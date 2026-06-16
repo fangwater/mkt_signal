@@ -8,8 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::common::min_qty_table::MinQtyTable;
+use crate::pre_trade::PersistChannel;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
-use crate::pre_trade::basic_exposure_manager::{BasicExposureEntry, BasicExposureManager};
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::close_inventory::{CloseInventoryLedger, CloseReservationGrant};
 use crate::pre_trade::net_position::NetPosition;
@@ -18,12 +18,11 @@ use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
-use crate::pre_trade::PersistChannel;
 use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
 use mkt_parsers::msg::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
-    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
+    BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg,
+    BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
+    BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg, split_basic_account_event,
 };
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
@@ -204,10 +203,10 @@ pub fn hash64(parts: &[u64]) -> u64 {
 
 // ==================== Monitor Channel ====================
 
-use crate::common::msg_parser::{get_msg_type, parse_index_price, parse_mark_price, MktMsgType};
+use crate::common::msg_parser::{MktMsgType, get_msg_type, parse_index_price, parse_mark_price};
 use crate::pre_trade::order_manager::OrderManager;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
+use crate::pre_trade::reactor_latency::{ReactorStage, record_stage_latency};
 use crate::strategy::OrphanStrategyManager;
 use account_common::BinanceAccountMode;
 use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
@@ -1103,6 +1102,7 @@ impl MonitorChannel {
     fn basic_state_any_dirty() -> bool {
         BASIC_STATE_DIRTY.with(|dirty| dirty.get())
             || BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.get())
+            || Self::basic_state_cache_stale()
     }
 
     fn clear_basic_state_runtime_cache() {
@@ -1127,12 +1127,34 @@ impl MonitorChannel {
     }
 
     fn basic_state_cache_key(inner: &MonitorChannelInner) -> usize {
+        let min_non_trading_position_bits = PreTradeParamsLoader::instance()
+            .min_non_trading_position_usdt()
+            .to_bits();
         (inner.open_venue.to_u8() as usize)
             ^ ((inner.hedge_venue.to_u8() as usize) << 8)
             ^ (Rc::as_ptr(&inner.price_table) as usize).rotate_left(3)
             ^ (Rc::as_ptr(&inner.order_manager) as usize).rotate_left(7)
             ^ Self::leg_cache_key(&inner.open_leg).rotate_left(11)
             ^ Self::leg_cache_key(&inner.hedge_leg).rotate_left(19)
+            ^ (hash64(&[min_non_trading_position_bits]) as usize).rotate_left(23)
+    }
+
+    fn basic_state_cache_stale() -> bool {
+        let Some(key) = Self::try_with_inner(Self::basic_state_cache_key) else {
+            return false;
+        };
+        BASIC_STATE_CACHE.with(|cache| {
+            cache
+                .borrow()
+                .as_ref()
+                .is_some_and(|(cached_key, _)| *cached_key != key)
+        })
+    }
+
+    fn ensure_basic_state_cache_current() {
+        if Self::basic_state_cache_stale() {
+            Self::refresh_basic_state_cache();
+        }
     }
 
     fn refresh_basic_state_cache() {
@@ -1203,7 +1225,8 @@ impl MonitorChannel {
             Self::refresh_basic_state_cache();
             return true;
         }
-        if Self::basic_state_cache_present() {
+        let cache_stale = Self::basic_state_cache_stale();
+        if Self::basic_state_cache_present() && !cache_stale {
             let now_us = get_timestamp_us();
             let last_us = BASIC_STATE_LAST_REFRESH_US.with(|last| last.get());
             if last_us > 0 && now_us.saturating_sub(last_us) < BASIC_STATE_REFRESH_MIN_INTERVAL_US {
@@ -1212,7 +1235,7 @@ impl MonitorChannel {
         }
         let full_dirty = BASIC_STATE_DIRTY.with(|dirty| dirty.get());
         let price_dirty = BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.get());
-        if !full_dirty {
+        if !full_dirty && !cache_stale {
             if !price_dirty {
                 return false;
             }
@@ -1225,6 +1248,7 @@ impl MonitorChannel {
     }
 
     fn basic_state_cached() -> BasicState {
+        Self::ensure_basic_state_cache_current();
         let key = Self::with_inner(Self::basic_state_cache_key);
         BASIC_STATE_CACHE.with(|cache| {
             cache
@@ -1236,6 +1260,7 @@ impl MonitorChannel {
     }
 
     fn with_basic_state_cached<R>(f: impl FnOnce(&BasicState) -> R) -> R {
+        Self::ensure_basic_state_cache_current();
         let key = Self::with_inner(Self::basic_state_cache_key);
         BASIC_STATE_CACHE.with(|cache| {
             let cache = cache.borrow();
@@ -2008,7 +2033,13 @@ impl MonitorChannel {
         if cancelled > 0 {
             warn!(
                 "Arb position risk cancel triggered: symbol={} open_venue={:?} hedge_venue={:?} net_qty={:.8} cancel_side={:?} cancelled_strategies={} trigger_ts={}",
-                normalized_symbol, open_venue, hedge_venue, net_qty, cancel_side, cancelled, trigger_ts
+                normalized_symbol,
+                open_venue,
+                hedge_venue,
+                net_qty,
+                cancel_side,
+                cancelled,
+                trigger_ts
             );
         }
     }
@@ -2674,55 +2705,59 @@ impl MonitorChannel {
         // 若同时统计会造成敞口翻倍；此时仅以 open 单边为准。
         let same_venue = inner.open_venue == inner.hedge_venue;
 
-        fn collect_leg_entries(leg: &LegMgr) -> Vec<BasicExposureEntry> {
+        fn collect_leg_exposure(
+            leg: &LegMgr,
+            exposures: &mut HashMap<String, (f64, f64)>,
+            leg_idx: usize,
+        ) {
+            let mut add_exposure = |asset: String, qty: f64| {
+                if qty.abs() <= 1e-12 {
+                    return;
+                }
+                let entry = exposures
+                    .entry(asset.to_ascii_uppercase())
+                    .or_insert((0.0, 0.0));
+                if leg_idx == 0 {
+                    entry.0 += qty;
+                } else {
+                    entry.1 += qty;
+                }
+            };
             match leg {
-                LegMgr::Margin { exchange, bal } => {
+                LegMgr::Margin { bal, .. } => {
                     let mgr = bal.borrow();
-                    let mgr_ref: &BasicBalanceManager = &mgr;
-                    BasicExposureManager::compute_exposures_for_exchange(
-                        *exchange,
-                        std::slice::from_ref(&mgr_ref),
-                        &[],
-                    )
+                    for balance in mgr.balances_iter() {
+                        add_exposure(balance.symbol.clone(), balance.net());
+                    }
                 }
                 LegMgr::Futures {
                     exchange,
                     um,
                     min_qty_table,
                 } => {
+                    let symbol_mapper = create_symbol_mapper(*exchange);
                     let um_mgr = um.borrow();
                     let min_qty = min_qty_table.borrow();
-                    let um_pair = (&*um_mgr, &*min_qty);
-                    BasicExposureManager::compute_exposures_for_exchange(
-                        *exchange,
-                        &[],
-                        std::slice::from_ref(&um_pair),
-                    )
+                    for (symbol, net_contracts) in um_mgr.net_contracts_iter() {
+                        if net_contracts == 0.0 {
+                            continue;
+                        }
+                        let Some(base_asset) = symbol_mapper.inst_id_to_base_asset(symbol) else {
+                            continue;
+                        };
+                        add_exposure(
+                            base_asset,
+                            net_contracts as f64 * min_qty.contract_multiplier(symbol),
+                        );
+                    }
                 }
             }
         }
 
-        let open_entries = collect_leg_entries(&inner.open_leg);
-        let hedge_entries = if same_venue {
-            Vec::new()
-        } else {
-            collect_leg_entries(&inner.hedge_leg)
-        };
-
         let mut exposures: HashMap<String, (f64, f64)> = HashMap::new();
-        for entry in open_entries {
-            if entry.exposure.abs() <= 1e-12 {
-                continue;
-            }
-            let asset = entry.asset.to_uppercase();
-            exposures.entry(asset).or_insert((0.0, 0.0)).0 += entry.exposure;
-        }
-        for entry in hedge_entries {
-            if entry.exposure.abs() <= 1e-12 {
-                continue;
-            }
-            let asset = entry.asset.to_uppercase();
-            exposures.entry(asset).or_insert((0.0, 0.0)).1 += entry.exposure;
+        collect_leg_exposure(&inner.open_leg, &mut exposures, 0);
+        if !same_venue {
+            collect_leg_exposure(&inner.hedge_leg, &mut exposures, 1);
         }
 
         let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
@@ -2757,6 +2792,13 @@ impl MonitorChannel {
                 }
             }
         }
+
+        Self::filter_non_trading_dust_positions(
+            inner,
+            &price_table,
+            &mut exposures,
+            &mut margin_balances_by_scope,
+        );
 
         // total_equity(eq) 口径：
         // - 非 USDT 资产：从 balance manager 统计净资产估值
@@ -2832,6 +2874,93 @@ impl MonitorChannel {
         let risk = inner.latest_account_risk.get(&scope)?;
         (risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON)
             .then_some((scope, risk.actual_equity_usd))
+    }
+
+    fn active_strategy_base_assets(inner: &MonitorChannelInner) -> HashSet<String> {
+        let mut assets = HashSet::new();
+        let strategy_mgr = inner.strategy_mgr.borrow();
+        for strategy_id in strategy_mgr.iter_ids() {
+            let Some(strategy) = strategy_mgr.get(*strategy_id) else {
+                continue;
+            };
+            let Some(symbol) = strategy.symbol() else {
+                continue;
+            };
+            let symbol = normalize_symbol_for_internal(symbol);
+            if let Some(asset) = extract_base_asset(&symbol) {
+                assets.insert(asset.to_uppercase());
+            }
+        }
+        assets
+    }
+
+    fn should_keep_non_trading_position(
+        asset: &str,
+        gross_qty: f64,
+        min_non_trading_position_usdt: f64,
+        active_assets: &HashSet<String>,
+        price_mapper: &dyn crate::pre_trade::symbol_mapper::SymbolMapper,
+        price_table: &PriceTable,
+    ) -> bool {
+        if asset.eq_ignore_ascii_case("USDT") || active_assets.contains(asset) {
+            return true;
+        }
+        let mark = Self::mark_price_for_asset(price_mapper, price_table, asset);
+        if mark <= 0.0 {
+            return true;
+        }
+        gross_qty.abs() * mark >= min_non_trading_position_usdt
+    }
+
+    fn filter_non_trading_dust_positions(
+        inner: &MonitorChannelInner,
+        price_table: &PriceTable,
+        exposures: &mut HashMap<String, (f64, f64)>,
+        margin_balances_by_scope: &mut HashMap<BasicAccountScope, HashMap<String, f64>>,
+    ) {
+        let min_non_trading_position_usdt =
+            PreTradeParamsLoader::instance().min_non_trading_position_usdt();
+        if !(min_non_trading_position_usdt.is_finite() && min_non_trading_position_usdt > 0.0) {
+            return;
+        }
+
+        let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+            inner.open_venue,
+            inner.hedge_venue,
+        ));
+        let active_assets = Self::active_strategy_base_assets(inner);
+        let mut retained_exposure_assets = HashSet::with_capacity(exposures.len());
+
+        exposures.retain(|asset, (open_qty, hedge_qty)| {
+            let gross_qty = open_qty.abs() + hedge_qty.abs();
+            let keep = Self::should_keep_non_trading_position(
+                asset,
+                gross_qty,
+                min_non_trading_position_usdt,
+                &active_assets,
+                &*price_mapper,
+                price_table,
+            );
+            if keep {
+                retained_exposure_assets.insert(asset.clone());
+            }
+            keep
+        });
+
+        for balances in margin_balances_by_scope.values_mut() {
+            balances.retain(|asset, qty| {
+                retained_exposure_assets.contains(asset)
+                    || Self::should_keep_non_trading_position(
+                        asset,
+                        qty.abs(),
+                        min_non_trading_position_usdt,
+                        &active_assets,
+                        &*price_mapper,
+                        price_table,
+                    )
+            });
+        }
+        margin_balances_by_scope.retain(|_, balances| !balances.is_empty());
     }
 
     fn mark_price_for_asset(
@@ -3718,16 +3847,16 @@ impl MonitorChannel {
                 Ok(v) => v,
                 Err(e) => {
                     info!(
-                            "max_pos_u check qty convert failed: symbol={} base_asset={} venue={:?} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} err={}",
-                            symbol,
-                            base_asset,
-                            venue,
-                            qty_unit,
-                            additional_qty,
-                            fut_symbol_key,
-                            qty_multiplier,
-                            e
-                        );
+                        "max_pos_u check qty convert failed: symbol={} base_asset={} venue={:?} qty_unit={} raw_qty={:.8} fut_symbol_key={:?} qty_multiplier={:?} err={}",
+                        symbol,
+                        base_asset,
+                        venue,
+                        qty_unit,
+                        additional_qty,
+                        fut_symbol_key,
+                        qty_multiplier,
+                        e
+                    );
                     return Err(e);
                 }
             };
@@ -4486,9 +4615,11 @@ mod tests {
 
         // max_pos_u default = 1000.0 (PreTradeParamsLoader::default)
         // FIL mark = 100.0, contracts=2, mult=10 => base=20 => notional=2000 > 1000
-        assert!(MonitorChannel::instance()
-            .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
-            .is_err());
+        assert!(
+            MonitorChannel::instance()
+                .ensure_max_pos_u("FIL-USDT-SWAP", 2.0, 100.0)
+                .is_err()
+        );
     }
 
     #[test]
@@ -4541,17 +4672,19 @@ mod tests {
         });
         MonitorChannel::mark_basic_state_dirty();
 
-        assert!(MonitorChannel::instance()
-            .ensure_max_pos_u_for_base_delta(
-                "FILUSDT",
-                TradingVenue::BinanceFutures,
-                0.0,
-                2.0,
-                100.0,
-                2.0,
-                1.0,
-            )
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .ensure_max_pos_u_for_base_delta(
+                    "FILUSDT",
+                    TradingVenue::BinanceFutures,
+                    0.0,
+                    2.0,
+                    100.0,
+                    2.0,
+                    1.0,
+                )
+                .is_ok()
+        );
 
         MonitorChannel::refresh_basic_state_cache();
         let err = MonitorChannel::instance()
@@ -4615,9 +4748,11 @@ mod tests {
         MonitorChannel::refresh_basic_state_cache();
 
         // 当前持仓 20 * 100 = 2000 > max_pos_u(1000)，但减少仓位应放行。
-        assert!(MonitorChannel::instance()
-            .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .ensure_max_pos_u("FILUSDT", -5.0, 100.0)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -4678,9 +4813,16 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("名义金额"), "err={err}");
 
-        assert!(MonitorChannel::instance()
-            .check_min_trading_requirements(TradingVenue::GateMargin, "CCUSDT", 40.0, Some(0.14653))
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_min_trading_requirements(
+                    TradingVenue::GateMargin,
+                    "CCUSDT",
+                    40.0,
+                    Some(0.14653)
+                )
+                .is_ok()
+        );
     }
 
     fn install_binance_arb_hedge_exposure_fixture(
@@ -4884,6 +5026,119 @@ mod tests {
         });
         MonitorChannel::refresh_basic_state_cache();
         (strategy_mgr, open_bal)
+    }
+
+    #[test]
+    fn basic_state_filters_non_trading_dust_by_position_usdt() {
+        let open_bal = Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance)));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "DOGE".to_string(), 10.0));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
+
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: open_bal,
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("DOGEUSDT", 1.0, 0);
+        price_table.update_mark_price("FILUSDT", 100.0, 0);
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::FundingArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!(!state.exposures.contains_key("DOGE"));
+        assert!(state.exposures.contains_key("FIL"));
+        assert!(
+            !state
+                .margin_balances_by_scope
+                .values()
+                .any(|balances| balances.contains_key("DOGE"))
+        );
+        assert!((state.total_position_usdt - 100.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn basic_state_keeps_active_strategy_dust_position() {
+        let open_bal = Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Binance)));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "DOGE".to_string(), 10.0));
+
+        let open_leg = LegMgr::Margin {
+            exchange: Exchange::Binance,
+            bal: open_bal,
+        };
+        let hedge_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("DOGEUSDT", 1.0, 0);
+
+        let strategy_mgr = Rc::new(RefCell::new(StrategyManager::new()));
+        strategy_mgr
+            .borrow_mut()
+            .insert(Box::new(TestMmOpenStrategy::new(
+                301,
+                "DOGEUSDT",
+                Side::Buy,
+                301_0001,
+            )));
+
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::FundingArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            open_leg,
+            hedge_leg,
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(price_table)),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr,
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert_eq!(state.exposures.get("DOGE"), Some(&(10.0, 0.0)));
+        assert!((state.total_position_usdt - 10.0).abs() < 1e-12);
     }
 
     #[test]
@@ -5180,9 +5435,11 @@ mod tests {
     fn arb_hedge_exposure_risk_allows_reducing_when_current_over_limit() {
         install_binance_arb_hedge_exposure_fixture(20.0, 0.0, false);
 
-        assert!(MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, -5.0)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -5199,9 +5456,11 @@ mod tests {
     fn arb_hedge_exposure_risk_allows_expanding_when_current_within_limit() {
         install_binance_arb_hedge_exposure_fixture(1.0, 0.0, false);
 
-        assert!(MonitorChannel::instance()
-            .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_arb_hedge_exposure_risk("FILUSDT", TradingVenue::BinanceFutures, 5.0)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -5244,18 +5503,22 @@ mod tests {
         assert_eq!(strategy_mgr.borrow().len(), 0);
 
         MonitorChannel::refresh_basic_state_cache();
-        assert!(MonitorChannel::instance()
-            .check_symbol_exposure("FILUSDT")
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_symbol_exposure("FILUSDT")
+                .is_ok()
+        );
 
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 20.0));
         MonitorChannel::mark_basic_state_dirty();
 
-        assert!(MonitorChannel::instance()
-            .check_symbol_exposure("FILUSDT")
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_symbol_exposure("FILUSDT")
+                .is_ok()
+        );
 
         MonitorChannel::refresh_basic_state_cache();
         let err = MonitorChannel::instance()
@@ -5272,9 +5535,11 @@ mod tests {
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
 
         MonitorChannel::refresh_basic_state_cache();
-        assert!(MonitorChannel::instance()
-            .check_symbol_exposure("FILUSDT")
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_symbol_exposure("FILUSDT")
+                .is_ok()
+        );
 
         MonitorChannel::with_inner(|inner| {
             inner
@@ -5284,9 +5549,11 @@ mod tests {
         });
         MonitorChannel::mark_basic_state_dirty();
 
-        assert!(MonitorChannel::instance()
-            .check_symbol_exposure("FILUSDT")
-            .is_ok());
+        assert!(
+            MonitorChannel::instance()
+                .check_symbol_exposure("FILUSDT")
+                .is_ok()
+        );
 
         MonitorChannel::refresh_basic_state_cache();
         let err = MonitorChannel::instance()

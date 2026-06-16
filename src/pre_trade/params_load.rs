@@ -17,6 +17,7 @@ const REFRESH_INTERVAL_SECS: u64 = 60;
 const EXCHANGE_WARNING_MODE_UPPER_UNIMMR: f64 = 1.5;
 const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
+const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 
 /// 从 Redis 加载的 Pre-Trade 风控参数（内部数据结构）
 #[derive(Debug, Clone)]
@@ -26,6 +27,7 @@ struct PreTradeParamsData {
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
+    min_non_trading_position_usdt: f64,
     exec_max_position_imbalance_ratio: f64,
     unimmr_trigger_line: f64,
     unimmr_recover_line: f64,
@@ -54,6 +56,7 @@ impl Default for PreTradeParamsData {
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
+            min_non_trading_position_usdt: DEFAULT_MIN_NON_TRADING_POSITION_USDT,
             exec_max_position_imbalance_ratio: 0.0,
             unimmr_trigger_line: DEFAULT_UNIMMR_TRIGGER_LINE,
             unimmr_recover_line: DEFAULT_UNIMMR_RECOVER_LINE,
@@ -293,6 +296,17 @@ impl PreTradeParamsLoader {
                 }
             }
 
+            if let Some(v) = parse_f64("min_non_trading_position_usdt") {
+                if v.is_finite() && v >= 0.0 {
+                    data.min_non_trading_position_usdt = v;
+                } else {
+                    warn!(
+                        "min_non_trading_position_usdt={} 无效，需为非负有限值，忽略更新",
+                        v
+                    );
+                }
+            }
+
             if let Some(v) = parse_f64("exec_max_position_imbalance_ratio") {
                 if v.is_finite() && (0.0..=1.0).contains(&v) {
                     data.exec_max_position_imbalance_ratio = v;
@@ -384,12 +398,13 @@ impl PreTradeParamsLoader {
             }
 
             debug!(
-                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
+                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} min_non_trading_position_usdt={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
                 data.max_pos_u,
                 data.max_pos_u_overrides.len(),
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
+                data.min_non_trading_position_usdt,
                 data.exec_max_position_imbalance_ratio,
                 data.unimmr_trigger_line,
                 data.unimmr_recover_line,
@@ -465,6 +480,10 @@ impl PreTradeParamsLoader {
             "max_total_exposure_ratio", data.max_total_exposure_ratio
         );
         println!("{:<40} {:>18.2}", "max_leverage", data.max_leverage);
+        println!(
+            "{:<40} {:>18.2}",
+            "min_non_trading_position_usdt", data.min_non_trading_position_usdt
+        );
         println!(
             "{:<40} {:>18.4}",
             "exec_max_position_imbalance_ratio", data.exec_max_position_imbalance_ratio
@@ -574,6 +593,10 @@ impl PreTradeParamsLoader {
 
     pub fn exec_max_position_imbalance_ratio(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().exec_max_position_imbalance_ratio)
+    }
+
+    pub fn min_non_trading_position_usdt(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().min_non_trading_position_usdt)
     }
 
     /// 获取 UniMMR 算法平仓触发线
@@ -717,6 +740,7 @@ impl PreTradeParamsLoader {
                 max_symbol_exposure_ratio: data.max_symbol_exposure_ratio,
                 max_total_exposure_ratio: data.max_total_exposure_ratio,
                 max_leverage: data.max_leverage,
+                min_non_trading_position_usdt: data.min_non_trading_position_usdt,
                 exec_max_position_imbalance_ratio: data.exec_max_position_imbalance_ratio,
                 unimmr_trigger_line: data.unimmr_trigger_line,
                 unimmr_recover_line: data.unimmr_recover_line,
@@ -747,6 +771,7 @@ pub struct PreTradeParamsSnapshot {
     pub max_symbol_exposure_ratio: f64,
     pub max_total_exposure_ratio: f64,
     pub max_leverage: f64,
+    pub min_non_trading_position_usdt: f64,
     pub exec_max_position_imbalance_ratio: f64,
     pub unimmr_trigger_line: f64,
     pub unimmr_recover_line: f64,
@@ -778,6 +803,10 @@ mod tests {
         assert_eq!(loader.max_symbol_exposure_ratio(), 0.8);
         assert_eq!(loader.max_total_exposure_ratio(), 1.0);
         assert_eq!(loader.max_leverage(), 3.0);
+        assert_eq!(
+            loader.min_non_trading_position_usdt(),
+            DEFAULT_MIN_NON_TRADING_POSITION_USDT
+        );
         assert_eq!(loader.exec_max_position_imbalance_ratio(), 0.0);
         assert_eq!(loader.unimmr_trigger_line(), DEFAULT_UNIMMR_TRIGGER_LINE);
         assert_eq!(loader.unimmr_recover_line(), DEFAULT_UNIMMR_RECOVER_LINE);
@@ -804,6 +833,10 @@ mod tests {
         let snapshot = loader.snapshot();
         assert_eq!(snapshot.max_pos_u, 1000.0);
         assert_eq!(snapshot.max_leverage, 3.0);
+        assert_eq!(
+            snapshot.min_non_trading_position_usdt,
+            DEFAULT_MIN_NON_TRADING_POSITION_USDT
+        );
         assert_eq!(snapshot.unimmr_trigger_line, DEFAULT_UNIMMR_TRIGGER_LINE);
         assert_eq!(snapshot.unimmr_recover_line, DEFAULT_UNIMMR_RECOVER_LINE);
         assert_eq!(snapshot.max_pending_limit_buy_orders, 0);
