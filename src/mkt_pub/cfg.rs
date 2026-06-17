@@ -11,6 +11,10 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
 
+const BINANCE_FUTURES_EXCHANGE_INFO_URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+const BINANCE_CONTRACT_PERPETUAL: &str = "PERPETUAL";
+const BINANCE_CONTRACT_TRADIFI_PERPETUAL: &str = "TRADIFI_PERPETUAL";
+
 fn symbols_cache() -> &'static AsyncMutex<HashMap<TradingVenue, Vec<String>>> {
     static CACHE: OnceLock<AsyncMutex<HashMap<TradingVenue, Vec<String>>>> = OnceLock::new();
     CACHE.get_or_init(|| AsyncMutex::new(HashMap::new()))
@@ -277,16 +281,11 @@ impl Config {
     }
 
     async fn get_symbol_for_binance_futures() -> Result<Vec<String>> {
-        const URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
-        let info = Self::fetch_binance_exchange_info(URL).await?;
-        let symbols: Vec<String> = info
-            .symbols
-            .into_iter()
-            .filter(|s| s.quote_asset == "USDT")
-            .filter(|s| s.status == "TRADING")
-            .filter(|s| s.contract_type.as_deref() == Some("PERPETUAL"))
-            .map(|s| s.symbol)
-            .collect();
+        let info = Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;
+        let symbols = Self::filter_binance_usdt_trading_futures_symbols(
+            &info.symbols,
+            BINANCE_CONTRACT_PERPETUAL,
+        );
         info!(
             "Binance futures USDT-denominated symbol count {:?}",
             symbols.len()
@@ -295,7 +294,24 @@ impl Config {
     }
 
     async fn get_futures_symbols_related_to_binance_spot() -> Result<Vec<String>> {
-        let futures_symbols = Self::get_symbol_for_binance_futures().await?;
+        let futures_info =
+            Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;
+        let futures_symbols = Self::filter_binance_usdt_trading_futures_symbols(
+            &futures_info.symbols,
+            BINANCE_CONTRACT_PERPETUAL,
+        );
+        let tradifi_symbols = Self::filter_binance_usdt_trading_futures_symbols(
+            &futures_info.symbols,
+            BINANCE_CONTRACT_TRADIFI_PERPETUAL,
+        );
+        info!(
+            "Binance futures USDT-denominated symbol count {:?}",
+            futures_symbols.len()
+        );
+        info!(
+            "Binance futures TRADIFI_PERPETUAL USDT-denominated symbol count {:?}",
+            tradifi_symbols.len()
+        );
         let spot_symbols = Self::get_spot_symbols_from_binance_api().await?;
         let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
             &futures_symbols,
@@ -309,7 +325,37 @@ impl Config {
             matched_futures.len()
         );
         print_matched_pairs("Futures", "Spot", &matched_pairs);
-        Ok(matched_futures)
+
+        let mut selected = matched_futures;
+        let matched_count = selected.len();
+        Self::extend_unique_symbols(&mut selected, tradifi_symbols);
+        info!(
+            "Binance futures symbols selected for subscription: spot_related={} total_with_tradifi={}",
+            matched_count,
+            selected.len()
+        );
+        Ok(selected)
+    }
+
+    fn filter_binance_usdt_trading_futures_symbols(
+        symbols: &[BinanceSymbolInfo],
+        contract_type: &str,
+    ) -> Vec<String> {
+        symbols
+            .iter()
+            .filter(|s| s.quote_asset == "USDT")
+            .filter(|s| s.status == "TRADING")
+            .filter(|s| s.contract_type.as_deref() == Some(contract_type))
+            .map(|s| s.symbol.clone())
+            .collect()
+    }
+
+    fn extend_unique_symbols(base: &mut Vec<String>, extras: Vec<String>) {
+        for symbol in extras {
+            if !base.contains(&symbol) {
+                base.push(symbol);
+            }
+        }
     }
 
     async fn get_spot_symbols_from_binance_api() -> Result<Vec<String>> {
@@ -1188,5 +1234,89 @@ impl Config {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binance_symbol(
+        symbol: &str,
+        status: &str,
+        quote_asset: &str,
+        contract_type: Option<&str>,
+    ) -> BinanceSymbolInfo {
+        BinanceSymbolInfo {
+            symbol: symbol.to_string(),
+            status: status.to_string(),
+            quote_asset: quote_asset.to_string(),
+            contract_type: contract_type.map(str::to_string),
+            is_spot_trading_allowed: None,
+        }
+    }
+
+    #[test]
+    fn filter_binance_usdt_trading_futures_symbols_matches_contract_type() {
+        let symbols = vec![
+            binance_symbol(
+                "BTCUSDT",
+                "TRADING",
+                "USDT",
+                Some(BINANCE_CONTRACT_PERPETUAL),
+            ),
+            binance_symbol(
+                "NVDAUSDT",
+                "TRADING",
+                "USDT",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol(
+                "AAPLUSDC",
+                "TRADING",
+                "USDC",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol(
+                "TSLAUSDT",
+                "SETTLING",
+                "USDT",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol("ETHUSDT", "TRADING", "USDT", None),
+        ];
+
+        assert_eq!(
+            Config::filter_binance_usdt_trading_futures_symbols(
+                &symbols,
+                BINANCE_CONTRACT_PERPETUAL
+            ),
+            vec!["BTCUSDT".to_string()]
+        );
+        assert_eq!(
+            Config::filter_binance_usdt_trading_futures_symbols(
+                &symbols,
+                BINANCE_CONTRACT_TRADIFI_PERPETUAL
+            ),
+            vec!["NVDAUSDT".to_string()]
+        );
+    }
+
+    #[test]
+    fn extend_unique_symbols_appends_new_symbols_only() {
+        let mut base = vec!["BTCUSDT".to_string(), "NVDAUSDT".to_string()];
+        Config::extend_unique_symbols(
+            &mut base,
+            vec!["NVDAUSDT".to_string(), "TSLAUSDT".to_string()],
+        );
+
+        assert_eq!(
+            base,
+            vec![
+                "BTCUSDT".to_string(),
+                "NVDAUSDT".to_string(),
+                "TSLAUSDT".to_string()
+            ]
+        );
     }
 }
