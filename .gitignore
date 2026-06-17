@@ -64,3 +64,6 @@ order_exports/
 analysis_outputs/
 persist_read_bybit_intra_arb01_20260612_new_latency.ipynb
 persist_read_bybit_intra_arb01_20260612_new_latency.executed.ipynb
+
+# local Binance intra latency notebooks
+binance_intra_futures_taker_*.ipynb
