@@ -202,9 +202,11 @@ impl TradeEngHub {
         let mut submit_meta = None;
         if let Some(om) = MonitorChannel::try_order_manager() {
             // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
-            let signal_meta = om
-                .borrow_mut()
-                .set_submit_time_and_signal_meta(client_order_id, publish_start_us);
+            let signal_meta = om.borrow_mut().set_submit_time_and_signal_meta(
+                client_order_id,
+                publish_start_us,
+                Some(SignalType::ArbOpen as u8),
+            );
             if let Some(meta) = signal_meta {
                 if meta.signal_t > 0 {
                     if let Some(st) = SignalType::from_u32(meta.signal_kind as u32) {

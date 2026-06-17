@@ -970,8 +970,16 @@ impl OrderManager {
         &mut self,
         order_id: i64,
         submit_time: i64,
+        first_create_signal_kind: Option<u8>,
     ) -> Option<OrderSubmitSignalMeta> {
         self.orders.get_mut(&order_id).map(|order| {
+            if first_create_signal_kind
+                .map(|kind| order.timestamp.signal_kind == kind)
+                .unwrap_or(false)
+                && order.timestamp.create_t == 0
+            {
+                order.set_create_time(submit_time);
+            }
             order.set_submit_time(submit_time);
             OrderSubmitSignalMeta {
                 signal_t: order.timestamp.signal_t,
