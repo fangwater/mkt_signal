@@ -54,6 +54,7 @@ ENV_DIR_PATTERN = re.compile(r"^(bitget_fr_|bitget[-_]intra[-_])")
 # Bitget repo scripts accept either passphrase env var name.
 AUTHORITATIVE_KEYS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_PASSPHRASE", "BITGET_API_PASSPHRASE")
 ZERO = Decimal("0")
+BUYBACK_QUOTE_BUFFER = Decimal("1.001")
 
 
 @dataclass
@@ -62,6 +63,8 @@ class SymbolSpec:
     asset: str            # BTC
     spot_qty_step: Decimal
     spot_min_qty: Decimal
+    spot_quote_step: Decimal
+    spot_min_amount: Decimal
     futures_qty_step: Decimal
     futures_min_qty: Decimal
 
@@ -73,6 +76,7 @@ class SymbolState:
     borrowed: Decimal
     interest: Decimal
     futures_position: Decimal  # signed base-coin qty
+    mark_price: Decimal        # USDT per base coin, used for market buys
 
 
 @dataclass
@@ -84,7 +88,7 @@ class SymbolPlan:
     futures_qty: Decimal
     futures_reduce_only: bool
     futures_skip_reason: Optional[str]
-    buyback_amt: Decimal
+    buyback_amt: Decimal       # quote-coin amount for MARGIN market BUY
     buyback_skip_reason: Optional[str]
     selldown_amt: Decimal
     selldown_skip_reason: Optional[str]
@@ -126,6 +130,18 @@ def ceil_to_step(value, step):
     if step <= 0:
         return value
     return (value / step).to_integral_value(rounding=ROUND_UP) * step
+
+
+def step_from_precision(value, default="0.000001"):
+    if value in (None, ""):
+        return Decimal(default)
+    try:
+        precision = int(str(value))
+    except (TypeError, ValueError):
+        return Decimal(default)
+    if precision < 0:
+        return Decimal(default)
+    return Decimal("1").scaleb(-precision)
 
 
 def format_decimal(value):
@@ -315,7 +331,7 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
                 or m.get("quantityMultiplier")
                 or m.get("sizeStep")
                 or m.get("baseSizeStep"),
-                "1",
+                str(step_from_precision(m.get("quantityPrecision"), "1")),
             ),
             spot_min_qty=decimal_or(
                 m.get("minOrderQuantity")
@@ -324,12 +340,14 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
                 or m.get("minQuantity"),
                 "0",
             ),
+            spot_quote_step=step_from_precision(m.get("quotePrecision")),
+            spot_min_amount=decimal_or(m.get("minOrderAmount"), "0"),
             futures_qty_step=decimal_or(
                 f.get("quantityStep")
                 or f.get("quantityMultiplier")
                 or f.get("sizeStep")
                 or f.get("baseSizeStep"),
-                "1",
+                str(step_from_precision(f.get("quantityPrecision"), "1")),
             ),
             futures_min_qty=decimal_or(
                 f.get("minOrderQuantity")
@@ -340,6 +358,35 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
             ),
         )
     return out
+
+
+def fetch_spot_marks(symbols: List[str]) -> Dict[str, Decimal]:
+    wanted = set(symbols)
+    marks: Dict[str, Decimal] = {}
+    status, body = http_request(
+        f"{BITGET_BASE}/api/v2/spot/market/tickers", timeout=15
+    )
+    if not (200 <= status < 300):
+        sys.stderr.write(f"[WARN] spot tickers status={status} body={body}\n")
+        return marks
+    parsed = json.loads(body)
+    if str(parsed.get("code", "")) not in ("0", "00000"):
+        sys.stderr.write(f"[WARN] spot tickers: {body}\n")
+        return marks
+    for row in parsed.get("data", []) or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol", "")).upper()
+        if sym not in wanted:
+            continue
+        price = (
+            decimal_or(row.get("askPr"))
+            or decimal_or(row.get("lastPr"))
+            or decimal_or(row.get("bidPr"))
+        )
+        if price > 0:
+            marks[sym] = price
+    return marks
 
 
 def fetch_assets(api_key, api_secret, passphrase) -> Dict[str, Tuple[Decimal, Decimal, Decimal]]:
@@ -483,15 +530,20 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
 
     if mode == "clear":
         # Negative spot net means BUY is needed to extinguish borrow (auto-repay).
+        # For Bitget UTA Spot/Margin market buys, qty is quote coin (USDT),
+        # while market sells and futures orders use base-coin qty.
         if free_after < 0:
             owed = -free_after
-            buyback_amt = ceil_to_step(owed, spec.spot_qty_step)
-            if buyback_amt < spec.spot_min_qty:
+            if state.mark_price <= 0:
                 buyback_skip = (
-                    f"buyback qty {format_decimal(buyback_amt)} < min "
-                    f"{format_decimal(spec.spot_min_qty)} (owed={format_decimal(owed)})"
+                    "missing spot mark price for quote-sized buyback "
+                    f"(owed_base={format_decimal(owed)})"
                 )
-                buyback_amt = ZERO
+            else:
+                quote_needed = owed * state.mark_price * BUYBACK_QUOTE_BUFFER
+                buyback_amt = ceil_to_step(quote_needed, spec.spot_quote_step)
+                if buyback_amt < spec.spot_min_amount:
+                    buyback_amt = spec.spot_min_amount
         elif free_after > 0:
             sell_target = free_after
             selldown_amt = floor_to_step(sell_target, spec.spot_qty_step)
@@ -499,6 +551,18 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
                 selldown_skip = (
                     f"selldown qty {format_decimal(selldown_amt)} < min "
                     f"{format_decimal(spec.spot_min_qty)} (spot_net={format_decimal(sell_target)})"
+                )
+                selldown_amt = ZERO
+            elif state.mark_price <= 0:
+                selldown_skip = (
+                    "missing spot mark price for min-notional check "
+                    f"(spot_net={format_decimal(sell_target)})"
+                )
+                selldown_amt = ZERO
+            elif selldown_amt * state.mark_price < spec.spot_min_amount:
+                selldown_skip = (
+                    f"selldown notional {format_decimal(selldown_amt * state.mark_price)} < min "
+                    f"{format_decimal(spec.spot_min_amount)} (spot_net={format_decimal(sell_target)})"
                 )
                 selldown_amt = ZERO
 
@@ -526,7 +590,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     header = (
         f"{'Symbol':<12} {'Asset':<6} {'SpotNet':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'Pos':>14} {'Net':>12} {'Fut Side':>9} {'Fut Qty':>14} "
-        f"{'Fut RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
+        f"{'Fut RO':>6} {'BuyQuote':>12} {'Selldown':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -636,7 +700,7 @@ def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
         "qty": qty,
         "clientOid": f"frbuy-{int(time.time() * 1000)}",
     }
-    print(f"\n[buyback] {sym} buy qty={qty} category=MARGIN (auto-repay)")
+    print(f"\n[buyback] {sym} buy quote_qty={qty} category=MARGIN (auto-repay)")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -698,6 +762,7 @@ def main() -> None:
     symbols = parse_symbol_args(args.symbol, args.symbols)
 
     specs = fetch_specs(symbols)
+    marks = fetch_spot_marks(symbols)
     balances = fetch_assets(api_key, api_secret, passphrase)
     positions = fetch_positions(symbols, api_key, api_secret, passphrase)
 
@@ -708,7 +773,7 @@ def main() -> None:
         pos = positions.get(sym, ZERO)
         state = SymbolState(
             spec=spec, free=free, borrowed=borrowed, interest=interest,
-            futures_position=pos,
+            futures_position=pos, mark_price=marks.get(sym, ZERO),
         )
         plans.append(plan_symbol(state, args.mode))
 
