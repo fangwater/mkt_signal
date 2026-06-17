@@ -38,10 +38,10 @@ use order_common::{
 };
 use order_common::{OrderStatus, TradingVenue};
 use runtime_common::exchange::Exchange;
-use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
-use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::common::{align_price_floor, SignalBytes, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -391,6 +391,52 @@ impl ArbHedgeStrategy {
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
         pending_hedge_qty.abs() * mark_price.abs()
+    }
+
+    fn gate_futures_query_qty_below_min(
+        due_hedge_qty: f64,
+        min_qty_contracts: Option<f64>,
+        step_contracts: Option<f64>,
+        contract_multiplier: Option<f64>,
+    ) -> Option<(f64, f64, f64)> {
+        if !(due_hedge_qty.is_finite() && due_hedge_qty.abs() > ARB_HEDGE_QTY_EPS) {
+            return None;
+        }
+        let min_qty_contracts = min_qty_contracts?;
+        if !(min_qty_contracts.is_finite() && min_qty_contracts > 0.0) {
+            return None;
+        }
+        let contract_multiplier = contract_multiplier?;
+        if !(contract_multiplier.is_finite() && contract_multiplier > 0.0) {
+            return None;
+        }
+        let raw_contracts = due_hedge_qty.abs() / contract_multiplier;
+        if !(raw_contracts.is_finite() && raw_contracts > 0.0) {
+            return None;
+        }
+        let aligned_contracts = match step_contracts {
+            Some(step) if step.is_finite() && step > 0.0 => align_price_floor(raw_contracts, step),
+            _ => raw_contracts,
+        };
+        if aligned_contracts + 1e-12 < min_qty_contracts {
+            Some((raw_contracts, aligned_contracts, min_qty_contracts))
+        } else {
+            None
+        }
+    }
+
+    fn gate_futures_query_due_qty_below_min(&self, due_hedge_qty: f64) -> Option<(f64, f64, f64)> {
+        if self.hedge_venue != TradingVenue::GateFutures {
+            return None;
+        }
+        let symbol_key = min_qty_symbol_key(self.hedge_venue, &self.symbol);
+        let table = MonitorChannel::instance().try_venue_min_qty_table(self.hedge_venue)?;
+        Self::gate_futures_query_qty_below_min(
+            due_hedge_qty,
+            table.min_qty(&symbol_key),
+            table.step_size(&symbol_key),
+            table.contract_multiplier_opt(&symbol_key),
+        )
     }
 
     fn hedge_leg_reference_price(price: f64, leg: TradingLeg) -> Option<f64> {
@@ -1001,6 +1047,27 @@ impl ArbHedgeStrategy {
                 false
             }
             DueHedgeRoute::Query => {
+                if let Some((raw_contracts, aligned_contracts, min_qty_contracts)) =
+                    self.gate_futures_query_due_qty_below_min(due_hedge_qty)
+                {
+                    if throttle_on_skip {
+                        self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+                    }
+                    if !suppress_pre_submit_hot_path_logs() {
+                        info!(
+                            "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because GateFutures qty below min due_hedge_qty={:.8} raw_contracts={:.8} aligned_contracts={:.8} min_contracts={:.8} next_query_ts_us={}",
+                            self.strategy_id,
+                            self.symbol,
+                            reason,
+                            due_hedge_qty,
+                            raw_contracts,
+                            aligned_contracts,
+                            min_qty_contracts,
+                            self.next_query_ts_us
+                        );
+                    }
+                    return false;
+                }
                 self.send_hedge_query(now_ts, due_hedge_qty);
                 true
             }
@@ -2717,6 +2784,33 @@ mod tests {
 
         assert!(below < super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
         assert!(above > super::ARB_HEDGE_PENDING_QUERY_MIN_USDT);
+    }
+
+    #[test]
+    fn gate_futures_query_qty_gate_rejects_below_min_contracts() {
+        let rejected = ArbHedgeStrategy::gate_futures_query_qty_below_min(
+            -6.1,
+            Some(0.1),
+            Some(0.1),
+            Some(100.0),
+        )
+        .expect("6.1 LAB is below 0.1 LAB_USDT contract");
+
+        assert!((rejected.0 - 0.061).abs() < 1e-12);
+        assert_eq!(rejected.1, 0.0);
+        assert_eq!(rejected.2, 0.1);
+    }
+
+    #[test]
+    fn gate_futures_query_qty_gate_allows_min_contracts() {
+        let allowed = ArbHedgeStrategy::gate_futures_query_qty_below_min(
+            -10.0,
+            Some(0.1),
+            Some(0.1),
+            Some(100.0),
+        );
+
+        assert!(allowed.is_none());
     }
 
     #[test]
