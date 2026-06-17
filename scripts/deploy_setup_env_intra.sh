@@ -189,6 +189,7 @@ $(emit_creds_block "$EXCHANGE")
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"
 
 # Core binding overrides (optional)
+export ACCOUNT_MONITOR_CORE="\${ACCOUNT_MONITOR_CORE:-}"
 export PERSIST_MANAGER_CORE="\${PERSIST_MANAGER_CORE:-}"
 EOF
   chmod +x "$ENV_FILE"

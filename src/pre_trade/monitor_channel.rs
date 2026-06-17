@@ -216,6 +216,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+const MONITOR_FAST_POLL_NORMAL_WEIGHT: usize = 16;
+const MONITOR_FAST_POLL_LOW_WEIGHT: usize = 1;
 const MONITOR_FAST_POLL_RAW_MULTIPLIER: usize = 8;
 
 /// 合约腿管理器句柄对：(UmManager, MinQtyTable)。
@@ -290,34 +292,41 @@ struct MonitorStateListeners {
 }
 
 impl MonitorStateListeners {
-    fn drain_pending_limit(&mut self, max_weight: usize) -> (bool, usize) {
+    fn drain_pending_limit(&mut self, max_messages: usize) -> (bool, usize) {
         let mut has_message = false;
-        let mut consumed_weight = 0usize;
-        let mut raw_remaining = monitor_fast_poll_raw_limit(max_weight);
+        let token_limit = monitor_fast_poll_token_limit(max_messages);
+        let mut consumed_tokens = 0usize;
+        let mut raw_remaining = monitor_fast_poll_raw_limit(max_messages);
         for listener in &mut self.account_listeners {
-            if consumed_weight >= max_weight || raw_remaining == 0 {
+            if consumed_tokens >= token_limit || raw_remaining == 0 {
                 break;
             }
             let (listener_has_message, listener_weight, listener_raw_received) =
-                listener.drain_pending_limit(max_weight - consumed_weight, raw_remaining);
-            consumed_weight += listener_weight;
+                listener.drain_pending_limit(token_limit - consumed_tokens, raw_remaining);
+            consumed_tokens += listener_weight;
             raw_remaining = raw_remaining.saturating_sub(listener_raw_received);
             has_message |= listener_has_message;
         }
-        if consumed_weight < max_weight && raw_remaining > 0 {
+        if consumed_tokens < token_limit && raw_remaining > 0 {
             let (listener_has_message, listener_weight, listener_raw_received) = self
                 .derivatives_listener
-                .drain_pending_limit(max_weight - consumed_weight, raw_remaining);
-            consumed_weight += listener_weight;
+                .drain_pending_limit(token_limit - consumed_tokens, raw_remaining);
+            consumed_tokens += listener_weight;
             let _ = listener_raw_received;
             has_message |= listener_has_message;
         }
-        (has_message, consumed_weight)
+        (has_message, consumed_tokens)
     }
 }
 
-fn monitor_fast_poll_raw_limit(weight_limit: usize) -> usize {
-    weight_limit
+fn monitor_fast_poll_token_limit(message_limit: usize) -> usize {
+    message_limit
+        .saturating_mul(MONITOR_FAST_POLL_NORMAL_WEIGHT)
+        .max(MONITOR_FAST_POLL_LOW_WEIGHT)
+}
+
+fn monitor_fast_poll_raw_limit(message_limit: usize) -> usize {
+    message_limit
         .saturating_mul(MONITOR_FAST_POLL_RAW_MULTIPLIER)
         .max(1)
 }
@@ -499,19 +508,19 @@ impl BasicAccountListener {
 
     fn process_payload(&mut self, payload: &[u8]) -> usize {
         let Some((msg_type, account_scope, data)) = split_basic_account_event(payload) else {
-            return 1;
+            return MONITOR_FAST_POLL_LOW_WEIGHT;
         };
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         payload.hash(&mut hasher);
         let key = hasher.finish();
         if !self.dedup.insert_check(key) {
-            return 0;
+            return MONITOR_FAST_POLL_LOW_WEIGHT;
         }
 
         match msg_type {
             BasicAccountEventType::BalanceUpdate => {
-                let mut weight = 0usize;
+                let mut weight = MONITOR_FAST_POLL_LOW_WEIGHT;
                 if let Ok(msg) = BasicBalanceMsg::from_bytes(data) {
                     if msg.symbol.eq_ignore_ascii_case("USDT") {
                         if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
@@ -534,7 +543,7 @@ impl BasicAccountListener {
                                 &msg.symbol,
                                 msg.timestamp.max(0).saturating_mul(1000),
                             ) {
-                                weight = 1;
+                                weight = MONITOR_FAST_POLL_NORMAL_WEIGHT;
                             }
                         }
                     }
@@ -570,7 +579,7 @@ impl BasicAccountListener {
                             msg.position_amount,
                             msg.timestamp
                         );
-                        return 1;
+                        return MONITOR_FAST_POLL_NORMAL_WEIGHT;
                     }
                     if scope_matches_venue(
                         account_scope,
@@ -612,7 +621,7 @@ impl BasicAccountListener {
                     }
                     MonitorChannel::mark_basic_state_dirty();
                 }
-                1
+                MONITOR_FAST_POLL_NORMAL_WEIGHT
             }
             BasicAccountEventType::UnrealizedPnlUpdate => {
                 if let Ok(msg) = BasicUmUnrealizedMsg::from_bytes(data) {
@@ -638,10 +647,10 @@ impl BasicAccountListener {
                     }
                     MonitorChannel::mark_basic_state_dirty();
                 }
-                0
+                MONITOR_FAST_POLL_LOW_WEIGHT
             }
             BasicAccountEventType::BorrowInterest => {
-                let mut weight = 0usize;
+                let mut weight = MONITOR_FAST_POLL_LOW_WEIGHT;
                 if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(data) {
                     if msg.symbol.eq_ignore_ascii_case("USDT") {
                         if let Some(mgr) = self.usdt_mgrs.get(&account_scope) {
@@ -664,7 +673,7 @@ impl BasicAccountListener {
                                 &msg.symbol,
                                 msg.timestamp.max(0).saturating_mul(1000),
                             ) {
-                                weight = 1;
+                                weight = MONITOR_FAST_POLL_NORMAL_WEIGHT;
                             }
                         }
                     }
@@ -715,7 +724,7 @@ impl BasicAccountListener {
                     }
                     _ => {}
                 }
-                1
+                MONITOR_FAST_POLL_NORMAL_WEIGHT
             }
             BasicAccountEventType::TradeUpdateLite => {
                 // 仅在已验证轻量成交频道的同所路径启用 TradeLite 派发。
@@ -724,23 +733,23 @@ impl BasicAccountListener {
                         dispatch_trade_update_lite_generic(&self.strategy_mgr, &msg);
                     }
                 }
-                1
+                MONITOR_FAST_POLL_NORMAL_WEIGHT
             }
             BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
                 Ok(msg) => {
                     MonitorChannel::instance().apply_account_risk(account_scope, msg);
                     MonitorChannel::mark_basic_state_dirty();
-                    0
+                    MONITOR_FAST_POLL_LOW_WEIGHT
                 }
                 Err(err) => {
                     warn!(
                         "AccountRisk decode failed: scope={} err={err:#}",
                         account_scope.as_str()
                     );
-                    0
+                    MONITOR_FAST_POLL_LOW_WEIGHT
                 }
             },
-            BasicAccountEventType::Error => 0,
+            BasicAccountEventType::Error => MONITOR_FAST_POLL_LOW_WEIGHT,
         }
     }
 }
@@ -850,15 +859,16 @@ impl DerivativesPriceListener {
 
     fn drain_pending_limit(
         &mut self,
-        max_weight: usize,
+        max_tokens: usize,
         max_raw_messages: usize,
     ) -> (bool, usize, usize) {
         if !self.ensure_subscriber() {
             return (false, 0, 0);
         }
         let mut has_message = false;
+        let mut consumed_tokens = 0usize;
         let mut received = 0usize;
-        while max_weight > 0 && received < max_raw_messages {
+        while consumed_tokens < max_tokens && received < max_raw_messages {
             let receive_result = self
                 .subscriber
                 .as_ref()
@@ -868,7 +878,8 @@ impl DerivativesPriceListener {
                 Ok(Some(sample)) => {
                     received += 1;
                     has_message = true;
-                    self.process_payload(sample.payload());
+                    consumed_tokens =
+                        consumed_tokens.saturating_add(self.process_payload(sample.payload()));
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -882,15 +893,15 @@ impl DerivativesPriceListener {
                 }
             }
         }
-        (has_message, 0, received)
+        (has_message, consumed_tokens, received)
     }
 
-    fn process_payload(&mut self, payload: &[u8]) {
+    fn process_payload(&mut self, payload: &[u8]) -> usize {
         if payload.is_empty() {
-            return;
+            return MONITOR_FAST_POLL_LOW_WEIGHT;
         }
         let Some(msg_type) = get_msg_type(payload) else {
-            return;
+            return MONITOR_FAST_POLL_LOW_WEIGHT;
         };
         match msg_type {
             MktMsgType::MarkPrice => match parse_mark_price(payload) {
@@ -932,17 +943,25 @@ impl DerivativesPriceListener {
                     let mut table = self.price_table.borrow_mut();
                     table.update_mark_price(&msg.symbol, msg.mark_price, msg.timestamp);
                     MonitorChannel::mark_basic_state_price_dirty();
+                    MONITOR_FAST_POLL_LOW_WEIGHT
                 }
-                Err(err) => warn!("parse mark price failed: {err:?}"),
+                Err(err) => {
+                    warn!("parse mark price failed: {err:?}");
+                    MONITOR_FAST_POLL_LOW_WEIGHT
+                }
             },
             MktMsgType::IndexPrice => match parse_index_price(payload) {
                 Ok(msg) => {
                     let mut table = self.price_table.borrow_mut();
                     table.update_index_price(&msg.symbol, msg.index_price, msg.timestamp);
+                    MONITOR_FAST_POLL_LOW_WEIGHT
                 }
-                Err(err) => warn!("parse index price failed: {err:?}"),
+                Err(err) => {
+                    warn!("parse index price failed: {err:?}");
+                    MONITOR_FAST_POLL_LOW_WEIGHT
+                }
             },
-            _ => {}
+            _ => MONITOR_FAST_POLL_LOW_WEIGHT,
         }
     }
 }
@@ -1125,20 +1144,36 @@ impl MonitorChannel {
         Self::drain_pending_state_updates_with_refresh_limit(usize::MAX)
     }
 
-    pub fn drain_pending_state_updates_with_refresh_limit(max_messages: usize) -> (bool, bool) {
-        let (mut has_message, _) = MONITOR_STATE_LISTENERS.with(|listeners| {
+    pub fn drain_pending_state_updates_limit(max_messages: usize) -> bool {
+        let (has_message, _) = MONITOR_STATE_LISTENERS.with(|listeners| {
             let mut listeners = listeners.borrow_mut();
             match listeners.as_mut() {
                 Some(listeners) => listeners.drain_pending_limit(max_messages),
                 None => (false, 0),
             }
         });
+        has_message
+    }
+
+    pub fn drain_pending_state_updates_with_refresh_limit(max_messages: usize) -> (bool, bool) {
+        let mut has_message = Self::drain_pending_state_updates_limit(max_messages);
+        let refreshed = Self::refresh_basic_state_if_due_after_monitor_drain(has_message);
+        if refreshed {
+            has_message = true;
+        }
+        (has_message, refreshed)
+    }
+
+    pub fn refresh_basic_state_if_due_after_fast_poll(has_monitor_message: bool) -> bool {
+        Self::refresh_basic_state_if_due_after_monitor_drain(has_monitor_message)
+    }
+
+    fn refresh_basic_state_if_due_after_monitor_drain(has_message: bool) -> bool {
         let mut refreshed = false;
         let state_dirty = Self::basic_state_any_dirty();
         if state_dirty && (has_message || Self::basic_state_cache_present()) {
             refreshed = Self::refresh_basic_state_cache_if_due(false);
             if refreshed {
-                has_message = true;
                 let risk_start_us = get_timestamp_us();
                 Self::drain_pending_risk_checks_after_refresh();
                 record_stage_latency(
@@ -1148,7 +1183,7 @@ impl MonitorChannel {
                 );
             }
         }
-        (has_message, refreshed)
+        refreshed
     }
 
     fn mark_basic_state_dirty() {
@@ -4427,6 +4462,23 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    #[test]
+    fn monitor_fast_poll_budget_maps_messages_to_tokens() {
+        assert_eq!(
+            monitor_fast_poll_token_limit(8),
+            8 * MONITOR_FAST_POLL_NORMAL_WEIGHT
+        );
+        assert_eq!(
+            monitor_fast_poll_raw_limit(8),
+            8 * MONITOR_FAST_POLL_RAW_MULTIPLIER
+        );
+        assert_eq!(
+            monitor_fast_poll_token_limit(0),
+            MONITOR_FAST_POLL_LOW_WEIGHT
+        );
+        assert_eq!(monitor_fast_poll_raw_limit(0), 1);
+    }
 
     struct TestMmOpenStrategy {
         id: i32,

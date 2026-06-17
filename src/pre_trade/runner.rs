@@ -552,28 +552,25 @@ impl PreTrade {
                 has_work |= TradeEngHub::drain_pending_responses();
             }
 
-            let monitor_refresh_start_us = get_timestamp_us();
-            let (monitor_has_work, basic_state_refreshed) = if fast_poll {
-                MonitorChannel::drain_pending_state_updates_with_refresh_limit(
-                    fast_poll_budgets.monitor_state,
-                )
+            let monitor_has_work = if fast_poll {
+                MonitorChannel::drain_pending_state_updates_limit(fast_poll_budgets.monitor_state)
             } else {
-                MonitorChannel::drain_pending_state_updates_with_refresh()
+                MonitorChannel::drain_pending_state_updates_with_refresh().0
             };
             has_work |= monitor_has_work;
-            if fast_poll && basic_state_refreshed {
-                let refresh_elapsed_us =
-                    get_timestamp_us().saturating_sub(monitor_refresh_start_us);
-                next_loop_open_drop_reason = select_slower_open_drop_reason(
-                    next_loop_open_drop_reason,
-                    Some(OpenSignalDropReason {
-                        source: "basic_state_refresh",
-                        elapsed_us: refresh_elapsed_us,
-                        threshold_us: 0,
-                    }),
-                );
-            }
             if fast_poll && monitor_has_work {
+                let refresh_start_us = get_timestamp_us();
+                if MonitorChannel::refresh_basic_state_if_due_after_fast_poll(true) {
+                    let refresh_elapsed_us = get_timestamp_us().saturating_sub(refresh_start_us);
+                    next_loop_open_drop_reason = select_slower_open_drop_reason(
+                        next_loop_open_drop_reason,
+                        Some(OpenSignalDropReason {
+                            source: "basic_state_refresh",
+                            elapsed_us: refresh_elapsed_us,
+                            threshold_us: 0,
+                        }),
+                    );
+                }
                 finish_fast_poll_work!(next_loop_open_drop_reason);
             }
 
@@ -732,6 +729,19 @@ impl PreTrade {
                         }
                         finish_fast_poll_work!(next_loop_open_drop_reason);
                     }
+                }
+                let refresh_start_us = get_timestamp_us();
+                if MonitorChannel::refresh_basic_state_if_due_after_fast_poll(false) {
+                    let refresh_elapsed_us = get_timestamp_us().saturating_sub(refresh_start_us);
+                    next_loop_open_drop_reason = select_slower_open_drop_reason(
+                        next_loop_open_drop_reason,
+                        Some(OpenSignalDropReason {
+                            source: "basic_state_refresh",
+                            elapsed_us: refresh_elapsed_us,
+                            threshold_us: 0,
+                        }),
+                    );
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
                 }
                 if let Some(auto_repay) = auto_repay.as_ref() {
                     if instant_now >= next_auto_repay {
