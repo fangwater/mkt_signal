@@ -1634,6 +1634,31 @@ mod tests {
     }
 
     #[test]
+    fn binance_ws_um_market_order_can_request_result_response() {
+        let params = BinanceNewOrderParams {
+            symbol: "ETHUSDT".to_string(),
+            side: Side::Buy,
+            order_type: OrderType::Market,
+            quantity_qv: QuantizedValue::from_parts(1, -2, 125),
+            price_qv: QuantizedValue::from_parts(1, 0, 0),
+            reduce_only: false,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: true,
+            ws_margin_limit_maker: false,
+        };
+
+        let query = params.to_query_string(TradeRequestType::BinanceWsNewUMOrder, 43);
+
+        assert!(query.contains("symbol=ETHUSDT"));
+        assert!(query.contains("type=MARKET"));
+        assert!(query.contains("quantity=1.25"));
+        assert!(query.contains("newOrderRespType=RESULT"));
+        assert!(!query.contains("timeInForce="));
+        assert!(!query.contains("price="));
+    }
+
+    #[test]
     fn binance_typed_cancel_params_render_query_string() {
         let params = BinanceCancelOrderParams {
             symbol: "BTCUSDT".to_string(),
