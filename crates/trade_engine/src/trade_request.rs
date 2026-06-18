@@ -363,14 +363,16 @@ impl BinanceNewOrderParams {
         );
         let is_ws_margin = req_type == TradeRequestType::BinanceWsNewMarginOrder;
         let is_ws_um = req_type == TradeRequestType::BinanceWsNewUMOrder;
-        let order_type = if is_ws_margin && self.ws_margin_limit_maker && self.order_type.is_limit()
-        {
+        let is_um_market = !is_margin && self.order_type.is_market();
+        let order_type = if is_um_market {
+            "LIMIT"
+        } else if is_ws_margin && self.ws_margin_limit_maker && self.order_type.is_limit() {
             "LIMIT_MAKER"
         } else {
             self.order_type.as_str()
         };
 
-        let mut params = Vec::with_capacity(8);
+        let mut params = Vec::with_capacity(10);
         params.push(format!("symbol={}", self.symbol));
         params.push(format!("side={}", self.side.as_str()));
         params.push(format!("type={order_type}"));
@@ -387,7 +389,10 @@ impl BinanceNewOrderParams {
         if is_margin && self.margin_buy {
             params.push("sideEffectType=MARGIN_BUY".to_string());
         }
-        if self.order_type.is_limit() {
+        if is_um_market {
+            params.push("timeInForce=IOC".to_string());
+            params.push("priceMatch=OPPONENT_5".to_string());
+        } else if self.order_type.is_limit() {
             if is_margin {
                 if !is_ws_margin {
                     params.push("timeInForce=GTC".to_string());
@@ -1634,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn binance_ws_um_market_order_can_request_result_response() {
+    fn binance_ws_um_market_order_is_rendered_as_limit_ioc_price_match() {
         let params = BinanceNewOrderParams {
             symbol: "ETHUSDT".to_string(),
             side: Side::Buy,
@@ -1651,10 +1656,11 @@ mod tests {
         let query = params.to_query_string(TradeRequestType::BinanceWsNewUMOrder, 43);
 
         assert!(query.contains("symbol=ETHUSDT"));
-        assert!(query.contains("type=MARKET"));
+        assert!(query.contains("type=LIMIT"));
         assert!(query.contains("quantity=1.25"));
+        assert!(query.contains("timeInForce=IOC"));
+        assert!(query.contains("priceMatch=OPPONENT_5"));
         assert!(query.contains("newOrderRespType=RESULT"));
-        assert!(!query.contains("timeInForce="));
         assert!(!query.contains("price="));
     }
 
