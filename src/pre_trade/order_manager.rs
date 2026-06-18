@@ -506,15 +506,21 @@ impl PreTradeOrderRequestExt for Order {
                 // 非 reduce-only PM 下单统一带 MARGIN_BUY，避免 free 被挂单占用时误走 NO_SIDE_EFFECT。
                 if available_balance < required_amount {
                     let borrow_amount = required_amount - available_balance;
-                    if self.reduce_only {
+                    if use_binance_ws_margin || self.reduce_only {
                         return Err(format!(
-                            "reduce-only BinanceMargin order has insufficient balance: asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} qty={} price={}",
+                            "BinanceMargin order has insufficient balance: mode={} asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} reduce_only={} qty={} price={}",
+                            if use_binance_ws_margin {
+                                "STANDARD"
+                            } else {
+                                "UNIFIED"
+                            },
                             check_asset,
                             required_amount,
                             available_balance,
                             borrow_amount,
                             self.symbol,
                             self.side,
+                            self.reduce_only,
                             resolved.quantity_text(),
                             resolved.price_text()
                         ));

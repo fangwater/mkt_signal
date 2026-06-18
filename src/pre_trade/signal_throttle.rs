@@ -6,9 +6,12 @@ use parking_lot::Mutex;
 use runtime_common::exchange::Exchange;
 use runtime_common::time_util::get_timestamp_us;
 use std::collections::{BTreeSet, HashMap};
+use trade_signal::ArbMode;
 
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
+pub const INTRA_SIGNAL_THROTTLE_TTL_US: i64 = 60 * 1_000_000;
 pub const GATE_SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED: i32 = -2010;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
@@ -69,6 +72,9 @@ impl SignalThrottleKey {
 
 pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bool {
     match error_code {
+        SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED => {
+            matches!(exchange, Some(Exchange::Binance))
+        }
         SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT
         | SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT => true,
         SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED => {
@@ -115,6 +121,14 @@ fn signal_throttle_ttl_us(exchange: Option<Exchange>) -> i64 {
     }
 }
 
+fn signal_throttle_ttl_us_for_mode(exchange: Option<Exchange>, arb_mode: ArbMode) -> i64 {
+    if matches!(arb_mode, ArbMode::IntraArb) && matches!(exchange, Some(Exchange::Binance)) {
+        INTRA_SIGNAL_THROTTLE_TTL_US
+    } else {
+        signal_throttle_ttl_us(exchange)
+    }
+}
+
 pub fn register_signal_throttle(
     symbol: &str,
     dir: Side,
@@ -129,6 +143,24 @@ pub fn register_signal_throttle(
         error_code,
         now_us,
         signal_throttle_ttl_us(exchange),
+    )
+}
+
+pub fn register_signal_throttle_for_mode(
+    symbol: &str,
+    dir: Side,
+    exchange: Option<Exchange>,
+    error_code: i32,
+    arb_mode: ArbMode,
+) -> bool {
+    let now_us = get_timestamp_us();
+    register_signal_throttle_at(
+        symbol,
+        dir,
+        exchange,
+        error_code,
+        now_us,
+        signal_throttle_ttl_us_for_mode(exchange, arb_mode),
     )
 }
 
@@ -345,8 +377,35 @@ mod tests {
     }
 
     #[test]
+    fn intra_throttle_ttl_is_one_minute() {
+        let _guard = TEST_LOCK.lock();
+        assert_eq!(
+            signal_throttle_ttl_us_for_mode(Some(Exchange::Binance), ArbMode::IntraArb),
+            INTRA_SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(INTRA_SIGNAL_THROTTLE_TTL_US, 60 * 1_000_000);
+        assert_eq!(
+            signal_throttle_ttl_us_for_mode(Some(Exchange::Binance), ArbMode::FundingArb),
+            SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(
+            signal_throttle_ttl_us_for_mode(Some(Exchange::Okex), ArbMode::IntraArb),
+            SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(
+            signal_throttle_ttl_us_for_mode(Some(Exchange::Gate), ArbMode::IntraArb),
+            GATE_SIGNAL_THROTTLE_TTL_US
+        );
+        assert_eq!(
+            signal_throttle_ttl_us_for_mode(Some(Exchange::Gate), ArbMode::CrossArb),
+            GATE_SIGNAL_THROTTLE_TTL_US
+        );
+    }
+
+    #[test]
     fn detects_throttle_error_code() {
         let _guard = TEST_LOCK.lock();
+        assert!(is_throttle_error_code(Some(Exchange::Binance), -2010));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51169));
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2019));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
@@ -414,6 +473,7 @@ mod tests {
         ));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 51006));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 51061));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), -2010));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 51168));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 516001));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), -2018));

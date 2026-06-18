@@ -8,7 +8,7 @@ use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimite
 use crate::pre_trade::order_manager::{PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
-use crate::pre_trade::signal_throttle::register_signal_throttle;
+use crate::pre_trade::signal_throttle::register_signal_throttle_for_mode;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
@@ -2394,11 +2394,12 @@ pub trait OpenStrategyCommon {
             return;
         };
 
-        if register_signal_throttle(
+        if register_signal_throttle_for_mode(
             &symbol,
             side,
             response.exchange_enum(),
             response.error_code(),
+            MonitorChannel::instance().arb_mode(),
         ) {
             info!(
                 "{}: strategy_id={} registered open signal throttle after open_failed symbol={} side={:?} code={} client_order_id={}",

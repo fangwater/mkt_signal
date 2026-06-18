@@ -9,7 +9,9 @@ use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::signal_channel::SignalChannel;
-use crate::pre_trade::signal_throttle::{register_signal_throttle, SIGNAL_THROTTLE_TTL_US};
+use crate::pre_trade::signal_throttle::{
+    register_signal_throttle_for_mode, SIGNAL_THROTTLE_TTL_US,
+};
 use crate::pre_trade::taker_decision_model::{
     LazyHedgeDecision, LazyHedgeDecisionSnapshot, PreTradeTakerDecisionModel,
 };
@@ -2049,8 +2051,13 @@ impl ArbHedgeStrategy {
             now_ts.saturating_add(SIGNAL_THROTTLE_TTL_US.max(ARB_HEDGE_QUERY_INTERVAL_US));
         self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
 
-        let open_registered =
-            register_signal_throttle(&self.symbol, open_side, Some(Exchange::Bybit), error_code);
+        let open_registered = register_signal_throttle_for_mode(
+            &self.symbol,
+            open_side,
+            Some(Exchange::Bybit),
+            error_code,
+            MonitorChannel::instance().arb_mode(),
+        );
         let strategy_mgr_handle = MonitorChannel::instance().strategy_mgr();
         let ids: Vec<i32> = strategy_mgr_handle
             .borrow()
