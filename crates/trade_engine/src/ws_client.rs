@@ -6,7 +6,8 @@ use crate::bybit::{
 };
 use crate::config::LimitConstants;
 use crate::engine::{
-    internal_open_terminated_outcome, take_internal_open_terminate, InternalOpenTerminateMap,
+    internal_open_terminated_outcome, record_internal_open_terminate_summary,
+    take_internal_open_terminate, InternalOpenTerminateMap, InternalOpenTerminateSummary,
 };
 use crate::gate_ws;
 use crate::okex::{
@@ -600,6 +601,7 @@ pub struct TradeWsClient {
     resp_sink: TradeResponseSink,
     query_resp_sink: Option<QueryResponseSink>,
     internal_open_terminates: InternalOpenTerminateMap,
+    internal_open_terminate_summary: InternalOpenTerminateSummary,
     pending: VecDeque<TradeRequestMsg>,
     pending_query: VecDeque<QueryRequestMsg>,
     inflight: HashMap<i64, TradeInflightMeta>,
@@ -636,6 +638,7 @@ impl TradeWsClient {
         cmd_queue: WsCommandQueue,
         resp_sink: TradeResponseSink,
         internal_open_terminates: InternalOpenTerminateMap,
+        internal_open_terminate_summary: InternalOpenTerminateSummary,
         engine_shutdown: CancellationToken,
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
@@ -730,6 +733,7 @@ impl TradeWsClient {
             resp_sink,
             query_resp_sink,
             internal_open_terminates,
+            internal_open_terminate_summary,
             pending: VecDeque::new(),
             pending_query: VecDeque::new(),
             inflight: HashMap::new(),
@@ -1362,6 +1366,7 @@ impl TradeWsClient {
             msg.client_order_id,
             state.trigger_ts
         );
+        record_internal_open_terminate_summary(&self.internal_open_terminate_summary, msg);
         let _ = self.resp_sink.send(internal_open_terminated_outcome(
             msg.req_type,
             msg.client_order_id,

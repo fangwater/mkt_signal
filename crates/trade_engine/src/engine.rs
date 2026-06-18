@@ -6,6 +6,7 @@ use crate::internal_terminate::{
     ARB_OPEN_INTERNAL_TERMINATE_ENV, INTERNAL_OPEN_TERMINATED_ERROR_CODE,
     INTERNAL_OPEN_TERMINATE_TTL_US, ORDER_TERMINATE_PAYLOAD_LEN,
 };
+use crate::okex::OkexNewOrderParams;
 use crate::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
@@ -35,7 +36,10 @@ use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::trade_request::{TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{
+    BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg,
+    TradeRequestType,
+};
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
 use crate::ws_client::{
@@ -72,6 +76,8 @@ const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
 const TE_IPC_IDLE_SLEEP_MICROS: u64 = 100;
+const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
+const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InternalOpenTerminateState {
@@ -80,6 +86,30 @@ pub(crate) struct InternalOpenTerminateState {
 }
 
 pub(crate) type InternalOpenTerminateMap = Rc<RefCell<HashMap<i64, InternalOpenTerminateState>>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct InternalOpenTerminateSummaryKey {
+    symbol: String,
+    dir: &'static str,
+    venue: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct InternalOpenTerminateSummaryBucket {
+    count: u64,
+    qty: f64,
+}
+
+pub(crate) type InternalOpenTerminateSummary =
+    Rc<RefCell<HashMap<InternalOpenTerminateSummaryKey, InternalOpenTerminateSummaryBucket>>>;
+
+#[derive(Debug, Clone)]
+struct InternalOpenTerminateOrderMeta {
+    symbol: String,
+    dir: &'static str,
+    venue: &'static str,
+    qty: f64,
+}
 
 struct IpcThreadQueues {
     order_req_producer: Producer<TradeRequestMsg>,
@@ -789,6 +819,166 @@ fn drain_order_control_ingress(
     did_work
 }
 
+fn decode_internal_open_terminate_order_meta(
+    msg: &TradeRequestMsg,
+) -> Option<InternalOpenTerminateOrderMeta> {
+    match msg.req_type {
+        TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceWsNewUMOrder => {
+            let params = BinanceNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "binance_um",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+            let params = BinanceNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "binance_margin",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::OkexNewUMOrder => {
+            let params = OkexNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "okex_um",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::OkexNewMarginOrder => {
+            let params = OkexNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "okex_margin",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::GateFuturesNewOrder => {
+            let params = GateNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "gate_futures",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::GateUnifiedNewOrder => {
+            let params = GateNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "gate_unified",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::BybitNewUMOrder => {
+            let params = crate::bybit::BybitNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "bybit_um",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::BybitNewMarginOrder => {
+            let params = crate::bybit::BybitNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "bybit_margin",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::BitgetNewUMOrder => {
+            let params = BitgetNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "bitget_um",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        TradeRequestType::BitgetNewMarginOrder => {
+            let params = BitgetNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "bitget_margin",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn record_internal_open_terminate_summary(
+    summary: &InternalOpenTerminateSummary,
+    msg: &TradeRequestMsg,
+) {
+    let Some(meta) = decode_internal_open_terminate_order_meta(msg) else {
+        return;
+    };
+    let key = InternalOpenTerminateSummaryKey {
+        symbol: meta.symbol,
+        dir: meta.dir,
+        venue: meta.venue,
+    };
+    let mut summary = summary.borrow_mut();
+    let bucket = summary.entry(key).or_default();
+    bucket.count = bucket.count.saturating_add(1);
+    bucket.qty += meta.qty;
+}
+
+fn flush_internal_open_terminate_summary(summary: &InternalOpenTerminateSummary) {
+    let mut summary = summary.borrow_mut();
+    if summary.is_empty() {
+        return;
+    }
+
+    let mut items: Vec<_> = summary.drain().collect();
+    items.sort_by(|(left_key, left_bucket), (right_key, right_bucket)| {
+        right_bucket
+            .count
+            .cmp(&left_bucket.count)
+            .then_with(|| left_key.venue.cmp(right_key.venue))
+            .then_with(|| left_key.symbol.cmp(&right_key.symbol))
+            .then_with(|| left_key.dir.cmp(right_key.dir))
+    });
+
+    let total_count: u64 = items.iter().map(|(_, bucket)| bucket.count).sum();
+    let total_qty: f64 = items.iter().map(|(_, bucket)| bucket.qty).sum();
+    let truncated = items
+        .len()
+        .saturating_sub(INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS);
+    let details = items
+        .iter()
+        .take(INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS)
+        .map(|(key, bucket)| {
+            format!(
+                "{{venue={} symbol={} dir={} count={} qty={:.8}}}",
+                key.venue, key.symbol, key.dir, bucket.count, bucket.qty
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    info!(
+        "InternalOpenTerminateSummary: window_s={} total_count={} total_qty={:.8} groups={} truncated_groups={} details=[{}]",
+        INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS,
+        total_count,
+        total_qty,
+        items.len(),
+        truncated,
+        details
+    );
+}
+
 pub(crate) fn take_internal_open_terminate(
     internal_terminates: &InternalOpenTerminateMap,
     client_order_id: i64,
@@ -1091,6 +1281,8 @@ impl TradeEngine {
         let query_resp_sink = QueryResponseSink::new(query_resp_publisher);
         let internal_open_terminates: InternalOpenTerminateMap =
             Rc::new(RefCell::new(HashMap::new()));
+        let internal_open_terminate_summary: InternalOpenTerminateSummary =
+            Rc::new(RefCell::new(HashMap::new()));
 
         // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
         // 推到 IPC（service: <IPC_NAMESPACE>/te_pubs/<venue>/latency）。
@@ -1122,6 +1314,32 @@ impl TradeEngine {
                 info!("trade_engine: latency snapshot ticker stopped");
             });
             worker_handles.push(("latency_snapshot_ticker", ticker));
+        }
+
+        if internal_open_terminate_enabled {
+            let summary = internal_open_terminate_summary.clone();
+            let shutdown_for_ticker = shutdown.clone();
+            let ticker = tokio::task::spawn_local(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(
+                    INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS,
+                ));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                interval.tick().await;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_for_ticker.cancelled() => {
+                            flush_internal_open_terminate_summary(&summary);
+                            break;
+                        }
+                        _ = interval.tick() => {
+                            flush_internal_open_terminate_summary(&summary);
+                        }
+                    }
+                }
+                info!("trade_engine: internal open terminate summary ticker stopped");
+            });
+            worker_handles.push(("internal_open_terminate_summary_ticker", ticker));
         }
 
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
@@ -1173,6 +1391,7 @@ impl TradeEngine {
                     cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     state.clone(),
                     false,
@@ -1231,6 +1450,7 @@ impl TradeEngine {
                     cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     state.clone(),
                     false,
@@ -1308,6 +1528,7 @@ impl TradeEngine {
                     cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     state.clone(),
                     false,
@@ -1365,6 +1586,7 @@ impl TradeEngine {
                     spot_cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     spot_state.clone(),
                     false,
@@ -1399,6 +1621,7 @@ impl TradeEngine {
                     fut_cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     fut_state.clone(),
                     false,
@@ -1483,6 +1706,7 @@ impl TradeEngine {
                     um_cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     um_state.clone(),
                     um_shutdown_on_rate_limit,
@@ -1519,6 +1743,7 @@ impl TradeEngine {
                     spot_cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
                     shutdown.clone(),
                     spot_state.clone(),
                     spot_shutdown_on_rate_limit,
@@ -1551,6 +1776,8 @@ impl TradeEngine {
         let exchange_for_req_worker = exchange;
         let shutdown_for_req_worker = shutdown.clone();
         let internal_open_terminates_for_req_worker = internal_open_terminates.clone();
+        let internal_open_terminate_summary_for_req_worker =
+            internal_open_terminate_summary.clone();
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
@@ -1560,6 +1787,7 @@ impl TradeEngine {
             let mut order_req_ingress = order_req_ingress;
             let mut order_control_ingress = order_control_ingress;
             let internal_open_terminates = internal_open_terminates_for_req_worker;
+            let internal_open_terminate_summary = internal_open_terminate_summary_for_req_worker;
 
             loop {
                 if shutdown_for_req_worker.is_cancelled() {
@@ -1592,6 +1820,10 @@ impl TradeEngine {
                             msg.req_type,
                             msg.client_order_id,
                             state.trigger_ts
+                        );
+                        record_internal_open_terminate_summary(
+                            &internal_open_terminate_summary,
+                            &msg,
                         );
                         let _ =
                             trade_resp_sink_for_req_worker.send(internal_open_terminated_outcome(
