@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
 use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
+use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
 use order_common::TradeRequestType;
@@ -21,6 +22,10 @@ use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::SignalType;
+use trade_engine::internal_terminate::{
+    parse_bool_env, InternalOpenTerminateMsg, ARB_OPEN_INTERNAL_TERMINATE_ENV,
+    ORDER_TERMINATE_PAYLOAD_LEN,
+};
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };
@@ -47,6 +52,29 @@ fn trade_request_type(bytes: &Bytes) -> Option<TradeRequestType> {
     }
     let req_type = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
     TradeRequestType::try_from(req_type).ok()
+}
+
+fn read_internal_open_terminate_enabled() -> bool {
+    let fast_poll = fast_poll_hot_path_mode();
+    let env_enabled = match std::env::var(ARB_OPEN_INTERNAL_TERMINATE_ENV) {
+        Ok(value) => match parse_bool_env(&value) {
+            Some(enabled) => enabled,
+            None => {
+                warn!(
+                    "invalid {}='{}', treating internal open terminate as disabled",
+                    ARB_OPEN_INTERNAL_TERMINATE_ENV, value
+                );
+                false
+            }
+        },
+        Err(_) => false,
+    };
+    let enabled = fast_poll && env_enabled;
+    info!(
+        "TradeEngHub internal open terminate configured fast_poll={} env_enabled={} effective={} env={}",
+        fast_poll, env_enabled, enabled, ARB_OPEN_INTERNAL_TERMINATE_ENV
+    );
+    enabled
 }
 
 fn log_open_order_slow_trace(
@@ -116,6 +144,7 @@ fn log_open_order_slow_trace(
 /// * 可以在启动时显式注册多个交易所，也可以按需懒加载
 pub struct TradeEngHub {
     channels: RefCell<HashMap<String, TradeEngChannel>>,
+    internal_open_terminate_enabled: bool,
 }
 
 impl TradeEngHub {
@@ -127,7 +156,8 @@ impl TradeEngHub {
         TRADE_ENG_HUB.with(|cell| {
             let hub = cell.get_or_init(|| {
                 info!("Initializing TradeEngHub singleton with default exchange (binance)");
-                let hub = TradeEngHub::new();
+                let internal_open_terminate_enabled = read_internal_open_terminate_enabled();
+                let hub = TradeEngHub::new(internal_open_terminate_enabled);
                 hub.ensure_exchange("binance")
                     .expect("Failed to initialize default TradeEngHub");
                 hub
@@ -146,7 +176,8 @@ impl TradeEngHub {
             if cell.get().is_some() {
                 return Err(anyhow!("TradeEngHub already initialized"));
             }
-            let hub = TradeEngHub::new();
+            let internal_open_terminate_enabled = read_internal_open_terminate_enabled();
+            let hub = TradeEngHub::new(internal_open_terminate_enabled);
             for exchange in exchanges {
                 hub.ensure_exchange(exchange.as_ref())?;
             }
@@ -271,9 +302,24 @@ impl TradeEngHub {
         result
     }
 
-    fn new() -> Self {
+    pub fn publish_internal_open_terminate_for(
+        client_order_id: i64,
+        exchange: &str,
+        trigger_ts: i64,
+    ) -> Result<bool> {
+        Self::with(|hub| {
+            if !hub.internal_open_terminate_enabled {
+                return Ok(false);
+            }
+            hub.publish_internal_open_terminate_to_exchange(client_order_id, exchange, trigger_ts)?;
+            Ok(true)
+        })
+    }
+
+    fn new(internal_open_terminate_enabled: bool) -> Self {
         Self {
             channels: RefCell::new(HashMap::new()),
+            internal_open_terminate_enabled,
         }
     }
 
@@ -293,6 +339,21 @@ impl TradeEngHub {
         channel.publish_order_request(bytes)
     }
 
+    fn publish_internal_open_terminate_to_exchange(
+        &self,
+        client_order_id: i64,
+        exchange: &str,
+        trigger_ts: i64,
+    ) -> Result<()> {
+        let key = Self::normalize_exchange(exchange);
+        self.ensure_exchange_key(key.as_ref())?;
+        let channels = self.channels.borrow();
+        let Some(channel) = channels.get(key.as_ref()) else {
+            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        };
+        channel.publish_internal_open_terminate(client_order_id, trigger_ts)
+    }
+
     fn ensure_exchange(&self, exchange: &str) -> Result<()> {
         let key = Self::normalize_exchange(exchange);
         self.ensure_exchange_key(key.as_ref())
@@ -307,7 +368,7 @@ impl TradeEngHub {
             "TradeEngHub: registering trade engine channel for exchange '{}'",
             key
         );
-        let channel = TradeEngChannel::new(key)?;
+        let channel = TradeEngChannel::new(key, self.internal_open_terminate_enabled)?;
         self.channels.borrow_mut().insert(key.to_string(), channel);
         Ok(())
     }
@@ -325,13 +386,15 @@ impl TradeEngHub {
 struct TradeEngChannel {
     exchange: String,
     order_req_publisher: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
+    order_control_publisher: Option<Publisher<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()>>,
     _resp_node: Node<ipc::Service>,
     resp_subscriber: Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()>,
 }
 
 impl TradeEngChannel {
-    fn new(exchange: &str) -> Result<Self> {
+    fn new(exchange: &str, internal_open_terminate_enabled: bool) -> Result<Self> {
         let order_req_service = build_service_name(&format!("order_reqs/{}", exchange));
+        let order_control_service = build_service_name(&format!("order_controls/{}", exchange));
         let order_resp_service = build_service_name(&format!("order_resps/{}", exchange));
 
         let req_node = NodeBuilder::new()
@@ -353,12 +416,29 @@ impl TradeEngChannel {
             order_req_service, exchange
         );
 
+        let order_control_publisher = if internal_open_terminate_enabled {
+            let control_service = req_node
+                .service_builder(&ServiceName::new(&order_control_service)?)
+                .publish_subscribe::<[u8; ORDER_TERMINATE_PAYLOAD_LEN]>()
+                .subscriber_max_buffer_size(TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
+                .open_or_create()?;
+            let publisher = control_service.publisher_builder().create()?;
+            info!(
+                "TradeEngHub: internal order control publisher created on '{}' (exchange={})",
+                order_control_service, exchange
+            );
+            Some(publisher)
+        } else {
+            None
+        };
+
         let (resp_node, resp_subscriber) =
             Self::create_trade_resp_subscriber(exchange, &order_resp_service)?;
 
         Ok(Self {
             exchange: exchange.to_string(),
             order_req_publisher,
+            order_control_publisher,
             _resp_node: resp_node,
             resp_subscriber,
         })
@@ -385,6 +465,21 @@ impl TradeEngChannel {
         let sample = sample.write_payload(buf);
         sample.send()?;
 
+        Ok(())
+    }
+
+    fn publish_internal_open_terminate(&self, client_order_id: i64, trigger_ts: i64) -> Result<()> {
+        let Some(publisher) = self.order_control_publisher.as_ref() else {
+            return Ok(());
+        };
+        let msg = InternalOpenTerminateMsg::new(get_timestamp_us(), client_order_id, trigger_ts);
+        let sample = publisher.loan_uninit()?;
+        let sample = sample.write_payload(msg.to_payload());
+        sample.send()?;
+        debug!(
+            "TradeEngHub: internal open terminate published exchange={} client_order_id={} trigger_ts={}",
+            self.exchange, client_order_id, trigger_ts
+        );
         Ok(())
     }
 

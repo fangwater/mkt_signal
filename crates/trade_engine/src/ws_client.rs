@@ -5,6 +5,9 @@ use crate::bybit::{
     ToBybitWsJson,
 };
 use crate::config::LimitConstants;
+use crate::engine::{
+    internal_open_terminated_outcome, take_internal_open_terminate, InternalOpenTerminateMap,
+};
 use crate::gate_ws;
 use crate::okex::{
     OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest, OkexWsOrderResponse,
@@ -596,6 +599,7 @@ pub struct TradeWsClient {
     cmd_queue: WsCommandQueue,
     resp_sink: TradeResponseSink,
     query_resp_sink: Option<QueryResponseSink>,
+    internal_open_terminates: InternalOpenTerminateMap,
     pending: VecDeque<TradeRequestMsg>,
     pending_query: VecDeque<QueryRequestMsg>,
     inflight: HashMap<i64, TradeInflightMeta>,
@@ -631,6 +635,7 @@ impl TradeWsClient {
         query_resp_sink: Option<QueryResponseSink>,
         cmd_queue: WsCommandQueue,
         resp_sink: TradeResponseSink,
+        internal_open_terminates: InternalOpenTerminateMap,
         engine_shutdown: CancellationToken,
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
@@ -724,6 +729,7 @@ impl TradeWsClient {
             cmd_queue,
             resp_sink,
             query_resp_sink,
+            internal_open_terminates,
             pending: VecDeque::new(),
             pending_query: VecDeque::new(),
             inflight: HashMap::new(),
@@ -1262,6 +1268,9 @@ impl TradeWsClient {
         msg: TradeRequestMsg,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
+        if self.try_internal_terminate_order(&msg, "ws_handle_send") {
+            return Ok(());
+        }
         if self.pending.len() >= self.max_inflight {
             let reason = format!(
                 "ws inflight limit exceeded (limit={}, pending={})",
@@ -1309,6 +1318,9 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
         while let Some(msg) = self.pending.pop_front() {
+            if self.try_internal_terminate_order(&msg, "ws_flush_pending") {
+                continue;
+            }
             if let Err(err) = self.send_one(ws, &msg).await {
                 warn!(
                     "trade ws client id={} send failed for order {}: {}",
@@ -1330,6 +1342,34 @@ impl TradeWsClient {
             }
         }
         Ok(())
+    }
+
+    fn try_internal_terminate_order(&self, msg: &TradeRequestMsg, stage: &'static str) -> bool {
+        if !msg.req_type.is_new_order() {
+            return false;
+        }
+        let Some(state) =
+            take_internal_open_terminate(&self.internal_open_terminates, msg.client_order_id)
+        else {
+            return false;
+        };
+        info!(
+            "trade ws client id={} internal open terminate hit stage={} exchange={} req_type={:?} client_order_id={} trigger_ts={}",
+            self.id,
+            stage,
+            self.exchange,
+            msg.req_type,
+            msg.client_order_id,
+            state.trigger_ts
+        );
+        let _ = self.resp_sink.send(internal_open_terminated_outcome(
+            msg.req_type,
+            msg.client_order_id,
+            self.exchange,
+            state,
+            stage,
+        ));
+        true
     }
 
     async fn send_one(

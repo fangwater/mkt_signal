@@ -1603,6 +1603,40 @@ pub trait OpenStrategyCommon {
                     self.open_order_state_mut().last_open_cancel_reason = Some(input.cancel_reason);
                     self.open_order_state_mut().last_cancel_trigger_ts = Some(input.trigger_ts);
                     self.schedule_cancel_query_watchdog(order.client_order_id);
+                    if input.signal_name == "ArbCancel" {
+                        match TradeEngHub::publish_internal_open_terminate_for(
+                            open_order_id,
+                            exchange,
+                            input.trigger_ts,
+                        ) {
+                            Ok(true) => {
+                                debug!(
+                                    "{}: strategy_id={} exchange={} published internal open terminate order_id={} trigger_ts={} reason={} from_key='{}'",
+                                    self.strategy_name(),
+                                    self.strategy_id(),
+                                    exchange,
+                                    open_order_id,
+                                    input.trigger_ts,
+                                    input.cancel_reason,
+                                    from_key_preview
+                                );
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                warn!(
+                                    "{}: strategy_id={} exchange={} internal open terminate publish failed order_id={} trigger_ts={} reason={} from_key='{}' err={}",
+                                    self.strategy_name(),
+                                    self.strategy_id(),
+                                    exchange,
+                                    open_order_id,
+                                    input.trigger_ts,
+                                    input.cancel_reason,
+                                    from_key_preview,
+                                    e
+                                );
+                            }
+                        }
+                    }
                     debug!(
                         "{}: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
                         self.strategy_name(),

@@ -1,6 +1,11 @@
 use crate::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::config::WsConstants;
 use crate::dispatcher::Dispatcher;
+use crate::internal_terminate::{
+    parse_bool_env as parse_internal_terminate_bool_env, InternalOpenTerminateMsg,
+    ARB_OPEN_INTERNAL_TERMINATE_ENV, INTERNAL_OPEN_TERMINATED_ERROR_CODE,
+    INTERNAL_OPEN_TERMINATE_TTL_US, ORDER_TERMINATE_PAYLOAD_LEN,
+};
 use crate::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
@@ -54,6 +59,7 @@ use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::mkt_cfg::binance_um_ip_whitelist_mode_enabled;
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::thread;
@@ -67,14 +73,24 @@ const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
 const TE_IPC_IDLE_SLEEP_MICROS: u64 = 100;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InternalOpenTerminateState {
+    pub trigger_ts: i64,
+    pub registered_at_us: i64,
+}
+
+pub(crate) type InternalOpenTerminateMap = Rc<RefCell<HashMap<i64, InternalOpenTerminateState>>>;
+
 struct IpcThreadQueues {
     order_req_producer: Producer<TradeRequestMsg>,
     query_req_producer: Producer<QueryRequestMsg>,
+    order_control_producer: Option<Producer<InternalOpenTerminateMsg>>,
 }
 
 struct AsyncThreadQueues {
     order_req_consumer: Consumer<TradeRequestMsg>,
     query_req_consumer: Consumer<QueryRequestMsg>,
+    order_control_consumer: Option<Consumer<InternalOpenTerminateMsg>>,
 }
 
 enum OrderReqIngress {
@@ -85,6 +101,11 @@ enum OrderReqIngress {
 enum QueryReqIngress {
     Spsc(Consumer<QueryRequestMsg>),
     Ipc(Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>),
+}
+
+enum OrderControlIngress {
+    Disabled,
+    Spsc(Consumer<InternalOpenTerminateMsg>),
 }
 
 fn env_usize_or(name: &str, default: usize) -> usize {
@@ -131,21 +152,50 @@ fn enable_ipc_fast_poll() -> bool {
     false
 }
 
-fn new_ipc_spsc_queues() -> (IpcThreadQueues, AsyncThreadQueues) {
+fn internal_open_terminate_enabled_from_env() -> bool {
+    match std::env::var(ARB_OPEN_INTERNAL_TERMINATE_ENV) {
+        Ok(value) => match parse_internal_terminate_bool_env(&value) {
+            Some(enabled) => enabled,
+            None => {
+                warn!(
+                    "invalid {}='{}', treating internal open terminate as disabled",
+                    ARB_OPEN_INTERNAL_TERMINATE_ENV, value
+                );
+                false
+            }
+        },
+        Err(_) => false,
+    }
+}
+
+fn new_ipc_spsc_queues(
+    internal_open_terminate_enabled: bool,
+) -> (IpcThreadQueues, AsyncThreadQueues) {
     let req_cap = env_usize_or("TE_IPC_REQ_QUEUE_CAP", DEFAULT_TE_IPC_REQ_QUEUE_CAP);
-    info!("trade_engine ipc spsc queues: req_cap={}", req_cap);
+    info!(
+        "trade_engine ipc spsc queues: req_cap={} internal_open_terminate_enabled={}",
+        req_cap, internal_open_terminate_enabled
+    );
 
     let (order_req_producer, order_req_consumer) = RingBuffer::new(req_cap);
     let (query_req_producer, query_req_consumer) = RingBuffer::new(req_cap);
+    let (order_control_producer, order_control_consumer) = if internal_open_terminate_enabled {
+        let (producer, consumer) = RingBuffer::new(req_cap);
+        (Some(producer), Some(consumer))
+    } else {
+        (None, None)
+    };
 
     (
         IpcThreadQueues {
             order_req_producer,
             query_req_producer,
+            order_control_producer,
         },
         AsyncThreadQueues {
             order_req_consumer,
             query_req_consumer,
+            order_control_consumer,
         },
     )
 }
@@ -221,6 +271,22 @@ fn parse_query_request_payload(payload: &[u8]) -> Option<QueryRequestMsg> {
     Some(msg)
 }
 
+fn parse_internal_open_terminate_payload(payload: &[u8]) -> Option<InternalOpenTerminateMsg> {
+    let msg = InternalOpenTerminateMsg::parse(payload)?;
+    let ipc_recv_us = get_timestamp_us();
+    let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
+    if msg.create_time > 0 && create_to_ipc_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US {
+        warn!(
+            "IpcIngressLatency: internal_open_terminate ipc_recv_slow client_order_id={} create_time_us={} ipc_thread_recv_us={} create_to_ipc_thread_recv_us={}",
+            msg.client_order_id,
+            msg.create_time,
+            ipc_recv_us,
+            create_to_ipc_recv_us
+        );
+    }
+    Some(msg)
+}
+
 fn pop_trade_req_for_async(consumer: &mut Consumer<TradeRequestMsg>) -> Option<TradeRequestMsg> {
     match consumer.pop() {
         Ok(mut msg) => {
@@ -247,6 +313,15 @@ fn pop_trade_req_for_async(consumer: &mut Consumer<TradeRequestMsg>) -> Option<T
 }
 
 fn pop_query_req_for_async(consumer: &mut Consumer<QueryRequestMsg>) -> Option<QueryRequestMsg> {
+    match consumer.pop() {
+        Ok(msg) => Some(msg),
+        Err(PopError::Empty) => None,
+    }
+}
+
+fn pop_order_control_for_async(
+    consumer: &mut Consumer<InternalOpenTerminateMsg>,
+) -> Option<InternalOpenTerminateMsg> {
     match consumer.pop() {
         Ok(msg) => Some(msg),
         Err(PopError::Empty) => None,
@@ -305,6 +380,15 @@ impl QueryReqIngress {
     }
 }
 
+impl OrderControlIngress {
+    fn try_recv(&mut self) -> Option<InternalOpenTerminateMsg> {
+        match self {
+            Self::Disabled => None,
+            Self::Spsc(consumer) => pop_order_control_for_async(consumer),
+        }
+    }
+}
+
 fn push_trade_req_or_pending(
     producer: &mut Producer<TradeRequestMsg>,
     msg: TradeRequestMsg,
@@ -355,9 +439,35 @@ fn push_query_req_or_pending(
     }
 }
 
+fn push_order_control_or_pending(
+    producer: &mut Producer<InternalOpenTerminateMsg>,
+    msg: InternalOpenTerminateMsg,
+    pending: &mut Option<InternalOpenTerminateMsg>,
+    full_count: &mut u64,
+) -> bool {
+    match producer.push(msg) {
+        Ok(()) => {
+            *pending = None;
+            true
+        }
+        Err(PushError::Full(returned)) => {
+            *full_count = full_count.saturating_add(1);
+            if *full_count % SPSC_QUEUE_FULL_WARN_INTERVAL == 1 {
+                warn!(
+                    "TE IPC order_control SPSC full; keeping pending client_order_id={} full_count={}",
+                    returned.client_order_id, *full_count
+                );
+            }
+            *pending = Some(returned);
+            false
+        }
+    }
+}
+
 fn spawn_te_ipc_thread(
     exchange_name: String,
     order_req_service: String,
+    order_control_service: Option<String>,
     query_req_service: String,
     mut queues: IpcThreadQueues,
     shutdown: CancellationToken,
@@ -378,6 +488,7 @@ fn spawn_te_ipc_thread(
             if let Err(err) = run_te_ipc_thread(
                 &exchange_name,
                 &order_req_service,
+                order_control_service.as_deref(),
                 &query_req_service,
                 &mut queues,
                 shutdown.clone(),
@@ -394,6 +505,7 @@ fn spawn_te_ipc_thread(
 fn run_te_ipc_thread(
     exchange_name: &str,
     order_req_service: &str,
+    order_control_service: Option<&str>,
     query_req_service: &str,
     queues: &mut IpcThreadQueues,
     shutdown: CancellationToken,
@@ -412,6 +524,19 @@ fn run_te_ipc_thread(
     let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
         order_service.subscriber_builder().create()?;
 
+    let order_control_subscriber = if let Some(order_control_service) = order_control_service {
+        let control_service = node
+            .service_builder(&ServiceName::new(order_control_service)?)
+            .publish_subscribe::<[u8; ORDER_TERMINATE_PAYLOAD_LEN]>()
+            .subscriber_max_buffer_size(256)
+            .open_or_create()?;
+        let subscriber: Subscriber<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()> =
+            control_service.subscriber_builder().create()?;
+        Some(subscriber)
+    } else {
+        None
+    };
+
     let query_service = node
         .service_builder(&ServiceName::new(query_req_service)?)
         .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
@@ -421,16 +546,19 @@ fn run_te_ipc_thread(
         query_service.subscriber_builder().create()?;
 
     info!(
-        "trade_engine IPC thread started; order_req='{}' query_req='{}' fast_poll={} idle_sleep_us={}",
+        "trade_engine IPC thread started; order_req='{}' order_control='{}' query_req='{}' fast_poll={} idle_sleep_us={}",
         order_req_service,
+        order_control_service.unwrap_or("-"),
         query_req_service,
         fast_poll,
         TE_IPC_IDLE_SLEEP_MICROS
     );
 
     let mut pending_order_req: Option<TradeRequestMsg> = None;
+    let mut pending_order_control: Option<InternalOpenTerminateMsg> = None;
     let mut pending_query_req: Option<QueryRequestMsg> = None;
     let mut order_req_full_count = 0u64;
+    let mut order_control_full_count = 0u64;
     let mut query_req_full_count = 0u64;
 
     while !shutdown.is_cancelled() {
@@ -443,6 +571,18 @@ fn run_te_ipc_thread(
                 msg,
                 &mut pending_order_req,
                 &mut order_req_full_count,
+            );
+        }
+        if let (Some(producer), Some(msg)) = (
+            queues.order_control_producer.as_mut(),
+            pending_order_control.take(),
+        ) {
+            did_work = true;
+            push_order_control_or_pending(
+                producer,
+                msg,
+                &mut pending_order_control,
+                &mut order_control_full_count,
             );
         }
         if let Some(msg) = pending_query_req.take() {
@@ -477,6 +617,38 @@ fn run_te_ipc_thread(
                     Err(err) => {
                         warn!("trade request receive error: {err}");
                         break;
+                    }
+                }
+            }
+        }
+
+        if let (Some(producer), Some(subscriber)) = (
+            queues.order_control_producer.as_mut(),
+            order_control_subscriber.as_ref(),
+        ) {
+            if pending_order_control.is_none() {
+                for _ in 0..IPC_THREAD_DRAIN_BUDGET {
+                    match subscriber.receive() {
+                        Ok(Some(sample)) => {
+                            did_work = true;
+                            let msg = parse_internal_open_terminate_payload(sample.payload());
+                            drop(sample);
+                            if let Some(msg) = msg {
+                                if !push_order_control_or_pending(
+                                    producer,
+                                    msg,
+                                    &mut pending_order_control,
+                                    &mut order_control_full_count,
+                                ) {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!("internal open terminate receive error: {err}");
+                            break;
+                        }
                     }
                 }
             }
@@ -566,6 +738,98 @@ fn summarize_bybit_response(body: &str) -> String {
     )
 }
 
+fn register_internal_open_terminate(
+    internal_terminates: &InternalOpenTerminateMap,
+    msg: InternalOpenTerminateMsg,
+) {
+    let now_us = get_timestamp_us();
+    internal_terminates.borrow_mut().insert(
+        msg.client_order_id,
+        InternalOpenTerminateState {
+            trigger_ts: msg.trigger_ts,
+            registered_at_us: now_us,
+        },
+    );
+    debug!(
+        "internal open terminate registered client_order_id={} trigger_ts={} registered_at_us={}",
+        msg.client_order_id, msg.trigger_ts, now_us
+    );
+}
+
+fn prune_internal_open_terminates(internal_terminates: &InternalOpenTerminateMap, now_us: i64) {
+    internal_terminates
+        .borrow_mut()
+        .retain(|client_order_id, state| {
+            let keep =
+                now_us.saturating_sub(state.registered_at_us) <= INTERNAL_OPEN_TERMINATE_TTL_US;
+            if !keep {
+                debug!(
+                    "internal open terminate expired client_order_id={} trigger_ts={} registered_at_us={} now_us={}",
+                    client_order_id, state.trigger_ts, state.registered_at_us, now_us
+                );
+            }
+            keep
+        });
+}
+
+fn drain_order_control_ingress(
+    ingress: &mut OrderControlIngress,
+    internal_terminates: &InternalOpenTerminateMap,
+) -> bool {
+    let mut did_work = false;
+    let now_us = get_timestamp_us();
+    prune_internal_open_terminates(internal_terminates, now_us);
+    for _ in 0..IPC_THREAD_DRAIN_BUDGET {
+        let Some(msg) = ingress.try_recv() else {
+            break;
+        };
+        did_work = true;
+        register_internal_open_terminate(internal_terminates, msg);
+    }
+    did_work
+}
+
+pub(crate) fn take_internal_open_terminate(
+    internal_terminates: &InternalOpenTerminateMap,
+    client_order_id: i64,
+) -> Option<InternalOpenTerminateState> {
+    internal_terminates.borrow_mut().remove(&client_order_id)
+}
+
+pub(crate) fn internal_open_terminated_outcome(
+    req_type: TradeRequestType,
+    client_order_id: i64,
+    exchange: Exchange,
+    state: InternalOpenTerminateState,
+    stage: &'static str,
+) -> TradeExecOutcome {
+    let body = serde_json::json!({
+        "transport": "internal",
+        "state": "terminated",
+        "code": INTERNAL_OPEN_TERMINATED_ERROR_CODE,
+        "msg": "arb open internal terminate before exchange send",
+        "reason": "arb open internal terminate before exchange send",
+        "stage": stage,
+        "clientOrderId": client_order_id,
+        "triggerTs": state.trigger_ts,
+        "registeredAtUs": state.registered_at_us,
+        "ttlUs": INTERNAL_OPEN_TERMINATE_TTL_US,
+    })
+    .to_string();
+    TradeExecOutcome {
+        req_type,
+        client_order_id,
+        status: 499,
+        body,
+        exchange,
+        order_id: 0,
+        order_status_u8: 0,
+        order_update_time: 0,
+        executed_qty: 0.0,
+        response_price: 0.0,
+    }
+}
+
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
     let mut truncated = String::new();
     for (idx, ch) in text.chars().enumerate() {
@@ -638,16 +902,29 @@ impl TradeEngine {
 
         let canonical_exchange = exchange.as_str();
         let fast_poll = enable_ipc_fast_poll();
+        let internal_open_terminate_env_enabled = internal_open_terminate_enabled_from_env();
+        let internal_open_terminate_enabled = fast_poll && internal_open_terminate_env_enabled;
 
         // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
+        let order_control_service =
+            build_service_name(&format!("order_controls/{}", canonical_exchange));
         let order_resp_service = build_service_name(&format!("order_resps/{}", canonical_exchange));
         let query_req_service = build_service_name(&format!("query_reqs/{}", canonical_exchange));
         let query_resp_service = build_service_name(&format!("query_resps/{}", canonical_exchange));
 
         info!(
-            "trade_engine starting; exchange={}, order_req='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={}",
-            canonical_exchange, order_req_service, order_resp_service, query_req_service, query_resp_service, fast_poll
+            "trade_engine starting; exchange={}, order_req='{}', order_control='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={} internal_open_terminate_env_enabled={} internal_open_terminate_effective={} env={}",
+            canonical_exchange,
+            order_req_service,
+            order_control_service,
+            order_resp_service,
+            query_req_service,
+            query_resp_service,
+            fast_poll,
+            internal_open_terminate_env_enabled,
+            internal_open_terminate_enabled,
+            ARB_OPEN_INTERNAL_TERMINATE_ENV
         );
 
         // Async thread owns outbound publishers and other network-facing IPC publications.
@@ -695,54 +972,62 @@ impl TradeEngine {
             return Err(anyhow!("Binance requires API keys in config"));
         }
 
-        let (order_req_ingress, query_req_ingress, ipc_thread_handle) = if fast_poll {
-            let (ipc_queues, async_queues) = new_ipc_spsc_queues();
-            let ipc_thread_handle = spawn_te_ipc_thread(
-                canonical_exchange.to_string(),
-                order_req_service.clone(),
-                query_req_service.clone(),
-                ipc_queues,
-                shutdown.clone(),
-                self.ipc_core,
-                fast_poll,
-            )?;
-            let AsyncThreadQueues {
-                order_req_consumer,
-                query_req_consumer,
-            } = async_queues;
-            (
-                OrderReqIngress::Spsc(order_req_consumer),
-                QueryReqIngress::Spsc(query_req_consumer),
-                Some(ipc_thread_handle),
-            )
-        } else {
-            let order_service = node
-                .service_builder(&ServiceName::new(&order_req_service)?)
-                .publish_subscribe::<[u8; 4096]>()
-                .subscriber_max_buffer_size(256)
-                .open_or_create()?;
-            let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
-                order_service.subscriber_builder().create()?;
+        let (order_req_ingress, order_control_ingress, query_req_ingress, ipc_thread_handle) =
+            if fast_poll {
+                let (ipc_queues, async_queues) =
+                    new_ipc_spsc_queues(internal_open_terminate_enabled);
+                let ipc_thread_handle = spawn_te_ipc_thread(
+                    canonical_exchange.to_string(),
+                    order_req_service.clone(),
+                    internal_open_terminate_enabled.then(|| order_control_service.clone()),
+                    query_req_service.clone(),
+                    ipc_queues,
+                    shutdown.clone(),
+                    self.ipc_core,
+                    fast_poll,
+                )?;
+                let AsyncThreadQueues {
+                    order_req_consumer,
+                    query_req_consumer,
+                    order_control_consumer,
+                } = async_queues;
+                (
+                    OrderReqIngress::Spsc(order_req_consumer),
+                    order_control_consumer
+                        .map(OrderControlIngress::Spsc)
+                        .unwrap_or(OrderControlIngress::Disabled),
+                    QueryReqIngress::Spsc(query_req_consumer),
+                    Some(ipc_thread_handle),
+                )
+            } else {
+                let order_service = node
+                    .service_builder(&ServiceName::new(&order_req_service)?)
+                    .publish_subscribe::<[u8; 4096]>()
+                    .subscriber_max_buffer_size(256)
+                    .open_or_create()?;
+                let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+                    order_service.subscriber_builder().create()?;
 
-            let query_service = node
-                .service_builder(&ServiceName::new(&query_req_service)?)
-                .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-                .subscriber_max_buffer_size(256)
-                .open_or_create()?;
-            let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
-                query_service.subscriber_builder().create()?;
+                let query_service = node
+                    .service_builder(&ServiceName::new(&query_req_service)?)
+                    .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
+                    .subscriber_max_buffer_size(256)
+                    .open_or_create()?;
+                let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
+                    query_service.subscriber_builder().create()?;
 
-            info!(
-                "trade_engine ingress running on async thread; order_req='{}' query_req='{}'",
-                order_req_service, query_req_service
-            );
+                info!(
+                    "trade_engine ingress running on async thread; order_req='{}' query_req='{}'",
+                    order_req_service, query_req_service
+                );
 
-            (
-                OrderReqIngress::Ipc(order_subscriber),
-                QueryReqIngress::Ipc(query_subscriber),
-                None,
-            )
-        };
+                (
+                    OrderReqIngress::Ipc(order_subscriber),
+                    OrderControlIngress::Disabled,
+                    QueryReqIngress::Ipc(query_subscriber),
+                    None,
+                )
+            };
 
         // 跨 endpoint 共享的延迟分桶。capacity 10000。
         // - new/cancel: T1−T0（IPC→WS 端到端），所有 venue 通用。
@@ -804,6 +1089,8 @@ impl TradeEngine {
 
         let trade_resp_sink = TradeResponseSink::new(order_resp_publisher);
         let query_resp_sink = QueryResponseSink::new(query_resp_publisher);
+        let internal_open_terminates: InternalOpenTerminateMap =
+            Rc::new(RefCell::new(HashMap::new()));
 
         // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
         // 推到 IPC（service: <IPC_NAMESPACE>/te_pubs/<venue>/latency）。
@@ -885,6 +1172,7 @@ impl TradeEngine {
                     None,
                     cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     state.clone(),
                     false,
@@ -942,6 +1230,7 @@ impl TradeEngine {
                     None,
                     cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     state.clone(),
                     false,
@@ -1018,6 +1307,7 @@ impl TradeEngine {
                     None,
                     cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     state.clone(),
                     false,
@@ -1074,6 +1364,7 @@ impl TradeEngine {
                     Some(query_resp_sink.clone()),
                     spot_cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     spot_state.clone(),
                     false,
@@ -1107,6 +1398,7 @@ impl TradeEngine {
                     Some(query_resp_sink.clone()),
                     fut_cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     fut_state.clone(),
                     false,
@@ -1190,6 +1482,7 @@ impl TradeEngine {
                     Some(query_resp_sink.clone()),
                     um_cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     um_state.clone(),
                     um_shutdown_on_rate_limit,
@@ -1225,6 +1518,7 @@ impl TradeEngine {
                     Some(query_resp_sink.clone()),
                     spot_cmd_queue.clone(),
                     trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
                     shutdown.clone(),
                     spot_state.clone(),
                     spot_shutdown_on_rate_limit,
@@ -1256,6 +1550,7 @@ impl TradeEngine {
         let trade_resp_sink_for_req_worker = trade_resp_sink.clone();
         let exchange_for_req_worker = exchange;
         let shutdown_for_req_worker = shutdown.clone();
+        let internal_open_terminates_for_req_worker = internal_open_terminates.clone();
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
@@ -1263,19 +1558,52 @@ impl TradeEngine {
             let mut ws_rr_cursor = 0usize; // 轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
             let mut order_req_ingress = order_req_ingress;
+            let mut order_control_ingress = order_control_ingress;
+            let internal_open_terminates = internal_open_terminates_for_req_worker;
 
             loop {
                 if shutdown_for_req_worker.is_cancelled() {
                     break;
                 }
+                let _ = drain_order_control_ingress(
+                    &mut order_control_ingress,
+                    &internal_open_terminates,
+                );
                 let Some(msg) = order_req_ingress.try_recv() else {
                     tokio::task::yield_now().await;
                     continue;
                 };
+                let _ = drain_order_control_ingress(
+                    &mut order_control_ingress,
+                    &internal_open_terminates,
+                );
                 debug!(
                     "routing request: type={:?}, client_order_id={}",
                     msg.req_type, msg.client_order_id
                 );
+
+                if msg.req_type.is_new_order() {
+                    if let Some(state) =
+                        take_internal_open_terminate(&internal_open_terminates, msg.client_order_id)
+                    {
+                        info!(
+                            "trade_engine req_worker internal open terminate hit exchange={} req_type={:?} client_order_id={} trigger_ts={}",
+                            exchange_for_req_worker,
+                            msg.req_type,
+                            msg.client_order_id,
+                            state.trigger_ts
+                        );
+                        let _ =
+                            trade_resp_sink_for_req_worker.send(internal_open_terminated_outcome(
+                                msg.req_type,
+                                msg.client_order_id,
+                                exchange_for_req_worker,
+                                state,
+                                "req_worker",
+                            ));
+                        continue;
+                    }
+                }
 
                 // 根据 mapping 判断是否走 WebSocket
                 if TradeTypeMapping::is_websocket(msg.req_type) {

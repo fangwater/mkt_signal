@@ -12,6 +12,7 @@ pub mod engine;
 pub mod gate_precheck;
 pub mod gate_query;
 pub mod gate_ws;
+pub mod internal_terminate;
 pub mod okex;
 pub mod okex_precheck;
 pub mod okex_query;
