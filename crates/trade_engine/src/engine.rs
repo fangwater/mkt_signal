@@ -1,6 +1,7 @@
 use crate::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::config::WsConstants;
 use crate::dispatcher::Dispatcher;
+use crate::exec_backend::ExecBackend;
 use crate::internal_terminate::{
     parse_bool_env as parse_internal_terminate_bool_env, InternalOpenTerminateMsg,
     ARB_OPEN_INTERNAL_TERMINATE_ENV, INTERNAL_OPEN_TERMINATED_ERROR_CODE,
@@ -141,6 +142,26 @@ enum OrderControlIngress {
 fn env_usize_or(name: &str, default: usize) -> usize {
     match std::env::var(name) {
         Ok(value) => match value.trim().parse::<usize>() {
+            Ok(parsed) if parsed > 0 => parsed,
+            Ok(_) => {
+                warn!("{} must be > 0, using default {}", name, default);
+                default
+            }
+            Err(err) => {
+                warn!(
+                    "invalid {}='{}', using default {}: {}",
+                    name, value, default, err
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+fn env_u64_or(name: &str, default: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(value) => match value.trim().parse::<u64>() {
             Ok(parsed) if parsed > 0 => parsed,
             Ok(_) => {
                 warn!("{} must be > 0, using default {}", name, default);
@@ -1089,6 +1110,15 @@ impl TradeEngine {
                 exchange
             ));
         }
+        let exec_backend = ExecBackend::for_exchange(exchange);
+        if !exec_backend.supports_exchange(exchange) {
+            return Err(anyhow!(
+                "execution backend '{}' does not support exchange '{}'",
+                exec_backend.as_str(),
+                exchange
+            ));
+        }
+        let use_ltp_backend = exec_backend == ExecBackend::Ltp;
 
         let canonical_exchange = exchange.as_str();
         let fast_poll = enable_ipc_fast_poll();
@@ -1158,7 +1188,7 @@ impl TradeEngine {
 
         // Async thread publishes responses directly to iceoryx; inbound requests still come from SPSC.
 
-        if exchange == Exchange::Binance && self.accounts.is_empty() {
+        if exchange == Exchange::Binance && !use_ltp_backend && self.accounts.is_empty() {
             return Err(anyhow!("Binance requires API keys in config"));
         }
 
@@ -1255,9 +1285,10 @@ impl TradeEngine {
         };
 
         // 初始化 REST dispatcher（用于 Binance）
-        let binance_um_ip_whitelist_mode =
-            exchange == Exchange::Binance && binance_um_ip_whitelist_mode_enabled();
-        let rest_dispatcher = if exchange == Exchange::Binance {
+        let binance_um_ip_whitelist_mode = exchange == Exchange::Binance
+            && !use_ltp_backend
+            && binance_um_ip_whitelist_mode_enabled();
+        let rest_dispatcher = if exchange == Exchange::Binance && !use_ltp_backend {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
                 &self.local_ips,
                 &self.accounts,
@@ -1270,9 +1301,10 @@ impl TradeEngine {
         };
 
         // 初始化 WebSocket 客户端（用于 OKEx/Gate/Binance）
-        let binance_ws_enabled =
-            exchange == Exchange::Binance && binance_account_mode() == BinanceAccountMode::Standard;
-        if exchange == Exchange::Binance && !binance_ws_enabled {
+        let binance_ws_enabled = exchange == Exchange::Binance
+            && !use_ltp_backend
+            && binance_account_mode() == BinanceAccountMode::Standard;
+        if exchange == Exchange::Binance && !use_ltp_backend && !binance_ws_enabled {
             info!("binance ws disabled (BINANCE_ACCOUNT_MODE!=STANDARD)");
         }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
@@ -1345,7 +1377,66 @@ impl TradeEngine {
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
 
-        let ws_endpoints = if exchange == Exchange::Bitget {
+        let ws_endpoints = if use_ltp_backend {
+            crate::ltp_ws::warn_if_unsupported_ltp_exchange(exchange)?;
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("LTP ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+
+            let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
+            let ping_interval_ms = env_u64_or("LTP_WS_PING_INTERVAL_MS", 10_000);
+            let max_inflight = WsConstants::MAX_INFLIGHT;
+            let ltp_ws_url = std::env::var("LTP_WS_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| crate::ltp_ws::DEFAULT_WS_URL.to_string());
+
+            let mut endpoints = Vec::with_capacity(local_ips.len());
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let cmd_queue = WsCommandQueue::new();
+                let state = StdRc::new(RefCell::new(Default::default()));
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    exchange,
+                    true,
+                    ip,
+                    ltp_ws_url.clone(),
+                    connect_timeout_ms,
+                    ping_interval_ms,
+                    max_inflight,
+                    None,
+                    None,
+                    None,
+                    None,
+                    cmd_queue.clone(),
+                    trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
+                    shutdown.clone(),
+                    state.clone(),
+                    false,
+                    lat_buckets.clone(),
+                );
+                info!(
+                    "spawning LTP ws client id={} logical_exchange={} ip={} url={} ping_interval_ms={} max_inflight={}",
+                    idx,
+                    exchange,
+                    client.local_ip(),
+                    ltp_ws_url,
+                    ping_interval_ms,
+                    max_inflight
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                worker_handles.push(("ltp_ws_client", handle));
+                endpoints.push(WsEndpointHandle::new(cmd_queue, state));
+            }
+            Some(endpoints)
+        } else if exchange == Exchange::Bitget {
             // 前置校验：Bitget 必须是 UTA + one-way 持仓模式；margin 路径还要求 Advanced。
             // 这里直接 panic，避免配置错误时 trade_engine 继续运行并反复拒单。
             let bitget_precheck_creds = account_common::bitget_auth::BitgetCredentials::from_env()
@@ -1379,6 +1470,8 @@ impl TradeEngine {
                 let client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     WsConstants::BITGET_TRADE_WS_URL.to_string(),
                     connect_timeout_ms,
@@ -1438,6 +1531,8 @@ impl TradeEngine {
                 let client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     WsConstants::BYBIT_TRADE_WS_URL.to_string(),
                     connect_timeout_ms,
@@ -1516,6 +1611,8 @@ impl TradeEngine {
                 let client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     url,
                     connect_timeout_ms,
@@ -1574,6 +1671,8 @@ impl TradeEngine {
                 let spot_client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     WsConstants::GATE_SPOT_WS_URL.to_string(),
                     connect_timeout_ms,
@@ -1609,6 +1708,8 @@ impl TradeEngine {
                 let fut_client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     WsConstants::GATE_FUTURES_WS_URL.to_string(),
                     connect_timeout_ms,
@@ -1694,6 +1795,8 @@ impl TradeEngine {
                 let um_client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     binance_um_ws_url.to_string(),
                     connect_timeout_ms,
@@ -1731,6 +1834,8 @@ impl TradeEngine {
                 let spot_client = TradeWsClient::new(
                     idx,
                     exchange,
+                    exchange,
+                    false,
                     ip,
                     WsConstants::BINANCE_SPOT_WS_URL.to_string(),
                     connect_timeout_ms,
@@ -1774,6 +1879,7 @@ impl TradeEngine {
         let rest_dispatcher_for_orders = rest_dispatcher.clone();
         let trade_resp_sink_for_req_worker = trade_resp_sink.clone();
         let exchange_for_req_worker = exchange;
+        let use_ltp_backend_for_req_worker = use_ltp_backend;
         let shutdown_for_req_worker = shutdown.clone();
         let internal_open_terminates_for_req_worker = internal_open_terminates.clone();
         let internal_open_terminate_summary_for_req_worker =
@@ -1837,14 +1943,17 @@ impl TradeEngine {
                     }
                 }
 
-                // 根据 mapping 判断是否走 WebSocket
-                if TradeTypeMapping::is_websocket(msg.req_type) {
-                    let mut target_endpoints = if exchange_for_req_worker == Exchange::Gate
+                // 根据 mapping 判断是否走 WebSocket；LTP 后端统一从 WS 执行。
+                if use_ltp_backend_for_req_worker || TradeTypeMapping::is_websocket(msg.req_type) {
+                    let mut target_endpoints = if use_ltp_backend_for_req_worker {
+                        ws_endpoints.as_mut()
+                    } else if exchange_for_req_worker == Exchange::Gate
                         && matches!(
                             msg.req_type,
                             TradeRequestType::GateFuturesNewOrder
                                 | TradeRequestType::GateFuturesCancelOrder
-                        ) {
+                        )
+                    {
                         gate_futures_ws_endpoints.as_mut()
                     } else if exchange_for_req_worker == Exchange::Binance
                         && matches!(
@@ -2027,8 +2136,17 @@ impl TradeEngine {
             let binance_spot_ws_endpoints = binance_spot_ws_endpoints.clone();
             let gate_spot_ws_endpoints = ws_endpoints.clone();
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
+            let use_ltp_backend_for_query_router = use_ltp_backend;
             let shutdown_for_query_router = shutdown.clone();
             let query_router = tokio::task::spawn_local(async move {
+                let ltp_rest = if use_ltp_backend_for_query_router {
+                    Some(
+                        crate::ltp_rest::LtpRestClient::from_env()
+                            .expect("LTP query requires LTP_API_KEY and LTP_API_SECRET"),
+                    )
+                } else {
+                    None
+                };
                 let okex_http = reqwest::Client::new();
                 let okex_creds = account_common::okex_auth::OkexCredentials::from_env().ok();
                 let bybit_http = reqwest::Client::new();
@@ -2056,6 +2174,25 @@ impl TradeEngine {
                         "routing query: type={:?} client_query_id={}",
                         msg.req_type, msg.client_query_id
                     );
+
+                    if use_ltp_backend_for_query_router {
+                        let Some(ltp_rest) = ltp_rest.as_ref() else {
+                            let _ = query_resp_sink.send(QueryExecOutcome {
+                                req_type: msg.req_type,
+                                client_query_id: msg.client_query_id,
+                                status: 503,
+                                body: bytes::Bytes::from_static(b"LTP REST client unavailable"),
+                                exchange: exchange_copy,
+                                ip_used_weight_1m: None,
+                                query_count_1m: None,
+                            });
+                            continue;
+                        };
+                        for outcome in ltp_rest.query_snapshot(&msg, exchange_copy).await {
+                            let _ = query_resp_sink.send(outcome);
+                        }
+                        continue;
+                    }
 
                     match exchange_copy {
                         Exchange::Binance => {

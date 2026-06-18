@@ -10,6 +10,7 @@ use crate::engine::{
     take_internal_open_terminate, InternalOpenTerminateMap, InternalOpenTerminateSummary,
 };
 use crate::gate_ws;
+use crate::ltp_ws::{self, LtpCredentials};
 use crate::okex::{
     OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest, OkexWsOrderResponse,
 };
@@ -140,6 +141,19 @@ fn parse_bitget_control_event(payload: &str) -> Option<(String, String, String, 
         msg,
         bitget_ws_code_is_success(v.get("code")),
     ))
+}
+
+fn is_ltp_terminal_order_push(resp: &ltp_ws::LtpWsResponse) -> bool {
+    let raw = resp
+        .data
+        .get("orderState")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    matches!(
+        raw.as_str(),
+        "FILLED" | "CANCELLED" | "CANCELED" | "REJECT" | "FAIL"
+    )
 }
 
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
@@ -581,6 +595,8 @@ struct OkexInstrumentEntry {
 pub struct TradeWsClient {
     id: usize,
     exchange: Exchange,
+    logical_exchange: Exchange,
+    use_ltp_backend: bool,
     local_ip: IpAddr,
     url: String,
     current_remote_addr: Option<SocketAddr>,
@@ -593,6 +609,7 @@ pub struct TradeWsClient {
     bybit_creds: Option<BybitCredentials>,
     okex_creds: Option<OkexCredentials>,
     gate_creds: Option<GateCredentials>,
+    ltp_creds: Option<LtpCredentials>,
     okex_http_client: Option<reqwest::Client>,
     okex_inst_id_code_cache: HashMap<String, i64>,
     okex_loaded_inst_types: HashSet<&'static str>,
@@ -626,6 +643,8 @@ impl TradeWsClient {
     pub(crate) fn new(
         id: usize,
         exchange: Exchange,
+        logical_exchange: Exchange,
+        use_ltp_backend: bool,
         local_ip: IpAddr,
         url: String,
         connect_timeout_ms: u64,
@@ -644,66 +663,93 @@ impl TradeWsClient {
         shutdown_on_rate_limit: bool,
         lat_buckets: WsLatencyBuckets,
     ) -> Self {
-        let (login_payload, bitget_creds, bybit_creds, okex_creds, gate_creds) = match exchange {
-            Exchange::Bitget => {
-                let creds = BitgetCredentials::from_env().unwrap_or_else(|e| {
+        let (login_payload, bitget_creds, bybit_creds, okex_creds, gate_creds, ltp_creds) =
+            if use_ltp_backend {
+                let creds = LtpCredentials::from_env().unwrap_or_else(|e| {
                     panic!(
-                        "Bitget requires environment variables BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE: {}",
+                        "LTP backend requires environment variables LTP_API_KEY and LTP_API_SECRET: {}",
                         e
                     )
                 });
                 info!(
-                    "Bitget credentials loaded from environment for ws client id={}",
-                    id
+                    "LTP credentials loaded from environment for ws client id={} logical_exchange={}",
+                    id, logical_exchange
                 );
-                let login_payload = bitget_ws::build_login_payload(&creds)
-                    .unwrap_or_else(|e| panic!("build Bitget login payload failed: {}", e));
-                (Some(login_payload), Some(creds), None, None, None)
-            }
-            Exchange::Bybit => {
-                let creds = BybitCredentials::from_env().unwrap_or_else(|e| {
-                    panic!(
-                        "Bybit requires environment variables BYBIT_API_KEY, BYBIT_API_SECRET: {}",
-                        e
-                    )
-                });
-                info!(
-                    "Bybit credentials loaded from environment for ws client id={}",
-                    id
-                );
-                (None, None, Some(creds), None, None)
-            }
-            Exchange::Okex => {
-                // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
-                let creds = OkexCredentials::from_env().unwrap_or_else(|e| {
-                    panic!(
-                        "OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}",
-                        e
-                    )
-                });
-                info!(
-                    "OKEx credentials loaded from environment for ws client id={}",
-                    id
-                );
-                (None, None, None, Some(creds), None)
-            }
-            Exchange::Gate => {
-                let creds = GateCredentials::from_env().unwrap_or_else(|e| {
-                    panic!(
-                        "Gate requires environment variables GATE_API_KEY, GATE_API_SECRET: {}",
-                        e
-                    )
-                });
-                info!(
-                    "Gate credentials loaded from environment for ws client id={}",
-                    id
-                );
-                (None, None, None, None, Some(creds))
-            }
-            _ => (login_payload, None, None, None, None),
-        };
+                let only_trade = std::env::var("LTP_WS_ONLY_TRADE")
+                    .ok()
+                    .map(|v| {
+                        matches!(
+                            v.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        )
+                    })
+                    .unwrap_or(false);
+                let login_payload = creds
+                    .build_login_payload(only_trade)
+                    .unwrap_or_else(|e| panic!("build LTP login payload failed: {}", e));
+                (Some(login_payload), None, None, None, None, Some(creds))
+            } else {
+                match exchange {
+                    Exchange::Bitget => {
+                        let creds = BitgetCredentials::from_env().unwrap_or_else(|e| {
+                            panic!(
+                                "Bitget requires environment variables BITGET_API_KEY, BITGET_API_SECRET, BITGET_API_PASSPHRASE: {}",
+                                e
+                            )
+                        });
+                        info!(
+                            "Bitget credentials loaded from environment for ws client id={}",
+                            id
+                        );
+                        let login_payload = bitget_ws::build_login_payload(&creds)
+                            .unwrap_or_else(|e| panic!("build Bitget login payload failed: {}", e));
+                        (Some(login_payload), Some(creds), None, None, None, None)
+                    }
+                    Exchange::Bybit => {
+                        let creds = BybitCredentials::from_env().unwrap_or_else(|e| {
+                            panic!(
+                                "Bybit requires environment variables BYBIT_API_KEY, BYBIT_API_SECRET: {}",
+                                e
+                            )
+                        });
+                        info!(
+                            "Bybit credentials loaded from environment for ws client id={}",
+                            id
+                        );
+                        (None, None, Some(creds), None, None, None)
+                    }
+                    Exchange::Okex => {
+                        // OKX login must use a fresh timestamp (signed) on each connect/reconnect.
+                        let creds = OkexCredentials::from_env().unwrap_or_else(|e| {
+                            panic!(
+                                "OKEx requires environment variables OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE: {}",
+                                e
+                            )
+                        });
+                        info!(
+                            "OKEx credentials loaded from environment for ws client id={}",
+                            id
+                        );
+                        (None, None, None, Some(creds), None, None)
+                    }
+                    Exchange::Gate => {
+                        let creds = GateCredentials::from_env().unwrap_or_else(|e| {
+                            panic!(
+                                "Gate requires environment variables GATE_API_KEY, GATE_API_SECRET: {}",
+                                e
+                            )
+                        });
+                        info!(
+                            "Gate credentials loaded from environment for ws client id={}",
+                            id
+                        );
+                        (None, None, None, None, Some(creds), None)
+                    }
+                    _ => (login_payload, None, None, None, None, None),
+                }
+            };
 
-        if exchange == Exchange::Binance && binance_creds.is_none() {
+        if exchange == Exchange::Binance && !use_ltp_backend && binance_creds.is_none() {
             warn!(
                 "trade ws client id={} missing Binance credentials; ws requests will fail",
                 id
@@ -713,6 +759,8 @@ impl TradeWsClient {
         Self {
             id,
             exchange,
+            logical_exchange,
+            use_ltp_backend,
             local_ip,
             url,
             current_remote_addr: None,
@@ -725,6 +773,7 @@ impl TradeWsClient {
             bybit_creds,
             okex_creds,
             gate_creds,
+            ltp_creds,
             okex_http_client: (exchange == Exchange::Okex).then(reqwest::Client::new),
             okex_inst_id_code_cache: HashMap::new(),
             okex_loaded_inst_types: HashSet::new(),
@@ -932,7 +981,20 @@ impl TradeWsClient {
                                 self.id, self.url, self.local_ip, remote_addr
                             );
 
-                            let login_payload = if self.exchange == Exchange::Bitget {
+                            let login_payload = if self.use_ltp_backend {
+                                self.ltp_creds.as_ref().and_then(|c| {
+                                    let only_trade = std::env::var("LTP_WS_ONLY_TRADE")
+                                        .ok()
+                                        .map(|v| {
+                                            matches!(
+                                                v.trim().to_ascii_lowercase().as_str(),
+                                                "1" | "true" | "yes" | "on"
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                    c.build_login_payload(only_trade).ok()
+                                })
+                            } else if self.exchange == Exchange::Bitget {
                                 self.bitget_creds
                                     .as_ref()
                                     .and_then(|c| bitget_ws::build_login_payload(c).ok())
@@ -1474,6 +1536,9 @@ impl TradeWsClient {
     }
 
     async fn build_payload(&mut self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
+        if self.use_ltp_backend {
+            return self.build_ltp_payload(msg, transport_id);
+        }
         match self.exchange {
             Exchange::Bitget => self.build_bitget_payload(msg, transport_id),
             Exchange::Bybit => self.build_bybit_payload(msg, transport_id),
@@ -1498,7 +1563,17 @@ impl TradeWsClient {
         bitget_ws::build_order_payload(msg, transport_id)
     }
 
+    fn build_ltp_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
+        ltp_ws::build_order_payload(self.logical_exchange, msg, transport_id)
+    }
+
     fn build_query_payload(&self, msg: &QueryRequestMsg, transport_id: i64) -> Result<String> {
+        if self.use_ltp_backend {
+            return Err(anyhow!(
+                "LTP backend query websocket is not implemented for {:?}",
+                msg.req_type
+            ));
+        }
         match self.exchange {
             Exchange::Gate => gate_ws::build_query_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_query_payload(msg, transport_id),
@@ -2159,6 +2234,16 @@ impl TradeWsClient {
     }
 
     fn process_incoming_payload(&mut self, payload: &str) {
+        if self.use_ltp_backend {
+            if ltp_ws::is_text_pong(payload) {
+                debug!("trade ws client id={} LTP received pong", self.id);
+                return;
+            }
+            if self.handle_ltp_payload(payload) {
+                return;
+            }
+        }
+
         if self.exchange == Exchange::Bitget {
             if is_bitget_pong_response(payload) {
                 self.bitget_waiting_pong = false;
@@ -2486,6 +2571,131 @@ impl TradeWsClient {
         } else {
             self.warn_uncorrelated_trade_payload(payload);
         }
+    }
+
+    fn handle_ltp_payload(&mut self, payload: &str) -> bool {
+        let Some(resp) = ltp_ws::LtpWsResponse::from_json_str(payload) else {
+            return false;
+        };
+
+        if resp.is_login() {
+            if resp.is_success() {
+                info!(
+                    "trade ws client id={} LTP login successful logical_exchange={}",
+                    self.id, self.logical_exchange
+                );
+            } else {
+                warn!(
+                    "trade ws client id={} LTP login failed code={} msg={} payload={}",
+                    self.id, resp.code, resp.msg, payload
+                );
+            }
+            return true;
+        }
+
+        if resp.is_trade_ack() {
+            let Some(meta) = self.take_trade_inflight(resp.id, resp.client_order_id_i64()) else {
+                self.warn_uncorrelated_trade_payload(payload);
+                return true;
+            };
+            let client_order_id = resp.client_order_id_i64().unwrap_or(meta.client_order_id);
+            if resp.is_success() {
+                self.publish_ltp_ws_response(client_order_id, &meta, &resp, false);
+                self.keep_ltp_inflight_after_success_ack(resp.id, client_order_id, meta);
+            } else {
+                self.publish_ltp_ws_response(client_order_id, &meta, &resp, true);
+            }
+            return true;
+        }
+
+        if resp.is_order_push() {
+            let Some(client_order_id) = resp.client_order_id_i64() else {
+                self.warn_uncorrelated_trade_payload(payload);
+                return true;
+            };
+            let Some(meta) = self.take_trade_inflight_by_client_order_id(client_order_id) else {
+                debug!(
+                    "trade ws client id={} LTP order push without inflight client_order_id={} payload={}",
+                    self.id,
+                    client_order_id,
+                    truncate_for_log(&payload.replace(['\r', '\n'], " "), 512)
+                );
+                return true;
+            };
+            self.publish_ltp_ws_response(client_order_id, &meta, &resp, true);
+            if !is_ltp_terminal_order_push(&resp) {
+                self.keep_ltp_inflight_after_success_ack(None, client_order_id, meta);
+            }
+            return true;
+        }
+
+        false
+    }
+
+    fn keep_ltp_inflight_after_success_ack(
+        &mut self,
+        transport_id: Option<i64>,
+        client_order_id: i64,
+        meta: TradeInflightMeta,
+    ) {
+        let mut meta = meta;
+        meta.client_order_id = client_order_id;
+        if let Some(transport_id) = transport_id.filter(|id| *id > 0) {
+            self.inflight.insert(transport_id, meta);
+            return;
+        }
+        let key = self
+            .inflight
+            .keys()
+            .copied()
+            .max()
+            .unwrap_or(self.next_binance_transport_id)
+            .saturating_add(1);
+        self.inflight.insert(key, meta);
+    }
+
+    fn publish_ltp_ws_response(
+        &self,
+        client_order_id: i64,
+        meta: &TradeInflightMeta,
+        resp: &ltp_ws::LtpWsResponse,
+        force_publish: bool,
+    ) {
+        let status = ltp_ws::ltp_status_for_response(resp);
+        if !force_publish
+            && !Self::should_publish_ws_open_update(
+                meta.req_type,
+                status,
+                meta.ws_open_update_enabled,
+            )
+        {
+            return;
+        }
+        let body_payload = json!({
+            "transport": "ws",
+            "backend": "ltp",
+            "exchange": self.logical_exchange.as_str(),
+            "event": resp.event.as_deref(),
+            "channel": resp.channel.as_deref(),
+            "code": resp.error_code_for_trade_response(),
+            "msg": resp.msg.as_str(),
+            "data": resp.data.clone(),
+            "endpointId": self.id,
+            "localIp": self.local_ip.to_string(),
+        })
+        .to_string();
+        let _ = self.resp_sink.send(TradeExecOutcome {
+            req_type: meta.req_type,
+            client_order_id,
+            status,
+            body: body_payload,
+            exchange: self.logical_exchange,
+            order_id: resp.order_id_i64(),
+            order_status_u8: resp.order_status_u8(),
+            order_update_time: resp.order_update_time_ms(),
+            executed_qty: resp.executed_qty(),
+            response_price: resp.response_price(),
+        });
     }
 
     fn publish_bybit_ws_response(
@@ -3435,7 +3645,9 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
         debug!("trade ws client id={} sending ping", self.id);
-        if self.exchange == Exchange::Bitget {
+        if self.use_ltp_backend {
+            ws.send(Message::Text("ping".to_string())).await?;
+        } else if self.exchange == Exchange::Bitget {
             self.bitget_waiting_pong = true;
             ws.send(Message::Text("ping".to_string())).await?;
         } else if self.exchange == Exchange::Bybit {

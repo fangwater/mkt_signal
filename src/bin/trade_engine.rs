@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use trade_engine::config::RestConstants;
+use trade_engine::exec_backend::ExecBackend;
 use trade_engine::TradeEngine;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
@@ -340,8 +341,15 @@ async fn main() -> Result<()> {
     maybe_pin_current_thread(args.core, "TRADE_ENGINE_CORE")?;
     let ipc_core = resolve_core(args.ipc_core, "TRADE_ENGINE_IPC_CORE");
     let exchange_name = args.exchange.as_str();
-    info!("trade_engine starting (exchange={})", exchange_name);
-    let binance_account_mode = if exchange_name == "binance" {
+    let exchange = Exchange::from_str(exchange_name)
+        .ok_or_else(|| anyhow::anyhow!("Invalid exchange name: {}", exchange_name))?;
+    let exec_backend = ExecBackend::for_exchange(exchange);
+    info!(
+        "trade_engine starting (exchange={} exec_backend={})",
+        exchange_name,
+        exec_backend.as_str()
+    );
+    let binance_account_mode = if exchange_name == "binance" && exec_backend != ExecBackend::Ltp {
         let mode = init_binance_account_mode("trade_engine");
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
         Some(mode)
@@ -351,7 +359,8 @@ async fn main() -> Result<()> {
 
     let local_ip_cfg = load_trade_engine_local_ip_config().await?;
     let local_ips = local_ip_cfg.local_ips;
-    let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
+    let binance_um_ip_whitelist_mode =
+        exec_backend != ExecBackend::Ltp && binance_um_ip_whitelist_mode_enabled();
     validate_binance_um_whitelist_ip_config(
         &local_ip_cfg.local_ip_values,
         local_ip_cfg.binance_um_whitelist_ip_value.as_deref(),
@@ -394,7 +403,15 @@ async fn main() -> Result<()> {
     }
 
     // OKEx 不需要从环境变量读取 API key，因为在 WebSocket 客户端中会自动处理
-    let accounts = if exchange_name == "okex" {
+    let accounts = if exec_backend == ExecBackend::Ltp {
+        info!(
+            "LTP backend mode: native exchange API credentials are not loaded here; ws client requires LTP_API_KEY and LTP_API_SECRET"
+        );
+        info!(
+            "Optional env vars: TRADE_ENGINE_EXEC_BACKEND_MAP, LTP_WS_URL, LTP_WS_PING_INTERVAL_MS, LTP_WS_ONLY_TRADE"
+        );
+        vec![]
+    } else if exchange_name == "okex" {
         info!("OKEx mode: API credentials will be loaded from OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE environment variables");
         vec![] // OKEx 不需要在这里配置
     } else {
@@ -486,10 +503,6 @@ async fn main() -> Result<()> {
 
     info!("trade_engine initialized");
     let engine = TradeEngine::new(local_ips, accounts, ipc_core, binance_um_whitelist_ip);
-
-    // Convert exchange_name to Exchange enum
-    let exchange = Exchange::from_str(exchange_name)
-        .ok_or_else(|| anyhow::anyhow!("Invalid exchange name: {}", exchange_name))?;
 
     let local = tokio::task::LocalSet::new();
     let shutdown = CancellationToken::new();
