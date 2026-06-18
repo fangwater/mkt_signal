@@ -9,6 +9,7 @@ use crate::gate_ws;
 use crate::okex::{
     OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest, OkexWsOrderResponse,
 };
+use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::query_parsers::gate_order_status::{
@@ -2977,7 +2978,14 @@ impl TradeWsClient {
             }
         };
 
-        if let Some(parsed) = parse_binance_um_order_query_json(&result_json) {
+        let parsed = match req_type {
+            QueryRequestType::BinanceWsMarginQuery => {
+                parse_binance_margin_order_query_json(&result_json)
+            }
+            _ => parse_binance_um_order_query_json(&result_json),
+        };
+
+        if let Some(parsed) = parsed {
             self.publish_query_response(req_type, client_query_id, status, parsed.to_bytes());
         } else {
             self.publish_query_error(req_type, client_query_id);

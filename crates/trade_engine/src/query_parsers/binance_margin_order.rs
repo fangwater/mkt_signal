@@ -27,7 +27,7 @@ fn status_to_u8(status: &str) -> u8 {
         "NEW" | "PARTIALLY_FILLED" | "PENDING_CANCEL" => OrderExecutionStatus::Create.to_u8(),
         "FILLED" => OrderExecutionStatus::Filled.to_u8(),
         "CANCELED" | "CANCELLED" | "EXPIRED" => OrderExecutionStatus::Cancelled.to_u8(),
-        "REJECTED" => OrderExecutionStatus::Rejected.to_u8(),
+        "REJECTED" | "EXPIRED_IN_MATCH" => OrderExecutionStatus::Rejected.to_u8(),
         _ => OrderExecutionStatus::Create.to_u8(),
     }
 }
@@ -55,4 +55,29 @@ pub fn parse_binance_margin_order_query_json(json: &str) -> Option<BinanceUmOrde
         time_in_force_u8: tif_u8,
         response_price,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_expired_in_match_as_terminal_rejected() {
+        let parsed = parse_binance_margin_order_query_json(
+            r#"{
+                "executedQty":"104.9",
+                "avgPrice":"0",
+                "price":"0.0631",
+                "orderId":764923910,
+                "status":"EXPIRED_IN_MATCH",
+                "timeInForce":"GTC",
+                "updateTime":1781718285552
+            }"#,
+        )
+        .expect("query json should parse");
+
+        assert_eq!(parsed.status_u8, OrderExecutionStatus::Rejected.to_u8());
+        assert_eq!(parsed.executed_qty, 104.9);
+        assert_eq!(parsed.order_id, 764923910);
+    }
 }

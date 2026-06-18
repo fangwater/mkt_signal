@@ -4383,7 +4383,9 @@ fn dispatch_order_update_generic<T>(
                     ExecutionType::Trade => {
                         strategy.apply_trade_update(&normalized_update);
                     }
-                    ExecutionType::Expired | ExecutionType::Rejected => {
+                    ExecutionType::Expired
+                    | ExecutionType::Rejected
+                    | ExecutionType::TradePrevention => {
                         warn!(
                             "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
                             normalized_update.execution_type(),

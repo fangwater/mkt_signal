@@ -1222,7 +1222,7 @@ impl TradeEngine {
                     None,
                     binance_creds.clone(),
                     None,
-                    None,
+                    Some(query_resp_sink.clone()),
                     spot_cmd_queue.clone(),
                     trade_resp_sink.clone(),
                     shutdown.clone(),
