@@ -38,7 +38,7 @@ use runtime_common::symbol_util::{
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::SignalType;
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
@@ -149,6 +149,46 @@ fn summarize_open_balance_reject(input: OpenBalanceRejectSummaryInput<'_>) {
             state.min_available = input.available_balance;
         }
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_open_order_request_bytes_scoped(
+    mut order_manager: RefMut<'_, OrderManager>,
+    venue: TradingVenue,
+    client_order_id: i64,
+    order_type: OrderType,
+    symbol: String,
+    side: Side,
+    order_qty: f64,
+    order_price: f64,
+    quantity_qv: Option<OrderQuantizedValue>,
+    price_qv: Option<OrderQuantizedValue>,
+    reduce_only: bool,
+    qty_multiplier: f64,
+    create_ts: i64,
+    signal_type_u8: u8,
+    mkt_ts: i64,
+    pre_trade_recv_ts: i64,
+    pre_trade_handle_ts: i64,
+) -> Result<(&'static str, Bytes), String> {
+    order_manager.create_open_order_request_bytes(
+        venue,
+        client_order_id,
+        order_type,
+        symbol,
+        side,
+        order_qty,
+        order_price,
+        quantity_qv,
+        price_qv,
+        reduce_only,
+        qty_multiplier,
+        create_ts,
+        signal_type_u8,
+        mkt_ts,
+        pre_trade_recv_ts,
+        pre_trade_handle_ts,
+    )
 }
 
 fn summarize_open_order_rate_limit(
@@ -1265,7 +1305,8 @@ pub trait OpenStrategyCommon {
         } else {
             None
         };
-        let (exchange, req_bin) = match order_manager.borrow_mut().create_open_order_request_bytes(
+        let request_build_result = build_open_order_request_bytes_scoped(
+            order_manager.borrow_mut(),
             venue,
             client_order_id,
             order_type,
@@ -1282,7 +1323,8 @@ pub trait OpenStrategyCommon {
             input.mkt_ts,
             input.pre_trade_recv_ts,
             input.pre_trade_handle_ts,
-        ) {
+        );
+        let (exchange, req_bin) = match request_build_result {
             Ok(request) => request,
             Err(err) => {
                 error!(
@@ -2707,12 +2749,13 @@ pub trait OpenStrategyCommon {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_promote_open_pending_query_reason, OpenStrategyCommon, OpenStrategyState,
-        PendingOrderQueryReason, QueryWatchdog,
+        build_open_order_request_bytes_scoped, should_promote_open_pending_query_reason,
+        OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason, QueryWatchdog,
     };
     use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
     use crate::strategy::manager::OrphanStrategyRole;
-    use order_common::TradingVenue;
+    use order_common::{BinanceAccountMode, OrderManager, OrderType, Side, TradingVenue};
+    use std::cell::RefCell;
 
     struct TestOpenStrategy {
         state: OpenStrategyState,
@@ -2768,6 +2811,36 @@ mod tests {
         ) -> Result<f64, String> {
             Ok(1.0)
         }
+    }
+
+    #[test]
+    fn open_order_request_build_err_releases_order_manager_borrow() {
+        let order_manager = RefCell::new(OrderManager::new(Some(BinanceAccountMode::Unified)));
+        let result = build_open_order_request_bytes_scoped(
+            order_manager.borrow_mut(),
+            TradingVenue::AsterMargin,
+            (7_i64 << 32) | 1,
+            OrderType::Limit,
+            "BNBUSDT".to_string(),
+            Side::Buy,
+            0.16,
+            618.25,
+            None,
+            None,
+            true,
+            1.0,
+            1,
+            0,
+            1,
+            1,
+            1,
+        );
+
+        assert!(result.is_err());
+        assert!(order_manager
+            .borrow_mut()
+            .remove((7_i64 << 32) | 1)
+            .is_some());
     }
 
     #[test]
