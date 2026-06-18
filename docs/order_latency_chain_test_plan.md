@@ -15,7 +15,7 @@
 `order_export` 导出的 `uniform_orders.parquet` 是当前最可靠的全策略订单口径：
 
 - `signal_ts`：触发该订单的信号时间，本地微秒。
-- `create_ts`：订单创建时间。NEW 事件等于订单更新事件时间；后续事件等于本地订单记录中的交易所创建时间。
+- `create_ts`：新订单请求首次 publish 的本地时间；缺失时由远端订单事件时间兜底。
 - `update_ts`：本次订单状态更新时间，来自交易所事件时间，微秒。
 - `recv_ts_us`：`pre_trade` 发布 uniform order 持久化消息时的本地时间，微秒。
 - `ts_us`：RocksDB key 对应的本地落盘时间；当前等于 payload 头部时间。

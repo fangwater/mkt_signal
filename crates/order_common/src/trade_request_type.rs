@@ -76,3 +76,24 @@ impl TryFrom<u32> for TradeRequestType {
         }
     }
 }
+
+impl TradeRequestType {
+    pub fn is_new_order(self) -> bool {
+        matches!(
+            self,
+            TradeRequestType::BinanceNewUMOrder
+                | TradeRequestType::BinanceNewUMConditionalOrder
+                | TradeRequestType::BinanceNewMarginOrder
+                | TradeRequestType::BinanceWsNewUMOrder
+                | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::OkexNewMarginOrder
+                | TradeRequestType::OkexNewUMOrder
+                | TradeRequestType::GateUnifiedNewOrder
+                | TradeRequestType::GateFuturesNewOrder
+                | TradeRequestType::BybitNewMarginOrder
+                | TradeRequestType::BybitNewUMOrder
+                | TradeRequestType::BitgetNewMarginOrder
+                | TradeRequestType::BitgetNewUMOrder
+        )
+    }
+}

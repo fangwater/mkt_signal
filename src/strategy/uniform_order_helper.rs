@@ -94,9 +94,14 @@ pub fn publish_uniform_order_event(
     price_offset: f64,
     amount_update: f64,
 ) {
-    let create_ts = match event_kind {
-        UniformOrderEventKind::New => event_ts,
-        UniformOrderEventKind::Terminal | UniformOrderEventKind::Trade => order.timestamp.create_t,
+    let create_ts = match (order.timestamp.create_t > 0, event_kind) {
+        (true, _) => order.timestamp.create_t,
+        (
+            false,
+            UniformOrderEventKind::New
+            | UniformOrderEventKind::Terminal
+            | UniformOrderEventKind::Trade,
+        ) => event_ts,
     };
     let price = price_override
         .filter(|p| p.is_finite() && *p > 0.0)

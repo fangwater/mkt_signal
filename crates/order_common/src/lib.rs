@@ -970,14 +970,10 @@ impl OrderManager {
         &mut self,
         order_id: i64,
         submit_time: i64,
-        first_create_signal_kind: Option<u8>,
+        is_new_order_request: bool,
     ) -> Option<OrderSubmitSignalMeta> {
         self.orders.get_mut(&order_id).map(|order| {
-            if first_create_signal_kind
-                .map(|kind| order.timestamp.signal_kind == kind)
-                .unwrap_or(false)
-                && order.timestamp.create_t == 0
-            {
+            if is_new_order_request && order.timestamp.create_t == 0 {
                 order.set_create_time(submit_time);
             }
             order.set_submit_time(submit_time);
@@ -1096,7 +1092,7 @@ impl OrderManager {
 #[derive(Debug, Clone)]
 pub struct OrderTimeStamp {
     pub submit_t: i64, // 最近一次给 trade engine / query engine 发送请求的本地时间(µs)
-    pub create_t: i64, // 交易所订单创建时间(交易所时间)
+    pub create_t: i64, // 新订单请求首次 publish 的本地时间；缺失时可由远端 NEW 事件时间兜底
     pub end_t: i64,    // 交易所时间(完全成交或者被撤单的时间)
     pub local_t: i64, // OrderUpdate/TradeUpdate/查询回报在本地最近一次被实质性接受的时间(µs)，每次覆写
     pub mkt_t: i64,   // 触发该订单动作（open/cancel/close）时所参考的最新盘口时间(µs)；
@@ -1292,5 +1288,58 @@ impl Order {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_test_order(manager: &mut OrderManager, client_order_id: i64) {
+        manager.create_order(
+            TradingVenue::BinanceFutures,
+            client_order_id,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+        );
+    }
+
+    #[test]
+    fn new_order_submit_initializes_create_time_once() {
+        let mut manager = OrderManager::new(None);
+        let client_order_id = 42;
+        insert_test_order(&mut manager, client_order_id);
+
+        let meta = manager.set_submit_time_and_signal_meta(client_order_id, 1_000, true);
+        assert!(meta.is_some());
+        let order = manager.get(client_order_id).expect("order exists");
+        assert_eq!(order.timestamp.create_t, 1_000);
+        assert_eq!(order.timestamp.submit_t, 1_000);
+
+        manager.set_submit_time_and_signal_meta(client_order_id, 2_000, false);
+        let order = manager.get(client_order_id).expect("order exists");
+        assert_eq!(order.timestamp.create_t, 1_000);
+        assert_eq!(order.timestamp.submit_t, 2_000);
+
+        manager.set_submit_time_and_signal_meta(client_order_id, 3_000, true);
+        let order = manager.get(client_order_id).expect("order exists");
+        assert_eq!(order.timestamp.create_t, 1_000);
+        assert_eq!(order.timestamp.submit_t, 3_000);
+    }
+
+    #[test]
+    fn trade_request_type_classifies_new_order_requests() {
+        assert!(TradeRequestType::BinanceNewUMOrder.is_new_order());
+        assert!(TradeRequestType::GateFuturesNewOrder.is_new_order());
+        assert!(TradeRequestType::BitgetNewUMOrder.is_new_order());
+
+        assert!(!TradeRequestType::BinanceCancelUMOrder.is_new_order());
+        assert!(!TradeRequestType::GateFuturesCancelOrder.is_new_order());
+        assert!(!TradeRequestType::BinanceUMSetLeverage.is_new_order());
     }
 }

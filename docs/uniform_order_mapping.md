@@ -18,13 +18,13 @@
 文件：`src/strategy/uniform_order_helper.rs`
 
 - `New`
-  - `create_ts = event_ts`
+  - `create_ts = order.timestamp.create_t`（优先本地新订单请求首次 publish 时间；缺失时 fallback `event_ts`）
   - `update_ts = event_ts`
 - `Terminal`
-  - `create_ts = order.timestamp.create_t`
+  - `create_ts = order.timestamp.create_t`（同上，缺失时 fallback `event_ts`）
   - `update_ts = event_ts`
 - `Trade`
-  - `create_ts = order.timestamp.create_t`
+  - `create_ts = order.timestamp.create_t`（同上，缺失时 fallback `event_ts`）
   - `update_ts = event_ts`
 
 策略侧仅负责传入 `event_kind` 与业务字段（`signal_ts/from_key/price_offset/amount_update/status`），公共 helper 统一完成 record 构造与发布。
@@ -38,7 +38,7 @@
 | 字段 | 含义注释 |
 | --- | --- |
 | `symbol` | 交易标的字节（UTF-8），例如 `BTCUSDT`。 |
-| `create_ts` | 订单创建时间戳。 |
+| `create_ts` | 新订单请求首次 publish 的本地时间戳；缺失时由远端事件时间兜底。 |
 | `update_ts` | 本次状态更新时间戳。 |
 | `signal_ts` | 触发该订单的信号时间戳。 |
 | `client_order_id` | 客户端订单 ID（i64，仅算法单）。 |
@@ -69,7 +69,8 @@
 文件：`src/strategy/hedge_arb_strategy.rs`
 
 - NEW（`OrderStatus::New`）
-  - `create_ts = update_ts = order_update.event_time()`
+  - `create_ts = order.timestamp.create_t`（优先本地新订单请求首次 publish 时间；缺失时 fallback `order_update.event_time()`）
+  - `update_ts = order_update.event_time()`
   - `signal_ts`：按腿选择 `open_signal_ts` / `hedge_signal_ts`
   - `from_key`：按腿前缀 `open|...` / `hedge|...`
   - `price_offset`：按腿使用 `open_price_offset` / `hedge_price_offset`

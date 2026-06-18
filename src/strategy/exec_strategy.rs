@@ -1559,7 +1559,9 @@ impl ExecStrategy {
             OrderStatus::New => {
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
-                order.set_create_time(order_update.event_time());
+                if order.timestamp.create_t == 0 {
+                    order.set_create_time(order_update.event_time());
+                }
             }
             OrderStatus::Canceled => {
                 order.status = OrderExecutionStatus::Cancelled;

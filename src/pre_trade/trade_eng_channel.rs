@@ -41,6 +41,14 @@ fn trade_request_create_time_us(bytes: &Bytes) -> Option<i64> {
     Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
 }
 
+fn trade_request_type(bytes: &Bytes) -> Option<TradeRequestType> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let req_type = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+    TradeRequestType::try_from(req_type).ok()
+}
+
 fn log_open_order_slow_trace(
     client_order_id: i64,
     exchange: &str,
@@ -199,13 +207,16 @@ impl TradeEngHub {
     ) -> Result<()> {
         let publish_start_us = get_timestamp_us();
         let create_time_us = trade_request_create_time_us(bytes);
+        let req_type = trade_request_type(bytes);
         let mut submit_meta = None;
         if let Some(om) = MonitorChannel::try_order_manager() {
             // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
             let signal_meta = om.borrow_mut().set_submit_time_and_signal_meta(
                 client_order_id,
                 publish_start_us,
-                Some(SignalType::ArbOpen as u8),
+                req_type
+                    .map(TradeRequestType::is_new_order)
+                    .unwrap_or(false),
             );
             if let Some(meta) = signal_meta {
                 if meta.signal_t > 0 {
