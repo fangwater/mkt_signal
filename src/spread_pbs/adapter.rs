@@ -139,6 +139,15 @@ pub trait VenueAdapter {
         value: &Value,
         emit: &mut dyn FnMut(BboFrame) -> Result<()>,
     ) -> Result<()>;
+    /// Optional raw fast path for fixed-shape BBO frames. Return Ok(true) when the
+    /// frame was fully handled and the caller can skip `serde_json::Value`.
+    fn parse_bbo_raw(
+        &self,
+        _raw: &[u8],
+        _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
     fn parse_trade_frame(&self, _value: &Value) -> Result<Vec<TradeFrame>> {
         Ok(Vec::new())
     }

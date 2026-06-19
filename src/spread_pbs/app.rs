@@ -1160,6 +1160,7 @@ impl SharedState {
     }
 }
 
+#[derive(Default)]
 struct ReplacementBatch {
     trades: Vec<TradeFrame>,
     incrementals: Vec<IncrementalFrame>,
@@ -1183,6 +1184,19 @@ fn parse_replacement_batch(
     emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
 ) -> ReplacementBatch {
     if looks_like_json(raw) {
+        if include_bbo {
+            match adapter.parse_bbo_raw(raw, emit_bbo) {
+                Ok(true) => return ReplacementBatch::default(),
+                Ok(false) => {}
+                Err(e) => {
+                    log::error!(
+                        "spread_pbs[{}] adapter.parse_bbo_raw failed: {:#}",
+                        label,
+                        e
+                    );
+                }
+            }
+        }
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) {
             return parse_json_replacement_batch(
                 label,

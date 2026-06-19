@@ -6,7 +6,7 @@ use crate::trade_request::{
 use account_common::ApiKey;
 use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 
@@ -15,6 +15,13 @@ type HmacSha256 = Hmac<Sha256>;
 const METHOD_ORDER_PLACE: &str = "order.place";
 const METHOD_ORDER_CANCEL: &str = "order.cancel";
 const METHOD_ORDER_STATUS: &str = "order.status";
+
+#[derive(serde::Serialize)]
+struct BinanceWsPayload<'a> {
+    id: i64,
+    method: &'a str,
+    params: &'a BTreeMap<String, String>,
+}
 
 fn parse_i64_value(v: &Value) -> Option<i64> {
     if let Some(n) = v.as_i64() {
@@ -148,12 +155,12 @@ pub fn build_order_payload(
     } else {
         build_signed_params(&msg.params, creds)?
     };
-    let payload = json!({
-        "id": transport_id,
-        "method": method,
-        "params": params,
-    });
-    serde_json::to_string(&payload).with_context(|| "serialize binance ws payload")
+    serde_json::to_string(&BinanceWsPayload {
+        id: transport_id,
+        method,
+        params: &params,
+    })
+    .with_context(|| "serialize binance ws payload")
 }
 
 pub fn build_query_payload(
@@ -171,12 +178,12 @@ pub fn build_query_payload(
     }
 
     let params = build_signed_params(&msg.params, creds)?;
-    let payload = json!({
-        "id": transport_id,
-        "method": METHOD_ORDER_STATUS,
-        "params": params,
-    });
-    serde_json::to_string(&payload).with_context(|| "serialize binance ws query payload")
+    serde_json::to_string(&BinanceWsPayload {
+        id: transport_id,
+        method: METHOD_ORDER_STATUS,
+        params: &params,
+    })
+    .with_context(|| "serialize binance ws query payload")
 }
 
 #[derive(Debug, Clone)]
@@ -247,4 +254,89 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) 
         .unwrap_or(0.0);
     let price = result.get("price").and_then(parse_f64_value).unwrap_or(0.0);
     (order_id, status_u8, update_time, executed_qty, price)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_order_payload, build_query_payload};
+    use crate::query_request::{QueryRequestMsg, QueryRequestType};
+    use crate::trade_request::{BinanceNewOrderParams, TradeRequestMsg, TradeRequestType};
+    use account_common::ApiKey;
+    use bytes::Bytes;
+    use order_common::{OrderType, Side};
+    use serde_json::Value;
+    use signal_common::tick_math::QuantizedValue;
+
+    fn creds() -> ApiKey {
+        ApiKey {
+            name: "test".to_string(),
+            key: "api-key".to_string(),
+            secret: "secret".to_string(),
+        }
+    }
+
+    #[test]
+    fn builds_binance_order_payload_without_value_intermediate() {
+        let params = BinanceNewOrderParams {
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Sell,
+            order_type: OrderType::Limit,
+            quantity_qv: QuantizedValue::from_parts(1, -3, 300),
+            price_qv: QuantizedValue::from_parts(1, -2, 12345),
+            reduce_only: true,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: true,
+            ws_margin_limit_maker: false,
+        };
+        let msg = TradeRequestMsg {
+            req_type: TradeRequestType::BinanceWsNewUMOrder,
+            create_time: 0,
+            client_order_id: 42,
+            params: params.to_bytes().expect("typed params"),
+            ipc_recv: None,
+        };
+
+        let payload = build_order_payload(&msg, 99, &creds()).expect("payload");
+        let value: Value = serde_json::from_str(&payload).expect("json");
+
+        assert_eq!(value["id"], 99);
+        assert_eq!(value["method"], "order.place");
+        assert_eq!(value["params"]["apiKey"], "api-key");
+        assert_eq!(value["params"]["symbol"], "BTCUSDT");
+        assert_eq!(value["params"]["side"], "SELL");
+        assert_eq!(value["params"]["type"], "LIMIT");
+        assert_eq!(value["params"]["quantity"], "0.300");
+        assert_eq!(value["params"]["price"], "123.45");
+        assert_eq!(value["params"]["timeInForce"], "GTX");
+        assert_eq!(value["params"]["newClientOrderId"], "42");
+        assert_eq!(value["params"]["newOrderRespType"], "RESULT");
+        assert!(value["params"]["timestamp"].as_str().is_some());
+        assert!(value["params"]["signature"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn builds_binance_query_payload_without_value_intermediate() {
+        let msg = QueryRequestMsg {
+            req_type: QueryRequestType::BinanceWsUMQuery,
+            create_time: 0,
+            client_query_id: 7,
+            params: Bytes::from_static(b"symbol=BTCUSDT&origClientOrderId=42"),
+        };
+
+        let payload = build_query_payload(&msg, 100, &creds()).expect("payload");
+        let value: Value = serde_json::from_str(&payload).expect("json");
+
+        assert_eq!(value["id"], 100);
+        assert_eq!(value["method"], "order.status");
+        assert_eq!(value["params"]["apiKey"], "api-key");
+        assert_eq!(value["params"]["symbol"], "BTCUSDT");
+        assert_eq!(value["params"]["origClientOrderId"], "42");
+        assert!(value["params"]["timestamp"].as_str().is_some());
+        assert!(value["params"]["signature"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+    }
 }

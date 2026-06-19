@@ -161,6 +161,21 @@ impl VenueAdapter for BinanceAdapter {
         Ok(())
     }
 
+    fn parse_bbo_raw(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<bool> {
+        if self.venue != TradingVenue::BinanceFutures {
+            return Ok(false);
+        }
+        let Some(bbo) = binance_codec::parse_book_ticker_bbo_raw(raw) else {
+            return Ok(false);
+        };
+        emit(bbo_to_frame(bbo))?;
+        Ok(true)
+    }
+
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
         Ok(binance_codec::parse_trade_json(value)
             .map(trade_to_frame)

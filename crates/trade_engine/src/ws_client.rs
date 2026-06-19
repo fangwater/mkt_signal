@@ -3155,17 +3155,39 @@ impl TradeWsClient {
                 executed_qty
             );
         }
-        let body_payload = json!({
-            "transport": "ws",
-            "exchange": "binance",
-            "status": resp.status.unwrap_or(0),
-            "code": resp.error_code.unwrap_or(0),
-            "msg": resp.error_msg.as_deref().unwrap_or(""),
-            "result": resp.result.clone().unwrap_or(Value::Null),
-            "endpointId": self.id,
-            "localIp": self.local_ip.to_string(),
-        })
-        .to_string();
+        #[derive(serde::Serialize)]
+        struct BinanceWsBody<'a> {
+            transport: &'static str,
+            exchange: &'static str,
+            status: u16,
+            code: i32,
+            msg: &'a str,
+            result: Option<&'a Value>,
+            #[serde(rename = "endpointId")]
+            endpoint_id: usize,
+            #[serde(rename = "localIp")]
+            local_ip: String,
+        }
+        let body = BinanceWsBody {
+            transport: "ws",
+            exchange: "binance",
+            status: resp.status.unwrap_or(0),
+            code: resp.error_code.unwrap_or(0),
+            msg: resp.error_msg.as_deref().unwrap_or(""),
+            result: resp.result.as_ref(),
+            endpoint_id: self.id,
+            local_ip: self.local_ip.to_string(),
+        };
+        let body_payload = match serde_json::to_string(&body) {
+            Ok(payload) => payload,
+            Err(err) => {
+                warn!(
+                    "trade ws client id={} exchange=binance failed to serialize response body: {}",
+                    self.id, err
+                );
+                "{}".to_string()
+            }
+        };
         let _ = self.resp_sink.send(TradeExecOutcome {
             req_type,
             client_order_id,

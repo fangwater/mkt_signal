@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::convert::TryFrom;
 
 pub const SBE_TEMPLATE_TRADE: u16 = 10000;
 pub const SBE_TEMPLATE_BBO: u16 = 10001;
@@ -116,6 +117,90 @@ pub fn parse_bbo_json(value: &Value) -> Option<Bbo> {
         ask_price,
         ask_amount,
     })
+}
+
+pub fn parse_book_ticker_bbo_raw(raw: &[u8]) -> Option<Bbo> {
+    let envelope: BookTickerEnvelope<'_> = serde_json::from_slice(raw).ok()?;
+    let payload = match envelope {
+        BookTickerEnvelope::Combined { data } => data,
+        BookTickerEnvelope::Direct(data) => data,
+    };
+    if let Some(event) = payload.event {
+        if event != "bookTicker" {
+            return None;
+        }
+    }
+
+    let bid_price = payload.bid_price.parse::<f64>().ok()?;
+    let bid_amount = payload.bid_amount.parse::<f64>().ok()?;
+    let ask_price = payload.ask_price.parse::<f64>().ok()?;
+    let ask_amount = payload.ask_amount.parse::<f64>().ok()?;
+    if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
+        return None;
+    }
+
+    Some(Bbo {
+        symbol: payload.symbol.to_ascii_uppercase(),
+        timestamp_us: payload
+            .event_time_ms
+            .as_ref()
+            .and_then(I64Field::to_i64)
+            .map(ms_to_us)
+            .unwrap_or(0),
+        seq_id: payload.seq_id.to_i64()?,
+        bid_price,
+        bid_amount,
+        ask_price,
+        ask_amount,
+    })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum BookTickerEnvelope<'a> {
+    Combined {
+        #[serde(borrow)]
+        data: BookTickerPayload<'a>,
+    },
+    Direct(BookTickerPayload<'a>),
+}
+
+#[derive(serde::Deserialize)]
+struct BookTickerPayload<'a> {
+    #[serde(rename = "e", default)]
+    event: Option<&'a str>,
+    #[serde(rename = "s")]
+    symbol: &'a str,
+    #[serde(rename = "u", borrow)]
+    seq_id: I64Field<'a>,
+    #[serde(rename = "b")]
+    bid_price: &'a str,
+    #[serde(rename = "B")]
+    bid_amount: &'a str,
+    #[serde(rename = "a")]
+    ask_price: &'a str,
+    #[serde(rename = "A")]
+    ask_amount: &'a str,
+    #[serde(rename = "E", default, borrow)]
+    event_time_ms: Option<I64Field<'a>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum I64Field<'a> {
+    Signed(i64),
+    Unsigned(u64),
+    Str(&'a str),
+}
+
+impl I64Field<'_> {
+    fn to_i64(&self) -> Option<i64> {
+        match self {
+            Self::Signed(v) => Some(*v),
+            Self::Unsigned(v) => i64::try_from(*v).ok(),
+            Self::Str(v) => v.parse::<i64>().ok(),
+        }
+    }
 }
 
 pub fn parse_trade_json(value: &Value) -> Option<Trade> {
@@ -657,4 +742,44 @@ fn read_group_levels(
         pos += block_length;
     }
     Some((levels, pos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_book_ticker_bbo_raw;
+
+    #[test]
+    fn parses_combined_book_ticker_without_value_tree() {
+        let raw = br#"{
+            "stream":"btcusdt@bookTicker",
+            "data":{"e":"bookTicker","u":22345,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50","E":1700000000002}
+        }"#;
+
+        let bbo = parse_book_ticker_bbo_raw(raw).expect("book ticker");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 22345);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_002_000);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
+        assert!((bbo.ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_direct_book_ticker_without_value_tree() {
+        let raw = br#"{"e":"bookTicker","u":"22346","s":"ethusdt","b":"2500.0","B":"2","a":"2500.1","A":"3"}"#;
+
+        let bbo = parse_book_ticker_bbo_raw(raw).expect("book ticker");
+
+        assert_eq!(bbo.symbol, "ETHUSDT");
+        assert_eq!(bbo.seq_id, 22346);
+        assert_eq!(bbo.timestamp_us, 0);
+        assert!((bbo.bid_amount - 2.0).abs() < 1e-9);
+        assert!((bbo.ask_price - 2500.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_book_ticker_rejects_depth_shape() {
+        let raw = br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":[["25","1"]],"a":[["25.1","1"]]}}"#;
+        assert!(parse_book_ticker_bbo_raw(raw).is_none());
+    }
 }
