@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+ahash.workspace = true
 anyhow.workspace = true
 clap = { version = "4.0", features = ["derive"] }
 libc = "0.2"

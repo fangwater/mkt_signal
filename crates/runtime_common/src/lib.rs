@@ -1,5 +1,6 @@
 pub mod affinity;
 pub mod exchange;
+pub mod fast_hash;
 pub mod ipc_service_name;
 pub mod mkt_cfg;
 pub mod redis_client;

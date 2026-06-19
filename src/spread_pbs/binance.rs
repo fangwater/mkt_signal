@@ -7,9 +7,9 @@
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
+use runtime_common::fast_hash::{fast_hash_set, FastHashSet};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
@@ -35,14 +35,14 @@ pub(crate) fn binance_futures_standard_ws_url() -> &'static str {
 
 pub struct BinanceAdapter {
     venue: TradingVenue,
-    derivatives_symbols: RefCell<HashSet<String>>,
+    derivatives_symbols: RefCell<FastHashSet<String>>,
 }
 
 impl BinanceAdapter {
     pub fn new(venue: TradingVenue) -> Self {
         Self {
             venue,
-            derivatives_symbols: RefCell::new(HashSet::new()),
+            derivatives_symbols: RefCell::new(fast_hash_set()),
         }
     }
 }

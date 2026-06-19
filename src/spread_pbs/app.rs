@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
+use runtime_common::fast_hash::{fast_hash_map_with_capacity, FastHashMap};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::env;
 use std::rc::Rc;
 use tokio::sync::watch;
@@ -965,7 +966,7 @@ async fn restart_leg(
 }
 
 struct SymbolSeqState {
-    index_by_symbol: HashMap<String, usize>,
+    index_by_symbol: FastHashMap<String, usize>,
     bbo_seq: Vec<i64>,
     bbo_ts_us: Vec<i64>,
     latency_measurement_symbol: Vec<bool>,
@@ -979,7 +980,7 @@ struct SymbolSeqState {
 impl SymbolSeqState {
     fn with_symbols(symbols: &[String]) -> Self {
         let mut state = Self {
-            index_by_symbol: HashMap::with_capacity(symbols.len().max(2048)),
+            index_by_symbol: fast_hash_map_with_capacity(symbols.len().max(2048)),
             bbo_seq: Vec::with_capacity(symbols.len()),
             bbo_ts_us: Vec::with_capacity(symbols.len()),
             latency_measurement_symbol: Vec::with_capacity(symbols.len()),

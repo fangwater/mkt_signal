@@ -2,8 +2,8 @@ use anyhow::Result;
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use mkt_parsers::msg::mkt_msg::{Level, MktMsgType};
 use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
@@ -241,7 +241,7 @@ fn write_incremental_payload(
 pub struct SpreadPublisher {
     publisher: Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>,
     service_name: String,
-    bbo_prefix_by_symbol: RefCell<HashMap<String, BboPayloadPrefix>>,
+    bbo_prefix_by_symbol: RefCell<FastHashMap<String, BboPayloadPrefix>>,
 }
 
 /// `spread_pbs/<venue>/latency` 服务的 publisher。这个 service 不经过
@@ -303,7 +303,7 @@ impl SpreadPublisher {
         Ok(Self {
             publisher,
             service_name,
-            bbo_prefix_by_symbol: RefCell::new(HashMap::new()),
+            bbo_prefix_by_symbol: RefCell::new(fast_hash_map()),
         })
     }
 

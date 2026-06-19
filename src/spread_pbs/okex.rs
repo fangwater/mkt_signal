@@ -17,9 +17,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use mkt_parsers::okex as okex_codec;
+#[cfg(test)]
+use runtime_common::fast_hash::fast_hash_map;
+use runtime_common::fast_hash::{fast_hash_map_with_capacity, FastHashMap};
 use serde_json::Value;
 use sha2::Sha256;
-use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::spread_pbs::adapter::{
@@ -40,9 +42,9 @@ pub fn normalize_okex_symbol(symbol: &str) -> String {
 pub struct OkexAdapter {
     venue: TradingVenue,
     /// instId (e.g. `BTC-USDT-SWAP`) → instIdCode (e.g. 10459)
-    sym_to_code: HashMap<String, i64>,
+    sym_to_code: FastHashMap<String, i64>,
     /// instIdCode → 归一化后的 symbol（与 JSON 时代输出格式一致）
-    code_to_norm: HashMap<i64, String>,
+    code_to_norm: FastHashMap<i64, String>,
 }
 
 impl OkexAdapter {
@@ -61,8 +63,8 @@ impl OkexAdapter {
                 venue, inst_type
             )
         })?;
-        let mut sym_to_code = HashMap::with_capacity(raw.len());
-        let mut code_to_norm = HashMap::with_capacity(raw.len());
+        let mut sym_to_code = fast_hash_map_with_capacity(raw.len());
+        let mut code_to_norm = fast_hash_map_with_capacity(raw.len());
         for (inst_id, code) in raw {
             let norm = normalize_okex_symbol(&inst_id);
             sym_to_code.insert(inst_id, code);
@@ -85,7 +87,7 @@ impl OkexAdapter {
 /// REST：`GET /api/v5/public/instruments?instType={SWAP|SPOT}` → `{instId → instIdCode}`。
 /// 我们不在这里做 USDT/state=live 过滤——`cfg::wait_for_symbols` 已经过滤了；多余的
 /// inst 留在映射里不会被订阅（subscribe 只发 wait_for_symbols 返回的那批）。
-async fn fetch_inst_id_codes(inst_type: &str) -> Result<HashMap<String, i64>> {
+async fn fetch_inst_id_codes(inst_type: &str) -> Result<FastHashMap<String, i64>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -109,7 +111,7 @@ async fn fetch_inst_id_codes(inst_type: &str) -> Result<HashMap<String, i64>> {
         .get("data")
         .and_then(|v| v.as_array())
         .ok_or_else(|| anyhow!("OKEx instruments: missing data array"))?;
-    let mut out = HashMap::with_capacity(data.len());
+    let mut out = fast_hash_map_with_capacity(data.len());
     for row in data {
         let inst_id = match row.get("instId").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
@@ -154,7 +156,7 @@ fn build_sbe_handshake_headers() -> Result<Vec<(String, String)>> {
 /// 把 instId 列表切片成多条 OKX SBE subscribe 消息（240 args/帧软上限）。
 /// 用 `instIdCode` 订阅（SBE 端要求；用 `instId` 字符串会返 60018）。
 fn build_sbe_subscribe_messages(
-    sym_to_code: &HashMap<String, i64>,
+    sym_to_code: &FastHashMap<String, i64>,
     symbols: &[String],
     chunk_size: usize,
 ) -> Vec<Value> {
@@ -162,7 +164,7 @@ fn build_sbe_subscribe_messages(
 }
 
 fn build_sbe_incremental_subscribe_messages(
-    sym_to_code: &HashMap<String, i64>,
+    sym_to_code: &FastHashMap<String, i64>,
     symbols: &[String],
     chunk_size: usize,
 ) -> Vec<Value> {
@@ -170,7 +172,7 @@ fn build_sbe_incremental_subscribe_messages(
 }
 
 fn build_sbe_channel_subscribe_messages(
-    sym_to_code: &HashMap<String, i64>,
+    sym_to_code: &FastHashMap<String, i64>,
     symbols: &[String],
     chunk_size: usize,
     channels: &[&str],
@@ -216,7 +218,7 @@ fn build_sbe_channel_subscribe_messages(
 /// 解一帧 SBE 二进制 bbo-tbt (templateId=1000)。其他 template 直接返回 Ok。
 fn parse_sbe_bbo_tbt(
     raw: &[u8],
-    code_to_norm: &HashMap<i64, String>,
+    code_to_norm: &FastHashMap<i64, String>,
     emit: &mut dyn FnMut(BboFrame) -> Result<()>,
 ) -> Result<()> {
     let Some(bbo) = okex_codec::parse_sbe_bbo_tbt(raw)? else {
@@ -241,7 +243,7 @@ fn parse_sbe_bbo_tbt(
 
 fn parse_sbe_books(
     raw: &[u8],
-    code_to_norm: &HashMap<i64, String>,
+    code_to_norm: &FastHashMap<i64, String>,
 ) -> Result<Vec<IncrementalFrame>> {
     let mut out = Vec::new();
     for book in okex_codec::parse_sbe_books(raw)? {
@@ -253,7 +255,10 @@ fn parse_sbe_books(
 }
 
 /// 解一帧 SBE 二进制 trades (templateId=1005)。其他 template 返回空 Vec。
-fn parse_sbe_trades(raw: &[u8], code_to_norm: &HashMap<i64, String>) -> Result<Vec<TradeFrame>> {
+fn parse_sbe_trades(
+    raw: &[u8],
+    code_to_norm: &FastHashMap<i64, String>,
+) -> Result<Vec<TradeFrame>> {
     let mut out = Vec::new();
     for trade in okex_codec::parse_sbe_trades(raw)? {
         let Some(symbol) = code_to_norm.get(&trade.inst_id_code).cloned() else {
@@ -278,7 +283,7 @@ fn parse_sbe_trades(raw: &[u8], code_to_norm: &HashMap<i64, String>) -> Result<V
 
 fn sbe_book_to_incremental(
     book: okex_codec::SbeBook,
-    code_to_norm: &HashMap<i64, String>,
+    code_to_norm: &FastHashMap<i64, String>,
 ) -> Option<IncrementalFrame> {
     match book {
         okex_codec::SbeBook::Book {
@@ -427,10 +432,10 @@ mod tests {
     };
 
     fn make_adapter() -> OkexAdapter {
-        let mut sym_to_code = HashMap::new();
+        let mut sym_to_code = fast_hash_map();
         sym_to_code.insert("BTC-USDT-SWAP".to_string(), 10459);
         sym_to_code.insert("ETH-USDT-SWAP".to_string(), 10461);
-        let mut code_to_norm = HashMap::new();
+        let mut code_to_norm = fast_hash_map();
         code_to_norm.insert(10459i64, "BTCUSDT".to_string());
         code_to_norm.insert(10461i64, "ETHUSDT".to_string());
         OkexAdapter {
@@ -601,7 +606,7 @@ mod tests {
 
     #[test]
     fn subscribe_uses_instidcode_and_chunks() {
-        let mut sym_to_code = HashMap::new();
+        let mut sym_to_code = fast_hash_map();
         for i in 0..500 {
             sym_to_code.insert(format!("INST{}-USDT-SWAP", i), i as i64);
         }
@@ -622,7 +627,7 @@ mod tests {
 
     #[test]
     fn incremental_subscribe_uses_books_l2_tbt() {
-        let mut sym_to_code = HashMap::new();
+        let mut sym_to_code = fast_hash_map();
         sym_to_code.insert("BTC-USDT-SWAP".to_string(), 10459);
         let symbols = vec!["BTC-USDT-SWAP".to_string()];
         let msgs = build_sbe_incremental_subscribe_messages(&sym_to_code, &symbols, 240);
@@ -634,7 +639,7 @@ mod tests {
 
     #[test]
     fn subscribe_skips_unknown_symbols() {
-        let mut sym_to_code = HashMap::new();
+        let mut sym_to_code = fast_hash_map();
         sym_to_code.insert("BTC-USDT-SWAP".to_string(), 10459);
         let symbols = vec!["BTC-USDT-SWAP".to_string(), "MISSING-USDT-SWAP".to_string()];
         let msgs = build_sbe_subscribe_messages(&sym_to_code, &symbols, 240);

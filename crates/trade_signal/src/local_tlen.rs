@@ -3,8 +3,10 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+#[cfg(test)]
+use runtime_common::fast_hash::fast_hash_set;
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set_from_iter, FastHashMap, FastHashSet};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use depth_pub_common::query_msg::{price_to_tick_index, TLEN_QUERY_AMOUNT_EMPTY};
@@ -46,8 +48,8 @@ struct BboEntry {
 struct SymbolTlenCache {
     price_tick: Option<f64>,
     amount_scale: f64,
-    bids: HashMap<i64, LevelEntry>,
-    asks: HashMap<i64, LevelEntry>,
+    bids: FastHashMap<i64, LevelEntry>,
+    asks: FastHashMap<i64, LevelEntry>,
     bbo: BboEntry,
 }
 
@@ -55,8 +57,8 @@ struct SymbolTlenCache {
 struct LocalTlenStore {
     venue: TradingVenue,
     table: VenueMinQtyTable,
-    online_symbols: HashSet<String>,
-    symbols: HashMap<String, SymbolTlenCache>,
+    online_symbols: FastHashSet<String>,
+    symbols: FastHashMap<String, SymbolTlenCache>,
     last_online_refresh: Instant,
     inc_updates: u64,
     bbo_updates: u64,
@@ -73,7 +75,7 @@ impl LocalTlenStore {
             venue,
             table,
             online_symbols,
-            symbols: HashMap::new(),
+            symbols: fast_hash_map(),
             last_online_refresh: Instant::now(),
             inc_updates: 0,
             bbo_updates: 0,
@@ -131,8 +133,8 @@ impl LocalTlenStore {
             .or_insert_with(|| SymbolTlenCache {
                 price_tick,
                 amount_scale,
-                bids: HashMap::new(),
-                asks: HashMap::new(),
+                bids: fast_hash_map(),
+                asks: fast_hash_map(),
                 bbo: BboEntry::default(),
             })
     }
@@ -546,7 +548,7 @@ fn read_f64(payload: &[u8], offset: &mut usize) -> Option<f64> {
 }
 
 fn apply_level_update(
-    levels: &mut HashMap<i64, LevelEntry>,
+    levels: &mut FastHashMap<i64, LevelEntry>,
     tick_index: i64,
     amount: f64,
     update_id: i64,
@@ -582,19 +584,20 @@ fn query_bbo_amount(bbo: BboEntry, tick_index: i64) -> Option<f64> {
     None
 }
 
-fn query_level_amount(levels: &HashMap<i64, LevelEntry>, tick_index: i64) -> Option<f64> {
+fn query_level_amount(levels: &FastHashMap<i64, LevelEntry>, tick_index: i64) -> Option<f64> {
     levels
         .get(&tick_index)
         .map(|entry| entry.amount)
         .filter(|amount| amount.is_finite() && *amount > 0.0)
 }
 
-fn load_online_symbol_set() -> HashSet<String> {
-    SymbolList::instance()
-        .get_online_symbols()
-        .into_iter()
-        .map(|symbol| normalize_symbol_key(&symbol))
-        .collect()
+fn load_online_symbol_set() -> FastHashSet<String> {
+    fast_hash_set_from_iter(
+        SymbolList::instance()
+            .get_online_symbols()
+            .into_iter()
+            .map(|symbol| normalize_symbol_key(&symbol)),
+    )
 }
 
 fn normalize_symbol_key(symbol: &str) -> String {
@@ -639,8 +642,8 @@ mod tests {
         LocalTlenStore {
             venue,
             table: VenueMinQtyTable::new(venue),
-            online_symbols: HashSet::new(),
-            symbols: HashMap::new(),
+            online_symbols: fast_hash_set(),
+            symbols: fast_hash_map(),
             last_online_refresh: Instant::now(),
             inc_updates: 0,
             bbo_updates: 0,
@@ -653,7 +656,7 @@ mod tests {
 
     #[test]
     fn newer_zero_update_tombstones_level() {
-        let mut levels = HashMap::new();
+        let mut levels = fast_hash_map();
         apply_level_update(&mut levels, 100, 2.0, 10);
         apply_level_update(&mut levels, 100, 0.0, 11);
         apply_level_update(&mut levels, 100, 3.0, 9);
@@ -696,19 +699,21 @@ mod tests {
     fn cancel_query_returns_cached_local_values() {
         LOCAL_TLEN.with(|state| {
             let mut store = test_store(TradingVenue::BinanceMargin);
+            let mut bids = fast_hash_map();
+            bids.insert(
+                100,
+                LevelEntry {
+                    amount: 2.0,
+                    update_id: 1,
+                },
+            );
             store.symbols.insert(
                 normalize_symbol_key("BTCUSDT"),
                 SymbolTlenCache {
                     price_tick: Some(0.01),
                     amount_scale: 1.0,
-                    bids: HashMap::from([(
-                        100,
-                        LevelEntry {
-                            amount: 2.0,
-                            update_id: 1,
-                        },
-                    )]),
-                    asks: HashMap::new(),
+                    bids,
+                    asks: fast_hash_map(),
                     bbo: BboEntry::default(),
                 },
             );

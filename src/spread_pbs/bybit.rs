@@ -12,9 +12,9 @@
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::bybit as bybit_codec;
+use runtime_common::fast_hash::{fast_hash_map_with_capacity, FastHashMap};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::spread_pbs::adapter::{
@@ -56,14 +56,14 @@ impl BybitAdapter {
 }
 
 struct BybitBboCache {
-    index_by_symbol: HashMap<String, usize>,
+    index_by_symbol: FastHashMap<String, usize>,
     entries: Vec<BboCacheEntry>,
 }
 
 impl BybitBboCache {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            index_by_symbol: HashMap::with_capacity(capacity),
+            index_by_symbol: fast_hash_map_with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
         }
     }
