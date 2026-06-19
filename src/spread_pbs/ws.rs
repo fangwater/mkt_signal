@@ -26,7 +26,9 @@ use url::Url;
 
 use crate::spread_pbs::adapter::KeepaliveSpec;
 use runtime_common::okex_notice::parse_okex_notice;
-use runtime_common::socket_tuning::{env_u32_first, tune_tcp_stream, TcpSocketTuning};
+use runtime_common::socket_tuning::{
+    tune_tcp_stream, TcpSocketTuning, MARKET_DATA_WS_BUSY_POLL_US,
+};
 use runtime_common::time_util::get_timestamp_us;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -34,8 +36,6 @@ type WsSink = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
 
 const RECONNECT_BACKOFF_SECS: u64 = 3;
-const SPREAD_PBS_BUSY_POLL_ENV: &str = "SPREAD_PBS_WS_SO_BUSY_POLL_US";
-const GLOBAL_BUSY_POLL_ENV: &str = "MKT_SIGNAL_WS_SO_BUSY_POLL_US";
 
 /// 帧处理回调：`(recv_us, payload_bytes)`。`recv_us` 是 `read.next()` 命中那一刻
 /// 立即抓的本地微秒时间戳，下游可用作"纯网络延迟"统计的端点。
@@ -153,7 +153,7 @@ async fn open_ws(url: &str, local_ip: &str, headers: &[(String, String)]) -> Res
         &tcp,
         "spread_pbs ws",
         TcpSocketTuning {
-            busy_poll_us: env_u32_first(&[SPREAD_PBS_BUSY_POLL_ENV, GLOBAL_BUSY_POLL_ENV]),
+            busy_poll_us: Some(MARKET_DATA_WS_BUSY_POLL_US),
             ..TcpSocketTuning::default()
         },
     );

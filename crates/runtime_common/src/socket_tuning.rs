@@ -1,6 +1,9 @@
 use log::{debug, warn};
 use tokio::net::TcpStream;
 
+pub const DEFAULT_WS_BUSY_POLL_US: u32 = 8;
+pub const MARKET_DATA_WS_BUSY_POLL_US: u32 = 25;
+
 #[derive(Clone, Copy, Debug)]
 pub struct TcpSocketTuning {
     pub nodelay: bool,
@@ -20,28 +23,28 @@ impl Default for TcpSocketTuning {
     }
 }
 
-pub fn env_u32_first(env_names: &[&str]) -> Option<u32> {
-    for name in env_names {
-        match std::env::var(name) {
-            Ok(raw) => {
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                match trimmed.parse::<u32>() {
-                    Ok(0) => return None,
-                    Ok(value) => return Some(value),
-                    Err(err) => warn!(
-                        "invalid {}={} for TCP socket tuning: {}",
-                        name, trimmed, err
-                    ),
-                }
-            }
-            Err(std::env::VarError::NotPresent) => {}
-            Err(err) => warn!("failed to read {} for TCP socket tuning: {}", name, err),
+pub fn ipc_fast_poll_enabled() -> bool {
+    for name in ["enable_ipc_fast_poll", "ENABLE_IPC_FAST_POLL"] {
+        let Ok(raw) = std::env::var(name) else {
+            continue;
+        };
+        match parse_bool_env(&raw) {
+            Some(enabled) => return enabled,
+            None => warn!(
+                "invalid {}='{}', treating IPC-gated socket busy poll as disabled",
+                name, raw
+            ),
         }
     }
-    None
+    false
+}
+
+fn parse_bool_env(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 pub fn tune_tcp_stream(stream: &TcpStream, label: &str, tuning: TcpSocketTuning) {

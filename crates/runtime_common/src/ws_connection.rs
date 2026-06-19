@@ -13,7 +13,9 @@ use tokio::{
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 
-use crate::socket_tuning::{env_u32_first, tune_tcp_stream, TcpSocketTuning};
+use crate::socket_tuning::{
+    ipc_fast_poll_enabled, tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US,
+};
 
 use tokio_tungstenite::{
     client_async, connect_async,
@@ -26,12 +28,9 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-const MKT_CONNECTION_BUSY_POLL_ENV: &str = "MKT_CONNECTION_WS_SO_BUSY_POLL_US";
-const GLOBAL_BUSY_POLL_ENV: &str = "MKT_SIGNAL_WS_SO_BUSY_POLL_US";
-
 fn mkt_connection_tcp_tuning() -> TcpSocketTuning {
     TcpSocketTuning {
-        busy_poll_us: env_u32_first(&[MKT_CONNECTION_BUSY_POLL_ENV, GLOBAL_BUSY_POLL_ENV]),
+        busy_poll_us: ipc_fast_poll_enabled().then_some(DEFAULT_WS_BUSY_POLL_US),
         ..TcpSocketTuning::default()
     }
 }

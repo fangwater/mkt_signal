@@ -43,7 +43,7 @@ use rolling_common::latency_snapshot::{
     METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
 };
 use runtime_common::exchange::Exchange;
-use runtime_common::socket_tuning::{env_u32_first, tune_tcp_stream, TcpSocketTuning};
+use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -208,19 +208,12 @@ fn format_ws_error(err: &WsError) -> String {
     }
 }
 
-const TRADE_ENGINE_BUSY_POLL_ENV: &str = "TRADE_ENGINE_WS_SO_BUSY_POLL_US";
-const TRADE_ENGINE_USER_TIMEOUT_ENV: &str = "TRADE_ENGINE_WS_TCP_USER_TIMEOUT_MS";
-const GLOBAL_BUSY_POLL_ENV: &str = "MKT_SIGNAL_WS_SO_BUSY_POLL_US";
-const GLOBAL_USER_TIMEOUT_ENV: &str = "MKT_SIGNAL_WS_TCP_USER_TIMEOUT_MS";
 const DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS: u32 = 30_000;
 
 fn trade_engine_tcp_tuning() -> TcpSocketTuning {
     TcpSocketTuning {
-        user_timeout_ms: Some(
-            env_u32_first(&[TRADE_ENGINE_USER_TIMEOUT_ENV, GLOBAL_USER_TIMEOUT_ENV])
-                .unwrap_or(DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS),
-        ),
-        busy_poll_us: env_u32_first(&[TRADE_ENGINE_BUSY_POLL_ENV, GLOBAL_BUSY_POLL_ENV]),
+        user_timeout_ms: Some(DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS),
+        busy_poll_us: Some(DEFAULT_WS_BUSY_POLL_US),
         ..TcpSocketTuning::default()
     }
 }
