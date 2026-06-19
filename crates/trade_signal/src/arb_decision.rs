@@ -2482,27 +2482,15 @@ fn drive_funding_cancel_candidate_query(
             .iter()
             .map(|item| item.price_qv.get_count())
             .collect();
-        let tlens = match decision
-            .runtime
-            .open_depth_query_client
-            .query_batch_tick_indices(&open_symbol, &tick_indices)
-        {
-            Ok(values) => normalize_tlens_for_compare(
-                FUNDING_ARB_SHELL_NAME,
-                &decision.runtime.open_min_qty_table,
-                venues.0,
-                &open_symbol,
-                values,
-            ),
-            Err(err) => {
-                log::warn!(
-                    "{FUNDING_ARB_SHELL_NAME}: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
-                    open_symbol,
-                    tick_indices.len(),
-                    err
-                );
-                continue;
-            }
+        let Some(tlens) = query_cancel_tlens(
+            FUNDING_ARB_SHELL_NAME,
+            &decision.runtime.open_depth_query_client,
+            &decision.runtime.open_min_qty_table,
+            venues.0,
+            &open_symbol,
+            &tick_indices,
+        ) else {
+            continue;
         };
         let preview = super::arb_tlen_cancel::build_group_eval_preview(&group, threshold, &tlens);
         let hedge_symbol =
@@ -2584,6 +2572,52 @@ fn drive_funding_cancel_candidate_query(
     let _ = ArbDecision::with_state_mut(|arb| arb.maybe_log_tlen_cancel_summary());
 }
 
+fn query_cancel_tlens(
+    source: &str,
+    depth_query_client: &depth_pub_common::query_client::DepthQueryClient,
+    table: &VenueMinQtyTable,
+    venue: TradingVenue,
+    symbol: &str,
+    tick_indices: &[i64],
+) -> Option<Vec<f64>> {
+    match super::local_tlen::query_batch_local_only_for_cancel(
+        source,
+        depth_query_client.venue_slug(),
+        symbol,
+        tick_indices,
+    ) {
+        Some(Some(values)) => {
+            return Some(normalize_tlens_for_compare(
+                source, table, venue, symbol, values,
+            ));
+        }
+        Some(None) => {
+            log::debug!(
+                "{source}: ArbCancel tlen local cache unavailable symbol={} levels={}, skip",
+                symbol,
+                tick_indices.len()
+            );
+            return None;
+        }
+        None => {}
+    }
+
+    match depth_query_client.query_batch_tick_indices(symbol, tick_indices) {
+        Ok(values) => Some(normalize_tlens_for_compare(
+            source, table, venue, symbol, values,
+        )),
+        Err(err) => {
+            log::warn!(
+                "{source}: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
+                symbol,
+                tick_indices.len(),
+                err
+            );
+            None
+        }
+    }
+}
+
 fn drive_spread_arb_cancel_candidate_query(
     decision: &mut SpreadArbShell,
     query: ArbCancelCandidateQueryMsg,
@@ -2616,27 +2650,15 @@ fn drive_spread_arb_cancel_candidate_query(
             .iter()
             .map(|item| item.price_qv.get_count())
             .collect();
-        let tlens = match decision
-            .runtime
-            .open_depth_query_client
-            .query_batch_tick_indices(&open_symbol, &tick_indices)
-        {
-            Ok(values) => normalize_tlens_for_compare(
-                SPREAD_ARB_SHELL_NAME,
-                &decision.runtime.open_min_qty_table,
-                venues.0,
-                &open_symbol,
-                values,
-            ),
-            Err(err) => {
-                log::warn!(
-                    "{SPREAD_ARB_SHELL_NAME}: ArbCancel tlen batch query failed symbol={} levels={} err={:#}",
-                    open_symbol,
-                    tick_indices.len(),
-                    err
-                );
-                continue;
-            }
+        let Some(tlens) = query_cancel_tlens(
+            SPREAD_ARB_SHELL_NAME,
+            &decision.runtime.open_depth_query_client,
+            &decision.runtime.open_min_qty_table,
+            venues.0,
+            &open_symbol,
+            &tick_indices,
+        ) else {
+            continue;
         };
         let preview = super::arb_tlen_cancel::build_group_eval_preview(&group, threshold, &tlens);
         let hedge_symbol =

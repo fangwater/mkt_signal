@@ -351,6 +351,40 @@ pub fn query_batch_or_remote(
     })
 }
 
+pub fn query_batch_local_only_for_cancel(
+    source: &str,
+    venue_slug: &str,
+    symbol: &str,
+    tick_indices: &[i64],
+) -> Option<Option<Vec<f64>>> {
+    if tick_indices.is_empty() {
+        return Some(Some(Vec::new()));
+    }
+    let symbol_key = normalize_symbol_key(symbol);
+    LOCAL_TLEN.with(|state| {
+        let mut state = state.borrow_mut();
+        match &mut *state {
+            LocalTlenRuntime::Local(store) => {
+                if store.venue.data_pub_slug() != venue_slug {
+                    warn!(
+                        "{source}: local_tlen mode fixed to venue={} but requested venue={}; skipping tlen cancel query",
+                        store.venue.data_pub_slug(),
+                        venue_slug
+                    );
+                    return Some(None);
+                }
+                if !store.symbols.contains_key(&symbol_key) {
+                    store.query_count = store.query_count.saturating_add(1);
+                    store.query_missing_count = store.query_missing_count.saturating_add(1);
+                    return Some(None);
+                }
+                Some(Some(store.query_batch(&symbol_key, tick_indices)))
+            }
+            LocalTlenRuntime::Remote | LocalTlenRuntime::Uninitialized => None,
+        }
+    })
+}
+
 fn spawn_incremental_listener(venue: TradingVenue) {
     tokio::task::spawn_local(async move {
         let result: Result<()> = async move {
@@ -601,6 +635,22 @@ fn amount_scale_for_symbol(table: &VenueMinQtyTable, venue: TradingVenue, symbol
 mod tests {
     use super::*;
 
+    fn test_store(venue: TradingVenue) -> LocalTlenStore {
+        LocalTlenStore {
+            venue,
+            table: VenueMinQtyTable::new(venue),
+            online_symbols: HashSet::new(),
+            symbols: HashMap::new(),
+            last_online_refresh: Instant::now(),
+            inc_updates: 0,
+            bbo_updates: 0,
+            query_count: 0,
+            query_missing_count: 0,
+            query_bbo_hit_count: 0,
+            last_stats_log: Instant::now(),
+        }
+    }
+
     #[test]
     fn newer_zero_update_tombstones_level() {
         let mut levels = HashMap::new();
@@ -624,5 +674,54 @@ mod tests {
         assert_eq!(query_bbo_amount(bbo, 10), Some(1.5));
         assert_eq!(query_bbo_amount(bbo, 11), Some(2.5));
         assert_eq!(query_bbo_amount(bbo, 12), None);
+    }
+
+    #[test]
+    fn cancel_query_skips_when_local_cache_missing() {
+        LOCAL_TLEN.with(|state| {
+            *state.borrow_mut() = LocalTlenRuntime::Local(test_store(TradingVenue::BinanceMargin));
+        });
+
+        assert_eq!(
+            query_batch_local_only_for_cancel("test", "binance-margin", "BTCUSDT", &[100, 101],),
+            Some(None)
+        );
+
+        LOCAL_TLEN.with(|state| {
+            *state.borrow_mut() = LocalTlenRuntime::Uninitialized;
+        });
+    }
+
+    #[test]
+    fn cancel_query_returns_cached_local_values() {
+        LOCAL_TLEN.with(|state| {
+            let mut store = test_store(TradingVenue::BinanceMargin);
+            store.symbols.insert(
+                normalize_symbol_key("BTCUSDT"),
+                SymbolTlenCache {
+                    price_tick: Some(0.01),
+                    amount_scale: 1.0,
+                    bids: HashMap::from([(
+                        100,
+                        LevelEntry {
+                            amount: 2.0,
+                            update_id: 1,
+                        },
+                    )]),
+                    asks: HashMap::new(),
+                    bbo: BboEntry::default(),
+                },
+            );
+            *state.borrow_mut() = LocalTlenRuntime::Local(store);
+        });
+
+        assert_eq!(
+            query_batch_local_only_for_cancel("test", "binance-margin", "BTCUSDT", &[100, 101],),
+            Some(Some(vec![2.0, 0.0]))
+        );
+
+        LOCAL_TLEN.with(|state| {
+            *state.borrow_mut() = LocalTlenRuntime::Uninitialized;
+        });
     }
 }
