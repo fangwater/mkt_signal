@@ -2,7 +2,6 @@ use log::{debug, warn};
 use tokio::net::TcpStream;
 
 pub const DEFAULT_WS_BUSY_POLL_US: u32 = 8;
-pub const MARKET_DATA_WS_BUSY_POLL_US: u32 = 25;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TcpSocketTuning {

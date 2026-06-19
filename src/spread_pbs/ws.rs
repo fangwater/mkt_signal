@@ -26,9 +26,7 @@ use url::Url;
 
 use crate::spread_pbs::adapter::KeepaliveSpec;
 use runtime_common::okex_notice::parse_okex_notice;
-use runtime_common::socket_tuning::{
-    tune_tcp_stream, TcpSocketTuning, MARKET_DATA_WS_BUSY_POLL_US,
-};
+use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
 use runtime_common::time_util::get_timestamp_us;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -153,7 +151,7 @@ async fn open_ws(url: &str, local_ip: &str, headers: &[(String, String)]) -> Res
         &tcp,
         "spread_pbs ws",
         TcpSocketTuning {
-            busy_poll_us: Some(MARKET_DATA_WS_BUSY_POLL_US),
+            busy_poll_us: Some(DEFAULT_WS_BUSY_POLL_US),
             ..TcpSocketTuning::default()
         },
     );
