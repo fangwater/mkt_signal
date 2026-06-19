@@ -1,0 +1,4 @@
+interface:
+  display_name: "Binance Intra Account Align"
+  short_description: "Align Binance intra leverage and spot/UM ratio"
+  default_prompt: "Use $binance-intra-account-align to check Binance intra online-symbol leverage and align spot vs UM futures account allocation."
