@@ -43,6 +43,7 @@ use rolling_common::latency_snapshot::{
     METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
 };
 use runtime_common::exchange::Exchange;
+use runtime_common::socket_tuning::{env_u32_first, tune_tcp_stream, TcpSocketTuning};
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -207,32 +208,20 @@ fn format_ws_error(err: &WsError) -> String {
     }
 }
 
-fn tune_tcp_socket(stream: &TcpStream) {
-    if let Err(err) = stream.set_nodelay(true) {
-        warn!("trade ws TCP_NODELAY failed: {}", err);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        let fd = stream.as_raw_fd();
-        let user_timeout_ms: libc::c_int = 30_000;
-        let quickack: libc::c_int = 1;
-        unsafe {
-            libc::setsockopt(
-                fd,
-                libc::IPPROTO_TCP,
-                libc::TCP_USER_TIMEOUT,
-                &user_timeout_ms as *const _ as *const libc::c_void,
-                std::mem::size_of_val(&user_timeout_ms) as libc::socklen_t,
-            );
-            libc::setsockopt(
-                fd,
-                libc::IPPROTO_TCP,
-                libc::TCP_QUICKACK,
-                &quickack as *const _ as *const libc::c_void,
-                std::mem::size_of_val(&quickack) as libc::socklen_t,
-            );
-        }
+const TRADE_ENGINE_BUSY_POLL_ENV: &str = "TRADE_ENGINE_WS_SO_BUSY_POLL_US";
+const TRADE_ENGINE_USER_TIMEOUT_ENV: &str = "TRADE_ENGINE_WS_TCP_USER_TIMEOUT_MS";
+const GLOBAL_BUSY_POLL_ENV: &str = "MKT_SIGNAL_WS_SO_BUSY_POLL_US";
+const GLOBAL_USER_TIMEOUT_ENV: &str = "MKT_SIGNAL_WS_TCP_USER_TIMEOUT_MS";
+const DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS: u32 = 30_000;
+
+fn trade_engine_tcp_tuning() -> TcpSocketTuning {
+    TcpSocketTuning {
+        user_timeout_ms: Some(
+            env_u32_first(&[TRADE_ENGINE_USER_TIMEOUT_ENV, GLOBAL_USER_TIMEOUT_ENV])
+                .unwrap_or(DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS),
+        ),
+        busy_poll_us: env_u32_first(&[TRADE_ENGINE_BUSY_POLL_ENV, GLOBAL_BUSY_POLL_ENV]),
+        ..TcpSocketTuning::default()
     }
 }
 
@@ -1297,7 +1286,7 @@ impl TradeWsClient {
             .await
             .map_err(|_| anyhow!("connect timeout {}", url_str))?
             .with_context(|| format!("connect {}", target))?;
-        tune_tcp_socket(&stream);
+        tune_tcp_stream(&stream, "trade_engine ws", trade_engine_tcp_tuning());
 
         let mut request = url.clone().into_client_request()?;
         for (name, value) in headers {

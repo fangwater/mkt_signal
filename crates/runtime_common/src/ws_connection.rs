@@ -13,6 +13,8 @@ use tokio::{
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 
+use crate::socket_tuning::{env_u32_first, tune_tcp_stream, TcpSocketTuning};
+
 use tokio_tungstenite::{
     client_async, connect_async,
     tungstenite::{
@@ -23,6 +25,16 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
+
+const MKT_CONNECTION_BUSY_POLL_ENV: &str = "MKT_CONNECTION_WS_SO_BUSY_POLL_US";
+const GLOBAL_BUSY_POLL_ENV: &str = "MKT_SIGNAL_WS_SO_BUSY_POLL_US";
+
+fn mkt_connection_tcp_tuning() -> TcpSocketTuning {
+    TcpSocketTuning {
+        busy_poll_us: env_u32_first(&[MKT_CONNECTION_BUSY_POLL_ENV, GLOBAL_BUSY_POLL_ENV]),
+        ..TcpSocketTuning::default()
+    }
+}
 
 pub struct WsConnectionResult {
     pub ws_stream: Arc<Mutex<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
@@ -177,6 +189,7 @@ impl WsConnector {
             .connect(target)
             .await
             .with_context(|| format!("Failed to connect to {}", target))?;
+        tune_tcp_stream(&stream, "mkt_connection ws", mkt_connection_tcp_tuning());
 
         // 根据 scheme 选择握手：ws 使用 Plain；wss 先做 TLS，再包裹为 NativeTls
         let (mut ws_stream, _resp) = if scheme.eq_ignore_ascii_case("wss") {
@@ -270,6 +283,7 @@ impl WsConnector {
             .connect(target)
             .await
             .with_context(|| format!("Failed to connect to {}", target))?;
+        tune_tcp_stream(&stream, "mkt_connection ws", mkt_connection_tcp_tuning());
 
         let mut request = ws_url.clone().into_client_request()?;
         apply_headers(request.headers_mut(), headers)?;
@@ -493,6 +507,7 @@ impl WsConnector {
             .connect(target)
             .await
             .with_context(|| format!("Failed to connect to {}", target))?;
+        tune_tcp_stream(&stream, "mkt_connection ws", mkt_connection_tcp_tuning());
 
         let mut request = ws_url.clone().into_client_request()?;
         apply_headers(request.headers_mut(), headers)?;
