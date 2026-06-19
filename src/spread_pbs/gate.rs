@@ -99,6 +99,21 @@ impl VenueAdapter for GateAdapter {
         Ok(())
     }
 
+    fn parse_bbo_raw(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<bool> {
+        if self.venue != TradingVenue::GateMargin {
+            return Ok(false);
+        }
+        let Some(bbo) = gate_codec::parse_spot_book_ticker_bbo_raw(raw) else {
+            return Ok(false);
+        };
+        emit(bbo_to_frame(bbo))?;
+        Ok(true)
+    }
+
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
         Ok(gate_codec::parse_trades_json(value)
             .into_iter()
@@ -295,6 +310,52 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].symbol, "ETHUSDT");
         assert_eq!(frames[0].seq_id, 111);
+    }
+
+    #[test]
+    fn parses_spot_book_ticker_raw_fast_path() {
+        let raw = br#"{
+            "time":1700000000,"time_ms":1700000000123,
+            "channel":"spot.book_ticker","event":"update",
+            "result":{"t":1700000000123,"u":111,"s":"ETH_USDT",
+                      "b":"3000","B":"0.5","a":"3001","A":"1.0"}
+        }"#;
+        let a = GateAdapter::new(TradingVenue::GateMargin);
+        let mut frames = Vec::new();
+        let handled = a
+            .parse_bbo_raw(raw, &mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(handled);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].symbol, "ETHUSDT");
+        assert_eq!(frames[0].seq_id, 111);
+        assert_eq!(frames[0].ts_us, 1_700_000_000_123_000);
+        assert!((frames[0].bid_amount - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn raw_fast_path_does_not_handle_futures_gate_adapter() {
+        let raw = br#"{
+            "time":1700000000,"time_ms":1700000000123,
+            "channel":"futures.book_ticker","event":"update",
+            "result":{"t":1700000000123,"u":111,"s":"ETH_USDT",
+                      "b":"3000","B":"0.5","a":"3001","A":"1.0"}
+        }"#;
+        let a = GateAdapter::new(TradingVenue::GateFutures);
+        let mut frames = Vec::new();
+        let handled = a
+            .parse_bbo_raw(raw, &mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(!handled);
+        assert!(frames.is_empty());
     }
 
     #[test]

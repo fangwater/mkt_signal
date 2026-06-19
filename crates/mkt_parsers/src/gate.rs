@@ -128,6 +128,137 @@ pub fn parse_bbo_json(value: &Value) -> Option<Bbo> {
     })
 }
 
+pub fn parse_spot_book_ticker_bbo_raw(raw: &[u8]) -> Option<Bbo> {
+    let envelope: SpotBookTickerEnvelope<'_> = serde_json::from_slice(raw).ok()?;
+    if envelope.channel != "spot.book_ticker" || envelope.event != "update" {
+        return None;
+    }
+
+    let bid_price = envelope.result.bid_price.to_f64()?;
+    let ask_price = envelope.result.ask_price.to_f64()?;
+    if bid_price <= 0.0 || ask_price <= 0.0 {
+        return None;
+    }
+
+    let timestamp_us = envelope
+        .result
+        .timestamp_ms
+        .as_ref()
+        .and_then(JsonI64Field::to_i64)
+        .or_else(|| {
+            envelope
+                .result
+                .time_ms
+                .as_ref()
+                .and_then(JsonI64Field::to_i64)
+        })
+        .or_else(|| envelope.time_ms.as_ref().and_then(JsonI64Field::to_i64))
+        .map(normalize_ts_to_us)
+        .or_else(|| {
+            envelope
+                .time
+                .as_ref()
+                .and_then(JsonI64Field::to_i64)
+                .map(|s| s.saturating_mul(1_000_000))
+        })
+        .unwrap_or(0);
+
+    Some(Bbo {
+        symbol: envelope.result.symbol.replace('_', "").to_ascii_uppercase(),
+        timestamp_us,
+        seq_id: envelope.result.seq_id.to_i64()?,
+        bid_price,
+        bid_amount: envelope
+            .result
+            .bid_amount
+            .as_ref()
+            .and_then(JsonF64Field::to_f64)
+            .unwrap_or(0.0),
+        ask_price,
+        ask_amount: envelope
+            .result
+            .ask_amount
+            .as_ref()
+            .and_then(JsonF64Field::to_f64)
+            .unwrap_or(0.0),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct SpotBookTickerEnvelope<'a> {
+    channel: &'a str,
+    event: &'a str,
+    #[serde(borrow)]
+    result: SpotBookTickerPayload<'a>,
+    #[serde(default, borrow)]
+    time_ms: Option<JsonI64Field<'a>>,
+    #[serde(default, borrow)]
+    time: Option<JsonI64Field<'a>>,
+}
+
+#[derive(serde::Deserialize)]
+struct SpotBookTickerPayload<'a> {
+    #[serde(rename = "s")]
+    symbol: &'a str,
+    #[serde(rename = "u", borrow)]
+    seq_id: JsonI64Field<'a>,
+    #[serde(rename = "t", default, borrow)]
+    timestamp_ms: Option<JsonI64Field<'a>>,
+    #[serde(default, borrow)]
+    time_ms: Option<JsonI64Field<'a>>,
+    #[serde(rename = "b", borrow)]
+    bid_price: JsonF64Field<'a>,
+    #[serde(rename = "B", default, borrow)]
+    bid_amount: Option<JsonF64Field<'a>>,
+    #[serde(rename = "a", borrow)]
+    ask_price: JsonF64Field<'a>,
+    #[serde(rename = "A", default, borrow)]
+    ask_amount: Option<JsonF64Field<'a>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum JsonI64Field<'a> {
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+    Str(&'a str),
+}
+
+impl JsonI64Field<'_> {
+    fn to_i64(&self) -> Option<i64> {
+        match self {
+            Self::Signed(v) => Some(*v),
+            Self::Unsigned(v) => i64::try_from(*v).ok(),
+            Self::Float(v) => Some(*v as i64),
+            Self::Str(v) => v
+                .parse::<i64>()
+                .ok()
+                .or_else(|| v.parse::<f64>().ok().map(|f| f as i64)),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum JsonF64Field<'a> {
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+    Str(&'a str),
+}
+
+impl JsonF64Field<'_> {
+    fn to_f64(&self) -> Option<f64> {
+        match self {
+            Self::Signed(v) => Some(*v as f64),
+            Self::Unsigned(v) => Some(*v as f64),
+            Self::Float(v) => Some(*v),
+            Self::Str(v) => v.parse::<f64>().ok(),
+        }
+    }
+}
+
 pub fn parse_trades_json(value: &Value) -> Vec<Trade> {
     let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
     let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
@@ -678,4 +809,76 @@ fn sbe_var_string_skip(buf: &[u8], off: usize) -> Option<usize> {
     let len = *buf.get(off)? as usize;
     buf.get(off + 1..off + 1 + len)?;
     Some(off + 1 + len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_spot_book_ticker_bbo_raw;
+
+    #[test]
+    fn parses_spot_book_ticker_without_value_tree() {
+        let raw = br#"{
+            "time":1700000000,
+            "time_ms":1700000000123,
+            "channel":"spot.book_ticker",
+            "event":"update",
+            "result":{
+                "t":1700000000124,
+                "u":"111",
+                "s":"ETH_USDT",
+                "b":"3000",
+                "B":"0.5",
+                "a":"3001",
+                "A":"1.0"
+            }
+        }"#;
+
+        let bbo = parse_spot_book_ticker_bbo_raw(raw).expect("spot book ticker");
+
+        assert_eq!(bbo.symbol, "ETHUSDT");
+        assert_eq!(bbo.seq_id, 111);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_124_000);
+        assert!((bbo.bid_price - 3000.0).abs() < 1e-12);
+        assert!((bbo.bid_amount - 0.5).abs() < 1e-12);
+        assert!((bbo.ask_price - 3001.0).abs() < 1e-12);
+        assert!((bbo.ask_amount - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn raw_spot_book_ticker_uses_envelope_timestamp_fallback() {
+        let raw = br#"{
+            "time_ms":1700000000123,
+            "channel":"spot.book_ticker",
+            "event":"update",
+            "result":{
+                "u":111,
+                "s":"ETH_USDT",
+                "b":"3000",
+                "B":"0.5",
+                "a":"3001",
+                "A":"1.0"
+            }
+        }"#;
+
+        let bbo = parse_spot_book_ticker_bbo_raw(raw).expect("spot book ticker");
+
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_123_000);
+    }
+
+    #[test]
+    fn raw_spot_book_ticker_rejects_non_bbo_frames() {
+        let trade = br#"{
+            "channel":"spot.trades",
+            "event":"update",
+            "result":{"id":1,"currency_pair":"ETH_USDT","price":"3000","amount":"0.1"}
+        }"#;
+        let futures = br#"{
+            "channel":"futures.book_ticker",
+            "event":"update",
+            "result":{"u":111,"s":"ETH_USDT","b":"3000","a":"3001"}
+        }"#;
+
+        assert!(parse_spot_book_ticker_bbo_raw(trade).is_none());
+        assert!(parse_spot_book_ticker_bbo_raw(futures).is_none());
+    }
 }
