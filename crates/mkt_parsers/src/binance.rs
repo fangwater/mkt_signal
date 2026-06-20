@@ -314,13 +314,46 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 }
 
 pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let book = parse_incremental_raw_borrowed(raw)?;
-    let bid = book.bids.as_slice().first()?;
-    let ask = book.asks.as_slice().first()?;
+    let data = combined_payload(raw).unwrap_or(raw);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut seen_event = false;
+    let mut symbol = None;
+    let mut timestamp_us = None;
+    let mut seq_id = None;
+    let mut bid = None;
+    let mut ask = None;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => {
+                if value.string_bytes()? != b"depthUpdate" {
+                    return None;
+                }
+                seen_event = true;
+            }
+            b"s" => symbol = Some(value.string_str()?),
+            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"u" | b"lastUpdateId" => seq_id = Some(value.i64()?),
+            b"b" | b"bids" => bid = Some(parse_raw_top_level(value.array_bytes()?)?),
+            b"a" | b"asks" => ask = Some(parse_raw_top_level(value.array_bytes()?)?),
+            _ => {}
+        }
+    }
+
+    let symbol = match symbol {
+        Some(symbol) => symbol,
+        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+    };
+    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.contains("@depth")) {
+        return None;
+    }
+    let bid = bid?;
+    let ask = ask?;
     let out = RawBbo {
-        symbol: book.symbol,
-        timestamp_us: book.timestamp_us,
-        seq_id: book.seq_id,
+        symbol,
+        timestamp_us: timestamp_us.unwrap_or(0),
+        seq_id: seq_id?,
         bid_price: bid.price,
         bid_amount: bid.amount,
         ask_price: ask.price,
@@ -1180,6 +1213,24 @@ pub fn raw_level_at(raw: &[u8], index: usize) -> Option<Level> {
 
 pub fn raw_levels_iter(raw: &[u8]) -> Option<RawLevelIter<'_>> {
     RawLevelIter::new(raw)
+}
+
+fn parse_raw_top_level(raw: &[u8]) -> Option<Level> {
+    let raw = trim_ascii(raw);
+    if raw.first() != Some(&b'[') || raw.last() != Some(&b']') {
+        return None;
+    }
+
+    let mut pos = 1usize;
+    loop {
+        skip_ws_at(raw, &mut pos);
+        match raw.get(pos).copied()? {
+            b']' => return None,
+            b',' => pos += 1,
+            b'[' => return parse_raw_level(raw, &mut pos),
+            _ => return None,
+        }
+    }
 }
 
 fn raw_levels_count(raw: &[u8]) -> Option<usize> {
