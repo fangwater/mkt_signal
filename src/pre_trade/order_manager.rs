@@ -19,16 +19,10 @@ use trade_engine::okex::{
     OkexCancelOrderParams, OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest,
     OkexOrderType,
 };
-use trade_engine::trade_request::BinanceNewMarginOrderRequest;
-use trade_engine::trade_request::BinanceNewUMOrderRequest;
 use trade_engine::trade_request::{
-    BinanceCancelMarginOrderRequest, BinanceCancelOrderParams, BinanceCancelUMOrderRequest,
-    BinanceNewOrderParams, BinanceWsCancelMarginOrderRequest, BinanceWsCancelUMOrderRequest,
-    BinanceWsNewMarginOrderRequest, BinanceWsNewUMOrderRequest, BitgetCancelOrderParams,
+    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams,
     BitgetMarginCancelOrderRequest, BitgetMarginNewOrderRequest, BitgetNewOrderParams,
-    BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest, GateCancelOrderParams,
-    GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateNewOrderParams,
-    GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
+    BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest, GateCancelOrderParams, GateNewOrderParams,
 };
 fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     if let Some(qv) = QuantizedValue::from_decimal(value) {
@@ -193,48 +187,36 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
             ));
         }
 
-        let params = BinanceCancelOrderParams {
-            symbol: symbol.to_string(),
-            orig_client_order_id: client_order_id,
-        };
         match venue {
             TradingVenue::BinanceMargin => {
-                if self.binance_is_standard() {
-                    let request = BinanceWsCancelMarginOrderRequest::create_typed(
-                        get_timestamp_us(),
-                        client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance ws margin cancel params".to_string())?;
-                    Ok(request.to_bytes())
+                let req_type = if self.binance_is_standard() {
+                    trade_engine::trade_request::TradeRequestType::BinanceWsCancelMarginOrder
                 } else {
-                    let request = BinanceCancelMarginOrderRequest::create_typed(
-                        get_timestamp_us(),
-                        client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance margin cancel params".to_string())?;
-                    Ok(request.to_bytes())
-                }
+                    trade_engine::trade_request::TradeRequestType::BinanceCancelMarginOrder
+                };
+                BinanceCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    client_order_id,
+                    symbol,
+                    client_order_id,
+                )
+                .ok_or_else(|| "failed to build binance margin cancel params".to_string())
             }
             TradingVenue::BinanceFutures => {
-                if self.binance_is_standard() {
-                    let request = BinanceWsCancelUMOrderRequest::create_typed(
-                        get_timestamp_us(),
-                        client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance ws um cancel params".to_string())?;
-                    Ok(request.to_bytes())
+                let req_type = if self.binance_is_standard() {
+                    trade_engine::trade_request::TradeRequestType::BinanceWsCancelUMOrder
                 } else {
-                    let request = BinanceCancelUMOrderRequest::create_typed(
-                        get_timestamp_us(),
-                        client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance um cancel params".to_string())?;
-                    Ok(request.to_bytes())
-                }
+                    trade_engine::trade_request::TradeRequestType::BinanceCancelUMOrder
+                };
+                BinanceCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    client_order_id,
+                    symbol,
+                    client_order_id,
+                )
+                .ok_or_else(|| "failed to build binance um cancel params".to_string())
             }
             _ => Err(format!(
                 "unmatched cancel fallback not supported for venue {:?}",
@@ -313,50 +295,36 @@ impl PreTradeOrderRequestExt for Order {
         match self.venue {
             TradingVenue::BinanceMargin => {
                 // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
-                let params = BinanceCancelOrderParams {
-                    symbol: self.symbol.clone(),
-                    orig_client_order_id: self.client_order_id,
-                };
-                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
-                    let request: BinanceWsCancelMarginOrderRequest =
-                        BinanceWsCancelMarginOrderRequest::create_typed(
-                            now,
-                            self.client_order_id,
-                            params,
-                        )
-                        .ok_or_else(|| {
-                            "failed to build binance ws margin cancel params".to_string()
-                        })?;
-                    return Ok(request.to_bytes());
-                }
-                let request: BinanceCancelMarginOrderRequest =
-                    BinanceCancelMarginOrderRequest::create_typed(
-                        now,
-                        self.client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance margin cancel params".to_string())?;
-                Ok(request.to_bytes())
+                let req_type =
+                    if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                        trade_engine::trade_request::TradeRequestType::BinanceWsCancelMarginOrder
+                    } else {
+                        trade_engine::trade_request::TradeRequestType::BinanceCancelMarginOrder
+                    };
+                BinanceCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    now,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.client_order_id,
+                )
+                .ok_or_else(|| "failed to build binance margin cancel params".to_string())
             }
             TradingVenue::BinanceFutures => {
-                let params = BinanceCancelOrderParams {
-                    symbol: self.symbol.clone(),
-                    orig_client_order_id: self.client_order_id,
-                };
-                if self.require_binance_account_mode() == BinanceAccountMode::Standard {
-                    let request: BinanceWsCancelUMOrderRequest =
-                        BinanceWsCancelUMOrderRequest::create_typed(
-                            now,
-                            self.client_order_id,
-                            params,
-                        )
-                        .ok_or_else(|| "failed to build binance ws um cancel params".to_string())?;
-                    return Ok(request.to_bytes());
-                }
-                let request: BinanceCancelUMOrderRequest =
-                    BinanceCancelUMOrderRequest::create_typed(now, self.client_order_id, params)
-                        .ok_or_else(|| "failed to build binance um cancel params".to_string())?;
-                Ok(request.to_bytes())
+                let req_type =
+                    if self.require_binance_account_mode() == BinanceAccountMode::Standard {
+                        trade_engine::trade_request::TradeRequestType::BinanceWsCancelUMOrder
+                    } else {
+                        trade_engine::trade_request::TradeRequestType::BinanceCancelUMOrder
+                    };
+                BinanceCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    now,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.client_order_id,
+                )
+                .ok_or_else(|| "failed to build binance um cancel params".to_string())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
@@ -388,14 +356,14 @@ impl PreTradeOrderRequestExt for Order {
                     .exchange_order_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| gate_text_from_client_order_id(self.client_order_id));
-                let params = GateCancelOrderParams {
-                    symbol: currency_pair,
-                    order_id,
-                };
-                let request =
-                    GateUnifiedCancelOrderRequest::create_typed(now, self.client_order_id, params)
-                        .ok_or_else(|| "failed to build gate unified cancel params".to_string())?;
-                Ok(request.to_bytes())
+                GateCancelOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::GateUnifiedCancelOrder,
+                    now,
+                    self.client_order_id,
+                    &currency_pair,
+                    &order_id,
+                )
+                .ok_or_else(|| "failed to build gate unified cancel params".to_string())
             }
             TradingVenue::GateFutures => {
                 let contract = gate_currency_pair_from_symbol(&self.symbol);
@@ -403,14 +371,14 @@ impl PreTradeOrderRequestExt for Order {
                     .exchange_order_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| gate_text_from_client_order_id(self.client_order_id));
-                let params = GateCancelOrderParams {
-                    symbol: contract,
-                    order_id,
-                };
-                let request =
-                    GateFuturesCancelOrderRequest::create_typed(now, self.client_order_id, params)
-                        .ok_or_else(|| "failed to build gate futures cancel params".to_string())?;
-                Ok(request.to_bytes())
+                GateCancelOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::GateFuturesCancelOrder,
+                    now,
+                    self.client_order_id,
+                    &contract,
+                    &order_id,
+                )
+                .ok_or_else(|| "failed to build gate futures cancel params".to_string())
             }
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                 let symbol = bybit_symbol_from_symbol(&self.symbol);
@@ -554,18 +522,8 @@ impl PreTradeOrderRequestExt for Order {
                     binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
                 // ===== 余额检查结束 =====/
 
-                let params = BinanceNewOrderParams {
-                    symbol: self.symbol.clone(),
-                    side: self.side,
-                    order_type: self.order_type,
-                    quantity_qv: resolved.require_quantity_qv(self, "binance")?,
-                    price_qv: resolved.limit_price_qv_or_zero(self, "binance")?,
-                    reduce_only: self.reduce_only,
-                    margin_buy,
-                    ws_response_full: use_binance_ws_margin,
-                    ws_um_response_result: false,
-                    ws_margin_limit_maker: use_binance_ws_margin,
-                };
+                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
                     info!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
@@ -577,40 +535,34 @@ impl PreTradeOrderRequestExt for Order {
                         self.reduce_only
                     );
                 }
-                if use_binance_ws_margin {
-                    let request = BinanceWsNewMarginOrderRequest::create_typed(
-                        local_create_ts,
-                        self.client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance ws margin order params".to_string())?;
-                    Ok(request.to_bytes())
+                let req_type = if use_binance_ws_margin {
+                    trade_engine::trade_request::TradeRequestType::BinanceWsNewMarginOrder
                 } else {
-                    let request = BinanceNewMarginOrderRequest::create_typed(
-                        local_create_ts,
-                        self.client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance margin order params".to_string())?;
-                    Ok(request.to_bytes())
-                }
+                    trade_engine::trade_request::TradeRequestType::BinanceNewMarginOrder
+                };
+                BinanceNewOrderParams::request_bytes_from_parts(
+                    req_type,
+                    local_create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    margin_buy,
+                    use_binance_ws_margin,
+                    false,
+                    use_binance_ws_margin,
+                )
+                .ok_or_else(|| "failed to build binance margin order params".to_string())
             }
             TradingVenue::BinanceFutures => {
                 let use_binance_ws_um =
                     self.require_binance_account_mode() == BinanceAccountMode::Standard;
                 let local_create_ts = get_timestamp_us();
-                let params = BinanceNewOrderParams {
-                    symbol: self.symbol.clone(),
-                    side: self.side,
-                    order_type: self.order_type,
-                    quantity_qv: resolved.require_quantity_qv(self, "binance")?,
-                    price_qv: resolved.limit_price_qv_or_zero(self, "binance")?,
-                    reduce_only: self.reduce_only,
-                    margin_buy: false,
-                    ws_response_full: false,
-                    ws_um_response_result: use_binance_ws_um,
-                    ws_margin_limit_maker: false,
-                };
+                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
                     info!(
                         "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
@@ -622,23 +574,27 @@ impl PreTradeOrderRequestExt for Order {
                         self.reduce_only
                     );
                 }
-                if use_binance_ws_um {
-                    let request = BinanceWsNewUMOrderRequest::create_typed(
-                        local_create_ts,
-                        self.client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance ws um order params".to_string())?;
-                    Ok(request.to_bytes())
+                let req_type = if use_binance_ws_um {
+                    trade_engine::trade_request::TradeRequestType::BinanceWsNewUMOrder
                 } else {
-                    let request = BinanceNewUMOrderRequest::create_typed(
-                        local_create_ts,
-                        self.client_order_id,
-                        params,
-                    )
-                    .ok_or_else(|| "failed to build binance um order params".to_string())?;
-                    Ok(request.to_bytes())
-                }
+                    trade_engine::trade_request::TradeRequestType::BinanceNewUMOrder
+                };
+                BinanceNewOrderParams::request_bytes_from_parts(
+                    req_type,
+                    local_create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    false,
+                    false,
+                    use_binance_ws_um,
+                    false,
+                )
+                .ok_or_else(|| "failed to build binance um order params".to_string())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let create_ts = get_timestamp_us();
@@ -678,23 +634,22 @@ impl PreTradeOrderRequestExt for Order {
                         self.order_type
                     ));
                 }
-                let params = GateNewOrderParams {
-                    symbol: currency_pair,
-                    side: self.side,
-                    order_type: self.order_type,
-                    quantity_qv: resolved.require_quantity_qv(self, "gate")?,
-                    price_qv: resolved.limit_price_qv_or_zero(self, "gate")?,
-                    reduce_only: self.reduce_only,
-                    // 仅 unified/cross-margin 买入单可能触发本单借款；成交所得用于偿还本单借入。
-                    auto_borrow_repay: self.side == Side::Buy,
-                };
-                let request = GateUnifiedNewOrderRequest::create_typed(
+                let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                GateNewOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
                     create_ts,
                     self.client_order_id,
-                    params,
+                    &currency_pair,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    // 仅 unified/cross-margin 买入单可能触发本单借款；成交所得用于偿还本单借入。
+                    self.side == Side::Buy,
                 )
-                .ok_or_else(|| "failed to build gate unified order params".to_string())?;
-                Ok(request.to_bytes())
+                .ok_or_else(|| "failed to build gate unified order params".to_string())
             }
             TradingVenue::GateFutures => {
                 let create_ts = get_timestamp_us();
@@ -705,22 +660,21 @@ impl PreTradeOrderRequestExt for Order {
                         self.order_type
                     ));
                 }
-                let params = GateNewOrderParams {
-                    symbol: contract,
-                    side: self.side,
-                    order_type: self.order_type,
-                    quantity_qv: resolved.require_quantity_qv(self, "gate")?,
-                    price_qv: resolved.limit_price_qv_or_zero(self, "gate")?,
-                    reduce_only: self.reduce_only,
-                    auto_borrow_repay: false,
-                };
-                let request = GateFuturesNewOrderRequest::create_typed(
+                let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                GateNewOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::GateFuturesNewOrder,
                     create_ts,
                     self.client_order_id,
-                    params,
+                    &contract,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    false,
                 )
-                .ok_or_else(|| "failed to build gate futures order params".to_string())?;
-                Ok(request.to_bytes())
+                .ok_or_else(|| "failed to build gate futures order params".to_string())
             }
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                 let create_ts = get_timestamp_us();
@@ -820,28 +774,28 @@ mod tests {
         match msg.req_type {
             TradeRequestType::GateUnifiedNewOrder => GateUnifiedNewOrderRequest {
                 header,
-                params: msg.params,
+                params: msg.params_bytes(),
             }
             .params_struct()
             .map(|params| params.to_gate_unified_json(msg.client_order_id))
             .expect("gate unified typed params should parse"),
             TradeRequestType::GateFuturesNewOrder => GateFuturesNewOrderRequest {
                 header,
-                params: msg.params,
+                params: msg.params_bytes(),
             }
             .params_struct()
             .map(|params| params.to_gate_futures_json(msg.client_order_id))
             .expect("gate futures typed params should parse"),
             TradeRequestType::GateUnifiedCancelOrder => GateUnifiedCancelOrderRequest {
                 header,
-                params: msg.params,
+                params: msg.params_bytes(),
             }
             .params_struct()
             .map(|params| params.to_gate_unified_json())
             .expect("gate unified cancel typed params should parse"),
             TradeRequestType::GateFuturesCancelOrder => GateFuturesCancelOrderRequest {
                 header,
-                params: msg.params,
+                params: msg.params_bytes(),
             }
             .params_struct()
             .map(|params| params.to_gate_futures_json())

@@ -228,7 +228,7 @@ pub fn build_order_payload(
         TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
             let params = OkexNewOrderRequest {
                 header: header_for_msg(msg),
-                params: msg.params.clone(),
+                params: msg.params_bytes(),
             }
             .params_struct()
             .ok_or_else(|| anyhow!("decode okex new order params failed"))?;
@@ -240,7 +240,7 @@ pub fn build_order_payload(
         TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
             let params = OkexCancelOrderRequest {
                 header: header_for_msg(msg),
-                params: msg.params.clone(),
+                params: msg.params_bytes(),
             }
             .params_struct()
             .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?;
@@ -524,13 +524,9 @@ mod tests {
             ws_um_response_result: true,
             ws_margin_limit_maker: false,
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BinanceWsNewUMOrder,
-            create_time: 1,
-            client_order_id: 123,
-            params: params.to_bytes().unwrap(),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().unwrap();
+        let msg = TradeRequestMsg::create(TradeRequestType::BinanceWsNewUMOrder, 1, 123, &params)
+            .expect("trade request msg");
         let payload = build_order_payload(Exchange::Binance, &msg, 9).unwrap();
         let value: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(value["id"], "9");

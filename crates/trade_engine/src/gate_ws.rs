@@ -1,6 +1,6 @@
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_request::{
-    GateCancelOrderParams, GateNewOrderParams, TradeRequestMsg, TradeRequestType,
+    GateCancelOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
 use account_common::gate_auth::GateCredentials;
 use anyhow::{anyhow, Context, Result};
@@ -104,7 +104,7 @@ pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<Str
 
     match msg.req_type {
         TradeRequestType::GateUnifiedNewOrder => {
-            let params = GateNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = GateNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Gate unified WS new order requires typed params, req_type={:?}",
                     msg.req_type
@@ -113,7 +113,7 @@ pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<Str
             push_gate_unified_new_req_param(&mut out, &params, msg.client_order_id);
         }
         TradeRequestType::GateFuturesNewOrder => {
-            let params = GateNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = GateNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Gate futures WS new order requires typed params, req_type={:?}",
                     msg.req_type
@@ -122,7 +122,7 @@ pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<Str
             push_gate_futures_new_req_param(&mut out, &params, msg.client_order_id);
         }
         TradeRequestType::GateUnifiedCancelOrder => {
-            let params = GateCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = GateCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Gate unified WS cancel order requires typed params, req_type={:?}",
                     msg.req_type
@@ -131,7 +131,7 @@ pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<Str
             push_gate_unified_cancel_req_param(&mut out, &params);
         }
         TradeRequestType::GateFuturesCancelOrder => {
-            let params = GateCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = GateCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Gate futures WS cancel order requires typed params, req_type={:?}",
                     msg.req_type
@@ -148,12 +148,12 @@ pub fn build_api_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<Str
 
 fn push_gate_unified_new_req_param(
     out: &mut String,
-    params: &GateNewOrderParams,
+    params: &GateNewOrderParamsRef<'_>,
     client_order_id: i64,
 ) {
     let mut first = true;
     push_i64_prefixed_text_field(out, "text", "t-", client_order_id, &mut first);
-    push_json_field(out, "currency_pair", &params.symbol, &mut first);
+    push_json_field(out, "currency_pair", params.symbol, &mut first);
     push_json_field(
         out,
         "type",
@@ -184,12 +184,12 @@ fn push_gate_unified_new_req_param(
 
 fn push_gate_futures_new_req_param(
     out: &mut String,
-    params: &GateNewOrderParams,
+    params: &GateNewOrderParamsRef<'_>,
     client_order_id: i64,
 ) {
     let mut first = true;
     push_i64_prefixed_text_field(out, "text", "t-", client_order_id, &mut first);
-    push_json_field(out, "contract", &params.symbol, &mut first);
+    push_json_field(out, "contract", params.symbol, &mut first);
     push_json_field(out, "account", "unified", &mut first);
     let mut size = params.quantity_qv.decimal_string();
     if params.side.is_sell() && size != "0" {
@@ -208,17 +208,17 @@ fn push_gate_futures_new_req_param(
     }
 }
 
-fn push_gate_unified_cancel_req_param(out: &mut String, params: &GateCancelOrderParams) {
+fn push_gate_unified_cancel_req_param(out: &mut String, params: &GateCancelOrderParamsRef<'_>) {
     let mut first = true;
-    push_json_field(out, "order_id", &params.order_id, &mut first);
-    push_json_field(out, "currency_pair", &params.symbol, &mut first);
+    push_json_field(out, "order_id", params.order_id, &mut first);
+    push_json_field(out, "currency_pair", params.symbol, &mut first);
     push_json_field(out, "account", "unified", &mut first);
 }
 
-fn push_gate_futures_cancel_req_param(out: &mut String, params: &GateCancelOrderParams) {
+fn push_gate_futures_cancel_req_param(out: &mut String, params: &GateCancelOrderParamsRef<'_>) {
     let mut first = true;
-    push_json_field(out, "order_id", &params.order_id, &mut first);
-    push_json_field(out, "contract", &params.symbol, &mut first);
+    push_json_field(out, "order_id", params.order_id, &mut first);
+    push_json_field(out, "contract", params.symbol, &mut first);
 }
 
 fn push_json_field(out: &mut String, key: &str, value: &str, first: &mut bool) {
@@ -308,10 +308,17 @@ mod tests {
     use crate::trade_request::{
         GateCancelOrderParams, GateNewOrderParams, TradeRequestMsg, TradeRequestType,
     };
-    use bytes::Bytes;
     use order_common::{OrderType, Side};
     use serde_json::{json, Value};
     use signal_common::tick_math::QuantizedValue;
+
+    fn trade_msg(
+        req_type: TradeRequestType,
+        client_order_id: i64,
+        params: &[u8],
+    ) -> TradeRequestMsg {
+        TradeRequestMsg::create(req_type, 0, client_order_id, params).expect("trade request msg")
+    }
 
     #[test]
     fn builds_gate_unified_order_payload_from_typed_params() {
@@ -324,13 +331,8 @@ mod tests {
             reduce_only: false,
             auto_borrow_repay: true,
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::GateUnifiedNewOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: params.to_bytes().expect("typed params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::GateUnifiedNewOrder, 123, &params);
 
         let payload = build_api_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -356,13 +358,8 @@ mod tests {
             reduce_only: true,
             auto_borrow_repay: false,
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::GateFuturesNewOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: params.to_bytes().expect("typed params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::GateFuturesNewOrder, 123, &params);
 
         let payload = build_api_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -382,13 +379,8 @@ mod tests {
             symbol: "BTC_USDT".to_string(),
             order_id: "abc".to_string(),
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::GateUnifiedCancelOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: params.to_bytes().expect("typed params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::GateUnifiedCancelOrder, 123, &params);
 
         let payload = build_api_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
@@ -401,15 +393,11 @@ mod tests {
 
     #[test]
     fn rejects_gate_raw_json_params() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::GateUnifiedNewOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: Bytes::from_static(
-                br#"{"currency_pair":"BTC_USDT","side":"buy","amount":"0.01"}"#,
-            ),
-            ipc_recv: None,
-        };
+        let msg = trade_msg(
+            TradeRequestType::GateUnifiedNewOrder,
+            123,
+            br#"{"currency_pair":"BTC_USDT","side":"buy","amount":"0.01"}"#,
+        );
 
         let err = build_api_payload(&msg, 999).expect_err("raw json must be rejected");
         assert!(err.to_string().contains("requires typed params"));

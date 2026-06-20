@@ -3,11 +3,105 @@ use log::debug;
 use order_common::{OrderType, Side};
 use serde_json::{json, Value};
 use signal_common::tick_math::QuantizedValue;
+use std::mem::MaybeUninit;
+use std::ops::Deref;
 use std::time::Instant;
 
 pub use order_common::TradeRequestType;
 
 pub const TRADE_REQ_PAYLOAD: usize = 1_024;
+pub const TRADE_REQ_HEADER_LEN: usize = 24;
+pub const TRADE_REQ_PARAMS_CAP: usize = TRADE_REQ_PAYLOAD - TRADE_REQ_HEADER_LEN;
+
+pub struct TradeRequestParams {
+    len: usize,
+    buf: MaybeUninit<[u8; TRADE_REQ_PARAMS_CAP]>,
+}
+
+impl TradeRequestParams {
+    pub fn try_from_slice(raw: &[u8]) -> Option<Self> {
+        if raw.len() > TRADE_REQ_PARAMS_CAP {
+            return None;
+        }
+        let mut params = Self {
+            len: raw.len(),
+            buf: MaybeUninit::uninit(),
+        };
+        params.write_prefix(raw);
+        Some(params)
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        // Only the first `len` bytes are initialized by `write_prefix`.
+        unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast::<u8>(), self.len) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        Bytes::copy_from_slice(self.as_slice())
+    }
+
+    fn write_prefix(&mut self, raw: &[u8]) {
+        debug_assert!(raw.len() <= TRADE_REQ_PARAMS_CAP);
+        // The tail intentionally remains uninitialized and is never read.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                self.buf.as_mut_ptr().cast::<u8>(),
+                raw.len(),
+            );
+        }
+    }
+}
+
+impl Clone for TradeRequestParams {
+    fn clone(&self) -> Self {
+        let mut cloned = Self {
+            len: self.len,
+            buf: MaybeUninit::uninit(),
+        };
+        cloned.write_prefix(self.as_slice());
+        cloned
+    }
+}
+
+impl std::fmt::Debug for TradeRequestParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TradeRequestParams")
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for TradeRequestParams {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            buf: MaybeUninit::uninit(),
+        }
+    }
+}
+
+impl AsRef<[u8]> for TradeRequestParams {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl Deref for TradeRequestParams {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
 
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
@@ -23,16 +117,35 @@ pub struct TradeRequestMsg {
     pub req_type: TradeRequestType,
     pub create_time: i64,
     pub client_order_id: i64,
-    pub params: Bytes,
+    pub params: TradeRequestParams,
     pub ipc_recv: Option<Instant>,
 }
 
 impl TradeRequestMsg {
+    pub fn create(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        params: &[u8],
+    ) -> Option<Self> {
+        Some(Self {
+            req_type,
+            create_time,
+            client_order_id,
+            params: TradeRequestParams::try_from_slice(params)?,
+            ipc_recv: None,
+        })
+    }
+
+    pub fn params_bytes(&self) -> Bytes {
+        self.params.to_bytes()
+    }
+
     /// Parse a binary TradeRequest buffer into a structured message.
     /// Layout (little-endian):
     ///   u32 msg_type, u32 params_length, i64 create_time, i64 client_order_id, [params_length] bytes
     pub fn parse(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 4 + 4 + 8 + 8 {
+        if buf.len() < TRADE_REQ_HEADER_LEN {
             debug!("TradeRequestMsg::parse buffer too short: {}", buf.len());
             return None;
         }
@@ -40,7 +153,7 @@ impl TradeRequestMsg {
         let params_len = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
         let create_time = i64::from_le_bytes(buf[8..16].try_into().ok()?);
         let client_order_id = i64::from_le_bytes(buf[16..24].try_into().ok()?);
-        if buf.len() < 24 + params_len {
+        if buf.len() < TRADE_REQ_HEADER_LEN + params_len {
             debug!(
                 "TradeRequestMsg::parse invalid params_len: total={}, params_len={}",
                 buf.len(),
@@ -49,7 +162,9 @@ impl TradeRequestMsg {
             return None;
         }
         let req_type = TradeRequestType::try_from(msg_type).ok()?;
-        let params = Bytes::copy_from_slice(&buf[24..24 + params_len]);
+        let params = TradeRequestParams::try_from_slice(
+            &buf[TRADE_REQ_HEADER_LEN..TRADE_REQ_HEADER_LEN + params_len],
+        )?;
         debug!(
             "TradeRequest parsed: type={}, params_len={}, client_order_id={}",
             msg_type, params_len, client_order_id
@@ -84,6 +199,27 @@ fn read_qv(raw: &[u8], offset: &mut usize) -> Option<QuantizedValue> {
     Some(QuantizedValue::from_parts(tick_i64, tick_exp, count))
 }
 
+fn trade_request_bytes_with_params<F>(
+    req_type: TradeRequestType,
+    create_time: i64,
+    client_order_id: i64,
+    params_len: usize,
+    write_params: F,
+) -> Option<Bytes>
+where
+    F: FnOnce(&mut BytesMut) -> Option<()>,
+{
+    let params_length = u32::try_from(params_len).ok()?;
+    let mut buf = BytesMut::with_capacity(TRADE_REQ_HEADER_LEN + params_len);
+    buf.put_u32_le(req_type as u32);
+    buf.put_u32_le(params_length);
+    buf.put_i64_le(create_time);
+    buf.put_i64_le(client_order_id);
+    write_params(&mut buf)?;
+    debug_assert_eq!(buf.len(), TRADE_REQ_HEADER_LEN + params_len);
+    Some(buf.freeze())
+}
+
 fn write_string(buf: &mut BytesMut, value: &str) -> Option<()> {
     let bytes = value.as_bytes();
     if bytes.len() > u16::MAX as usize {
@@ -95,6 +231,10 @@ fn write_string(buf: &mut BytesMut, value: &str) -> Option<()> {
 }
 
 fn read_string(raw: &[u8], offset: &mut usize) -> Option<String> {
+    read_str(raw, offset).map(str::to_string)
+}
+
+fn read_str<'a>(raw: &'a [u8], offset: &mut usize) -> Option<&'a str> {
     if raw.len() < *offset + 2 {
         return None;
     }
@@ -103,9 +243,7 @@ fn read_string(raw: &[u8], offset: &mut usize) -> Option<String> {
     if raw.len() < *offset + len {
         return None;
     }
-    let value = std::str::from_utf8(&raw[*offset..*offset + len])
-        .ok()?
-        .to_string();
+    let value = std::str::from_utf8(&raw[*offset..*offset + len]).ok()?;
     *offset += len;
     Some(value)
 }
@@ -301,6 +439,20 @@ pub struct BinanceNewOrderParams {
     pub ws_margin_limit_maker: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinanceNewOrderParamsRef<'a> {
+    pub symbol: &'a str,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+    pub margin_buy: bool,
+    pub ws_response_full: bool,
+    pub ws_um_response_result: bool,
+    pub ws_margin_limit_maker: bool,
+}
+
 impl BinanceNewOrderParams {
     const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 1 + 1 + 1 + 1 + 1 + 2;
 
@@ -320,41 +472,52 @@ impl BinanceNewOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        let mut offset = 0usize;
-        if raw.len() < 2 {
-            return None;
-        }
-        let side = Side::from_u8(raw[offset])?;
-        offset += 1;
-        let order_type = OrderType::from_u8(raw[offset])?;
-        offset += 1;
-        let quantity_qv = read_qv(raw, &mut offset)?;
-        let price_qv = read_qv(raw, &mut offset)?;
-        if raw.len() < offset + 5 {
-            return None;
-        }
-        let reduce_only = raw[offset] != 0;
-        offset += 1;
-        let margin_buy = raw[offset] != 0;
-        offset += 1;
-        let ws_response_full = raw[offset] != 0;
-        offset += 1;
-        let ws_um_response_result = raw[offset] != 0;
-        offset += 1;
-        let ws_margin_limit_maker = raw[offset] != 0;
-        offset += 1;
-        let symbol = read_string(raw, &mut offset)?;
+        let params = BinanceNewOrderParamsRef::from_bytes(raw)?;
         Some(Self {
-            symbol,
-            side,
-            order_type,
-            quantity_qv,
-            price_qv,
-            reduce_only,
-            margin_buy,
-            ws_response_full,
-            ws_um_response_result,
-            ws_margin_limit_maker,
+            symbol: params.symbol.to_string(),
+            side: params.side,
+            order_type: params.order_type,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            reduce_only: params.reduce_only,
+            margin_buy: params.margin_buy,
+            ws_response_full: params.ws_response_full,
+            ws_um_response_result: params.ws_um_response_result,
+            ws_margin_limit_maker: params.ws_margin_limit_maker,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+        margin_buy: bool,
+        ws_response_full: bool,
+        ws_um_response_result: bool,
+        ws_margin_limit_maker: bool,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        let params_len = Self::FIXED_LEN + symbol.len();
+        trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
+            buf.put_u8(side.to_u8());
+            buf.put_u8(order_type.to_u8());
+            write_qv(buf, quantity_qv);
+            write_qv(buf, price_qv);
+            buf.put_u8(reduce_only as u8);
+            buf.put_u8(margin_buy as u8);
+            buf.put_u8(ws_response_full as u8);
+            buf.put_u8(ws_um_response_result as u8);
+            buf.put_u8(ws_margin_limit_maker as u8);
+            write_string(buf, symbol)
         })
     }
 
@@ -400,6 +563,47 @@ impl BinanceNewOrderParams {
             params.push(format!("price={}", self.price_qv.decimal_string()));
         }
         params.join("&")
+    }
+}
+
+impl<'a> BinanceNewOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        if raw.len() < 2 {
+            return None;
+        }
+        let side = Side::from_u8(raw[offset])?;
+        offset += 1;
+        let order_type = OrderType::from_u8(raw[offset])?;
+        offset += 1;
+        let quantity_qv = read_qv(raw, &mut offset)?;
+        let price_qv = read_qv(raw, &mut offset)?;
+        if raw.len() < offset + 5 {
+            return None;
+        }
+        let reduce_only = raw[offset] != 0;
+        offset += 1;
+        let margin_buy = raw[offset] != 0;
+        offset += 1;
+        let ws_response_full = raw[offset] != 0;
+        offset += 1;
+        let ws_um_response_result = raw[offset] != 0;
+        offset += 1;
+        let ws_margin_limit_maker = raw[offset] != 0;
+        offset += 1;
+        let symbol = read_str(raw, &mut offset)?;
+        Some(Self {
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            margin_buy,
+            ws_response_full,
+            ws_um_response_result,
+            ws_margin_limit_maker,
+        })
     }
 }
 
@@ -637,6 +841,12 @@ pub struct BinanceCancelOrderParams {
     pub orig_client_order_id: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinanceCancelOrderParamsRef<'a> {
+    pub symbol: &'a str,
+    pub orig_client_order_id: i64,
+}
+
 impl BinanceCancelOrderParams {
     const FIXED_LEN: usize = 8 + 2;
 
@@ -648,16 +858,27 @@ impl BinanceCancelOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        if raw.len() < 8 {
+        let params = BinanceCancelOrderParamsRef::from_bytes(raw)?;
+        Some(Self {
+            symbol: params.symbol.to_string(),
+            orig_client_order_id: params.orig_client_order_id,
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        orig_client_order_id: i64,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize {
             return None;
         }
-        let mut offset = 0usize;
-        let orig_client_order_id = i64::from_le_bytes(raw[offset..offset + 8].try_into().ok()?);
-        offset += 8;
-        let symbol = read_string(raw, &mut offset)?;
-        Some(Self {
-            symbol,
-            orig_client_order_id,
+        let params_len = Self::FIXED_LEN + symbol.len();
+        trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
+            buf.put_i64_le(orig_client_order_id);
+            write_string(buf, symbol)
         })
     }
 
@@ -666,6 +887,22 @@ impl BinanceCancelOrderParams {
             "symbol={}&origClientOrderId={}",
             self.symbol, self.orig_client_order_id
         )
+    }
+}
+
+impl<'a> BinanceCancelOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        if raw.len() < 8 {
+            return None;
+        }
+        let mut offset = 0usize;
+        let orig_client_order_id = i64::from_le_bytes(raw[offset..offset + 8].try_into().ok()?);
+        offset += 8;
+        let symbol = read_str(raw, &mut offset)?;
+        Some(Self {
+            symbol,
+            orig_client_order_id,
+        })
     }
 }
 
@@ -965,6 +1202,17 @@ pub struct GateNewOrderParams {
     pub auto_borrow_repay: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GateNewOrderParamsRef<'a> {
+    pub symbol: &'a str,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+    pub auto_borrow_repay: bool,
+}
+
 impl GateNewOrderParams {
     const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 1 + 1 + 2;
 
@@ -981,32 +1229,42 @@ impl GateNewOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        let mut offset = 0usize;
-        if raw.len() < 2 {
-            return None;
-        }
-        let side = Side::from_u8(raw[offset])?;
-        offset += 1;
-        let order_type = OrderType::from_u8(raw[offset])?;
-        offset += 1;
-        let quantity_qv = read_qv(raw, &mut offset)?;
-        let price_qv = read_qv(raw, &mut offset)?;
-        if raw.len() < offset + 2 {
-            return None;
-        }
-        let reduce_only = raw[offset] != 0;
-        offset += 1;
-        let auto_borrow_repay = raw[offset] != 0;
-        offset += 1;
-        let symbol = read_string(raw, &mut offset)?;
+        let params = GateNewOrderParamsRef::from_bytes(raw)?;
         Some(Self {
-            symbol,
-            side,
-            order_type,
-            quantity_qv,
-            price_qv,
-            reduce_only,
-            auto_borrow_repay,
+            symbol: params.symbol.to_string(),
+            side: params.side,
+            order_type: params.order_type,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            reduce_only: params.reduce_only,
+            auto_borrow_repay: params.auto_borrow_repay,
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+        auto_borrow_repay: bool,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        let params_len = Self::FIXED_LEN + symbol.len();
+        trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
+            buf.put_u8(side.to_u8());
+            buf.put_u8(order_type.to_u8());
+            write_qv(buf, quantity_qv);
+            write_qv(buf, price_qv);
+            buf.put_u8(reduce_only as u8);
+            buf.put_u8(auto_borrow_repay as u8);
+            write_string(buf, symbol)
         })
     }
 
@@ -1059,6 +1317,38 @@ impl GateNewOrderParams {
             req_param.insert("reduce_only".to_string(), json!(true));
         }
         Value::Object(req_param)
+    }
+}
+
+impl<'a> GateNewOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        if raw.len() < 2 {
+            return None;
+        }
+        let side = Side::from_u8(raw[offset])?;
+        offset += 1;
+        let order_type = OrderType::from_u8(raw[offset])?;
+        offset += 1;
+        let quantity_qv = read_qv(raw, &mut offset)?;
+        let price_qv = read_qv(raw, &mut offset)?;
+        if raw.len() < offset + 2 {
+            return None;
+        }
+        let reduce_only = raw[offset] != 0;
+        offset += 1;
+        let auto_borrow_repay = raw[offset] != 0;
+        offset += 1;
+        let symbol = read_str(raw, &mut offset)?;
+        Some(Self {
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            auto_borrow_repay,
+        })
     }
 }
 
@@ -1115,6 +1405,12 @@ pub struct GateCancelOrderParams {
     pub order_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GateCancelOrderParamsRef<'a> {
+    pub symbol: &'a str,
+    pub order_id: &'a str,
+}
+
 impl GateCancelOrderParams {
     const FIXED_LEN: usize = 2 + 2;
 
@@ -1127,10 +1423,28 @@ impl GateCancelOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        let mut offset = 0usize;
-        let symbol = read_string(raw, &mut offset)?;
-        let order_id = read_string(raw, &mut offset)?;
-        Some(Self { symbol, order_id })
+        let params = GateCancelOrderParamsRef::from_bytes(raw)?;
+        Some(Self {
+            symbol: params.symbol.to_string(),
+            order_id: params.order_id.to_string(),
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        order_id: &str,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize || order_id.len() > u16::MAX as usize {
+            return None;
+        }
+        let params_len = Self::FIXED_LEN + symbol.len() + order_id.len();
+        trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
+            write_string(buf, symbol)?;
+            write_string(buf, order_id)
+        })
     }
 
     pub fn to_gate_unified_json(&self) -> Value {
@@ -1146,6 +1460,15 @@ impl GateCancelOrderParams {
             "order_id": self.order_id,
             "contract": self.symbol,
         })
+    }
+}
+
+impl<'a> GateCancelOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        let symbol = read_str(raw, &mut offset)?;
+        let order_id = read_str(raw, &mut offset)?;
+        Some(Self { symbol, order_id })
     }
 }
 

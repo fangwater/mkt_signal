@@ -262,10 +262,17 @@ mod tests {
     use crate::trade_request::{
         BitgetCancelOrderParams, BitgetNewOrderParams, TradeRequestMsg, TradeRequestType,
     };
-    use bytes::Bytes;
     use order_common::{OrderType, Side};
     use serde_json::{json, Value};
     use signal_common::tick_math::QuantizedValue;
+
+    fn trade_msg(
+        req_type: TradeRequestType,
+        client_order_id: i64,
+        params: &[u8],
+    ) -> TradeRequestMsg {
+        TradeRequestMsg::create(req_type, 0, client_order_id, params).expect("trade request msg")
+    }
 
     #[test]
     fn parses_bitget_trade_order_response() {
@@ -313,13 +320,8 @@ mod tests {
             price_qv: QuantizedValue::from_parts(1, 0, 100000),
             reduce_only: false,
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetNewUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: params.to_bytes().expect("typed params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::BitgetNewUMOrder, 123, &params);
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
         assert_eq!(val["category"], json!("usdt-futures"));
@@ -334,28 +336,22 @@ mod tests {
 
     #[test]
     fn rejects_bitget_um_order_raw_json_params() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetNewUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: Bytes::from(
-                r#"{"category":"usdt-futures","symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
-            ),
-            ipc_recv: None,
-        };
+        let msg = trade_msg(
+            TradeRequestType::BitgetNewUMOrder,
+            123,
+            br#"{"category":"usdt-futures","symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
+        );
         let err = build_order_payload(&msg, 999).expect_err("raw json must be rejected");
         assert!(err.to_string().contains("requires typed params"));
     }
 
     #[test]
     fn rejects_bitget_um_cancel_raw_json_params() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetCancelUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: Bytes::from(r#"{"orderId":"abc","clientOid":"123"}"#),
-            ipc_recv: None,
-        };
+        let msg = trade_msg(
+            TradeRequestType::BitgetCancelUMOrder,
+            123,
+            br#"{"orderId":"abc","clientOid":"123"}"#,
+        );
         let err = build_order_payload(&msg, 999).expect_err("raw json must be rejected");
         assert!(err.to_string().contains("requires typed params"));
     }
@@ -366,13 +362,8 @@ mod tests {
             order_id: Some("abc".to_string()),
             client_order_id: "123".to_string(),
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetCancelUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: params.to_bytes().expect("typed cancel params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed cancel params");
+        let msg = trade_msg(TradeRequestType::BitgetCancelUMOrder, 123, &params);
         let payload = build_order_payload(&msg, 999).expect("payload");
         let val: Value = serde_json::from_str(&payload).expect("json");
         assert_eq!(val["topic"], json!("cancel-order"));

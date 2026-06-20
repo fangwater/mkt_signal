@@ -1,7 +1,7 @@
 use crate::config::RestConstants;
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
+    BinanceCancelOrderParamsRef, BinanceNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
 use account_common::ApiKey;
 use anyhow::{anyhow, Context, Result};
@@ -14,6 +14,7 @@ type HmacSha256 = Hmac<Sha256>;
 const METHOD_ORDER_PLACE: &str = "order.place";
 const METHOD_ORDER_CANCEL: &str = "order.cancel";
 const METHOD_ORDER_STATUS: &str = "order.status";
+const BINANCE_RECV_WINDOW_MS: &str = "5000";
 
 fn parse_i64_value(v: &Value) -> Option<i64> {
     if let Some(n) = v.as_i64() {
@@ -63,20 +64,18 @@ fn parse_f64_value(v: &Value) -> Option<f64> {
     None
 }
 
-fn sign_query(query: &str, secret: &str) -> Result<String> {
+fn sign_ordered_params_fast(params: &[(&str, &str)], secret: &str) -> Result<String> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .map_err(|_| anyhow!("invalid binance secret"))?;
-    mac.update(query.as_bytes());
-    Ok(hex::encode(mac.finalize().into_bytes()))
-}
-
-fn sign_ordered_params(params: &[(&str, &str)], secret: &str) -> Result<String> {
-    let mut ser = url::form_urlencoded::Serializer::new(String::new());
-    for (k, v) in params.iter() {
-        ser.append_pair(k, v);
+    for (idx, (key, value)) in params.iter().enumerate() {
+        if idx > 0 {
+            mac.update(b"&");
+        }
+        mac.update(key.as_bytes());
+        mac.update(b"=");
+        mac.update(value.as_bytes());
     }
-    let query = ser.finish();
-    sign_query(&query, secret)
+    Ok(hex::encode(mac.finalize().into_bytes()))
 }
 
 fn push_json_string(out: &mut String, value: &str) {
@@ -121,7 +120,7 @@ fn build_signed_payload_json(
     params: &[(&str, &str)],
     creds: &ApiKey,
 ) -> Result<String> {
-    let signature = sign_ordered_params(params, creds.secret.trim())?;
+    let signature = sign_ordered_params_fast(params, creds.secret.trim())?;
     let id = transport_id.to_string();
     let params_bytes: usize = params.iter().map(|(k, v)| k.len() + v.len() + 6).sum();
     let mut out = String::with_capacity(
@@ -147,7 +146,7 @@ fn current_timestamp_ms_string() -> String {
 }
 
 fn build_new_order_payload_fast(
-    params: &BinanceNewOrderParams,
+    params: &BinanceNewOrderParamsRef<'_>,
     req_type: TradeRequestType,
     client_order_id: i64,
     transport_id: i64,
@@ -173,7 +172,6 @@ fn build_new_order_payload_fast(
         .order_type
         .is_limit()
         .then(|| params.price_qv.decimal_string());
-    let recv_window = RestConstants::RECV_WINDOW_MS.to_string();
     let timestamp = current_timestamp_ms_string();
     let reduce_only = if params.reduce_only { "true" } else { "false" };
     let new_order_resp_type = if params.ws_response_full {
@@ -198,48 +196,61 @@ fn build_new_order_payload_fast(
         None
     };
 
-    let mut ordered = Vec::with_capacity(13);
-    ordered.push(("apiKey", api_key));
-    ordered.push(("newClientOrderId", client_order_id.as_str()));
+    let mut ordered = [("", ""); 13];
+    let mut len = 0usize;
+    ordered[len] = ("apiKey", api_key);
+    len += 1;
+    ordered[len] = ("newClientOrderId", client_order_id.as_str());
+    len += 1;
     if let Some(value) = new_order_resp_type {
-        ordered.push(("newOrderRespType", value));
+        ordered[len] = ("newOrderRespType", value);
+        len += 1;
     }
     if let Some(value) = price.as_deref() {
-        ordered.push(("price", value));
+        ordered[len] = ("price", value);
+        len += 1;
     }
-    ordered.push(("quantity", quantity.as_str()));
-    ordered.push(("recvWindow", recv_window.as_str()));
+    ordered[len] = ("quantity", quantity.as_str());
+    len += 1;
+    ordered[len] = ("recvWindow", BINANCE_RECV_WINDOW_MS);
+    len += 1;
     if !is_margin {
-        ordered.push(("reduceOnly", reduce_only));
+        ordered[len] = ("reduceOnly", reduce_only);
+        len += 1;
     }
-    ordered.push(("side", params.side.as_str()));
+    ordered[len] = ("side", params.side.as_str());
+    len += 1;
     if let Some(value) = side_effect_type {
-        ordered.push(("sideEffectType", value));
+        ordered[len] = ("sideEffectType", value);
+        len += 1;
     }
-    ordered.push(("symbol", params.symbol.as_str()));
+    ordered[len] = ("symbol", params.symbol);
+    len += 1;
     if let Some(value) = time_in_force {
-        ordered.push(("timeInForce", value));
+        ordered[len] = ("timeInForce", value);
+        len += 1;
     }
-    ordered.push(("timestamp", timestamp.as_str()));
-    ordered.push(("type", order_type));
+    ordered[len] = ("timestamp", timestamp.as_str());
+    len += 1;
+    ordered[len] = ("type", order_type);
+    len += 1;
 
-    build_signed_payload_json(transport_id, METHOD_ORDER_PLACE, &ordered, creds)
+    build_signed_payload_json(transport_id, METHOD_ORDER_PLACE, &ordered[..len], creds)
 }
 
 fn build_cancel_order_payload_fast(
-    params: &BinanceCancelOrderParams,
+    params: &BinanceCancelOrderParamsRef<'_>,
     transport_id: i64,
     creds: &ApiKey,
 ) -> Result<String> {
     let api_key = creds.key.trim();
     let orig_client_order_id = params.orig_client_order_id.to_string();
-    let recv_window = RestConstants::RECV_WINDOW_MS.to_string();
     let timestamp = current_timestamp_ms_string();
     let ordered = [
         ("apiKey", api_key),
         ("origClientOrderId", orig_client_order_id.as_str()),
-        ("recvWindow", recv_window.as_str()),
-        ("symbol", params.symbol.as_str()),
+        ("recvWindow", BINANCE_RECV_WINDOW_MS),
+        ("symbol", params.symbol),
         ("timestamp", timestamp.as_str()),
     ];
     build_signed_payload_json(transport_id, METHOD_ORDER_CANCEL, &ordered, creds)
@@ -252,7 +263,7 @@ fn build_typed_order_payload_fast(
 ) -> Result<String> {
     match msg.req_type {
         TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
-            let params = BinanceNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = BinanceNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "invalid typed binance ws new order params for {:?}",
                     msg.req_type
@@ -267,7 +278,7 @@ fn build_typed_order_payload_fast(
             )
         }
         TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
-            let params = BinanceCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = BinanceCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "invalid typed binance ws cancel order params for {:?}",
                     msg.req_type
@@ -457,7 +468,7 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) 
 
 #[cfg(test)]
 mod tests {
-    use super::{build_order_payload, build_query_payload, sign_ordered_params};
+    use super::{build_order_payload, build_query_payload, sign_ordered_params_fast};
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
     use crate::trade_request::{
         BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
@@ -477,6 +488,14 @@ mod tests {
         }
     }
 
+    fn trade_msg(
+        req_type: TradeRequestType,
+        client_order_id: i64,
+        params: &[u8],
+    ) -> TradeRequestMsg {
+        TradeRequestMsg::create(req_type, 0, client_order_id, params).expect("trade request msg")
+    }
+
     fn assert_signature_matches_sorted_params(value: &Value) {
         let params = value["params"].as_object().expect("params object");
         let mut sorted = BTreeMap::new();
@@ -493,7 +512,8 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
-        let expected = sign_ordered_params(&ordered, creds().secret.trim()).expect("signature");
+        let expected =
+            sign_ordered_params_fast(&ordered, creds().secret.trim()).expect("signature");
         assert_eq!(
             value["params"]["signature"].as_str().expect("signature"),
             expected
@@ -514,13 +534,8 @@ mod tests {
             ws_um_response_result: true,
             ws_margin_limit_maker: false,
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BinanceWsNewUMOrder,
-            create_time: 0,
-            client_order_id: 42,
-            params: params.to_bytes().expect("typed params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::BinanceWsNewUMOrder, 42, &params);
 
         let payload = build_order_payload(&msg, 99, &creds()).expect("payload");
         let value: Value = serde_json::from_str(&payload).expect("json");
@@ -549,13 +564,8 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
             orig_client_order_id: 42,
         };
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BinanceWsCancelUMOrder,
-            create_time: 0,
-            client_order_id: 43,
-            params: params.to_bytes().expect("typed params"),
-            ipc_recv: None,
-        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::BinanceWsCancelUMOrder, 43, &params);
 
         let payload = build_order_payload(&msg, 101, &creds()).expect("payload");
         let value: Value = serde_json::from_str(&payload).expect("json");
@@ -598,13 +608,11 @@ mod tests {
 
     #[test]
     fn rejects_non_typed_binance_ws_order_params() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BinanceWsNewUMOrder,
-            create_time: 0,
-            client_order_id: 42,
-            params: Bytes::from_static(b"symbol=BTCUSDT&side=BUY"),
-            ipc_recv: None,
-        };
+        let msg = trade_msg(
+            TradeRequestType::BinanceWsNewUMOrder,
+            42,
+            b"symbol=BTCUSDT&side=BUY",
+        );
 
         let err = build_order_payload(&msg, 99, &creds()).expect_err("should reject raw params");
         assert!(err

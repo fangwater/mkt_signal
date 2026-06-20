@@ -1377,7 +1377,6 @@ impl TradeWsClient {
                 self.pending.push_front(msg);
                 return Err(err);
             }
-            self.notify_sent(&msg);
         }
         while let Some(msg) = self.pending_query.pop_front() {
             if let Err(err) = self.send_one_query(ws, &msg).await {
@@ -1586,7 +1585,7 @@ impl TradeWsClient {
             TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
                 BybitNewOrderRequest {
                     header,
-                    params: msg.params.clone(),
+                    params: msg.params_bytes(),
                 }
                 .to_ws_json_string(&req_id, timestamp_ms)
                 .ok_or_else(|| {
@@ -1600,7 +1599,7 @@ impl TradeWsClient {
             TradeRequestType::BybitCancelMarginOrder | TradeRequestType::BybitCancelUMOrder => {
                 BybitCancelOrderRequest {
                     header,
-                    params: msg.params.clone(),
+                    params: msg.params_bytes(),
                 }
                 .to_ws_json_string(&req_id, timestamp_ms)
                 .ok_or_else(|| {
@@ -1638,14 +1637,14 @@ impl TradeWsClient {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
                 OkexNewOrderRequest {
                     header,
-                    params: msg.params.clone(),
+                    params: msg.params_bytes(),
                 }
                 .to_ws_json_string(inst_id_code, transport_id)
             }
             TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
                 OkexCancelOrderRequest {
                     header,
-                    params: msg.params.clone(),
+                    params: msg.params_bytes(),
                 }
                 .to_ws_json_string(inst_id_code, transport_id)
             }
@@ -1678,7 +1677,7 @@ impl TradeWsClient {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
                 OkexNewOrderRequest {
                     header,
-                    params: msg.params.clone(),
+                    params: msg.params_bytes(),
                 }
                 .params_struct()
                 .map(|params| params.symbol)
@@ -1687,7 +1686,7 @@ impl TradeWsClient {
             TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
                 OkexCancelOrderRequest {
                     header,
-                    params: msg.params.clone(),
+                    params: msg.params_bytes(),
                 }
                 .params_struct()
                 .map(|params| params.inst_id)
@@ -1980,7 +1979,7 @@ impl TradeWsClient {
                                 create_time: msg.create_time,
                                 client_order_id: msg.client_order_id,
                             },
-                            params: msg.params.clone(),
+                            params: msg.params_bytes(),
                         }
                         .params_struct()
                     }
@@ -1992,7 +1991,7 @@ impl TradeWsClient {
                                 create_time: msg.create_time,
                                 client_order_id: msg.client_order_id,
                             },
-                            params: msg.params.clone(),
+                            params: msg.params_bytes(),
                         }
                         .params_struct()
                     }
@@ -2118,21 +2117,6 @@ impl TradeWsClient {
             "trade ws client id={} exchange={:?} dropping uncorrelated non-utf8 payload: {} bytes",
             self.id, self.exchange, len
         );
-    }
-
-    fn notify_sent(&self, msg: &TradeRequestMsg) {
-        let _ = self.resp_sink.send(TradeExecOutcome {
-            req_type: msg.req_type,
-            client_order_id: msg.client_order_id,
-            status: 200,
-            body: String::new(),
-            exchange: self.exchange,
-            order_id: 0,
-            order_status_u8: 0,
-            order_update_time: 0,
-            executed_qty: 0.0,
-            response_price: 0.0,
-        });
     }
 
     fn notify_rejected(&self, msg: &TradeRequestMsg, reason: &str) {
