@@ -40,6 +40,36 @@ pub struct BinanceAdapter {
     venue: TradingVenue,
     derivatives_symbols: RefCell<FastHashSet<String>>,
     symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,
+    last_symbol_slot: RefCell<Option<LastSymbolSlot>>,
+}
+
+#[derive(Clone, Copy)]
+struct LastSymbolSlot {
+    symbol: [u8; 32],
+    len: u8,
+    slot: usize,
+}
+
+impl LastSymbolSlot {
+    fn new(symbol: &str, slot: usize) -> Option<Self> {
+        let bytes = symbol.as_bytes();
+        let len = u8::try_from(bytes.len()).ok()?;
+        if bytes.len() > 32 {
+            return None;
+        }
+        let mut out = Self {
+            symbol: [0; 32],
+            len,
+            slot,
+        };
+        out.symbol[..bytes.len()].copy_from_slice(bytes);
+        Some(out)
+    }
+
+    fn matches(self, symbol: &str) -> bool {
+        let len = self.len as usize;
+        symbol.len() == len && symbol.as_bytes() == &self.symbol[..len]
+    }
 }
 
 impl BinanceAdapter {
@@ -48,6 +78,7 @@ impl BinanceAdapter {
             venue,
             derivatives_symbols: RefCell::new(fast_hash_set()),
             symbol_slot_by_symbol: RefCell::new(fast_hash_map()),
+            last_symbol_slot: RefCell::new(None),
         }
     }
 }
@@ -150,10 +181,21 @@ impl VenueAdapter for BinanceAdapter {
             let next_idx = slots.len();
             slots.entry(symbol.to_ascii_uppercase()).or_insert(next_idx);
         }
+        self.last_symbol_slot.borrow_mut().take();
     }
 
     fn symbol_slot_index(&self, symbol: &str) -> Option<usize> {
-        self.symbol_slot_by_symbol.borrow().get(symbol).copied()
+        if let Some(cached) = *self.last_symbol_slot.borrow() {
+            if cached.matches(symbol) {
+                return Some(cached.slot);
+            }
+        }
+
+        let slot = self.symbol_slot_by_symbol.borrow().get(symbol).copied()?;
+        if let Some(cached) = LastSymbolSlot::new(symbol, slot) {
+            *self.last_symbol_slot.borrow_mut() = Some(cached);
+        }
+        Some(slot)
     }
 
     fn parse_frame(
