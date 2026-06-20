@@ -61,6 +61,7 @@ scripts/order_export_puller/config.toml
 order_exports/
 
 # local notebook analysis outputs
+notebooks/
 analysis_outputs/
 persist_read_bybit_intra_arb01_20260612_new_latency.ipynb
 persist_read_bybit_intra_arb01_20260612_new_latency.executed.ipynb
