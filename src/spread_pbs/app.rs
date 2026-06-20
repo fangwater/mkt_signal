@@ -1469,14 +1469,11 @@ fn make_replacement_handler(
 ) -> FrameHandler {
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
         if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
-            let mut s = state.borrow_mut();
             let mut symbol_slot = |symbol: &str| adapter.symbol_slot_index(symbol);
-            if adapter.publish_derivatives_raw(
-                raw,
-                derivatives_publisher,
-                &mut symbol_slot,
-                &mut s.derivatives_published,
-            ) {
+            if let Some(published) =
+                adapter.publish_derivatives_raw(raw, derivatives_publisher, &mut symbol_slot)
+            {
+                state.borrow_mut().derivatives_published += published as u64;
                 return;
             }
             if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {

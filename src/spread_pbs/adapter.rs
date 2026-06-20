@@ -191,16 +191,15 @@ pub trait VenueAdapter {
     fn skip_json_fallback_after_raw_miss(&self) -> bool {
         false
     }
-    /// Optional raw derivatives hot path. Return true when the frame was fully
-    /// handled and callers can skip `serde_json::Value`.
+    /// Optional raw derivatives hot path. Return Some(published_count) when the
+    /// frame was fully handled and callers can skip `serde_json::Value`.
     fn publish_derivatives_raw(
         &self,
         _raw: &[u8],
         _publisher: &Rc<SpreadDerivativesPublisher>,
         _symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
-        _published: &mut u64,
-    ) -> bool {
-        false
+    ) -> Option<usize> {
+        None
     }
     fn parse_binary_frame(
         &self,

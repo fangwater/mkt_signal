@@ -336,13 +336,13 @@ impl VenueAdapter for BinanceAdapter {
         raw: &[u8],
         publisher: &Rc<SpreadDerivativesPublisher>,
         symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
-        published: &mut u64,
-    ) -> bool {
+    ) -> Option<usize> {
         if self.venue != TradingVenue::BinanceFutures {
-            return false;
+            return None;
         }
         let active_is_empty = self.symbol_slot_by_symbol.borrow().is_empty();
         let mut handled = false;
+        let mut published = 0usize;
         let parsed = binance_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
             handled = true;
             let symbol = raw_derivative_symbol(&derivative);
@@ -351,12 +351,12 @@ impl VenueAdapter for BinanceAdapter {
                 return Some(());
             }
             match publish_raw_derivative(publisher, slot_index, derivative) {
-                Ok(count) => *published += count as u64,
+                Ok(count) => published += count,
                 Err(e) => log::warn!("spread_pbs derivatives publish failed: {:#}", e),
             }
             Some(())
         });
-        parsed.is_some() && handled
+        (parsed.is_some() && handled).then_some(published)
     }
 
     fn parse_binary_frame(
