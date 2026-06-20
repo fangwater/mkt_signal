@@ -30,11 +30,16 @@ impl MarketMakerOpenStrategy {
     }
 
     pub fn handle_mm_open_ctx(&mut self, ctx: MmOpenCtx) {
+        let symbol = ctx.get_opening_symbol();
+        self.handle_mm_open_ctx_with_symbol(ctx, symbol);
+    }
+
+    pub fn handle_mm_open_ctx_with_symbol(&mut self, ctx: MmOpenCtx, symbol: String) {
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
             order_log_name: "MM开仓",
             order_rate_bucket: OrderRateBucket::MmOpen,
-            opening_symbol: ctx.get_opening_symbol(),
+            opening_symbol: symbol,
             opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,

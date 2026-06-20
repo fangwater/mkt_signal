@@ -1,4 +1,4 @@
-use crate::common::{bytes_helper, SignalBytes};
+use crate::common::{bytes_helper, SignalBytes, SignalSliceReader};
 use crate::hedge_signal::MmHedgeSignalQueryMsg;
 use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -19,15 +19,17 @@ impl SignalBytes for MmCancelTriggerCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 16 {
-            return Err("Not enough bytes for MmCancelTriggerCtx".to_string());
-        }
-        let trigger_ts = bytes.get_i64_le();
-        let freq_ms = bytes.get_u64_le();
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for MmCancelTriggerCtx".to_string());
-        }
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
+    }
+}
+
+impl MmCancelTriggerCtx {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(bytes);
+        let trigger_ts = reader.read_i64_le("MmCancelTriggerCtx trigger_ts")?;
+        let freq_ms = reader.read_u64_le("MmCancelTriggerCtx freq_ms")?;
+        reader.finish_exact("MmCancelTriggerCtx")?;
         Ok(Self {
             trigger_ts,
             freq_ms,
@@ -62,18 +64,18 @@ pub struct MmCancelCandidateSymbolGroup {
 
 impl MmCancelCandidateSymbolGroup {
     pub fn new(symbol: &str) -> Self {
-        let mut symbol_bytes = [0u8; 32];
-        let raw = symbol.as_bytes();
-        let len = raw.len().min(32);
-        symbol_bytes[..len].copy_from_slice(&raw[..len]);
         Self {
-            symbol: symbol_bytes,
+            symbol: bytes_helper::fixed_bytes_from_str(symbol),
             items: Vec::new(),
         }
     }
 
+    pub fn symbol_matches(&self, symbol: &str) -> bool {
+        bytes_helper::fixed_bytes_eq_ignore_ascii_case(&self.symbol, symbol)
+    }
+
     pub fn get_symbol(&self) -> String {
-        let end = self.symbol.iter().position(|&b| b == 0).unwrap_or(32);
+        let end = bytes_helper::fixed_bytes_len(&self.symbol);
         String::from_utf8_lossy(&self.symbol[..end]).to_string()
     }
 
@@ -103,7 +105,7 @@ impl MmCancelCandidateQueryMsg {
 
     pub fn push_grouped(&mut self, symbol: &str, entry: MmCancelCandidateEntry) {
         if let Some(last_group) = self.groups.last_mut() {
-            if last_group.get_symbol().eq_ignore_ascii_case(symbol) {
+            if last_group.symbol_matches(symbol) {
                 last_group.items.push(entry);
                 return;
             }
@@ -128,7 +130,7 @@ impl MmCancelCandidateQueryMsg {
 
     pub fn next_encoded_len_with(&self, symbol: &str, entry: &MmCancelCandidateEntry) -> usize {
         let add_group_overhead = match self.groups.last() {
-            Some(last_group) if last_group.get_symbol().eq_ignore_ascii_case(symbol) => 0,
+            Some(last_group) if last_group.symbol_matches(symbol) => 0,
             _ => 32 + 4,
         };
         8 + 4
@@ -139,6 +141,23 @@ impl MmCancelCandidateQueryMsg {
                 .sum::<usize>()
             + add_group_overhead
             + entry.encoded_len()
+    }
+
+    pub fn write_backward_to(&self, buf: &mut BytesMut) {
+        buf.put_u8(MM_BACKWARD_QUERY_CANCEL_CANDIDATES);
+        buf.put_i64_le(self.trigger_ts);
+        buf.put_u32_le(self.groups.len() as u32);
+        for group in &self.groups {
+            bytes_helper::write_fixed_bytes(buf, &group.symbol);
+            buf.put_u32_le(group.items.len() as u32);
+            for item in &group.items {
+                let (tick_i64, tick_exp) = item.price_qv.get_tick_parts();
+                buf.put_i32_le(item.strategy_id);
+                buf.put_i64_le(tick_i64);
+                buf.put_i32_le(tick_exp);
+                buf.put_i64_le(item.price_qv.get_count());
+            }
+        }
     }
 }
 
@@ -151,29 +170,20 @@ pub enum MmBackwardQueryMsg {
 impl MmBackwardQueryMsg {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
+        self.write_to(&mut buf);
+        buf.freeze()
+    }
+
+    pub fn write_to(&self, buf: &mut BytesMut) {
         match self {
             Self::Hedge(msg) => {
                 buf.put_u8(MM_BACKWARD_QUERY_HEDGE);
                 buf.put(msg.to_bytes());
             }
             Self::CancelCandidates(msg) => {
-                buf.put_u8(MM_BACKWARD_QUERY_CANCEL_CANDIDATES);
-                buf.put_i64_le(msg.trigger_ts);
-                buf.put_u32_le(msg.groups.len() as u32);
-                for group in &msg.groups {
-                    bytes_helper::write_fixed_bytes(&mut buf, &group.symbol);
-                    buf.put_u32_le(group.items.len() as u32);
-                    for item in &group.items {
-                        let (tick_i64, tick_exp) = item.price_qv.get_tick_parts();
-                        buf.put_i32_le(item.strategy_id);
-                        buf.put_i64_le(tick_i64);
-                        buf.put_i32_le(tick_exp);
-                        buf.put_i64_le(item.price_qv.get_count());
-                    }
-                }
+                msg.write_backward_to(buf);
             }
         }
-        buf.freeze()
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {

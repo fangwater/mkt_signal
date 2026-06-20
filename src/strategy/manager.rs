@@ -539,13 +539,22 @@ impl StrategyManager {
     /// 查询指定 symbol 的所有活跃策略 id。
     pub fn ids_for_symbol(&self, symbol: &str) -> Option<&BTreeSet<i32>> {
         let symbol = normalize_symbol_for_internal(symbol);
-        self.symbol_index.get(&symbol)
+        self.ids_for_normalized_symbol(&symbol)
+    }
+
+    /// 查询已归一化 symbol 的所有活跃策略 id。
+    pub fn ids_for_normalized_symbol(&self, symbol: &str) -> Option<&BTreeSet<i32>> {
+        self.symbol_index.get(symbol)
     }
 
     /// 指定 symbol 是否存在活跃策略。
     pub fn has_symbol(&self, symbol: &str) -> bool {
         let symbol = normalize_symbol_for_internal(symbol);
-        self.symbol_index.contains_key(&symbol)
+        self.has_normalized_symbol(&symbol)
+    }
+
+    pub fn has_normalized_symbol(&self, symbol: &str) -> bool {
+        self.symbol_index.contains_key(symbol)
     }
 
     pub fn mm_open_strategy_ids_by_price_qv(
@@ -683,7 +692,11 @@ impl StrategyManager {
     /// 查询指定 symbol 的 MM 对冲策略 id（symbol 不区分大小写）
     pub fn find_mm_hedge_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        let ids = self.symbol_index.get(&symbol_upper)?;
+        self.find_mm_hedge_id_for_normalized_symbol(&symbol_upper)
+    }
+
+    pub fn find_mm_hedge_id_for_normalized_symbol(&self, symbol_upper: &str) -> Option<i32> {
+        let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if strategy.as_any().is::<MarketMakerHedgeStrategy>() {
@@ -697,9 +710,14 @@ impl StrategyManager {
     /// 确保指定 symbol 存在 MM 对冲策略（symbol 不区分大小写）
     pub fn ensure_mm_hedge_strategy(&mut self, symbol: &str) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        if let Some(id) = self.find_mm_hedge_id(&symbol_upper) {
+        self.ensure_mm_hedge_strategy_for_normalized_symbol(&symbol_upper)
+    }
+
+    pub fn ensure_mm_hedge_strategy_for_normalized_symbol(&mut self, symbol_upper: &str) -> i32 {
+        if let Some(id) = self.find_mm_hedge_id_for_normalized_symbol(symbol_upper) {
             return id;
         }
+        let symbol_upper = symbol_upper.to_string();
         let strategy_id = StrategyManager::generate_strategy_id();
         let mut strategy = MarketMakerHedgeStrategy::new(strategy_id, symbol_upper.clone());
         let open_venue = MonitorChannel::instance().open_venue();
@@ -741,7 +759,15 @@ impl StrategyManager {
     /// 查询指定 symbol 的 Arb 对冲状态策略 id（symbol 不区分大小写）
     pub fn find_exec_strategy_id(&self, symbol: &str, exec_venue: TradingVenue) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        let ids = self.symbol_index.get(&symbol_upper)?;
+        self.find_exec_strategy_id_for_normalized_symbol(&symbol_upper, exec_venue)
+    }
+
+    pub fn find_exec_strategy_id_for_normalized_symbol(
+        &self,
+        symbol_upper: &str,
+        exec_venue: TradingVenue,
+    ) -> Option<i32> {
+        let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if let Some(exec) = strategy.as_any().downcast_ref::<ExecStrategy>() {
@@ -756,9 +782,19 @@ impl StrategyManager {
 
     pub fn ensure_exec_strategy(&mut self, symbol: &str, exec_venue: TradingVenue) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        if let Some(id) = self.find_exec_strategy_id(&symbol_upper, exec_venue) {
+        self.ensure_exec_strategy_for_normalized_symbol(&symbol_upper, exec_venue)
+    }
+
+    pub fn ensure_exec_strategy_for_normalized_symbol(
+        &mut self,
+        symbol_upper: &str,
+        exec_venue: TradingVenue,
+    ) -> i32 {
+        if let Some(id) = self.find_exec_strategy_id_for_normalized_symbol(symbol_upper, exec_venue)
+        {
             return id;
         }
+        let symbol_upper = symbol_upper.to_string();
         let strategy_id = StrategyManager::generate_strategy_id();
         let strategy = ExecStrategy::new(strategy_id, symbol_upper.clone(), exec_venue);
         info!(
@@ -781,7 +817,11 @@ impl StrategyManager {
 
     pub fn find_arb_hedge_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        let ids = self.symbol_index.get(&symbol_upper)?;
+        self.find_arb_hedge_id_for_normalized_symbol(&symbol_upper)
+    }
+
+    pub fn find_arb_hedge_id_for_normalized_symbol(&self, symbol_upper: &str) -> Option<i32> {
+        let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
                 if strategy.as_any().is::<ArbHedgeStrategy>() {
@@ -795,9 +835,14 @@ impl StrategyManager {
     /// 确保指定 symbol 存在 Arb 对冲状态策略（symbol 不区分大小写）
     pub fn ensure_arb_hedge_strategy(&mut self, symbol: &str) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        if let Some(id) = self.find_arb_hedge_id(&symbol_upper) {
+        self.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol_upper)
+    }
+
+    pub fn ensure_arb_hedge_strategy_for_normalized_symbol(&mut self, symbol_upper: &str) -> i32 {
+        if let Some(id) = self.find_arb_hedge_id_for_normalized_symbol(symbol_upper) {
             return id;
         }
+        let symbol_upper = symbol_upper.to_string();
         let strategy_id = StrategyManager::generate_strategy_id();
         let open_venue = MonitorChannel::instance().open_venue();
         let hedge_venue = MonitorChannel::instance().hedge_venue();

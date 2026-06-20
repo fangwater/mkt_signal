@@ -227,10 +227,28 @@ impl<'a> SignalSliceReader<'a> {
 pub mod bytes_helper {
     use super::*;
 
+    pub fn fixed_bytes_len(bytes: &[u8; 32]) -> usize {
+        bytes.iter().position(|&b| b == 0).unwrap_or(32)
+    }
+
+    pub fn fixed_bytes_from_str(value: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let bytes = value.as_bytes();
+        let len = bytes.len().min(32);
+        out[..len].copy_from_slice(&bytes[..len]);
+        out
+    }
+
+    pub fn fixed_bytes_eq_ignore_ascii_case(bytes: &[u8; 32], value: &str) -> bool {
+        let len = fixed_bytes_len(bytes);
+        let value = value.as_bytes();
+        len == value.len() && bytes[..len].eq_ignore_ascii_case(value)
+    }
+
     /// Write a fixed-size byte array (for symbol storage)
     pub fn write_fixed_bytes(buf: &mut BytesMut, bytes: &[u8; 32]) {
         // Find the actual length (until first zero or full length)
-        let len = bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        let len = fixed_bytes_len(bytes);
         buf.put_u8(len as u8);
         buf.put_slice(&bytes[..len]);
     }

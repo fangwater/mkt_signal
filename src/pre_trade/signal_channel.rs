@@ -16,6 +16,7 @@ use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::open_strategy_common::OpenStrategyCommon;
 use crate::strategy::{Strategy, StrategyManager};
 use anyhow::Result;
+use bytes::BytesMut;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
@@ -27,19 +28,19 @@ use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::{
-    ArbBackwardQueryMsg, ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
+    ArbCancelCandidateEntry, ArbCancelCandidateQueryMsg, ArbCancelTriggerCtx,
 };
 use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
-use signal_common::common::SignalBytes;
+use signal_common::common::bytes_helper;
 use signal_common::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
 use signal_common::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use signal_common::mm_signal::{
-    MmBackwardQueryMsg, MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
+    MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
 };
 use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView, MmOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignal, TradeSignalView};
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
@@ -55,6 +56,12 @@ pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
 const SIGNAL_COUNT_BUCKETS: usize = 14;
+
+fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
+    let end = bytes_helper::fixed_bytes_len(symbol);
+    let raw = std::str::from_utf8(&symbol[..end]).unwrap_or("");
+    normalize_symbol_for_internal(raw)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct OpenSignalDropReason {
@@ -736,12 +743,12 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     match ArbOpenCtxView::from_bytes(signal.context) {
         Ok(open_ctx) => {
             let handle_start_us = get_timestamp_us();
-            let symbol = normalize_symbol_for_internal(&open_ctx.get_opening_symbol());
+            let symbol = normalize_fixed_symbol_for_internal(&open_ctx.opening_symbol);
             if symbol.is_empty() {
                 warn!("ArbOpen: empty symbol");
                 return;
             }
-            let hedging_symbol = normalize_symbol_for_internal(&open_ctx.get_hedging_symbol());
+            let hedging_symbol = normalize_fixed_symbol_for_internal(&open_ctx.hedging_symbol);
             let Some(side) = open_ctx.get_side() else {
                 warn!("ArbOpen: invalid side {}", open_ctx.side);
                 return;
@@ -890,7 +897,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             {
                 let mut mgr = strategy_mgr.borrow_mut();
-                let _ = mgr.ensure_arb_hedge_strategy(&symbol);
+                let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
             }
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = ArbOpenStrategy::new(strategy_id);
@@ -958,7 +965,7 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
         warn!("failed to decode MMOpen context");
         return;
     };
-    let symbol = normalize_symbol_for_internal(&open_ctx.get_opening_symbol());
+    let symbol = normalize_fixed_symbol_for_internal(&open_ctx.opening_symbol);
     if symbol.is_empty() {
         warn!("MMOpen: empty symbol");
         return;
@@ -981,11 +988,13 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
 
     let open_ctx = open_ctx.to_owned_with_symbol(&symbol);
     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-    let _ = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
+    let _ = strategy_mgr
+        .borrow_mut()
+        .ensure_mm_hedge_strategy_for_normalized_symbol(&symbol);
 
     let strategy_id = StrategyManager::generate_strategy_id();
     let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-    strategy.handle_mm_open_ctx(open_ctx);
+    strategy.handle_mm_open_ctx_with_symbol(open_ctx, symbol.clone());
     if strategy.is_active() {
         debug!("MMOpen: strategy activated id={}", strategy_id);
         strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1009,13 +1018,13 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
             match ArbOpenCtxView::from_bytes(signal.context) {
                 Ok(open_ctx_view) => {
                     let handle_start_us = get_timestamp_us();
-                    let symbol = normalize_symbol_for_internal(&open_ctx_view.get_opening_symbol());
+                    let symbol = normalize_fixed_symbol_for_internal(&open_ctx_view.opening_symbol);
                     if symbol.is_empty() {
                         warn!("ArbOpen: empty symbol");
                         return;
                     }
                     let hedging_symbol =
-                        normalize_symbol_for_internal(&open_ctx_view.get_hedging_symbol());
+                        normalize_fixed_symbol_for_internal(&open_ctx_view.hedging_symbol);
                     let Some(side) = open_ctx_view.get_side() else {
                         warn!("ArbOpen: invalid side {}", open_ctx_view.side);
                         return;
@@ -1170,7 +1179,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                     {
                         let mut mgr = strategy_mgr.borrow_mut();
-                        let _ = mgr.ensure_arb_hedge_strategy(&symbol);
+                        let _ = mgr.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol);
                     }
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = ArbOpenStrategy::new(strategy_id);
@@ -1228,9 +1237,9 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
             match ArbOpenCtxView::from_bytes(signal.context) {
                 Ok(close_ctx_view) => {
                     let opening_symbol =
-                        normalize_symbol_for_internal(&close_ctx_view.get_opening_symbol());
+                        normalize_fixed_symbol_for_internal(&close_ctx_view.opening_symbol);
                     let hedging_symbol =
-                        normalize_symbol_for_internal(&close_ctx_view.get_hedging_symbol());
+                        normalize_fixed_symbol_for_internal(&close_ctx_view.hedging_symbol);
 
                     // 获取平仓方向
                     let Some(close_side) = Side::from_u8(close_ctx_view.side) else {
@@ -1296,7 +1305,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     {
                         let _ = strategy_mgr
                             .borrow_mut()
-                            .ensure_arb_hedge_strategy(&opening_symbol);
+                            .ensure_arb_hedge_strategy_for_normalized_symbol(&opening_symbol);
                     }
 
                     let strategy_id = StrategyManager::generate_strategy_id();
@@ -1324,9 +1333,9 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
         SignalType::ArbCancel => {
             match ArbCancelCtx::from_slice(signal.context) {
                 Ok(mut cancel_ctx) => {
-                    let symbol = normalize_symbol_for_internal(&cancel_ctx.get_opening_symbol());
+                    let symbol = normalize_fixed_symbol_for_internal(&cancel_ctx.opening_symbol);
                     let hedging_symbol =
-                        normalize_symbol_for_internal(&cancel_ctx.get_hedging_symbol());
+                        normalize_fixed_symbol_for_internal(&cancel_ctx.hedging_symbol);
                     let cancel_side = cancel_ctx.get_side();
                     let cancel_reason = cancel_ctx.get_reason();
                     let require_direction_match = matches!(
@@ -1397,7 +1406,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     let candidate_ids: Vec<i32> = {
                         strategy_mgr
                             .borrow()
-                            .ids_for_symbol(&symbol)
+                            .ids_for_normalized_symbol(&symbol)
                             .map(|set| set.iter().copied().collect())
                             .unwrap_or_default()
                     };
@@ -1442,21 +1451,21 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 Err(err) => warn!("failed to decode ArbCancel context: {err}"),
             }
         }
-        SignalType::ArbCancelTrigger => {
-            match ArbCancelTriggerCtx::from_bytes(bytes::Bytes::copy_from_slice(signal.context)) {
-                Ok(trigger_ctx) => {
-                    if current_is_mm_mode() {
-                        debug!("ArbCancelTrigger ignored: pre_trade is in MM mode");
-                        return;
-                    }
+        SignalType::ArbCancelTrigger => match ArbCancelTriggerCtx::from_slice(signal.context) {
+            Ok(trigger_ctx) => {
+                if current_is_mm_mode() {
+                    debug!("ArbCancelTrigger ignored: pre_trade is in MM mode");
+                    return;
+                }
 
-                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                    let price_map_snapshot = strategy_mgr.borrow().arb_open_price_map_snapshot();
-                    if price_map_snapshot.is_empty() {
-                        return;
-                    }
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let price_map_snapshot = strategy_mgr.borrow().arb_open_price_map_snapshot();
+                if price_map_snapshot.is_empty() {
+                    return;
+                }
 
-                    let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let debug_stats = if log::log_enabled!(log::Level::Debug) {
+                    let mut symbol_counts: HashMap<String, usize> = HashMap::new();
                     let mut indexed_strategy_count = 0usize;
                     for (key, strategy_ids) in &price_map_snapshot {
                         *symbol_counts.entry(key.symbol.clone()).or_default() += strategy_ids.len();
@@ -1496,78 +1505,98 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                             preview.join(",")
                         }
                     };
-
-                    let mut chunk = ArbCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
-                    let mut published_chunks = 0usize;
-                    let mut published_items = 0usize;
-
-                    let flush_chunk =
-                        |chunk: &mut ArbCancelCandidateQueryMsg,
-                         published_chunks: &mut usize,
-                         published_items: &mut usize| {
-                            if chunk.is_empty() {
-                                return;
-                            }
-                            let item_count = chunk
-                                .groups
-                                .iter()
-                                .map(|group| group.items.len())
-                                .sum::<usize>();
-                            let payload =
-                                ArbBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
-                            match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
-                                Ok(true) => {
-                                    *published_chunks += 1;
-                                    *published_items += item_count;
-                                }
-                                Ok(false) => {
-                                    warn!("ArbCancelTrigger: backward publisher unavailable");
-                                }
-                                Err(err) => {
-                                    warn!(
-                                        "ArbCancelTrigger: publish backward failed err={:#}",
-                                        err
-                                    );
-                                }
-                            }
-                            chunk.groups.clear();
-                        };
-
-                    for (key, strategy_ids) in price_map_snapshot {
-                        let price_qv = key.price_qv.to_quantized_value();
-                        for strategy_id in strategy_ids {
-                            let entry = ArbCancelCandidateEntry::new(strategy_id, price_qv);
-                            let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
-                            if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
-                                flush_chunk(
-                                    &mut chunk,
-                                    &mut published_chunks,
-                                    &mut published_items,
-                                );
-                            }
-                            chunk.push_grouped(&key.symbol, entry);
-                        }
-                    }
-                    flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
-                    debug!(
-                        "ArbCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
-                        published_chunks,
-                        published_items,
+                    Some((
                         indexed_strategy_count,
                         symbol_count,
                         symbol_sample,
                         strategy_sample,
-                        trigger_ctx.trigger_ts,
-                        trigger_ctx.freq_ms
-                    );
+                    ))
+                } else {
+                    None
+                };
+
+                let mut chunk = ArbCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
+                let mut payload = BytesMut::with_capacity(SIGNAL_PAYLOAD);
+                let mut published_chunks = 0usize;
+                let mut published_items = 0usize;
+
+                let flush_chunk = |chunk: &mut ArbCancelCandidateQueryMsg,
+                                   payload: &mut BytesMut,
+                                   published_chunks: &mut usize,
+                                   published_items: &mut usize| {
+                    if chunk.is_empty() {
+                        return;
+                    }
+                    let item_count = chunk
+                        .groups
+                        .iter()
+                        .map(|group| group.items.len())
+                        .sum::<usize>();
+                    payload.clear();
+                    chunk.write_backward_to(payload);
+                    match SignalChannel::with(|ch| ch.publish_backward(payload.as_ref())) {
+                        Ok(true) => {
+                            *published_chunks += 1;
+                            *published_items += item_count;
+                        }
+                        Ok(false) => {
+                            warn!("ArbCancelTrigger: backward publisher unavailable");
+                        }
+                        Err(err) => {
+                            warn!("ArbCancelTrigger: publish backward failed err={:#}", err);
+                        }
+                    }
+                    chunk.groups.clear();
+                };
+
+                for (key, strategy_ids) in price_map_snapshot {
+                    let price_qv = key.price_qv.to_quantized_value();
+                    for strategy_id in strategy_ids {
+                        let entry = ArbCancelCandidateEntry::new(strategy_id, price_qv);
+                        let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
+                        if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
+                            flush_chunk(
+                                &mut chunk,
+                                &mut payload,
+                                &mut published_chunks,
+                                &mut published_items,
+                            );
+                        }
+                        chunk.push_grouped(&key.symbol, entry);
+                    }
                 }
-                Err(err) => warn!("failed to decode ArbCancelTrigger context: {err}"),
+                flush_chunk(
+                    &mut chunk,
+                    &mut payload,
+                    &mut published_chunks,
+                    &mut published_items,
+                );
+                if let Some((
+                    indexed_strategy_count,
+                    symbol_count,
+                    symbol_sample,
+                    strategy_sample,
+                )) = debug_stats
+                {
+                    debug!(
+                            "ArbCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
+                            published_chunks,
+                            published_items,
+                            indexed_strategy_count,
+                            symbol_count,
+                            symbol_sample,
+                            strategy_sample,
+                            trigger_ctx.trigger_ts,
+                            trigger_ctx.freq_ms
+                        );
+                }
             }
-        }
+            Err(err) => warn!("failed to decode ArbCancelTrigger context: {err}"),
+        },
         SignalType::ArbHedge => match ArbHedgeCtx::from_slice(signal.context) {
             Ok(mut hedge_ctx) => {
                 let strategy_id = hedge_ctx.strategy_id;
-                let hedging_symbol = normalize_symbol_for_internal(&hedge_ctx.get_hedging_symbol());
+                let hedging_symbol = normalize_fixed_symbol_for_internal(&hedge_ctx.hedging_symbol);
                 let hedging_venue = TradingVenue::from_u8(hedge_ctx.hedging_leg.venue)
                     .unwrap_or(TradingVenue::BinanceFutures);
 
@@ -1614,7 +1643,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 warn!("failed to decode MMOpen context");
                 return;
             };
-            let symbol = normalize_symbol_for_internal(&open_ctx_view.get_opening_symbol());
+            let symbol = normalize_fixed_symbol_for_internal(&open_ctx_view.opening_symbol);
             if symbol.is_empty() {
                 warn!("MMOpen: empty symbol");
                 return;
@@ -1639,11 +1668,13 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
             let open_ctx = open_ctx_view.to_owned_with_symbol(&symbol);
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-            let _ = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
+            let _ = strategy_mgr
+                .borrow_mut()
+                .ensure_mm_hedge_strategy_for_normalized_symbol(&symbol);
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_mm_open_ctx(open_ctx);
+            strategy.handle_mm_open_ctx_with_symbol(open_ctx, symbol.clone());
             if strategy.is_active() {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1651,17 +1682,20 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 info!("MMOpen: strategy_id={} 未激活", strategy_id);
             }
         }
-        SignalType::MMCancelTrigger => {
-            match MmCancelTriggerCtx::from_bytes(bytes::Bytes::copy_from_slice(signal.context)) {
-                Ok(trigger_ctx) => {
-                    if !current_is_mm_mode() {
-                        debug!("MMCancelTrigger ignored: pre_trade is not in MM mode");
-                        return;
-                    }
+        SignalType::MMCancelTrigger => match MmCancelTriggerCtx::from_slice(signal.context) {
+            Ok(trigger_ctx) => {
+                if !current_is_mm_mode() {
+                    debug!("MMCancelTrigger ignored: pre_trade is not in MM mode");
+                    return;
+                }
 
-                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                    let price_map_snapshot = strategy_mgr.borrow().mm_open_price_map_snapshot();
-                    let mut symbol_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                let price_map_snapshot = strategy_mgr.borrow().mm_open_price_map_snapshot();
+                if price_map_snapshot.is_empty() {
+                    return;
+                }
+                let debug_stats = if log::log_enabled!(log::Level::Debug) {
+                    let mut symbol_counts: HashMap<String, usize> = HashMap::new();
                     let mut indexed_strategy_count = 0usize;
                     for (key, strategy_ids) in &price_map_snapshot {
                         *symbol_counts.entry(key.symbol.clone()).or_default() += strategy_ids.len();
@@ -1701,81 +1735,101 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                             preview.join(",")
                         }
                     };
-                    if price_map_snapshot.is_empty() {
+                    Some((
+                        indexed_strategy_count,
+                        symbol_count,
+                        symbol_sample,
+                        strategy_sample,
+                    ))
+                } else {
+                    None
+                };
+
+                let mut chunk = MmCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
+                let mut payload = BytesMut::with_capacity(SIGNAL_PAYLOAD);
+                let mut published_chunks = 0usize;
+                let mut published_items = 0usize;
+
+                let flush_chunk = |chunk: &mut MmCancelCandidateQueryMsg,
+                                   payload: &mut BytesMut,
+                                   published_chunks: &mut usize,
+                                   published_items: &mut usize| {
+                    if chunk.is_empty() {
                         return;
                     }
-
-                    let mut chunk = MmCancelCandidateQueryMsg::new(trigger_ctx.trigger_ts);
-                    let mut published_chunks = 0usize;
-                    let mut published_items = 0usize;
-
-                    let flush_chunk =
-                        |chunk: &mut MmCancelCandidateQueryMsg,
-                         published_chunks: &mut usize,
-                         published_items: &mut usize| {
-                            if chunk.is_empty() {
-                                return;
-                            }
-                            let item_count = chunk
-                                .groups
-                                .iter()
-                                .map(|group| group.items.len())
-                                .sum::<usize>();
-                            let payload =
-                                MmBackwardQueryMsg::CancelCandidates(chunk.clone()).to_bytes();
-                            match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
-                                Ok(true) => {
-                                    *published_chunks += 1;
-                                    *published_items += item_count;
-                                }
-                                Ok(false) => {
-                                    warn!("MMCancelTrigger: backward publisher unavailable");
-                                }
-                                Err(err) => {
-                                    warn!("MMCancelTrigger: publish backward failed err={:#}", err);
-                                }
-                            }
-                            chunk.groups.clear();
-                        };
-
-                    for (key, strategy_ids) in price_map_snapshot {
-                        let price_qv = key.price_qv.to_quantized_value();
-                        for strategy_id in strategy_ids {
-                            let entry = MmCancelCandidateEntry::new(strategy_id, price_qv);
-                            let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
-                            if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
-                                flush_chunk(
-                                    &mut chunk,
-                                    &mut published_chunks,
-                                    &mut published_items,
-                                );
-                            }
-                            chunk.push_grouped(&key.symbol, entry);
+                    let item_count = chunk
+                        .groups
+                        .iter()
+                        .map(|group| group.items.len())
+                        .sum::<usize>();
+                    payload.clear();
+                    chunk.write_backward_to(payload);
+                    match SignalChannel::with(|ch| ch.publish_backward(payload.as_ref())) {
+                        Ok(true) => {
+                            *published_chunks += 1;
+                            *published_items += item_count;
+                        }
+                        Ok(false) => {
+                            warn!("MMCancelTrigger: backward publisher unavailable");
+                        }
+                        Err(err) => {
+                            warn!("MMCancelTrigger: publish backward failed err={:#}", err);
                         }
                     }
-                    flush_chunk(&mut chunk, &mut published_chunks, &mut published_items);
-                    debug!(
-                    "MMCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
-                    published_chunks,
-                    published_items,
+                    chunk.groups.clear();
+                };
+
+                for (key, strategy_ids) in price_map_snapshot {
+                    let price_qv = key.price_qv.to_quantized_value();
+                    for strategy_id in strategy_ids {
+                        let entry = MmCancelCandidateEntry::new(strategy_id, price_qv);
+                        let next_len = 1 + chunk.next_encoded_len_with(&key.symbol, &entry);
+                        if !chunk.is_empty() && next_len > SIGNAL_PAYLOAD {
+                            flush_chunk(
+                                &mut chunk,
+                                &mut payload,
+                                &mut published_chunks,
+                                &mut published_items,
+                            );
+                        }
+                        chunk.push_grouped(&key.symbol, entry);
+                    }
+                }
+                flush_chunk(
+                    &mut chunk,
+                    &mut payload,
+                    &mut published_chunks,
+                    &mut published_items,
+                );
+                if let Some((
                     indexed_strategy_count,
                     symbol_count,
                     symbol_sample,
                     strategy_sample,
-                    trigger_ctx.trigger_ts,
-                    trigger_ctx.freq_ms
-                );
+                )) = debug_stats
+                {
+                    debug!(
+                            "MMCancelTrigger: dynamic index published chunks={} items={} indexed_strategies={} symbols={} sample={} strategies={} trigger_ts={} freq_ms={}",
+                            published_chunks,
+                            published_items,
+                            indexed_strategy_count,
+                            symbol_count,
+                            symbol_sample,
+                            strategy_sample,
+                            trigger_ctx.trigger_ts,
+                            trigger_ctx.freq_ms
+                        );
                 }
-                Err(err) => warn!("failed to decode MMCancelTrigger context: {err}"),
             }
-        }
+            Err(err) => warn!("failed to decode MMCancelTrigger context: {err}"),
+        },
         SignalType::MMCancel => match MmCancelCtx::from_slice(signal.context) {
             Ok(mut cancel_ctx) => {
                 if !current_is_mm_mode() {
                     debug!("MMCancel ignored: pre_trade is not in MM mode");
                     return;
                 }
-                let symbol = normalize_symbol_for_internal(&cancel_ctx.get_opening_symbol());
+                let symbol = normalize_fixed_symbol_for_internal(&cancel_ctx.opening_symbol);
                 let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
                     .unwrap_or(TradingVenue::BinanceMargin);
 
@@ -1823,7 +1877,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let candidate_ids: Vec<i32> = {
                     strategy_mgr
                         .borrow()
-                        .ids_for_symbol(&symbol)
+                        .ids_for_normalized_symbol(&symbol)
                         .map(|set| set.iter().copied().collect())
                         .unwrap_or_default()
                 };
@@ -1864,14 +1918,16 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     debug!("MMHedge ignored: pre_trade is not in MM mode");
                     return;
                 }
-                let symbol = normalize_symbol_for_internal(&hedge_ctx.get_opening_symbol());
+                let symbol = normalize_fixed_symbol_for_internal(&hedge_ctx.opening_symbol);
                 if symbol.is_empty() {
                     warn!("MMHedge: empty symbol");
                     return;
                 }
                 hedge_ctx.set_opening_symbol(&symbol);
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let strategy_id = strategy_mgr.borrow_mut().ensure_mm_hedge_strategy(&symbol);
+                let strategy_id = strategy_mgr
+                    .borrow_mut()
+                    .ensure_mm_hedge_strategy_for_normalized_symbol(&symbol);
                 info!(
                     "MMHedge: received symbol={} strategy_id={} price_levels={} amount_levels={} next_query_ts={}",
                     symbol,
@@ -1904,7 +1960,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
         },
         SignalType::ExecRequest => match ExecRequestCtx::from_slice(signal.context) {
             Ok(mut exec_ctx) => {
-                let symbol = normalize_symbol_for_internal(&exec_ctx.get_exec_symbol());
+                let symbol = normalize_fixed_symbol_for_internal(&exec_ctx.exec_symbol);
                 if symbol.is_empty() {
                     warn!("ExecRequest: empty symbol");
                     return;
@@ -1926,7 +1982,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let strategy_id = strategy_mgr
                     .borrow_mut()
-                    .ensure_exec_strategy(&symbol, exec_venue);
+                    .ensure_exec_strategy_for_normalized_symbol(&symbol, exec_venue);
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
@@ -1948,7 +2004,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
         },
         SignalType::Exec => match ExecCtx::from_slice(signal.context) {
             Ok(mut exec_ctx) => {
-                let symbol = normalize_symbol_for_internal(&exec_ctx.get_exec_symbol());
+                let symbol = normalize_fixed_symbol_for_internal(&exec_ctx.exec_symbol);
                 if symbol.is_empty() {
                     warn!("Exec: empty symbol");
                     return;
@@ -1964,7 +2020,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 } else {
                     strategy_mgr
                         .borrow_mut()
-                        .ensure_exec_strategy(&symbol, exec_venue)
+                        .ensure_exec_strategy_for_normalized_symbol(&symbol, exec_venue)
                 };
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
@@ -1992,7 +2048,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
         },
         SignalType::ExecPositionTarget => match ExecPositionTargetCtx::from_slice(signal.context) {
             Ok(mut target_ctx) => {
-                let symbol = normalize_symbol_for_internal(&target_ctx.get_exec_symbol());
+                let symbol = normalize_fixed_symbol_for_internal(&target_ctx.exec_symbol);
                 if symbol.is_empty() {
                     warn!("ExecPositionTarget: empty symbol");
                     return;
@@ -2020,7 +2076,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let strategy_id = strategy_mgr
                     .borrow_mut()
-                    .ensure_exec_strategy(&symbol, exec_venue);
+                    .ensure_exec_strategy_for_normalized_symbol(&symbol, exec_venue);
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
