@@ -6,6 +6,7 @@ use crate::trade_request::{
     BitgetCancelOrderParamsRef, BitgetNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
 use account_common::bitget_auth::BitgetCredentials;
+use signal_common::tick_math::QuantizedValue;
 
 pub fn build_login_payload(creds: &BitgetCredentials) -> Result<String> {
     serde_json::to_string(&creds.build_login_message())
@@ -104,9 +105,9 @@ fn push_bitget_new_order_arg(
     );
     if params.order_type.is_limit() {
         push_json_field(out, "timeInForce", "post_only", &mut first);
-        push_json_field(out, "price", &params.price_qv.decimal_string(), &mut first);
+        push_qv_json_field(out, "price", params.price_qv, &mut first);
     }
-    push_json_field(out, "qty", &params.quantity_qv.decimal_string(), &mut first);
+    push_qv_json_field(out, "qty", params.quantity_qv, &mut first);
     push_i64_string_field(out, "clientOid", client_order_id, &mut first);
     if params.reduce_only {
         push_json_field(out, "reduceOnly", "YES", &mut first);
@@ -129,6 +130,19 @@ fn push_json_field(out: &mut String, key: &str, value: &str, first: &mut bool) {
     push_json_string(out, key);
     out.push(':');
     push_json_string(out, value);
+}
+
+fn push_qv_json_field(out: &mut String, key: &str, value: QuantizedValue, first: &mut bool) {
+    if !*first {
+        out.push(',');
+    }
+    *first = false;
+    push_json_string(out, key);
+    out.push_str(":\"");
+    value
+        .write_decimal_to(out)
+        .expect("write quantized decimal to String cannot fail");
+    out.push('"');
 }
 
 fn push_i64_string_field(out: &mut String, key: &str, value: i64, first: &mut bool) {

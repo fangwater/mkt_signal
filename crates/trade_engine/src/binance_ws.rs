@@ -8,6 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::Sha256;
+use signal_common::tick_math::QuantizedDecimal;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -170,11 +171,16 @@ fn build_new_order_payload_fast(
 
     let api_key = creds.key.trim();
     let client_order_id = client_order_id.to_string();
-    let quantity = params.quantity_qv.decimal_string();
+    let quantity = QuantizedDecimal::try_from_value(params.quantity_qv)
+        .ok_or_else(|| anyhow!("binance order quantity decimal exceeds inline buffer"))?;
     let price = params
         .order_type
         .is_limit()
-        .then(|| params.price_qv.decimal_string());
+        .then(|| {
+            QuantizedDecimal::try_from_value(params.price_qv)
+                .ok_or_else(|| anyhow!("binance order price decimal exceeds inline buffer"))
+        })
+        .transpose()?;
     let timestamp = current_timestamp_ms_string();
     let reduce_only = if params.reduce_only { "true" } else { "false" };
     let new_order_resp_type = if params.ws_response_full {
@@ -209,8 +215,8 @@ fn build_new_order_payload_fast(
         ordered[len] = ("newOrderRespType", value);
         len += 1;
     }
-    if let Some(value) = price.as_deref() {
-        ordered[len] = ("price", value);
+    if let Some(value) = price.as_ref() {
+        ordered[len] = ("price", value.as_str());
         len += 1;
     }
     ordered[len] = ("quantity", quantity.as_str());

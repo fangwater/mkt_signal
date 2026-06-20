@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha512;
+use signal_common::tick_math::QuantizedValue;
 use std::fmt::Write as _;
 
 type HmacSha512 = Hmac<Sha512>;
@@ -166,18 +167,13 @@ fn push_gate_unified_new_req_param(
     );
     push_json_field(out, "account", "unified", &mut first);
     push_json_field(out, "side", params.side.as_str_lower(), &mut first);
-    push_json_field(
-        out,
-        "amount",
-        &params.quantity_qv.decimal_string(),
-        &mut first,
-    );
+    push_qv_json_field(out, "amount", params.quantity_qv, &mut first);
     if params.auto_borrow_repay {
         push_bool_field(out, "auto_borrow", true, &mut first);
         push_bool_field(out, "auto_repay", true, &mut first);
     }
     if params.order_type.is_limit() {
-        push_json_field(out, "price", &params.price_qv.decimal_string(), &mut first);
+        push_qv_json_field(out, "price", params.price_qv, &mut first);
         push_json_field(out, "time_in_force", "poc", &mut first);
     }
 }
@@ -191,13 +187,15 @@ fn push_gate_futures_new_req_param(
     push_i64_prefixed_text_field(out, "text", "t-", client_order_id, &mut first);
     push_json_field(out, "contract", params.symbol, &mut first);
     push_json_field(out, "account", "unified", &mut first);
-    let mut size = params.quantity_qv.decimal_string();
-    if params.side.is_sell() && size != "0" {
-        size.insert(0, '-');
-    }
-    push_json_field(out, "size", &size, &mut first);
+    push_qv_json_field_with_sign(
+        out,
+        "size",
+        params.quantity_qv,
+        params.side.is_sell(),
+        &mut first,
+    );
     if params.order_type.is_limit() {
-        push_json_field(out, "price", &params.price_qv.decimal_string(), &mut first);
+        push_qv_json_field(out, "price", params.price_qv, &mut first);
         push_json_field(out, "tif", "poc", &mut first);
     } else {
         push_json_field(out, "price", "0", &mut first);
@@ -229,6 +227,32 @@ fn push_json_field(out: &mut String, key: &str, value: &str, first: &mut bool) {
     push_json_string(out, key);
     out.push(':');
     push_json_string(out, value);
+}
+
+fn push_qv_json_field(out: &mut String, key: &str, value: QuantizedValue, first: &mut bool) {
+    push_qv_json_field_with_sign(out, key, value, false, first);
+}
+
+fn push_qv_json_field_with_sign(
+    out: &mut String,
+    key: &str,
+    value: QuantizedValue,
+    negative: bool,
+    first: &mut bool,
+) {
+    if !*first {
+        out.push(',');
+    }
+    *first = false;
+    push_json_string(out, key);
+    out.push_str(":\"");
+    if negative && !value.is_zero() {
+        out.push('-');
+    }
+    value
+        .write_decimal_to(out)
+        .expect("write quantized decimal to String cannot fail");
+    out.push('"');
 }
 
 fn push_i64_prefixed_text_field(
