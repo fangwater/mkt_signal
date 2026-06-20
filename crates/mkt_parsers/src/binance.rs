@@ -696,6 +696,9 @@ pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
             }
             _ => {}
         }
+        if symbol.is_some() && kline.is_some() {
+            break;
+        }
     }
 
     let kline = kline?;
@@ -1244,7 +1247,12 @@ fn parse_kline_object_scanner(scanner: &mut JsonObjectScanner<'_>) -> Option<Raw
 
     while let Some(key) = scanner.next_key() {
         match key {
-            b"x" => is_closed = scanner.take_value()?.bool()?,
+            b"x" => {
+                is_closed = scanner.take_value()?.bool()?;
+                if !is_closed {
+                    return None;
+                }
+            }
             b"o" => open_price = Some(scanner.take_value()?.f64()?),
             b"h" => high_price = Some(scanner.take_value()?.f64()?),
             b"l" => low_price = Some(scanner.take_value()?.f64()?),
@@ -1252,6 +1260,16 @@ fn parse_kline_object_scanner(scanner: &mut JsonObjectScanner<'_>) -> Option<Raw
             b"v" => volume = Some(scanner.take_value()?.f64()?),
             b"t" => timestamp = Some(scanner.take_value()?.i64()?),
             _ => scanner.skip_value()?,
+        }
+        if is_closed
+            && open_price.is_some()
+            && high_price.is_some()
+            && low_price.is_some()
+            && close_price.is_some()
+            && volume.is_some()
+            && timestamp.is_some()
+        {
+            break;
         }
     }
 
