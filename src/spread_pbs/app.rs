@@ -1198,6 +1198,9 @@ fn parse_replacement_batch(
                 }
             }
         }
+        if adapter.skip_json_fallback_after_raw_miss() {
+            return ReplacementBatch::default();
+        }
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) {
             return parse_json_replacement_batch(
                 label,
@@ -2306,6 +2309,85 @@ mod tests {
         assert_eq!(parse_env_bool("false"), Some(false));
         assert_eq!(parse_env_bool("off"), Some(false));
         assert_eq!(parse_env_bool("maybe"), None);
+    }
+
+    #[test]
+    fn replacement_batch_can_skip_json_fallback_after_raw_miss() {
+        struct JsonTradeAdapter {
+            skip_json_fallback: bool,
+        }
+
+        impl VenueAdapter for JsonTradeAdapter {
+            fn name(&self) -> &'static str {
+                "json-trade"
+            }
+
+            fn ws_url(&self) -> String {
+                "wss://example.invalid/ws".to_string()
+            }
+
+            fn build_subscribe(&self, _symbols: &[String]) -> Vec<serde_json::Value> {
+                Vec::new()
+            }
+
+            fn parse_frame(
+                &self,
+                _value: &serde_json::Value,
+                _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+            ) -> Result<()> {
+                Ok(())
+            }
+
+            fn parse_trade_frame(&self, _value: &serde_json::Value) -> Result<Vec<TradeFrame>> {
+                Ok(vec![TradeFrame {
+                    symbol: "BTCUSDT".to_string(),
+                    timestamp_us: 1,
+                    seq_id: 1,
+                    trade_id: 1,
+                    side: 'B',
+                    price: 1.0,
+                    amount: 1.0,
+                }])
+            }
+
+            fn skip_json_fallback_after_raw_miss(&self) -> bool {
+                self.skip_json_fallback
+            }
+
+            fn keepalive(&self) -> Option<KeepaliveSpec> {
+                None
+            }
+        }
+
+        let raw = br#"{"data":{"e":"trade","s":"BTCUSDT"}}"#;
+        let mut emit_bbo = |_frame: BboFrame| Ok(());
+        let fallback_batch = parse_replacement_batch(
+            "test",
+            &JsonTradeAdapter {
+                skip_json_fallback: false,
+            },
+            raw,
+            false,
+            true,
+            false,
+            false,
+            &mut emit_bbo,
+        );
+        assert_eq!(fallback_batch.trades.len(), 1);
+
+        let raw_only_batch = parse_replacement_batch(
+            "test",
+            &JsonTradeAdapter {
+                skip_json_fallback: true,
+            },
+            raw,
+            false,
+            true,
+            false,
+            false,
+            &mut emit_bbo,
+        );
+        assert!(raw_only_batch.is_empty());
     }
 
     #[test]

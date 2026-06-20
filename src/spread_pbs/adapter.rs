@@ -179,6 +179,12 @@ pub trait VenueAdapter {
     fn parse_derivatives_frame(&self, _value: &Value) -> Result<Vec<Bytes>> {
         Ok(Vec::new())
     }
+    /// Return true for JSON feeds whose hot path is intentionally raw-only. When
+    /// a raw parser misses, callers should drop the frame instead of allocating
+    /// a fallback `serde_json::Value`.
+    fn skip_json_fallback_after_raw_miss(&self) -> bool {
+        false
+    }
     /// Optional raw derivatives hot path. Return true when the frame was fully
     /// handled and callers can skip `serde_json::Value`.
     fn publish_derivatives_raw(

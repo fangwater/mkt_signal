@@ -239,6 +239,10 @@ impl VenueAdapter for BinanceAdapter {
             .collect())
     }
 
+    fn skip_json_fallback_after_raw_miss(&self) -> bool {
+        self.venue == TradingVenue::BinanceFutures
+    }
+
     fn publish_derivatives_raw(
         &self,
         raw: &[u8],
