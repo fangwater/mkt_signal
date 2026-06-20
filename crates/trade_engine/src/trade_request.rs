@@ -7,6 +7,8 @@ use std::time::Instant;
 
 pub use order_common::TradeRequestType;
 
+pub const TRADE_REQ_PAYLOAD: usize = 1_024;
+
 #[repr(C, align(8))]
 #[derive(Debug, Clone)]
 pub struct TradeRequestHeader {

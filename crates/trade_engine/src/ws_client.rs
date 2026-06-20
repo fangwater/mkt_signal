@@ -1429,9 +1429,13 @@ impl TradeWsClient {
         let transport_id = self.next_transport_id();
         let payload = self.build_payload(msg, transport_id).await?;
         if self.exchange == Exchange::Gate {
-            info!(
-                "trade ws client id={} exchange={} sending order client_order_id={} transport_id={} payload: {}",
-                self.id, self.exchange, msg.client_order_id, transport_id, payload
+            debug!(
+                "trade ws client id={} exchange={} sending order client_order_id={} transport_id={} payload_bytes={}",
+                self.id,
+                self.exchange,
+                msg.client_order_id,
+                transport_id,
+                payload.len()
             );
         } else if self.exchange == Exchange::Binance {
             debug!(
@@ -2117,19 +2121,11 @@ impl TradeWsClient {
     }
 
     fn notify_sent(&self, msg: &TradeRequestMsg) {
-        let body = json!({
-            "transport": "ws",
-            "state": "sent",
-            "clientOrderId": msg.client_order_id,
-            "endpointId": self.id,
-            "localIp": self.local_ip.to_string(),
-        })
-        .to_string();
         let _ = self.resp_sink.send(TradeExecOutcome {
             req_type: msg.req_type,
             client_order_id: msg.client_order_id,
             status: 200,
-            body,
+            body: String::new(),
             exchange: self.exchange,
             order_id: 0,
             order_status_u8: 0,

@@ -22,7 +22,7 @@ pub fn enable_ipc_fast_poll() -> bool {
             return false;
         }
     }
-    false
+    true
 }
 
 pub(crate) fn fast_poll_hot_path_mode() -> bool {
@@ -37,6 +37,12 @@ pub(crate) fn suppress_pre_submit_hot_path_logs() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{enable_ipc_fast_poll, parse_bool_env};
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn parse_bool_env_accepts_common_values() {
@@ -50,16 +56,18 @@ mod tests {
     }
 
     #[test]
-    fn enable_ipc_fast_poll_defaults_off() {
+    fn enable_ipc_fast_poll_defaults_on() {
+        let _guard = env_test_lock();
         std::env::remove_var("ENABLE_IPC_FAST_POLL");
         std::env::remove_var("enable_ipc_fast_poll");
-        assert!(!enable_ipc_fast_poll());
+        assert!(enable_ipc_fast_poll());
     }
 
     #[test]
     fn enable_ipc_fast_poll_honors_upper_and_lower_case_env_names() {
-        std::env::set_var("ENABLE_IPC_FAST_POLL", "1");
-        assert!(enable_ipc_fast_poll());
+        let _guard = env_test_lock();
+        std::env::set_var("ENABLE_IPC_FAST_POLL", "0");
+        assert!(!enable_ipc_fast_poll());
         std::env::remove_var("ENABLE_IPC_FAST_POLL");
 
         std::env::set_var("enable_ipc_fast_poll", "yes");

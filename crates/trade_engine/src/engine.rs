@@ -39,7 +39,7 @@ use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
     BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
-    TradeRequestMsg, TradeRequestType,
+    TradeRequestMsg, TradeRequestType, TRADE_REQ_PAYLOAD,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -127,7 +127,7 @@ struct AsyncThreadQueues {
 
 enum OrderReqIngress {
     Spsc(Consumer<TradeRequestMsg>),
-    Ipc(Subscriber<ipc::Service, [u8; 4096], ()>),
+    Ipc(Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>),
 }
 
 enum QueryReqIngress {
@@ -201,7 +201,7 @@ fn enable_ipc_fast_poll() -> bool {
             return false;
         }
     }
-    false
+    true
 }
 
 fn internal_open_terminate_enabled_from_env() -> bool {
@@ -463,7 +463,7 @@ fn pop_order_control_for_async(
 }
 
 fn recv_trade_req_from_ipc(
-    subscriber: &Subscriber<ipc::Service, [u8; 4096], ()>,
+    subscriber: &Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
 ) -> Option<TradeRequestMsg> {
     match subscriber.receive() {
         Ok(Some(sample)) => {
@@ -652,10 +652,10 @@ fn run_te_ipc_thread(
 
     let order_service = node
         .service_builder(&ServiceName::new(order_req_service)?)
-        .publish_subscribe::<[u8; 4096]>()
+        .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
         .subscriber_max_buffer_size(256)
         .open_or_create()?;
-    let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+    let order_subscriber: Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()> =
         order_service.subscriber_builder().create()?;
 
     let order_control_subscriber = if let Some(order_control_service) = order_control_service {
@@ -1305,10 +1305,10 @@ impl TradeEngine {
             } else {
                 let order_service = node
                     .service_builder(&ServiceName::new(&order_req_service)?)
-                    .publish_subscribe::<[u8; 4096]>()
+                    .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
                     .subscriber_max_buffer_size(256)
                     .open_or_create()?;
-                let order_subscriber: Subscriber<ipc::Service, [u8; 4096], ()> =
+                let order_subscriber: Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()> =
                     order_service.subscriber_builder().create()?;
 
                 let query_service = node
@@ -3496,6 +3496,12 @@ impl TradeEngine {
 #[cfg(test)]
 mod tests {
     use super::{enable_ipc_fast_poll, parse_bool_env};
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn parse_bool_env_accepts_common_values() {
@@ -3509,13 +3515,16 @@ mod tests {
     }
 
     #[test]
-    fn enable_ipc_fast_poll_defaults_off() {
+    fn enable_ipc_fast_poll_defaults_on() {
+        let _guard = env_test_lock();
         std::env::remove_var("ENABLE_IPC_FAST_POLL");
-        assert!(!enable_ipc_fast_poll());
+        std::env::remove_var("enable_ipc_fast_poll");
+        assert!(enable_ipc_fast_poll());
     }
 
     #[test]
     fn enable_ipc_fast_poll_honors_env() {
+        let _guard = env_test_lock();
         std::env::set_var("ENABLE_IPC_FAST_POLL", "1");
         assert!(enable_ipc_fast_poll());
         std::env::set_var("ENABLE_IPC_FAST_POLL", "off");
@@ -3525,6 +3534,7 @@ mod tests {
 
     #[test]
     fn enable_ipc_fast_poll_accepts_lowercase_env_name() {
+        let _guard = env_test_lock();
         std::env::set_var("enable_ipc_fast_poll", "yes");
         assert!(enable_ipc_fast_poll());
         std::env::remove_var("enable_ipc_fast_poll");

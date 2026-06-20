@@ -26,7 +26,7 @@ use signal_common::bbo::Bbo;
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use signal_common::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
-use signal_common::trade_signal::{SignalType, TradeSignal};
+use signal_common::trade_signal::SignalType;
 
 mod cancel;
 pub mod from_key;
@@ -656,9 +656,13 @@ impl MmDecision {
                 ctx.tlen_values = vec![0.0; tick_indices.len()];
             }
         }
-        let signal =
-            TradeSignal::create(SignalType::MMHedge, get_timestamp_us(), 0.0, ctx.to_bytes());
-        if let Err(err) = self.state.signal_pub.publish(&signal.to_bytes()) {
+        let context = ctx.to_bytes();
+        if let Err(err) = self.state.signal_pub.publish_trade_signal_parts(
+            SignalType::MMHedge,
+            get_timestamp_us(),
+            0.0,
+            context.as_ref(),
+        ) {
             warn!(
                 "MmDecision: publish MMHedge failed symbol={} err={:#}",
                 symbol, err

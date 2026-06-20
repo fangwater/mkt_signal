@@ -4,7 +4,7 @@ use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use order_common::Side;
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason};
 use signal_common::common::SignalBytes;
-use signal_common::trade_signal::{SignalType, TradeSignal};
+use signal_common::trade_signal::SignalType;
 
 use super::arb_cancel_context::{build_arb_cancel_context, ArbCancelContextInput};
 use super::common::Quote;
@@ -44,7 +44,12 @@ pub fn build_precise_arb_cancel_ctx(input: ArbCancelEmitInput<'_>) -> ArbCancelC
 pub fn emit_precise_arb_cancel(input: ArbCancelEmitInput<'_>) -> Result<()> {
     let signal_pub = input.signal_pub;
     let ctx = build_precise_arb_cancel_ctx(input);
-    let signal = TradeSignal::create(SignalType::ArbCancel, ctx.trigger_ts, 0.0, ctx.to_bytes());
-    signal_pub.publish(&signal.to_bytes())?;
+    let context = ctx.to_bytes();
+    signal_pub.publish_trade_signal_parts(
+        SignalType::ArbCancel,
+        ctx.trigger_ts,
+        0.0,
+        context.as_ref(),
+    )?;
     Ok(())
 }

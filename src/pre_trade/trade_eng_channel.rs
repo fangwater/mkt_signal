@@ -26,12 +26,12 @@ use trade_engine::internal_terminate::{
     parse_bool_env, InternalOpenTerminateMsg, ARB_OPEN_INTERNAL_TERMINATE_ENV,
     ORDER_TERMINATE_PAYLOAD_LEN,
 };
+use trade_engine::trade_request::TRADE_REQ_PAYLOAD;
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };
 }
 
-const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 22;
 const TRADE_RESP_TAIL_LEN: usize = 33;
@@ -457,12 +457,12 @@ impl TradeEngChannel {
             );
         }
 
-        let mut buf = [0u8; TRADE_REQ_PAYLOAD];
         let copy_len = bytes.len().min(TRADE_REQ_PAYLOAD);
-        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
 
-        let sample = self.order_req_publisher.loan_uninit()?;
-        let sample = sample.write_payload(buf);
+        let mut sample = self.order_req_publisher.loan_uninit()?;
+        sample.payload_mut().write([0u8; TRADE_REQ_PAYLOAD]);
+        let mut sample = unsafe { sample.assume_init() };
+        sample.payload_mut()[..copy_len].copy_from_slice(&bytes[..copy_len]);
         sample.send()?;
 
         Ok(())

@@ -7,7 +7,7 @@ use log::{info, warn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use runtime_common::ipc_service_name::build_service_name;
-use signal_common::trade_signal::TradeSignal;
+use signal_common::trade_signal::{SignalType, TradeSignal};
 
 pub const SIGNAL_PAYLOAD: usize = 4_096;
 pub const TRADE_SIGNAL_PAYLOAD: usize = 1_024;
@@ -241,6 +241,62 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
 
         // 生产环境去除发布详情 DEBUG 日志，避免刷屏
 
+        Ok(())
+    }
+}
+
+impl GenericPublisher<TRADE_SIGNAL_PAYLOAD> {
+    pub fn publish_trade_signal_parts(
+        &self,
+        signal_type: SignalType,
+        generation_time: i64,
+        handle_time: f64,
+        context: &[u8],
+    ) -> Result<()> {
+        let total_len = signal_common::trade_signal::TRADE_SIGNAL_HEADER_LEN
+            .checked_add(context.len())
+            .ok_or_else(|| anyhow!("trade signal payload size overflow"))?;
+        if total_len > TRADE_SIGNAL_PAYLOAD {
+            anyhow::bail!(
+                "trade signal payload {} exceeds {} bytes",
+                total_len,
+                TRADE_SIGNAL_PAYLOAD
+            );
+        }
+
+        if self.suppress_trade_signal_publish && signal_publish_dry_run_enabled() {
+            let suppressed = self
+                .suppressed_publish_count
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            if suppressed == 1 || suppressed.is_multiple_of(100) {
+                warn!(
+                    "Signal publish suppressed (dry-run): service={} count={} signal_type={} generation_time={} payload_bytes={}",
+                    self.full_service,
+                    suppressed,
+                    signal_type.as_str(),
+                    generation_time,
+                    total_len
+                );
+            }
+            return Ok(());
+        }
+
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("publisher unavailable for service={}", self.full_service)
+        })?;
+        let mut sample = publisher.loan_uninit()?;
+        sample.payload_mut().write([0u8; TRADE_SIGNAL_PAYLOAD]);
+        let mut sample = unsafe { sample.assume_init() };
+        TradeSignal::write_parts_to_slice(
+            signal_type,
+            generation_time,
+            handle_time,
+            context,
+            sample.payload_mut(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        sample.send()?;
         Ok(())
     }
 }

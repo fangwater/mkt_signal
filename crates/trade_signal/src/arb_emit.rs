@@ -3,7 +3,7 @@ use anyhow::Result;
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::time_util::get_timestamp_us;
-use signal_common::trade_signal::{SignalType, TradeSignal};
+use signal_common::trade_signal::SignalType;
 
 pub fn emit_levels_as_signals<TCtx>(
     signal_pub: &TradeSignalPublisher,
@@ -21,8 +21,13 @@ pub fn emit_levels_as_signals<TCtx>(
                 publish_start_us.saturating_sub(generation_time),
             );
         }
-        let signal = TradeSignal::create(signal_type.clone(), generation_time, 0.0, to_bytes(ctx));
-        signal_pub.publish(&signal.to_bytes())?;
+        let context = to_bytes(ctx);
+        signal_pub.publish_trade_signal_parts(
+            signal_type,
+            generation_time,
+            0.0,
+            context.as_ref(),
+        )?;
         if matches!(signal_type, SignalType::ArbOpen) {
             record_arb_open_latency(
                 "ts_signal_publish_cost",

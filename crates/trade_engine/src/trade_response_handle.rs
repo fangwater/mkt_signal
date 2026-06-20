@@ -1,4 +1,3 @@
-use bytes::{BufMut, BytesMut};
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
@@ -23,29 +22,6 @@ pub struct TradeExecOutcome {
     pub order_update_time: i64,
     pub executed_qty: f64,
     pub response_price: f64,
-}
-
-// 固定长度 trade response header（22 bytes），不再携带 raw JSON body。
-#[repr(C, align(8))]
-#[derive(Debug, Clone)]
-struct GenericResponseHeader {
-    req_type: u32,
-    client_order_id: i64,
-    exchange: u32,
-    status: u16,
-    error_code: i32,
-}
-
-impl GenericResponseHeader {
-    fn to_bytes(&self) -> bytes::Bytes {
-        let mut buf = BytesMut::with_capacity(22);
-        buf.put_u32_le(self.req_type);
-        buf.put_i64_le(self.client_order_id);
-        buf.put_u32_le(self.exchange);
-        buf.put_u16_le(self.status);
-        buf.put_i32_le(self.error_code);
-        buf.freeze()
-    }
 }
 
 fn extract_code(v: &Value) -> Option<i32> {
@@ -129,19 +105,18 @@ fn extract_msg(v: &Value) -> Option<String> {
 }
 
 fn parse_error_code_and_msg(body: &str) -> (i32, Option<String>) {
-    // Default: unknown/no code.
-    let mut candidate = body.to_string();
+    let body = body.trim();
+    if body.is_empty() {
+        return (0, None);
+    }
 
     // Some WS wrappers include nested raw/payload text.
     if let Ok(v) = serde_json::from_str::<Value>(body) {
         if let Some(raw) = v.get("raw").and_then(|r| r.as_str()) {
-            candidate = raw.to_string();
+            return parse_error_code_and_msg(raw);
         } else if let Some(payload) = v.get("payload").and_then(|p| p.as_str()) {
-            candidate = payload.to_string();
+            return parse_error_code_and_msg(payload);
         }
-    }
-
-    if let Ok(v) = serde_json::from_str::<Value>(&candidate) {
         let mut code = extract_code(&v).unwrap_or(0);
         if let Some(s_code) = extract_s_code(&v) {
             if s_code != 0 {
@@ -416,17 +391,15 @@ pub fn publish_trade_response(
         }
     }
 
-    let hdr = GenericResponseHeader {
-        req_type: out.req_type as u32,
-        client_order_id: out.client_order_id,
-        exchange: out.exchange as u32,
-        status: out.status,
-        error_code,
-    };
-    let hdr_bytes = hdr.to_bytes();
+    let req_type = out.req_type as u32;
+    let exchange = out.exchange as u32;
     let mut buf = [0u8; 64];
-    let h = hdr_bytes.len().min(buf.len());
-    buf[..h].copy_from_slice(&hdr_bytes[..h]);
+    buf[0..4].copy_from_slice(&req_type.to_le_bytes());
+    buf[4..12].copy_from_slice(&out.client_order_id.to_le_bytes());
+    buf[12..16].copy_from_slice(&exchange.to_le_bytes());
+    buf[16..18].copy_from_slice(&out.status.to_le_bytes());
+    buf[18..22].copy_from_slice(&error_code.to_le_bytes());
+    let h = 22;
     if buf.len() >= h + 33 {
         buf[h..h + 8].copy_from_slice(&out.order_id.to_le_bytes());
         buf[h + 8] = out.order_status_u8;
@@ -436,7 +409,7 @@ pub fn publish_trade_response(
     }
     debug!(
         "publish trade resp header: type={}, status={}, code={}",
-        hdr.req_type, hdr.status, hdr.error_code
+        req_type, out.status, error_code
     );
     if let Ok(sample) = publisher.loan_uninit() {
         let sample = sample.write_payload(buf);

@@ -33,7 +33,7 @@ use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::tick_math::QuantizedValue;
-use signal_common::trade_signal::{SignalType, TradeSignal};
+use signal_common::trade_signal::SignalType;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 use super::arb_cooldown::is_cooldown_hit;
@@ -2201,13 +2201,13 @@ fn emit_arb_taker_hedge_fast(
     ctx.request_seq = query.request_seq;
     ctx.set_from_key(build_inventory_hedge_from_key(now_us, None, 0.0));
 
-    let signal = TradeSignal::create(
+    let context = ctx.to_bytes();
+    if let Err(err) = runtime.signal_pub.publish_trade_signal_parts(
         SignalType::ArbHedge,
         get_timestamp_us(),
         0.0,
-        ctx.to_bytes(),
-    );
-    if let Err(err) = runtime.signal_pub.publish(&signal.to_bytes()) {
+        context.as_ref(),
+    ) {
         log::warn!(
             "{source}: publish ArbHedge force-taker failed strategy_id={} symbol={} err={:#}",
             query.strategy_id,
@@ -2418,13 +2418,13 @@ fn drive_shared_arb_hedge_query(
         plan.volatility,
     ));
 
-    let signal = TradeSignal::create(
+    let context = ctx.to_bytes();
+    if let Err(err) = runtime.signal_pub.publish_trade_signal_parts(
         SignalType::ArbHedge,
         get_timestamp_us(),
         0.0,
-        ctx.to_bytes(),
-    );
-    if let Err(err) = runtime.signal_pub.publish(&signal.to_bytes()) {
+        context.as_ref(),
+    ) {
         log::warn!(
             "{source}: publish ArbHedge failed strategy_id={} symbol={} err={:#}",
             query.strategy_id,
@@ -2965,13 +2965,13 @@ pub fn publish_arb_cancel_trigger(
         trigger_ts: now_us,
         freq_ms,
     };
-    let signal = signal_common::trade_signal::TradeSignal::create(
+    let context = ctx.to_bytes();
+    signal_pub.publish_trade_signal_parts(
         SignalType::ArbCancelTrigger,
         now_us,
         0.0,
-        ctx.to_bytes(),
-    );
-    signal_pub.publish(&signal.to_bytes())?;
+        context.as_ref(),
+    )?;
     Ok(freq_ms)
 }
 

@@ -23,7 +23,7 @@ use signal_common::cancel_signal::{MmCancelCtx, MmCancelReason};
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::mm_signal::MmCancelTriggerCtx;
 use signal_common::open_signal::MmOpenCtx;
-use signal_common::trade_signal::{SignalType, TradeSignal};
+use signal_common::trade_signal::SignalType;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 pub(crate) const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
@@ -1103,8 +1103,13 @@ impl MmDecisionState {
         ctx.trigger_ts = now_us;
         ctx.set_from_key(from_key.as_bytes().to_vec());
 
-        let signal = TradeSignal::create(SignalType::MMCancel, now_us, 0.0, ctx.to_bytes());
-        self.signal_pub.publish(&signal.to_bytes())?;
+        let context = ctx.to_bytes();
+        self.signal_pub.publish_trade_signal_parts(
+            SignalType::MMCancel,
+            now_us,
+            0.0,
+            context.as_ref(),
+        )?;
         Ok(())
     }
 
@@ -1131,8 +1136,13 @@ impl MmDecisionState {
         ctx.set_from_key(from_key.as_bytes().to_vec());
         ctx.set_target_strategy(strategy_id, 0);
 
-        let signal = TradeSignal::create(SignalType::MMCancel, now_us, 0.0, ctx.to_bytes());
-        self.signal_pub.publish(&signal.to_bytes())?;
+        let context = ctx.to_bytes();
+        self.signal_pub.publish_trade_signal_parts(
+            SignalType::MMCancel,
+            now_us,
+            0.0,
+            context.as_ref(),
+        )?;
         Ok(())
     }
 
@@ -1141,8 +1151,13 @@ impl MmDecisionState {
             trigger_ts: now_us,
             freq_ms: self.tlen_cancel_freq_ms,
         };
-        let signal = TradeSignal::create(SignalType::MMCancelTrigger, now_us, 0.0, ctx.to_bytes());
-        self.signal_pub.publish(&signal.to_bytes())?;
+        let context = ctx.to_bytes();
+        self.signal_pub.publish_trade_signal_parts(
+            SignalType::MMCancelTrigger,
+            now_us,
+            0.0,
+            context.as_ref(),
+        )?;
         Ok(())
     }
 
@@ -1264,8 +1279,13 @@ impl MmDecisionState {
         };
 
         for item in gated_prepared.iter() {
-            let signal = TradeSignal::create(SignalType::MMOpen, now_us, 0.0, item.ctx.to_bytes());
-            if let Err(err) = self.signal_pub.publish(&signal.to_bytes()) {
+            let context = item.ctx.to_bytes();
+            if let Err(err) = self.signal_pub.publish_trade_signal_parts(
+                SignalType::MMOpen,
+                now_us,
+                0.0,
+                context.as_ref(),
+            ) {
                 publish_failures += 1;
                 side_breakdown_mut(item.side, &mut buy, &mut sell).publish_failed += 1;
                 let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);

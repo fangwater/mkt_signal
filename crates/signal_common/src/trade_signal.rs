@@ -1,5 +1,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
+pub const TRADE_SIGNAL_HEADER_LEN: usize = 24;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalType {
     ArbOpen = 1,             // 套利开仓信号
@@ -91,7 +93,7 @@ impl TradeSignal {
     pub fn to_bytes(&self) -> Bytes {
         let context_length = self.context.len() as u32;
         // 计算总大小: signal_type(4) + generation_time(8) + handle_time(8) + context_length(4) + context
-        let total_size = 4 + 8 + 8 + 4 + context_length as usize;
+        let total_size = TRADE_SIGNAL_HEADER_LEN + context_length as usize;
         let mut buf = BytesMut::with_capacity(total_size);
 
         // 写入信号类型
@@ -110,6 +112,34 @@ impl TradeSignal {
         buf.put(self.context.clone());
 
         buf.freeze()
+    }
+
+    pub fn write_parts_to_slice(
+        signal_type: SignalType,
+        generation_time: i64,
+        handle_time: f64,
+        context: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, String> {
+        let context_length = u32::try_from(context.len())
+            .map_err(|_| format!("context too large: {} bytes", context.len()))?;
+        let total_size = TRADE_SIGNAL_HEADER_LEN
+            .checked_add(context.len())
+            .ok_or_else(|| "trade signal size overflow".to_string())?;
+        if out.len() < total_size {
+            return Err(format!(
+                "trade signal output too small: need {} bytes, got {}",
+                total_size,
+                out.len()
+            ));
+        }
+
+        out[0..4].copy_from_slice(&(signal_type as u32).to_le_bytes());
+        out[4..12].copy_from_slice(&generation_time.to_le_bytes());
+        out[12..20].copy_from_slice(&handle_time.to_le_bytes());
+        out[20..24].copy_from_slice(&context_length.to_le_bytes());
+        out[TRADE_SIGNAL_HEADER_LEN..total_size].copy_from_slice(context);
+        Ok(total_size)
     }
 
     /// 从字节数组解析交易信号
@@ -197,7 +227,7 @@ impl TradeSignal {
     #[inline]
     pub fn encoded_len(data: &[u8]) -> Option<usize> {
         let context_length = Self::get_context_length(data)? as usize;
-        let total_len = 24usize.checked_add(context_length)?;
+        let total_len = TRADE_SIGNAL_HEADER_LEN.checked_add(context_length)?;
         (data.len() >= total_len).then_some(total_len)
     }
 
@@ -273,5 +303,28 @@ mod tests {
         assert_eq!(view.handle_time, owned.handle_time);
         assert_eq!(view.context, owned.context.as_ref());
         assert_eq!(view.to_owned_signal().context.as_ref(), b"ctx-bytes");
+    }
+
+    #[test]
+    fn write_parts_to_slice_matches_to_bytes() {
+        let signal = TradeSignal::create(
+            SignalType::ArbOpen,
+            123456,
+            7.5,
+            Bytes::from_static(b"ctx-bytes"),
+        );
+        let expected = signal.to_bytes();
+        let mut out = [0u8; 128];
+        let written = TradeSignal::write_parts_to_slice(
+            SignalType::ArbOpen,
+            123456,
+            7.5,
+            b"ctx-bytes",
+            &mut out,
+        )
+        .expect("write signal");
+
+        assert_eq!(written, expected.len());
+        assert_eq!(&out[..written], expected.as_ref());
     }
 }
