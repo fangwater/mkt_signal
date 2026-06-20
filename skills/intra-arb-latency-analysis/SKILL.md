@@ -15,14 +15,15 @@ Use repo-local parquet snapshots instead of re-reading remote persist services w
 4. For same-exchange spot/futures intra analysis, report spot and futures results in one combined table, not as separate sections.
 5. Include a Chinese `含义` column in the table.
 6. For spot/open-leg rows, report:
+   - `signal_ts - mkt_ts`
    - `create_ts - signal_ts`
    - `update_ts - submit_ts` on the `NEW` row
    - `local_ts - submit_ts`
 7. For futures hedge rows, report:
-   - `futures.submit_ts - margin.local_ts`
-   - `futures.submit_ts - margin.update_ts`
-   - `futures.update_ts - futures.submit_ts`
-   - `futures.local_ts - futures.submit_ts`
+   - `futures.create_ts - margin.local_ts`
+   - `futures.create_ts - margin.update_ts`
+   - `futures.update_ts - futures.create_ts`
+   - `futures.local_ts - futures.create_ts`
 8. For Bybit intra hedge analysis, also report the taker hedge reaction latency from margin local receive time to futures submit time.
 
 ## Fetch Snapshot
@@ -128,15 +129,16 @@ Secondary reference metrics:
 
 ## Combined Table Meanings
 
-- `create_ts - signal_ts`: 行情延迟.
+- `signal_ts - mkt_ts`: 行情延迟.
+- `create_ts - signal_ts`: 内部延迟.
 - `update_ts - submit_ts`: 挂单延迟; for spot/open-leg analysis this is measured on the `NEW` row.
 - `local_ts - submit_ts`: 完整回报延迟.
-- `futures.submit_ts - margin.local_ts`: taker触发内部延迟.
-- `futures.submit_ts - margin.update_ts`: 合约挂到距离现货撤单/成交延迟.
-- `futures.update_ts - futures.submit_ts`: 合约挂单延迟.
-- `futures.local_ts - futures.submit_ts`: 合约完整回报延迟.
+- `futures.create_ts - margin.local_ts`: taker触发内部延迟.
+- `futures.create_ts - margin.update_ts`: 合约挂到距离现货撤单/成交延迟.
+- `futures.update_ts - futures.create_ts`: 合约挂单延迟.
+- `futures.local_ts - futures.create_ts`: 合约完整回报延迟.
 
-For futures hedge rows, `futures.submit_ts - margin.local_ts` is the preferred local-process taker hedge reaction metric.
+For futures hedge rows, `futures.create_ts - margin.local_ts` is the preferred local-process taker hedge reaction metric.
 
 When comparing with older notebooks, keep the same filters. Do not mix in terminal rows unless the user explicitly asks for a different definition.
 
