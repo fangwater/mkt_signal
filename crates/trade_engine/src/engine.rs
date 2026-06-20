@@ -60,11 +60,11 @@ use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 use rtrb::{Consumer, PopError, Producer, PushError, RingBuffer};
 use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::mkt_cfg::binance_um_ip_whitelist_mode_enabled;
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::thread;
@@ -86,7 +86,8 @@ pub(crate) struct InternalOpenTerminateState {
     pub registered_at_us: i64,
 }
 
-pub(crate) type InternalOpenTerminateMap = Rc<RefCell<HashMap<i64, InternalOpenTerminateState>>>;
+pub(crate) type InternalOpenTerminateMap =
+    Rc<RefCell<FastHashMap<i64, InternalOpenTerminateState>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct InternalOpenTerminateSummaryKey {
@@ -102,7 +103,7 @@ pub(crate) struct InternalOpenTerminateSummaryBucket {
 }
 
 pub(crate) type InternalOpenTerminateSummary =
-    Rc<RefCell<HashMap<InternalOpenTerminateSummaryKey, InternalOpenTerminateSummaryBucket>>>;
+    Rc<RefCell<FastHashMap<InternalOpenTerminateSummaryKey, InternalOpenTerminateSummaryBucket>>>;
 
 #[derive(Debug, Clone)]
 struct InternalOpenTerminateOrderMeta {
@@ -1312,9 +1313,9 @@ impl TradeEngine {
         let trade_resp_sink = TradeResponseSink::new(order_resp_publisher);
         let query_resp_sink = QueryResponseSink::new(query_resp_publisher);
         let internal_open_terminates: InternalOpenTerminateMap =
-            Rc::new(RefCell::new(HashMap::new()));
+            Rc::new(RefCell::new(fast_hash_map()));
         let internal_open_terminate_summary: InternalOpenTerminateSummary =
-            Rc::new(RefCell::new(HashMap::new()));
+            Rc::new(RefCell::new(fast_hash_map()));
 
         // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
         // 推到 IPC（service: <IPC_NAMESPACE>/te_pubs/<venue>/latency）。

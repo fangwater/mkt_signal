@@ -5,13 +5,14 @@ use crate::strategy::orphan_order_strategy::{OrphanOrderSnapshot, OrphanOrderStr
 use log::info;
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 pub struct OrphanStrategyManager {
-    strategies: HashMap<i32, Box<dyn Strategy>>,
+    strategies: FastHashMap<i32, Box<dyn Strategy>>,
     strategy_queue: VecDeque<i32>,
-    symbol_index: HashMap<String, BTreeSet<i32>>,
+    symbol_index: FastHashMap<String, BTreeSet<i32>>,
 }
 
 impl Default for OrphanStrategyManager {
@@ -23,9 +24,9 @@ impl Default for OrphanStrategyManager {
 impl OrphanStrategyManager {
     pub fn new() -> Self {
         Self {
-            strategies: HashMap::new(),
+            strategies: fast_hash_map(),
             strategy_queue: VecDeque::new(),
-            symbol_index: HashMap::new(),
+            symbol_index: fast_hash_map(),
         }
     }
 

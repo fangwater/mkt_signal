@@ -22,6 +22,7 @@ use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
 use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::common::SignalBytes;
@@ -30,7 +31,7 @@ use signal_common::exec_signal::{
 };
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 const EXEC_QTY_EPS: f64 = 1e-12;
 const EXEC_PENDING_QUERY_MIN_USDT: f64 = 25.0;
@@ -63,7 +64,7 @@ pub struct ExecStrategy {
     last_exec_offset: Option<f64>,
     next_query_ts_us: i64,
     order_seq: u32,
-    exec_order_meta: HashMap<i64, ExecOrderMeta>,
+    exec_order_meta: FastHashMap<i64, ExecOrderMeta>,
     exec_order_expiry_wheel: BTreeMap<i64, Vec<i64>>,
     order_reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
@@ -135,7 +136,7 @@ impl ExecStrategy {
             last_exec_offset: None,
             next_query_ts_us: 0,
             order_seq: 0,
-            exec_order_meta: HashMap::new(),
+            exec_order_meta: fast_hash_map(),
             exec_order_expiry_wheel: BTreeMap::new(),
             order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,

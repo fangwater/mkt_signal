@@ -10,9 +10,11 @@
 
 use anyhow::Result;
 use log::{info, warn};
+use runtime_common::fast_hash::{
+    fast_hash_map, fast_hash_set, fast_hash_set_from_iter, FastHashMap, FastHashSet,
+};
 use serde_json;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
@@ -35,20 +37,20 @@ struct SymbolListInner {
     current_exchange: Option<Exchange>,
 
     /// 平仓列表
-    dump_symbols: HashSet<String>,
+    dump_symbols: FastHashSet<String>,
 
     /// 正套建仓列表
-    fwd_trade_symbols: HashSet<String>,
+    fwd_trade_symbols: FastHashSet<String>,
 
     /// 反套建仓列表
-    bwd_trade_symbols: HashSet<String>,
+    bwd_trade_symbols: FastHashSet<String>,
 
     /// UniMMR 算法平仓 symbol list（仅 fr / intra / cross 加载；mm 跳过）。
     /// 参与 `collect_online` 并集，确保下游阈值/订阅会覆盖这些 symbol。
-    unimmr_close_symbols: HashSet<String>,
+    unimmr_close_symbols: FastHashSet<String>,
 
     /// Intra 专用：只有命中该列表的 symbol 才应用 inline volatility open gate。
-    vol_gate_symbols: HashSet<String>,
+    vol_gate_symbols: FastHashSet<String>,
 }
 
 impl SymbolList {
@@ -85,11 +87,11 @@ impl SymbolList {
     pub fn init_singleton() -> Result<()> {
         let inner = SymbolListInner {
             current_exchange: None,
-            dump_symbols: HashSet::new(),
-            fwd_trade_symbols: HashSet::new(),
-            bwd_trade_symbols: HashSet::new(),
-            unimmr_close_symbols: HashSet::new(),
-            vol_gate_symbols: HashSet::new(),
+            dump_symbols: fast_hash_set(),
+            fwd_trade_symbols: fast_hash_set(),
+            bwd_trade_symbols: fast_hash_set(),
+            unimmr_close_symbols: fast_hash_set(),
+            vol_gate_symbols: fast_hash_set(),
         };
 
         SYMBOL_LIST.with(|sl| {
@@ -172,8 +174,8 @@ impl SymbolList {
                 symbol_list_redis_key(key_prefix.as_deref(), &ns, "trade_symbols", &key_suffix);
             if let Ok(Some(value)) = client.get_string(&trade_key).await {
                 if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                    let normalized: HashSet<String> =
-                        symbols.iter().map(|s| s.to_uppercase()).collect();
+                    let normalized: FastHashSet<String> =
+                        fast_hash_set_from_iter(symbols.iter().map(|s| s.to_uppercase()));
                     Self::with_inner_mut(|inner| {
                         // MM 当前只维护一套交易列表，映射到正反两个方向以复用触发逻辑
                         inner.fwd_trade_symbols = normalized.clone();
@@ -306,11 +308,12 @@ impl SymbolList {
         // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
         if ns == "intra" {
             Self::with_inner_mut(|inner| {
-                let union: HashSet<String> = inner
-                    .fwd_trade_symbols
-                    .union(&inner.bwd_trade_symbols)
-                    .cloned()
-                    .collect();
+                let union: FastHashSet<String> = fast_hash_set_from_iter(
+                    inner
+                        .fwd_trade_symbols
+                        .union(&inner.bwd_trade_symbols)
+                        .cloned(),
+                );
                 let count = union.len();
                 inner.fwd_trade_symbols = union.clone();
                 inner.bwd_trade_symbols = union;
@@ -397,9 +400,9 @@ impl SymbolList {
     }
 
     /// 获取所有交易场所的 online symbols（基于当前 exchange）
-    pub fn get_all_online_symbols(&self) -> HashMap<TradingVenue, Vec<String>> {
+    pub fn get_all_online_symbols(&self) -> FastHashMap<TradingVenue, Vec<String>> {
         Self::with_inner(|inner| {
-            let mut result = HashMap::new();
+            let mut result = fast_hash_map();
             if let Some(exchange) = inner.current_exchange {
                 let online_set = Self::collect_online(inner);
                 for venue in Self::exchange_to_venues(&exchange) {
@@ -414,7 +417,7 @@ impl SymbolList {
 
     /// 汇总 online symbols（平仓 ∪ 正套/反套建仓 ∪ UniMMR 算法平仓）
     fn collect_online(inner: &SymbolListInner) -> Vec<String> {
-        let mut online_set = HashSet::new();
+        let mut online_set = fast_hash_set();
         online_set.extend(inner.dump_symbols.iter().cloned());
         online_set.extend(inner.fwd_trade_symbols.iter().cloned());
         online_set.extend(inner.bwd_trade_symbols.iter().cloned());
@@ -423,7 +426,7 @@ impl SymbolList {
     }
 
     /// 判断集合中是否包含归一化后的 symbol（忽略分隔符和 OKEx SWAP 后缀）
-    fn contains_normalized(set: &HashSet<String>, symbol: &str) -> bool {
+    fn contains_normalized(set: &FastHashSet<String>, symbol: &str) -> bool {
         let target = Self::normalize_for_filtering(symbol);
         set.iter()
             .any(|s| Self::normalize_for_filtering(s) == target)

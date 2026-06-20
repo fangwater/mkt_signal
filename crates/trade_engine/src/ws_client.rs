@@ -43,11 +43,12 @@ use rolling_common::latency_snapshot::{
     METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
 };
 use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
@@ -593,8 +594,8 @@ pub struct TradeWsClient {
     gate_creds: Option<GateCredentials>,
     ltp_creds: Option<LtpCredentials>,
     okex_http_client: Option<reqwest::Client>,
-    okex_inst_id_code_cache: HashMap<String, i64>,
-    okex_loaded_inst_types: HashSet<&'static str>,
+    okex_inst_id_code_cache: FastHashMap<String, i64>,
+    okex_loaded_inst_types: FastHashSet<&'static str>,
     gate_ws_kind: Option<gate_ws::GateWsKind>,
     cmd_queue: WsCommandQueue,
     resp_sink: TradeResponseSink,
@@ -603,8 +604,8 @@ pub struct TradeWsClient {
     internal_open_terminate_summary: InternalOpenTerminateSummary,
     pending: VecDeque<TradeRequestMsg>,
     pending_query: VecDeque<QueryRequestMsg>,
-    inflight: HashMap<i64, TradeInflightMeta>,
-    query_inflight: HashMap<i64, QueryInflightMeta>,
+    inflight: FastHashMap<i64, TradeInflightMeta>,
+    query_inflight: FastHashMap<i64, QueryInflightMeta>,
     next_binance_transport_id: i64,
     engine_shutdown: CancellationToken,
     endpoint_state: Rc<RefCell<WsEndpointState>>,
@@ -757,8 +758,8 @@ impl TradeWsClient {
             gate_creds,
             ltp_creds,
             okex_http_client: (exchange == Exchange::Okex).then(reqwest::Client::new),
-            okex_inst_id_code_cache: HashMap::new(),
-            okex_loaded_inst_types: HashSet::new(),
+            okex_inst_id_code_cache: fast_hash_map(),
+            okex_loaded_inst_types: fast_hash_set(),
             gate_ws_kind,
             cmd_queue,
             resp_sink,
@@ -767,8 +768,8 @@ impl TradeWsClient {
             internal_open_terminate_summary,
             pending: VecDeque::new(),
             pending_query: VecDeque::new(),
-            inflight: HashMap::new(),
-            query_inflight: HashMap::new(),
+            inflight: fast_hash_map(),
+            query_inflight: fast_hash_map(),
             next_binance_transport_id: ((id as i64) << 48) + 1,
             engine_shutdown,
             endpoint_state,
@@ -2059,7 +2060,7 @@ impl TradeWsClient {
     }
 
     fn resolve_gate_query_identity(
-        query_inflight: &mut HashMap<i64, QueryInflightMeta>,
+        query_inflight: &mut FastHashMap<i64, QueryInflightMeta>,
         default_req_type: QueryRequestType,
         transport_id: i64,
     ) -> (QueryRequestType, i64) {
@@ -3677,7 +3678,7 @@ mod tests {
         is_bitget_pong_response, parse_bitget_control_event, QueryInflightMeta, TradeWsClient,
     };
     use crate::query_request::QueryRequestType;
-    use std::collections::HashMap;
+    use runtime_common::fast_hash::fast_hash_map;
 
     #[test]
     fn parses_bitget_login_failure_control_event() {
@@ -3704,7 +3705,7 @@ mod tests {
 
     #[test]
     fn gate_order_status_uses_original_client_query_id() {
-        let mut query_inflight = HashMap::new();
+        let mut query_inflight = fast_hash_map();
         query_inflight.insert(
             5303,
             QueryInflightMeta {
@@ -3726,7 +3727,7 @@ mod tests {
 
     #[test]
     fn gate_order_status_falls_back_to_transport_id_without_inflight() {
-        let mut query_inflight = HashMap::new();
+        let mut query_inflight = fast_hash_map();
 
         let (req_type, client_query_id) = TradeWsClient::resolve_gate_query_identity(
             &mut query_inflight,

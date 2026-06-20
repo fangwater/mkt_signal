@@ -40,6 +40,7 @@ use order_common::{
 };
 use order_common::{OrderStatus, TradingVenue};
 use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
@@ -48,7 +49,7 @@ use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
@@ -198,8 +199,8 @@ pub struct ArbHedgeStrategy {
     last_hedge_offset: Option<f64>,
     next_query_ts_us: i64,
     order_seq: u32,
-    hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
-    orphaned_hedge_order_meta: HashMap<i64, ArbHedgeOrderMeta>,
+    hedge_order_meta: FastHashMap<i64, ArbHedgeOrderMeta>,
+    orphaned_hedge_order_meta: FastHashMap<i64, ArbHedgeOrderMeta>,
     hedge_order_expiry_wheel: BTreeMap<i64, Vec<i64>>,
     order_reconcile_state: HedgeOrderReconcileState,
     alive_flag: bool,
@@ -250,8 +251,8 @@ impl ArbHedgeStrategy {
             last_hedge_offset: None,
             next_query_ts_us: 0,
             order_seq: 0,
-            hedge_order_meta: HashMap::new(),
-            orphaned_hedge_order_meta: HashMap::new(),
+            hedge_order_meta: fast_hash_map(),
+            orphaned_hedge_order_meta: fast_hash_map(),
             hedge_order_expiry_wheel: BTreeMap::new(),
             order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,

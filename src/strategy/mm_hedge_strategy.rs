@@ -28,6 +28,7 @@ use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
 use quote_plan::hedge_split::{split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder};
 use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::common::SignalBytes;
@@ -35,7 +36,6 @@ use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use signal_common::mm_signal::MmBackwardQueryMsg;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
 use trade_signal::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 
 #[derive(Debug, Clone)]
@@ -86,8 +86,8 @@ pub struct MarketMakerHedgeStrategy {
     hedge_from_key: Vec<u8>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
-    hedge_order_meta: HashMap<i64, HedgeOrderMeta>,
-    hedge_order_ids: HashSet<i64>,
+    hedge_order_meta: FastHashMap<i64, HedgeOrderMeta>,
+    hedge_order_ids: FastHashSet<i64>,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
     alive_flag: bool,
@@ -116,8 +116,8 @@ impl MarketMakerHedgeStrategy {
             hedge_from_key: Vec::new(),
             order_seq: 0,
             hedge_plan: Vec::new(),
-            hedge_order_meta: HashMap::new(),
-            hedge_order_ids: HashSet::new(),
+            hedge_order_meta: fast_hash_map(),
+            hedge_order_ids: fast_hash_set(),
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
             alive_flag: true,

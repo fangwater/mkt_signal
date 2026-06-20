@@ -9,7 +9,10 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use indexmap::IndexSet;
 use log::{debug, info, warn};
-use std::collections::{HashMap, HashSet};
+use runtime_common::fast_hash::{
+    fast_hash_map, fast_hash_map_from_iter, fast_hash_set, fast_hash_set_from_iter, FastHashMap,
+    FastHashSet,
+};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -148,7 +151,7 @@ impl AccountSubscription {
 
 #[derive(Default)]
 struct QueuePositionAccounts {
-    states: HashMap<String, QueuePositionState>,
+    states: FastHashMap<String, QueuePositionState>,
 }
 
 impl QueuePositionAccounts {
@@ -259,7 +262,7 @@ pub struct DepthPubApp {
     last_queue_cleanup: Instant,
     min_qty_table: VenueMinQtyTable,
     /// symbol -> SymbolState
-    symbols: HashMap<String, SymbolState>,
+    symbols: FastHashMap<String, SymbolState>,
     /// 推送间隔
     push_interval: Duration,
     /// 统计
@@ -310,7 +313,7 @@ pub struct DepthPubRunner {
 
 impl DepthPubRunner {
     pub async fn new(venues: Vec<TradingVenue>) -> Result<Self> {
-        let mut seen = HashSet::new();
+        let mut seen = fast_hash_set();
         let mut apps = Vec::with_capacity(venues.len());
         for venue in venues {
             if !seen.insert(venue) {
@@ -435,7 +438,7 @@ impl DepthPubApp {
             last_account_reload: Instant::now(),
             last_queue_cleanup: Instant::now(),
             min_qty_table,
-            symbols: HashMap::new(),
+            symbols: fast_hash_map(),
             push_interval,
             update_count: 0,
             push_count: 0,
@@ -537,7 +540,7 @@ impl DepthPubApp {
     ) -> (Vec<AccountSubscription>, QueuePositionAccounts) {
         let mut subscriptions = Vec::new();
         let mut accounts = QueuePositionAccounts::default();
-        let mut seen = HashSet::new();
+        let mut seen = fast_hash_set();
 
         for cfg in configs {
             if cfg.venue != venue {
@@ -638,10 +641,11 @@ impl DepthPubApp {
     }
 
     fn reload_account_subscriptions(&mut self, configs: &[DepthAccountSubscriptionConfig]) {
-        let desired: HashMap<String, DepthAccountSubscriptionConfig> = configs
-            .iter()
-            .map(|cfg| (cfg.account_id.clone(), cfg.clone()))
-            .collect();
+        let desired: FastHashMap<String, DepthAccountSubscriptionConfig> = fast_hash_map_from_iter(
+            configs
+                .iter()
+                .map(|cfg| (cfg.account_id.clone(), cfg.clone())),
+        );
 
         let before = self.account_subscriptions.len();
         let mut removed = 0usize;
@@ -655,11 +659,11 @@ impl DepthPubApp {
             }
             keep
         });
-        let active: HashSet<String> = self
-            .account_subscriptions
-            .iter()
-            .map(|sub| sub.account_id.clone())
-            .collect();
+        let active: FastHashSet<String> = fast_hash_set_from_iter(
+            self.account_subscriptions
+                .iter()
+                .map(|sub| sub.account_id.clone()),
+        );
 
         let mut added = 0usize;
         for cfg in desired.values() {

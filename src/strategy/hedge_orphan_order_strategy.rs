@@ -18,11 +18,11 @@ use order_common::OrderQueryOrderUpdate;
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
 use order_common::{ExecutionType, OrderStatus};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
 
 const HEDGE_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const HEDGE_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
@@ -43,9 +43,9 @@ struct HedgeOrphanQueryState {
 pub struct HedgeOrphanOrderStrategy {
     strategy_id: i32,
     symbol: String,
-    order_ids: HashSet<i64>,
-    order_owners: HashMap<i64, HedgeOrphanOrderOwner>,
-    query_states: HashMap<i64, HedgeOrphanQueryState>,
+    order_ids: FastHashSet<i64>,
+    order_owners: FastHashMap<i64, HedgeOrphanOrderOwner>,
+    query_states: FastHashMap<i64, HedgeOrphanQueryState>,
     active: bool,
 }
 
@@ -54,9 +54,9 @@ impl HedgeOrphanOrderStrategy {
         Self {
             strategy_id,
             symbol: normalize_symbol_for_internal(&symbol.into()),
-            order_ids: HashSet::new(),
-            order_owners: HashMap::new(),
-            query_states: HashMap::new(),
+            order_ids: fast_hash_set(),
+            order_owners: fast_hash_map(),
+            query_states: fast_hash_map(),
             active: true,
         }
     }

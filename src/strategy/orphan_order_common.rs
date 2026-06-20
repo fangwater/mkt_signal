@@ -13,9 +13,9 @@ use order_common::OrderUpdate;
 use order_common::TradeUpdate;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{Order, OrderExecutionStatus};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
-use std::collections::{HashMap, HashSet};
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
@@ -88,9 +88,9 @@ struct OrphanQueryState {
 }
 
 pub struct OrphanOrderTracker {
-    order_ids: HashSet<i64>,
-    order_owners: HashMap<i64, OrphanOrderOwner>,
-    query_states: HashMap<i64, OrphanQueryState>,
+    order_ids: FastHashSet<i64>,
+    order_owners: FastHashMap<i64, OrphanOrderOwner>,
+    query_states: FastHashMap<i64, OrphanQueryState>,
     initial_query_ticks: u32,
     query_base_ticks: u32,
     query_max_ticks: u32,
@@ -99,9 +99,9 @@ pub struct OrphanOrderTracker {
 impl OrphanOrderTracker {
     pub fn new(initial_query_ticks: u32, query_base_ticks: u32, query_max_ticks: u32) -> Self {
         Self {
-            order_ids: HashSet::new(),
-            order_owners: HashMap::new(),
-            query_states: HashMap::new(),
+            order_ids: fast_hash_set(),
+            order_owners: fast_hash_map(),
+            query_states: fast_hash_map(),
             initial_query_ticks,
             query_base_ticks,
             query_max_ticks,

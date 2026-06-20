@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_map_from_iter, FastHashMap, FastHashSet};
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
 use log::debug;
@@ -67,7 +68,7 @@ pub struct QueuePositionPublishEvent {
 
 #[derive(Default)]
 struct DedupCache {
-    set: HashSet<u64>,
+    set: FastHashSet<u64>,
     order: VecDeque<u64>,
 }
 
@@ -94,9 +95,9 @@ pub struct QueuePositionState {
     amount_scale: f64,
     engine: QueuePositionEngine,
     account_dedup: DedupCache,
-    order_symbols: HashMap<i64, String>,
-    order_first_seen_ms: HashMap<i64, i64>,
-    order_create_tp: HashMap<i64, i64>,
+    order_symbols: FastHashMap<i64, String>,
+    order_first_seen_ms: FastHashMap<i64, i64>,
+    order_create_tp: FastHashMap<i64, i64>,
     stats: QueuePositionStats,
 }
 
@@ -138,9 +139,9 @@ impl QueuePositionState {
             amount_scale: valid_amount_scale(amount_scale),
             engine: QueuePositionEngine::new(),
             account_dedup: DedupCache::default(),
-            order_symbols: HashMap::new(),
-            order_first_seen_ms: HashMap::new(),
-            order_create_tp: HashMap::new(),
+            order_symbols: fast_hash_map(),
+            order_first_seen_ms: fast_hash_map(),
+            order_create_tp: fast_hash_map(),
             stats: QueuePositionStats::default(),
         })
     }
@@ -445,17 +446,13 @@ impl QueuePositionState {
         }
     }
 
-    fn snapshot_map(&self) -> HashMap<i64, QueuePositionSnapshot> {
-        self.engine
-            .order_snapshots()
-            .into_iter()
-            .map(|snapshot| {
-                (
-                    snapshot.order_id,
-                    self.snapshot_from_order_snapshot(snapshot),
-                )
-            })
-            .collect()
+    fn snapshot_map(&self) -> FastHashMap<i64, QueuePositionSnapshot> {
+        fast_hash_map_from_iter(self.engine.order_snapshots().into_iter().map(|snapshot| {
+            (
+                snapshot.order_id,
+                self.snapshot_from_order_snapshot(snapshot),
+            )
+        }))
     }
 
     fn snapshot_from_order_snapshot(&self, snapshot: OrderSnapshot) -> QueuePositionSnapshot {
@@ -469,7 +466,7 @@ impl QueuePositionState {
 
     fn diff_events(
         &self,
-        before: HashMap<i64, QueuePositionSnapshot>,
+        before: FastHashMap<i64, QueuePositionSnapshot>,
         source: QueuePositionEventSource,
         update_tp: i64,
         local_tp: i64,

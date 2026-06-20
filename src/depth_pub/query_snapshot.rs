@@ -1,9 +1,9 @@
 use arc_swap::ArcSwap;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use runtime_common::fast_hash::{fast_hash_map_from_iter, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 
 use super::orderbook::{key_to_price, OrderBook};
@@ -18,8 +18,8 @@ pub struct SymbolQuerySnapshot {
     pub top5_ready: bool,
     pub top5_bids: Vec<(i64, f64)>,
     pub top5_asks: Vec<(i64, f64)>,
-    bid_amounts: HashMap<i64, f64>,
-    ask_amounts: HashMap<i64, f64>,
+    bid_amounts: FastHashMap<i64, f64>,
+    ask_amounts: FastHashMap<i64, f64>,
 }
 
 impl SymbolQuerySnapshot {
@@ -155,11 +155,12 @@ fn depth_levels_to_tick_indices(
     Some(out)
 }
 
-fn scale_price_key_amounts(levels: Vec<(i64, f64)>, amount_scale: f64) -> HashMap<i64, f64> {
-    levels
-        .into_iter()
-        .map(|(price_key, amount)| (price_key, amount * amount_scale))
-        .collect()
+fn scale_price_key_amounts(levels: Vec<(i64, f64)>, amount_scale: f64) -> FastHashMap<i64, f64> {
+    fast_hash_map_from_iter(
+        levels
+            .into_iter()
+            .map(|(price_key, amount)| (price_key, amount * amount_scale)),
+    )
 }
 
 #[cfg(test)]

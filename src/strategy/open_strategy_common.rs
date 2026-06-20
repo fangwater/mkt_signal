@@ -32,6 +32,7 @@ use order_common::{OrderExecutionStatus, OrderManager, OrderQuantizedValue, Orde
 use order_common::{OrderStatus, TradingVenue};
 use order_common::{TradeEngineResponse, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::{
     extract_assets_from_internal_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
 };
@@ -39,7 +40,6 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::SignalType;
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
 const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
@@ -63,10 +63,10 @@ struct OpenOrderRateLimitSummaryState {
 }
 
 thread_local! {
-    static OPEN_ORDER_RATE_LIMIT_SUMMARY: RefCell<HashMap<OpenOrderRateLimitSummaryKey, OpenOrderRateLimitSummaryState>> =
-        RefCell::new(HashMap::new());
-    static OPEN_BALANCE_REJECT_SUMMARY: RefCell<HashMap<OpenBalanceRejectSummaryKey, OpenBalanceRejectSummaryState>> =
-        RefCell::new(HashMap::new());
+    static OPEN_ORDER_RATE_LIMIT_SUMMARY: RefCell<FastHashMap<OpenOrderRateLimitSummaryKey, OpenOrderRateLimitSummaryState>> =
+        RefCell::new(fast_hash_map());
+    static OPEN_BALANCE_REJECT_SUMMARY: RefCell<FastHashMap<OpenBalanceRejectSummaryKey, OpenBalanceRejectSummaryState>> =
+        RefCell::new(fast_hash_map());
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -286,7 +286,7 @@ pub struct OpenOrderState {
     pub open_order_id: i64,
     pub hedge_watermark_base_qty: f64,
     pub trade_lite_cumulative_venue_qty: f64,
-    pub seen_trade_lite_ids: HashSet<[u8; mkt_parsers::msg::basic_account_msg::TRADE_ID_LEN]>,
+    pub seen_trade_lite_ids: FastHashSet<[u8; mkt_parsers::msg::basic_account_msg::TRADE_ID_LEN]>,
     pub open_expire_ts: Option<i64>,
     pub open_side: Option<Side>,
     pub pending_order_query: Option<PendingOrderQueryReason>,

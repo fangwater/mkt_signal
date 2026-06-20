@@ -1,5 +1,6 @@
 use crate::query_request::QueryRequestType;
-use std::collections::{HashMap, VecDeque};
+use runtime_common::fast_hash::FastHashMap;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 const OKEX_QUERY_WINDOW: Duration = Duration::from_secs(2);
@@ -30,7 +31,7 @@ pub struct OkexQueryRateSnapshot {
 
 #[derive(Default)]
 pub struct OkexQueryRateLimiter {
-    windows: HashMap<u32, VecDeque<Instant>>,
+    windows: FastHashMap<u32, VecDeque<Instant>>,
 }
 
 impl OkexQueryRateLimiter {

@@ -12,13 +12,14 @@ use order_common::Side;
 use order_common::TradeEngineResponse;
 use order_common::TradingVenue;
 use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 
@@ -232,14 +233,14 @@ impl OrphanHandoff {
 
 /// Strategy id -> Strategy 映射的简单管理器
 pub struct StrategyManager {
-    strategies: HashMap<i32, Box<dyn Strategy>>,
+    strategies: FastHashMap<i32, Box<dyn Strategy>>,
     strategy_queue: VecDeque<i32>,
-    known_ids: HashSet<i32>,
-    symbol_index: HashMap<String, BTreeSet<i32>>,
-    mm_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-    mm_open_strategy_index: HashMap<i32, OpenPriceMapEntry>,
-    arb_open_price_index: HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-    arb_open_strategy_index: HashMap<i32, OpenPriceMapEntry>,
+    known_ids: FastHashSet<i32>,
+    symbol_index: FastHashMap<String, BTreeSet<i32>>,
+    mm_open_price_index: FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
+    mm_open_strategy_index: FastHashMap<i32, OpenPriceMapEntry>,
+    arb_open_price_index: FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
+    arb_open_strategy_index: FastHashMap<i32, OpenPriceMapEntry>,
 }
 
 impl Default for StrategyManager {
@@ -252,20 +253,20 @@ impl StrategyManager {
     /// 创建空的策略管理器
     pub fn new() -> Self {
         Self {
-            strategies: HashMap::new(),
+            strategies: fast_hash_map(),
             strategy_queue: VecDeque::new(),
-            known_ids: HashSet::new(),
-            symbol_index: HashMap::new(),
-            mm_open_price_index: HashMap::new(),
-            mm_open_strategy_index: HashMap::new(),
-            arb_open_price_index: HashMap::new(),
-            arb_open_strategy_index: HashMap::new(),
+            known_ids: fast_hash_set(),
+            symbol_index: fast_hash_map(),
+            mm_open_price_index: fast_hash_map(),
+            mm_open_strategy_index: fast_hash_map(),
+            arb_open_price_index: fast_hash_map(),
+            arb_open_strategy_index: fast_hash_map(),
         }
     }
 
     fn register_open_price_entry(
-        price_index: &mut HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-        strategy_index: &mut HashMap<i32, OpenPriceMapEntry>,
+        price_index: &mut FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        strategy_index: &mut FastHashMap<i32, OpenPriceMapEntry>,
         strategy_id: i32,
         mut entry: OpenPriceMapEntry,
     ) {
@@ -280,8 +281,8 @@ impl StrategyManager {
     }
 
     fn unregister_open_price_entry(
-        price_index: &mut HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-        strategy_index: &mut HashMap<i32, OpenPriceMapEntry>,
+        price_index: &mut FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        strategy_index: &mut FastHashMap<i32, OpenPriceMapEntry>,
         strategy_id: i32,
     ) {
         let Some(entry) = strategy_index.remove(&strategy_id) else {
@@ -339,7 +340,7 @@ impl StrategyManager {
     }
 
     fn open_strategy_ids_by_price_qv(
-        price_index: &HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        price_index: &FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
         symbol: &str,
         price_qv: QuantizedValue,
     ) -> Vec<i32> {
@@ -353,8 +354,8 @@ impl StrategyManager {
     }
 
     fn open_strategy_ids_by_price_qv_and_side(
-        price_index: &HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
-        strategy_index: &HashMap<i32, OpenPriceMapEntry>,
+        price_index: &FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        strategy_index: &FastHashMap<i32, OpenPriceMapEntry>,
         symbol: &str,
         price_qv: QuantizedValue,
         side: Side,
@@ -379,7 +380,7 @@ impl StrategyManager {
     }
 
     fn open_price_map_snapshot(
-        price_index: &HashMap<String, HashMap<QuantizedValueKey, BTreeSet<i32>>>,
+        price_index: &FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
     ) -> Vec<(OpenPriceMapKey, Vec<i32>)> {
         let mut rows: Vec<(OpenPriceMapKey, Vec<i32>)> = price_index
             .iter()

@@ -16,6 +16,19 @@ pub fn fast_hash_map_with_capacity<K, V>(capacity: usize) -> FastHashMap<K, V> {
 }
 
 #[inline]
+pub fn fast_hash_map_from_iter<K, V, I>(iter: I) -> FastHashMap<K, V>
+where
+    K: Eq + Hash,
+    I: IntoIterator<Item = (K, V)>,
+{
+    let iter = iter.into_iter();
+    let (lower, _) = iter.size_hint();
+    let mut out = fast_hash_map_with_capacity(lower);
+    out.extend(iter);
+    out
+}
+
+#[inline]
 pub fn fast_hash_set<T>() -> FastHashSet<T> {
     HashSet::with_hasher(RandomState::new())
 }

@@ -10,13 +10,13 @@ use log::{debug, warn};
 use order_common::trade_error_code::describe_trade_error_code;
 use order_common::OrderExecutionStatus;
 use order_common::{TradeEngineResponse, TradeRequestKind};
+use runtime_common::fast_hash::FastHashMap;
 use runtime_common::time_util::get_timestamp_us;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct HedgeOrderReconcileState {
-    pub pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
-    pub order_query_watchdogs: HashMap<i64, (i64, PendingOrderQueryReason)>,
+    pub pending_order_queries: FastHashMap<i64, PendingOrderQueryReason>,
+    pub order_query_watchdogs: FastHashMap<i64, (i64, PendingOrderQueryReason)>,
 }
 
 impl HedgeOrderReconcileState {
