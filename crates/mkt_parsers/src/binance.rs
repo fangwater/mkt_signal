@@ -1384,7 +1384,9 @@ fn parse_kline_object_scanner(scanner: &mut JsonObjectScanner<'_>) -> Option<Raw
                 timestamp = Some(scanner.take_value()?.i64()?);
                 seen |= KLINE_TIMESTAMP;
             }
-            _ => scanner.skip_value()?,
+            _ => {
+                scanner.skip_value()?;
+            }
         }
         if seen == KLINE_REQUIRED {
             break;
@@ -1507,7 +1509,9 @@ fn parse_derivative_object_after_key<'a>(
                 seen |= DERIVATIVE_NEXT_FUNDING;
             }
             b"o" => liquidation = Some(parse_liquidation_object_scanner(scanner)?),
-            _ => scanner.skip_value()?,
+            _ => {
+                scanner.skip_value()?;
+            }
         }
         if event == Some(RawDerivativeKind::MarkPrice)
             && (seen & DERIVATIVE_MARK_REQUIRED) == DERIVATIVE_MARK_REQUIRED
@@ -1583,7 +1587,9 @@ fn parse_liquidation_object_scanner<'a>(
                 order_timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?));
                 seen |= LIQ_TIME;
             }
-            _ => scanner.skip_value()?,
+            _ => {
+                scanner.skip_value()?;
+            }
         }
         if seen == LIQ_REQUIRED {
             scanner.skip_rest_of_object()?;
@@ -2107,6 +2113,7 @@ fn raw_payload_object(raw: &[u8]) -> RawPayloadObject<'_> {
 #[derive(Clone, Copy)]
 struct JsonValue<'a> {
     raw: &'a [u8],
+    escaped: bool,
 }
 
 impl<'a> JsonValue<'a> {
@@ -2115,7 +2122,7 @@ impl<'a> JsonValue<'a> {
             return None;
         }
         let inner = &self.raw[1..self.raw.len() - 1];
-        if inner.contains(&b'\\') {
+        if self.escaped {
             return None;
         }
         Some(inner)
@@ -2223,10 +2230,11 @@ impl<'a> JsonObjectScanner<'a> {
 
     fn take_value(&mut self) -> Option<JsonValue<'a>> {
         let start = self.pos;
-        self.skip_value()?;
+        let escaped = self.skip_value()?;
         let end = self.pos;
         Some(JsonValue {
             raw: &self.raw[start..end],
+            escaped,
         })
     }
 
@@ -2295,10 +2303,13 @@ impl<'a> JsonObjectScanner<'a> {
         None
     }
 
-    fn skip_value(&mut self) -> Option<()> {
+    fn skip_value(&mut self) -> Option<bool> {
         match *self.raw.get(self.pos)? {
             b'"' => self.skip_string_value(),
-            b'{' | b'[' => self.skip_nested_value(),
+            b'{' | b'[' => {
+                self.skip_nested_value()?;
+                Some(false)
+            }
             _ => {
                 while let Some(&b) = self.raw.get(self.pos) {
                     if b == b',' || b == b'}' || b == b']' || b.is_ascii_whitespace() {
@@ -2306,24 +2317,26 @@ impl<'a> JsonObjectScanner<'a> {
                     }
                     self.pos += 1;
                 }
-                (self.pos < self.raw.len()).then_some(())
+                (self.pos < self.raw.len()).then_some(false)
             }
         }
     }
 
-    fn skip_string_value(&mut self) -> Option<()> {
+    fn skip_string_value(&mut self) -> Option<bool> {
         if self.raw.get(self.pos) != Some(&b'"') {
             return None;
         }
         self.pos += 1;
+        let mut escaped = false;
         while let Some(&b) = self.raw.get(self.pos) {
             match b {
                 b'\\' => {
+                    escaped = true;
                     self.pos += 2;
                 }
                 b'"' => {
                     self.pos += 1;
-                    return Some(());
+                    return Some(escaped);
                 }
                 _ => self.pos += 1,
             }
@@ -2335,7 +2348,9 @@ impl<'a> JsonObjectScanner<'a> {
         let mut depth = 0usize;
         while let Some(&b) = self.raw.get(self.pos) {
             match b {
-                b'"' => self.skip_string_value()?,
+                b'"' => {
+                    self.skip_string_value()?;
+                }
                 b'{' | b'[' => {
                     depth += 1;
                     self.pos += 1;
@@ -2620,6 +2635,12 @@ mod tests {
     fn raw_trade_rejects_book_ticker_shape() {
         let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":1,"s":"BTCUSDT","b":"25","B":"1","a":"25.1","A":"1"}}"#;
         assert!(parse_trade_raw(raw).is_none());
+    }
+
+    #[test]
+    fn raw_trade_rejects_escaped_symbol() {
+        let raw = br#"{"e":"trade","E":1700000000001,"s":"BTC\u0055SDT","t":1001,"p":"25.0","q":"100","m":true}"#;
+        assert!(parse_trade_raw_borrowed(raw).is_none());
     }
 
     #[test]
