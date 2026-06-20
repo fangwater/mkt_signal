@@ -1,5 +1,5 @@
-use crate::common::{bytes_helper, SignalBytes, TradingLeg};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use crate::common::{bytes_helper, SignalBytes, SignalSliceReader, TradingLeg};
+use bytes::{BufMut, Bytes, BytesMut};
 use order_common::Side;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,38 +123,6 @@ fn write_leg(buf: &mut BytesMut, leg: &TradingLeg, symbol: &[u8; 32]) {
     buf.put_f64_le(leg.ask0);
     buf.put_i64_le(leg.ts);
     bytes_helper::write_fixed_bytes(buf, symbol);
-}
-
-fn read_leg(
-    bytes: &mut Bytes,
-    with_ts: bool,
-    label: &str,
-) -> Result<(TradingLeg, [u8; 32]), String> {
-    let need = if with_ts { 1 + 8 + 8 + 8 } else { 1 + 8 + 8 };
-    if bytes.remaining() < need {
-        return Err(format!("Not enough bytes for {}", label));
-    }
-    let venue = bytes.get_u8();
-    let bid0 = bytes.get_f64_le();
-    let ask0 = bytes.get_f64_le();
-    let ts = if with_ts {
-        if bytes.remaining() < 8 {
-            return Err(format!("Not enough bytes for {} ts", label));
-        }
-        bytes.get_i64_le()
-    } else {
-        0
-    };
-    let symbol = bytes_helper::read_fixed_bytes(bytes)?;
-    Ok((
-        TradingLeg {
-            venue,
-            bid0,
-            ask0,
-            ts,
-        },
-        symbol,
-    ))
 }
 
 impl Default for ArbCancelCtx {
@@ -328,59 +296,7 @@ impl SignalBytes for ArbCancelCtx {
     }
 
     fn from_bytes(bytes: Bytes) -> Result<Self, String> {
-        let mut bytes = bytes;
-
-        // Opening leg
-        let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
-
-        // Hedging leg
-        let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, true, "hedging leg")?;
-
-        if bytes.remaining() < 8 + 4 {
-            return Err(
-                "Not enough bytes for ArbCancelCtx trigger timestamp / from_key_len".to_string(),
-            );
-        }
-
-        let trigger_ts = bytes.get_i64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-        if bytes.remaining() != 1 + 1 + 4 {
-            return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
-        }
-
-        let reason = bytes.get_u8();
-        if ArbCancelReason::from_u8(reason).is_none() {
-            return Err(format!("Invalid ArbCancelCtx reason: {}", reason));
-        }
-        let side = bytes.get_u8();
-        if Side::from_u8(side).is_none() {
-            return Err(format!("Invalid ArbCancelCtx side: {}", side));
-        }
-        let strategy_id = bytes.get_i32_le();
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ArbCancelCtx".to_string());
-        }
-
-        Ok(ArbCancelCtx {
-            opening_leg,
-            opening_symbol,
-            hedging_leg,
-            hedging_symbol,
-            trigger_ts,
-            from_key_len: from_key_len as u32,
-            from_key,
-            reason,
-            side,
-            strategy_id,
-        })
+        Self::from_slice(bytes.as_ref())
     }
 }
 
@@ -407,49 +323,81 @@ impl SignalBytes for MmCancelCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        // Opening leg
-        let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
+    }
+}
 
-        if bytes.remaining() < 1 + 1 + 8 + 4 {
-            return Err(
-                "Not enough bytes for cancel side / reason / trigger timestamp".to_string(),
-            );
+impl ArbCancelCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(raw);
+        let (opening_leg, opening_symbol) = reader.read_trading_leg(true, "opening leg")?;
+        let (hedging_leg, hedging_symbol) = reader.read_trading_leg(true, "hedging leg")?;
+        let trigger_ts = reader.read_i64_le("ArbCancelCtx trigger timestamp")?;
+        let from_key_len = reader.read_u32_le("ArbCancelCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "ArbCancelCtx from_key")?
+            .to_vec();
+        let reason = reader.read_u8("ArbCancelCtx reason")?;
+        if ArbCancelReason::from_u8(reason).is_none() {
+            return Err(format!("Invalid ArbCancelCtx reason: {reason}"));
         }
-        let side = bytes.get_u8();
+        let side = reader.read_u8("ArbCancelCtx side")?;
         if Side::from_u8(side).is_none() {
-            return Err(format!("Invalid MmCancelCtx side: {}", side));
+            return Err(format!("Invalid ArbCancelCtx side: {side}"));
         }
-        let reason = bytes.get_u8();
+        let strategy_id = reader.read_i32_le("ArbCancelCtx strategy_id")?;
+        reader.finish_exact("ArbCancelCtx")?;
+
+        Ok(Self {
+            opening_leg,
+            opening_symbol,
+            hedging_leg,
+            hedging_symbol,
+            trigger_ts,
+            from_key_len: from_key.len() as u32,
+            from_key,
+            reason,
+            side,
+            strategy_id,
+        })
+    }
+}
+
+impl MmCancelCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(raw);
+        let (opening_leg, opening_symbol) = reader.read_trading_leg(true, "opening leg")?;
+        let side = reader.read_u8("MmCancelCtx side")?;
+        if Side::from_u8(side).is_none() {
+            return Err(format!("Invalid MmCancelCtx side: {side}"));
+        }
+        let reason = reader.read_u8("MmCancelCtx reason")?;
         if MmCancelReason::from_u8(reason).is_none() {
-            return Err(format!("Invalid MmCancelCtx reason: {}", reason));
+            return Err(format!("Invalid MmCancelCtx reason: {reason}"));
         }
-
-        let trigger_ts = bytes.get_i64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
-
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-
-        let (strategy_id, client_order_id) = match bytes.remaining() {
+        let trigger_ts = reader.read_i64_le("MmCancelCtx trigger timestamp")?;
+        let from_key_len = reader.read_u32_le("MmCancelCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "MmCancelCtx from_key")?
+            .to_vec();
+        let (strategy_id, client_order_id) = match reader.remaining() {
             0 => (0, 0),
-            12 => (bytes.get_i32_le(), bytes.get_i64_le()),
+            12 => (
+                reader.read_i32_le("MmCancelCtx strategy_id")?,
+                reader.read_i64_le("MmCancelCtx client_order_id")?,
+            ),
             _ => return Err("Unexpected trailing bytes for MmCancelCtx".to_string()),
         };
+        reader.finish_exact("MmCancelCtx")?;
 
-        Ok(MmCancelCtx {
+        Ok(Self {
             opening_leg,
             opening_symbol,
             side,
             reason,
             trigger_ts,
-            from_key_len: from_key_len as u32,
+            from_key_len: from_key.len() as u32,
             from_key,
             strategy_id,
             client_order_id,

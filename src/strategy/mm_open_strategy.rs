@@ -62,6 +62,19 @@ impl MarketMakerOpenStrategy {
         });
     }
 
+    pub fn handle_mm_cancel_ctx(&mut self, ctx: &MmCancelCtx) {
+        self.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "MMCancel",
+            target_strategy_id: ctx.strategy_id,
+            target_client_order_id: ctx.client_order_id,
+            cancel_side: ctx.get_side(),
+            cancel_reason: ctx.get_reason().as_log_reason(),
+            trigger_ts: ctx.trigger_ts,
+            from_key: ctx.from_key.clone(),
+            mkt_ts: ctx.opening_leg.ts,
+        });
+    }
+
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         self.apply_order_update_common(order_update)
     }
@@ -83,16 +96,7 @@ impl MarketMakerOpenStrategy {
                 }
             },
             SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_open_cancel_signal_common(OpenCancelInput {
-                    signal_name: "MMCancel",
-                    target_strategy_id: ctx.strategy_id,
-                    target_client_order_id: ctx.client_order_id,
-                    cancel_side: ctx.get_side(),
-                    cancel_reason: ctx.get_reason().as_log_reason(),
-                    trigger_ts: ctx.trigger_ts,
-                    from_key: ctx.from_key,
-                    mkt_ts: ctx.opening_leg.ts,
-                }),
+                Ok(ctx) => self.handle_mm_cancel_ctx(&ctx),
                 Err(err) => {
                     warn!(
                         "MarketMakerOpenStrategy: strategy_id={} decode MMCancel failed: {}",

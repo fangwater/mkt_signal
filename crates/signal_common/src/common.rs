@@ -88,6 +88,141 @@ pub trait SignalBytes: Sized {
     fn from_bytes(bytes: Bytes) -> Result<Self, String>;
 }
 
+pub struct SignalSliceReader<'a> {
+    raw: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> SignalSliceReader<'a> {
+    pub fn new(raw: &'a [u8]) -> Self {
+        Self { raw, offset: 0 }
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.raw.len().saturating_sub(self.offset)
+    }
+
+    fn ensure(&self, len: usize, label: &str) -> Result<(), String> {
+        if self.remaining() < len {
+            return Err(format!(
+                "Not enough bytes for {label}: need {len}, have {}",
+                self.remaining()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn read_u8(&mut self, label: &str) -> Result<u8, String> {
+        self.ensure(1, label)?;
+        let value = self.raw[self.offset];
+        self.offset += 1;
+        Ok(value)
+    }
+
+    pub fn read_i32_le(&mut self, label: &str) -> Result<i32, String> {
+        self.ensure(4, label)?;
+        let value = i32::from_le_bytes(
+            self.raw[self.offset..self.offset + 4]
+                .try_into()
+                .map_err(|_| format!("Invalid bytes for {label}"))?,
+        );
+        self.offset += 4;
+        Ok(value)
+    }
+
+    pub fn read_u32_le(&mut self, label: &str) -> Result<u32, String> {
+        self.ensure(4, label)?;
+        let value = u32::from_le_bytes(
+            self.raw[self.offset..self.offset + 4]
+                .try_into()
+                .map_err(|_| format!("Invalid bytes for {label}"))?,
+        );
+        self.offset += 4;
+        Ok(value)
+    }
+
+    pub fn read_i64_le(&mut self, label: &str) -> Result<i64, String> {
+        self.ensure(8, label)?;
+        let value = i64::from_le_bytes(
+            self.raw[self.offset..self.offset + 8]
+                .try_into()
+                .map_err(|_| format!("Invalid bytes for {label}"))?,
+        );
+        self.offset += 8;
+        Ok(value)
+    }
+
+    pub fn read_u64_le(&mut self, label: &str) -> Result<u64, String> {
+        self.ensure(8, label)?;
+        let value = u64::from_le_bytes(
+            self.raw[self.offset..self.offset + 8]
+                .try_into()
+                .map_err(|_| format!("Invalid bytes for {label}"))?,
+        );
+        self.offset += 8;
+        Ok(value)
+    }
+
+    pub fn read_f64_le(&mut self, label: &str) -> Result<f64, String> {
+        self.ensure(8, label)?;
+        let value = f64::from_le_bytes(
+            self.raw[self.offset..self.offset + 8]
+                .try_into()
+                .map_err(|_| format!("Invalid bytes for {label}"))?,
+        );
+        self.offset += 8;
+        Ok(value)
+    }
+
+    pub fn read_fixed_bytes(&mut self, label: &str) -> Result<[u8; 32], String> {
+        let len = self.read_u8(label)? as usize;
+        if len > 32 {
+            return Err(format!("Invalid array length: {len}"));
+        }
+        self.ensure(len, "array data")?;
+
+        let mut arr = [0u8; 32];
+        arr[..len].copy_from_slice(&self.raw[self.offset..self.offset + len]);
+        self.offset += len;
+        Ok(arr)
+    }
+
+    pub fn read_bytes(&mut self, len: usize, label: &str) -> Result<&'a [u8], String> {
+        self.ensure(len, label)?;
+        let bytes = &self.raw[self.offset..self.offset + len];
+        self.offset += len;
+        Ok(bytes)
+    }
+
+    pub fn read_trading_leg(
+        &mut self,
+        with_ts: bool,
+        label: &str,
+    ) -> Result<(TradingLeg, [u8; 32]), String> {
+        let venue = self.read_u8(label)?;
+        let bid0 = self.read_f64_le(label)?;
+        let ask0 = self.read_f64_le(label)?;
+        let ts = if with_ts { self.read_i64_le(label)? } else { 0 };
+        let symbol = self.read_fixed_bytes(label)?;
+        Ok((
+            TradingLeg {
+                venue,
+                bid0,
+                ask0,
+                ts,
+            },
+            symbol,
+        ))
+    }
+
+    pub fn finish_exact(&self, label: &str) -> Result<(), String> {
+        if self.remaining() != 0 {
+            return Err(format!("Unexpected trailing bytes for {label}"));
+        }
+        Ok(())
+    }
+}
+
 /// Helper functions for byte serialization
 pub mod bytes_helper {
     use super::*;

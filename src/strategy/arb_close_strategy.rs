@@ -38,7 +38,7 @@ impl ArbCloseStrategy {
         self.open_side()
     }
 
-    fn handle_arb_close_signal(&mut self, mut ctx: ArbOpenCtx) {
+    pub fn handle_arb_close_ctx(&mut self, mut ctx: ArbOpenCtx) {
         let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
         if symbol.is_empty() {
             warn!(
@@ -236,7 +236,7 @@ impl ArbCloseStrategy {
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
             SignalType::ArbClose => match ArbOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_arb_close_signal(ctx),
+                Ok(ctx) => self.handle_arb_close_ctx(ctx),
                 Err(err) => {
                     warn!(
                         "ArbCloseStrategy: strategy_id={} decode ArbClose failed: {}",

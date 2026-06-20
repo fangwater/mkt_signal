@@ -731,7 +731,7 @@ impl ArbHedgeStrategy {
             mark_price,
             request_seq
         );
-        self.handle_arb_hedge_signal(ctx);
+        self.handle_arb_hedge_ctx(ctx);
         true
     }
 
@@ -1118,7 +1118,7 @@ impl ArbHedgeStrategy {
         }
     }
 
-    fn handle_arb_hedge_signal(&mut self, ctx: ArbHedgeCtx) {
+    pub fn handle_arb_hedge_ctx(&mut self, ctx: ArbHedgeCtx) {
         let Some(expected_request_seq) = self.pending_hedge_request_seq else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedge reply without pending query: symbol={} request_seq={}",
@@ -2285,7 +2285,7 @@ impl Strategy for ArbHedgeStrategy {
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match signal.signal_type {
             SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_arb_hedge_signal(ctx),
+                Ok(ctx) => self.handle_arb_hedge_ctx(ctx),
                 Err(err) => warn!(
                     "ArbHedgeStrategy: strategy_id={} decode ArbHedge failed err={}",
                     self.strategy_id, err

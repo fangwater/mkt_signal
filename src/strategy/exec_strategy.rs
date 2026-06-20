@@ -458,7 +458,7 @@ impl ExecStrategy {
         }
     }
 
-    fn handle_exec_position_target_ctx(&mut self, ctx: ExecPositionTargetCtx) {
+    pub fn handle_exec_position_target_ctx(&mut self, ctx: ExecPositionTargetCtx) {
         let symbol = normalize_symbol_for_internal(&ctx.get_exec_symbol());
         if symbol.is_empty() {
             warn!(
@@ -895,7 +895,7 @@ impl ExecStrategy {
         }
     }
 
-    fn handle_exec_signal(&mut self, ctx: ExecCtx) {
+    pub fn handle_exec_ctx(&mut self, ctx: ExecCtx) {
         let Some(expected_request_seq) = self.pending_exec_request_seq else {
             warn!(
                 "ExecStrategy: strategy_id={} drop unexpected Exec reply without pending query symbol={} request_seq={}",
@@ -1911,7 +1911,7 @@ impl Strategy for ExecStrategy {
                 ),
             },
             SignalType::Exec => match ExecCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_exec_signal(ctx),
+                Ok(ctx) => self.handle_exec_ctx(ctx),
                 Err(err) => warn!(
                     "ExecStrategy: strategy_id={} decode Exec failed err={}",
                     self.strategy_id, err

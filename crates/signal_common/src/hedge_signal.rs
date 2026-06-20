@@ -1,9 +1,7 @@
-use crate::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::common::{bytes_helper, SignalBytes, SignalSliceReader, TradingLeg};
 use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::Side;
-
-const QV_BYTES_LEN: usize = 8 + 4 + 8;
 
 fn fixed_symbol_to_string(symbol: &[u8; 32]) -> String {
     let end = symbol.iter().position(|&b| b == 0).unwrap_or(32);
@@ -22,16 +20,6 @@ fn write_qv(buf: &mut BytesMut, qv: &QuantizedValue) {
     buf.put_i64_le(tick_i64);
     buf.put_i32_le(tick_exp);
     buf.put_i64_le(qv.get_count());
-}
-
-fn read_qv(bytes: &mut Bytes, field: &str) -> Result<QuantizedValue, String> {
-    if bytes.remaining() < QV_BYTES_LEN {
-        return Err(format!("Not enough bytes for {field}"));
-    }
-    let tick_i64 = bytes.get_i64_le();
-    let tick_exp = bytes.get_i32_le();
-    let count = bytes.get_i64_le();
-    Ok(QuantizedValue::from_parts(tick_i64, tick_exp, count))
 }
 
 /// Market maker hedge signal context (query response)
@@ -293,66 +281,8 @@ impl SignalBytes for ArbHedgeCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 4 + 1 {
-            return Err("Not enough bytes for ArbHedgeCtx basic fields".to_string());
-        }
-        let strategy_id = bytes.get_i32_le();
-        let hedge_side = bytes.get_u8();
-
-        if bytes.remaining() < 1 + 8 + 8 + 8 {
-            return Err("Not enough bytes for ArbHedgeCtx hedging leg".to_string());
-        }
-        let hedging_venue = bytes.get_u8();
-        let hedging_bid0 = bytes.get_f64_le();
-        let hedging_ask0 = bytes.get_f64_le();
-        let hedging_ts = bytes.get_i64_le();
-        let hedging_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-
-        let price_qv = read_qv(&mut bytes, "ArbHedgeCtx price_qv")?;
-        let amount_qv = read_qv(&mut bytes, "ArbHedgeCtx amount_qv")?;
-
-        if bytes.remaining() < 8 + 8 + 8 + 8 + 4 {
-            return Err("Not enough bytes for ArbHedgeCtx tail".to_string());
-        }
-        let price_offset = bytes.get_f64_le();
-        let signal_ts = bytes.get_i64_le();
-        let exp_time = bytes.get_i64_le();
-        let request_seq = bytes.get_u64_le();
-
-        let from_key_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ArbHedgeCtx".to_string());
-        }
-
-        Ok(Self {
-            strategy_id,
-            hedge_side,
-            hedging_leg: TradingLeg {
-                venue: hedging_venue,
-                bid0: hedging_bid0,
-                ask0: hedging_ask0,
-                ts: hedging_ts,
-            },
-            hedging_symbol,
-            price_qv,
-            amount_qv,
-            price_offset,
-            signal_ts,
-            exp_time,
-            request_seq,
-            from_key_len: from_key.len() as u32,
-            from_key,
-        })
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
     }
 }
 
@@ -414,57 +344,82 @@ impl SignalBytes for MmHedgeCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
+    }
+}
+
+impl ArbHedgeCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(raw);
+        let strategy_id = reader.read_i32_le("ArbHedgeCtx strategy_id")?;
+        let hedge_side = reader.read_u8("ArbHedgeCtx side")?;
+        let (hedging_leg, hedging_symbol) = reader.read_trading_leg(true, "ArbHedgeCtx leg")?;
+        let price_qv = read_qv_slice(&mut reader, "ArbHedgeCtx price_qv")?;
+        let amount_qv = read_qv_slice(&mut reader, "ArbHedgeCtx amount_qv")?;
+        let price_offset = reader.read_f64_le("ArbHedgeCtx price_offset")?;
+        let signal_ts = reader.read_i64_le("ArbHedgeCtx signal_ts")?;
+        let exp_time = reader.read_i64_le("ArbHedgeCtx exp_time")?;
+        let request_seq = reader.read_u64_le("ArbHedgeCtx request_seq")?;
+        let from_key_len = reader.read_u32_le("ArbHedgeCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "ArbHedgeCtx from_key")?
+            .to_vec();
+        reader.finish_exact("ArbHedgeCtx")?;
+        Ok(Self {
+            strategy_id,
+            hedge_side,
+            hedging_leg,
+            hedging_symbol,
+            price_qv,
+            amount_qv,
+            price_offset,
+            signal_ts,
+            exp_time,
+            request_seq,
+            from_key_len: from_key.len() as u32,
+            from_key,
+        })
+    }
+}
+
+impl MmHedgeCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
         const QV_BYTES_LEN: usize = 8 + 4 + 8;
+        let mut reader = SignalSliceReader::new(raw);
+        let (opening_leg, opening_symbol) = reader.read_trading_leg(true, "opening leg")?;
 
-        // Opening leg
-        if bytes.remaining() < 1 + 8 + 8 + 8 {
-            return Err("Not enough bytes for opening leg".to_string());
-        }
-        let opening_venue = bytes.get_u8();
-        let opening_bid0 = bytes.get_f64_le();
-        let opening_ask0 = bytes.get_f64_le();
-        let opening_ts = bytes.get_i64_le();
-        let opening_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-
-        if bytes.remaining() < 4 {
-            return Err("Not enough bytes for price_qv_list length".to_string());
-        }
-        let price_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < price_len.saturating_mul(QV_BYTES_LEN) {
+        let price_len = reader.read_u32_le("price_qv_list length")? as usize;
+        let price_bytes = price_len
+            .checked_mul(QV_BYTES_LEN)
+            .ok_or_else(|| "price_qv_list byte length overflow".to_string())?;
+        if reader.remaining() < price_bytes {
             return Err(format!(
                 "Not enough bytes for price_qv_list: need {}, have {}",
-                price_len.saturating_mul(QV_BYTES_LEN),
-                bytes.remaining()
+                price_bytes,
+                reader.remaining()
             ));
         }
         let mut price_qv_list = Vec::with_capacity(price_len);
         for _ in 0..price_len {
-            let tick_i64 = bytes.get_i64_le();
-            let tick_exp = bytes.get_i32_le();
-            let count = bytes.get_i64_le();
-            price_qv_list.push(QuantizedValue::from_parts(tick_i64, tick_exp, count));
+            price_qv_list.push(read_qv_slice(&mut reader, "MmHedgeCtx price_qv")?);
         }
 
-        if bytes.remaining() < 4 {
-            return Err("Not enough bytes for amount_qv_list length".to_string());
-        }
-        let amount_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < amount_len.saturating_mul(QV_BYTES_LEN) {
+        let amount_len = reader.read_u32_le("amount_qv_list length")? as usize;
+        let amount_bytes = amount_len
+            .checked_mul(QV_BYTES_LEN)
+            .ok_or_else(|| "amount_qv_list byte length overflow".to_string())?;
+        if reader.remaining() < amount_bytes {
             return Err(format!(
                 "Not enough bytes for amount_qv_list: need {}, have {}",
-                amount_len.saturating_mul(QV_BYTES_LEN),
-                bytes.remaining()
+                amount_bytes,
+                reader.remaining()
             ));
         }
         let mut amount_qv_list = Vec::with_capacity(amount_len);
         for _ in 0..amount_len {
-            let tick_i64 = bytes.get_i64_le();
-            let tick_exp = bytes.get_i32_le();
-            let count = bytes.get_i64_le();
-            amount_qv_list.push(QuantizedValue::from_parts(tick_i64, tick_exp, count));
+            amount_qv_list.push(read_qv_slice(&mut reader, "MmHedgeCtx amount_qv")?);
         }
-
         if price_qv_list.len() != amount_qv_list.len() {
             return Err(format!(
                 "price_qv_list/amount_qv_list length mismatch: price_len={} amount_len={}",
@@ -473,22 +428,21 @@ impl SignalBytes for MmHedgeCtx {
             ));
         }
 
-        if bytes.remaining() < 4 {
-            return Err("Not enough bytes for price_offsets length".to_string());
-        }
-        let price_offset_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < price_offset_len.saturating_mul(8) {
+        let price_offset_len = reader.read_u32_le("price_offsets length")? as usize;
+        let price_offset_bytes = price_offset_len
+            .checked_mul(8)
+            .ok_or_else(|| "price_offsets byte length overflow".to_string())?;
+        if reader.remaining() < price_offset_bytes {
             return Err(format!(
                 "Not enough bytes for price_offsets: need {}, have {}",
-                price_offset_len.saturating_mul(8),
-                bytes.remaining()
+                price_offset_bytes,
+                reader.remaining()
             ));
         }
         let mut price_offsets = Vec::with_capacity(price_offset_len);
         for _ in 0..price_offset_len {
-            price_offsets.push(bytes.get_f64_le());
+            price_offsets.push(reader.read_f64_le("MmHedgeCtx price_offset")?);
         }
-
         if price_qv_list.len() != price_offsets.len() {
             return Err(format!(
                 "price_qv_list/price_offsets length mismatch: price_len={} offset_len={}",
@@ -497,22 +451,21 @@ impl SignalBytes for MmHedgeCtx {
             ));
         }
 
-        if bytes.remaining() < 4 {
-            return Err("Not enough bytes for tlen_values length".to_string());
-        }
-        let tlen_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < tlen_len.saturating_mul(8) {
+        let tlen_len = reader.read_u32_le("tlen_values length")? as usize;
+        let tlen_bytes = tlen_len
+            .checked_mul(8)
+            .ok_or_else(|| "tlen_values byte length overflow".to_string())?;
+        if reader.remaining() < tlen_bytes {
             return Err(format!(
                 "Not enough bytes for tlen_values: need {}, have {}",
-                tlen_len.saturating_mul(8),
-                bytes.remaining()
+                tlen_bytes,
+                reader.remaining()
             ));
         }
         let mut tlen_values = Vec::with_capacity(tlen_len);
         for _ in 0..tlen_len {
-            tlen_values.push(bytes.get_f64_le());
+            tlen_values.push(reader.read_f64_le("MmHedgeCtx tlen")?);
         }
-
         if !tlen_values.is_empty() && tlen_values.len() != price_qv_list.len() {
             return Err(format!(
                 "price_qv_list/tlen_values length mismatch: price_len={} tlen_len={}",
@@ -521,46 +474,18 @@ impl SignalBytes for MmHedgeCtx {
             ));
         }
 
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for signal_ts".to_string());
-        }
-        let signal_ts = bytes.get_i64_le();
+        let signal_ts = reader.read_i64_le("MmHedgeCtx signal_ts")?;
+        let next_query_ts = reader.read_i64_le("MmHedgeCtx next_query_ts")?;
+        let from_key_len = reader.read_u32_le("MmHedgeCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "MmHedgeCtx from_key")?
+            .to_vec();
+        let request_seq = reader.read_u64_le("MmHedgeCtx request_seq")?;
+        let use_taker = reader.read_u8("MmHedgeCtx use_taker")? != 0;
+        reader.finish_exact("MmHedgeCtx")?;
 
-        if bytes.remaining() < 8 {
-            return Err("Not enough bytes for next_query_ts".to_string());
-        }
-        let next_query_ts = bytes.get_i64_le();
-
-        if bytes.remaining() < 4 {
-            return Err("Not enough bytes for from_key length".to_string());
-        }
-        let from_key_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-
-        if bytes.remaining() < 8 + 1 {
-            return Err("Not enough bytes for MmHedgeCtx tail".to_string());
-        }
-        let request_seq = bytes.get_u64_le();
-        let use_taker = bytes.get_u8() != 0;
-
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for MmHedgeCtx".to_string());
-        }
-
-        Ok(MmHedgeCtx {
-            opening_leg: TradingLeg {
-                venue: opening_venue,
-                bid0: opening_bid0,
-                ask0: opening_ask0,
-                ts: opening_ts,
-            },
+        Ok(Self {
+            opening_leg,
             opening_symbol,
             price_qv_list,
             amount_qv_list,
@@ -570,10 +495,20 @@ impl SignalBytes for MmHedgeCtx {
             next_query_ts,
             request_seq,
             use_taker,
-            from_key_len: from_key_len as u32,
+            from_key_len: from_key.len() as u32,
             from_key,
         })
     }
+}
+
+fn read_qv_slice(
+    reader: &mut SignalSliceReader<'_>,
+    field: &str,
+) -> Result<QuantizedValue, String> {
+    let tick_i64 = reader.read_i64_le(field)?;
+    let tick_exp = reader.read_i32_le(field)?;
+    let count = reader.read_i64_le(field)?;
+    Ok(QuantizedValue::from_parts(tick_i64, tick_exp, count))
 }
 
 /// MM 对冲查询消息（携带 symbol + 当期买/卖成交 + 累计净头寸）

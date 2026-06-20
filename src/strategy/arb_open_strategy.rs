@@ -112,6 +112,20 @@ impl ArbOpenStrategy {
         self.handle_arb_open_ctx(ctx, false);
     }
 
+    pub fn handle_arb_cancel_ctx(&mut self, ctx: &ArbCancelCtx) {
+        let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
+        self.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "ArbCancel",
+            target_strategy_id: ctx.strategy_id,
+            target_client_order_id: 0,
+            cancel_side: ctx.get_side(),
+            cancel_reason: ctx.get_reason().as_log_reason(),
+            trigger_ts: ctx.trigger_ts,
+            from_key: ctx.from_key.clone(),
+            mkt_ts,
+        })
+    }
+
     fn apply_order_update(&mut self, order_update: &dyn OrderUpdate) -> bool {
         self.apply_order_update_common(order_update)
     }
@@ -133,19 +147,7 @@ impl ArbOpenStrategy {
                 }
             },
             SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => {
-                    let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
-                    self.handle_open_cancel_signal_common(OpenCancelInput {
-                        signal_name: "ArbCancel",
-                        target_strategy_id: ctx.strategy_id,
-                        target_client_order_id: 0,
-                        cancel_side: ctx.get_side(),
-                        cancel_reason: ctx.get_reason().as_log_reason(),
-                        trigger_ts: ctx.trigger_ts,
-                        from_key: ctx.from_key,
-                        mkt_ts,
-                    })
-                }
+                Ok(ctx) => self.handle_arb_cancel_ctx(&ctx),
                 Err(err) => warn!(
                     "ArbOpenStrategy: strategy_id={} decode ArbCancel failed: {}",
                     self.open_state.strategy_id, err

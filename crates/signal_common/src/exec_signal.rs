@@ -1,10 +1,9 @@
-use crate::common::{bytes_helper, SignalBytes, TradingLeg};
+use crate::common::{bytes_helper, SignalBytes, SignalSliceReader, TradingLeg};
 use crate::tick_math::QuantizedValue;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use order_common::Side;
 use order_common::TradingVenue;
 
-const QV_BYTES_LEN: usize = 8 + 4 + 8;
 const EXEC_BACKWARD_QUERY_QUOTE: u8 = 1;
 
 fn fixed_symbol_to_string(symbol: &[u8; 32]) -> String {
@@ -24,16 +23,6 @@ fn write_qv(buf: &mut BytesMut, qv: &QuantizedValue) {
     buf.put_i64_le(tick_i64);
     buf.put_i32_le(tick_exp);
     buf.put_i64_le(qv.get_count());
-}
-
-fn read_qv(bytes: &mut Bytes, field: &str) -> Result<QuantizedValue, String> {
-    if bytes.remaining() < QV_BYTES_LEN {
-        return Err(format!("Not enough bytes for {field}"));
-    }
-    let tick_i64 = bytes.get_i64_le();
-    let tick_exp = bytes.get_i32_le();
-    let count = bytes.get_i64_le();
-    Ok(QuantizedValue::from_parts(tick_i64, tick_exp, count))
 }
 
 #[derive(Debug, Clone)]
@@ -370,37 +359,8 @@ impl SignalBytes for ExecPositionTargetCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 1 {
-            return Err("Not enough bytes for ExecPositionTargetCtx venue".to_string());
-        }
-        let exec_venue = bytes.get_u8();
-        let exec_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 8 + 8 + 4 {
-            return Err("Not enough bytes for ExecPositionTargetCtx tail".to_string());
-        }
-        let target_qty = bytes.get_f64_le();
-        let generation_time = bytes.get_i64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for ExecPositionTargetCtx from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ExecPositionTargetCtx".to_string());
-        }
-        Ok(Self {
-            exec_venue,
-            exec_symbol,
-            target_qty,
-            generation_time,
-            from_key_len: from_key.len() as u32,
-            from_key,
-        })
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
     }
 }
 
@@ -422,54 +382,8 @@ impl SignalBytes for ExecRequestCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 1 + 8 + 8 + 8 {
-            return Err("Not enough bytes for ExecRequestCtx leg".to_string());
-        }
-        let venue = bytes.get_u8();
-        let bid0 = bytes.get_f64_le();
-        let ask0 = bytes.get_f64_le();
-        let ts = bytes.get_i64_le();
-        let exec_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        if bytes.remaining() < 1 {
-            return Err("Not enough bytes for ExecRequestCtx side".to_string());
-        }
-        let side = bytes.get_u8();
-        let amount_qv = read_qv(&mut bytes, "ExecRequestCtx amount_qv")?;
-        if bytes.remaining() < 8 + 8 + 8 + 4 {
-            return Err("Not enough bytes for ExecRequestCtx tail".to_string());
-        }
-        let close_ts = bytes.get_i64_le();
-        let create_ts = bytes.get_i64_le();
-        let price_hint = bytes.get_f64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ExecRequestCtx".to_string());
-        }
-        Ok(Self {
-            exec_leg: TradingLeg {
-                venue,
-                bid0,
-                ask0,
-                ts,
-            },
-            exec_symbol,
-            side,
-            amount_qv,
-            close_ts,
-            create_ts,
-            price_hint,
-            from_key_len: from_key.len() as u32,
-            from_key,
-        })
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
     }
 }
 
@@ -494,47 +408,83 @@ impl SignalBytes for ExecCtx {
         buf.freeze()
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        if bytes.remaining() < 4 + 1 + 1 + 8 + 8 + 8 {
-            return Err("Not enough bytes for ExecCtx basic fields".to_string());
-        }
-        let strategy_id = bytes.get_i32_le();
-        let exec_side = bytes.get_u8();
-        let venue = bytes.get_u8();
-        let bid0 = bytes.get_f64_le();
-        let ask0 = bytes.get_f64_le();
-        let ts = bytes.get_i64_le();
-        let exec_symbol = bytes_helper::read_fixed_bytes(&mut bytes)?;
-        let price_qv = read_qv(&mut bytes, "ExecCtx price_qv")?;
-        let amount_qv = read_qv(&mut bytes, "ExecCtx amount_qv")?;
-        if bytes.remaining() < 8 + 8 + 8 + 8 + 4 {
-            return Err("Not enough bytes for ExecCtx tail".to_string());
-        }
-        let price_offset = bytes.get_f64_le();
-        let signal_ts = bytes.get_i64_le();
-        let exp_time = bytes.get_i64_le();
-        let request_seq = bytes.get_u64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ExecCtx".to_string());
-        }
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
+    }
+}
+
+impl ExecPositionTargetCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(raw);
+        let exec_venue = reader.read_u8("ExecPositionTargetCtx venue")?;
+        let exec_symbol = reader.read_fixed_bytes("ExecPositionTargetCtx symbol")?;
+        let target_qty = reader.read_f64_le("ExecPositionTargetCtx target_qty")?;
+        let generation_time = reader.read_i64_le("ExecPositionTargetCtx generation_time")?;
+        let from_key_len = reader.read_u32_le("ExecPositionTargetCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "ExecPositionTargetCtx from_key")?
+            .to_vec();
+        reader.finish_exact("ExecPositionTargetCtx")?;
+        Ok(Self {
+            exec_venue,
+            exec_symbol,
+            target_qty,
+            generation_time,
+            from_key_len: from_key.len() as u32,
+            from_key,
+        })
+    }
+}
+
+impl ExecRequestCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(raw);
+        let (exec_leg, exec_symbol) = reader.read_trading_leg(true, "ExecRequestCtx leg")?;
+        let side = reader.read_u8("ExecRequestCtx side")?;
+        let amount_qv = read_qv_slice(&mut reader, "ExecRequestCtx amount_qv")?;
+        let close_ts = reader.read_i64_le("ExecRequestCtx close_ts")?;
+        let create_ts = reader.read_i64_le("ExecRequestCtx create_ts")?;
+        let price_hint = reader.read_f64_le("ExecRequestCtx price_hint")?;
+        let from_key_len = reader.read_u32_le("ExecRequestCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "ExecRequestCtx from_key")?
+            .to_vec();
+        reader.finish_exact("ExecRequestCtx")?;
+        Ok(Self {
+            exec_leg,
+            exec_symbol,
+            side,
+            amount_qv,
+            close_ts,
+            create_ts,
+            price_hint,
+            from_key_len: from_key.len() as u32,
+            from_key,
+        })
+    }
+}
+
+impl ExecCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let mut reader = SignalSliceReader::new(raw);
+        let strategy_id = reader.read_i32_le("ExecCtx strategy_id")?;
+        let exec_side = reader.read_u8("ExecCtx side")?;
+        let (exec_leg, exec_symbol) = reader.read_trading_leg(true, "ExecCtx leg")?;
+        let price_qv = read_qv_slice(&mut reader, "ExecCtx price_qv")?;
+        let amount_qv = read_qv_slice(&mut reader, "ExecCtx amount_qv")?;
+        let price_offset = reader.read_f64_le("ExecCtx price_offset")?;
+        let signal_ts = reader.read_i64_le("ExecCtx signal_ts")?;
+        let exp_time = reader.read_i64_le("ExecCtx exp_time")?;
+        let request_seq = reader.read_u64_le("ExecCtx request_seq")?;
+        let from_key_len = reader.read_u32_le("ExecCtx from_key_len")? as usize;
+        let from_key = reader
+            .read_bytes(from_key_len, "ExecCtx from_key")?
+            .to_vec();
+        reader.finish_exact("ExecCtx")?;
         Ok(Self {
             strategy_id,
             exec_side,
-            exec_leg: TradingLeg {
-                venue,
-                bid0,
-                ask0,
-                ts,
-            },
+            exec_leg,
             exec_symbol,
             price_qv,
             amount_qv,
@@ -546,6 +496,16 @@ impl SignalBytes for ExecCtx {
             from_key,
         })
     }
+}
+
+fn read_qv_slice(
+    reader: &mut SignalSliceReader<'_>,
+    field: &str,
+) -> Result<QuantizedValue, String> {
+    let tick_i64 = reader.read_i64_le(field)?;
+    let tick_exp = reader.read_i32_le(field)?;
+    let count = reader.read_i64_le(field)?;
+    Ok(QuantizedValue::from_parts(tick_i64, tick_exp, count))
 }
 
 #[cfg(test)]

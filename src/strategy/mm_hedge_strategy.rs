@@ -378,7 +378,7 @@ impl MarketMakerHedgeStrategy {
         self.hedge_request_seq
     }
 
-    fn handle_mm_hedge_signal(&mut self, ctx: MmHedgeCtx) {
+    pub fn handle_mm_hedge_ctx(&mut self, ctx: MmHedgeCtx) {
         let Some(expected_request_seq) = self.pending_hedge_request_seq else {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} drop unexpected MMHedge reply without pending query: symbol={} request_seq={}",
@@ -1545,7 +1545,7 @@ impl MarketMakerHedgeStrategy {
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
             SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_mm_hedge_signal(ctx),
+                Ok(ctx) => self.handle_mm_hedge_ctx(ctx),
                 Err(err) => {
                     warn!(
                         "MarketMakerHedgeStrategy: strategy_id={} decode MMHedge failed: {}",
