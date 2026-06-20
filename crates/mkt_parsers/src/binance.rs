@@ -260,7 +260,8 @@ pub fn parse_book_ticker_bbo_raw(raw: &[u8]) -> Option<Bbo> {
 }
 
 pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let data = combined_payload(raw).unwrap_or(raw);
+    let frame = combined_object_frame(raw);
+    let data = frame.data.unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -290,7 +291,12 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
         }
     }
 
-    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.ends_with("@bookTicker")) {
+    if !seen_event
+        && frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .is_some_and(|stream| !stream.ends_with("@bookTicker"))
+    {
         return None;
     }
 
@@ -320,7 +326,8 @@ enum RawBboKind {
 }
 
 pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let data = combined_payload(raw).unwrap_or(raw);
+    let frame = combined_object_frame(raw);
+    let data = frame.data.unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
     let mut event_kind = None;
     let mut symbol = None;
@@ -353,7 +360,10 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     }
 
     let stream_kind = if event_kind.is_none() {
-        stream_name(raw).and_then(raw_bbo_stream_kind)
+        frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .and_then(raw_bbo_stream_kind)
     } else {
         None
     };
@@ -366,7 +376,10 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let kind = event_kind.or(inferred_kind).or(stream_kind)?;
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+        None => frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .and_then(parse_stream_symbol_borrowed)?,
     };
 
     let (bid_price, bid_amount, ask_price, ask_amount) = match kind {
@@ -402,7 +415,8 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 }
 
 pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let data = combined_payload(raw).unwrap_or(raw);
+    let frame = combined_object_frame(raw);
+    let data = frame.data.unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -431,9 +445,17 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+        None => frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .and_then(parse_stream_symbol_borrowed)?,
     };
-    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.contains("@depth")) {
+    if !seen_event
+        && frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .is_some_and(|stream| !stream.contains("@depth"))
+    {
         return None;
     }
     let bid = bid?;
@@ -500,7 +522,8 @@ pub fn parse_trade_raw(raw: &[u8]) -> Option<Trade> {
 }
 
 pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
-    let data = combined_payload(raw).unwrap_or(raw);
+    let frame = combined_object_frame(raw);
+    let data = frame.data.unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -529,7 +552,12 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
         }
     }
 
-    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.ends_with("@trade")) {
+    if !seen_event
+        && frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .is_some_and(|stream| !stream.ends_with("@trade"))
+    {
         return None;
     }
 
@@ -599,7 +627,8 @@ pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
 }
 
 pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
-    let data = combined_payload(raw).unwrap_or(raw);
+    let frame = combined_object_frame(raw);
+    let data = frame.data.unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -640,7 +669,10 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
 
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+        None => frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .and_then(parse_stream_symbol_borrowed)?,
     };
     if let Some(last_update_id) = last_update_id {
         return Some(RawBook {
@@ -657,7 +689,12 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
         });
     }
 
-    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.contains("@depth")) {
+    if !seen_event
+        && frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .is_some_and(|stream| !stream.contains("@depth"))
+    {
         return None;
     }
     if !has_bids && !has_asks {
@@ -680,7 +717,8 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
 }
 
 pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
-    let data = combined_payload(raw).unwrap_or(raw);
+    let frame = combined_object_frame(raw);
+    let data = frame.data.unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -721,7 +759,10 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
 
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+        None => frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .and_then(parse_stream_symbol_borrowed)?,
     };
     let bids_raw = bids_raw.unwrap_or(b"[]");
     let asks_raw = asks_raw.unwrap_or(b"[]");
@@ -745,7 +786,12 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
         });
     }
 
-    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.contains("@depth")) {
+    if !seen_event
+        && frame
+            .stream
+            .and_then(|stream| stream.string_str())
+            .is_some_and(|stream| !stream.contains("@depth"))
+    {
         return None;
     }
     if !has_bids && !has_asks {
@@ -1516,14 +1562,27 @@ fn infer_raw_bbo_kind(
     }
 }
 
-fn combined_payload(raw: &[u8]) -> Option<&[u8]> {
+#[derive(Clone, Copy)]
+struct CombinedObjectFrame<'a> {
+    data: Option<&'a [u8]>,
+    stream: Option<JsonValue<'a>>,
+}
+
+fn combined_object_frame(raw: &[u8]) -> CombinedObjectFrame<'_> {
     let mut scanner = JsonObjectScanner::new(raw);
+    let mut data = None;
+    let mut stream = None;
     while let Some((key, value)) = scanner.next_field() {
-        if key == b"data" {
-            return value.object_bytes();
+        match key {
+            b"data" => data = value.object_bytes(),
+            b"stream" => stream = Some(value),
+            _ => {}
+        }
+        if data.is_some() && stream.is_some() {
+            break;
         }
     }
-    None
+    CombinedObjectFrame { data, stream }
 }
 
 fn combined_value(raw: &[u8]) -> Option<&[u8]> {
@@ -1531,16 +1590,6 @@ fn combined_value(raw: &[u8]) -> Option<&[u8]> {
     while let Some((key, value)) = scanner.next_field() {
         if key == b"data" {
             return Some(trim_ascii(value.raw));
-        }
-    }
-    None
-}
-
-fn stream_name(raw: &[u8]) -> Option<&str> {
-    let mut scanner = JsonObjectScanner::new(raw);
-    while let Some((key, value)) = scanner.next_field() {
-        if key == b"stream" {
-            return value.string_str();
         }
     }
     None
