@@ -289,6 +289,17 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
             b"E" => timestamp_us = ms_to_us(value.i64()?),
             _ => {}
         }
+        if seen_event
+            && symbol.is_some()
+            && seq_id.is_some()
+            && timestamp_us != 0
+            && bid_price.is_some()
+            && bid_amount.is_some()
+            && ask_price.is_some()
+            && ask_amount.is_some()
+        {
+            break;
+        }
     }
 
     if !seen_event
@@ -355,6 +366,29 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
             b"B" => bid_amount = Some(value),
             b"a" | b"asks" => ask = Some(value),
             b"A" => ask_amount = Some(value),
+            _ => {}
+        }
+        match event_kind {
+            Some(RawBboKind::BookTicker)
+                if symbol.is_some()
+                    && seq_id.is_some()
+                    && timestamp_us.is_some()
+                    && bid.is_some()
+                    && bid_amount.is_some()
+                    && ask.is_some()
+                    && ask_amount.is_some() =>
+            {
+                break;
+            }
+            Some(RawBboKind::Depth)
+                if symbol.is_some()
+                    && seq_id.is_some()
+                    && timestamp_us.is_some()
+                    && bid.is_some()
+                    && ask.is_some() =>
+            {
+                break;
+            }
             _ => {}
         }
     }
@@ -440,6 +474,15 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
             b"b" | b"bids" => bid = Some(parse_raw_top_level(value.array_bytes()?)?),
             b"a" | b"asks" => ask = Some(parse_raw_top_level(value.array_bytes()?)?),
             _ => {}
+        }
+        if seen_event
+            && symbol.is_some()
+            && timestamp_us.is_some()
+            && seq_id.is_some()
+            && bid.is_some()
+            && ask.is_some()
+        {
+            break;
         }
     }
 
@@ -532,6 +575,7 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
     let mut price = None;
     let mut amount = None;
     let mut is_buyer_maker = false;
+    let mut seen_buyer_maker = false;
 
     while let Some((key, value)) = scanner.next_field() {
         match key {
@@ -547,8 +591,21 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
             b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
             b"p" => price = Some(value.f64()?),
             b"q" => amount = Some(value.f64()?),
-            b"m" => is_buyer_maker = value.bool()?,
+            b"m" => {
+                is_buyer_maker = value.bool()?;
+                seen_buyer_maker = true;
+            }
             _ => {}
+        }
+        if seen_event
+            && symbol.is_some()
+            && trade_id.is_some()
+            && timestamp_us.is_some()
+            && price.is_some()
+            && amount.is_some()
+            && seen_buyer_maker
+        {
+            break;
         }
     }
 
