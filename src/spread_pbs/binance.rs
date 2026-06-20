@@ -83,14 +83,14 @@ impl SymbolSlotCache {
         }
     }
 
-    fn get(&self, symbol: &str) -> Option<usize> {
-        let entry = self.entries[slot_cache_index(symbol)];
+    fn get_at(&self, index: usize, symbol: &str) -> Option<usize> {
+        let entry = self.entries[index];
         entry.matches(symbol).then_some(entry.slot)
     }
 
-    fn insert(&mut self, symbol: &str, slot: usize) {
+    fn insert_at(&mut self, index: usize, symbol: &str, slot: usize) {
         if let Some(entry) = SymbolSlotCacheEntry::new(symbol, slot) {
-            self.entries[slot_cache_index(symbol)] = entry;
+            self.entries[index] = entry;
         }
     }
 
@@ -216,12 +216,15 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn symbol_slot_index(&self, symbol: &str) -> Option<usize> {
-        if let Some(slot) = self.symbol_slot_cache.borrow().get(symbol) {
+        let cache_index = slot_cache_index(symbol);
+        if let Some(slot) = self.symbol_slot_cache.borrow().get_at(cache_index, symbol) {
             return Some(slot);
         }
 
         let slot = self.symbol_slot_by_symbol.borrow().get(symbol).copied()?;
-        self.symbol_slot_cache.borrow_mut().insert(symbol, slot);
+        self.symbol_slot_cache
+            .borrow_mut()
+            .insert_at(cache_index, symbol, slot);
         Some(slot)
     }
 
