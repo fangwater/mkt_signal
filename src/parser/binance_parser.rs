@@ -967,6 +967,7 @@ pub struct BinanceIncParser {
     max_levels: Option<usize>,
     is_snapshot: bool,
     mode: BinanceDepthMode,
+    raw_only: bool,
 }
 
 impl Default for BinanceIncParser {
@@ -989,34 +990,40 @@ impl BinanceIncParser {
     }
 
     pub fn futures_incremental(max_levels: Option<usize>) -> Self {
-        Self {
-            max_levels,
-            is_snapshot: false,
-            mode: BinanceDepthMode::FuturesDepthUpdate,
-        }
+        Self::with_depth_mode(max_levels, false, BinanceDepthMode::FuturesDepthUpdate, false)
+    }
+
+    pub fn futures_incremental_raw_only(max_levels: Option<usize>) -> Self {
+        Self::with_depth_mode(max_levels, false, BinanceDepthMode::FuturesDepthUpdate, true)
     }
 
     pub fn futures_snapshot(max_levels: Option<usize>) -> Self {
-        Self {
-            max_levels,
-            is_snapshot: true,
-            mode: BinanceDepthMode::FuturesDepthUpdate,
-        }
+        Self::with_depth_mode(max_levels, true, BinanceDepthMode::FuturesDepthUpdate, false)
+    }
+
+    pub fn futures_snapshot_raw_only(max_levels: Option<usize>) -> Self {
+        Self::with_depth_mode(max_levels, true, BinanceDepthMode::FuturesDepthUpdate, true)
     }
 
     pub fn spot_incremental(max_levels: Option<usize>) -> Self {
-        Self {
-            max_levels,
-            is_snapshot: false,
-            mode: BinanceDepthMode::SpotDepthUpdate,
-        }
+        Self::with_depth_mode(max_levels, false, BinanceDepthMode::SpotDepthUpdate, false)
     }
 
     pub fn spot_snapshot(max_levels: Option<usize>) -> Self {
+        Self::with_depth_mode(max_levels, true, BinanceDepthMode::SpotSnapshot, false)
+    }
+
+    fn with_depth_mode(
+        max_levels: Option<usize>,
+        is_snapshot: bool,
+        mode: BinanceDepthMode,
+        raw_only: bool,
+    ) -> Self {
         Self {
             max_levels,
-            is_snapshot: true,
-            mode: BinanceDepthMode::SpotSnapshot,
+            is_snapshot,
+            mode,
+            raw_only,
         }
     }
 
@@ -1074,6 +1081,10 @@ impl Parser for BinanceIncParser {
                     return publish_raw_book_view_chunks(&book, self.max_levels, tx);
                 }
             }
+        }
+
+        if self.raw_only {
+            return 0;
         }
 
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
@@ -1298,6 +1309,21 @@ mod tests {
     }
 
     #[test]
+    fn binance_incremental_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"\u0073":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#;
+
+        let fallback_parser = BinanceIncParser::futures_incremental(Some(1));
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 2);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::OrderBookInc);
+
+        let raw_only_parser = BinanceIncParser::futures_incremental_raw_only(Some(1));
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
     fn binance_derivatives_parser_uses_raw_array_shape() {
         let parser = BinanceDerivativesMetricsParser::new(HashSet::from(["BTCUSDT".to_string()]));
         let out = parse_one(
@@ -1402,6 +1428,21 @@ mod tests {
         assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
         assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
         assert_eq!(inc_first_update_id(&out[0]), 22346);
+    }
+
+    #[test]
+    fn binance_snapshot_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"\u0073":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#;
+
+        let fallback_parser = BinanceIncParser::futures_snapshot(Some(1));
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 2);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::OrderBookInc);
+
+        let raw_only_parser = BinanceIncParser::futures_snapshot_raw_only(Some(1));
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
     }
 
     #[test]

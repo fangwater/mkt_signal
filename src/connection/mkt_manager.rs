@@ -233,7 +233,7 @@ impl MktManager {
                             BinanceFuturesStreamKind::Depth,
                         )
                         .to_string();
-                        let parser = BinanceIncParser::futures_incremental(max_levels);
+                        let parser = BinanceIncParser::futures_incremental_raw_only(max_levels);
                         self.spawn_connection_with_mpsc(
                             exchange,
                             url,
@@ -251,7 +251,7 @@ impl MktManager {
                     let parser = if self.cfg.venue == TradingVenue::AsterMargin {
                         BinanceIncParser::spot_incremental(max_levels)
                     } else {
-                        BinanceIncParser::futures_incremental(max_levels)
+                        BinanceIncParser::futures_incremental_raw_only(max_levels)
                     };
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -367,7 +367,7 @@ impl MktManager {
                         BinanceFuturesStreamKind::Depth,
                     )
                     .to_string(),
-                    BinanceIncParser::futures_snapshot(max_levels),
+                    BinanceIncParser::futures_snapshot_raw_only(max_levels),
                 ),
                 (Exchange::Aster, TradingVenue::AsterMargin) => (
                     SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string(),
@@ -375,7 +375,7 @@ impl MktManager {
                 ),
                 (Exchange::Aster, _) => (
                     SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string(),
-                    BinanceIncParser::futures_snapshot(max_levels),
+                    BinanceIncParser::futures_snapshot_raw_only(max_levels),
                 ),
                 _ => unreachable!(),
             };
