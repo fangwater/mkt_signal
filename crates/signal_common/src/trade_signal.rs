@@ -1,6 +1,6 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalType {
     ArbOpen = 1,             // 套利开仓信号
     ArbCancel = 3,           // 套利撤单信号
@@ -60,6 +60,14 @@ pub struct TradeSignal {
     pub generation_time: i64,    //信号的产生时间
     pub handle_time: f64,        //信号被pre-process处理的时间
     pub context: Bytes,          //信号的具体内容，信号上下文
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TradeSignalView<'a> {
+    pub signal_type: SignalType,
+    pub generation_time: i64,
+    pub handle_time: f64,
+    pub context: &'a [u8],
 }
 
 impl TradeSignal {
@@ -198,5 +206,72 @@ impl TradeSignal {
             return None;
         }
         Some(u32::from_le_bytes([data[20], data[21], data[22], data[23]]))
+    }
+}
+
+impl<'a> TradeSignalView<'a> {
+    pub fn from_bytes(data: &'a [u8]) -> Result<Self, String> {
+        if data.len() < 24 {
+            return Err("数据长度不足，最少需要24字节".to_string());
+        }
+
+        let signal_type_u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let signal_type = SignalType::from_u32(signal_type_u32)
+            .ok_or_else(|| format!("未知的信号类型: {}", signal_type_u32))?;
+        let generation_time = i64::from_le_bytes([
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        ]);
+        let handle_time = f64::from_le_bytes([
+            data[12], data[13], data[14], data[15], data[16], data[17], data[18], data[19],
+        ]);
+        let context_length = u32::from_le_bytes([data[20], data[21], data[22], data[23]]) as usize;
+        if data.len() < 24 + context_length {
+            return Err(format!(
+                "数据长度不足，期望{}字节，实际{}字节",
+                24 + context_length,
+                data.len()
+            ));
+        }
+
+        Ok(Self {
+            signal_type,
+            generation_time,
+            handle_time,
+            context: &data[24..24 + context_length],
+        })
+    }
+
+    pub fn to_owned_signal(self) -> TradeSignal {
+        TradeSignal {
+            signal_type: self.signal_type,
+            generation_time: self.generation_time,
+            handle_time: self.handle_time,
+            context: Bytes::copy_from_slice(self.context),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trade_signal_view_borrows_context_and_matches_owned_parse() {
+        let signal = TradeSignal::create(
+            SignalType::ArbOpen,
+            123456,
+            7.5,
+            Bytes::from_static(b"ctx-bytes"),
+        );
+        let bytes = signal.to_bytes();
+
+        let view = TradeSignalView::from_bytes(bytes.as_ref()).expect("view parse");
+        let owned = TradeSignal::from_bytes(bytes.as_ref()).expect("owned parse");
+
+        assert_eq!(view.signal_type, owned.signal_type);
+        assert_eq!(view.generation_time, owned.generation_time);
+        assert_eq!(view.handle_time, owned.handle_time);
+        assert_eq!(view.context, owned.context.as_ref());
+        assert_eq!(view.to_owned_signal().context.as_ref(), b"ctx-bytes");
     }
 }
