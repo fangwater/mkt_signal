@@ -2628,6 +2628,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_depth_update_symbol_from_stream_after_data() {
+        let raw = br#"{
+            "data":{"e":"depthUpdate","E":1700000000001,"U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]},
+            "stream":"BTCUSDT@depth@0ms"
+        }"#;
+
+        let book = parse_incremental_raw_borrowed(raw).expect("depth update");
+
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.seq_id, 103);
+        assert_eq!(book.prev_seq_id, 100);
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.asks.len(), 1);
+    }
+
+    #[test]
     fn parses_direct_book_ticker_without_value_tree() {
         let raw = br#"{"e":"bookTicker","u":"22346","s":"ethusdt","b":"2500.0","B":"2","a":"2500.1","A":"3"}"#;
 
