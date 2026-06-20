@@ -1441,6 +1441,14 @@ fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
     fast_float::parse::<f64, _>(bytes).ok()
 }
 
+fn parse_i64_bytes(raw: &[u8]) -> Option<i64> {
+    match raw.first().copied() {
+        Some(b'+') => atoi_simd::parse::<i64>(&raw[1..]).ok(),
+        Some(_) => atoi_simd::parse::<i64>(raw).ok(),
+        None => None,
+    }
+}
+
 fn skip_ws_at(raw: &[u8], pos: &mut usize) {
     while raw.get(*pos).is_some_and(|b| b.is_ascii_whitespace()) {
         *pos += 1;
@@ -1591,10 +1599,7 @@ impl<'a> JsonValue<'a> {
     }
 
     fn i64(self) -> Option<i64> {
-        std::str::from_utf8(self.number_bytes()?)
-            .ok()?
-            .parse::<i64>()
-            .ok()
+        parse_i64_bytes(self.number_bytes()?)
     }
 
     fn f64(self) -> Option<f64> {
@@ -1919,10 +1924,23 @@ mod tests {
     use super::{
         parse_bbo_raw_borrowed, parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
         parse_depth_bbo_raw_borrowed, parse_derivatives_raw_borrowed, parse_event_time_ms_raw,
-        parse_incremental_raw_borrowed, parse_incremental_raw_view, parse_kline_raw_borrowed,
-        parse_trade_raw, parse_trade_raw_borrowed, raw_level_at, RawDerivative,
-        RAW_DEPTH_LEVEL_CAP,
+        parse_i64_bytes, parse_incremental_raw_borrowed, parse_incremental_raw_view,
+        parse_kline_raw_borrowed, parse_trade_raw, parse_trade_raw_borrowed, raw_level_at,
+        RawDerivative, RAW_DEPTH_LEVEL_CAP,
     };
+
+    #[test]
+    fn parses_i64_from_ascii_bytes() {
+        assert_eq!(parse_i64_bytes(b"0"), Some(0));
+        assert_eq!(parse_i64_bytes(b"+42"), Some(42));
+        assert_eq!(parse_i64_bytes(b"-42"), Some(-42));
+        assert_eq!(parse_i64_bytes(b"9223372036854775807"), Some(i64::MAX));
+        assert_eq!(parse_i64_bytes(b"-9223372036854775808"), Some(i64::MIN));
+        assert_eq!(parse_i64_bytes(b"9223372036854775808"), None);
+        assert_eq!(parse_i64_bytes(b"-9223372036854775809"), None);
+        assert_eq!(parse_i64_bytes(b""), None);
+        assert_eq!(parse_i64_bytes(b"12x"), None);
+    }
 
     #[test]
     fn parses_combined_book_ticker_without_value_tree() {
