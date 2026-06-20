@@ -812,61 +812,41 @@ mod tests {
     use order_common::{BinanceAccountMode, TradingVenue};
     use serde_json::Value;
     use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
-    use trade_engine::trade_request::{
-        BitgetCancelOrderParams, BitgetNewOrderParams, GateFuturesCancelOrderRequest,
-        GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
-        TradeRequestHeader, TradeRequestMsg, TradeRequestType,
-    };
+    use trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
+    use trade_engine::{bitget_ws, gate_ws};
 
     fn extract_request_json(bytes: &[u8]) -> Value {
         let msg = TradeRequestMsg::parse(bytes).expect("trade request should parse");
-        let header = TradeRequestHeader {
-            msg_type: msg.req_type as u32,
-            params_length: msg.params.len() as u32,
-            create_time: msg.create_time,
-            client_order_id: msg.client_order_id,
-        };
         match msg.req_type {
-            TradeRequestType::GateUnifiedNewOrder => GateUnifiedNewOrderRequest {
-                header,
-                params: msg.params_bytes(),
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                let payload =
+                    gate_ws::build_api_payload(&msg, 999).expect("gate ws payload should build");
+                let payload: Value =
+                    serde_json::from_str(&payload).expect("gate ws payload should be json");
+                payload["payload"]["req_param"].clone()
             }
-            .params_struct()
-            .map(|params| params.to_gate_unified_json(msg.client_order_id))
-            .expect("gate unified typed params should parse"),
-            TradeRequestType::GateFuturesNewOrder => GateFuturesNewOrderRequest {
-                header,
-                params: msg.params_bytes(),
-            }
-            .params_struct()
-            .map(|params| params.to_gate_futures_json(msg.client_order_id))
-            .expect("gate futures typed params should parse"),
-            TradeRequestType::GateUnifiedCancelOrder => GateUnifiedCancelOrderRequest {
-                header,
-                params: msg.params_bytes(),
-            }
-            .params_struct()
-            .map(|params| params.to_gate_unified_json())
-            .expect("gate unified cancel typed params should parse"),
-            TradeRequestType::GateFuturesCancelOrder => GateFuturesCancelOrderRequest {
-                header,
-                params: msg.params_bytes(),
-            }
-            .params_struct()
-            .map(|params| params.to_gate_futures_json())
-            .expect("gate futures cancel typed params should parse"),
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-                BitgetNewOrderParams::from_bytes(&msg.params)
-                    .map(|params| params.to_bitget_ws_arg(msg.req_type, msg.client_order_id))
-                    .expect("bitget typed params should parse")
-            }
-            TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
-                BitgetCancelOrderParams::from_bytes(&msg.params)
-                    .map(|params| params.to_bitget_ws_arg(msg.req_type))
-                    .expect("bitget cancel typed params should parse")
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder => {
+                let payload = bitget_ws::build_order_payload(&msg, 999)
+                    .expect("bitget ws payload should build");
+                let payload: Value =
+                    serde_json::from_str(&payload).expect("bitget ws payload should be json");
+                payload["args"][0].clone()
             }
             _ => serde_json::from_slice(&msg.params).expect("request params should be valid json"),
         }
+    }
+
+    fn extract_bitget_ws_payload_json(bytes: &[u8]) -> Value {
+        let msg = TradeRequestMsg::parse(bytes).expect("trade request should parse");
+        let payload =
+            bitget_ws::build_order_payload(&msg, 999).expect("bitget ws payload should build");
+        serde_json::from_str(&payload).expect("bitget ws payload should be json")
     }
 
     #[test]
@@ -1386,10 +1366,11 @@ mod tests {
         let bytes = order
             .get_order_request_bytes()
             .expect("bitget futures request should build");
-        let payload = extract_request_json(bytes.as_ref());
+        let ws_payload = extract_bitget_ws_payload_json(bytes.as_ref());
+        let payload = &ws_payload["args"][0];
 
         assert_eq!(
-            payload.get("category").and_then(Value::as_str),
+            ws_payload.get("category").and_then(Value::as_str),
             Some("usdt-futures")
         );
         assert_eq!(
@@ -1434,10 +1415,11 @@ mod tests {
         let bytes = order
             .get_order_request_bytes()
             .expect("bitget futures request should build");
-        let payload = extract_request_json(bytes.as_ref());
+        let ws_payload = extract_bitget_ws_payload_json(bytes.as_ref());
+        let payload = &ws_payload["args"][0];
 
         assert_eq!(
-            payload.get("category").and_then(Value::as_str),
+            ws_payload.get("category").and_then(Value::as_str),
             Some("usdt-futures")
         );
         assert_eq!(
@@ -1497,10 +1479,11 @@ mod tests {
         let bytes = order
             .get_order_cancel_bytes()
             .expect("bitget futures cancel should build");
-        let payload = extract_request_json(bytes.as_ref());
+        let ws_payload = extract_bitget_ws_payload_json(bytes.as_ref());
+        let payload = &ws_payload["args"][0];
 
         assert_eq!(
-            payload.get("category").and_then(Value::as_str),
+            ws_payload.get("category").and_then(Value::as_str),
             Some("usdt-futures")
         );
         assert_eq!(payload.get("clientOid").and_then(Value::as_str), Some("80"));

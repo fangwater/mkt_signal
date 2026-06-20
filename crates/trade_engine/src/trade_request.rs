@@ -2,7 +2,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::prelude::ZeroCopySend;
 use log::debug;
 use order_common::{OrderType, Side};
-use serde_json::{json, Value};
 use signal_common::tick_math::QuantizedValue;
 use std::fmt::Write as _;
 use std::mem::MaybeUninit;
@@ -351,15 +350,6 @@ fn read_optional_str<'a>(raw: &'a [u8], offset: &mut usize) -> Option<Option<&'a
         read_str(raw, offset).map(Some)
     } else {
         Some(None)
-    }
-}
-
-fn signed_qv_string(qv: QuantizedValue, negative: bool) -> String {
-    let abs = qv.decimal_string();
-    if negative && abs != "0" {
-        format!("-{abs}")
-    } else {
-        abs
     }
 }
 
@@ -1366,57 +1356,6 @@ impl GateNewOrderParams {
             write_string(buf, symbol)
         })
     }
-
-    pub fn to_gate_unified_json(&self, client_order_id: i64) -> Value {
-        let mut req_param = serde_json::Map::new();
-        req_param.insert("text".to_string(), json!(format!("t-{client_order_id}")));
-        req_param.insert("currency_pair".to_string(), json!(self.symbol));
-        req_param.insert(
-            "type".to_string(),
-            json!(if self.order_type.is_limit() {
-                "limit"
-            } else {
-                "market"
-            }),
-        );
-        req_param.insert("account".to_string(), json!("unified"));
-        req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-        req_param.insert(
-            "amount".to_string(),
-            json!(self.quantity_qv.decimal_string()),
-        );
-        if self.auto_borrow_repay {
-            req_param.insert("auto_borrow".to_string(), json!(true));
-            req_param.insert("auto_repay".to_string(), json!(true));
-        }
-        if self.order_type.is_limit() {
-            req_param.insert("price".to_string(), json!(self.price_qv.decimal_string()));
-            req_param.insert("time_in_force".to_string(), json!("poc"));
-        }
-        Value::Object(req_param)
-    }
-
-    pub fn to_gate_futures_json(&self, client_order_id: i64) -> Value {
-        let mut req_param = serde_json::Map::new();
-        req_param.insert("text".to_string(), json!(format!("t-{client_order_id}")));
-        req_param.insert("contract".to_string(), json!(self.symbol));
-        req_param.insert("account".to_string(), json!("unified"));
-        req_param.insert(
-            "size".to_string(),
-            json!(signed_qv_string(self.quantity_qv, self.side.is_sell())),
-        );
-        if self.order_type.is_limit() {
-            req_param.insert("price".to_string(), json!(self.price_qv.decimal_string()));
-            req_param.insert("tif".to_string(), json!("poc"));
-        } else {
-            req_param.insert("price".to_string(), json!("0"));
-            req_param.insert("tif".to_string(), json!("ioc"));
-        }
-        if self.reduce_only {
-            req_param.insert("reduce_only".to_string(), json!(true));
-        }
-        Value::Object(req_param)
-    }
 }
 
 impl<'a> GateNewOrderParamsRef<'a> {
@@ -1543,21 +1482,6 @@ impl GateCancelOrderParams {
         trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
             write_string(buf, symbol)?;
             write_string(buf, order_id)
-        })
-    }
-
-    pub fn to_gate_unified_json(&self) -> Value {
-        json!({
-            "order_id": self.order_id,
-            "currency_pair": self.symbol,
-            "account": "unified",
-        })
-    }
-
-    pub fn to_gate_futures_json(&self) -> Value {
-        json!({
-            "order_id": self.order_id,
-            "contract": self.symbol,
         })
     }
 }
@@ -1781,39 +1705,6 @@ impl BitgetNewOrderParams {
             write_string(buf, symbol)
         })
     }
-
-    pub fn to_bitget_ws_arg(&self, req_type: TradeRequestType, client_order_id: i64) -> Value {
-        let category = match req_type {
-            TradeRequestType::BitgetNewMarginOrder => "margin",
-            TradeRequestType::BitgetNewUMOrder => "usdt-futures",
-            _ => "margin",
-        };
-        let mut req_param = serde_json::Map::new();
-        req_param.insert("category".to_string(), json!(category));
-        req_param.insert(
-            "symbol".to_string(),
-            json!(self.symbol.to_ascii_uppercase()),
-        );
-        req_param.insert("side".to_string(), json!(self.side.as_str_lower()));
-        req_param.insert(
-            "orderType".to_string(),
-            json!(if self.order_type.is_limit() {
-                "limit"
-            } else {
-                "market"
-            }),
-        );
-        if self.order_type.is_limit() {
-            req_param.insert("timeInForce".to_string(), json!("post_only"));
-            req_param.insert("price".to_string(), json!(self.price_qv.decimal_string()));
-        }
-        req_param.insert("qty".to_string(), json!(self.quantity_qv.decimal_string()));
-        req_param.insert("clientOid".to_string(), json!(client_order_id.to_string()));
-        if self.reduce_only {
-            req_param.insert("reduceOnly".to_string(), json!("YES"));
-        }
-        Value::Object(req_param)
-    }
 }
 
 impl<'a> BitgetNewOrderParamsRef<'a> {
@@ -1991,21 +1882,6 @@ impl BitgetCancelOrderParams {
             write_optional_string(buf, order_id)?;
             write_string(buf, bitget_client_order_id)
         })
-    }
-
-    pub fn to_bitget_ws_arg(&self, req_type: TradeRequestType) -> Value {
-        let category = match req_type {
-            TradeRequestType::BitgetCancelMarginOrder => "margin",
-            TradeRequestType::BitgetCancelUMOrder => "usdt-futures",
-            _ => "margin",
-        };
-        let mut req_param = serde_json::Map::new();
-        req_param.insert("category".to_string(), json!(category));
-        if let Some(order_id) = &self.order_id {
-            req_param.insert("orderId".to_string(), json!(order_id));
-        }
-        req_param.insert("clientOid".to_string(), json!(self.client_order_id));
-        Value::Object(req_param)
     }
 }
 
@@ -2251,13 +2127,12 @@ mod tests {
         let decoded = request
             .params_struct()
             .expect("gate typed params should decode");
-        let json = decoded.to_gate_futures_json(45);
-
-        assert_eq!(json["contract"], "SOL_USDT");
-        assert_eq!(json["size"], "-3.00");
-        assert_eq!(json["price"], "88.560");
-        assert_eq!(json["tif"], "poc");
-        assert_eq!(json["reduce_only"], true);
+        assert_eq!(decoded.symbol, "SOL_USDT");
+        assert_eq!(decoded.side, Side::Sell);
+        assert_eq!(decoded.order_type, OrderType::Limit);
+        assert_eq!(decoded.quantity_qv.decimal_string(), "3.00");
+        assert_eq!(decoded.price_qv.decimal_string(), "88.560");
+        assert!(decoded.reduce_only);
     }
 
     #[test]
@@ -2271,9 +2146,7 @@ mod tests {
         let decoded = request
             .params_struct()
             .expect("gate cancel typed params should decode");
-        let json = decoded.to_gate_futures_json();
-
-        assert_eq!(json["contract"], "SOL_USDT");
-        assert_eq!(json["order_id"], "t-45");
+        assert_eq!(decoded.symbol, "SOL_USDT");
+        assert_eq!(decoded.order_id, "t-45");
     }
 }

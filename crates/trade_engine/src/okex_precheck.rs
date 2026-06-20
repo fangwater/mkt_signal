@@ -1,6 +1,6 @@
 //! OKX 启动前置校验：账户必须处于跨保证金或组合保证金模式，否则下单时 `tdMode=cross` 会被拒。
 //!
-//! 我们在 `okex.rs::ToOkexWsJson` 中对 OkexMargin/OkexUM 都强制 `tdMode=cross`，依赖 OKX
+//! 我们在 `okex.rs::to_ws_json_string` 中对 OkexMargin/OkexUM 都强制 `tdMode=cross`，依赖 OKX
 //! Unified 账户做自动借币与共享保证金。OKX 文档明确：自动借币仅在「多币种保证金模式 (acctLv=3)」
 //! 或「组合保证金模式 (acctLv=4)」下生效。Spot/Futures 模式 (acctLv=1/2) 下 `tdMode=cross`
 //! 在现货/合约会被直接拒单。

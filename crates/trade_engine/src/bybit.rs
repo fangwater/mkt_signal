@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::fmt::Write as _;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{OrderType, Side};
@@ -212,10 +212,6 @@ pub struct BybitNewOrderRequest {
 pub struct BybitCancelOrderRequest {
     pub header: TradeRequestHeader,
     pub params: Bytes,
-}
-
-pub trait ToBybitWsJson {
-    fn to_ws_json(&self, req_id: &str, timestamp_ms: i64) -> Option<Value>;
 }
 
 impl BybitNewOrderRequest {
@@ -502,84 +498,6 @@ impl BybitNewOrderRequest {
     }
 }
 
-impl ToBybitWsJson for BybitNewOrderRequest {
-    fn to_ws_json(&self, req_id: &str, timestamp_ms: i64) -> Option<Value> {
-        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        let params = self.params_struct()?;
-        let category = bybit_category_for_req(req_type)?;
-
-        let mut arg = json!({
-            "category": category.as_str(),
-            "symbol": params.symbol,
-            "side": params.side.as_str(),
-            "orderType": bybit_order_type_str(params.order_type),
-            "qty": params.quantity_qv.decimal_string(),
-            "orderLinkId": self.header.client_order_id.to_string(),
-        });
-
-        if let Some(map) = arg.as_object_mut() {
-            if params.order_type.is_limit() {
-                map.insert(
-                    "timeInForce".to_string(),
-                    json!(bybit_time_in_force_str(req_type, params.order_type)),
-                );
-                map.insert("price".to_string(), json!(params.price_qv.decimal_string()));
-            } else if req_type == TradeRequestType::BybitNewMarginOrder && params.side.is_buy() {
-                map.insert("marketUnit".to_string(), json!("baseCoin"));
-            }
-
-            if req_type == TradeRequestType::BybitNewMarginOrder {
-                map.insert(
-                    "isLeverage".to_string(),
-                    json!(if params.is_leverage { 1 } else { 0 }),
-                );
-                map.insert("orderFilter".to_string(), json!("Order"));
-            } else {
-                map.insert("reduceOnly".to_string(), json!(params.reduce_only));
-            }
-        }
-
-        Some(json!({
-            "reqId": req_id,
-            "header": {
-                "X-BAPI-TIMESTAMP": timestamp_ms.to_string(),
-                "X-BAPI-RECV-WINDOW": DEFAULT_RECV_WINDOW_MS.to_string(),
-            },
-            "op": "order.create",
-            "args": [arg],
-        }))
-    }
-}
-
-impl ToBybitWsJson for BybitCancelOrderRequest {
-    fn to_ws_json(&self, req_id: &str, timestamp_ms: i64) -> Option<Value> {
-        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        let params = self.params_struct()?;
-        let category = bybit_category_for_req(req_type)?;
-
-        let mut arg = json!({
-            "category": category.as_str(),
-            "symbol": params.symbol,
-            "orderLinkId": params.order_link_id.to_string(),
-        });
-        if req_type == TradeRequestType::BybitCancelMarginOrder {
-            if let Some(map) = arg.as_object_mut() {
-                map.insert("orderFilter".to_string(), json!("Order"));
-            }
-        }
-
-        Some(json!({
-            "reqId": req_id,
-            "header": {
-                "X-BAPI-TIMESTAMP": timestamp_ms.to_string(),
-                "X-BAPI-RECV-WINDOW": DEFAULT_RECV_WINDOW_MS.to_string(),
-            },
-            "op": "order.cancel",
-            "args": [arg],
-        }))
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct BybitWsOrderResponse {
     pub req_id: String,
@@ -807,6 +725,7 @@ fn parse_i32(value: Option<&Value>) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn bybit_margin_payload_uses_post_only_and_margin_flags() {

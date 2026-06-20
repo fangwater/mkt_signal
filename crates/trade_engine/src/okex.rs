@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::fmt::Write as _;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use order_common::Side;
 use signal_common::tick_math::QuantizedValue;
@@ -254,10 +254,6 @@ pub struct OkexCancelOrderRequest {
     pub params: Bytes,
 }
 
-pub trait ToOkexWsJson {
-    fn to_ws_json(&self, inst_id_code: i64) -> Option<Value>;
-}
-
 impl OkexNewOrderRequest {
     fn create_with_type(
         req_type: TradeRequestType,
@@ -501,106 +497,6 @@ impl OkexCancelOrderRequest {
         }
         out.push_str("}]}");
         Some(out)
-    }
-}
-
-impl ToOkexWsJson for OkexNewOrderRequest {
-    fn to_ws_json(&self, inst_id_code: i64) -> Option<Value> {
-        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        let params = self.params_struct()?;
-
-        // tdMode 映射：
-        // - OkexMargin：当前工程语义为“保证金/PM”，使用 "cross"
-        // - OkexFutures：使用 "cross"
-        let td_mode = match req_type {
-            TradeRequestType::OkexNewMarginOrder => "cross",
-            TradeRequestType::OkexNewUMOrder => "cross",
-            _ => return None,
-        };
-
-        let qty = params.quantity_qv.decimal_string();
-        let price = params.price_qv.decimal_string();
-        let cl_id = params.client_order_id.to_string();
-        let ord_type_str = params.order_type.as_str();
-        let args_obj = if params.order_type == OkexOrderType::Market {
-            // 市价买单默认用 quote 计价，这里强制 tgtCcy=base_ccy 让 sz 表示基础币数量
-            let mut obj = json!({
-                "instIdCode": inst_id_code,
-                "side": params.side.as_str_lower(),
-                "ordType": ord_type_str,
-                "sz": qty,
-                "tdMode": td_mode,
-                "clOrdId": cl_id,
-            });
-            if req_type == TradeRequestType::OkexNewMarginOrder && params.side.is_buy() {
-                if let Some(map) = obj.as_object_mut() {
-                    map.insert("tgtCcy".to_string(), json!("base_ccy"));
-                }
-            }
-            if req_type == TradeRequestType::OkexNewUMOrder {
-                if let Some(map) = obj.as_object_mut() {
-                    map.insert("reduceOnly".to_string(), json!(params.reduce_only));
-                }
-            }
-            obj
-        } else {
-            let mut obj = json!({
-                "instIdCode": inst_id_code,
-                "side": params.side.as_str_lower(),
-                "ordType": ord_type_str,
-                "sz": qty,
-                "px": price,
-                "tdMode": td_mode,
-                "clOrdId": cl_id,
-            });
-            if req_type == TradeRequestType::OkexNewUMOrder {
-                if let Some(map) = obj.as_object_mut() {
-                    map.insert("reduceOnly".to_string(), json!(params.reduce_only));
-                }
-            }
-            obj
-        };
-        Some(json!({
-            "op": "order",
-            "id": cl_id,
-            "args": [args_obj]
-        }))
-    }
-}
-
-impl ToOkexWsJson for OkexCancelOrderRequest {
-    fn to_ws_json(&self, inst_id_code: i64) -> Option<Value> {
-        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        if req_type != TradeRequestType::OkexCancelMarginOrder
-            && req_type != TradeRequestType::OkexCancelUMOrder
-        {
-            return None;
-        }
-        let params = self.params_struct()?;
-        let mut obj = json!({
-            "instIdCode": inst_id_code,
-        });
-        if params.ord_id != 0 {
-            if let Some(map) = obj.as_object_mut() {
-                map.insert("ordId".to_string(), json!(params.ord_id.to_string()));
-            }
-        }
-        let cancel_cl_id = if params.cl_ord_id != 0 {
-            params.cl_ord_id
-        } else {
-            self.header.client_order_id
-        };
-        if cancel_cl_id != 0 {
-            if let Some(map) = obj.as_object_mut() {
-                map.insert("clOrdId".to_string(), json!(cancel_cl_id.to_string()));
-            }
-        }
-
-        Some(json!({
-            "op": "cancel-order",
-            "id": self.header.client_order_id.to_string(),
-            "args": [obj]
-        }))
     }
 }
 
@@ -862,6 +758,7 @@ fn push_json_string(out: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn okex_new_order_ws_payload_uses_inst_id_code_only() {
