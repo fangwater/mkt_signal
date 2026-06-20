@@ -77,6 +77,7 @@ const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
 const TE_IPC_IDLE_SLEEP_MICROS: u64 = 100;
+const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 64;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
 
@@ -202,6 +203,16 @@ fn enable_ipc_fast_poll() -> bool {
         }
     }
     true
+}
+
+fn router_idle_spin_iters(fast_poll: bool) -> usize {
+    if !fast_poll {
+        return 0;
+    }
+    env_usize_or(
+        "TE_ROUTER_IDLE_SPIN_ITERS",
+        DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+    )
 }
 
 fn internal_open_terminate_enabled_from_env() -> bool {
@@ -1205,6 +1216,7 @@ impl TradeEngine {
 
         let canonical_exchange = exchange.as_str();
         let fast_poll = enable_ipc_fast_poll();
+        let router_idle_spin_iters = router_idle_spin_iters(fast_poll);
         let internal_open_terminate_env_enabled = internal_open_terminate_enabled_from_env();
         let internal_open_terminate_enabled = fast_poll && internal_open_terminate_env_enabled;
 
@@ -1217,7 +1229,7 @@ impl TradeEngine {
         let query_resp_service = build_service_name(&format!("query_resps/{}", canonical_exchange));
 
         info!(
-            "trade_engine starting; exchange={}, order_req='{}', order_control='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={} internal_open_terminate_env_enabled={} internal_open_terminate_effective={} env={}",
+            "trade_engine starting; exchange={}, order_req='{}', order_control='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={} router_idle_spin_iters={} internal_open_terminate_env_enabled={} internal_open_terminate_effective={} env={}",
             canonical_exchange,
             order_req_service,
             order_control_service,
@@ -1225,6 +1237,7 @@ impl TradeEngine {
             query_req_service,
             query_resp_service,
             fast_poll,
+            router_idle_spin_iters,
             internal_open_terminate_env_enabled,
             internal_open_terminate_enabled,
             ARB_OPEN_INTERNAL_TERMINATE_ENV
@@ -1967,6 +1980,7 @@ impl TradeEngine {
         let internal_open_terminates_for_req_worker = internal_open_terminates.clone();
         let internal_open_terminate_summary_for_req_worker =
             internal_open_terminate_summary.clone();
+        let router_idle_spin_iters_for_req_worker = router_idle_spin_iters;
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
@@ -1977,6 +1991,7 @@ impl TradeEngine {
             let mut order_control_ingress = order_control_ingress;
             let internal_open_terminates = internal_open_terminates_for_req_worker;
             let internal_open_terminate_summary = internal_open_terminate_summary_for_req_worker;
+            let mut idle_spin_count = 0usize;
 
             loop {
                 if shutdown_for_req_worker.is_cancelled() {
@@ -1987,9 +2002,16 @@ impl TradeEngine {
                     &internal_open_terminates,
                 );
                 let Some(msg) = order_req_ingress.try_recv() else {
-                    tokio::task::yield_now().await;
+                    if idle_spin_count < router_idle_spin_iters_for_req_worker {
+                        idle_spin_count += 1;
+                        std::hint::spin_loop();
+                    } else {
+                        idle_spin_count = 0;
+                        tokio::task::yield_now().await;
+                    }
                     continue;
                 };
+                idle_spin_count = 0;
                 let _ = drain_order_control_ingress(
                     &mut order_control_ingress,
                     &internal_open_terminates,
@@ -2229,6 +2251,7 @@ impl TradeEngine {
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
             let use_ltp_backend_for_query_router = use_ltp_backend;
             let shutdown_for_query_router = shutdown.clone();
+            let router_idle_spin_iters_for_query_router = router_idle_spin_iters;
             let query_router = tokio::task::spawn_local(async move {
                 let ltp_rest = if use_ltp_backend_for_query_router {
                     Some(
@@ -2252,15 +2275,23 @@ impl TradeEngine {
                 let mut okex_query_rate_limiter = OkexQueryRateLimiter::default();
                 let mut bitget_query_rate_limiter = BitgetQueryRateLimiter::default();
                 let mut query_req_ingress = query_req_ingress;
+                let mut idle_spin_count = 0usize;
 
                 'query_router: loop {
                     if shutdown_for_query_router.is_cancelled() {
                         break;
                     }
                     let Some(msg) = query_req_ingress.try_recv() else {
-                        tokio::task::yield_now().await;
+                        if idle_spin_count < router_idle_spin_iters_for_query_router {
+                            idle_spin_count += 1;
+                            std::hint::spin_loop();
+                        } else {
+                            idle_spin_count = 0;
+                            tokio::task::yield_now().await;
+                        }
                         continue;
                     };
+                    idle_spin_count = 0;
                     debug!(
                         "routing query: type={:?} client_query_id={}",
                         msg.req_type, msg.client_query_id
