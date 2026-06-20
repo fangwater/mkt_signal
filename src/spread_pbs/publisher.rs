@@ -253,6 +253,93 @@ fn write_trade_payload(
     Ok(off)
 }
 
+#[derive(Clone)]
+struct TradePayloadPrefix {
+    bytes: [u8; TRADE_PAYLOAD_BYTES],
+    len: usize,
+    total_len: usize,
+}
+
+impl TradePayloadPrefix {
+    fn new(symbol: &str) -> Result<Self> {
+        let len = 4 + 4 + symbol.len();
+        let total_len = trade_payload_len(symbol);
+        anyhow::ensure!(
+            total_len <= TRADE_PAYLOAD_BYTES,
+            "trade payload {} exceeds {}",
+            total_len,
+            TRADE_PAYLOAD_BYTES
+        );
+        let mut bytes = [0u8; TRADE_PAYLOAD_BYTES];
+        let mut off = 0usize;
+        write_u32_le(&mut bytes, &mut off, MktMsgType::TradeInfo as u32);
+        write_symbol(&mut bytes, &mut off, symbol)?;
+        Ok(Self {
+            bytes,
+            len,
+            total_len,
+        })
+    }
+}
+
+fn write_trade_payload_with_prefix(
+    buf: &mut [u8],
+    prefix: &TradePayloadPrefix,
+    id: i64,
+    timestamp_us: i64,
+    side: char,
+    price: f64,
+    amount: f64,
+) -> usize {
+    buf[..prefix.len].copy_from_slice(&prefix.bytes[..prefix.len]);
+    let mut off = prefix.len;
+    write_i64_le(buf, &mut off, id);
+    write_i64_le(buf, &mut off, timestamp_us);
+    buf[off] = side as u8;
+    off += 8;
+    write_f64_le(buf, &mut off, price);
+    write_f64_le(buf, &mut off, amount);
+    off
+}
+
+fn ensure_trade_prefix_at_index(
+    cache: &mut FastHashMap<String, TradePayloadPrefix>,
+    by_index: &mut Vec<Option<TradePayloadPrefix>>,
+    symbol: &str,
+    index: usize,
+) -> Result<()> {
+    if index < by_index.len() && by_index[index].is_some() {
+        return Ok(());
+    }
+    let prefix = if let Some(prefix) = cache.get(symbol) {
+        prefix.clone()
+    } else {
+        let prefix = TradePayloadPrefix::new(symbol)?;
+        cache.insert(symbol.to_string(), prefix.clone());
+        prefix
+    };
+
+    if by_index.len() <= index {
+        by_index.resize_with(index + 1, || None);
+    }
+    by_index[index] = Some(prefix);
+    Ok(())
+}
+
+fn seed_trade_prefixes(
+    cache: &mut FastHashMap<String, TradePayloadPrefix>,
+    by_index: &mut Vec<Option<TradePayloadPrefix>>,
+    symbols: &[String],
+) -> Result<()> {
+    for symbol in symbols {
+        if !cache.contains_key(symbol.as_str()) {
+            let index = by_index.len();
+            ensure_trade_prefix_at_index(cache, by_index, symbol, index)?;
+        }
+    }
+    Ok(())
+}
+
 #[inline]
 fn incremental_payload_len(symbol: &str, bids_count: usize, asks_count: usize) -> usize {
     4 + 4 + symbol.len() + 8 + 8 + 8 + 1 + 7 + 4 + 4 + (bids_count + asks_count) * 16
@@ -465,6 +552,8 @@ pub struct SpreadLatencyPublisher {
 pub struct SpreadTradePublisher {
     publisher: Publisher<ipc::Service, [u8; TRADE_PAYLOAD_BYTES], ()>,
     service_name: String,
+    trade_prefix_by_symbol: RefCell<FastHashMap<String, TradePayloadPrefix>>,
+    trade_prefix_by_index: RefCell<Vec<Option<TradePayloadPrefix>>>,
 }
 
 /// spread_pbs 直接替代旧 `dat_pbs/<venue>/incremental` 的 publisher。
@@ -697,6 +786,8 @@ impl SpreadTradePublisher {
         Ok(Self {
             publisher,
             service_name,
+            trade_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            trade_prefix_by_index: RefCell::new(Vec::new()),
         })
     }
 
@@ -706,6 +797,12 @@ impl SpreadTradePublisher {
 
     pub fn publish(&self, data: &[u8]) -> Result<()> {
         publish_padded(&self.publisher, data, "trade")
+    }
+
+    pub fn seed_symbols(&self, symbols: &[String]) -> Result<()> {
+        let mut cache = self.trade_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.trade_prefix_by_index.borrow_mut();
+        seed_trade_prefixes(&mut cache, &mut by_index, symbols)
     }
 
     pub fn publish_trade(
@@ -720,6 +817,50 @@ impl SpreadTradePublisher {
         let min_len = trade_payload_len(symbol);
         publish_write(&self.publisher, min_len, "trade", |buf| {
             write_trade_payload(buf, symbol, id, timestamp_us, side, price, amount)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_trade_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        id: i64,
+        timestamp_us: i64,
+        side: char,
+        price: f64,
+        amount: f64,
+    ) -> Result<()> {
+        let cache = self.trade_prefix_by_index.borrow();
+        if let Some(Some(prefix)) = cache.get(slot_index) {
+            return publish_write(&self.publisher, prefix.total_len, "trade", |buf| {
+                Ok(write_trade_payload_with_prefix(
+                    buf,
+                    prefix,
+                    id,
+                    timestamp_us,
+                    side,
+                    price,
+                    amount,
+                ))
+            });
+        }
+        drop(cache);
+
+        let mut by_symbol = self.trade_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.trade_prefix_by_index.borrow_mut();
+        ensure_trade_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefix = by_index[slot_index].as_ref().expect("prefix inserted");
+        publish_write(&self.publisher, prefix.total_len, "trade", |buf| {
+            Ok(write_trade_payload_with_prefix(
+                buf,
+                prefix,
+                id,
+                timestamp_us,
+                side,
+                price,
+                amount,
+            ))
         })
     }
 }
@@ -1043,6 +1184,33 @@ mod tests {
             0.75,
         )
         .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+        assert!(buf[written..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn cached_trade_prefix_writer_matches_trade_msg_bytes() {
+        let expected = TradeMsg::create(
+            "ETHUSDT".to_string(),
+            9001,
+            1_700_000_000_123_456,
+            'S',
+            2000.5,
+            0.75,
+        )
+        .to_bytes();
+        let prefix = TradePayloadPrefix::new("ETHUSDT").unwrap();
+        let mut buf = [0u8; TRADE_PAYLOAD_BYTES];
+        let written = write_trade_payload_with_prefix(
+            &mut buf,
+            &prefix,
+            9001,
+            1_700_000_000_123_456,
+            'S',
+            2000.5,
+            0.75,
+        );
         assert_eq!(written, expected.len());
         assert_eq!(&buf[..written], &expected[..]);
         assert!(buf[written..].iter().all(|b| *b == 0));

@@ -373,14 +373,18 @@ impl SpreadPbsApp {
             .seed_symbols(&initial_symbols)
             .with_context(|| format!("seed BBO payload prefixes for {}", venue_slug))?;
         let trade_publisher = if direct_trade_enabled {
-            Some(Rc::new(
+            let publisher = Rc::new(
                 SpreadTradePublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
                     panic!(
                         "spread_pbs[{}] failed to open/create replacement trade ipc channel dat_pbs/{}/trade: {:#}",
                         venue_slug, venue_slug, e
                     )
                 }),
-            ))
+            );
+            publisher
+                .seed_symbols(&initial_symbols)
+                .with_context(|| format!("seed trade payload prefixes for {}", venue_slug))?;
+            Some(publisher)
         } else {
             None
         };
@@ -945,6 +949,15 @@ async fn restart_leg(
                 venue_slug,
                 e
             );
+        }
+        if let Some(trade_publisher) = ctx.trade_publisher.as_ref() {
+            if let Err(e) = trade_publisher.seed_symbols(&new_symbols) {
+                log::warn!(
+                    "spread_pbs[{}] failed to seed trade payload prefixes: {:#}",
+                    venue_slug,
+                    e
+                );
+            }
         }
     }
     *current_symbols = new_set;
@@ -1649,7 +1662,20 @@ fn process_trade_fields(
     }
     state.symbol_state.set_trade_slot(slot, seq_id);
 
-    if let Err(e) = publisher.publish_trade(symbol, trade_id, timestamp_us, side, price, amount) {
+    let publish_result = if let Some(slot_index) = slot_index {
+        publisher.publish_trade_for_slot(
+            slot_index,
+            symbol,
+            trade_id,
+            timestamp_us,
+            side,
+            price,
+            amount,
+        )
+    } else {
+        publisher.publish_trade(symbol, trade_id, timestamp_us, side, price, amount)
+    };
+    if let Err(e) = publish_result {
         log::warn!("spread_pbs trade publish failed: {:#}", e);
         return;
     }
