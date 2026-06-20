@@ -298,7 +298,7 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
-                if value.string_bytes()? != b"bookTicker" {
+                if value.raw != br#""bookTicker""# {
                     return None;
                 }
                 seen_event = true;
@@ -373,9 +373,9 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
-                event_kind = Some(match value.string_bytes()? {
-                    b"bookTicker" => RawBboKind::BookTicker,
-                    b"depthUpdate" => RawBboKind::Depth,
+                event_kind = Some(match value.raw {
+                    br#""bookTicker""# => RawBboKind::BookTicker,
+                    br#""depthUpdate""# => RawBboKind::Depth,
                     _ => return None,
                 });
             }
@@ -482,7 +482,7 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
-                if value.string_bytes()? != b"depthUpdate" {
+                if value.raw != br#""depthUpdate""# {
                     return None;
                 }
                 seen_event = true;
@@ -598,7 +598,7 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
-                if value.string_bytes()? != b"trade" {
+                if value.raw != br#""trade""# {
                     return None;
                 }
                 seen_event = true;
@@ -822,7 +822,7 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
-                if value.string_bytes()? != b"depthUpdate" {
+                if value.raw != br#""depthUpdate""# {
                     return None;
                 }
                 seen_event = true;
