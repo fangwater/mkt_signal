@@ -1522,39 +1522,6 @@ fn make_replacement_handler(
                 if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
                     return;
                 }
-                if let Some(book) = adapter.parse_incremental_raw_borrowed(raw) {
-                    let slot_index = adapter.symbol_slot_index(book.symbol);
-                    let mut s = state.borrow_mut();
-                    process_incremental_fields(
-                        &mut s,
-                        incremental_publisher,
-                        slot_index,
-                        book.symbol,
-                        book.timestamp_us,
-                        book.seq_id,
-                        book.prev_seq_id,
-                        book.first_update_id,
-                        book.final_update_id,
-                        book.gap_check,
-                        book.is_snapshot,
-                        book.bids.as_slice(),
-                        book.asks.as_slice(),
-                        incremental_max_levels,
-                    );
-                    return;
-                }
-                if let Some(book) = adapter.parse_incremental_raw_view(raw) {
-                    let slot_index = adapter.symbol_slot_index(book.symbol);
-                    let mut s = state.borrow_mut();
-                    process_incremental_view(
-                        &mut s,
-                        incremental_publisher,
-                        slot_index,
-                        book,
-                        incremental_max_levels,
-                    );
-                    return;
-                }
             } else if let (Some(trade_publisher), Some(trade)) = (
                 trade_publisher.as_ref(),
                 adapter.parse_trade_raw_borrowed(raw),
