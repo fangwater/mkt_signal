@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::fmt::Write as _;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use serde_json::{json, Value};
@@ -134,6 +135,47 @@ impl OkexNewOrderParams {
             client_order_id,
         })
     }
+
+    fn decode_raw(raw: &[u8]) -> Option<OkexNewOrderParamsRaw> {
+        if raw.len() < Self::MIN_BIN_LEN {
+            return None;
+        }
+
+        let side = Side::from_u8(raw[0])?;
+        let order_type = OkexOrderType::try_from(raw[1]).ok()?;
+        let reduce_only = raw[2] != 0;
+        let qty_tick_i64 = i64::from_le_bytes(raw[3..11].try_into().ok()?);
+        let qty_tick_exp = i32::from_le_bytes(raw[11..15].try_into().ok()?);
+        let qty_count = i64::from_le_bytes(raw[15..23].try_into().ok()?);
+        let price_tick_i64 = i64::from_le_bytes(raw[23..31].try_into().ok()?);
+        let price_tick_exp = i32::from_le_bytes(raw[31..35].try_into().ok()?);
+        let price_count = i64::from_le_bytes(raw[35..43].try_into().ok()?);
+        let client_order_id = i64::from_le_bytes(raw[43..51].try_into().ok()?);
+        let symbol_len = raw[51] as usize;
+
+        if raw.len() < Self::MIN_BIN_LEN + symbol_len {
+            return None;
+        }
+        std::str::from_utf8(&raw[52..52 + symbol_len]).ok()?;
+
+        Some(OkexNewOrderParamsRaw {
+            side,
+            order_type,
+            reduce_only,
+            quantity_qv: QuantizedValue::from_parts(qty_tick_i64, qty_tick_exp, qty_count),
+            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
+            client_order_id,
+        })
+    }
+}
+
+struct OkexNewOrderParamsRaw {
+    side: Side,
+    order_type: OkexOrderType,
+    reduce_only: bool,
+    quantity_qv: QuantizedValue,
+    price_qv: QuantizedValue,
+    client_order_id: i64,
 }
 
 #[repr(C, align(8))]
@@ -184,6 +226,25 @@ impl OkexCancelOrderParams {
             inst_id: inst_id.to_string(),
         })
     }
+
+    fn decode_raw(raw: &[u8]) -> Option<OkexCancelOrderParamsRaw> {
+        if raw.len() < Self::MIN_BIN_LEN {
+            return None;
+        }
+        let ord_id = i64::from_le_bytes(raw[0..8].try_into().ok()?);
+        let cl_ord_id = i64::from_le_bytes(raw[8..16].try_into().ok()?);
+        let inst_len = raw[16] as usize;
+        if raw.len() < Self::MIN_BIN_LEN + inst_len {
+            return None;
+        }
+        std::str::from_utf8(&raw[17..17 + inst_len]).ok()?;
+        Some(OkexCancelOrderParamsRaw { ord_id, cl_ord_id })
+    }
+}
+
+struct OkexCancelOrderParamsRaw {
+    ord_id: i64,
+    cl_ord_id: i64,
 }
 
 #[repr(C, align(8))]
@@ -294,6 +355,41 @@ impl OkexNewOrderRequest {
     pub fn params_struct(&self) -> Option<OkexNewOrderParams> {
         OkexNewOrderParams::from_bytes(&self.params)
     }
+
+    pub fn to_ws_json_string(&self, inst_id_code: i64, transport_id: i64) -> Option<String> {
+        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
+        let params = OkexNewOrderParams::decode_raw(&self.params)?;
+        let td_mode = match req_type {
+            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => "cross",
+            _ => return None,
+        };
+        let qty = params.quantity_qv.decimal_string();
+        let price = params.price_qv.decimal_string();
+        let cl_id = params.client_order_id;
+        let ord_type_str = params.order_type.as_str();
+        let mut out = okex_payload_prefix("order", transport_id, 192 + qty.len() + price.len());
+
+        push_i64_field(&mut out, "instIdCode", inst_id_code, true);
+        push_json_field(&mut out, "side", params.side.as_str_lower(), false);
+        push_json_field(&mut out, "ordType", ord_type_str, false);
+        push_json_field(&mut out, "sz", &qty, false);
+        if params.order_type != OkexOrderType::Market {
+            push_json_field(&mut out, "px", &price, false);
+        }
+        push_json_field(&mut out, "tdMode", td_mode, false);
+        push_i64_string_field(&mut out, "clOrdId", cl_id, false);
+        if params.order_type == OkexOrderType::Market
+            && req_type == TradeRequestType::OkexNewMarginOrder
+            && params.side.is_buy()
+        {
+            push_json_field(&mut out, "tgtCcy", "base_ccy", false);
+        }
+        if req_type == TradeRequestType::OkexNewUMOrder {
+            push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
+        }
+        out.push_str("}]}");
+        Some(out)
+    }
 }
 
 impl OkexCancelOrderRequest {
@@ -380,6 +476,31 @@ impl OkexCancelOrderRequest {
 
     pub fn params_struct(&self) -> Option<OkexCancelOrderParams> {
         OkexCancelOrderParams::from_bytes(&self.params)
+    }
+
+    pub fn to_ws_json_string(&self, inst_id_code: i64, transport_id: i64) -> Option<String> {
+        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
+        if req_type != TradeRequestType::OkexCancelMarginOrder
+            && req_type != TradeRequestType::OkexCancelUMOrder
+        {
+            return None;
+        }
+        let params = OkexCancelOrderParams::decode_raw(&self.params)?;
+        let cancel_cl_id = if params.cl_ord_id != 0 {
+            params.cl_ord_id
+        } else {
+            self.header.client_order_id
+        };
+        let mut out = okex_payload_prefix("cancel-order", transport_id, 128);
+        push_i64_field(&mut out, "instIdCode", inst_id_code, true);
+        if params.ord_id != 0 {
+            push_i64_string_field(&mut out, "ordId", params.ord_id, false);
+        }
+        if cancel_cl_id != 0 {
+            push_i64_string_field(&mut out, "clOrdId", cancel_cl_id, false);
+        }
+        out.push_str("}]}");
+        Some(out)
     }
 }
 
@@ -671,6 +792,73 @@ fn parse_i32_field(v: Option<&Value>) -> i32 {
     .unwrap_or(-1)
 }
 
+fn okex_payload_prefix(op: &str, transport_id: i64, extra_capacity: usize) -> String {
+    let mut out = String::with_capacity(extra_capacity);
+    out.push_str("{\"op\":");
+    push_json_string(&mut out, op);
+    out.push_str(",\"id\":\"");
+    write!(out, "{}", transport_id).expect("write okex id");
+    out.push_str("\",\"args\":[{");
+    out
+}
+
+fn push_json_field(out: &mut String, key: &str, value: &str, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    push_json_string(out, value);
+}
+
+fn push_i64_field(out: &mut String, key: &str, value: i64, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    write!(out, "{}", value).expect("write okex i64 field");
+}
+
+fn push_i64_string_field(out: &mut String, key: &str, value: i64, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push_str(":\"");
+    write!(out, "{}", value).expect("write okex i64 string field");
+    out.push('"');
+}
+
+fn push_bool_field(out: &mut String, key: &str, value: bool, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    out.push_str(if value { "true" } else { "false" });
+}
+
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if c <= '\u{1f}' => {
+                write!(out, "\\u{:04x}", c as u32).expect("write json escape");
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,9 +875,12 @@ mod tests {
             client_order_id: 42,
         };
         let req = OkexNewOrderRequest::create_um(1, 42, params).unwrap();
-        let payload = req.to_ws_json(123456).unwrap();
+        let payload: Value = serde_json::from_str(&req.to_ws_json_string(123456, 99).unwrap())
+            .expect("json payload");
         let arg = payload["args"].as_array().unwrap().first().unwrap();
 
+        assert_eq!(payload["op"], json!("order"));
+        assert_eq!(payload["id"], json!("99"));
         assert_eq!(arg["instIdCode"], json!(123456));
         assert!(arg.get("instId").is_none());
         assert_eq!(arg["clOrdId"], json!("42"));
@@ -705,9 +896,12 @@ mod tests {
             inst_id: "BTC-USDT-SWAP".to_string(),
         };
         let req = OkexCancelOrderRequest::create_um(1, 99, params).unwrap();
-        let payload = req.to_ws_json(654321).unwrap();
+        let payload: Value = serde_json::from_str(&req.to_ws_json_string(654321, 100).unwrap())
+            .expect("json payload");
         let arg = payload["args"].as_array().unwrap().first().unwrap();
 
+        assert_eq!(payload["op"], json!("cancel-order"));
+        assert_eq!(payload["id"], json!("100"));
         assert_eq!(arg["instIdCode"], json!(654321));
         assert!(arg.get("instId").is_none());
         assert_eq!(arg["ordId"], json!("88"));

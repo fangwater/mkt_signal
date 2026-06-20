@@ -1,6 +1,7 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use order_common::{gate_text_from_client_order_id, Order, TradingVenue};
 use runtime_common::time_util::get_timestamp_us;
+use std::fmt::Write as _;
 use symbol_utils::symbol_util::{
     gate_currency_pair_from_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
@@ -51,40 +52,39 @@ pub fn build_order_query_request(
     let params = match order.venue {
         TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
             if let Some(order_id) = exchange_order_id {
-                bytes::Bytes::from(format!("symbol={}&orderId={}", order.symbol, order_id))
+                query_bytes_with_i64_pairs("symbol", &order.symbol, "orderId", order_id)
             } else {
-                bytes::Bytes::from(format!(
-                    "symbol={}&origClientOrderId={}",
-                    order.symbol, lookup_client_order_id
-                ))
+                query_bytes_with_i64_pairs(
+                    "symbol",
+                    &order.symbol,
+                    "origClientOrderId",
+                    lookup_client_order_id,
+                )
             }
         }
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
             let inst_id = okex_inst_id_from_symbol(&order.symbol, order.venue)?;
             if let Some(order_id) = exchange_order_id {
-                bytes::Bytes::from(format!("instId={}&ordId={}", inst_id, order_id))
+                query_bytes_with_i64_pairs("instId", &inst_id, "ordId", order_id)
             } else {
-                bytes::Bytes::from(format!(
-                    "instId={}&clOrdId={}",
-                    inst_id, lookup_client_order_id
-                ))
+                query_bytes_with_i64_pairs("instId", &inst_id, "clOrdId", lookup_client_order_id)
             }
         }
-        TradingVenue::BybitMargin => bytes::Bytes::from(format!(
-            "category=spot&symbol={}&orderLinkId={}",
-            normalize_symbol_for_internal(&order.symbol),
-            lookup_client_order_id
-        )),
-        TradingVenue::BybitFutures => bytes::Bytes::from(format!(
-            "category=linear&symbol={}&orderLinkId={}",
-            normalize_symbol_for_internal(&order.symbol),
-            lookup_client_order_id
-        )),
+        TradingVenue::BybitMargin => bybit_query_bytes(
+            "spot",
+            &normalize_symbol_for_internal(&order.symbol),
+            lookup_client_order_id,
+        ),
+        TradingVenue::BybitFutures => bybit_query_bytes(
+            "linear",
+            &normalize_symbol_for_internal(&order.symbol),
+            lookup_client_order_id,
+        ),
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
             if let Some(order_id) = exchange_order_id {
-                bytes::Bytes::from(format!("orderId={}", order_id))
+                query_bytes_with_i64("orderId", order_id)
             } else {
-                bytes::Bytes::from(format!("clientOid={}", lookup_client_order_id))
+                query_bytes_with_i64("clientOid", lookup_client_order_id)
             }
         }
         TradingVenue::GateMargin => {
@@ -92,27 +92,88 @@ pub fn build_order_query_request(
             let order_id = exchange_order_id
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| gate_text_from_client_order_id(lookup_client_order_id));
-            let req_param = serde_json::json!({
-                "order_id": order_id,
-                "currency_pair": currency_pair,
-                "account": "unified",
-            });
-            bytes::Bytes::from(req_param.to_string())
+            gate_margin_query_json_bytes(&order_id, &currency_pair)
         }
         TradingVenue::GateFutures => {
             let order_id = exchange_order_id
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| gate_text_from_client_order_id(lookup_client_order_id));
-            let req_param = serde_json::json!({
-                "order_id": order_id,
-            });
-            bytes::Bytes::from(req_param.to_string())
+            gate_futures_query_json_bytes(&order_id)
         }
         _ => bytes::Bytes::new(),
     };
 
     let req = GenericQueryRequest::create(req_type, get_timestamp_us(), request_query_id, params);
     Ok((exchange, req.to_bytes()))
+}
+
+fn query_bytes_with_i64(key: &str, value: i64) -> bytes::Bytes {
+    let mut out = String::with_capacity(key.len() + 24);
+    out.push_str(key);
+    out.push('=');
+    write!(out, "{}", value).expect("write query i64 value");
+    bytes::Bytes::from(out)
+}
+
+fn query_bytes_with_i64_pairs(key1: &str, value1: &str, key2: &str, value2: i64) -> bytes::Bytes {
+    let mut out = String::with_capacity(key1.len() + value1.len() + key2.len() + 28);
+    out.push_str(key1);
+    out.push('=');
+    out.push_str(value1);
+    out.push('&');
+    out.push_str(key2);
+    out.push('=');
+    write!(out, "{}", value2).expect("write query i64 value");
+    bytes::Bytes::from(out)
+}
+
+fn bybit_query_bytes(category: &str, symbol: &str, order_link_id: i64) -> bytes::Bytes {
+    let mut out = String::with_capacity(category.len() + symbol.len() + 48);
+    out.push_str("category=");
+    out.push_str(category);
+    out.push_str("&symbol=");
+    out.push_str(symbol);
+    out.push_str("&orderLinkId=");
+    write!(out, "{}", order_link_id).expect("write bybit order link id");
+    bytes::Bytes::from(out)
+}
+
+fn gate_margin_query_json_bytes(order_id: &str, currency_pair: &str) -> bytes::Bytes {
+    let mut out = String::with_capacity(order_id.len() + currency_pair.len() + 72);
+    out.push_str("{\"order_id\":");
+    push_json_string(&mut out, order_id);
+    out.push_str(",\"currency_pair\":");
+    push_json_string(&mut out, currency_pair);
+    out.push_str(",\"account\":\"unified\"}");
+    bytes::Bytes::from(out)
+}
+
+fn gate_futures_query_json_bytes(order_id: &str) -> bytes::Bytes {
+    let mut out = String::with_capacity(order_id.len() + 18);
+    out.push_str("{\"order_id\":");
+    push_json_string(&mut out, order_id);
+    out.push('}');
+    bytes::Bytes::from(out)
+}
+
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if c <= '\u{1f}' => {
+                write!(out, "\\u{:04x}", c as u32).expect("write json escape");
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 #[cfg(test)]
@@ -122,24 +183,92 @@ mod tests {
     use serde_json::Value;
     use trade_engine::query_request::{QueryRequestMsg, QueryRequestType};
 
-    #[test]
-    fn gate_margin_order_query_uses_unified_account() {
+    fn order_from_manager(
+        venue: TradingVenue,
+        client_order_id: i64,
+        symbol: &str,
+        exchange_order_id: Option<i64>,
+    ) -> Order {
         let mut order_manager = OrderManager::new(None);
-        let client_order_id = 1133736985207242753;
         order_manager.create_order(
-            TradingVenue::GateMargin,
+            venue,
             client_order_id,
             OrderType::Limit,
-            "CCUSDT".to_string(),
+            symbol.to_string(),
             Side::Sell,
             7.0,
             0.14653,
             false,
             1.0,
         );
-        let order = order_manager
+        let mut order = order_manager
             .get(client_order_id)
             .expect("test order should exist");
+        order.exchange_order_id = exchange_order_id;
+        order
+    }
+
+    fn query_params(bytes: bytes::Bytes) -> (QueryRequestMsg, String) {
+        let msg = QueryRequestMsg::parse(bytes.as_ref()).expect("query request should parse");
+        let params = std::str::from_utf8(msg.params.as_ref())
+            .expect("params should be utf-8")
+            .to_string();
+        (msg, params)
+    }
+
+    #[test]
+    fn binance_query_helpers_preserve_required_order() {
+        assert_eq!(
+            query_bytes_with_i64_pairs("symbol", "BTCUSDT", "orderId", 99),
+            bytes::Bytes::from_static(b"symbol=BTCUSDT&orderId=99")
+        );
+        assert_eq!(
+            query_bytes_with_i64_pairs("symbol", "BTCUSDT", "origClientOrderId", 42),
+            bytes::Bytes::from_static(b"symbol=BTCUSDT&origClientOrderId=42")
+        );
+    }
+
+    #[test]
+    fn okex_order_query_uses_inst_id_and_exchange_order_id() {
+        let client_order_id = 1133736985207242753;
+        let order = order_from_manager(
+            TradingVenue::OkexFutures,
+            client_order_id,
+            "BTCUSDT",
+            Some(998877),
+        );
+
+        let (exchange, bytes) = build_order_query_request(&order, client_order_id, client_order_id)
+            .expect("okex futures order query should build");
+        let (msg, params) = query_params(bytes);
+
+        assert_eq!(exchange, "okex");
+        assert_eq!(msg.req_type, QueryRequestType::OkexUMQuery);
+        assert_eq!(params, "instId=BTC-USDT-SWAP&ordId=998877");
+    }
+
+    #[test]
+    fn bybit_margin_order_query_uses_spot_category() {
+        let client_order_id = 1133736985207242753;
+        let order =
+            order_from_manager(TradingVenue::BybitMargin, client_order_id, "BTC_USDT", None);
+
+        let (exchange, bytes) = build_order_query_request(&order, client_order_id, client_order_id)
+            .expect("bybit margin order query should build");
+        let (msg, params) = query_params(bytes);
+
+        assert_eq!(exchange, "bybit");
+        assert_eq!(msg.req_type, QueryRequestType::BybitMarginQuery);
+        assert_eq!(
+            params,
+            "category=spot&symbol=BTCUSDT&orderLinkId=1133736985207242753"
+        );
+    }
+
+    #[test]
+    fn gate_margin_order_query_uses_unified_account() {
+        let client_order_id = 1133736985207242753;
+        let order = order_from_manager(TradingVenue::GateMargin, client_order_id, "CCUSDT", None);
 
         let (exchange, bytes) = build_order_query_request(&order, client_order_id, client_order_id)
             .expect("gate margin order query should build");
@@ -160,6 +289,26 @@ mod tests {
         assert_eq!(
             params.get("account").and_then(Value::as_str),
             Some("unified")
+        );
+    }
+
+    #[test]
+    fn gate_futures_order_query_uses_text_client_order_id() {
+        let client_order_id = 1133736985207242753;
+        let order =
+            order_from_manager(TradingVenue::GateFutures, client_order_id, "BTC_USDT", None);
+
+        let (exchange, bytes) = build_order_query_request(&order, client_order_id, client_order_id)
+            .expect("gate futures order query should build");
+        let msg = QueryRequestMsg::parse(bytes.as_ref()).expect("query request should parse");
+        let params: Value =
+            serde_json::from_slice(msg.params.as_ref()).expect("params should be json");
+
+        assert_eq!(exchange, "gate");
+        assert_eq!(msg.req_type, QueryRequestType::GateFuturesOrderQuery);
+        assert_eq!(
+            params.get("order_id").and_then(Value::as_str),
+            Some("t-1133736985207242753")
         );
     }
 }

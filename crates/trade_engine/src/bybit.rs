@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
+use std::fmt::Write as _;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use serde::Serialize;
 use serde_json::{json, Value};
 
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
@@ -11,45 +11,6 @@ use signal_common::tick_math::QuantizedValue;
 use super::trade_request::{TradeRequestHeader, TradeRequestType};
 
 const DEFAULT_RECV_WINDOW_MS: i64 = 5_000;
-
-#[derive(Clone, Copy)]
-struct JsonI64String(i64);
-
-impl Serialize for JsonI64String {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_str(&self.0)
-    }
-}
-
-#[derive(Serialize)]
-struct BybitWsHeaderJson {
-    #[serde(rename = "X-BAPI-TIMESTAMP")]
-    timestamp_ms: JsonI64String,
-    #[serde(rename = "X-BAPI-RECV-WINDOW")]
-    recv_window_ms: JsonI64String,
-}
-
-#[derive(Serialize)]
-struct BybitCancelArgJson<'a> {
-    category: &'static str,
-    symbol: &'a str,
-    #[serde(rename = "orderLinkId")]
-    order_link_id: JsonI64String,
-    #[serde(rename = "orderFilter", skip_serializing_if = "Option::is_none")]
-    order_filter: Option<&'static str>,
-}
-
-#[derive(Serialize)]
-struct BybitCancelPayloadJson<'a> {
-    #[serde(rename = "reqId")]
-    req_id: &'a str,
-    header: BybitWsHeaderJson,
-    op: &'static str,
-    args: [BybitCancelArgJson<'a>; 1],
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BybitCategory {
@@ -151,6 +112,49 @@ impl BybitNewOrderParams {
             symbol: symbol.to_string(),
         })
     }
+
+    fn decode_raw(raw: &[u8]) -> Option<BybitNewOrderParamsRef<'_>> {
+        if raw.len() < Self::MIN_BIN_LEN {
+            return None;
+        }
+
+        let side = Side::from_u8(raw[0])?;
+        let order_type = OrderType::from_u8(raw[1])?;
+        let reduce_only = raw[2] != 0;
+        let is_leverage = raw[3] != 0;
+        let qty_tick_i64 = i64::from_le_bytes(raw[4..12].try_into().ok()?);
+        let qty_tick_exp = i32::from_le_bytes(raw[12..16].try_into().ok()?);
+        let qty_count = i64::from_le_bytes(raw[16..24].try_into().ok()?);
+        let price_tick_i64 = i64::from_le_bytes(raw[24..32].try_into().ok()?);
+        let price_tick_exp = i32::from_le_bytes(raw[32..36].try_into().ok()?);
+        let price_count = i64::from_le_bytes(raw[36..44].try_into().ok()?);
+        let symbol_len = raw[44] as usize;
+
+        if raw.len() < Self::MIN_BIN_LEN + symbol_len {
+            return None;
+        }
+        let symbol = std::str::from_utf8(&raw[45..45 + symbol_len]).ok()?;
+
+        Some(BybitNewOrderParamsRef {
+            side,
+            order_type,
+            reduce_only,
+            is_leverage,
+            quantity_qv: QuantizedValue::from_parts(qty_tick_i64, qty_tick_exp, qty_count),
+            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
+            symbol,
+        })
+    }
+}
+
+struct BybitNewOrderParamsRef<'a> {
+    side: Side,
+    order_type: OrderType,
+    reduce_only: bool,
+    is_leverage: bool,
+    quantity_qv: QuantizedValue,
+    price_qv: QuantizedValue,
+    symbol: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -430,28 +434,71 @@ impl BybitCancelOrderRequest {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
         let category = bybit_category_for_req(req_type)?;
         let (order_link_id, symbol) = BybitCancelOrderParams::decode_raw(&self.params)?;
-        let order_filter = if req_type == TradeRequestType::BybitCancelMarginOrder {
-            Some("Order")
-        } else {
-            None
-        };
-        let payload = BybitCancelPayloadJson {
+        let mut out =
+            bybit_payload_prefix(req_id, timestamp_ms, "order.cancel", 160 + symbol.len());
+        push_json_field(&mut out, "category", category.as_str(), true);
+        push_json_field(&mut out, "symbol", symbol, false);
+        push_i64_string_field(&mut out, "orderLinkId", order_link_id, false);
+        if req_type == TradeRequestType::BybitCancelMarginOrder {
+            push_json_field(&mut out, "orderFilter", "Order", false);
+        }
+        out.push_str("}]}");
+        Some(out)
+    }
+}
+
+impl BybitNewOrderRequest {
+    pub fn to_ws_json_string(&self, req_id: &str, timestamp_ms: i64) -> Option<String> {
+        let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
+        let params = BybitNewOrderParams::decode_raw(&self.params)?;
+        let category = bybit_category_for_req(req_type)?;
+        let qty = params.quantity_qv.decimal_string();
+        let price = params.price_qv.decimal_string();
+        let mut out = bybit_payload_prefix(
             req_id,
-            header: BybitWsHeaderJson {
-                timestamp_ms: JsonI64String(timestamp_ms),
-                recv_window_ms: JsonI64String(DEFAULT_RECV_WINDOW_MS),
-            },
-            op: "order.cancel",
-            args: [BybitCancelArgJson {
-                category: category.as_str(),
-                symbol,
-                order_link_id: JsonI64String(order_link_id),
-                order_filter,
-            }],
-        };
-        let mut out = Vec::with_capacity(192 + req_id.len() + symbol.len());
-        serde_json::to_writer(&mut out, &payload).ok()?;
-        String::from_utf8(out).ok()
+            timestamp_ms,
+            "order.create",
+            192 + params.symbol.len() + qty.len() + price.len(),
+        );
+
+        push_json_field(&mut out, "category", category.as_str(), true);
+        push_json_field(&mut out, "symbol", params.symbol, false);
+        push_json_field(&mut out, "side", params.side.as_str(), false);
+        push_json_field(
+            &mut out,
+            "orderType",
+            bybit_order_type_str(params.order_type),
+            false,
+        );
+        push_json_field(&mut out, "qty", &qty, false);
+        push_i64_string_field(&mut out, "orderLinkId", self.header.client_order_id, false);
+
+        if params.order_type.is_limit() {
+            push_json_field(
+                &mut out,
+                "timeInForce",
+                bybit_time_in_force_str(req_type, params.order_type),
+                false,
+            );
+            push_json_field(&mut out, "price", &price, false);
+        } else if req_type == TradeRequestType::BybitNewMarginOrder && params.side.is_buy() {
+            push_json_field(&mut out, "marketUnit", "baseCoin", false);
+        }
+
+        if req_type == TradeRequestType::BybitNewMarginOrder {
+            push_i32_field(
+                &mut out,
+                "isLeverage",
+                if params.is_leverage { 1 } else { 0 },
+                false,
+            );
+            push_json_field(&mut out, "orderFilter", "Order", false);
+        } else {
+            push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
+        }
+
+        out.push_str("}]}");
+        Some(out)
     }
 }
 
@@ -667,6 +714,82 @@ fn bybit_time_in_force_str(req_type: TradeRequestType, order_type: OrderType) ->
     }
 }
 
+fn bybit_payload_prefix(
+    req_id: &str,
+    timestamp_ms: i64,
+    op: &str,
+    extra_capacity: usize,
+) -> String {
+    let mut out = String::with_capacity(extra_capacity + req_id.len());
+    out.push_str("{\"reqId\":");
+    push_json_string(&mut out, req_id);
+    out.push_str(",\"header\":{\"X-BAPI-TIMESTAMP\":\"");
+    write!(out, "{}", timestamp_ms).expect("write bybit timestamp");
+    out.push_str("\",\"X-BAPI-RECV-WINDOW\":\"");
+    write!(out, "{}", DEFAULT_RECV_WINDOW_MS).expect("write bybit recv window");
+    out.push_str("\"},\"op\":");
+    push_json_string(&mut out, op);
+    out.push_str(",\"args\":[{");
+    out
+}
+
+fn push_json_field(out: &mut String, key: &str, value: &str, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    push_json_string(out, value);
+}
+
+fn push_i64_string_field(out: &mut String, key: &str, value: i64, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push_str(":\"");
+    write!(out, "{}", value).expect("write bybit i64 string field");
+    out.push('"');
+}
+
+fn push_i32_field(out: &mut String, key: &str, value: i32, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    write!(out, "{}", value).expect("write bybit i32 field");
+}
+
+fn push_bool_field(out: &mut String, key: &str, value: bool, first: bool) {
+    if !first {
+        out.push(',');
+    }
+    push_json_string(out, key);
+    out.push(':');
+    out.push_str(if value { "true" } else { "false" });
+}
+
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if c <= '\u{1f}' => {
+                write!(out, "\\u{:04x}", c as u32).expect("write json escape");
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 fn parse_i32(value: Option<&Value>) -> Option<i32> {
     value.and_then(|val| {
         if let Some(n) = val.as_i64() {
@@ -697,10 +820,18 @@ mod tests {
             symbol: "BTCUSDT".to_string(),
         };
         let req = BybitNewOrderRequest::create_margin(1, 42, params).unwrap();
-        let payload = req.to_ws_json("123", 1_711_001_595_207).unwrap();
+        let payload: Value =
+            serde_json::from_str(&req.to_ws_json_string("123", 1_711_001_595_207).unwrap())
+                .unwrap();
         let arg = payload["args"].as_array().unwrap().first().unwrap();
 
+        assert_eq!(payload["reqId"], json!("123"));
         assert_eq!(payload["op"], json!("order.create"));
+        assert_eq!(
+            payload["header"]["X-BAPI-TIMESTAMP"],
+            json!("1711001595207")
+        );
+        assert_eq!(payload["header"]["X-BAPI-RECV-WINDOW"], json!("5000"));
         assert_eq!(arg["category"], json!("spot"));
         assert_eq!(arg["timeInForce"], json!("PostOnly"));
         assert_eq!(arg["isLeverage"], json!(1));
@@ -720,7 +851,9 @@ mod tests {
             symbol: "ETHUSDT".to_string(),
         };
         let req = BybitNewOrderRequest::create_um(1, 99, params).unwrap();
-        let payload = req.to_ws_json("456", 1_711_001_595_207).unwrap();
+        let payload: Value =
+            serde_json::from_str(&req.to_ws_json_string("456", 1_711_001_595_207).unwrap())
+                .unwrap();
         let arg = payload["args"].as_array().unwrap().first().unwrap();
 
         assert_eq!(arg["category"], json!("linear"));
@@ -736,7 +869,9 @@ mod tests {
             order_link_id: 42,
         };
         let req = BybitCancelOrderRequest::create_um(1, 100, params).unwrap();
-        let payload = req.to_ws_json("789", 1_711_001_595_207).unwrap();
+        let payload: Value =
+            serde_json::from_str(&req.to_ws_json_string("789", 1_711_001_595_207).unwrap())
+                .unwrap();
         let arg = payload["args"].as_array().unwrap().first().unwrap();
 
         assert_eq!(payload["op"], json!("order.cancel"));

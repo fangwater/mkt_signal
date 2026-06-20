@@ -2,7 +2,6 @@ use crate::binance_ws;
 use crate::bitget_ws;
 use crate::bybit::{
     BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest, BybitWsOrderResponse,
-    ToBybitWsJson,
 };
 use crate::config::LimitConstants;
 use crate::engine::{
@@ -1581,19 +1580,18 @@ impl TradeWsClient {
 
         match msg.req_type {
             TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
-                let payload = BybitNewOrderRequest {
+                BybitNewOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
-                .to_ws_json(&req_id, timestamp_ms)
+                .to_ws_json_string(&req_id, timestamp_ms)
                 .ok_or_else(|| {
                     anyhow!(
                         "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
                         msg.req_type,
                         msg.client_order_id
                     )
-                })?;
-                serde_json::to_string(&payload).with_context(|| "serialize bybit ws payload")
+                })
             }
             TradeRequestType::BybitCancelMarginOrder | TradeRequestType::BybitCancelUMOrder => {
                 BybitCancelOrderRequest {
@@ -1622,7 +1620,6 @@ impl TradeWsClient {
         msg: &TradeRequestMsg,
         transport_id: i64,
     ) -> Result<String> {
-        use crate::okex::ToOkexWsJson;
         use crate::trade_request::TradeRequestHeader;
 
         let header = TradeRequestHeader {
@@ -1633,37 +1630,31 @@ impl TradeWsClient {
         };
 
         let inst_id_code = self.resolve_okex_inst_id_code_for_trade_msg(msg).await?;
-        let json_val = match msg.req_type {
+        let payload = match msg.req_type {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
                 OkexNewOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
-                .to_ws_json(inst_id_code)
+                .to_ws_json_string(inst_id_code, transport_id)
             }
             TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
                 OkexCancelOrderRequest {
                     header,
                     params: msg.params.clone(),
                 }
-                .to_ws_json(inst_id_code)
+                .to_ws_json_string(inst_id_code, transport_id)
             }
             _ => None,
         };
 
-        let mut payload = json_val.ok_or_else(|| {
+        payload.ok_or_else(|| {
             anyhow!(
                 "failed to build okex ws payload (req_type={:?}, client_order_id={})",
                 msg.req_type,
                 msg.client_order_id
             )
-        })?;
-
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("id".to_string(), json!(transport_id.to_string()));
-        }
-
-        serde_json::to_string(&payload).with_context(|| "serialize okex ws payload")
+        })
     }
 
     async fn resolve_okex_inst_id_code_for_trade_msg(
