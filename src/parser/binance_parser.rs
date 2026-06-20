@@ -149,6 +149,10 @@ impl BinanceDerivativesMetricsParser {
 
 impl Parser for BinanceDerivativesMetricsParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(count) = self.publish_derivatives_raw(&msg, tx) {
+            return count;
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
         };
@@ -158,6 +162,96 @@ impl Parser for BinanceDerivativesMetricsParser {
 }
 
 impl BinanceDerivativesMetricsParser {
+    fn publish_derivatives_raw(
+        &self,
+        msg: &[u8],
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> Option<usize> {
+        let mut total_parsed = 0usize;
+        binance_codec::parse_derivatives_raw_borrowed(msg, |derivative| {
+            match derivative {
+                binance_codec::RawDerivative::MarkPrice {
+                    symbol,
+                    mark_price,
+                    index_price,
+                    funding_rate,
+                    next_funding_time_us,
+                    timestamp_us,
+                } => {
+                    if !self.symbols.contains(&symbol.to_ascii_lowercase()) {
+                        return Some(());
+                    }
+                    if let Some(price) = mark_price.filter(|price| *price > 0.0) {
+                        if tx
+                            .send(
+                                MarkPriceMsg::create(symbol.to_string(), price, timestamp_us)
+                                    .to_bytes(),
+                            )
+                            .is_ok()
+                        {
+                            total_parsed += 1;
+                        }
+                    }
+                    if let Some(price) = index_price.filter(|price| *price > 0.0) {
+                        if tx
+                            .send(
+                                IndexPriceMsg::create(symbol.to_string(), price, timestamp_us)
+                                    .to_bytes(),
+                            )
+                            .is_ok()
+                        {
+                            total_parsed += 1;
+                        }
+                    }
+                    if let (Some(funding_rate), Some(next_funding_time_us)) =
+                        (funding_rate, next_funding_time_us)
+                    {
+                        if tx
+                            .send(
+                                FundingRateMsg::create(
+                                    symbol.to_string(),
+                                    funding_rate,
+                                    next_funding_time_us,
+                                    timestamp_us,
+                                )
+                                .to_bytes(),
+                            )
+                            .is_ok()
+                        {
+                            total_parsed += 1;
+                        }
+                    }
+                }
+                binance_codec::RawDerivative::Liquidation {
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    timestamp_us,
+                } => {
+                    if self.symbols.contains(&symbol.to_ascii_lowercase())
+                        && tx
+                            .send(
+                                LiquidationMsg::create(
+                                    symbol.to_string(),
+                                    side,
+                                    amount,
+                                    price,
+                                    timestamp_us,
+                                )
+                                .to_bytes(),
+                            )
+                            .is_ok()
+                    {
+                        total_parsed += 1;
+                    }
+                }
+            }
+            Some(())
+        })?;
+        Some(total_parsed)
+    }
+
     fn publish_derivatives(
         &self,
         derivatives: Vec<binance_codec::Derivative>,
@@ -406,6 +500,46 @@ fn publish_book_chunks(
     sent_count
 }
 
+fn publish_raw_book_chunks(
+    book: &binance_codec::RawBook<'_>,
+    max_levels: Option<usize>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let chunks = split_levels(book.bids.len(), book.asks.len(), max_levels);
+    let total_chunks = chunks.len();
+    let mut sent_count = 0;
+
+    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+        chunks.into_iter().enumerate()
+    {
+        let mut inc_msg = IncMsg::create(
+            book.symbol.to_string(),
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            bids_count as u32,
+            asks_count as u32,
+        );
+        inc_msg.set_chunk_index(chunk_idx as u8);
+        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+        set_inc_levels_from_raw(
+            book.bids.as_slice(),
+            book.asks.as_slice(),
+            bids_start,
+            bids_count,
+            asks_start,
+            asks_count,
+            &mut inc_msg,
+        );
+        if tx.send(inc_msg.to_bytes()).is_ok() {
+            sent_count += 1;
+        }
+    }
+
+    sent_count
+}
+
 fn set_inc_levels_from_parsed(
     bids: &[binance_codec::Level],
     asks: &[binance_codec::Level],
@@ -429,6 +563,20 @@ fn set_inc_levels_from_parsed(
     }
 }
 
+fn set_inc_levels_from_raw(
+    bids: &[binance_codec::Level],
+    asks: &[binance_codec::Level],
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    inc_msg: &mut IncMsg,
+) {
+    set_inc_levels_from_parsed(
+        bids, asks, bids_start, bids_count, asks_start, asks_count, inc_msg,
+    );
+}
+
 fn publish_trades(trades: Vec<binance_codec::Trade>, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
     let mut sent_count = 0;
     for trade in trades {
@@ -445,6 +593,25 @@ fn publish_trades(trades: Vec<binance_codec::Trade>, tx: &mpsc::UnboundedSender<
         }
     }
     sent_count
+}
+
+fn publish_raw_trade(
+    trade: binance_codec::RawTrade<'_>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let trade_msg = TradeMsg::create(
+        trade.symbol.to_string(),
+        trade.trade_id,
+        trade.timestamp_us,
+        trade.side,
+        trade.price,
+        trade.amount,
+    );
+    if tx.send(trade_msg.to_bytes()).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[derive(Clone)]
@@ -694,6 +861,24 @@ impl BinanceIncParser {
 
 impl Parser for BinanceIncParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(mut book) = binance_codec::parse_incremental_raw_borrowed(&msg) {
+            match self.mode {
+                BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                    if book.is_snapshot {
+                        return 0;
+                    }
+                    book.is_snapshot = self.is_snapshot;
+                }
+                BinanceDepthMode::SpotSnapshot => {
+                    if !book.is_snapshot {
+                        return 0;
+                    }
+                    book.is_snapshot = self.is_snapshot;
+                }
+            }
+            return publish_raw_book_chunks(&book, self.max_levels, tx);
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
         };
@@ -759,6 +944,10 @@ impl BinanceAskBidSpreadParser {
 
 impl Parser for BinanceTradeParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(trade) = binance_codec::parse_trade_raw_borrowed(&msg) {
+            return publish_raw_trade(trade, tx);
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
         };
@@ -771,6 +960,24 @@ impl Parser for BinanceTradeParser {
 
 impl Parser for BinanceAskBidSpreadParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(bbo) = binance_codec::parse_book_ticker_bbo_raw_borrowed(&msg)
+            .or_else(|| binance_codec::parse_depth_bbo_raw_borrowed(&msg))
+        {
+            let spread_msg = AskBidSpreadMsg::create(
+                bbo.symbol.to_string(),
+                bbo.timestamp_us,
+                bbo.bid_price,
+                bbo.bid_amount,
+                bbo.ask_price,
+                bbo.ask_amount,
+            );
+            return if tx.send(spread_msg.to_bytes()).is_ok() {
+                1
+            } else {
+                0
+            };
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
         };
@@ -790,5 +997,105 @@ impl Parser for BinanceAskBidSpreadParser {
         } else {
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
+
+    fn parse_one(parser: &dyn Parser, raw: &'static [u8]) -> Vec<Bytes> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let count = parser.parse(Bytes::from_static(raw), &tx);
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(msg);
+        }
+        assert_eq!(count, out.len());
+        out
+    }
+
+    #[test]
+    fn binance_trade_parser_uses_raw_trade_shape() {
+        let parser = BinanceTradeParser::new();
+        let out = parse_one(
+            &parser,
+            br#"{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::TradeInfo);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(trade_timestamp(&out[0]), 1_700_000_000_001_000);
+    }
+
+    #[test]
+    fn binance_bbo_parser_uses_raw_depth_top_shape() {
+        let parser = BinanceAskBidSpreadParser::new();
+        let out = parse_one(
+            &parser,
+            br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,
+            "b":[["25.0","1"]],"a":[["25.1","3"]]}}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::AskBidSpread);
+        assert_eq!(AskBidSpreadMsg::get_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(
+            AskBidSpreadMsg::get_timestamp(&out[0]),
+            1_700_000_000_001_000
+        );
+    }
+
+    #[test]
+    fn binance_incremental_parser_uses_raw_depth_shape() {
+        let parser = BinanceIncParser::futures_incremental(Some(1));
+        let out = parse_one(
+            &parser,
+            br#"{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#,
+        );
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
+    }
+
+    #[test]
+    fn binance_derivatives_parser_uses_raw_array_shape() {
+        let parser = BinanceDerivativesMetricsParser::new(HashSet::from(["BTCUSDT".to_string()]));
+        let out = parse_one(
+            &parser,
+            br#"{"data":[
+            {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
+            {"e":"markPriceUpdate","E":1700000000001,"s":"ETHUSDT","p":"26.0","i":"25.9","r":"0.0002","T":1700003600000}
+        ]}"#,
+        );
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::MarkPrice);
+        assert_eq!(get_msg_type(&out[1]), MktMsgType::IndexPrice);
+        assert_eq!(get_msg_type(&out[2]), MktMsgType::FundingRate);
+    }
+
+    fn msg_symbol(data: &[u8]) -> &str {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        std::str::from_utf8(&data[8..8 + len]).unwrap()
+    }
+
+    fn trade_timestamp(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len + 8;
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
     }
 }
