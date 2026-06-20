@@ -1300,6 +1300,10 @@ fn looks_like_json(raw: &[u8]) -> bool {
     )
 }
 
+fn should_drop_json_after_raw_miss(adapter: &dyn VenueAdapter, raw: &[u8]) -> bool {
+    adapter.skip_json_fallback_after_raw_miss() && looks_like_json(raw)
+}
+
 fn parse_json_replacement_batch(
     label: &'static str,
     adapter: &dyn VenueAdapter,
@@ -1475,6 +1479,9 @@ fn make_replacement_handler(
             ) {
                 return;
             }
+            if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
+                return;
+            }
         }
 
         if derivatives_publisher.is_none() {
@@ -1513,6 +1520,9 @@ fn make_replacement_handler(
                             );
                         }
                     }
+                    return;
+                }
+                if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
                     return;
                 }
                 if let Some(book) = adapter.parse_incremental_raw_borrowed(raw) {
@@ -1566,6 +1576,10 @@ fn make_replacement_handler(
                     trade.price,
                     trade.amount,
                 );
+                return;
+            } else if trade_publisher.is_some()
+                && should_drop_json_after_raw_miss(adapter.as_ref(), raw)
+            {
                 return;
             }
         }
@@ -1640,6 +1654,9 @@ fn make_handler(
                 bbo.ask_amount,
                 source,
             );
+            return;
+        }
+        if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
             return;
         }
 
@@ -2575,6 +2592,15 @@ mod tests {
             &mut emit_bbo,
         );
         assert!(raw_only_batch.is_empty());
+
+        let raw_only = JsonTradeAdapter {
+            skip_json_fallback: true,
+        };
+        assert!(should_drop_json_after_raw_miss(&raw_only, raw));
+        assert!(!should_drop_json_after_raw_miss(
+            &raw_only,
+            &[64, 0, 1, 0, 1, 0, 3, 0]
+        ));
     }
 
     #[test]
