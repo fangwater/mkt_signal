@@ -381,29 +381,41 @@ impl BinanceSnapshotParser {
     }
 }
 
+fn normalize_snapshot_raw_book(book: &mut binance_codec::RawBook<'_>) {
+    let update_id = book.seq_id.saturating_add(1);
+    book.seq_id = update_id;
+    book.prev_seq_id = update_id;
+    book.first_update_id = update_id;
+    book.final_update_id = update_id;
+}
+
+fn normalize_snapshot_raw_book_view(book: &mut binance_codec::RawBookView<'_>) {
+    let update_id = book.seq_id.saturating_add(1);
+    book.seq_id = update_id;
+    book.prev_seq_id = update_id;
+    book.first_update_id = update_id;
+    book.final_update_id = update_id;
+}
+
 impl Parser for BinanceSnapshotParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        if let Some(mut book) = binance_codec::parse_incremental_raw_borrowed(&msg) {
-            if !book.is_snapshot {
-                return 0;
+        if let Some(book) = binance_codec::parse_incremental_raw(&msg) {
+            match book {
+                binance_codec::RawBookParse::Parsed(mut book) => {
+                    if !book.is_snapshot {
+                        return 0;
+                    }
+                    normalize_snapshot_raw_book(&mut book);
+                    return publish_raw_book_chunks(&book, self.max_levels, tx);
+                }
+                binance_codec::RawBookParse::View(mut book) => {
+                    if !book.is_snapshot {
+                        return 0;
+                    }
+                    normalize_snapshot_raw_book_view(&mut book);
+                    return publish_raw_book_view_chunks(&book, self.max_levels, tx);
+                }
             }
-            let update_id = book.seq_id.saturating_add(1);
-            book.seq_id = update_id;
-            book.prev_seq_id = update_id;
-            book.first_update_id = update_id;
-            book.final_update_id = update_id;
-            return publish_raw_book_chunks(&book, self.max_levels, tx);
-        }
-        if let Some(mut book) = binance_codec::parse_incremental_raw_view(&msg) {
-            if !book.is_snapshot {
-                return 0;
-            }
-            let update_id = book.seq_id.saturating_add(1);
-            book.seq_id = update_id;
-            book.prev_seq_id = update_id;
-            book.first_update_id = update_id;
-            book.final_update_id = update_id;
-            return publish_raw_book_view_chunks(&book, self.max_levels, tx);
         }
 
         // 解析币安快照消息
@@ -968,43 +980,61 @@ impl BinanceIncParser {
             mode: BinanceDepthMode::SpotSnapshot,
         }
     }
+
+    fn apply_depth_mode_raw(&self, book: &mut binance_codec::RawBook<'_>) -> bool {
+        match self.mode {
+            BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                if book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+            BinanceDepthMode::SpotSnapshot => {
+                if !book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+        }
+        true
+    }
+
+    fn apply_depth_mode_raw_view(&self, book: &mut binance_codec::RawBookView<'_>) -> bool {
+        match self.mode {
+            BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                if book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+            BinanceDepthMode::SpotSnapshot => {
+                if !book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+        }
+        true
+    }
 }
 
 impl Parser for BinanceIncParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        if let Some(mut book) = binance_codec::parse_incremental_raw_borrowed(&msg) {
-            match self.mode {
-                BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
-                    if book.is_snapshot {
+        if let Some(book) = binance_codec::parse_incremental_raw(&msg) {
+            match book {
+                binance_codec::RawBookParse::Parsed(mut book) => {
+                    if !self.apply_depth_mode_raw(&mut book) {
                         return 0;
                     }
-                    book.is_snapshot = self.is_snapshot;
+                    return publish_raw_book_chunks(&book, self.max_levels, tx);
                 }
-                BinanceDepthMode::SpotSnapshot => {
-                    if !book.is_snapshot {
+                binance_codec::RawBookParse::View(mut book) => {
+                    if !self.apply_depth_mode_raw_view(&mut book) {
                         return 0;
                     }
-                    book.is_snapshot = self.is_snapshot;
-                }
-            }
-            return publish_raw_book_chunks(&book, self.max_levels, tx);
-        }
-        if let Some(mut book) = binance_codec::parse_incremental_raw_view(&msg) {
-            match self.mode {
-                BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
-                    if book.is_snapshot {
-                        return 0;
-                    }
-                    book.is_snapshot = self.is_snapshot;
-                }
-                BinanceDepthMode::SpotSnapshot => {
-                    if !book.is_snapshot {
-                        return 0;
-                    }
-                    book.is_snapshot = self.is_snapshot;
+                    return publish_raw_book_view_chunks(&book, self.max_levels, tx);
                 }
             }
-            return publish_raw_book_view_chunks(&book, self.max_levels, tx);
         }
 
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
