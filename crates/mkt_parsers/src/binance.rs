@@ -1,5 +1,4 @@
 use serde_json::Value;
-use std::convert::TryFrom;
 
 pub const SBE_TEMPLATE_TRADE: u16 = 10000;
 pub const SBE_TEMPLATE_BBO: u16 = 10001;
@@ -26,6 +25,28 @@ pub struct Bbo {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trade {
     pub symbol: String,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub trade_id: i64,
+    pub side: char,
+    pub price: f64,
+    pub amount: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawBbo<'a> {
+    pub symbol: &'a str,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub bid_price: f64,
+    pub bid_amount: f64,
+    pub ask_price: f64,
+    pub ask_amount: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawTrade<'a> {
+    pub symbol: &'a str,
     pub timestamp_us: i64,
     pub seq_id: i64,
     pub trade_id: i64,
@@ -120,87 +141,70 @@ pub fn parse_bbo_json(value: &Value) -> Option<Bbo> {
 }
 
 pub fn parse_book_ticker_bbo_raw(raw: &[u8]) -> Option<Bbo> {
-    let envelope: BookTickerEnvelope<'_> = serde_json::from_slice(raw).ok()?;
-    let payload = match envelope {
-        BookTickerEnvelope::Combined { data } => data,
-        BookTickerEnvelope::Direct(data) => data,
-    };
-    if let Some(event) = payload.event {
-        if event != "bookTicker" {
-            return None;
-        }
-    }
-
-    let bid_price = payload.bid_price.parse::<f64>().ok()?;
-    let bid_amount = payload.bid_amount.parse::<f64>().ok()?;
-    let ask_price = payload.ask_price.parse::<f64>().ok()?;
-    let ask_amount = payload.ask_amount.parse::<f64>().ok()?;
-    if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
-        return None;
-    }
-
+    let payload = parse_book_ticker_bbo_raw_borrowed(raw)?;
     Some(Bbo {
         symbol: payload.symbol.to_ascii_uppercase(),
-        timestamp_us: payload
-            .event_time_ms
-            .as_ref()
-            .and_then(I64Field::to_i64)
-            .map(ms_to_us)
-            .unwrap_or(0),
-        seq_id: payload.seq_id.to_i64()?,
-        bid_price,
-        bid_amount,
-        ask_price,
-        ask_amount,
+        timestamp_us: payload.timestamp_us,
+        seq_id: payload.seq_id,
+        bid_price: payload.bid_price,
+        bid_amount: payload.bid_amount,
+        ask_price: payload.ask_price,
+        ask_amount: payload.ask_amount,
     })
 }
 
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum BookTickerEnvelope<'a> {
-    Combined {
-        #[serde(borrow)]
-        data: BookTickerPayload<'a>,
-    },
-    Direct(BookTickerPayload<'a>),
-}
+pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let data = combined_payload(raw).unwrap_or(raw);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut seen_event = false;
+    let mut symbol = None;
+    let mut seq_id = None;
+    let mut bid_price = None;
+    let mut bid_amount = None;
+    let mut ask_price = None;
+    let mut ask_amount = None;
+    let mut timestamp_us = 0i64;
 
-#[derive(serde::Deserialize)]
-struct BookTickerPayload<'a> {
-    #[serde(rename = "e", default)]
-    event: Option<&'a str>,
-    #[serde(rename = "s")]
-    symbol: &'a str,
-    #[serde(rename = "u", borrow)]
-    seq_id: I64Field<'a>,
-    #[serde(rename = "b")]
-    bid_price: &'a str,
-    #[serde(rename = "B")]
-    bid_amount: &'a str,
-    #[serde(rename = "a")]
-    ask_price: &'a str,
-    #[serde(rename = "A")]
-    ask_amount: &'a str,
-    #[serde(rename = "E", default, borrow)]
-    event_time_ms: Option<I64Field<'a>>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum I64Field<'a> {
-    Signed(i64),
-    Unsigned(u64),
-    Str(&'a str),
-}
-
-impl I64Field<'_> {
-    fn to_i64(&self) -> Option<i64> {
-        match self {
-            Self::Signed(v) => Some(*v),
-            Self::Unsigned(v) => i64::try_from(*v).ok(),
-            Self::Str(v) => v.parse::<i64>().ok(),
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => {
+                if value.string_bytes()? != b"bookTicker" {
+                    return None;
+                }
+                seen_event = true;
+            }
+            b"s" => symbol = Some(value.string_str()?),
+            b"u" => seq_id = Some(value.i64()?),
+            b"b" => bid_price = Some(value.f64()?),
+            b"B" => bid_amount = Some(value.f64()?),
+            b"a" => ask_price = Some(value.f64()?),
+            b"A" => ask_amount = Some(value.f64()?),
+            b"E" => timestamp_us = ms_to_us(value.i64()?),
+            _ => {}
         }
     }
+
+    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.ends_with("@bookTicker")) {
+        return None;
+    }
+
+    let out = RawBbo {
+        symbol: symbol?,
+        timestamp_us,
+        seq_id: seq_id?,
+        bid_price: bid_price?,
+        bid_amount: bid_amount?,
+        ask_price: ask_price?,
+        ask_amount: ask_amount?,
+    };
+    if out.bid_price <= 0.0
+        || out.bid_amount <= 0.0
+        || out.ask_price <= 0.0
+        || out.ask_amount <= 0.0
+    {
+        return None;
+    }
+    Some(out)
 }
 
 pub fn parse_trade_json(value: &Value) -> Option<Trade> {
@@ -230,6 +234,69 @@ pub fn parse_trade_json(value: &Value) -> Option<Trade> {
         price,
         amount,
     })
+}
+
+pub fn parse_trade_raw(raw: &[u8]) -> Option<Trade> {
+    let payload = parse_trade_raw_borrowed(raw)?;
+    Some(Trade {
+        symbol: payload.symbol.to_ascii_uppercase(),
+        timestamp_us: payload.timestamp_us,
+        seq_id: payload.seq_id,
+        trade_id: payload.trade_id,
+        side: payload.side,
+        price: payload.price,
+        amount: payload.amount,
+    })
+}
+
+pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
+    let data = combined_payload(raw).unwrap_or(raw);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut seen_event = false;
+    let mut symbol = None;
+    let mut trade_id = None;
+    let mut timestamp_us = None;
+    let mut price = None;
+    let mut amount = None;
+    let mut is_buyer_maker = false;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => {
+                if value.string_bytes()? != b"trade" {
+                    return None;
+                }
+                seen_event = true;
+            }
+            b"s" => symbol = Some(value.string_str()?),
+            b"t" => trade_id = Some(value.i64()?),
+            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"p" => price = Some(value.f64()?),
+            b"q" => amount = Some(value.f64()?),
+            b"m" => is_buyer_maker = value.bool()?,
+            _ => {}
+        }
+    }
+
+    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.ends_with("@trade")) {
+        return None;
+    }
+
+    let trade_id = trade_id?;
+    let out = RawTrade {
+        symbol: symbol?,
+        timestamp_us: timestamp_us?,
+        seq_id: trade_id,
+        trade_id,
+        side: if is_buyer_maker { 'S' } else { 'B' },
+        price: price?,
+        amount: amount?,
+    };
+    if out.price <= 0.0 || out.amount <= 0.0 {
+        return None;
+    }
+    Some(out)
 }
 
 pub fn parse_incremental_json(value: &Value) -> Option<Book> {
@@ -646,6 +713,235 @@ fn parse_stream_symbol(stream: &str) -> Option<String> {
     stream.split('@').next().map(|s| s.to_ascii_uppercase())
 }
 
+fn combined_payload(raw: &[u8]) -> Option<&[u8]> {
+    let mut scanner = JsonObjectScanner::new(raw);
+    while let Some((key, value)) = scanner.next_field() {
+        if key == b"data" {
+            return value.object_bytes();
+        }
+    }
+    None
+}
+
+fn stream_name(raw: &[u8]) -> Option<&str> {
+    let mut scanner = JsonObjectScanner::new(raw);
+    while let Some((key, value)) = scanner.next_field() {
+        if key == b"stream" {
+            return value.string_str();
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+struct JsonValue<'a> {
+    raw: &'a [u8],
+}
+
+impl<'a> JsonValue<'a> {
+    fn string_bytes(self) -> Option<&'a [u8]> {
+        if self.raw.len() < 2 || self.raw.first() != Some(&b'"') || self.raw.last() != Some(&b'"') {
+            return None;
+        }
+        let inner = &self.raw[1..self.raw.len() - 1];
+        if inner.contains(&b'\\') {
+            return None;
+        }
+        Some(inner)
+    }
+
+    fn string_str(self) -> Option<&'a str> {
+        std::str::from_utf8(self.string_bytes()?).ok()
+    }
+
+    fn object_bytes(self) -> Option<&'a [u8]> {
+        let raw = trim_ascii(self.raw);
+        if raw.first() == Some(&b'{') && raw.last() == Some(&b'}') {
+            Some(raw)
+        } else {
+            None
+        }
+    }
+
+    fn number_bytes(self) -> Option<&'a [u8]> {
+        let raw = trim_ascii(self.raw);
+        if raw.first() == Some(&b'"') && raw.last() == Some(&b'"') {
+            let inner = &raw[1..raw.len() - 1];
+            if inner.contains(&b'\\') {
+                return None;
+            }
+            Some(inner)
+        } else {
+            Some(raw)
+        }
+    }
+
+    fn i64(self) -> Option<i64> {
+        std::str::from_utf8(self.number_bytes()?)
+            .ok()?
+            .parse::<i64>()
+            .ok()
+    }
+
+    fn f64(self) -> Option<f64> {
+        std::str::from_utf8(self.number_bytes()?)
+            .ok()?
+            .parse::<f64>()
+            .ok()
+    }
+
+    fn bool(self) -> Option<bool> {
+        match trim_ascii(self.raw) {
+            b"true" => Some(true),
+            b"false" => Some(false),
+            _ => None,
+        }
+    }
+}
+
+struct JsonObjectScanner<'a> {
+    raw: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonObjectScanner<'a> {
+    fn new(raw: &'a [u8]) -> Self {
+        Self { raw, pos: 0 }
+    }
+
+    fn next_field(&mut self) -> Option<(&'a [u8], JsonValue<'a>)> {
+        self.skip_object_separators();
+        if self.raw.get(self.pos) == Some(&b'}') {
+            self.pos += 1;
+            return None;
+        }
+        let key = self.take_string_inner()?;
+        self.skip_ws();
+        if self.raw.get(self.pos) != Some(&b':') {
+            return None;
+        }
+        self.pos += 1;
+        self.skip_ws();
+        let start = self.pos;
+        self.skip_value()?;
+        let end = self.pos;
+        Some((
+            &self.raw[key.0..key.1],
+            JsonValue {
+                raw: &self.raw[start..end],
+            },
+        ))
+    }
+
+    fn skip_object_separators(&mut self) {
+        loop {
+            self.skip_ws();
+            match self.raw.get(self.pos) {
+                Some(b'{') | Some(b',') => self.pos += 1,
+                _ => break,
+            }
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while self
+            .raw
+            .get(self.pos)
+            .is_some_and(|b| b.is_ascii_whitespace())
+        {
+            self.pos += 1;
+        }
+    }
+
+    fn take_string_inner(&mut self) -> Option<(usize, usize)> {
+        if self.raw.get(self.pos) != Some(&b'"') {
+            return None;
+        }
+        self.pos += 1;
+        let start = self.pos;
+        while let Some(&b) = self.raw.get(self.pos) {
+            match b {
+                b'\\' => return None,
+                b'"' => {
+                    let end = self.pos;
+                    self.pos += 1;
+                    return Some((start, end));
+                }
+                _ => self.pos += 1,
+            }
+        }
+        None
+    }
+
+    fn skip_value(&mut self) -> Option<()> {
+        match *self.raw.get(self.pos)? {
+            b'"' => self.skip_string_value(),
+            b'{' | b'[' => self.skip_nested_value(),
+            _ => {
+                while let Some(&b) = self.raw.get(self.pos) {
+                    if b == b',' || b == b'}' || b == b']' || b.is_ascii_whitespace() {
+                        break;
+                    }
+                    self.pos += 1;
+                }
+                (self.pos < self.raw.len()).then_some(())
+            }
+        }
+    }
+
+    fn skip_string_value(&mut self) -> Option<()> {
+        if self.raw.get(self.pos) != Some(&b'"') {
+            return None;
+        }
+        self.pos += 1;
+        while let Some(&b) = self.raw.get(self.pos) {
+            match b {
+                b'\\' => {
+                    self.pos += 2;
+                }
+                b'"' => {
+                    self.pos += 1;
+                    return Some(());
+                }
+                _ => self.pos += 1,
+            }
+        }
+        None
+    }
+
+    fn skip_nested_value(&mut self) -> Option<()> {
+        let mut depth = 0usize;
+        while let Some(&b) = self.raw.get(self.pos) {
+            match b {
+                b'"' => self.skip_string_value()?,
+                b'{' | b'[' => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                b'}' | b']' => {
+                    depth = depth.checked_sub(1)?;
+                    self.pos += 1;
+                    if depth == 0 {
+                        return Some(());
+                    }
+                }
+                _ => self.pos += 1,
+            }
+        }
+        None
+    }
+}
+
+fn trim_ascii(mut raw: &[u8]) -> &[u8] {
+    while raw.first().is_some_and(|b| b.is_ascii_whitespace()) {
+        raw = &raw[1..];
+    }
+    while raw.last().is_some_and(|b| b.is_ascii_whitespace()) {
+        raw = &raw[..raw.len() - 1];
+    }
+    raw
+}
+
 struct SbeHeader {
     block_length: usize,
     template_id: u16,
@@ -746,7 +1042,10 @@ fn read_group_levels(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_book_ticker_bbo_raw;
+    use super::{
+        parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed, parse_trade_raw,
+        parse_trade_raw_borrowed,
+    };
 
     #[test]
     fn parses_combined_book_ticker_without_value_tree() {
@@ -762,6 +1061,11 @@ mod tests {
         assert_eq!(bbo.timestamp_us, 1_700_000_000_002_000);
         assert!((bbo.bid_price - 25.0).abs() < 1e-9);
         assert!((bbo.ask_amount - 50.0).abs() < 1e-9);
+
+        let borrowed = parse_book_ticker_bbo_raw_borrowed(raw).expect("borrowed book ticker");
+        assert_eq!(borrowed.symbol, "BTCUSDT");
+        assert_eq!(borrowed.seq_id, 22345);
+        assert!((borrowed.bid_price - 25.0).abs() < 1e-9);
     }
 
     #[test]
@@ -781,5 +1085,45 @@ mod tests {
     fn raw_book_ticker_rejects_depth_shape() {
         let raw = br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":[["25","1"]],"a":[["25.1","1"]]}}"#;
         assert!(parse_book_ticker_bbo_raw(raw).is_none());
+    }
+
+    #[test]
+    fn parses_combined_trade_without_value_tree() {
+        let raw = br#"{
+            "stream":"btcusdt@trade",
+            "data":{"e":"trade","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}
+        }"#;
+
+        let trade = parse_trade_raw(raw).expect("trade");
+
+        assert_eq!(trade.symbol, "BTCUSDT");
+        assert_eq!(trade.trade_id, 1001);
+        assert_eq!(trade.seq_id, 1001);
+        assert_eq!(trade.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(trade.side, 'S');
+        assert!((trade.price - 25.0).abs() < 1e-9);
+        assert!((trade.amount - 100.0).abs() < 1e-9);
+
+        let borrowed = parse_trade_raw_borrowed(raw).expect("borrowed trade");
+        assert_eq!(borrowed.symbol, "BTCUSDT");
+        assert_eq!(borrowed.side, 'S');
+    }
+
+    #[test]
+    fn raw_trade_uses_trade_time_when_event_time_is_absent() {
+        let raw = br#"{"e":"trade","T":1700000000000,"s":"ethusdt","t":"1002","p":"2500.0","q":"2","m":false}"#;
+
+        let trade = parse_trade_raw(raw).expect("direct trade");
+
+        assert_eq!(trade.symbol, "ETHUSDT");
+        assert_eq!(trade.timestamp_us, 1_700_000_000_000_000);
+        assert_eq!(trade.side, 'B');
+        assert!((trade.amount - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_trade_rejects_book_ticker_shape() {
+        let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":1,"s":"BTCUSDT","b":"25","B":"1","a":"25.1","A":"1"}}"#;
+        assert!(parse_trade_raw(raw).is_none());
     }
 }
