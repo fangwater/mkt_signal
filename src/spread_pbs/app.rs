@@ -1479,6 +1479,42 @@ fn make_replacement_handler(
 
         if derivatives_publisher.is_none() {
             if let Some(incremental_publisher) = incremental_publisher.as_ref() {
+                if let Some(book) = adapter.parse_incremental_raw(raw) {
+                    match book {
+                        mkt_parsers::binance::RawBookParse::Parsed(book) => {
+                            let slot_index = adapter.symbol_slot_index(book.symbol);
+                            let mut s = state.borrow_mut();
+                            process_incremental_fields(
+                                &mut s,
+                                incremental_publisher,
+                                slot_index,
+                                book.symbol,
+                                book.timestamp_us,
+                                book.seq_id,
+                                book.prev_seq_id,
+                                book.first_update_id,
+                                book.final_update_id,
+                                book.gap_check,
+                                book.is_snapshot,
+                                book.bids.as_slice(),
+                                book.asks.as_slice(),
+                                incremental_max_levels,
+                            );
+                        }
+                        mkt_parsers::binance::RawBookParse::View(book) => {
+                            let slot_index = adapter.symbol_slot_index(book.symbol);
+                            let mut s = state.borrow_mut();
+                            process_incremental_view(
+                                &mut s,
+                                incremental_publisher,
+                                slot_index,
+                                book,
+                                incremental_max_levels,
+                            );
+                        }
+                    }
+                    return;
+                }
                 if let Some(book) = adapter.parse_incremental_raw_borrowed(raw) {
                     let slot_index = adapter.symbol_slot_index(book.symbol);
                     let mut s = state.borrow_mut();

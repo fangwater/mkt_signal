@@ -213,6 +213,13 @@ impl VenueAdapter for BinanceAdapter {
         binance_codec::parse_incremental_raw_borrowed(raw)
     }
 
+    fn parse_incremental_raw<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawBookParse<'a>> {
+        if self.venue != TradingVenue::BinanceFutures {
+            return None;
+        }
+        binance_codec::parse_incremental_raw(raw)
+    }
+
     fn parse_incremental_raw_view<'a>(
         &self,
         raw: &'a [u8],
