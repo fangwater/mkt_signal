@@ -1040,7 +1040,7 @@ fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
     if bytes.is_empty() {
         return None;
     }
-    std::str::from_utf8(bytes).ok()?.parse::<f64>().ok()
+    fast_float::parse::<f64, _>(bytes).ok()
 }
 
 fn skip_ws_at(raw: &[u8], pos: &mut usize) {
@@ -1171,10 +1171,7 @@ impl<'a> JsonValue<'a> {
     }
 
     fn f64(self) -> Option<f64> {
-        std::str::from_utf8(self.number_bytes()?)
-            .ok()?
-            .parse::<f64>()
-            .ok()
+        fast_float::parse::<f64, _>(self.number_bytes()?).ok()
     }
 
     fn bool(self) -> Option<bool> {

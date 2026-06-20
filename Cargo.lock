@@ -2212,6 +2212,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "fast-float",
  "log",
  "serde",
  "serde_json",
