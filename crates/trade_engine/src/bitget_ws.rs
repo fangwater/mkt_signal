@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
+use std::fmt::Write as _;
 
 use crate::trade_request::{
     BitgetCancelOrderParams, BitgetNewOrderParams, TradeRequestMsg, TradeRequestType,
@@ -27,122 +28,134 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
             ))
         }
     };
-    let args: Value = match req_type {
-        TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-            BitgetNewOrderParams::from_bytes(&msg.params)
-                .map(|params| params.to_bitget_ws_arg(req_type, msg.client_order_id))
-                .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null))
-        }
-        TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
-            BitgetCancelOrderParams::from_bytes(&msg.params)
-                .map(|params| params.to_bitget_ws_arg(req_type))
-                .unwrap_or_else(|| serde_json::from_slice(&msg.params).unwrap_or(Value::Null))
-        }
-        _ => {
-            serde_json::from_slice(&msg.params).with_context(|| "invalid bitget req_param json")?
-        }
-    };
-    if args.is_null() {
-        return Err(anyhow!("invalid bitget req_param json"));
-    }
-    let (category, args) = match args {
-        Value::Object(obj) => {
-            let (category, arg) = normalize_bitget_trade_arg(obj, req_type)?;
-            (category, Value::Array(vec![Value::Object(arg)]))
-        }
-        Value::Array(arr) => {
-            let mut normalized = Vec::with_capacity(arr.len());
-            let mut category = None;
-            for item in arr {
-                let Value::Object(obj) = item else {
-                    return Err(anyhow!("bitget req_param array items must be objects"));
-                };
-                let (current_category, arg) = normalize_bitget_trade_arg(obj, req_type)?;
-                if let Some(prev) = &category {
-                    if prev != &current_category {
-                        return Err(anyhow!(
-                            "bitget req_param array has mixed categories: {} vs {}",
-                            prev,
-                            current_category
-                        ));
-                    }
-                } else {
-                    category = Some(current_category);
-                }
-                normalized.push(Value::Object(arg));
-            }
-            let category =
-                category.ok_or_else(|| anyhow!("bitget req_param array must not be empty"))?;
-            (category, Value::Array(normalized))
-        }
-        _ => return Err(anyhow!("bitget req_param must be object or array")),
-    };
-    let payload = json!({
-        "id": transport_id.to_string(),
-        "op": "trade",
-        "category": category,
-        "topic": topic,
-        "args": args,
-    });
-    serde_json::to_string(&payload).with_context(|| "serialize bitget ws payload")
-}
-
-fn normalize_bitget_trade_arg(
-    mut obj: serde_json::Map<String, Value>,
-    req_type: TradeRequestType,
-) -> Result<(String, serde_json::Map<String, Value>)> {
-    if !obj.contains_key("category") {
-        // Bitget UTA v3：BitgetMargin 默认走 cross-margin 现货（category=margin），
-        // 这样 UTA 才会自动借币；用 spot 不会借币。
-        let default_category = match req_type {
-            TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetCancelMarginOrder => {
-                "margin"
-            }
-            TradeRequestType::BitgetNewUMOrder | TradeRequestType::BitgetCancelUMOrder => {
-                "usdt-futures"
-            }
-            _ => return Err(anyhow!("unsupported bitget req_type for category default")),
-        };
-        obj.insert("category".to_string(), json!(default_category));
-    }
+    let category = bitget_category(req_type)?;
+    let mut out = String::with_capacity(256 + msg.params.len());
+    write!(
+        out,
+        "{{\"id\":\"{}\",\"op\":\"trade\",\"category\":",
+        transport_id
+    )
+    .expect("write bitget payload id");
+    push_json_string(&mut out, category);
+    out.push_str(",\"topic\":");
+    push_json_string(&mut out, topic);
+    out.push_str(",\"args\":[{");
 
     match req_type {
         TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-            if let Some(side) = obj.get_mut("side") {
-                if let Some(raw) = side.as_str() {
-                    *side = json!(raw.to_ascii_lowercase());
-                }
-            }
-            // Bitget WS trade API expects qty/timeInForce. Upstream still emits size/force.
-            if !obj.contains_key("qty") {
-                if let Some(size) = obj.remove("size") {
-                    obj.insert("qty".to_string(), size);
-                }
-            }
-            if !obj.contains_key("timeInForce") {
-                if let Some(force) = obj.remove("force") {
-                    obj.insert("timeInForce".to_string(), force);
-                }
-            }
+            let params = BitgetNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+                anyhow!(
+                    "Bitget WS new order requires typed params, req_type={:?}",
+                    req_type
+                )
+            })?;
+            push_bitget_new_order_arg(&mut out, &params, msg.client_order_id);
         }
         TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
-            if !obj.contains_key("orderId") && !obj.contains_key("clientOid") {
-                return Err(anyhow!("bitget cancel-order requires orderId or clientOid"));
-            }
+            let params = BitgetCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+                anyhow!(
+                    "Bitget WS cancel order requires typed params, req_type={:?}",
+                    req_type
+                )
+            })?;
+            push_bitget_cancel_order_arg(&mut out, &params);
+        }
+        _ => unreachable!("unsupported bitget request type checked above"),
+    }
+
+    out.push_str("}]}");
+    Ok(out)
+}
+
+fn bitget_category(req_type: TradeRequestType) -> Result<&'static str> {
+    match req_type {
+        TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetCancelMarginOrder => {
+            Ok("margin")
+        }
+        TradeRequestType::BitgetNewUMOrder | TradeRequestType::BitgetCancelUMOrder => {
+            Ok("usdt-futures")
         }
         _ => return Err(anyhow!("unsupported bitget req_type")),
     }
-
-    let category = extract_bitget_category(&obj)?;
-    obj.remove("category");
-    Ok((category, obj))
 }
 
-fn extract_bitget_category(obj: &serde_json::Map<String, Value>) -> Result<String> {
-    obj.get("category")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow!("bitget req_param missing category"))
+fn push_bitget_new_order_arg(
+    out: &mut String,
+    params: &BitgetNewOrderParams,
+    client_order_id: i64,
+) {
+    let mut first = true;
+    let symbol = params.symbol.to_ascii_uppercase();
+    push_json_field(out, "symbol", &symbol, &mut first);
+    push_json_field(out, "side", params.side.as_str_lower(), &mut first);
+    push_json_field(
+        out,
+        "orderType",
+        if params.order_type.is_limit() {
+            "limit"
+        } else {
+            "market"
+        },
+        &mut first,
+    );
+    if params.order_type.is_limit() {
+        push_json_field(out, "timeInForce", "post_only", &mut first);
+        push_json_field(out, "price", &params.price_qv.decimal_string(), &mut first);
+    }
+    push_json_field(out, "qty", &params.quantity_qv.decimal_string(), &mut first);
+    push_i64_string_field(out, "clientOid", client_order_id, &mut first);
+    if params.reduce_only {
+        push_json_field(out, "reduceOnly", "YES", &mut first);
+    }
+}
+
+fn push_bitget_cancel_order_arg(out: &mut String, params: &BitgetCancelOrderParams) {
+    let mut first = true;
+    if let Some(order_id) = params.order_id.as_deref() {
+        push_json_field(out, "orderId", order_id, &mut first);
+    }
+    push_json_field(out, "clientOid", &params.client_order_id, &mut first);
+}
+
+fn push_json_field(out: &mut String, key: &str, value: &str, first: &mut bool) {
+    if !*first {
+        out.push(',');
+    }
+    *first = false;
+    push_json_string(out, key);
+    out.push(':');
+    push_json_string(out, value);
+}
+
+fn push_i64_string_field(out: &mut String, key: &str, value: i64, first: &mut bool) {
+    if !*first {
+        out.push(',');
+    }
+    *first = false;
+    push_json_string(out, key);
+    out.push_str(":\"");
+    write!(out, "{}", value).expect("write bitget integer field");
+    out.push('"');
+}
+
+fn push_json_string(out: &mut String, value: &str) {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if c <= '\u{1f}' => {
+                write!(out, "\\u{:04x}", c as u32).expect("write json escape");
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 #[derive(Debug, Clone)]
@@ -291,29 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn builds_bitget_um_order_payload_with_top_level_category() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetNewUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: Bytes::from(
-                r#"{"category":"usdt-futures","symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
-            ),
-            ipc_recv: None,
-        };
-        let payload = build_order_payload(&msg, 999).expect("payload");
-        let val: Value = serde_json::from_str(&payload).expect("json");
-        assert_eq!(val["category"], json!("usdt-futures"));
-        assert_eq!(val["topic"], json!("place-order"));
-        assert_eq!(val["args"][0]["side"], json!("buy"));
-        assert_eq!(val["args"][0]["qty"], json!("0.01"));
-        assert_eq!(val["args"][0]["timeInForce"], json!("post_only"));
-        assert!(val["args"][0].get("category").is_none());
-        assert!(val["args"][0].get("size").is_none());
-        assert!(val["args"][0].get("force").is_none());
-    }
-
-    #[test]
     fn builds_bitget_um_order_payload_from_typed_params() {
         let params = BitgetNewOrderParams {
             symbol: "BTCUSDT".to_string(),
@@ -343,58 +333,22 @@ mod tests {
     }
 
     #[test]
-    fn fills_missing_bitget_um_category_from_request_type() {
+    fn rejects_bitget_um_order_raw_json_params() {
         let msg = TradeRequestMsg {
             req_type: TradeRequestType::BitgetNewUMOrder,
             create_time: 0,
             client_order_id: 123,
             params: Bytes::from(
-                r#"{"symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
+                r#"{"category":"usdt-futures","symbol":"BTCUSDT","side":"buy","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
             ),
             ipc_recv: None,
         };
-        let payload = build_order_payload(&msg, 999).expect("payload");
-        let val: Value = serde_json::from_str(&payload).expect("json");
-        assert_eq!(val["category"], json!("usdt-futures"));
-        assert_eq!(val["args"][0]["side"], json!("buy"));
-        assert!(val["args"][0].get("category").is_none());
+        let err = build_order_payload(&msg, 999).expect_err("raw json must be rejected");
+        assert!(err.to_string().contains("requires typed params"));
     }
 
     #[test]
-    fn normalizes_bitget_side_to_lowercase() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetNewUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: Bytes::from(
-                r#"{"symbol":"BTCUSDT","side":"SELL","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123"}"#,
-            ),
-            ipc_recv: None,
-        };
-        let payload = build_order_payload(&msg, 999).expect("payload");
-        let val: Value = serde_json::from_str(&payload).expect("json");
-        assert_eq!(val["args"][0]["side"], json!("sell"));
-    }
-
-    #[test]
-    fn preserves_bitget_reduce_only_and_does_not_add_pos_side() {
-        let msg = TradeRequestMsg {
-            req_type: TradeRequestType::BitgetNewUMOrder,
-            create_time: 0,
-            client_order_id: 123,
-            params: Bytes::from(
-                r#"{"symbol":"BTCUSDT","side":"sell","orderType":"limit","force":"post_only","size":"0.01","price":"100000","clientOid":"123","reduceOnly":"YES"}"#,
-            ),
-            ipc_recv: None,
-        };
-        let payload = build_order_payload(&msg, 999).expect("payload");
-        let val: Value = serde_json::from_str(&payload).expect("json");
-        assert_eq!(val["args"][0]["reduceOnly"], json!("YES"));
-        assert!(val["args"][0].get("posSide").is_none());
-    }
-
-    #[test]
-    fn builds_bitget_um_cancel_payload_in_uta_format() {
+    fn rejects_bitget_um_cancel_raw_json_params() {
         let msg = TradeRequestMsg {
             req_type: TradeRequestType::BitgetCancelUMOrder,
             create_time: 0,
@@ -402,14 +356,8 @@ mod tests {
             params: Bytes::from(r#"{"orderId":"abc","clientOid":"123"}"#),
             ipc_recv: None,
         };
-        let payload = build_order_payload(&msg, 999).expect("payload");
-        let val: Value = serde_json::from_str(&payload).expect("json");
-        assert_eq!(val["op"], json!("trade"));
-        assert_eq!(val["topic"], json!("cancel-order"));
-        assert_eq!(val["category"], json!("usdt-futures"));
-        assert_eq!(val["args"][0]["orderId"], json!("abc"));
-        assert_eq!(val["args"][0]["clientOid"], json!("123"));
-        assert!(val["args"][0].get("category").is_none());
+        let err = build_order_payload(&msg, 999).expect_err("raw json must be rejected");
+        assert!(err.to_string().contains("requires typed params"));
     }
 
     #[test]

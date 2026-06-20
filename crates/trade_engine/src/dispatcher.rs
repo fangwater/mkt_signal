@@ -73,13 +73,83 @@ pub struct Dispatcher {
     shutdown: CancellationToken,
 }
 
-fn hot_symbol(params: &std::collections::BTreeMap<String, String>) -> String {
+fn hot_symbol(params: &[(String, String)]) -> String {
     params
-        .get("symbol")
-        .map(|v| v.trim())
+        .iter()
+        .find_map(|(key, value)| (key == "symbol").then_some(value.trim()))
         .filter(|v| !v.is_empty())
         .unwrap_or("-")
         .to_string()
+}
+
+fn build_signed_query(params: &[(String, String)], recv_window: &str, timestamp: &str) -> String {
+    let mut ser = url::form_urlencoded::Serializer::new(String::with_capacity(
+        params
+            .iter()
+            .map(|(key, value)| key.len() + value.len() + 2)
+            .sum::<usize>()
+            + recv_window.len()
+            + timestamp.len()
+            + 24,
+    ));
+    let mut inserted_recv_window = false;
+    let mut inserted_timestamp = false;
+
+    for (key, value) in params {
+        let key = key.as_str();
+        if !inserted_recv_window && key > "recvWindow" {
+            ser.append_pair("recvWindow", recv_window);
+            inserted_recv_window = true;
+        }
+        if !inserted_timestamp && key > "timestamp" {
+            if !inserted_recv_window {
+                ser.append_pair("recvWindow", recv_window);
+                inserted_recv_window = true;
+            }
+            ser.append_pair("timestamp", timestamp);
+            inserted_timestamp = true;
+        }
+        ser.append_pair(key, value);
+    }
+
+    if !inserted_recv_window {
+        ser.append_pair("recvWindow", recv_window);
+    }
+    if !inserted_timestamp {
+        ser.append_pair("timestamp", timestamp);
+    }
+    ser.finish()
+}
+
+fn signed_query_keys_for_log<'a>(params: &'a [(String, String)]) -> Vec<&'a str> {
+    let mut keys = Vec::with_capacity(params.len() + 2);
+    let mut inserted_recv_window = false;
+    let mut inserted_timestamp = false;
+
+    for (key, _) in params {
+        let key = key.as_str();
+        if !inserted_recv_window && key > "recvWindow" {
+            keys.push("recvWindow");
+            inserted_recv_window = true;
+        }
+        if !inserted_timestamp && key > "timestamp" {
+            if !inserted_recv_window {
+                keys.push("recvWindow");
+                inserted_recv_window = true;
+            }
+            keys.push("timestamp");
+            inserted_timestamp = true;
+        }
+        keys.push(key);
+    }
+
+    if !inserted_recv_window {
+        keys.push("recvWindow");
+    }
+    if !inserted_timestamp {
+        keys.push("timestamp");
+    }
+    keys
 }
 
 impl Dispatcher {
@@ -357,22 +427,10 @@ impl Dispatcher {
             &self.base_url_papi
         };
         let url = format!("{}{}", base_url, evt.endpoint);
-        let recv_window = RestConstants::RECV_WINDOW_MS;
+        let recv_window = RestConstants::RECV_WINDOW_MS.to_string();
         let ts = chrono::Utc::now().timestamp_millis();
-
-        // Merge params + timestamp + recvWindow
-        let mut params = evt.params.clone();
-        params.insert("timestamp".to_string(), ts.to_string());
-        params.insert("recvWindow".to_string(), recv_window.to_string());
-
-        // Build query string (sorted by key as BTreeMap)
-        let mut parts: Vec<(String, String)> = params.into_iter().collect();
-        parts.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut ser = url::form_urlencoded::Serializer::new(String::new());
-        for (k, v) in &parts {
-            ser.append_pair(k, v);
-        }
-        let query = ser.finish();
+        let ts = ts.to_string();
+        let query = build_signed_query(&evt.params, &recv_window, &ts);
         let req_type = evt.req_type.as_deref().unwrap_or("unknown");
         let symbol = hot_symbol(&evt.params);
         debug!(
@@ -386,7 +444,7 @@ impl Dispatcher {
             symbol,
             evt.weight(),
             evt.counts_toward_order_limit,
-            parts.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()
+            signed_query_keys_for_log(&evt.params)
         );
 
         // HMAC-SHA256 signature
@@ -395,7 +453,12 @@ impl Dispatcher {
         mac.update(query.as_bytes());
         let sig = hex::encode(mac.finalize().into_bytes());
 
-        let full_url = format!("{}?{}&signature={}", url, query, sig);
+        let mut full_url = String::with_capacity(url.len() + query.len() + sig.len() + 12);
+        full_url.push_str(&url);
+        full_url.push('?');
+        full_url.push_str(&query);
+        full_url.push_str("&signature=");
+        full_url.push_str(&sig);
         let client = &self.ip_clients[ip_idx].client;
 
         let request_builder = match evt.method.as_str() {
@@ -609,6 +672,22 @@ mod tests {
             None,
         )
         .expect("dispatcher")
+    }
+
+    #[test]
+    fn signed_query_inserts_recv_window_and_timestamp_in_key_order() {
+        let params = vec![
+            ("newClientOrderId".to_string(), "42".to_string()),
+            ("quantity".to_string(), "0.01".to_string()),
+            ("symbol".to_string(), "BTCUSDT".to_string()),
+            ("type".to_string(), "MARKET".to_string()),
+        ];
+
+        let query = build_signed_query(&params, "5000", "1710000000000");
+        assert_eq!(
+            query,
+            "newClientOrderId=42&quantity=0.01&recvWindow=5000&symbol=BTCUSDT&timestamp=1710000000000&type=MARKET"
+        );
     }
 
     #[test]

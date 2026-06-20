@@ -38,8 +38,8 @@ use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg,
-    TradeRequestType,
+    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
+    TradeRequestMsg, TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -285,24 +285,106 @@ fn parse_trade_request_payload(payload: &[u8]) -> Option<TradeRequestMsg> {
     Some(msg)
 }
 
-fn trade_request_params_query_string(msg: &TradeRequestMsg) -> Option<String> {
-    match msg.req_type {
-        TradeRequestType::BinanceNewUMOrder
-        | TradeRequestType::BinanceNewMarginOrder
-        | TradeRequestType::BinanceWsNewUMOrder
-        | TradeRequestType::BinanceWsNewMarginOrder => {
-            crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
-                .map(|params| params.to_query_string(msg.req_type, msg.client_order_id))
-        }
-        TradeRequestType::BinanceCancelUMOrder
-        | TradeRequestType::BinanceCancelMarginOrder
-        | TradeRequestType::BinanceWsCancelUMOrder
-        | TradeRequestType::BinanceWsCancelMarginOrder => {
-            crate::trade_request::BinanceCancelOrderParams::from_bytes(&msg.params)
-                .map(|params| params.to_query_string())
-        }
-        _ => None,
+type RestParamPairs = Vec<(String, String)>;
+
+fn sorted_rest_pairs(mut pairs: RestParamPairs) -> RestParamPairs {
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+fn push_or_replace_pair(pairs: &mut RestParamPairs, key: String, value: String) {
+    if key == "timestamp" || key == "recvWindow" || key == "signature" {
+        return;
     }
+    if let Some((_, existing_value)) = pairs
+        .iter_mut()
+        .find(|(existing_key, _)| existing_key == &key)
+    {
+        *existing_value = value;
+    } else {
+        pairs.push((key, value));
+    }
+}
+
+fn parse_urlencoded_rest_pairs(raw: &[u8], context: &str) -> Result<RestParamPairs> {
+    let raw = std::str::from_utf8(raw)
+        .with_context(|| format!("{context} params must be utf-8 urlencoded pairs"))?;
+    let mut pairs = Vec::with_capacity(8);
+    for (key, value) in url::form_urlencoded::parse(raw.as_bytes()) {
+        push_or_replace_pair(&mut pairs, key.into_owned(), value.into_owned());
+    }
+    Ok(sorted_rest_pairs(pairs))
+}
+
+fn binance_new_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let params = BinanceNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+        anyhow!(
+            "Binance REST new order requires typed params, req_type={:?}",
+            msg.req_type
+        )
+    })?;
+    let is_margin = msg.req_type == TradeRequestType::BinanceNewMarginOrder;
+    let mut pairs = Vec::with_capacity(10);
+
+    pairs.push((
+        "newClientOrderId".to_string(),
+        msg.client_order_id.to_string(),
+    ));
+    if params.ws_response_full {
+        pairs.push(("newOrderRespType".to_string(), "FULL".to_string()));
+    }
+    if params.order_type.is_limit() {
+        pairs.push(("price".to_string(), params.price_qv.decimal_string()));
+    }
+    pairs.push(("quantity".to_string(), params.quantity_qv.decimal_string()));
+    if !is_margin {
+        pairs.push(("reduceOnly".to_string(), params.reduce_only.to_string()));
+    }
+    pairs.push(("side".to_string(), params.side.as_str().to_string()));
+    if is_margin && params.margin_buy {
+        pairs.push(("sideEffectType".to_string(), "MARGIN_BUY".to_string()));
+    }
+    pairs.push(("symbol".to_string(), params.symbol));
+    if params.order_type.is_limit() {
+        pairs.push((
+            "timeInForce".to_string(),
+            if is_margin { "GTC" } else { "GTX" }.to_string(),
+        ));
+    }
+    pairs.push(("type".to_string(), params.order_type.as_str().to_string()));
+    Ok(pairs)
+}
+
+fn binance_cancel_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let params = BinanceCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+        anyhow!(
+            "Binance REST cancel order requires typed params, req_type={:?}",
+            msg.req_type
+        )
+    })?;
+    Ok(vec![
+        (
+            "origClientOrderId".to_string(),
+            params.orig_client_order_id.to_string(),
+        ),
+        ("symbol".to_string(), params.symbol),
+    ])
+}
+
+fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    match msg.req_type {
+        TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceNewMarginOrder => {
+            binance_new_order_rest_pairs(msg)
+        }
+        TradeRequestType::BinanceCancelUMOrder | TradeRequestType::BinanceCancelMarginOrder => {
+            binance_cancel_order_rest_pairs(msg)
+        }
+        _ => parse_urlencoded_rest_pairs(&msg.params, "Binance REST trade request"),
+    }
+}
+
+fn query_request_rest_pairs(msg: &QueryRequestMsg) -> Result<RestParamPairs> {
+    parse_urlencoded_rest_pairs(&msg.params, "Binance REST query request")
 }
 
 fn parse_query_request_payload(payload: &[u8]) -> Option<QueryRequestMsg> {
@@ -2036,20 +2118,28 @@ impl TradeEngine {
                             msg.req_type, method, endpoint, weight
                         );
 
-                        let params_source = trade_request_params_query_string(&msg);
-                        let params: std::collections::BTreeMap<String, String> =
-                            if let Some(s) = params_source.as_deref() {
-                                url::form_urlencoded::parse(s.as_bytes())
-                                    .into_owned()
-                                    .collect()
-                            } else {
-                                match std::str::from_utf8(&msg.params) {
-                                    Ok(s) => url::form_urlencoded::parse(s.as_bytes())
-                                        .into_owned()
-                                        .collect(),
-                                    Err(_) => std::collections::BTreeMap::new(),
-                                }
-                            };
+                        let params = match trade_request_rest_pairs(&msg) {
+                            Ok(params) => params,
+                            Err(err) => {
+                                warn!(
+                                    "invalid REST trade params: req_type={:?} client_order_id={} err={}",
+                                    msg.req_type, msg.client_order_id, err
+                                );
+                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_order_id: msg.client_order_id,
+                                    status: 400,
+                                    body: err.to_string(),
+                                    exchange: exchange_for_req_worker,
+                                    order_id: 0,
+                                    order_status_u8: 0,
+                                    order_update_time: 0,
+                                    executed_qty: 0.0,
+                                    response_price: 0.0,
+                                });
+                                continue;
+                            }
+                        };
 
                         let evt = crate::order_event::OrderRequestEvent {
                             req_type: Some(format!("{:?}", msg.req_type)),
@@ -2304,13 +2394,25 @@ impl TradeEngine {
                             let endpoint = QueryTypeMapping::get_endpoint(msg.req_type).to_string();
                             let method = QueryTypeMapping::get_method(msg.req_type).to_string();
                             let weight = QueryTypeMapping::get_weight(msg.req_type);
-                            let params: std::collections::BTreeMap<String, String> =
-                                match std::str::from_utf8(&msg.params) {
-                                    Ok(s) => url::form_urlencoded::parse(s.as_bytes())
-                                        .into_owned()
-                                        .collect(),
-                                    Err(_) => std::collections::BTreeMap::new(),
-                                };
+                            let params = match query_request_rest_pairs(&msg) {
+                                Ok(params) => params,
+                                Err(err) => {
+                                    warn!(
+                                        "invalid REST query params: req_type={:?} client_query_id={} err={}",
+                                        msg.req_type, msg.client_query_id, err
+                                    );
+                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_query_id: msg.client_query_id,
+                                        status: 400,
+                                        body: bytes::Bytes::from(err.to_string()),
+                                        exchange: exchange_copy,
+                                        ip_used_weight_1m: None,
+                                        query_count_1m: None,
+                                    });
+                                    continue;
+                                }
+                            };
 
                             let evt = crate::order_event::OrderRequestEvent {
                                 req_type: Some(format!("{:?}", msg.req_type)),
