@@ -16,6 +16,7 @@ pub const TRADE_PAYLOAD_BYTES: usize = 128;
 pub const DERIVATIVES_PAYLOAD_BYTES: usize = 128;
 pub const INCREMENTAL_PAYLOAD_BYTES: usize = 2048;
 
+const SYMBOL_PREFIX_BYTES: usize = 128;
 const HISTORY_SIZE: usize = 100;
 const SUBSCRIBER_MAX_BUFFER: usize = 8192;
 
@@ -345,6 +346,84 @@ fn incremental_payload_len(symbol: &str, bids_count: usize, asks_count: usize) -
     4 + 4 + symbol.len() + 8 + 8 + 8 + 1 + 7 + 4 + 4 + (bids_count + asks_count) * 16
 }
 
+#[derive(Clone)]
+struct IncrementalPayloadPrefix {
+    bytes: [u8; SYMBOL_PREFIX_BYTES],
+    len: usize,
+    fixed_len: usize,
+}
+
+impl IncrementalPayloadPrefix {
+    fn new(symbol: &str) -> Result<Self> {
+        let len = 4 + 4 + symbol.len();
+        let fixed_len = incremental_payload_len(symbol, 0, 0);
+        anyhow::ensure!(
+            len <= SYMBOL_PREFIX_BYTES,
+            "incremental prefix {} exceeds {}",
+            len,
+            SYMBOL_PREFIX_BYTES
+        );
+        anyhow::ensure!(
+            fixed_len <= INCREMENTAL_PAYLOAD_BYTES,
+            "incremental payload {} exceeds {}",
+            fixed_len,
+            INCREMENTAL_PAYLOAD_BYTES
+        );
+        let mut bytes = [0u8; SYMBOL_PREFIX_BYTES];
+        let mut off = 0usize;
+        write_u32_le(&mut bytes, &mut off, MktMsgType::OrderBookInc as u32);
+        write_symbol(&mut bytes, &mut off, symbol)?;
+        Ok(Self {
+            bytes,
+            len,
+            fixed_len,
+        })
+    }
+
+    #[inline]
+    fn total_len(&self, bids_count: usize, asks_count: usize) -> usize {
+        self.fixed_len + (bids_count + asks_count) * 16
+    }
+}
+
+fn ensure_incremental_prefix_at_index(
+    cache: &mut FastHashMap<String, IncrementalPayloadPrefix>,
+    by_index: &mut Vec<Option<IncrementalPayloadPrefix>>,
+    symbol: &str,
+    index: usize,
+) -> Result<()> {
+    if index < by_index.len() && by_index[index].is_some() {
+        return Ok(());
+    }
+    let prefix = if let Some(prefix) = cache.get(symbol) {
+        prefix.clone()
+    } else {
+        let prefix = IncrementalPayloadPrefix::new(symbol)?;
+        cache.insert(symbol.to_string(), prefix.clone());
+        prefix
+    };
+
+    if by_index.len() <= index {
+        by_index.resize_with(index + 1, || None);
+    }
+    by_index[index] = Some(prefix);
+    Ok(())
+}
+
+fn seed_incremental_prefixes(
+    cache: &mut FastHashMap<String, IncrementalPayloadPrefix>,
+    by_index: &mut Vec<Option<IncrementalPayloadPrefix>>,
+    symbols: &[String],
+) -> Result<()> {
+    for symbol in symbols {
+        if !cache.contains_key(symbol.as_str()) {
+            let index = by_index.len();
+            ensure_incremental_prefix_at_index(cache, by_index, symbol, index)?;
+        }
+    }
+    Ok(())
+}
+
 #[inline]
 fn mark_price_payload_len(symbol: &str) -> usize {
     4 + 4 + symbol.len() + 8 + 8
@@ -436,6 +515,73 @@ fn write_incremental_payload_from_levels<B: PayloadLevel, A: PayloadLevel>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn write_incremental_header_with_prefix(
+    buf: &mut [u8],
+    prefix: &IncrementalPayloadPrefix,
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    bids_count: usize,
+    asks_count: usize,
+    chunk_idx: usize,
+    total_chunks: usize,
+) -> usize {
+    buf[..prefix.len].copy_from_slice(&prefix.bytes[..prefix.len]);
+    let mut off = prefix.len;
+    write_i64_le(buf, &mut off, first_update_id);
+    write_i64_le(buf, &mut off, final_update_id);
+    write_i64_le(buf, &mut off, timestamp);
+    buf[off] = u8::from(is_snapshot);
+    buf[off + 1] = u8::from(chunk_idx == total_chunks - 1);
+    buf[off + 2] = chunk_idx as u8;
+    off += 8;
+    write_u32_le(buf, &mut off, bids_count as u32);
+    write_u32_le(buf, &mut off, asks_count as u32);
+    off
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_incremental_payload_from_levels_with_prefix<B: PayloadLevel, A: PayloadLevel>(
+    buf: &mut [u8],
+    prefix: &IncrementalPayloadPrefix,
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    bids: &[B],
+    bids_start: usize,
+    bids_count: usize,
+    asks: &[A],
+    asks_start: usize,
+    asks_count: usize,
+    chunk_idx: usize,
+    total_chunks: usize,
+) -> usize {
+    let mut off = write_incremental_header_with_prefix(
+        buf,
+        prefix,
+        first_update_id,
+        final_update_id,
+        timestamp,
+        is_snapshot,
+        bids_count,
+        asks_count,
+        chunk_idx,
+        total_chunks,
+    );
+    for level in &bids[bids_start..bids_start + bids_count] {
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
+    }
+    for level in &asks[asks_start..asks_start + asks_count] {
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
+    }
+    off
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_incremental_payload_from_iter<B, A>(
     buf: &mut [u8],
     symbol: &str,
@@ -475,6 +621,48 @@ where
         write_f64_le(buf, &mut off, level.amount);
     }
     Ok(off)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_incremental_payload_from_iter_with_prefix<B, A>(
+    buf: &mut [u8],
+    prefix: &IncrementalPayloadPrefix,
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    bids: B,
+    bids_count: usize,
+    asks: A,
+    asks_count: usize,
+    chunk_idx: usize,
+    total_chunks: usize,
+) -> usize
+where
+    B: IntoIterator<Item = mkt_parsers::binance::Level>,
+    A: IntoIterator<Item = mkt_parsers::binance::Level>,
+{
+    let mut off = write_incremental_header_with_prefix(
+        buf,
+        prefix,
+        first_update_id,
+        final_update_id,
+        timestamp,
+        is_snapshot,
+        bids_count,
+        asks_count,
+        chunk_idx,
+        total_chunks,
+    );
+    for level in bids {
+        write_f64_le(buf, &mut off, level.price);
+        write_f64_le(buf, &mut off, level.amount);
+    }
+    for level in asks {
+        write_f64_le(buf, &mut off, level.price);
+        write_f64_le(buf, &mut off, level.amount);
+    }
+    off
 }
 
 fn write_price_payload(
@@ -562,6 +750,8 @@ pub struct SpreadTradePublisher {
 pub struct SpreadIncrementalPublisher {
     publisher: Publisher<ipc::Service, [u8; INCREMENTAL_PAYLOAD_BYTES], ()>,
     service_name: String,
+    incremental_prefix_by_symbol: RefCell<FastHashMap<String, IncrementalPayloadPrefix>>,
+    incremental_prefix_by_index: RefCell<Vec<Option<IncrementalPayloadPrefix>>>,
 }
 
 /// spread_pbs 直接替代旧 `dat_pbs/<venue>/derivatives` 的 publisher。
@@ -893,6 +1083,8 @@ impl SpreadIncrementalPublisher {
         Ok(Self {
             publisher,
             service_name,
+            incremental_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            incremental_prefix_by_index: RefCell::new(Vec::new()),
         })
     }
 
@@ -902,6 +1094,12 @@ impl SpreadIncrementalPublisher {
 
     pub fn publish(&self, data: &[u8]) -> Result<()> {
         publish_padded(&self.publisher, data, "incremental")
+    }
+
+    pub fn seed_symbols(&self, symbols: &[String]) -> Result<()> {
+        let mut cache = self.incremental_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.incremental_prefix_by_index.borrow_mut();
+        seed_incremental_prefixes(&mut cache, &mut by_index, symbols)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -981,6 +1179,73 @@ impl SpreadIncrementalPublisher {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn publish_chunk_for_slot<B: PayloadLevel, A: PayloadLevel>(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        is_snapshot: bool,
+        bids: &[B],
+        bids_start: usize,
+        bids_count: usize,
+        asks: &[A],
+        asks_start: usize,
+        asks_count: usize,
+        chunk_idx: usize,
+        total_chunks: usize,
+    ) -> Result<()> {
+        let cache = self.incremental_prefix_by_index.borrow();
+        if let Some(Some(prefix)) = cache.get(slot_index) {
+            let min_len = prefix.total_len(bids_count, asks_count);
+            return publish_write(&self.publisher, min_len, "incremental", |buf| {
+                Ok(write_incremental_payload_from_levels_with_prefix(
+                    buf,
+                    prefix,
+                    first_update_id,
+                    final_update_id,
+                    timestamp,
+                    is_snapshot,
+                    bids,
+                    bids_start,
+                    bids_count,
+                    asks,
+                    asks_start,
+                    asks_count,
+                    chunk_idx,
+                    total_chunks,
+                ))
+            });
+        }
+        drop(cache);
+
+        let mut by_symbol = self.incremental_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.incremental_prefix_by_index.borrow_mut();
+        ensure_incremental_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefix = by_index[slot_index].as_ref().expect("prefix inserted");
+        let min_len = prefix.total_len(bids_count, asks_count);
+        publish_write(&self.publisher, min_len, "incremental", |buf| {
+            Ok(write_incremental_payload_from_levels_with_prefix(
+                buf,
+                prefix,
+                first_update_id,
+                final_update_id,
+                timestamp,
+                is_snapshot,
+                bids,
+                bids_start,
+                bids_count,
+                asks,
+                asks_start,
+                asks_count,
+                chunk_idx,
+                total_chunks,
+            ))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_chunk_from_iter<B, A>(
         &self,
         symbol: &str,
@@ -1015,6 +1280,71 @@ impl SpreadIncrementalPublisher {
                 chunk_idx,
                 total_chunks,
             )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_chunk_from_iter_for_slot<B, A>(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        is_snapshot: bool,
+        bids: B,
+        bids_count: usize,
+        asks: A,
+        asks_count: usize,
+        chunk_idx: usize,
+        total_chunks: usize,
+    ) -> Result<()>
+    where
+        B: IntoIterator<Item = mkt_parsers::binance::Level>,
+        A: IntoIterator<Item = mkt_parsers::binance::Level>,
+    {
+        let cache = self.incremental_prefix_by_index.borrow();
+        if let Some(Some(prefix)) = cache.get(slot_index) {
+            let min_len = prefix.total_len(bids_count, asks_count);
+            return publish_write(&self.publisher, min_len, "incremental", |buf| {
+                Ok(write_incremental_payload_from_iter_with_prefix(
+                    buf,
+                    prefix,
+                    first_update_id,
+                    final_update_id,
+                    timestamp,
+                    is_snapshot,
+                    bids,
+                    bids_count,
+                    asks,
+                    asks_count,
+                    chunk_idx,
+                    total_chunks,
+                ))
+            });
+        }
+        drop(cache);
+
+        let mut by_symbol = self.incremental_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.incremental_prefix_by_index.borrow_mut();
+        ensure_incremental_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefix = by_index[slot_index].as_ref().expect("prefix inserted");
+        let min_len = prefix.total_len(bids_count, asks_count);
+        publish_write(&self.publisher, min_len, "incremental", |buf| {
+            Ok(write_incremental_payload_from_iter_with_prefix(
+                buf,
+                prefix,
+                first_update_id,
+                final_update_id,
+                timestamp,
+                is_snapshot,
+                bids,
+                bids_count,
+                asks,
+                asks_count,
+                chunk_idx,
+                total_chunks,
+            ))
         })
     }
 }
@@ -1253,6 +1583,34 @@ mod tests {
             &mut buf, "BTCUSDT", 10, 11, 123_456, false, &bids, 1, 1, &asks, 0, 2, 2, 3,
         )
         .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+        assert!(buf[written..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn cached_incremental_prefix_writer_matches_inc_msg_bytes() {
+        let bids = vec![
+            Level::from_values(100.0, 1.0),
+            Level::from_values(99.5, 2.0),
+        ];
+        let asks = vec![
+            Level::from_values(101.0, 3.0),
+            Level::from_values(101.5, 4.0),
+        ];
+        let mut msg = IncMsg::create("BTCUSDT".to_string(), 10, 11, 123_456, false, 1, 2);
+        msg.set_chunk_index(2);
+        msg.set_is_last(true);
+        msg.set_bid_level(0, bids[1]);
+        msg.set_ask_level(0, asks[0]);
+        msg.set_ask_level(1, asks[1]);
+        let expected = msg.to_bytes();
+
+        let prefix = IncrementalPayloadPrefix::new("BTCUSDT").unwrap();
+        let mut buf = [0u8; INCREMENTAL_PAYLOAD_BYTES];
+        let written = write_incremental_payload_from_levels_with_prefix(
+            &mut buf, &prefix, 10, 11, 123_456, false, &bids, 1, 1, &asks, 0, 2, 2, 3,
+        );
         assert_eq!(written, expected.len());
         assert_eq!(&buf[..written], &expected[..]);
         assert!(buf[written..].iter().all(|b| *b == 0));

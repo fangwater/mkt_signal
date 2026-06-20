@@ -389,14 +389,18 @@ impl SpreadPbsApp {
             None
         };
         let incremental_publisher = if direct_incremental_enabled {
-            Some(Rc::new(
+            let publisher = Rc::new(
                 SpreadIncrementalPublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
                     panic!(
                         "spread_pbs[{}] failed to open/create replacement incremental ipc channel dat_pbs/{}/incremental: {:#}",
                         venue_slug, venue_slug, e
                     )
                 }),
-            ))
+            );
+            publisher
+                .seed_symbols(&initial_symbols)
+                .with_context(|| format!("seed incremental payload prefixes for {}", venue_slug))?;
+            Some(publisher)
         } else {
             None
         };
@@ -954,6 +958,15 @@ async fn restart_leg(
             if let Err(e) = trade_publisher.seed_symbols(&new_symbols) {
                 log::warn!(
                     "spread_pbs[{}] failed to seed trade payload prefixes: {:#}",
+                    venue_slug,
+                    e
+                );
+            }
+        }
+        if let Some(incremental_publisher) = ctx.incremental_publisher.as_ref() {
+            if let Err(e) = incremental_publisher.seed_symbols(&new_symbols) {
+                log::warn!(
+                    "spread_pbs[{}] failed to seed incremental payload prefixes: {:#}",
                     venue_slug,
                     e
                 );
@@ -1801,6 +1814,7 @@ fn process_incremental_fields<L: PayloadLevel>(
                 if !publish_incremental_chunk(
                     state,
                     publisher,
+                    slot_index,
                     symbol,
                     first_update_id,
                     final_update_id,
@@ -1825,6 +1839,7 @@ fn process_incremental_fields<L: PayloadLevel>(
             if !publish_incremental_chunk(
                 state,
                 publisher,
+                slot_index,
                 symbol,
                 first_update_id,
                 final_update_id,
@@ -1887,6 +1902,7 @@ fn process_incremental_view(
                     state,
                     publisher,
                     &book,
+                    slot_index,
                     bids_start,
                     bids_count,
                     asks_start,
@@ -1905,6 +1921,7 @@ fn process_incremental_view(
                 state,
                 publisher,
                 &book,
+                slot_index,
                 0,
                 book.bids_count,
                 0,
@@ -1922,6 +1939,7 @@ fn process_incremental_view(
 fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
+    slot_index: Option<usize>,
     symbol: &str,
     first_update_id: i64,
     final_update_id: i64,
@@ -1936,21 +1954,41 @@ fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
     chunk_idx: usize,
     total_chunks: usize,
 ) -> bool {
-    if let Err(e) = publisher.publish_chunk_from_levels(
-        symbol,
-        first_update_id,
-        final_update_id,
-        timestamp,
-        is_snapshot,
-        bids,
-        bids_start,
-        bids_count,
-        asks,
-        asks_start,
-        asks_count,
-        chunk_idx,
-        total_chunks,
-    ) {
+    let publish_result = if let Some(slot_index) = slot_index {
+        publisher.publish_chunk_for_slot(
+            slot_index,
+            symbol,
+            first_update_id,
+            final_update_id,
+            timestamp,
+            is_snapshot,
+            bids,
+            bids_start,
+            bids_count,
+            asks,
+            asks_start,
+            asks_count,
+            chunk_idx,
+            total_chunks,
+        )
+    } else {
+        publisher.publish_chunk_from_levels(
+            symbol,
+            first_update_id,
+            final_update_id,
+            timestamp,
+            is_snapshot,
+            bids,
+            bids_start,
+            bids_count,
+            asks,
+            asks_start,
+            asks_count,
+            chunk_idx,
+            total_chunks,
+        )
+    };
+    if let Err(e) = publish_result {
         log::warn!("spread_pbs incremental publish failed: {:#}", e);
         return false;
     }
@@ -1962,6 +2000,7 @@ fn publish_incremental_view_chunk(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
     book: &mkt_parsers::binance::RawBookView<'_>,
+    slot_index: Option<usize>,
     bids_start: usize,
     bids_count: usize,
     asks_start: usize,
@@ -1975,19 +2014,37 @@ fn publish_incremental_view_chunk(
     let Some(asks) = mkt_parsers::binance::raw_levels_iter(book.asks_raw) else {
         return false;
     };
-    if let Err(e) = publisher.publish_chunk_from_iter(
-        book.symbol,
-        book.first_update_id,
-        book.final_update_id,
-        book.timestamp_us,
-        book.is_snapshot,
-        bids.skip(bids_start).take(bids_count),
-        bids_count,
-        asks.skip(asks_start).take(asks_count),
-        asks_count,
-        chunk_idx,
-        total_chunks,
-    ) {
+    let publish_result = if let Some(slot_index) = slot_index {
+        publisher.publish_chunk_from_iter_for_slot(
+            slot_index,
+            book.symbol,
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            bids.skip(bids_start).take(bids_count),
+            bids_count,
+            asks.skip(asks_start).take(asks_count),
+            asks_count,
+            chunk_idx,
+            total_chunks,
+        )
+    } else {
+        publisher.publish_chunk_from_iter(
+            book.symbol,
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            bids.skip(bids_start).take(bids_count),
+            bids_count,
+            asks.skip(asks_start).take(asks_count),
+            asks_count,
+            chunk_idx,
+            total_chunks,
+        )
+    };
+    if let Err(e) = publish_result {
         log::warn!("spread_pbs incremental publish failed: {:#}", e);
         return false;
     }
