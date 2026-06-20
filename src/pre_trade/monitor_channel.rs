@@ -1186,7 +1186,7 @@ impl MonitorChannel {
         refreshed
     }
 
-    fn mark_basic_state_dirty() {
+    pub(crate) fn mark_basic_state_dirty() {
         BASIC_STATE_DIRTY.with(|dirty| dirty.set(true));
         BASIC_STATE_PRICE_DIRTY.with(|dirty| dirty.set(false));
     }

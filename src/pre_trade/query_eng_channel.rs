@@ -608,7 +608,9 @@ impl QueryEngChannel {
                                                     );
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::BorrowInterest => {
@@ -658,7 +660,9 @@ impl QueryEngChannel {
                                                     );
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::PositionUpdate => {
@@ -702,7 +706,9 @@ impl QueryEngChannel {
                                                     );
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::UnrealizedPnlUpdate => {
@@ -738,13 +744,18 @@ impl QueryEngChannel {
                                                     applied = true;
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::AccountRisk => {
                                         match BasicAccountRiskMsg::from_bytes(body) {
-                                            Ok(msg) => MonitorChannel::instance()
-                                                .apply_account_risk(account_scope, msg),
+                                            Ok(msg) => {
+                                                MonitorChannel::instance()
+                                                    .apply_account_risk(account_scope, msg);
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                             Err(err) => warn!(
                                                 "AccountRisk decode failed via query_eng_channel: scope={} err={err:#}",
                                                 account_scope.as_str()

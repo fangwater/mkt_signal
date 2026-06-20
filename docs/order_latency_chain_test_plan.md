@@ -97,19 +97,13 @@
   --end 2026-05-06T08:43:58Z
 ```
 
-2. 校验导出 schema 与基础质量：
-
-```bash
-python3 scripts/check_order_export_parquet.py <export_dir>
-```
-
-3. 统计延迟：
+2. 统计延迟：
 
 ```bash
 python3 scripts/analyze_order_latency.py <export_dir_1> <export_dir_2> --top 20
 ```
 
-4. 对 `negative > 0`、p99/max 明显异常的样本，按 `client_order_id` 回查：
+3. 对 `negative > 0`、p99/max 明显异常的样本，按 `client_order_id` 回查：
 
 - `uniform_orders.parquet`
 - `order_updates_unmatched.parquet`

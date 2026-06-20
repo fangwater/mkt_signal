@@ -1,6 +1,6 @@
 ---
 name: intra-arb-latency-analysis
-description: Analyze intra spot/futures arbitrage order latency from local uniform_orders parquet snapshots. Use when the user asks for mkt_ts to signal_ts, signal_ts to submit_ts, update_ts to submit_ts, local_ts to submit_ts, or NEW rows that later filled latency for environments such as bybit-intra-arb01, okex-intra-arb01, gate-intra-arb01, bitget-intra-arb01, or binance-intra-arb01, especially from order_export or data/intra_order_export_backfill snapshots.
+description: Analyze intra spot/futures arbitrage order latency from local uniform_orders parquet snapshots. Use when the user asks for mkt_ts to signal_ts, create_ts to signal_ts, update_ts to submit_ts, local_ts to submit_ts, or NEW rows that later filled latency for environments such as bybit-intra-arb01, okex-intra-arb01, gate-intra-arb01, bitget-intra-arb01, or binance-intra-arb01, especially from order_export or data/intra_order_export_backfill snapshots.
 ---
 
 # Intra Arb Latency Analysis
@@ -12,12 +12,18 @@ Use repo-local parquet snapshots instead of re-reading remote persist services w
 1. Work in `/home/ubuntu/crypto_mkt/mkt_signal` unless the user points to another checkout.
 2. If the user does not already have a local snapshot, fetch one first with the existing backfill script.
 3. Run the latency helper on `uniform_orders.parquet`.
-4. Report the three main segments:
-   - `signal_ts - mkt_ts`
-   - `submit_ts - signal_ts`
+4. For same-exchange spot/futures intra analysis, report spot and futures results in one combined table, not as separate sections.
+5. Include a Chinese `含义` column in the table.
+6. For spot/open-leg rows, report:
+   - `create_ts - signal_ts`
    - `update_ts - submit_ts`
-5. Keep `local_ts - submit_ts` as the local-clock fallback when `update_ts - submit_ts` needs cross-clock context.
-6. For Bybit intra hedge analysis, also report the taker hedge reaction latency from margin local receive time to futures submit time.
+   - `local_ts - submit_ts`
+7. For futures hedge rows, report:
+   - `futures.submit_ts - margin.local_ts`
+   - `futures.submit_ts - margin.update_ts`
+   - `futures.update_ts - futures.submit_ts`
+   - `futures.local_ts - futures.submit_ts`
+8. For Bybit intra hedge analysis, also report the taker hedge reaction latency from margin local receive time to futures submit time.
 
 ## Fetch Snapshot
 
@@ -120,13 +126,17 @@ Secondary reference metrics:
 - `futures_local_minus_submit_ms`
 - `futures_update_minus_submit_ms`
 
-## Interpretation Notes
+## Combined Table Meanings
 
-- `signal_ts - mkt_ts` is the market-to-signal stage.
-- `submit_ts - signal_ts` is the in-process signal-to-submit stage.
-- `update_ts - submit_ts` is the submit-to-exchange-ack stage, but it can have missing or cross-clock quirks.
-- `local_ts - submit_ts` is the better SG local-clock correlation metric when the user wants a pure local receive latency.
-- `futures submit_ts - margin local_ts` is the preferred Bybit taker hedge reaction metric when the user asks for margin local ts to hedge submit ts.
+- `create_ts - signal_ts`: 行情延迟.
+- `update_ts - submit_ts`: 挂单延迟.
+- `local_ts - submit_ts`: 完整回报延迟.
+- `futures.submit_ts - margin.local_ts`: taker触发内部延迟.
+- `futures.submit_ts - margin.update_ts`: 合约挂到距离现货撤单/成交延迟.
+- `futures.update_ts - futures.submit_ts`: 合约挂单延迟.
+- `futures.local_ts - futures.submit_ts`: 合约rtt.
+
+For futures hedge rows, `futures.submit_ts - margin.local_ts` is the preferred local-process taker hedge reaction metric.
 
 When comparing with older notebooks, keep the same filters. Do not mix in terminal rows unless the user explicitly asks for a different definition.
 
