@@ -161,15 +161,25 @@ impl Parser for BinanceKlineParser {
 #[derive(Clone)]
 pub struct BinanceDerivativesMetricsParser {
     symbols: HashSet<String>,
+    raw_only: bool,
 }
 
 impl BinanceDerivativesMetricsParser {
     pub fn new(symbols_set: HashSet<String>) -> Self {
+        Self::with_raw_only(symbols_set, false)
+    }
+
+    pub fn raw_only(symbols_set: HashSet<String>) -> Self {
+        Self::with_raw_only(symbols_set, true)
+    }
+
+    fn with_raw_only(symbols_set: HashSet<String>, raw_only: bool) -> Self {
         Self {
             symbols: symbols_set
                 .into_iter()
                 .map(|s| s.to_ascii_uppercase())
                 .collect(),
+            raw_only,
         }
     }
 }
@@ -178,6 +188,9 @@ impl Parser for BinanceDerivativesMetricsParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         if let Some(count) = self.publish_derivatives_raw(&msg, tx) {
             return count;
+        }
+        if self.raw_only {
+            return 0;
         }
 
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
@@ -1273,6 +1286,23 @@ mod tests {
         assert_eq!(get_msg_type(&out[0]), MktMsgType::MarkPrice);
         assert_eq!(get_msg_type(&out[1]), MktMsgType::IndexPrice);
         assert_eq!(get_msg_type(&out[2]), MktMsgType::FundingRate);
+    }
+
+    #[test]
+    fn binance_derivatives_raw_only_drops_json_fallback_shape() {
+        let raw =
+            br#"{"\u0065":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0"}"#;
+
+        let fallback_parser =
+            BinanceDerivativesMetricsParser::new(HashSet::from(["BTCUSDT".to_string()]));
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 1);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::MarkPrice);
+
+        let raw_only_parser =
+            BinanceDerivativesMetricsParser::raw_only(HashSet::from(["BTCUSDT".to_string()]));
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
     }
 
     #[test]

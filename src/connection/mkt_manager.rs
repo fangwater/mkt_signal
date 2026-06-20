@@ -821,8 +821,8 @@ impl MktManager {
             .get_active_symbols();
 
         info!("Starting Aster derivatives connections");
-        let parser1 = BinanceDerivativesMetricsParser::new(symbols.clone());
-        let parser2 = BinanceDerivativesMetricsParser::new(symbols.clone());
+        let parser1 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
+        let parser2 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
 
         self.spawn_connection_with_mpsc(
             exchange,
@@ -858,8 +858,8 @@ impl MktManager {
             .get_active_symbols();
 
         info!("Starting Binance derivatives connections");
-        let parser1 = BinanceDerivativesMetricsParser::new(symbols.clone());
-        let parser2 = BinanceDerivativesMetricsParser::new(symbols.clone());
+        let parser1 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
+        let parser2 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
 
         self.spawn_connection_with_mpsc(
             exchange,
