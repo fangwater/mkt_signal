@@ -2008,10 +2008,13 @@ fn raw_payload_object(raw: &[u8]) -> RawPayloadObject<'_> {
                     first_field: None,
                 };
             }
-            let Some(value) = scanner.take_value() else {
+            let data_scanner = scanner
+                .value_starts_object()
+                .then(|| scanner.scanner_at_value());
+            if scanner.skip_value().is_none() {
                 break;
-            };
-            data = value.object_bytes();
+            }
+            data = data_scanner;
             continue;
         }
         if scanner.skip_value().is_none() {
@@ -2019,7 +2022,7 @@ fn raw_payload_object(raw: &[u8]) -> RawPayloadObject<'_> {
         }
     }
     RawPayloadObject {
-        scanner: JsonObjectScanner::new(data.unwrap_or(raw)),
+        scanner: data.unwrap_or_else(|| JsonObjectScanner::new(raw)),
         stream,
         first_field: None,
     }
