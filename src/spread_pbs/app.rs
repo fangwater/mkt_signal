@@ -1148,6 +1148,7 @@ impl SymbolSeqState {
         }
     }
 
+    #[cfg(test)]
     fn incremental_prev_seen(&mut self, symbol: &str) -> Option<i64> {
         let slot = self.incremental_slot(symbol);
         (slot.prev != i64::MIN).then_some(slot.prev)
@@ -1768,7 +1769,7 @@ fn process_incremental_frame(
                 let _ = timestamp;
                 return;
             }
-            warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, false);
+            warn_incremental_gap_if_needed(state, &symbol, slot.prev, seq_id, prev_seq_id, false);
             state.symbol_state.set_incremental_slot(slot, seq_id);
             let _ = timestamp;
             return;
@@ -1819,7 +1820,7 @@ fn process_incremental_fields<L: PayloadLevel>(
     }
 
     if gap_check {
-        warn_incremental_gap_if_needed(state, symbol, seq_id, prev_seq_id, is_snapshot);
+        warn_incremental_gap_if_needed(state, symbol, slot.prev, seq_id, prev_seq_id, is_snapshot);
     }
 
     let total_levels = bids.len() + asks.len();
@@ -1900,6 +1901,7 @@ fn process_incremental_view(
         warn_incremental_gap_if_needed(
             state,
             book.symbol,
+            slot.prev,
             book.seq_id,
             book.prev_seq_id,
             book.is_snapshot,
@@ -2087,6 +2089,7 @@ fn process_derivatives_bytes(
 fn warn_incremental_gap_if_needed(
     state: &mut SharedState,
     symbol: &str,
+    local_prev_seq_id: i64,
     seq_id: i64,
     prev_seq_id: i64,
     is_snapshot: bool,
@@ -2094,7 +2097,7 @@ fn warn_incremental_gap_if_needed(
     if is_snapshot {
         return;
     }
-    let prev = state.symbol_state.incremental_prev_seen(symbol);
+    let prev = (local_prev_seq_id != i64::MIN).then_some(local_prev_seq_id);
     if seq_id < prev_seq_id {
         state.incremental_gap_warnings += 1;
         log::warn!(
