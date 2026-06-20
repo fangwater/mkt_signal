@@ -39,6 +39,7 @@ use runtime_common::symbol_util::{
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::SignalType;
+use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
@@ -310,7 +311,7 @@ pub struct OpenStrategyState {
     pub inactive_reason: Option<String>,
 }
 
-pub struct OpenSignalInput {
+pub struct OpenSignalInput<'a> {
     pub signal_kind: &'static str,
     pub order_log_name: &'static str,
     pub order_rate_bucket: OrderRateBucket,
@@ -326,7 +327,7 @@ pub struct OpenSignalInput {
     pub exp_time: i64,
     pub create_ts: i64,
     pub from_key_len: u32,
-    pub from_key: Vec<u8>,
+    pub from_key: Cow<'a, [u8]>,
     pub price_qv: QuantizedValue,
     pub order_qty_qv: Option<QuantizedValue>,
     pub order_price_qv: Option<QuantizedValue>,
@@ -863,7 +864,7 @@ pub trait OpenStrategyCommon {
 
     fn handle_open_signal_common(
         &mut self,
-        input: OpenSignalInput,
+        input: OpenSignalInput<'_>,
     ) -> Option<OpenSignalInitResult> {
         let total_start_us = get_timestamp_us();
         let is_arb_open = input.signal_type_u8 == SignalType::ArbOpen as u8;
@@ -1402,7 +1403,7 @@ pub trait OpenStrategyCommon {
             let state = self.open_state_mut();
             state.open_symbol = symbol;
             state.signal_ts = input.create_ts;
-            state.from_key = input.from_key;
+            state.from_key = input.from_key.into_owned();
             state.price_qv = input.price_qv;
             state.price_offset = input.price_offset;
         }

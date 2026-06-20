@@ -19,6 +19,7 @@ use signal_common::common::SignalBytes;
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
+use std::borrow::Cow;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;
 
@@ -222,7 +223,7 @@ impl ArbCloseStrategy {
             exp_time: ctx.exp_time,
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
-            from_key: ctx.from_key,
+            from_key: Cow::Owned(ctx.from_key),
             price_qv: ctx.price_qv,
             order_qty_qv: None,
             order_price_qv: None,

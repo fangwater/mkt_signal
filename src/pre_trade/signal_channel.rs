@@ -952,7 +952,6 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let signal_price = open_ctx.price_value();
             let signal_amount = open_ctx.amount_value();
             let signal_spread_rate = open_ctx.spread_rate;
-            let open_ctx = open_ctx.to_owned_with_symbols(&symbol, &hedging_symbol);
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             {
                 let mut mgr = strategy_mgr.borrow_mut();
@@ -961,7 +960,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = ArbOpenStrategy::new(strategy_id);
             let log_symbol = symbol.clone();
-            strategy.handle_arb_open_ctx_with_symbol(
+            strategy.handle_arb_open_view_with_symbol(
                 open_ctx,
                 symbol,
                 pending_limit_prechecked,

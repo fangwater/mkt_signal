@@ -16,6 +16,7 @@ use signal_common::common::SignalBytes;
 use signal_common::open_signal::MmOpenCtx;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
+use std::borrow::Cow;
 
 /// 做市开仓策略：仅处理开仓，不涉及对冲/强平/模式切换
 pub struct MarketMakerOpenStrategy {
@@ -51,7 +52,7 @@ impl MarketMakerOpenStrategy {
             exp_time: ctx.exp_time,
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
-            from_key: ctx.from_key,
+            from_key: Cow::Owned(ctx.from_key),
             price_qv: ctx.price_qv,
             order_qty_qv: Some(ctx.amount_qv),
             order_price_qv: Some(ctx.price_qv),

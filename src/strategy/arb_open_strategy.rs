@@ -15,9 +15,10 @@ use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::ArbCancelCtx;
 use signal_common::common::SignalBytes;
-use signal_common::open_signal::ArbOpenCtx;
+use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
+use std::borrow::Cow;
 
 /// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。
 pub struct ArbOpenStrategy {
@@ -83,7 +84,72 @@ impl ArbOpenStrategy {
             exp_time: ctx.exp_time,
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
-            from_key: ctx.from_key,
+            from_key: Cow::Owned(ctx.from_key),
+            price_qv: ctx.price_qv,
+            order_qty_qv: Some(ctx.amount_qv),
+            order_price_qv: Some(ctx.price_qv),
+            price_offset: ctx.price_offset,
+            reduce_only: false,
+            client_order_id: None,
+            pending_limit_prechecked,
+            close_ts,
+            mkt_ts,
+            signal_type_u8: SignalType::ArbOpen as u8,
+            pre_trade_recv_ts,
+            pre_trade_handle_ts,
+        }) else {
+            return;
+        };
+        self.close_ts = if init.close_ts > 0 {
+            Some(init.close_ts)
+        } else {
+            None
+        };
+        self.cumulative_open_qty = 0.0;
+        self.open_qty_multiplier = init.qty_multiplier;
+    }
+
+    pub fn handle_arb_open_view_with_symbol(
+        &mut self,
+        ctx: ArbOpenCtxView<'_>,
+        symbol: String,
+        pending_limit_prechecked: bool,
+        pre_trade_recv_ts: i64,
+        pre_trade_handle_ts: i64,
+    ) {
+        let close_ts = if ctx.hedge_timeout_us > 0 {
+            let base_ts = if ctx.create_ts > 0 {
+                ctx.create_ts
+            } else {
+                get_timestamp_us()
+            };
+            base_ts.saturating_add(ctx.hedge_timeout_us)
+        } else {
+            0
+        };
+
+        if let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) {
+            MonitorChannel::instance().seed_close_inventory_if_absent(venue, &symbol);
+        }
+
+        let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
+        let Some(init) = self.handle_open_signal_common(OpenSignalInput {
+            signal_kind: "ArbOpen",
+            order_log_name: "ArbOpen",
+            order_rate_bucket: OrderRateBucket::ArbOpen,
+            opening_symbol: symbol,
+            opening_symbol_normalized: true,
+            venue_u8: ctx.opening_leg.venue,
+            side_u8: ctx.side,
+            order_type_u8: ctx.order_type,
+            qty: ctx.amount_value(),
+            price: ctx.price_value(),
+            price_count: ctx.price_count(),
+            amount_count: ctx.amount_count(),
+            exp_time: ctx.exp_time,
+            create_ts: ctx.create_ts,
+            from_key_len: ctx.from_key_len,
+            from_key: Cow::Borrowed(ctx.from_key),
             price_qv: ctx.price_qv,
             order_qty_qv: Some(ctx.amount_qv),
             order_price_qv: Some(ctx.price_qv),
