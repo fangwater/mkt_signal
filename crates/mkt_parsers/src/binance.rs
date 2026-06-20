@@ -116,6 +116,17 @@ pub struct RawBook<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawKline<'a> {
+    pub symbol: &'a str,
+    pub open_price: f64,
+    pub high_price: f64,
+    pub low_price: f64,
+    pub close_price: f64,
+    pub volume: f64,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RawDerivative<'a> {
     MarkPrice {
         symbol: &'a str,
@@ -420,6 +431,34 @@ pub fn parse_incremental_json(value: &Value) -> Option<Book> {
         return parse_depth_snapshot_json(payload, stream_symbol.as_deref());
     }
     None
+}
+
+pub fn parse_event_time_ms_raw(raw: &[u8]) -> Option<i64> {
+    let data = combined_value(raw).unwrap_or(raw);
+    let mut scanner = JsonObjectScanner::new(data);
+    while let Some((key, value)) = scanner.next_field() {
+        if key == b"E" {
+            return value.i64();
+        }
+    }
+    None
+}
+
+pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
+    let data = combined_value(raw).unwrap_or(raw);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut symbol = None;
+    let mut kline = None;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"s" => symbol = Some(value.string_str()?),
+            b"k" => kline = Some(value.object_bytes()?),
+            _ => {}
+        }
+    }
+
+    parse_kline_object_raw(kline?, symbol?)
 }
 
 pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
@@ -812,6 +851,43 @@ fn parse_liquidation_json(payload: &Value) -> Vec<Derivative> {
         price,
         timestamp_us,
     }]
+}
+
+fn parse_kline_object_raw<'a>(raw: &'a [u8], symbol: &'a str) -> Option<RawKline<'a>> {
+    let mut scanner = JsonObjectScanner::new(raw);
+    let mut is_closed = false;
+    let mut open_price = None;
+    let mut high_price = None;
+    let mut low_price = None;
+    let mut close_price = None;
+    let mut volume = None;
+    let mut timestamp = None;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"x" => is_closed = value.bool()?,
+            b"o" => open_price = Some(value.f64()?),
+            b"h" => high_price = Some(value.f64()?),
+            b"l" => low_price = Some(value.f64()?),
+            b"c" => close_price = Some(value.f64()?),
+            b"v" => volume = Some(value.f64()?),
+            b"t" => timestamp = Some(value.i64()?),
+            _ => {}
+        }
+    }
+
+    if !is_closed {
+        return None;
+    }
+    Some(RawKline {
+        symbol,
+        open_price: open_price?,
+        high_price: high_price?,
+        low_price: low_price?,
+        close_price: close_price?,
+        volume: volume?,
+        timestamp: timestamp?,
+    })
 }
 
 fn parse_derivative_object_raw(raw: &[u8]) -> Option<RawDerivative<'_>> {
@@ -1491,9 +1567,9 @@ fn read_group_levels(
 mod tests {
     use super::{
         parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
-        parse_depth_bbo_raw_borrowed, parse_derivatives_raw_borrowed,
-        parse_incremental_raw_borrowed, parse_trade_raw, parse_trade_raw_borrowed, RawDerivative,
-        RAW_DEPTH_LEVEL_CAP,
+        parse_depth_bbo_raw_borrowed, parse_derivatives_raw_borrowed, parse_event_time_ms_raw,
+        parse_incremental_raw_borrowed, parse_kline_raw_borrowed, parse_trade_raw,
+        parse_trade_raw_borrowed, RawDerivative, RAW_DEPTH_LEVEL_CAP,
     };
 
     #[test]
@@ -1666,6 +1742,38 @@ mod tests {
         raw.extend_from_slice(br#"],"a":[]}"#);
 
         assert!(parse_incremental_raw_borrowed(&raw).is_none());
+    }
+
+    #[test]
+    fn parses_event_time_without_value_tree() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#;
+
+        assert_eq!(parse_event_time_ms_raw(raw), Some(1_700_000_000_001));
+    }
+
+    #[test]
+    fn parses_closed_kline_without_value_tree() {
+        let raw = br#"{"e":"kline","E":1700000000001,"s":"BTCUSDT",
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":true}}"#;
+
+        let kline = parse_kline_raw_borrowed(raw).expect("closed kline");
+
+        assert_eq!(kline.symbol, "BTCUSDT");
+        assert_eq!(kline.timestamp, 1_700_000_000_000);
+        assert!((kline.open_price - 25.0).abs() < 1e-9);
+        assert!((kline.high_price - 26.0).abs() < 1e-9);
+        assert!((kline.low_price - 24.5).abs() < 1e-9);
+        assert!((kline.close_price - 25.5).abs() < 1e-9);
+        assert!((kline.volume - 123.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_kline_rejects_open_candle() {
+        let raw = br#"{"e":"kline","s":"BTCUSDT",
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":false}}"#;
+
+        assert!(parse_kline_raw_borrowed(raw).is_none());
     }
 
     #[test]

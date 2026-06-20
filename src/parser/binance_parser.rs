@@ -27,6 +27,15 @@ impl BinanceSignalParser {
 
 impl Parser for BinanceSignalParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(timestamp) = binance_codec::parse_event_time_ms_raw(&msg) {
+            let signal_msg = SignalMsg::create(self.source, timestamp);
+            return if tx.send(signal_msg.to_bytes()).is_ok() {
+                1
+            } else {
+                0
+            };
+        }
+
         // Parse Binance depth message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -66,6 +75,23 @@ impl BinanceKlineParser {
 
 impl Parser for BinanceKlineParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(kline) = binance_codec::parse_kline_raw_borrowed(&msg) {
+            let kline_msg = KlineMsg::create(
+                kline.symbol.to_string(),
+                kline.open_price,
+                kline.high_price,
+                kline.low_price,
+                kline.close_price,
+                kline.volume,
+                kline.timestamp,
+            );
+            return if tx.send(kline_msg.to_bytes()).is_ok() {
+                1
+            } else {
+                0
+            };
+        }
+
         // Parse Binance kline message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -356,6 +382,18 @@ impl BinanceSnapshotParser {
 
 impl Parser for BinanceSnapshotParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(mut book) = binance_codec::parse_incremental_raw_borrowed(&msg) {
+            if !book.is_snapshot {
+                return 0;
+            }
+            let update_id = book.seq_id.saturating_add(1);
+            book.seq_id = update_id;
+            book.prev_seq_id = update_id;
+            book.first_update_id = update_id;
+            book.final_update_id = update_id;
+            return publish_raw_book_chunks(&book, self.max_levels, tx);
+        }
+
         // 解析币安快照消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -1079,6 +1117,50 @@ mod tests {
         assert_eq!(get_msg_type(&out[2]), MktMsgType::FundingRate);
     }
 
+    #[test]
+    fn binance_signal_parser_uses_raw_event_time() {
+        let parser = BinanceSignalParser::new(false);
+        let out = parse_one(
+            &parser,
+            br#"{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::TimeSignal);
+        assert_eq!(signal_timestamp(&out[0]), 1_700_000_000_001);
+    }
+
+    #[test]
+    fn binance_kline_parser_uses_raw_closed_kline() {
+        let parser = BinanceKlineParser::new();
+        let out = parse_one(
+            &parser,
+            br#"{"e":"kline","E":1700000000001,"s":"BTCUSDT",
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":true}}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::Kline);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(kline_timestamp(&out[0]), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn binance_snapshot_parser_uses_raw_snapshot_shape() {
+        let parser = BinanceSnapshotParser::with_max_levels(Some(1));
+        let out = parse_one(
+            &parser,
+            br#"{"lastUpdateId":22345,"s":"BTCUSDT",
+            "bids":[["25.0","100"]],"asks":[["25.1","50"]]}"#,
+        );
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(inc_first_update_id(&out[0]), 22346);
+    }
+
     fn msg_symbol(data: &[u8]) -> &str {
         let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
         std::str::from_utf8(&data[8..8 + len]).unwrap()
@@ -1087,6 +1169,42 @@ mod tests {
     fn trade_timestamp(data: &[u8]) -> i64 {
         let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
         let offset = 8 + len + 8;
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
+    }
+
+    fn signal_timestamp(data: &[u8]) -> i64 {
+        i64::from_le_bytes([
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+        ])
+    }
+
+    fn kline_timestamp(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len + 5 * 8;
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
+    }
+
+    fn inc_first_update_id(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len;
         i64::from_le_bytes([
             data[offset],
             data[offset + 1],
