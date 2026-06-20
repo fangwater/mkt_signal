@@ -32,6 +32,124 @@ pub const MODEL_STATUS_BAD_DIM: u8 = 1;
 pub const MODEL_STATUS_INFER_ERR: u8 = 2;
 pub const MODEL_STATUS_DECODE_ERR: u8 = 3;
 
+#[inline]
+fn put_symbol_header(buf: &mut BytesMut, msg_type: MktMsgType, symbol: &str) {
+    buf.put_u32_le(msg_type as u32);
+    buf.put_u32_le(symbol.len() as u32);
+    buf.put(symbol.as_bytes());
+}
+
+#[inline]
+pub fn ask_bid_spread_msg_bytes_borrowed(
+    symbol: &str,
+    timestamp: i64,
+    bid_price: f64,
+    bid_amount: f64,
+    ask_price: f64,
+    ask_amount: f64,
+) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 8 + 32);
+    put_symbol_header(&mut buf, MktMsgType::AskBidSpread, symbol);
+    buf.put_i64_le(timestamp);
+    buf.put_f64_le(bid_price);
+    buf.put_f64_le(bid_amount);
+    buf.put_f64_le(ask_price);
+    buf.put_f64_le(ask_amount);
+    buf.freeze()
+}
+
+#[inline]
+pub fn trade_msg_bytes_borrowed(
+    symbol: &str,
+    id: i64,
+    timestamp: i64,
+    side: char,
+    price: f64,
+    amount: f64,
+) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 8 + 8 + 1 + 7 + 8 + 8);
+    put_symbol_header(&mut buf, MktMsgType::TradeInfo, symbol);
+    buf.put_i64_le(id);
+    buf.put_i64_le(timestamp);
+    buf.put_u8(side as u8);
+    buf.put_slice(&[0u8; 7]);
+    buf.put_f64_le(price);
+    buf.put_f64_le(amount);
+    buf.freeze()
+}
+
+#[inline]
+pub fn kline_msg_bytes_borrowed(
+    symbol: &str,
+    open_price: f64,
+    high_price: f64,
+    low_price: f64,
+    close_price: f64,
+    volume: f64,
+    timestamp: i64,
+) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 5 * 8 + 8 + 8);
+    put_symbol_header(&mut buf, MktMsgType::Kline, symbol);
+    buf.put_f64_le(open_price);
+    buf.put_f64_le(high_price);
+    buf.put_f64_le(low_price);
+    buf.put_f64_le(close_price);
+    buf.put_f64_le(volume);
+    buf.put_i64_le(timestamp);
+    buf.put_u64_le(0);
+    buf.freeze()
+}
+
+#[inline]
+pub fn mark_price_msg_bytes_borrowed(symbol: &str, mark_price: f64, timestamp: i64) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 8 + 8);
+    put_symbol_header(&mut buf, MktMsgType::MarkPrice, symbol);
+    buf.put_f64_le(mark_price);
+    buf.put_i64_le(timestamp);
+    buf.freeze()
+}
+
+#[inline]
+pub fn index_price_msg_bytes_borrowed(symbol: &str, index_price: f64, timestamp: i64) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 8 + 8);
+    put_symbol_header(&mut buf, MktMsgType::IndexPrice, symbol);
+    buf.put_f64_le(index_price);
+    buf.put_i64_le(timestamp);
+    buf.freeze()
+}
+
+#[inline]
+pub fn funding_rate_msg_bytes_borrowed(
+    symbol: &str,
+    funding_rate: f64,
+    next_funding_time: i64,
+    timestamp: i64,
+) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 8 + 8 + 8);
+    put_symbol_header(&mut buf, MktMsgType::FundingRate, symbol);
+    buf.put_f64_le(funding_rate);
+    buf.put_i64_le(next_funding_time);
+    buf.put_i64_le(timestamp);
+    buf.freeze()
+}
+
+#[inline]
+pub fn liquidation_msg_bytes_borrowed(
+    symbol: &str,
+    liquidation_side: char,
+    executed_qty: f64,
+    price: f64,
+    timestamp: i64,
+) -> Bytes {
+    let mut buf = BytesMut::with_capacity(4 + 4 + symbol.len() + 1 + 8 + 8 + 8);
+    put_symbol_header(&mut buf, MktMsgType::LiquidationOrder, symbol);
+    buf.put_u8(liquidation_side as u8);
+    buf.put_f64_le(executed_qty);
+    buf.put_f64_le(price);
+    buf.put_i64_le(timestamp);
+    buf.freeze()
+}
+
 #[allow(dead_code)]
 pub struct MktMsg {
     pub msg_type: MktMsgType,
@@ -1383,7 +1501,7 @@ impl ModelMsg {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelMsg, MODEL_STATUS_OK};
+    use super::*;
 
     #[test]
     fn model_msg_roundtrip_preserves_score_quantile() {
@@ -1407,6 +1525,39 @@ mod tests {
         assert!(!decoded.score_ready);
         assert_eq!(decoded.factor_indices, vec![1, 7]);
         assert_eq!(decoded.factor_values, vec![0.5, -0.25]);
+    }
+
+    #[test]
+    fn borrowed_symbol_encoders_match_struct_bytes() {
+        assert_eq!(
+            ask_bid_spread_msg_bytes_borrowed("BTCUSDT", 11, 1.0, 2.0, 3.0, 4.0),
+            AskBidSpreadMsg::create("BTCUSDT".to_string(), 11, 1.0, 2.0, 3.0, 4.0).to_bytes()
+        );
+        assert_eq!(
+            trade_msg_bytes_borrowed("BTCUSDT", 12, 13, 'B', 4.0, 5.0),
+            TradeMsg::create("BTCUSDT".to_string(), 12, 13, 'B', 4.0, 5.0).to_bytes()
+        );
+        assert_eq!(
+            kline_msg_bytes_borrowed("BTCUSDT", 1.0, 2.0, 0.5, 1.5, 99.0, 14),
+            KlineMsg::create("BTCUSDT".to_string(), 1.0, 2.0, 0.5, 1.5, 99.0, 14)
+                .to_bytes()
+        );
+        assert_eq!(
+            mark_price_msg_bytes_borrowed("BTCUSDT", 25.0, 15),
+            MarkPriceMsg::create("BTCUSDT".to_string(), 25.0, 15).to_bytes()
+        );
+        assert_eq!(
+            index_price_msg_bytes_borrowed("BTCUSDT", 24.9, 16),
+            IndexPriceMsg::create("BTCUSDT".to_string(), 24.9, 16).to_bytes()
+        );
+        assert_eq!(
+            funding_rate_msg_bytes_borrowed("BTCUSDT", 0.0001, 17, 18),
+            FundingRateMsg::create("BTCUSDT".to_string(), 0.0001, 17, 18).to_bytes()
+        );
+        assert_eq!(
+            liquidation_msg_bytes_borrowed("BTCUSDT", 'S', 2.0, 3.0, 19),
+            LiquidationMsg::create("BTCUSDT".to_string(), 'S', 2.0, 3.0, 19).to_bytes()
+        );
     }
 }
 

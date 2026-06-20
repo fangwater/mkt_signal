@@ -2,8 +2,11 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
 use mkt_parsers::msg::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+    ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed,
+    index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed, liquidation_msg_bytes_borrowed,
+    mark_price_msg_bytes_borrowed, trade_msg_bytes_borrowed, AskBidSpreadMsg, FundingRateMsg,
+    IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg, SignalMsg, SignalSource,
+    TradeMsg,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -99,8 +102,8 @@ impl BinanceKlineParser {
 impl Parser for BinanceKlineParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         if let Some(kline) = binance_codec::parse_kline_raw_borrowed(&msg) {
-            let kline_msg = KlineMsg::create(
-                kline.symbol.to_string(),
+            let kline_bytes = kline_msg_bytes_borrowed(
+                kline.symbol,
                 kline.open_price,
                 kline.high_price,
                 kline.low_price,
@@ -108,11 +111,7 @@ impl Parser for BinanceKlineParser {
                 kline.volume,
                 kline.timestamp,
             );
-            return if tx.send(kline_msg.to_bytes()).is_ok() {
-                1
-            } else {
-                0
-            };
+            return if tx.send(kline_bytes).is_ok() { 1 } else { 0 };
         }
         if self.raw_only {
             return 0;
@@ -249,10 +248,7 @@ impl BinanceDerivativesMetricsParser {
                     }
                     if let Some(price) = mark_price.filter(|price| *price > 0.0) {
                         if tx
-                            .send(
-                                MarkPriceMsg::create(symbol.to_string(), price, timestamp_us)
-                                    .to_bytes(),
-                            )
+                            .send(mark_price_msg_bytes_borrowed(symbol, price, timestamp_us))
                             .is_ok()
                         {
                             total_parsed += 1;
@@ -260,10 +256,7 @@ impl BinanceDerivativesMetricsParser {
                     }
                     if let Some(price) = index_price.filter(|price| *price > 0.0) {
                         if tx
-                            .send(
-                                IndexPriceMsg::create(symbol.to_string(), price, timestamp_us)
-                                    .to_bytes(),
-                            )
+                            .send(index_price_msg_bytes_borrowed(symbol, price, timestamp_us))
                             .is_ok()
                         {
                             total_parsed += 1;
@@ -274,13 +267,12 @@ impl BinanceDerivativesMetricsParser {
                     {
                         if tx
                             .send(
-                                FundingRateMsg::create(
-                                    symbol.to_string(),
+                                funding_rate_msg_bytes_borrowed(
+                                    symbol,
                                     funding_rate,
                                     next_funding_time_us,
                                     timestamp_us,
-                                )
-                                .to_bytes(),
+                                ),
                             )
                             .is_ok()
                         {
@@ -298,14 +290,13 @@ impl BinanceDerivativesMetricsParser {
                     if self.symbols.contains(symbol)
                         && tx
                             .send(
-                                LiquidationMsg::create(
-                                    symbol.to_string(),
+                                liquidation_msg_bytes_borrowed(
+                                    symbol,
                                     side,
                                     amount,
                                     price,
                                     timestamp_us,
-                                )
-                                .to_bytes(),
+                                ),
                             )
                             .is_ok()
                     {
@@ -761,19 +752,15 @@ fn publish_raw_trade(
     trade: binance_codec::RawTrade<'_>,
     tx: &mpsc::UnboundedSender<Bytes>,
 ) -> usize {
-    let trade_msg = TradeMsg::create(
-        trade.symbol.to_string(),
+    let trade_bytes = trade_msg_bytes_borrowed(
+        trade.symbol,
         trade.trade_id,
         trade.timestamp_us,
         trade.side,
         trade.price,
         trade.amount,
     );
-    if tx.send(trade_msg.to_bytes()).is_ok() {
-        1
-    } else {
-        0
-    }
+    if tx.send(trade_bytes).is_ok() { 1 } else { 0 }
 }
 
 #[derive(Clone)]
@@ -1184,19 +1171,15 @@ impl Parser for BinanceTradeParser {
 impl Parser for BinanceAskBidSpreadParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         if let Some(bbo) = binance_codec::parse_bbo_raw_borrowed(&msg) {
-            let spread_msg = AskBidSpreadMsg::create(
-                bbo.symbol.to_string(),
+            let spread_bytes = ask_bid_spread_msg_bytes_borrowed(
+                bbo.symbol,
                 bbo.timestamp_us,
                 bbo.bid_price,
                 bbo.bid_amount,
                 bbo.ask_price,
                 bbo.ask_amount,
             );
-            return if tx.send(spread_msg.to_bytes()).is_ok() {
-                1
-            } else {
-                0
-            };
+            return if tx.send(spread_bytes).is_ok() { 1 } else { 0 };
         }
         if self.raw_only {
             return 0;
