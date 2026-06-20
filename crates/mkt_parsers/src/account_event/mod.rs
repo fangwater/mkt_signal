@@ -14,6 +14,7 @@ pub mod binance_basic_account_event_parser;
 pub mod bitget_account_event_parser;
 pub mod bybit_account_event_parser;
 pub mod gate_account_event_parser;
+mod lazy_json;
 pub mod okex_account_event_parser;
 
 pub trait AccountEventSink {

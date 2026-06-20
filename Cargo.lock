@@ -2215,6 +2215,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sonic-rs",
  "symbol_utils",
  "tokio",
 ]

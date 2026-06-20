@@ -2,7 +2,8 @@
 
 use super::{
     account_risk_dedup_key, balance_dedup_key, bitget_order_dedup_key, borrow_interest_dedup_key,
-    position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+    lazy_json, position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key,
+    AccountEventSink, Parser,
 };
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
@@ -12,71 +13,11 @@ use crate::msg::basic_account_msg::{
 use crate::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use bytes::Bytes;
 use log::{debug, warn};
-use serde::Deserialize;
 use serde_json::{Map, Value};
+use sonic_rs::{JsonValueTrait, LazyValue};
 
 #[derive(Clone)]
 pub struct BitgetAccountEventParser;
-
-#[derive(Debug, Deserialize)]
-struct BitgetAccountChannelRow {
-    #[serde(default, rename = "uTime")]
-    u_time: String,
-    #[serde(default, rename = "updatedTime")]
-    updated_time: String,
-    #[serde(default)]
-    ts: String,
-    #[serde(default)]
-    coin: Vec<BitgetAccountChannelCoin>,
-    #[serde(default, rename = "marginCoin")]
-    margin_coin: String,
-    #[serde(default)]
-    balance: String,
-    #[serde(default)]
-    locked: String,
-    #[serde(default)]
-    equity: String,
-    #[serde(default)]
-    debt: String,
-    #[serde(default)]
-    borrow: String,
-    #[serde(default)]
-    debts: String,
-    #[serde(default, rename = "totalEquity")]
-    total_equity: String,
-    #[serde(default, rename = "accountEquity")]
-    account_equity: String,
-    #[serde(default, rename = "effEquity")]
-    eff_equity: String,
-    #[serde(default)]
-    mmr: String,
-    #[serde(default)]
-    imr: String,
-    #[serde(default, rename = "mgnRatio")]
-    mgn_ratio: String,
-    #[serde(default, rename = "totalLiabilities")]
-    total_liabilities: String,
-    #[serde(default, rename = "notionalUsd")]
-    notional_usd: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct BitgetAccountChannelCoin {
-    #[serde(default)]
-    coin: String,
-    #[serde(default)]
-    balance: String,
-    #[serde(default)]
-    locked: String,
-    #[serde(default)]
-    equity: String,
-    #[serde(default)]
-    debt: String,
-    #[serde(default)]
-    borrow: String,
-    #[serde(default)]
-    debts: String,
-}
 
 impl Default for BitgetAccountEventParser {
     fn default() -> Self {
@@ -89,58 +30,45 @@ impl BitgetAccountEventParser {
         Self
     }
 
-    fn parse_account_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
+    fn parse_account_channel<S: AccountEventSink>(&self, root: &LazyValue<'_>, tx: &S) -> usize {
         let mut count = 0;
 
-        let top_timestamp = parse_i64_str_or_num(json_value.get("ts"))
-            .or_else(|| parse_i64_str_or_num(json_value.get("timestamp")))
-            .unwrap_or(0);
+        let top_timestamp = lazy_json::get_i64(root, &["ts", "timestamp"]).unwrap_or(0);
 
-        for account in collect_data_objects(json_value) {
-            let Ok(account_row) =
-                serde_json::from_value::<BitgetAccountChannelRow>(Value::Object(account.clone()))
-            else {
-                continue;
-            };
-            let timestamp = parse_i64_str(&account_row.u_time)
-                .or_else(|| parse_i64_str(&account_row.updated_time))
-                .or_else(|| parse_i64_str(&account_row.ts))
+        for account in lazy_json::collect_data_values(root) {
+            let timestamp = lazy_json::get_i64(&account, &["uTime", "updatedTime", "ts"])
                 .unwrap_or(top_timestamp);
 
-            if !account_row.coin.is_empty() {
-                for coin_item in &account_row.coin {
-                    count += self.emit_account_coin(coin_item, timestamp, tx);
+            if let Some(coins) = account
+                .get("coin")
+                .and_then(|value| value.into_array_iter())
+            {
+                for coin_item in coins
+                    .filter_map(Result::ok)
+                    .filter(|value| value.is_object())
+                {
+                    count += self.emit_account_coin(&coin_item, timestamp, tx);
                 }
-            } else if !account_row.margin_coin.is_empty() {
-                let coin_item = BitgetAccountChannelCoin {
-                    coin: account_row.margin_coin.clone(),
-                    balance: account_row.balance.clone(),
-                    locked: account_row.locked.clone(),
-                    equity: account_row.equity.clone(),
-                    debt: account_row.debt.clone(),
-                    borrow: account_row.borrow.clone(),
-                    debts: account_row.debts.clone(),
-                };
-                count += self.emit_account_coin(&coin_item, timestamp, tx);
+            } else if lazy_json::field_present_non_empty(&account, "marginCoin") {
+                count += self.emit_account_coin(&account, timestamp, tx);
             }
 
             let has_risk_fields = [
-                &account_row.eff_equity,
-                &account_row.total_equity,
-                &account_row.account_equity,
-                &account_row.mmr,
-                &account_row.imr,
-                &account_row.mgn_ratio,
+                "effEquity",
+                "totalEquity",
+                "accountEquity",
+                "mmr",
+                "imr",
+                "mgnRatio",
             ]
             .iter()
-            .any(|value| !value.trim().is_empty());
+            .any(|key| lazy_json::field_present_non_empty(&account, key));
             if has_risk_fields {
-                let actual_equity_usd = parse_f64_str(&account_row.total_equity)
-                    .or_else(|| parse_f64_str(&account_row.account_equity))
-                    .unwrap_or(0.0);
+                let actual_equity_usd =
+                    lazy_json::get_f64(&account, &["totalEquity", "accountEquity"]).unwrap_or(0.0);
                 let adj_equity_usd =
-                    parse_f64_str(&account_row.eff_equity).unwrap_or(actual_equity_usd);
-                let maintenance_margin_usd = parse_f64_str(&account_row.mmr).unwrap_or(0.0);
+                    lazy_json::get_f64(&account, &["effEquity"]).unwrap_or(actual_equity_usd);
+                let maintenance_margin_usd = lazy_json::get_f64(&account, &["mmr"]).unwrap_or(0.0);
                 let margin_ratio = if maintenance_margin_usd.abs() > f64::EPSILON {
                     adj_equity_usd / maintenance_margin_usd
                 } else {
@@ -151,12 +79,12 @@ impl BitgetAccountEventParser {
                     adj_equity_usd,
                     actual_equity_usd,
                     maintenance_margin_usd,
-                    parse_f64_str(&account_row.imr).unwrap_or(0.0),
+                    lazy_json::get_f64(&account, &["imr"]).unwrap_or(0.0),
                     margin_ratio,
-                    parse_f64_str(&account_row.total_liabilities)
+                    lazy_json::get_f64(&account, &["totalLiabilities"])
                         .unwrap_or(0.0)
                         .abs(),
-                    parse_f64_str(&account_row.notional_usd).unwrap_or(0.0),
+                    lazy_json::get_f64(&account, &["notionalUsd"]).unwrap_or(0.0),
                 );
                 let event = BasicAccountEventMsg::create(
                     BasicAccountEventType::AccountRisk,
@@ -177,20 +105,20 @@ impl BitgetAccountEventParser {
 
     fn emit_account_coin<S: AccountEventSink>(
         &self,
-        coin_obj: &BitgetAccountChannelCoin,
+        coin_obj: &LazyValue<'_>,
         timestamp: i64,
         tx: &S,
     ) -> usize {
-        let coin = coin_obj.coin.clone();
+        let coin = lazy_json::get_string(coin_obj, &["coin", "marginCoin"]).unwrap_or_default();
         if coin.is_empty() {
             return 0;
         }
 
         let mut sent = 0;
 
-        let net_balance = parse_f64_str(&coin_obj.balance)
-            .map(|balance| balance + parse_f64_str(&coin_obj.locked).unwrap_or(0.0))
-            .or_else(|| parse_f64_str(&coin_obj.equity))
+        let net_balance = lazy_json::get_f64(coin_obj, &["balance"])
+            .map(|balance| balance + lazy_json::get_f64(coin_obj, &["locked"]).unwrap_or(0.0))
+            .or_else(|| lazy_json::get_f64(coin_obj, &["equity"]))
             .unwrap_or(0.0);
         let (has_liability_fields, borrowed, interest) = bitget_coin_debt(coin_obj);
         let wallet = net_balance + borrowed + interest;
@@ -624,44 +552,44 @@ impl BitgetAccountEventParser {
 
 impl Parser for BitgetAccountEventParser {
     fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
-        let json_str = match std::str::from_utf8(&msg) {
-            Ok(s) => s,
-            Err(_) => return 0,
+        let Some(root) = lazy_json::root_from_bytes(&msg) else {
+            return 0;
         };
 
-        let json_value: Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-
-        if let Some(event) = json_value.get("event").and_then(|v| v.as_str()) {
-            if matches!(event, "login" | "subscribe") {
+        if let Some(event) = lazy_json::get_string(&root, &["event"]) {
+            if matches!(event.as_str(), "login" | "subscribe") {
                 return 0;
             }
             if event == "error" {
+                let json_str = std::str::from_utf8(msg.as_ref()).unwrap_or("<non-utf8>");
                 warn!("Bitget: private ws error payload={}", json_str);
                 return 0;
             }
         }
 
-        let route = json_value
+        let route = root
             .get("arg")
-            .and_then(|v| v.as_object())
-            .and_then(|arg| {
-                arg.get("topic")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| arg.get("channel").and_then(|v| v.as_str()))
-            })
-            .or_else(|| json_value.get("topic").and_then(|v| v.as_str()))
-            .unwrap_or("");
+            .and_then(|arg| lazy_json::get_string(&arg, &["topic", "channel"]))
+            .or_else(|| lazy_json::get_string(&root, &["topic"]))
+            .unwrap_or_default();
 
-        match route {
-            "account" => self.parse_account_channel(&json_value, tx),
-            "position" | "positions" => self.parse_positions_channel(&json_value, tx),
-            "order" | "orders" => self.parse_orders_channel(&json_value, tx),
-            "fill" | "fills" => self.parse_fill_channel(&json_value, tx),
-            "fast-fill" => self.parse_fast_fill_channel(&json_value, tx),
+        match route.as_str() {
+            "account" => self.parse_account_channel(&root, tx),
+            "position" | "positions" | "order" | "orders" | "fill" | "fills" | "fast-fill" => {
+                let json_value: Value = match serde_json::from_slice(msg.as_ref()) {
+                    Ok(v) => v,
+                    Err(_) => return 0,
+                };
+                match route.as_str() {
+                    "position" | "positions" => self.parse_positions_channel(&json_value, tx),
+                    "order" | "orders" => self.parse_orders_channel(&json_value, tx),
+                    "fill" | "fills" => self.parse_fill_channel(&json_value, tx),
+                    "fast-fill" => self.parse_fast_fill_channel(&json_value, tx),
+                    _ => 0,
+                }
+            }
             _ => {
+                let json_str = std::str::from_utf8(msg.as_ref()).unwrap_or("<non-utf8>");
                 if !route.is_empty() {
                     debug!("Bitget: ignored route={} payload={}", route, json_str);
                 } else {
@@ -729,35 +657,17 @@ fn parse_i64_str_or_num(v: Option<&Value>) -> Option<i64> {
     })
 }
 
-fn parse_f64_str(v: &str) -> Option<f64> {
-    let s = v.trim();
-    if s.is_empty() {
-        return None;
-    }
-    s.parse::<f64>().ok()
-}
-
-fn bitget_coin_debt(coin_obj: &BitgetAccountChannelCoin) -> (bool, f64, f64) {
-    let has_liability_fields = !coin_obj.borrow.trim().is_empty()
-        || !coin_obj.debt.trim().is_empty()
-        || !coin_obj.debts.trim().is_empty();
-    let debt_total = parse_f64_str(&coin_obj.debts)
-        .or_else(|| parse_f64_str(&coin_obj.debt))
-        .unwrap_or(0.0);
-    if let Some(borrowed) = parse_f64_str(&coin_obj.borrow) {
+fn bitget_coin_debt(coin_obj: &LazyValue<'_>) -> (bool, f64, f64) {
+    let has_liability_fields = ["borrow", "debt", "debts"]
+        .iter()
+        .any(|key| lazy_json::field_present_non_empty(coin_obj, key));
+    let debt_total = lazy_json::get_f64(coin_obj, &["debts", "debt"]).unwrap_or(0.0);
+    if let Some(borrowed) = lazy_json::get_f64(coin_obj, &["borrow"]) {
         let interest = (debt_total - borrowed).max(0.0);
         (has_liability_fields, borrowed, interest)
     } else {
         (has_liability_fields, debt_total, 0.0)
     }
-}
-
-fn parse_i64_str(v: &str) -> Option<i64> {
-    let s = v.trim();
-    if s.is_empty() {
-        return None;
-    }
-    s.parse::<i64>().ok()
 }
 
 #[cfg(test)]

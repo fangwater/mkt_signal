@@ -1,8 +1,8 @@
 //! OKX 账户事件解析器（余额 / 持仓 / 订单）
 
 use super::{
-    account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, okex_order_dedup_key,
-    position_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser,
+    account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, lazy_json,
+    okex_order_dedup_key, position_dedup_key, trade_lite_dedup_key, AccountEventSink, Parser,
 };
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
@@ -10,6 +10,7 @@ use crate::msg::basic_account_msg::{
 };
 use bytes::Bytes;
 use log::{debug, info, warn};
+use sonic_rs::JsonValueTrait;
 use symbol_utils::TradingVenue;
 
 #[derive(Clone)]
@@ -452,33 +453,37 @@ impl OkexAccountEventParser {
 
 impl Parser for OkexAccountEventParser {
     fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
-        let json_str = match std::str::from_utf8(&msg) {
-            Ok(s) => s,
-            Err(_) => return 0,
+        let Some(root) = lazy_json::root_from_bytes(&msg) else {
+            return 0;
         };
 
-        let json_value: serde_json::Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-
-        let channel = json_value
+        let channel = root
             .get("arg")
-            .and_then(|arg| arg.get("channel"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .and_then(|arg| lazy_json::get_string(&arg, &["channel"]))
+            .unwrap_or_default();
 
-        match channel {
-            "balance_and_position" => self.parse_balance_and_position(&json_value, tx),
-            "orders" => self.parse_orders(&json_value, tx),
-            "account" => self.parse_account(&json_value, tx),
-            "fills" => self.parse_fills_channel(&json_value, tx),
+        match channel.as_str() {
+            "balance_and_position" | "orders" | "account" | "fills" => {
+                let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                    Ok(v) => v,
+                    Err(_) => return 0,
+                };
+                match channel.as_str() {
+                    "balance_and_position" => self.parse_balance_and_position(&json_value, tx),
+                    "orders" => self.parse_orders(&json_value, tx),
+                    "account" => self.parse_account(&json_value, tx),
+                    "fills" => self.parse_fills_channel(&json_value, tx),
+                    _ => 0,
+                }
+            }
             "positions" => {
+                let json_str = std::str::from_utf8(msg.as_ref()).unwrap_or("<non-utf8>");
                 debug!("OKX: ignored channel={} payload={}", channel, json_str);
                 0
             }
             _ => {
-                if json_value.get("event").is_some() {
+                let json_str = std::str::from_utf8(msg.as_ref()).unwrap_or("<non-utf8>");
+                if root.get("event").is_some() {
                     debug!("OKX: event message: {}", json_str);
                 } else {
                     warn!("OKX: Unknown channel: {}", channel);

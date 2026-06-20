@@ -103,7 +103,8 @@
 
 use super::{
     account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, gate_order_dedup_key,
-    position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+    lazy_json, position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key,
+    AccountEventSink, Parser,
 };
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
@@ -1118,28 +1119,20 @@ impl GateAccountEventParser {
     }
 
     pub fn parse_with_report<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> GateParseReport {
-        let json_str = match std::str::from_utf8(&msg) {
-            Ok(s) => s,
-            Err(_) => return GateParseReport::incomplete(0),
+        let Some(root) = lazy_json::root_from_bytes(&msg) else {
+            return GateParseReport::incomplete(0);
         };
 
-        let json_value: serde_json::Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return GateParseReport::incomplete(0),
-        };
+        let channel = lazy_json::get_string(&root, &["channel"]).unwrap_or_default();
+        let event = lazy_json::get_string(&root, &["event"]).unwrap_or_default();
 
-        let channel = json_value
-            .get("channel")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let event = json_value
-            .get("event")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        match channel {
+        match channel.as_str() {
             "unified.asset_detail" => {
                 if event == "update" {
+                    let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                        Ok(v) => v,
+                        Err(_) => return GateParseReport::incomplete(0),
+                    };
                     self.parse_unified_asset_detail(&json_value, tx)
                 } else {
                     GateParseReport::incomplete(0)
@@ -1147,6 +1140,10 @@ impl GateAccountEventParser {
             }
             "unified.assets" => {
                 if event == "update" {
+                    let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                        Ok(v) => v,
+                        Err(_) => return GateParseReport::incomplete(0),
+                    };
                     self.parse_unified_assets(&json_value, tx)
                 } else {
                     GateParseReport::incomplete(0)
@@ -1154,6 +1151,10 @@ impl GateAccountEventParser {
             }
             "spot.orders_v2" | "spot.orders" => {
                 if event == "update" {
+                    let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                        Ok(v) => v,
+                        Err(_) => return GateParseReport::incomplete(0),
+                    };
                     self.parse_spot_orders_v2(&json_value, tx)
                 } else {
                     GateParseReport::incomplete(0)
@@ -1161,6 +1162,10 @@ impl GateAccountEventParser {
             }
             "futures.orders" => {
                 if event == "update" {
+                    let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                        Ok(v) => v,
+                        Err(_) => return GateParseReport::incomplete(0),
+                    };
                     self.parse_futures_orders(&json_value, tx)
                 } else {
                     GateParseReport::incomplete(0)
@@ -1168,6 +1173,10 @@ impl GateAccountEventParser {
             }
             "futures.usertrades" => {
                 if event == "update" {
+                    let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                        Ok(v) => v,
+                        Err(_) => return GateParseReport::incomplete(0),
+                    };
                     self.parse_futures_usertrades(&json_value, tx)
                 } else {
                     GateParseReport::incomplete(0)
@@ -1175,6 +1184,10 @@ impl GateAccountEventParser {
             }
             "futures.positions" => {
                 if event == "update" {
+                    let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                        Ok(v) => v,
+                        Err(_) => return GateParseReport::incomplete(0),
+                    };
                     self.parse_futures_positions(&json_value, tx)
                 } else {
                     GateParseReport::incomplete(0)
@@ -1182,7 +1195,7 @@ impl GateAccountEventParser {
             }
             "unified.pong" | "spot.pong" | "futures.pong" => GateParseReport::complete(0),
             _ => {
-                if json_value.get("event").is_some() {
+                if !event.is_empty() {
                     debug!(
                         "Gate: unsupported event channel={} event={}",
                         channel, event
