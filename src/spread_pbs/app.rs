@@ -1962,6 +1962,12 @@ fn process_incremental_view(
     }
 
     let total_levels = book.bids_count + book.asks_count;
+    let Some(mut bids_iter) = mkt_parsers::binance::raw_levels_iter(book.bids_raw) else {
+        return;
+    };
+    let Some(mut asks_iter) = mkt_parsers::binance::raw_levels_iter(book.asks_raw) else {
+        return;
+    };
     match max_levels {
         Some(max) if total_levels > max && max > 0 => {
             let total_chunks = level_chunk_count(book.bids_count, book.asks_count, max);
@@ -1978,9 +1984,9 @@ fn process_incremental_view(
                     publisher,
                     &book,
                     slot_index,
-                    bids_start,
+                    &mut bids_iter,
                     bids_count,
-                    asks_start,
+                    &mut asks_iter,
                     asks_count,
                     chunk_idx,
                     total_chunks,
@@ -1997,9 +2003,9 @@ fn process_incremental_view(
                 publisher,
                 &book,
                 slot_index,
-                0,
+                &mut bids_iter,
                 book.bids_count,
-                0,
+                &mut asks_iter,
                 book.asks_count,
                 0,
                 1,
@@ -2076,19 +2082,13 @@ fn publish_incremental_view_chunk(
     publisher: &Rc<SpreadIncrementalPublisher>,
     book: &mkt_parsers::binance::RawBookView<'_>,
     slot_index: Option<usize>,
-    bids_start: usize,
+    bids: &mut mkt_parsers::binance::RawLevelIter<'_>,
     bids_count: usize,
-    asks_start: usize,
+    asks: &mut mkt_parsers::binance::RawLevelIter<'_>,
     asks_count: usize,
     chunk_idx: usize,
     total_chunks: usize,
 ) -> bool {
-    let Some(bids) = mkt_parsers::binance::raw_levels_iter(book.bids_raw) else {
-        return false;
-    };
-    let Some(asks) = mkt_parsers::binance::raw_levels_iter(book.asks_raw) else {
-        return false;
-    };
     let publish_result = if let Some(slot_index) = slot_index {
         publisher.publish_chunk_from_iter_for_slot(
             slot_index,
@@ -2097,9 +2097,9 @@ fn publish_incremental_view_chunk(
             book.final_update_id,
             book.timestamp_us,
             book.is_snapshot,
-            bids.skip(bids_start).take(bids_count),
+            bids.by_ref().take(bids_count),
             bids_count,
-            asks.skip(asks_start).take(asks_count),
+            asks.by_ref().take(asks_count),
             asks_count,
             chunk_idx,
             total_chunks,
@@ -2111,9 +2111,9 @@ fn publish_incremental_view_chunk(
             book.final_update_id,
             book.timestamp_us,
             book.is_snapshot,
-            bids.skip(bids_start).take(bids_count),
+            bids.by_ref().take(bids_count),
             bids_count,
-            asks.skip(asks_start).take(asks_count),
+            asks.by_ref().take(asks_count),
             asks_count,
             chunk_idx,
             total_chunks,
