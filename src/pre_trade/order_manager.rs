@@ -10,7 +10,7 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 pub use symbol_utils::symbol_util::gate_currency_pair_from_symbol;
 use symbol_utils::symbol_util::{
-    extract_assets_from_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
+    extract_assets_from_internal_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
 use trade_engine::bybit::{
     BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
@@ -502,7 +502,7 @@ impl PreTradeOrderRequestExt for Order {
                 let local_create_ts = get_timestamp_us();
                 // ===== 余额检查和日志记录 =====
                 // 提取 base asset 和 quote asset
-                let (base_asset, quote_asset) = extract_assets_from_symbol(&self.symbol);
+                let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&self.symbol);
 
                 // 根据 side 确定需要检查的资产和所需金额
                 let (check_asset, required_amount) = match self.side {
@@ -809,7 +809,7 @@ mod tests {
         OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
         TradeUpdateSkipReason,
     };
-    use order_common::TradingVenue;
+    use order_common::{BinanceAccountMode, TradingVenue};
     use serde_json::Value;
     use trade_engine::trade_request::{
         BitgetCancelOrderParams, BitgetNewOrderParams, GateFuturesCancelOrderRequest,
@@ -969,6 +969,39 @@ mod tests {
         assert_eq!(params.symbol, "CCUSDT");
         assert_eq!(params.side, Side::Buy);
         assert!(params.is_leverage);
+    }
+
+    #[test]
+    fn binance_margin_open_uses_normalized_symbol_for_asset_split() {
+        let mut mgr = OrderManager::new(Some(BinanceAccountMode::Unified));
+        let (exchange, req_bin) = mgr
+            .create_open_order_request_bytes(
+                TradingVenue::BinanceMargin,
+                45,
+                OrderType::Limit,
+                "BTC-USDT".to_string(),
+                Side::Buy,
+                0.01,
+                50000.0,
+                Some(OrderQuantizedValue::new(1, -2, 1)),
+                Some(OrderQuantizedValue::new(1, 0, 50000)),
+                false,
+                1.0,
+                123456,
+                7,
+                654321,
+                0,
+                0,
+            )
+            .expect("binance margin open request should build");
+
+        assert_eq!(exchange, "binance");
+        assert_eq!(
+            mgr.get(45).expect("order should be inserted").symbol,
+            "BTCUSDT"
+        );
+        let msg = TradeRequestMsg::parse(req_bin.as_ref()).expect("trade request should parse");
+        assert_eq!(msg.req_type, TradeRequestType::BinanceNewMarginOrder);
     }
 
     #[test]
