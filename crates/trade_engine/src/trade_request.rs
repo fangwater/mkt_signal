@@ -4,6 +4,7 @@ use log::debug;
 use order_common::{OrderType, Side};
 use serde_json::{json, Value};
 use signal_common::tick_math::QuantizedValue;
+use std::fmt::Write as _;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::time::Instant;
@@ -614,34 +615,53 @@ impl BinanceNewOrderParams {
             self.order_type.as_str()
         };
 
-        let mut params = Vec::with_capacity(8);
-        params.push(format!("symbol={}", self.symbol));
-        params.push(format!("side={}", self.side.as_str()));
-        params.push(format!("type={order_type}"));
-        params.push(format!("quantity={}", self.quantity_qv.decimal_string()));
+        let quantity = self.quantity_qv.decimal_string();
+        let price = self
+            .order_type
+            .is_limit()
+            .then(|| self.price_qv.decimal_string());
+        let mut params = String::with_capacity(
+            self.symbol.len() + quantity.len() + price.as_ref().map_or(0, String::len) + 128,
+        );
+        write!(
+            &mut params,
+            "symbol={}&side={}&type={}&quantity={}",
+            self.symbol,
+            self.side.as_str(),
+            order_type,
+            quantity
+        )
+        .expect("write to String cannot fail");
         if !is_margin {
-            params.push(format!("reduceOnly={}", self.reduce_only));
+            write!(&mut params, "&reduceOnly={}", self.reduce_only)
+                .expect("write to String cannot fail");
         }
-        params.push(format!("newClientOrderId={client_order_id}"));
+        write!(&mut params, "&newClientOrderId={client_order_id}")
+            .expect("write to String cannot fail");
         if self.ws_response_full {
-            params.push("newOrderRespType=FULL".to_string());
+            params.push_str("&newOrderRespType=FULL");
         } else if is_ws_um && self.ws_um_response_result {
-            params.push("newOrderRespType=RESULT".to_string());
+            params.push_str("&newOrderRespType=RESULT");
         }
         if is_margin && self.margin_buy {
-            params.push("sideEffectType=MARGIN_BUY".to_string());
+            params.push_str("&sideEffectType=MARGIN_BUY");
         }
         if self.order_type.is_limit() {
             if is_margin {
                 if !is_ws_margin {
-                    params.push("timeInForce=GTC".to_string());
+                    params.push_str("&timeInForce=GTC");
                 }
             } else {
-                params.push("timeInForce=GTX".to_string());
+                params.push_str("&timeInForce=GTX");
             }
-            params.push(format!("price={}", self.price_qv.decimal_string()));
+            write!(
+                &mut params,
+                "&price={}",
+                price.expect("limit order price should be pre-rendered")
+            )
+            .expect("write to String cannot fail");
         }
-        params.join("&")
+        params
     }
 }
 
