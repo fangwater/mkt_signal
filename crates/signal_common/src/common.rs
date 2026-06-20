@@ -84,6 +84,14 @@ pub trait SignalBytes: Sized {
     /// Serialize the signal to bytes
     fn to_bytes(&self) -> Bytes;
 
+    /// Serialize the signal into an existing buffer.
+    ///
+    /// Hot paths should override this to avoid allocating a temporary `Bytes`.
+    fn write_to(&self, buf: &mut BytesMut) {
+        let bytes = self.to_bytes();
+        buf.put_slice(bytes.as_ref());
+    }
+
     /// Deserialize the signal from bytes
     fn from_bytes(bytes: Bytes) -> Result<Self, String>;
 }

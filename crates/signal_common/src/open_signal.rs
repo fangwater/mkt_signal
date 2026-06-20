@@ -702,12 +702,16 @@ impl<'a> MmOpenCtxView<'a> {
 impl SignalBytes for ArbOpenCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
+        self.write_to(&mut buf);
+        buf.freeze()
+    }
 
+    fn write_to(&self, buf: &mut BytesMut) {
         // Opening leg
-        write_leg(&mut buf, &self.opening_leg, &self.opening_symbol);
+        write_leg(buf, &self.opening_leg, &self.opening_symbol);
 
         // Hedging leg
-        write_leg(&mut buf, &self.hedging_leg, &self.hedging_symbol);
+        write_leg(buf, &self.hedging_leg, &self.hedging_symbol);
 
         // Trade parameters
         buf.put_u8(self.side);
@@ -729,8 +733,6 @@ impl SignalBytes for ArbOpenCtx {
         let from_key_len = self.from_key.len() as u32;
         buf.put_u32_le(from_key_len);
         buf.put_slice(&self.from_key);
-
-        buf.freeze()
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
@@ -797,9 +799,13 @@ impl SignalBytes for ArbOpenCtx {
 impl SignalBytes for MmOpenCtx {
     fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
+        self.write_to(&mut buf);
+        buf.freeze()
+    }
 
+    fn write_to(&self, buf: &mut BytesMut) {
         // Opening leg
-        write_leg(&mut buf, &self.opening_leg, &self.opening_symbol);
+        write_leg(buf, &self.opening_leg, &self.opening_symbol);
 
         // Trade parameters
         buf.put_u8(self.side);
@@ -819,8 +825,6 @@ impl SignalBytes for MmOpenCtx {
         let from_key_len = self.from_key.len() as u32;
         buf.put_u32_le(from_key_len);
         buf.put_slice(&self.from_key);
-
-        buf.freeze()
     }
 
     fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
@@ -902,6 +906,10 @@ mod tests {
         ctx.set_from_key(b"arb-from-key".to_vec());
 
         let bytes = ctx.to_bytes();
+        let mut written = BytesMut::new();
+        ctx.write_to(&mut written);
+        assert_eq!(written.as_ref(), bytes.as_ref());
+
         let owned = ArbOpenCtx::from_bytes(bytes.clone()).expect("owned parse");
         let view = ArbOpenCtxView::from_bytes(bytes.as_ref()).expect("view parse");
 
@@ -935,6 +943,10 @@ mod tests {
         ctx.set_from_key(b"mm-from-key".to_vec());
 
         let bytes = ctx.to_bytes();
+        let mut written = BytesMut::new();
+        ctx.write_to(&mut written);
+        assert_eq!(written.as_ref(), bytes.as_ref());
+
         let owned = MmOpenCtx::from_bytes(bytes.clone()).expect("owned parse");
         let view = MmOpenCtxView::from_bytes(bytes.as_ref()).expect("view parse");
 

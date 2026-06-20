@@ -3228,7 +3228,6 @@ fn emit_spread_arb_open_signals(
         SignalType::ArbOpen,
         batch_ts,
         contexts,
-        |ctx| ctx.to_bytes(),
     )?;
 
     log::info!(
@@ -3419,7 +3418,6 @@ fn emit_spread_arb_close_signals(
         SignalType::ArbClose,
         batch_ts,
         contexts,
-        |ctx| ctx.to_bytes(),
     )?;
 
     log::info!(
@@ -3757,7 +3755,6 @@ fn emit_funding_open_close_signals(
         signal_type.clone(),
         batch_ts,
         contexts,
-        |ctx| ctx.to_bytes(),
     )?;
 
     log::info!(
