@@ -414,21 +414,22 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
         }
     }
 
-    let stream_kind = if event_kind.is_none() {
-        payload
-            .stream
-            .and_then(|stream_value| stream_value.string_str())
-            .and_then(raw_bbo_stream_kind)
-    } else {
-        None
-    };
-    let inferred_kind = infer_raw_bbo_kind(bid, bid_amount, ask, ask_amount);
-    if let (Some(stream_kind), Some(inferred_kind)) = (stream_kind, inferred_kind) {
-        if stream_kind != inferred_kind {
-            return None;
+    let kind = match event_kind {
+        Some(kind) => kind,
+        None => {
+            let stream_kind = payload
+                .stream
+                .and_then(|stream_value| stream_value.string_str())
+                .and_then(raw_bbo_stream_kind);
+            let inferred_kind = infer_raw_bbo_kind(bid, bid_amount, ask, ask_amount);
+            if let (Some(stream_kind), Some(inferred_kind)) = (stream_kind, inferred_kind) {
+                if stream_kind != inferred_kind {
+                    return None;
+                }
+            }
+            inferred_kind.or(stream_kind)?
         }
-    }
-    let kind = event_kind.or(inferred_kind).or(stream_kind)?;
+    };
     let symbol = match symbol {
         Some(symbol) => symbol,
         None => payload
