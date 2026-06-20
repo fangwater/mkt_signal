@@ -1369,14 +1369,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
                     if cancel_ctx.strategy_id > 0 {
                         let strategy_id = cancel_ctx.strategy_id;
-                        let exists = { strategy_mgr.borrow().contains(strategy_id) };
-                        if !exists {
-                            debug!(
-                            "ArbCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
-                            strategy_id, symbol, cancel_ctx.trigger_ts
-                        );
-                            return;
-                        }
                         let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                         if let Some(mut strategy) = strategy_opt {
                             let should_handle = strategy
@@ -1402,6 +1394,11 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                             if strategy.is_active() {
                                 strategy_mgr.borrow_mut().insert(strategy);
                             }
+                        } else {
+                            debug!(
+                            "ArbCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
+                            strategy_id, symbol, cancel_ctx.trigger_ts
+                        );
                         }
                         return;
                     }
@@ -1419,10 +1416,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         return;
                     }
                     for strategy_id in candidate_ids {
-                        let exists = { strategy_mgr.borrow().contains(strategy_id) };
-                        if !exists {
-                            continue;
-                        }
                         let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                         if let Some(mut strategy) = strategy_opt {
                             let should_handle = strategy
@@ -1615,10 +1608,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
                 hedge_ctx.set_hedging_symbol(&hedging_symbol);
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                if !strategy_mgr.borrow().contains(strategy_id) {
-                    warn!("ArbHedge: 策略 id={} 不存在", strategy_id);
-                    return;
-                }
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     if let Some(arb_hedge) =
@@ -1635,6 +1624,8 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     if strategy.is_active() {
                         strategy_mgr.borrow_mut().insert(strategy);
                     }
+                } else {
+                    warn!("ArbHedge: 策略 id={} 不存在", strategy_id);
                 }
             }
             Err(err) => warn!("failed to decode ArbHedge context: {err}"),
@@ -1851,14 +1842,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 if cancel_ctx.strategy_id > 0 {
                     let strategy_id = cancel_ctx.strategy_id;
-                    let exists = { strategy_mgr.borrow().contains(strategy_id) };
-                    if !exists {
-                        debug!(
-                            "MMCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
-                            strategy_id, symbol, cancel_ctx.trigger_ts
-                        );
-                        return;
-                    }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
                         let handled = if let Some(mm_open) = strategy
@@ -1875,6 +1858,11 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         } else if !handled {
                             strategy_mgr.borrow_mut().insert(strategy);
                         }
+                    } else {
+                        debug!(
+                            "MMCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
+                            strategy_id, symbol, cancel_ctx.trigger_ts
+                        );
                     }
                     return;
                 }
@@ -1891,10 +1879,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     return;
                 }
                 for strategy_id in candidate_ids {
-                    let exists = { strategy_mgr.borrow().contains(strategy_id) };
-                    if !exists {
-                        continue;
-                    }
                     let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                     if let Some(mut strategy) = strategy_opt {
                         let handled = if let Some(mm_open) = strategy

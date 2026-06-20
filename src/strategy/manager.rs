@@ -479,7 +479,6 @@ impl StrategyManager {
 
     /// 移除策略
     pub fn remove(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
-        self.strategy_queue.retain(|id| *id != strategy_id);
         let removed = self.strategies.remove(&strategy_id);
         if removed.is_some() {
             self.unregister_mm_open_price_entry(strategy_id);
@@ -507,8 +506,10 @@ impl StrategyManager {
 
     /// 取出指定策略，调用方处理后可重新插入
     pub fn take(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
-        self.strategy_queue.retain(|id| *id != strategy_id);
         let removed = self.strategies.remove(&strategy_id);
+        if removed.is_none() {
+            return None;
+        }
         self.unregister_mm_open_price_entry(strategy_id);
         self.unregister_arb_open_price_entry(strategy_id);
         if let Some(symbol) = removed
@@ -527,8 +528,12 @@ impl StrategyManager {
 
     /// 按当前调度队列顺序取出下一个策略，调用方处理后可重新插入。
     pub fn take_next_queued(&mut self) -> Option<Box<dyn Strategy>> {
-        let strategy_id = self.strategy_queue.pop_front()?;
-        self.take(strategy_id)
+        while let Some(strategy_id) = self.strategy_queue.pop_front() {
+            if let Some(strategy) = self.take(strategy_id) {
+                return Some(strategy);
+            }
+        }
+        None
     }
 
     /// 遍历所有策略 id
