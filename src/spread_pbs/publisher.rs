@@ -787,6 +787,16 @@ fn seed_derivatives_prefixes(
     Ok(())
 }
 
+fn derivatives_prefixes_for_slot<'a>(
+    cache: &mut FastHashMap<String, DerivativesPayloadPrefixes>,
+    by_index: &'a mut Vec<Option<DerivativesPayloadPrefixes>>,
+    symbol: &str,
+    index: usize,
+) -> Result<&'a DerivativesPayloadPrefixes> {
+    ensure_derivatives_prefix_at_index(cache, by_index, symbol, index)?;
+    Ok(by_index[index].as_ref().expect("prefix inserted"))
+}
+
 fn write_price_payload_with_prefix(
     buf: &mut [u8],
     prefix: &DerivativePayloadPrefix,
@@ -1711,6 +1721,129 @@ impl SpreadDerivativesPublisher {
                 ))
             },
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_mark_price_bundle_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        mark_price: Option<f64>,
+        index_price: Option<f64>,
+        funding_rate: Option<f64>,
+        next_funding_time: Option<i64>,
+        timestamp: i64,
+    ) -> Result<usize> {
+        let mut count = 0usize;
+        let cache = self.derivatives_prefix_by_index.borrow();
+        if let Some(Some(prefixes)) = cache.get(slot_index) {
+            if let Some(price) = mark_price {
+                publish_write(
+                    &self.publisher,
+                    prefixes.mark.total_len,
+                    "derivatives",
+                    |buf| {
+                        Ok(write_price_payload_with_prefix(
+                            buf,
+                            &prefixes.mark,
+                            price,
+                            timestamp,
+                        ))
+                    },
+                )?;
+                count += 1;
+            }
+            if let Some(price) = index_price {
+                publish_write(
+                    &self.publisher,
+                    prefixes.index.total_len,
+                    "derivatives",
+                    |buf| {
+                        Ok(write_price_payload_with_prefix(
+                            buf,
+                            &prefixes.index,
+                            price,
+                            timestamp,
+                        ))
+                    },
+                )?;
+                count += 1;
+            }
+            if let (Some(rate), Some(next_time)) = (funding_rate, next_funding_time) {
+                publish_write(
+                    &self.publisher,
+                    prefixes.funding.total_len,
+                    "derivatives",
+                    |buf| {
+                        Ok(write_funding_rate_payload_with_prefix(
+                            buf,
+                            &prefixes.funding,
+                            rate,
+                            next_time,
+                            timestamp,
+                        ))
+                    },
+                )?;
+                count += 1;
+            }
+            return Ok(count);
+        }
+        drop(cache);
+
+        let mut by_symbol = self.derivatives_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.derivatives_prefix_by_index.borrow_mut();
+        let prefixes =
+            derivatives_prefixes_for_slot(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        if let Some(price) = mark_price {
+            publish_write(
+                &self.publisher,
+                prefixes.mark.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_price_payload_with_prefix(
+                        buf,
+                        &prefixes.mark,
+                        price,
+                        timestamp,
+                    ))
+                },
+            )?;
+            count += 1;
+        }
+        if let Some(price) = index_price {
+            publish_write(
+                &self.publisher,
+                prefixes.index.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_price_payload_with_prefix(
+                        buf,
+                        &prefixes.index,
+                        price,
+                        timestamp,
+                    ))
+                },
+            )?;
+            count += 1;
+        }
+        if let (Some(rate), Some(next_time)) = (funding_rate, next_funding_time) {
+            publish_write(
+                &self.publisher,
+                prefixes.funding.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_funding_rate_payload_with_prefix(
+                        buf,
+                        &prefixes.funding,
+                        rate,
+                        next_time,
+                        timestamp,
+                    ))
+                },
+            )?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     pub fn publish_liquidation(

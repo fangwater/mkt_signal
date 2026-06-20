@@ -543,52 +543,31 @@ fn publish_raw_derivative(
             next_funding_time_us,
             timestamp_us,
         } => {
+            let mark_price = mark_price.filter(|price| *price > 0.0);
+            let index_price = index_price.filter(|price| *price > 0.0);
+            if let Some(slot_index) = slot_index {
+                return publisher.publish_mark_price_bundle_for_slot(
+                    slot_index,
+                    symbol,
+                    mark_price,
+                    index_price,
+                    funding_rate,
+                    next_funding_time_us,
+                    timestamp_us,
+                );
+            }
+
             let mut count = 0usize;
-            if let Some(price) = mark_price.filter(|price| *price > 0.0) {
-                if let Some(slot_index) = slot_index {
-                    publisher.publish_mark_price_for_slot(
-                        slot_index,
-                        symbol,
-                        price,
-                        timestamp_us,
-                    )?;
-                } else {
-                    publisher.publish_mark_price(symbol, price, timestamp_us)?;
-                }
+            if let Some(price) = mark_price {
+                publisher.publish_mark_price(symbol, price, timestamp_us)?;
                 count += 1;
             }
-            if let Some(price) = index_price.filter(|price| *price > 0.0) {
-                if let Some(slot_index) = slot_index {
-                    publisher.publish_index_price_for_slot(
-                        slot_index,
-                        symbol,
-                        price,
-                        timestamp_us,
-                    )?;
-                } else {
-                    publisher.publish_index_price(symbol, price, timestamp_us)?;
-                }
+            if let Some(price) = index_price {
+                publisher.publish_index_price(symbol, price, timestamp_us)?;
                 count += 1;
             }
-            if let (Some(funding_rate), Some(next_funding_time_us)) =
-                (funding_rate, next_funding_time_us)
-            {
-                if let Some(slot_index) = slot_index {
-                    publisher.publish_funding_rate_for_slot(
-                        slot_index,
-                        symbol,
-                        funding_rate,
-                        next_funding_time_us,
-                        timestamp_us,
-                    )?;
-                } else {
-                    publisher.publish_funding_rate(
-                        symbol,
-                        funding_rate,
-                        next_funding_time_us,
-                        timestamp_us,
-                    )?;
-                }
+            if let (Some(rate), Some(next_time)) = (funding_rate, next_funding_time_us) {
+                publisher.publish_funding_rate(symbol, rate, next_time, timestamp_us)?;
                 count += 1;
             }
             Ok(count)
