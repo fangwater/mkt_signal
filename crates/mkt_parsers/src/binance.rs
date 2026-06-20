@@ -1331,6 +1331,17 @@ fn parse_derivative_object_scanner<'a>(
             b"o" => liquidation = Some(parse_liquidation_object_scanner(scanner)?),
             _ => scanner.skip_value()?,
         }
+        if event == Some(b"markPriceUpdate")
+            && symbol.is_some()
+            && timestamp_us.is_some()
+            && mark_price.is_some()
+            && index_price.is_some()
+            && funding_rate.is_some()
+            && next_funding_time_us.is_some()
+        {
+            scanner.skip_rest_of_object()?;
+            break;
+        }
     }
 
     match event? {
@@ -1382,6 +1393,15 @@ fn parse_liquidation_object_scanner<'a>(
             b"ap" => price = Some(scanner.take_value()?.f64()?),
             b"T" => order_timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
             _ => scanner.skip_value()?,
+        }
+        if symbol.is_some()
+            && side.is_some()
+            && amount.is_some()
+            && price.is_some()
+            && order_timestamp_us.is_some()
+        {
+            scanner.skip_rest_of_object()?;
+            break;
         }
     }
 
@@ -1984,6 +2004,31 @@ impl<'a> JsonObjectScanner<'a> {
             match self.raw.get(self.pos) {
                 Some(b'{') | Some(b',') => self.pos += 1,
                 _ => break,
+            }
+        }
+    }
+
+    fn skip_rest_of_object(&mut self) -> Option<()> {
+        loop {
+            self.skip_ws();
+            match self.raw.get(self.pos)? {
+                b',' => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    self.take_string_inner()?;
+                    self.skip_ws();
+                    if self.raw.get(self.pos) != Some(&b':') {
+                        return None;
+                    }
+                    self.pos += 1;
+                    self.skip_ws();
+                    self.skip_value()?;
+                }
+                b'}' => {
+                    self.pos += 1;
+                    return Some(());
+                }
+                _ => return None,
             }
         }
     }
