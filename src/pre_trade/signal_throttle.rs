@@ -1,11 +1,12 @@
 use crate::pre_trade::order_manager::Side;
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+
 use log::{debug, info, warn};
-use once_cell::sync::Lazy;
 use order_common::trade_error_code::{bybit, gate};
-use parking_lot::Mutex;
 use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
-use std::collections::{BTreeSet, HashMap};
 use trade_signal::ArbMode;
 
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
@@ -56,10 +57,13 @@ pub struct ActiveSignalThrottle {
     pub last_error_code: i32,
 }
 
-static SIGNAL_THROTTLE_MAP: Lazy<Mutex<HashMap<SignalThrottleKey, SignalThrottleEntry>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-static ACCOUNT_SIGNAL_THROTTLE: Lazy<Mutex<Option<SignalThrottleEntry>>> =
-    Lazy::new(|| Mutex::new(None));
+thread_local! {
+    static SIGNAL_THROTTLE_MAP: RefCell<FastHashMap<SignalThrottleKey, SignalThrottleEntry>> =
+        RefCell::new(fast_hash_map());
+    static ACCOUNT_SIGNAL_THROTTLE: RefCell<Option<SignalThrottleEntry>> = const {
+        RefCell::new(None)
+    };
+}
 
 impl SignalThrottleKey {
     fn new(symbol: &str, dir: Side) -> Self {
@@ -176,20 +180,22 @@ pub fn check_account_signal_throttle() -> Option<SignalThrottleHit> {
 
 pub fn snapshot_active_signal_throttles() -> Vec<ActiveSignalThrottle> {
     let now_us = get_timestamp_us();
-    let mut guard = SIGNAL_THROTTLE_MAP.lock();
-    cleanup_expired(&mut guard, now_us);
+    let mut rows = SIGNAL_THROTTLE_MAP.with(|map| {
+        let mut guard = map.borrow_mut();
+        cleanup_expired(&mut guard, now_us);
 
-    let mut rows = Vec::with_capacity(guard.len());
-    for (key, entry) in guard.iter() {
-        rows.push(ActiveSignalThrottle {
-            symbol: key.symbol.clone(),
-            dir: side_label_from_u8(key.dir).to_string(),
-            remaining_us: entry.ban_until_us.saturating_sub(now_us),
-            until_us: entry.ban_until_us,
-            last_error_code: entry.last_error_code,
-        });
-    }
-    drop(guard);
+        let mut rows = Vec::with_capacity(guard.len());
+        for (key, entry) in guard.iter() {
+            rows.push(ActiveSignalThrottle {
+                symbol: key.symbol.clone(),
+                dir: side_label_from_u8(key.dir).to_string(),
+                remaining_us: entry.ban_until_us.saturating_sub(now_us),
+                until_us: entry.ban_until_us,
+                last_error_code: entry.last_error_code,
+            });
+        }
+        rows
+    });
 
     rows.sort_by(|a, b| (&a.symbol, &a.dir, a.until_us).cmp(&(&b.symbol, &b.dir, b.until_us)));
     rows
@@ -247,43 +253,46 @@ fn register_signal_throttle_at(
     let ttl_us = ttl_us.max(0);
     let ban_until_us = now_us.saturating_add(ttl_us);
     let registered_account_block = if is_account_wide_reduce_only_error_code(exchange, error_code) {
-        let mut account_guard = ACCOUNT_SIGNAL_THROTTLE.lock();
-        cleanup_account_expired(&mut account_guard, now_us);
-        match account_guard.as_mut() {
-            Some(entry) => {
-                entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
-                entry.last_error_code = error_code;
-                entry.updated_at_us = now_us;
+        ACCOUNT_SIGNAL_THROTTLE.with(|slot| {
+            let mut account_guard = slot.borrow_mut();
+            cleanup_account_expired(&mut account_guard, now_us);
+            match account_guard.as_mut() {
+                Some(entry) => {
+                    entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
+                    entry.last_error_code = error_code;
+                    entry.updated_at_us = now_us;
+                }
+                None => {
+                    *account_guard = Some(SignalThrottleEntry {
+                        ban_until_us,
+                        last_error_code: error_code,
+                        updated_at_us: now_us,
+                    });
+                }
             }
-            None => {
-                *account_guard = Some(SignalThrottleEntry {
-                    ban_until_us,
-                    last_error_code: error_code,
-                    updated_at_us: now_us,
-                });
-            }
-        }
+        });
         true
     } else {
         false
     };
 
-    let mut guard = SIGNAL_THROTTLE_MAP.lock();
-    cleanup_expired(&mut guard, now_us);
-
     let key = SignalThrottleKey::new(symbol, dir);
-    guard
-        .entry(key.clone())
-        .and_modify(|entry| {
-            entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
-            entry.last_error_code = error_code;
-            entry.updated_at_us = now_us;
-        })
-        .or_insert(SignalThrottleEntry {
-            ban_until_us,
-            last_error_code: error_code,
-            updated_at_us: now_us,
-        });
+    SIGNAL_THROTTLE_MAP.with(|map| {
+        let mut guard = map.borrow_mut();
+        cleanup_expired(&mut guard, now_us);
+        guard
+            .entry(key.clone())
+            .and_modify(|entry| {
+                entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
+                entry.last_error_code = error_code;
+                entry.updated_at_us = now_us;
+            })
+            .or_insert(SignalThrottleEntry {
+                ban_until_us,
+                last_error_code: error_code,
+                updated_at_us: now_us,
+            });
+    });
 
     warn!(
         "SignalThrottle: register block symbol={} dir={} code={} block_for={}s until_us={}",
@@ -306,28 +315,30 @@ fn register_signal_throttle_at(
 
 fn check_signal_throttle_at(symbol: &str, dir: Side, now_us: i64) -> Option<SignalThrottleHit> {
     let key = SignalThrottleKey::new(symbol, dir);
-    let mut guard = SIGNAL_THROTTLE_MAP.lock();
-    cleanup_expired(&mut guard, now_us);
-    let entry = guard.get(&key)?;
-    Some(SignalThrottleHit {
-        remaining_us: entry.ban_until_us.saturating_sub(now_us),
-        until_us: entry.ban_until_us,
-        last_error_code: entry.last_error_code,
+    SIGNAL_THROTTLE_MAP.with(|map| {
+        let mut guard = map.borrow_mut();
+        cleanup_expired(&mut guard, now_us);
+        guard.get(&key).map(|entry| SignalThrottleHit {
+            remaining_us: entry.ban_until_us.saturating_sub(now_us),
+            until_us: entry.ban_until_us,
+            last_error_code: entry.last_error_code,
+        })
     })
 }
 
 fn check_account_signal_throttle_at(now_us: i64) -> Option<SignalThrottleHit> {
-    let mut guard = ACCOUNT_SIGNAL_THROTTLE.lock();
-    cleanup_account_expired(&mut guard, now_us);
-    let entry = guard.as_ref()?;
-    Some(SignalThrottleHit {
-        remaining_us: entry.ban_until_us.saturating_sub(now_us),
-        until_us: entry.ban_until_us,
-        last_error_code: entry.last_error_code,
+    ACCOUNT_SIGNAL_THROTTLE.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        cleanup_account_expired(&mut guard, now_us);
+        guard.as_ref().map(|entry| SignalThrottleHit {
+            remaining_us: entry.ban_until_us.saturating_sub(now_us),
+            until_us: entry.ban_until_us,
+            last_error_code: entry.last_error_code,
+        })
     })
 }
 
-fn cleanup_expired(map: &mut HashMap<SignalThrottleKey, SignalThrottleEntry>, now_us: i64) {
+fn cleanup_expired(map: &mut FastHashMap<SignalThrottleKey, SignalThrottleEntry>, now_us: i64) {
     map.retain(|_, entry| entry.ban_until_us > now_us);
 }
 
@@ -349,12 +360,14 @@ fn side_label_from_u8(value: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
+    use parking_lot::Mutex;
 
     static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn clear_all() {
-        SIGNAL_THROTTLE_MAP.lock().clear();
-        *ACCOUNT_SIGNAL_THROTTLE.lock() = None;
+        SIGNAL_THROTTLE_MAP.with(|map| map.borrow_mut().clear());
+        ACCOUNT_SIGNAL_THROTTLE.with(|slot| *slot.borrow_mut() = None);
     }
 
     #[test]

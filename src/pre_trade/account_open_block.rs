@@ -5,8 +5,9 @@ use log::{info, warn};
 use once_cell::sync::Lazy;
 use order_common::TradingVenue;
 use parking_lot::Mutex;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
-use std::collections::HashMap;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicI64, Ordering};
 use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
@@ -204,8 +205,10 @@ impl CapacityVenue {
     }
 }
 
-static ACCOUNT_OPEN_BLOCKS: Lazy<Mutex<HashMap<AccountOpenBlockReason, AccountOpenBlockEntry>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+thread_local! {
+    static ACCOUNT_OPEN_BLOCKS: RefCell<FastHashMap<AccountOpenBlockReason, AccountOpenBlockEntry>> =
+        RefCell::new(fast_hash_map());
+}
 static BINANCE_PM_CAPACITY_POLL: Lazy<Mutex<CapacityPollState>> =
     Lazy::new(|| Mutex::new(CapacityPollState::default()));
 static OKEX_UNIFIED_CAPACITY_POLL: Lazy<Mutex<CapacityPollState>> =
@@ -234,7 +237,7 @@ pub fn check_account_open_block() -> Option<AccountOpenBlockHit> {
 }
 
 pub fn clear_account_open_block(reason: AccountOpenBlockReason) -> bool {
-    ACCOUNT_OPEN_BLOCKS.lock().remove(&reason).is_some()
+    ACCOUNT_OPEN_BLOCKS.with(|blocks| blocks.borrow_mut().remove(&reason).is_some())
 }
 
 pub fn latest_usdt_max_available_margin_snapshot() -> Option<UsdtMaxAvailableMarginSnapshot> {
@@ -530,54 +533,56 @@ fn register_account_open_block_entry_at(
     now_us: i64,
     expires_at_us: Option<i64>,
 ) {
-    let mut guard = ACCOUNT_OPEN_BLOCKS.lock();
-    cleanup_expired_account_open_blocks(&mut guard, now_us);
-    guard
-        .entry(reason)
-        .and_modify(|entry| {
-            entry.updated_at_us = now_us;
-            entry.last_error_code = error_code;
-            entry.expires_at_us = match (entry.expires_at_us, expires_at_us) {
-                (None, _) | (_, None) => None,
-                (Some(existing), Some(incoming)) => Some(existing.max(incoming)),
-            };
-        })
-        .or_insert(AccountOpenBlockEntry {
-            first_seen_us: now_us,
-            updated_at_us: now_us,
-            last_error_code: error_code,
-            expires_at_us,
-        });
+    let (first_seen_us, active_expires_at_us) = ACCOUNT_OPEN_BLOCKS.with(|blocks| {
+        let mut guard = blocks.borrow_mut();
+        cleanup_expired_account_open_blocks(&mut guard, now_us);
+        let entry = guard
+            .entry(reason)
+            .and_modify(|entry| {
+                entry.updated_at_us = now_us;
+                entry.last_error_code = error_code;
+                entry.expires_at_us = match (entry.expires_at_us, expires_at_us) {
+                    (None, _) | (_, None) => None,
+                    (Some(existing), Some(incoming)) => Some(existing.max(incoming)),
+                };
+            })
+            .or_insert(AccountOpenBlockEntry {
+                first_seen_us: now_us,
+                updated_at_us: now_us,
+                last_error_code: error_code,
+                expires_at_us,
+            });
+        (entry.first_seen_us, entry.expires_at_us)
+    });
     warn!(
         "AccountOpenBlock: register reason={} code={} first_seen_us={} updated_at_us={} expires_at_us={:?}",
         reason.as_str(),
         error_code,
-        guard
-            .get(&reason)
-            .map(|entry| entry.first_seen_us)
-            .unwrap_or(now_us),
+        first_seen_us,
         now_us,
-        guard.get(&reason).and_then(|entry| entry.expires_at_us)
+        active_expires_at_us
     );
 }
 
 fn ensure_account_open_block_from_capacity_low(venue: CapacityVenue, now_us: i64) -> bool {
     let reason = venue.block_reason();
-    let mut guard = ACCOUNT_OPEN_BLOCKS.lock();
-    if let Some(entry) = guard.get_mut(&reason) {
-        entry.updated_at_us = now_us;
-        return false;
-    }
-    guard.insert(
-        reason,
-        AccountOpenBlockEntry {
-            first_seen_us: now_us,
-            updated_at_us: now_us,
-            last_error_code: venue.low_error_code(),
-            expires_at_us: None,
-        },
-    );
-    true
+    ACCOUNT_OPEN_BLOCKS.with(|blocks| {
+        let mut guard = blocks.borrow_mut();
+        if let Some(entry) = guard.get_mut(&reason) {
+            entry.updated_at_us = now_us;
+            return false;
+        }
+        guard.insert(
+            reason,
+            AccountOpenBlockEntry {
+                first_seen_us: now_us,
+                updated_at_us: now_us,
+                last_error_code: venue.low_error_code(),
+                expires_at_us: None,
+            },
+        );
+        true
+    })
 }
 
 fn check_account_open_block_at() -> Option<AccountOpenBlockHit> {
@@ -585,21 +590,23 @@ fn check_account_open_block_at() -> Option<AccountOpenBlockHit> {
 }
 
 fn check_account_open_block_at_ts(now_us: i64) -> Option<AccountOpenBlockHit> {
-    let mut guard = ACCOUNT_OPEN_BLOCKS.lock();
-    cleanup_expired_account_open_blocks(&mut guard, now_us);
-    guard
-        .iter()
-        .min_by_key(|(reason, entry)| (entry.first_seen_us, reason.as_str()))
-        .map(|(reason, entry)| AccountOpenBlockHit {
-            reason: *reason,
-            first_seen_us: entry.first_seen_us,
-            updated_at_us: entry.updated_at_us,
-            last_error_code: entry.last_error_code,
-        })
+    ACCOUNT_OPEN_BLOCKS.with(|blocks| {
+        let mut guard = blocks.borrow_mut();
+        cleanup_expired_account_open_blocks(&mut guard, now_us);
+        guard
+            .iter()
+            .min_by_key(|(reason, entry)| (entry.first_seen_us, reason.as_str()))
+            .map(|(reason, entry)| AccountOpenBlockHit {
+                reason: *reason,
+                first_seen_us: entry.first_seen_us,
+                updated_at_us: entry.updated_at_us,
+                last_error_code: entry.last_error_code,
+            })
+    })
 }
 
 fn cleanup_expired_account_open_blocks(
-    map: &mut HashMap<AccountOpenBlockReason, AccountOpenBlockEntry>,
+    map: &mut FastHashMap<AccountOpenBlockReason, AccountOpenBlockEntry>,
     now_us: i64,
 ) {
     map.retain(|_, entry| {
@@ -958,7 +965,7 @@ mod tests {
     static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn clear_all() {
-        ACCOUNT_OPEN_BLOCKS.lock().clear();
+        ACCOUNT_OPEN_BLOCKS.with(|blocks| blocks.borrow_mut().clear());
         *BINANCE_PM_CAPACITY_POLL.lock() = CapacityPollState::default();
         *OKEX_UNIFIED_CAPACITY_POLL.lock() = CapacityPollState::default();
         *GATE_UNIFIED_CAPACITY_POLL.lock() = CapacityPollState::default();
