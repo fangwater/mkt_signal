@@ -4,8 +4,11 @@ use mkt_parsers::binance::{RawBbo, RawBook, RawTrade};
 use serde_json::Value;
 
 use mkt_parsers::msg::mkt_msg::Level;
+use std::rc::Rc;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::spread_pbs::publisher::SpreadDerivativesPublisher;
 
 /// 各家 spread 解析后的统一中间表示。
 #[derive(Debug, Clone)]
@@ -172,6 +175,16 @@ pub trait VenueAdapter {
     }
     fn parse_derivatives_frame(&self, _value: &Value) -> Result<Vec<Bytes>> {
         Ok(Vec::new())
+    }
+    /// Optional raw derivatives hot path. Return true when the frame was fully
+    /// handled and callers can skip `serde_json::Value`.
+    fn publish_derivatives_raw(
+        &self,
+        _raw: &[u8],
+        _publisher: &Rc<SpreadDerivativesPublisher>,
+        _published: &mut u64,
+    ) -> bool {
+        false
     }
     fn parse_binary_frame(
         &self,

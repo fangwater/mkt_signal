@@ -16,6 +16,9 @@ use crate::spread_pbs::adapter::{
 };
 use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use order_common::TradingVenue;
+use std::rc::Rc;
+
+use crate::spread_pbs::publisher::SpreadDerivativesPublisher;
 
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
@@ -224,6 +227,32 @@ impl VenueAdapter for BinanceAdapter {
             })
             .map(derivative_to_bytes)
             .collect())
+    }
+
+    fn publish_derivatives_raw(
+        &self,
+        raw: &[u8],
+        publisher: &Rc<SpreadDerivativesPublisher>,
+        published: &mut u64,
+    ) -> bool {
+        if self.venue != TradingVenue::BinanceFutures {
+            return false;
+        }
+        let active = self.derivatives_symbols.borrow();
+        let mut handled = false;
+        let parsed = binance_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
+            handled = true;
+            let symbol = raw_derivative_symbol(&derivative);
+            if !active.is_empty() && !active.contains(symbol) {
+                return Some(());
+            }
+            match publish_raw_derivative(publisher, derivative) {
+                Ok(count) => *published += count as u64,
+                Err(e) => log::warn!("spread_pbs derivatives publish failed: {:#}", e),
+            }
+            Some(())
+        });
+        parsed.is_some() && handled
     }
 
     fn parse_binary_frame(
@@ -462,6 +491,61 @@ fn derivative_to_bytes(derivative: binance_codec::Derivative) -> Bytes {
             price,
             timestamp_us,
         } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
+    }
+}
+
+fn raw_derivative_symbol<'a>(derivative: &'a binance_codec::RawDerivative<'a>) -> &'a str {
+    match derivative {
+        binance_codec::RawDerivative::MarkPrice { symbol, .. }
+        | binance_codec::RawDerivative::Liquidation { symbol, .. } => symbol,
+    }
+}
+
+fn publish_raw_derivative(
+    publisher: &Rc<SpreadDerivativesPublisher>,
+    derivative: binance_codec::RawDerivative<'_>,
+) -> Result<usize> {
+    match derivative {
+        binance_codec::RawDerivative::MarkPrice {
+            symbol,
+            mark_price,
+            index_price,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => {
+            let mut count = 0usize;
+            if let Some(price) = mark_price.filter(|price| *price > 0.0) {
+                publisher.publish_mark_price(symbol, price, timestamp_us)?;
+                count += 1;
+            }
+            if let Some(price) = index_price.filter(|price| *price > 0.0) {
+                publisher.publish_index_price(symbol, price, timestamp_us)?;
+                count += 1;
+            }
+            if let (Some(funding_rate), Some(next_funding_time_us)) =
+                (funding_rate, next_funding_time_us)
+            {
+                publisher.publish_funding_rate(
+                    symbol,
+                    funding_rate,
+                    next_funding_time_us,
+                    timestamp_us,
+                )?;
+                count += 1;
+            }
+            Ok(count)
+        }
+        binance_codec::RawDerivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => {
+            publisher.publish_liquidation(symbol, side, amount, price, timestamp_us)?;
+            Ok(1)
+        }
     }
 }
 

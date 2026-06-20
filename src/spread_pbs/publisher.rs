@@ -219,6 +219,21 @@ fn incremental_payload_len(symbol: &str, bids_count: usize, asks_count: usize) -
     4 + 4 + symbol.len() + 8 + 8 + 8 + 1 + 7 + 4 + 4 + (bids_count + asks_count) * 16
 }
 
+#[inline]
+fn mark_price_payload_len(symbol: &str) -> usize {
+    4 + 4 + symbol.len() + 8 + 8
+}
+
+#[inline]
+fn funding_rate_payload_len(symbol: &str) -> usize {
+    4 + 4 + symbol.len() + 8 + 8 + 8
+}
+
+#[inline]
+fn liquidation_payload_len(symbol: &str) -> usize {
+    4 + 4 + symbol.len() + 1 + 8 + 8 + 8
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_incremental_payload(
     buf: &mut [u8],
@@ -291,6 +306,56 @@ fn write_incremental_payload_from_levels<B: PayloadLevel, A: PayloadLevel>(
         write_f64_le(buf, &mut off, level.price());
         write_f64_le(buf, &mut off, level.amount());
     }
+    Ok(off)
+}
+
+fn write_price_payload(
+    buf: &mut [u8],
+    msg_type: MktMsgType,
+    symbol: &str,
+    price: f64,
+    timestamp: i64,
+) -> Result<usize> {
+    let mut off = 0usize;
+    write_u32_le(buf, &mut off, msg_type as u32);
+    write_symbol(buf, &mut off, symbol)?;
+    write_f64_le(buf, &mut off, price);
+    write_i64_le(buf, &mut off, timestamp);
+    Ok(off)
+}
+
+fn write_funding_rate_payload(
+    buf: &mut [u8],
+    symbol: &str,
+    funding_rate: f64,
+    next_funding_time: i64,
+    timestamp: i64,
+) -> Result<usize> {
+    let mut off = 0usize;
+    write_u32_le(buf, &mut off, MktMsgType::FundingRate as u32);
+    write_symbol(buf, &mut off, symbol)?;
+    write_f64_le(buf, &mut off, funding_rate);
+    write_i64_le(buf, &mut off, next_funding_time);
+    write_i64_le(buf, &mut off, timestamp);
+    Ok(off)
+}
+
+fn write_liquidation_payload(
+    buf: &mut [u8],
+    symbol: &str,
+    side: char,
+    amount: f64,
+    price: f64,
+    timestamp: i64,
+) -> Result<usize> {
+    let mut off = 0usize;
+    write_u32_le(buf, &mut off, MktMsgType::LiquidationOrder as u32);
+    write_symbol(buf, &mut off, symbol)?;
+    buf[off] = side as u8;
+    off += 1;
+    write_f64_le(buf, &mut off, amount);
+    write_f64_le(buf, &mut off, price);
+    write_i64_le(buf, &mut off, timestamp);
     Ok(off)
 }
 
@@ -686,12 +751,56 @@ impl SpreadDerivativesPublisher {
     pub fn publish(&self, data: &[u8]) -> Result<()> {
         publish_padded(&self.publisher, data, "derivatives")
     }
+
+    pub fn publish_mark_price(&self, symbol: &str, price: f64, timestamp: i64) -> Result<()> {
+        let min_len = mark_price_payload_len(symbol);
+        publish_write(&self.publisher, min_len, "derivatives", |buf| {
+            write_price_payload(buf, MktMsgType::MarkPrice, symbol, price, timestamp)
+        })
+    }
+
+    pub fn publish_index_price(&self, symbol: &str, price: f64, timestamp: i64) -> Result<()> {
+        let min_len = mark_price_payload_len(symbol);
+        publish_write(&self.publisher, min_len, "derivatives", |buf| {
+            write_price_payload(buf, MktMsgType::IndexPrice, symbol, price, timestamp)
+        })
+    }
+
+    pub fn publish_funding_rate(
+        &self,
+        symbol: &str,
+        funding_rate: f64,
+        next_funding_time: i64,
+        timestamp: i64,
+    ) -> Result<()> {
+        let min_len = funding_rate_payload_len(symbol);
+        publish_write(&self.publisher, min_len, "derivatives", |buf| {
+            write_funding_rate_payload(buf, symbol, funding_rate, next_funding_time, timestamp)
+        })
+    }
+
+    pub fn publish_liquidation(
+        &self,
+        symbol: &str,
+        side: char,
+        amount: f64,
+        price: f64,
+        timestamp: i64,
+    ) -> Result<()> {
+        let min_len = liquidation_payload_len(symbol);
+        publish_write(&self.publisher, min_len, "derivatives", |buf| {
+            write_liquidation_payload(buf, symbol, side, amount, price, timestamp)
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mkt_parsers::msg::mkt_msg::{AskBidSpreadMsg, IncMsg, TradeMsg};
+    use mkt_parsers::msg::mkt_msg::{
+        AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg,
+        TradeMsg,
+    };
 
     #[test]
     fn direct_bbo_writer_matches_ask_bid_spread_msg_bytes() {
@@ -800,5 +909,68 @@ mod tests {
         assert_eq!(written, expected.len());
         assert_eq!(&buf[..written], &expected[..]);
         assert!(buf[written..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn direct_derivatives_writers_match_msg_bytes() {
+        let mut buf = [0u8; DERIVATIVES_PAYLOAD_BYTES];
+
+        let expected =
+            MarkPriceMsg::create("BTCUSDT".to_string(), 25.0, 1_700_000_000_001_000).to_bytes();
+        let written = write_price_payload(
+            &mut buf,
+            MktMsgType::MarkPrice,
+            "BTCUSDT",
+            25.0,
+            1_700_000_000_001_000,
+        )
+        .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+
+        let expected =
+            IndexPriceMsg::create("BTCUSDT".to_string(), 24.9, 1_700_000_000_001_000).to_bytes();
+        let written = write_price_payload(
+            &mut buf,
+            MktMsgType::IndexPrice,
+            "BTCUSDT",
+            24.9,
+            1_700_000_000_001_000,
+        )
+        .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+
+        let expected = FundingRateMsg::create(
+            "BTCUSDT".to_string(),
+            0.0001,
+            1_700_003_600_000_000,
+            1_700_000_000_001_000,
+        )
+        .to_bytes();
+        let written = write_funding_rate_payload(
+            &mut buf,
+            "BTCUSDT",
+            0.0001,
+            1_700_003_600_000_000,
+            1_700_000_000_001_000,
+        )
+        .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+
+        let expected = LiquidationMsg::create(
+            "BTCUSDT".to_string(),
+            'S',
+            10.0,
+            25.2,
+            1_700_000_000_000_000,
+        )
+        .to_bytes();
+        let written =
+            write_liquidation_payload(&mut buf, "BTCUSDT", 'S', 10.0, 25.2, 1_700_000_000_000_000)
+                .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
     }
 }

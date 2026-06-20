@@ -1394,6 +1394,17 @@ fn make_replacement_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
+        if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
+            let mut s = state.borrow_mut();
+            if adapter.publish_derivatives_raw(
+                raw,
+                derivatives_publisher,
+                &mut s.derivatives_published,
+            ) {
+                return;
+            }
+        }
+
         if derivatives_publisher.is_none() {
             if let Some(incremental_publisher) = incremental_publisher.as_ref() {
                 if let Some(book) = adapter.parse_incremental_raw_borrowed(raw) {

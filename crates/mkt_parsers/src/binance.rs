@@ -115,6 +115,25 @@ pub struct RawBook<'a> {
     pub asks: RawLevels,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RawDerivative<'a> {
+    MarkPrice {
+        symbol: &'a str,
+        mark_price: Option<f64>,
+        index_price: Option<f64>,
+        funding_rate: Option<f64>,
+        next_funding_time_us: Option<i64>,
+        timestamp_us: i64,
+    },
+    Liquidation {
+        symbol: &'a str,
+        side: char,
+        amount: f64,
+        price: f64,
+        timestamp_us: i64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Book {
     pub symbol: String,
@@ -499,6 +518,22 @@ pub fn parse_derivatives_json(value: &Value) -> Vec<Derivative> {
     }
 }
 
+pub fn parse_derivatives_raw_borrowed<'a>(
+    raw: &'a [u8],
+    mut emit: impl FnMut(RawDerivative<'a>) -> Option<()>,
+) -> Option<()> {
+    let data = combined_value(raw).unwrap_or(raw);
+    let data = trim_ascii(data);
+    if data.first() == Some(&b'[') {
+        for item in JsonArrayObjectIter::new(data) {
+            emit(parse_derivative_object_raw(item?)?)?;
+        }
+        return Some(());
+    }
+    emit(parse_derivative_object_raw(data)?)?;
+    Some(())
+}
+
 pub fn parse_sbe_bbo(msg: &[u8]) -> Option<Bbo> {
     let header = read_sbe_header(msg)?;
     if header.template_id != SBE_TEMPLATE_BBO {
@@ -779,6 +814,85 @@ fn parse_liquidation_json(payload: &Value) -> Vec<Derivative> {
     }]
 }
 
+fn parse_derivative_object_raw(raw: &[u8]) -> Option<RawDerivative<'_>> {
+    let mut scanner = JsonObjectScanner::new(raw);
+    let mut event = None;
+    let mut symbol = None;
+    let mut timestamp_us = None;
+    let mut mark_price = None;
+    let mut index_price = None;
+    let mut funding_rate = None;
+    let mut next_funding_time_us = None;
+    let mut order = None;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => event = Some(value.string_bytes()?),
+            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"s" => symbol = Some(value.string_str()?),
+            b"p" => mark_price = Some(value.f64()?),
+            b"i" => index_price = Some(value.f64()?),
+            b"r" => funding_rate = Some(value.f64()?),
+            b"T" => next_funding_time_us = Some(ms_to_us(value.i64()?)),
+            b"o" => order = Some(value.object_bytes()?),
+            _ => {}
+        }
+    }
+
+    match event? {
+        b"markPriceUpdate" => Some(RawDerivative::MarkPrice {
+            symbol: symbol?,
+            mark_price,
+            index_price,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us: timestamp_us.unwrap_or(0),
+        }),
+        b"forceOrder" => parse_liquidation_object_raw(order?, timestamp_us.unwrap_or(0)),
+        _ => None,
+    }
+}
+
+fn parse_liquidation_object_raw(raw: &[u8], event_timestamp_us: i64) -> Option<RawDerivative<'_>> {
+    let mut scanner = JsonObjectScanner::new(raw);
+    let mut symbol = None;
+    let mut side = None;
+    let mut amount = None;
+    let mut price = None;
+    let mut timestamp_us = event_timestamp_us;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"s" => symbol = Some(value.string_str()?),
+            b"S" => {
+                side = Some(match value.string_bytes()? {
+                    b"BUY" => 'B',
+                    b"SELL" => 'S',
+                    _ => return None,
+                })
+            }
+            b"z" => amount = Some(value.f64()?),
+            b"ap" => price = Some(value.f64()?),
+            b"T" => timestamp_us = ms_to_us(value.i64()?),
+            _ => {}
+        }
+    }
+
+    let out = RawDerivative::Liquidation {
+        symbol: symbol?,
+        side: side?,
+        amount: amount?,
+        price: price?,
+        timestamp_us,
+    };
+    if let RawDerivative::Liquidation { amount, price, .. } = out {
+        if amount <= 0.0 || price <= 0.0 {
+            return None;
+        }
+    }
+    Some(out)
+}
+
 fn parse_sbe_depth_snapshot(msg: &[u8], header: &SbeHeader) -> Option<Book> {
     let base = header.body_offset;
     if msg.len() < base + header.block_length {
@@ -977,6 +1091,16 @@ fn combined_payload(raw: &[u8]) -> Option<&[u8]> {
     None
 }
 
+fn combined_value(raw: &[u8]) -> Option<&[u8]> {
+    let mut scanner = JsonObjectScanner::new(raw);
+    while let Some((key, value)) = scanner.next_field() {
+        if key == b"data" {
+            return Some(trim_ascii(value.raw));
+        }
+    }
+    None
+}
+
 fn stream_name(raw: &[u8]) -> Option<&str> {
     let mut scanner = JsonObjectScanner::new(raw);
     while let Some((key, value)) = scanner.next_field() {
@@ -1065,6 +1189,69 @@ impl<'a> JsonValue<'a> {
 struct JsonObjectScanner<'a> {
     raw: &'a [u8],
     pos: usize,
+}
+
+struct JsonArrayObjectIter<'a> {
+    raw: &'a [u8],
+    pos: usize,
+    done: bool,
+}
+
+impl<'a> JsonArrayObjectIter<'a> {
+    fn new(raw: &'a [u8]) -> Self {
+        Self {
+            raw: trim_ascii(raw),
+            pos: 0,
+            done: false,
+        }
+    }
+}
+
+impl<'a> Iterator for JsonArrayObjectIter<'a> {
+    type Item = Option<&'a [u8]>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        skip_ws_at(self.raw, &mut self.pos);
+        if self.pos == 0 {
+            if self.raw.get(self.pos) != Some(&b'[') {
+                self.done = true;
+                return Some(None);
+            }
+            self.pos += 1;
+        }
+
+        loop {
+            skip_ws_at(self.raw, &mut self.pos);
+            match self.raw.get(self.pos).copied() {
+                Some(b']') => {
+                    self.pos += 1;
+                    self.done = true;
+                    return None;
+                }
+                Some(b',') => self.pos += 1,
+                Some(b'{') => break,
+                _ => {
+                    self.done = true;
+                    return Some(None);
+                }
+            }
+        }
+
+        let start = self.pos;
+        let mut scanner = JsonObjectScanner {
+            raw: self.raw,
+            pos: self.pos,
+        };
+        if scanner.skip_nested_value().is_none() {
+            self.done = true;
+            return Some(None);
+        }
+        self.pos = scanner.pos;
+        Some(Some(&self.raw[start..self.pos]))
+    }
 }
 
 impl<'a> JsonObjectScanner<'a> {
@@ -1307,8 +1494,9 @@ fn read_group_levels(
 mod tests {
     use super::{
         parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
-        parse_depth_bbo_raw_borrowed, parse_incremental_raw_borrowed, parse_trade_raw,
-        parse_trade_raw_borrowed, RAW_DEPTH_LEVEL_CAP,
+        parse_depth_bbo_raw_borrowed, parse_derivatives_raw_borrowed,
+        parse_incremental_raw_borrowed, parse_trade_raw, parse_trade_raw_borrowed, RawDerivative,
+        RAW_DEPTH_LEVEL_CAP,
     };
 
     #[test]
@@ -1481,5 +1669,99 @@ mod tests {
         raw.extend_from_slice(br#"],"a":[]}"#);
 
         assert!(parse_incremental_raw_borrowed(&raw).is_none());
+    }
+
+    #[test]
+    fn parses_mark_price_derivatives_without_value_tree() {
+        let raw = br#"{"data":{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000}}"#;
+        let mut out = Vec::new();
+
+        parse_derivatives_raw_borrowed(raw, |derivative| {
+            out.push(derivative);
+            Some(())
+        })
+        .expect("raw mark price");
+
+        assert_eq!(
+            out,
+            vec![RawDerivative::MarkPrice {
+                symbol: "BTCUSDT",
+                mark_price: Some(25.0),
+                index_price: Some(24.9),
+                funding_rate: Some(0.0001),
+                next_funding_time_us: Some(1_700_003_600_000_000),
+                timestamp_us: 1_700_000_000_001_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_mark_price_array_without_value_tree() {
+        let raw = br#"{"data":[
+            {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
+            {"e":"markPriceUpdate","E":1700000000002,"s":"ETHUSDT","p":"26.0","i":"25.9","r":"0.0002","T":1700003600000}
+        ]}"#;
+        let mut symbols = Vec::new();
+
+        parse_derivatives_raw_borrowed(raw, |derivative| {
+            if let RawDerivative::MarkPrice {
+                symbol,
+                timestamp_us,
+                ..
+            } = derivative
+            {
+                symbols.push((symbol, timestamp_us));
+            }
+            Some(())
+        })
+        .expect("raw mark price array");
+
+        assert_eq!(
+            symbols,
+            vec![
+                ("BTCUSDT", 1_700_000_000_001_000),
+                ("ETHUSDT", 1_700_000_000_002_000)
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_liquidation_without_value_tree() {
+        let raw = br#"{"data":{"e":"forceOrder","E":1700000000001,
+            "o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2","T":1700000000000}}}"#;
+        let mut out = Vec::new();
+
+        parse_derivatives_raw_borrowed(raw, |derivative| {
+            out.push(derivative);
+            Some(())
+        })
+        .expect("raw liquidation");
+
+        assert_eq!(
+            out,
+            vec![RawDerivative::Liquidation {
+                symbol: "BTCUSDT",
+                side: 'S',
+                amount: 10.0,
+                price: 25.2,
+                timestamp_us: 1_700_000_000_000_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn raw_derivatives_propagates_emit_stop() {
+        let raw = br#"{"data":[
+            {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
+            {"e":"markPriceUpdate","E":1700000000002,"s":"ETHUSDT","p":"26.0","i":"25.9","r":"0.0002","T":1700003600000}
+        ]}"#;
+        let mut count = 0usize;
+
+        assert!(parse_derivatives_raw_borrowed(raw, |_derivative| {
+            count += 1;
+            None
+        })
+        .is_none());
+        assert_eq!(count, 1);
     }
 }
