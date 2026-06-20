@@ -300,6 +300,8 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut ask_price = None;
     let mut ask_amount = None;
     let mut timestamp_us = 0i64;
+    let mut seen = 0u8;
+    const BOOK_TICKER_REQUIRED: u8 = 0b0111_1111;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
@@ -309,24 +311,37 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
                 }
                 seen_event = true;
             }
-            b"s" => symbol = Some(value.string_str()?),
-            b"u" => seq_id = Some(value.i64()?),
-            b"b" => bid_price = Some(value.f64()?),
-            b"B" => bid_amount = Some(value.f64()?),
-            b"a" => ask_price = Some(value.f64()?),
-            b"A" => ask_amount = Some(value.f64()?),
-            b"E" => timestamp_us = ms_to_us(value.i64()?),
+            b"s" => {
+                symbol = Some(value.string_str()?);
+                seen |= 1 << 0;
+            }
+            b"u" => {
+                seq_id = Some(value.i64()?);
+                seen |= 1 << 1;
+            }
+            b"b" => {
+                bid_price = Some(value.f64()?);
+                seen |= 1 << 3;
+            }
+            b"B" => {
+                bid_amount = Some(value.f64()?);
+                seen |= 1 << 4;
+            }
+            b"a" => {
+                ask_price = Some(value.f64()?);
+                seen |= 1 << 5;
+            }
+            b"A" => {
+                ask_amount = Some(value.f64()?);
+                seen |= 1 << 6;
+            }
+            b"E" => {
+                timestamp_us = ms_to_us(value.i64()?);
+                seen |= 1 << 2;
+            }
             _ => {}
         }
-        if seen_event
-            && symbol.is_some()
-            && seq_id.is_some()
-            && timestamp_us != 0
-            && bid_price.is_some()
-            && bid_amount.is_some()
-            && ask_price.is_some()
-            && ask_amount.is_some()
-        {
+        if seen_event && seen == BOOK_TICKER_REQUIRED {
             break;
         }
     }
