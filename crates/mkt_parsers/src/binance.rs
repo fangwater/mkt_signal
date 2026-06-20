@@ -508,6 +508,8 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut seq_id = None;
     let mut bid = None;
     let mut ask = None;
+    let mut seen = 0u8;
+    const DEPTH_BBO_REQUIRED: u8 = 0b0001_1111;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
@@ -517,21 +519,33 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
                 }
                 seen_event = true;
             }
-            b"s" => symbol = Some(value.string_str()?),
-            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"u" | b"lastUpdateId" => seq_id = Some(value.i64()?),
-            b"b" | b"bids" => bid = Some(parse_raw_top_level(value.array_bytes()?)?),
-            b"a" | b"asks" => ask = Some(parse_raw_top_level(value.array_bytes()?)?),
+            b"s" => {
+                symbol = Some(value.string_str()?);
+                seen |= 1 << 0;
+            }
+            b"E" => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= 1 << 1;
+            }
+            b"T" if timestamp_us.is_none() => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= 1 << 1;
+            }
+            b"u" | b"lastUpdateId" => {
+                seq_id = Some(value.i64()?);
+                seen |= 1 << 2;
+            }
+            b"b" | b"bids" => {
+                bid = Some(parse_raw_top_level(value.array_bytes()?)?);
+                seen |= 1 << 3;
+            }
+            b"a" | b"asks" => {
+                ask = Some(parse_raw_top_level(value.array_bytes()?)?);
+                seen |= 1 << 4;
+            }
             _ => {}
         }
-        if seen_event
-            && symbol.is_some()
-            && timestamp_us.is_some()
-            && seq_id.is_some()
-            && bid.is_some()
-            && ask.is_some()
-        {
+        if seen_event && seen == DEPTH_BBO_REQUIRED {
             break;
         }
     }
