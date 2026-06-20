@@ -4,8 +4,8 @@
 //! - OrderUpdate 的 payload 使用 basic 层统一 schema：`BinanceBasicOrderMsg`
 
 use super::{
-    balance_dedup_key, binance_order_dedup_key, borrow_interest_dedup_key, position_dedup_key,
-    trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
+    balance_dedup_key, binance_order_dedup_key, borrow_interest_dedup_key, lazy_json,
+    position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key, AccountEventSink, Parser,
 };
 use crate::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountScope, BasicBalanceMsg,
@@ -14,7 +14,7 @@ use crate::msg::basic_account_msg::{
 };
 use bytes::Bytes;
 use log::{debug, warn};
-use serde_json::Value;
+use sonic_rs::{JsonValueTrait, LazyValue};
 use std::collections::HashMap;
 
 use crate::msg::order_codes;
@@ -34,22 +34,19 @@ impl BinanceBasicAccountEventParser {
         }
     }
 
-    fn parse_execution_report<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
-        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
-        let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let order_id = json.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
-        let trade_id = json.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+    fn parse_execution_report<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let event_time = lazy_i64(json, "E");
+        let transaction_time = lazy_i64(json, "T");
+        let order_id = lazy_i64(json, "i");
+        let trade_id = lazy_i64(json, "t").max(0);
 
-        let symbol = json
-            .get("s")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let client_order_id_raw = json.get("c").and_then(|v| v.as_str());
-        let orig_client_order_id_raw = json.get("C").and_then(|v| v.as_str());
+        let symbol = lazy_string(json, "s");
+        let client_order_id_raw = lazy_string_opt(json, "c");
+        let orig_client_order_id_raw = lazy_string_opt(json, "C");
         let client_order_id = client_order_id_raw
-            .and_then(|s| s.parse::<i64>().ok())
-            .or_else(|| orig_client_order_id_raw.and_then(|s| s.parse::<i64>().ok()))
+            .as_deref()
+            .and_then(parse_i64_str)
+            .or_else(|| orig_client_order_id_raw.as_deref().and_then(parse_i64_str))
             .unwrap_or(0);
 
         if client_order_id == 0 {
@@ -60,58 +57,25 @@ impl BinanceBasicAccountEventParser {
             return 0;
         }
 
-        let side = order_codes::side_to_u8_default_buy(
-            json.get("S").and_then(|v| v.as_str()).unwrap_or(""),
-        );
-        let is_maker = json.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
+        let side_str = lazy_string(json, "S");
+        let side = order_codes::side_to_u8_default_buy(&side_str);
+        let is_maker = lazy_bool(json, "m");
 
-        let price = json
-            .get("p")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let quantity = json
-            .get("q")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let last_executed_quantity = json
-            .get("l")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let cumulative_filled_quantity = json
-            .get("z")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let last_executed_price = json
-            .get("L")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let commission_amount = json
-            .get("n")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let cumulative_quote = json
-            .get("Z")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let price = lazy_f64(json, "p");
+        let quantity = lazy_f64(json, "q");
+        let last_executed_quantity = lazy_f64(json, "l");
+        let cumulative_filled_quantity = lazy_f64(json, "z");
+        let last_executed_price = lazy_f64(json, "L");
+        let commission_amount = lazy_f64(json, "n");
+        let cumulative_quote = lazy_f64(json, "Z");
 
-        let order_type_str = json.get("o").and_then(|v| v.as_str()).unwrap_or("");
-        let tif_str = json.get("f").and_then(|v| v.as_str()).unwrap_or("");
-        let exe_code =
-            order_codes::execution_type_to_u8(json.get("x").and_then(|v| v.as_str()).unwrap_or(""));
-        let status_code =
-            order_codes::order_status_to_u8(json.get("X").and_then(|v| v.as_str()).unwrap_or(""));
-        let commission_asset = json
-            .get("N")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let order_type_str = lazy_string(json, "o");
+        let tif_str = lazy_string(json, "f");
+        let execution_type_str = lazy_string(json, "x");
+        let status_str = lazy_string(json, "X");
+        let exe_code = order_codes::execution_type_to_u8(&execution_type_str);
+        let status_code = order_codes::order_status_to_u8(&status_str);
+        let commission_asset = lazy_string(json, "N");
 
         let average_price = if cumulative_filled_quantity > 0.0 {
             cumulative_quote / cumulative_filled_quantity
@@ -123,13 +87,13 @@ impl BinanceBasicAccountEventParser {
             BinanceBasicOrderMsg::VENUE_MARGIN,
             event_time,
             transaction_time,
-            symbol,
+            symbol.clone(),
             order_id,
             client_order_id,
             trade_id,
             side,
-            order_codes::order_type_to_u8_default_limit(order_type_str),
-            order_codes::time_in_force_to_u8(tif_str),
+            order_codes::order_type_to_u8_default_limit(&order_type_str),
+            order_codes::time_in_force_to_u8(&tif_str),
             exe_code,
             status_code,
             is_maker,
@@ -146,14 +110,14 @@ impl BinanceBasicAccountEventParser {
 
         debug!(
             "parser: executionReport parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
-            json.get("s").and_then(|v| v.as_str()).unwrap_or(""),
+            symbol,
             client_order_id_raw,
             client_order_id,
-            json.get("x").and_then(|v| v.as_str()).unwrap_or(""),
-            json.get("X").and_then(|v| v.as_str()).unwrap_or(""),
-            json.get("q").and_then(|v| v.as_str()).unwrap_or(""),
-            json.get("l").and_then(|v| v.as_str()).unwrap_or(""),
-            json.get("L").and_then(|v| v.as_str()).unwrap_or("")
+            execution_type_str,
+            status_str,
+            lazy_string(json, "q"),
+            lazy_string(json, "l"),
+            lazy_string(json, "L")
         );
 
         let event = BasicAccountEventMsg::create(
@@ -170,25 +134,22 @@ impl BinanceBasicAccountEventParser {
         1
     }
 
-    fn parse_order_trade_update<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
-        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
-        let transaction_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
+    fn parse_order_trade_update<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let event_time = lazy_i64(json, "E");
+        let transaction_time = lazy_i64(json, "T");
 
         let Some(o) = json.get("o") else {
             return 0;
         };
 
-        let order_id = o.get("i").and_then(|v| v.as_i64()).unwrap_or(0);
-        let trade_id = o.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+        let order_id = lazy_i64(&o, "i");
+        let trade_id = lazy_i64(&o, "t").max(0);
 
-        let symbol = o
-            .get("s")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let client_order_id_raw = o.get("c").and_then(|v| v.as_str());
+        let symbol = lazy_string(&o, "s");
+        let client_order_id_raw = lazy_string_opt(&o, "c");
         let client_order_id = client_order_id_raw
-            .and_then(|s| s.parse::<i64>().ok())
+            .as_deref()
+            .and_then(parse_i64_str)
             .unwrap_or(0);
 
         if client_order_id == 0 {
@@ -199,74 +160,38 @@ impl BinanceBasicAccountEventParser {
             return 0;
         }
 
-        let side =
-            order_codes::side_to_u8_default_buy(o.get("S").and_then(|v| v.as_str()).unwrap_or(""));
-        let is_maker = o.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
+        let side_str = lazy_string(&o, "S");
+        let side = order_codes::side_to_u8_default_buy(&side_str);
+        let is_maker = lazy_bool(&o, "m");
 
-        let price = o
-            .get("p")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let quantity = o
-            .get("q")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let average_price = o
-            .get("ap")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let last_executed_quantity = o
-            .get("l")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let cumulative_filled_quantity = o
-            .get("z")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let last_executed_price = o
-            .get("L")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let commission_amount = o
-            .get("n")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let realized_profit = o
-            .get("rp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let price = lazy_f64(&o, "p");
+        let quantity = lazy_f64(&o, "q");
+        let average_price = lazy_f64(&o, "ap");
+        let last_executed_quantity = lazy_f64(&o, "l");
+        let cumulative_filled_quantity = lazy_f64(&o, "z");
+        let last_executed_price = lazy_f64(&o, "L");
+        let commission_amount = lazy_f64(&o, "n");
+        let realized_profit = lazy_f64(&o, "rp");
 
-        let order_type_str = o.get("o").and_then(|v| v.as_str()).unwrap_or("");
-        let tif_str = o.get("f").and_then(|v| v.as_str()).unwrap_or("");
-        let exe_code =
-            order_codes::execution_type_to_u8(o.get("x").and_then(|v| v.as_str()).unwrap_or(""));
-        let status_code =
-            order_codes::order_status_to_u8(o.get("X").and_then(|v| v.as_str()).unwrap_or(""));
-        let commission_asset = o
-            .get("N")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let order_type_str = lazy_string(&o, "o");
+        let tif_str = lazy_string(&o, "f");
+        let execution_type_str = lazy_string(&o, "x");
+        let status_str = lazy_string(&o, "X");
+        let exe_code = order_codes::execution_type_to_u8(&execution_type_str);
+        let status_code = order_codes::order_status_to_u8(&status_str);
+        let commission_asset = lazy_string(&o, "N");
 
         let msg = BinanceBasicOrderMsg::create(
             BinanceBasicOrderMsg::VENUE_UM,
             event_time,
             transaction_time,
-            symbol,
+            symbol.clone(),
             order_id,
             client_order_id,
             trade_id,
             side,
-            order_codes::order_type_to_u8_default_limit(order_type_str),
-            order_codes::time_in_force_to_u8(tif_str),
+            order_codes::order_type_to_u8_default_limit(&order_type_str),
+            order_codes::time_in_force_to_u8(&tif_str),
             exe_code,
             status_code,
             is_maker,
@@ -283,14 +208,14 @@ impl BinanceBasicAccountEventParser {
 
         debug!(
             "parser: orderTradeUpdate parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
-            o.get("s").and_then(|v| v.as_str()).unwrap_or(""),
+            symbol,
             client_order_id_raw,
             client_order_id,
-            o.get("x").and_then(|v| v.as_str()).unwrap_or(""),
-            o.get("X").and_then(|v| v.as_str()).unwrap_or(""),
-            o.get("q").and_then(|v| v.as_str()).unwrap_or(""),
-            o.get("l").and_then(|v| v.as_str()).unwrap_or(""),
-            o.get("L").and_then(|v| v.as_str()).unwrap_or("")
+            execution_type_str,
+            status_str,
+            lazy_string(&o, "q"),
+            lazy_string(&o, "l"),
+            lazy_string(&o, "L")
         );
 
         let event = BasicAccountEventMsg::create(
@@ -307,19 +232,15 @@ impl BinanceBasicAccountEventParser {
         1
     }
 
-    fn parse_trade_lite<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
-        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
-        let trade_time = json.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
-        let trade_id_num = json.get("t").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
+    fn parse_trade_lite<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let event_time = lazy_i64(json, "E");
+        let trade_time = lazy_i64(json, "T");
+        let trade_id_num = lazy_i64(json, "t").max(0);
         let trade_id = trade_id_num.to_string();
 
-        let symbol = json
-            .get("s")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let client_order_id_raw = json.get("c").and_then(|v| v.as_str()).unwrap_or("");
-        let client_order_id = client_order_id_raw.parse::<i64>().unwrap_or(0);
+        let symbol = lazy_string(json, "s");
+        let client_order_id_raw = lazy_string(json, "c");
+        let client_order_id = parse_i64_str(&client_order_id_raw).unwrap_or(0);
 
         if symbol.is_empty() || client_order_id == 0 {
             warn!(
@@ -329,26 +250,17 @@ impl BinanceBasicAccountEventParser {
             return 0;
         }
 
-        let side = order_codes::side_to_u8_default_buy(
-            json.get("S").and_then(|v| v.as_str()).unwrap_or(""),
-        );
-        let is_maker = json.get("m").and_then(|v| v.as_bool()).unwrap_or(false);
-        let last_executed_price = json
-            .get("L")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let last_executed_quantity = json
-            .get("l")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let side_str = lazy_string(json, "S");
+        let side = order_codes::side_to_u8_default_buy(&side_str);
+        let is_maker = lazy_bool(json, "m");
+        let last_executed_price = lazy_f64(json, "L");
+        let last_executed_quantity = lazy_f64(json, "l");
 
         let msg = BasicTradeLiteMsg::create(
             TradingVenue::BinanceFutures as u8,
             event_time,
             trade_time,
-            symbol,
+            symbol.clone(),
             client_order_id,
             &trade_id,
             side,
@@ -359,12 +271,12 @@ impl BinanceBasicAccountEventParser {
 
         debug!(
             "parser: tradeLite parsed sym={} c={} trade_id={} side={} last_qty={} last_px={}",
-            json.get("s").and_then(|v| v.as_str()).unwrap_or(""),
+            symbol,
             client_order_id,
             trade_id,
-            json.get("S").and_then(|v| v.as_str()).unwrap_or(""),
-            json.get("l").and_then(|v| v.as_str()).unwrap_or(""),
-            json.get("L").and_then(|v| v.as_str()).unwrap_or("")
+            side_str,
+            lazy_string(json, "l"),
+            lazy_string(json, "L")
         );
 
         let event = BasicAccountEventMsg::create(
@@ -381,19 +293,11 @@ impl BinanceBasicAccountEventParser {
         1
     }
 
-    fn parse_liability_change<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
-        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
-        let asset = json
-            .get("a")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let principal_str = json.get("p").and_then(|v| v.as_str()).unwrap_or("0");
-        let interest_str = json.get("i").and_then(|v| v.as_str()).unwrap_or("0");
-
-        let principal = principal_str.parse::<f64>().unwrap_or(0.0);
-        let interest = interest_str.parse::<f64>().unwrap_or(0.0);
+    fn parse_liability_change<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let event_time = lazy_i64(json, "E");
+        let asset = lazy_string(json, "a");
+        let principal = lazy_f64(json, "p");
+        let interest = lazy_f64(json, "i");
 
         let msg = BasicBorrowInterestMsg::create(event_time, asset, principal, interest);
         let payload = msg.to_bytes();
@@ -407,34 +311,29 @@ impl BinanceBasicAccountEventParser {
         1
     }
 
-    fn parse_outbound_account_position<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
-        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
-        let Some(balances) = json.get("B").and_then(|v| v.as_array()) else {
+    fn parse_outbound_account_position<S: AccountEventSink>(
+        &self,
+        json: &LazyValue<'_>,
+        tx: &S,
+    ) -> usize {
+        let event_time = lazy_i64(json, "E");
+        let Some(balances) = json.get("B").and_then(|v| v.into_array_iter()) else {
             return 0;
         };
 
         let mut count = 0;
-        for balance in balances {
-            let asset = balance
-                .get("a")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        for balance in balances
+            .filter_map(Result::ok)
+            .filter(|value| value.is_object())
+        {
+            let asset = lazy_string(&balance, "a");
             if asset.is_empty() {
                 continue;
             }
             // outboundAccountPosition carries both free and locked balances.
             // Use total balance here so equity semantics stay aligned with snapshot parsing.
-            let free_balance = balance
-                .get("f")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let locked_balance = balance
-                .get("l")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(0.0);
+            let free_balance = lazy_f64(&balance, "f");
+            let locked_balance = lazy_f64(&balance, "l");
 
             let msg = BasicBalanceMsg::create(event_time, asset, free_balance + locked_balance);
             let payload = msg.to_bytes();
@@ -451,8 +350,8 @@ impl BinanceBasicAccountEventParser {
         count
     }
 
-    fn parse_account_update<S: AccountEventSink>(&self, json: &Value, tx: &S) -> usize {
-        let event_time = json.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
+    fn parse_account_update<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let event_time = lazy_i64(json, "E");
 
         let mut count = 0;
 
@@ -462,27 +361,16 @@ impl BinanceBasicAccountEventParser {
 
         // ACCOUNT_UPDATE balance ("cw"/"wb") parsing is optional for standard mode.
         if self.parse_account_update_balances {
-            if let Some(balances) = a.get("B").and_then(|v| v.as_array()) {
-                for balance in balances {
-                    let asset = balance
-                        .get("a")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+            if let Some(balances) = a.get("B").and_then(|v| v.into_array_iter()) {
+                for balance in balances
+                    .filter_map(Result::ok)
+                    .filter(|value| value.is_object())
+                {
+                    let asset = lazy_string(&balance, "a");
                     if asset.is_empty() {
                         continue;
                     }
-                    let balance_value = balance
-                        .get("cw")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .or_else(|| {
-                            balance
-                                .get("wb")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<f64>().ok())
-                        })
-                        .unwrap_or(0.0);
+                    let balance_value = lazy_json::get_f64(&balance, &["cw", "wb"]).unwrap_or(0.0);
                     let msg = BasicBalanceMsg::create(event_time, asset, balance_value);
                     let payload = msg.to_bytes();
                     let event =
@@ -499,29 +387,20 @@ impl BinanceBasicAccountEventParser {
         }
 
         // positions (merge by (symbol, side))
-        if let Some(positions) = a.get("P").and_then(|v| v.as_array()) {
+        if let Some(positions) = a.get("P").and_then(|v| v.into_array_iter()) {
             let mut position_map: HashMap<(String, char), (f32, Option<f64>)> = HashMap::new();
-            for position in positions {
-                let symbol = position
-                    .get("s")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let position_side = match position.get("ps").and_then(|v| v.as_str()).unwrap_or("")
-                {
+            for position in positions
+                .filter_map(Result::ok)
+                .filter(|value| value.is_object())
+            {
+                let symbol = lazy_string(&position, "s");
+                let position_side = match lazy_string(&position, "ps").as_str() {
                     "LONG" => 'L',
                     "SHORT" => 'S',
                     _ => 'N',
                 };
-                let position_amount = position
-                    .get("pa")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse::<f32>().ok())
-                    .unwrap_or(0.0);
-                let unrealized_pnl = position
-                    .get("up")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse::<f64>().ok());
+                let position_amount = lazy_f64(&position, "pa") as f32;
+                let unrealized_pnl = position.get("up").and_then(|v| lazy_json::parse_f64(&v));
                 position_map.insert((symbol, position_side), (position_amount, unrealized_pnl));
             }
 
@@ -568,33 +447,70 @@ impl BinanceBasicAccountEventParser {
 
 impl Parser for BinanceBasicAccountEventParser {
     fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
-        let json_str = match std::str::from_utf8(&msg) {
-            Ok(s) => s,
-            Err(_) => return 0,
-        };
-        let json_value: Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return 0,
-        };
-        let event_json = json_value
-            .get("event")
-            .filter(|v| v.is_object())
-            .unwrap_or(&json_value);
-
-        let Some(event_type) = event_json.get("e").and_then(|v| v.as_str()) else {
+        let Some(root) = lazy_json::root_from_bytes(&msg) else {
             return 0;
         };
+        let event_json = root
+            .get("event")
+            .filter(|value| value.is_object())
+            .unwrap_or_else(|| root.clone());
 
-        match event_type {
-            "executionReport" => self.parse_execution_report(event_json, tx),
-            "ORDER_TRADE_UPDATE" => self.parse_order_trade_update(event_json, tx),
-            "TRADE_LITE" => self.parse_trade_lite(event_json, tx),
-            "ACCOUNT_UPDATE" => self.parse_account_update(event_json, tx),
-            "liabilityChange" => self.parse_liability_change(event_json, tx),
-            "outboundAccountPosition" => self.parse_outbound_account_position(event_json, tx),
+        let event_type = lazy_string(&event_json, "e");
+        if event_type.is_empty() {
+            return 0;
+        }
+
+        match event_type.as_str() {
+            "executionReport" => self.parse_execution_report(&event_json, tx),
+            "ORDER_TRADE_UPDATE" => self.parse_order_trade_update(&event_json, tx),
+            "TRADE_LITE" => self.parse_trade_lite(&event_json, tx),
+            "ACCOUNT_UPDATE" => self.parse_account_update(&event_json, tx),
+            "liabilityChange" => self.parse_liability_change(&event_json, tx),
+            "outboundAccountPosition" => self.parse_outbound_account_position(&event_json, tx),
             _ => 0,
         }
     }
+}
+
+#[inline]
+fn lazy_string(obj: &LazyValue<'_>, key: &str) -> String {
+    lazy_string_opt(obj, key).unwrap_or_default()
+}
+
+#[inline]
+fn lazy_string_opt(obj: &LazyValue<'_>, key: &str) -> Option<String> {
+    obj.get(key)
+        .and_then(|value| value.as_str().map(|s| s.to_string()))
+}
+
+#[inline]
+fn lazy_i64(obj: &LazyValue<'_>, key: &str) -> i64 {
+    obj.get(key)
+        .and_then(|value| lazy_json::parse_i64(&value))
+        .unwrap_or(0)
+}
+
+#[inline]
+fn lazy_f64(obj: &LazyValue<'_>, key: &str) -> f64 {
+    obj.get(key)
+        .and_then(|value| lazy_json::parse_f64(&value))
+        .unwrap_or(0.0)
+}
+
+#[inline]
+fn lazy_bool(obj: &LazyValue<'_>, key: &str) -> bool {
+    obj.get(key)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+#[inline]
+fn parse_i64_str(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<i64>().ok()
 }
 
 #[cfg(test)]
@@ -642,6 +558,118 @@ mod tests {
         let pnl = BasicUmUnrealizedMsg::from_bytes(pnl_payload).expect("pnl payload");
         assert_eq!(pnl.inst_id, "BTCUSDT");
         assert!((pnl.unrealized_pnl - 12.34).abs() < 1e-9);
+    }
+
+    #[test]
+    fn order_trade_update_emits_order_update_from_event_wrapper() {
+        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
+        let sink = TestAccountEventSink::new();
+        let json = Bytes::from(
+            r#"{
+                "event":{
+                    "e":"ORDER_TRADE_UPDATE",
+                    "E":1700000000000,
+                    "T":1700000000123,
+                    "o":{
+                        "s":"BTCUSDT",
+                        "c":"123456",
+                        "S":"BUY",
+                        "o":"LIMIT",
+                        "f":"GTC",
+                        "x":"TRADE",
+                        "X":"PARTIALLY_FILLED",
+                        "i":998877,
+                        "t":556677,
+                        "m":false,
+                        "p":"64000.0",
+                        "q":"0.010",
+                        "ap":"64000.5",
+                        "l":"0.002",
+                        "z":"0.004",
+                        "L":"64000.5",
+                        "n":"0.01",
+                        "rp":"1.25",
+                        "N":"USDT"
+                    }
+                }
+            }"#,
+        );
+
+        let emitted = parser.parse(json, &sink);
+        assert_eq!(emitted, 1);
+
+        let wrapped = sink.recv().expect("order event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped order");
+        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+        assert_eq!(scope, BasicAccountScope::BinanceStdUm);
+
+        let msg = BinanceBasicOrderMsg::from_bytes(payload).expect("order payload");
+        assert_eq!(msg.venue, BinanceBasicOrderMsg::VENUE_UM);
+        assert_eq!(msg.event_time, 1700000000000);
+        assert_eq!(msg.trade_time, 1700000000123);
+        assert_eq!(msg.symbol, "BTCUSDT");
+        assert_eq!(msg.client_order_id, 123456);
+        assert_eq!(msg.order_id, 998877);
+        assert_eq!(msg.trade_id, 556677);
+        assert!((msg.quantity - 0.010).abs() < 1e-12);
+        assert!((msg.cumulative_filled_quantity - 0.004).abs() < 1e-12);
+        assert!((msg.last_executed_price - 64000.5).abs() < 1e-9);
+        assert!((msg.average_price - 64000.5).abs() < 1e-9);
+        assert!((msg.commission - 0.01).abs() < 1e-12);
+        assert!((msg.realized_pnl - 1.25).abs() < 1e-12);
+        assert_eq!(msg.commission_asset, "USDT");
+    }
+
+    #[test]
+    fn execution_report_uses_orig_client_order_id_fallback() {
+        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdSpot);
+        let sink = TestAccountEventSink::new();
+        let json = Bytes::from(
+            r#"{
+                "e":"executionReport",
+                "E":1700000000000,
+                "T":1700000000123,
+                "s":"ETHUSDT",
+                "c":"autoclose-1",
+                "C":"987654",
+                "S":"SELL",
+                "o":"MARKET",
+                "f":"IOC",
+                "x":"CANCELED",
+                "X":"CANCELED",
+                "i":112233,
+                "t":0,
+                "m":true,
+                "p":"0",
+                "q":"0.5",
+                "l":"0",
+                "z":"0.2",
+                "L":"0",
+                "Z":"660.0",
+                "n":"0",
+                "N":""
+            }"#,
+        );
+
+        let emitted = parser.parse(json, &sink);
+        assert_eq!(emitted, 1);
+
+        let wrapped = sink.recv().expect("order event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped order");
+        assert_eq!(event_type, BasicAccountEventType::OrderUpdate);
+        assert_eq!(scope, BasicAccountScope::BinanceStdSpot);
+
+        let msg = BinanceBasicOrderMsg::from_bytes(payload).expect("order payload");
+        assert_eq!(msg.venue, BinanceBasicOrderMsg::VENUE_MARGIN);
+        assert_eq!(msg.symbol, "ETHUSDT");
+        assert_eq!(msg.client_order_id, 987654);
+        assert_eq!(msg.order_id, 112233);
+        assert_eq!(msg.trade_id, 0);
+        assert!(msg.is_maker != 0);
+        assert!((msg.cumulative_filled_quantity - 0.2).abs() < 1e-12);
+        assert!((msg.average_price - 3300.0).abs() < 1e-9);
     }
 
     #[test]
