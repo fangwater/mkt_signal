@@ -379,11 +379,16 @@ impl MarketMakerHedgeStrategy {
     }
 
     pub fn handle_mm_hedge_ctx(&mut self, ctx: MmHedgeCtx) {
+        let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
+        self.handle_mm_hedge_ctx_with_symbol(ctx, symbol);
+    }
+
+    pub fn handle_mm_hedge_ctx_with_symbol(&mut self, ctx: MmHedgeCtx, symbol: String) {
         let Some(expected_request_seq) = self.pending_hedge_request_seq else {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} drop unexpected MMHedge reply without pending query: symbol={} request_seq={}",
                 self.strategy_id,
-                ctx.get_opening_symbol(),
+                symbol,
                 ctx.request_seq
             );
             return;
@@ -392,7 +397,7 @@ impl MarketMakerHedgeStrategy {
             warn!(
                 "MarketMakerHedgeStrategy: strategy_id={} drop stale/duplicate MMHedge reply: symbol={} request_seq={} expected_request_seq={}",
                 self.strategy_id,
-                ctx.get_opening_symbol(),
+                symbol,
                 ctx.request_seq,
                 expected_request_seq
             );
@@ -430,7 +435,7 @@ impl MarketMakerHedgeStrategy {
         let from_key = String::from_utf8_lossy(&self.hedge_from_key);
         debug!(
             "MMHedge ctx: symbol={} price_levels={} amount_levels={} offset_levels={} signal_ts={} next_query_ts={} request_seq={} from_key='{}'",
-            ctx.get_opening_symbol(),
+            symbol,
             ctx.price_qv_list.len(),
             ctx.amount_qv_list.len(),
             ctx.price_offsets.len(),
@@ -449,7 +454,6 @@ impl MarketMakerHedgeStrategy {
             None
         };
 
-        let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
         let venue = MonitorChannel::instance().open_venue();
         let symbol_key = min_qty_symbol_key(venue, &symbol);
         let qty_multiplier = MonitorChannel::instance()
@@ -663,7 +667,7 @@ impl MarketMakerHedgeStrategy {
         };
         debug!(
             "MMHedge split: symbol={} side={} mode={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
-            ctx.get_opening_symbol(),
+            symbol,
             hedge_side_str,
             if ctx.use_taker { "taker" } else { "maker" },
             net_qty,

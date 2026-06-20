@@ -460,6 +460,14 @@ impl ExecStrategy {
 
     pub fn handle_exec_position_target_ctx(&mut self, ctx: ExecPositionTargetCtx) {
         let symbol = normalize_symbol_for_internal(&ctx.get_exec_symbol());
+        self.handle_exec_position_target_ctx_with_symbol(ctx, symbol);
+    }
+
+    pub fn handle_exec_position_target_ctx_with_symbol(
+        &mut self,
+        ctx: ExecPositionTargetCtx,
+        symbol: String,
+    ) {
         if symbol.is_empty() {
             warn!(
                 "ExecPositionTarget: strategy_id={} empty symbol",
@@ -675,6 +683,11 @@ impl ExecStrategy {
     }
 
     pub fn handle_exec_request_ctx(&mut self, ctx: ExecRequestCtx) {
+        let symbol = normalize_symbol_for_internal(&ctx.get_exec_symbol());
+        self.handle_exec_request_ctx_with_symbol(ctx, symbol);
+    }
+
+    pub fn handle_exec_request_ctx_with_symbol(&mut self, ctx: ExecRequestCtx, symbol: String) {
         let Some(side) = ctx.get_side() else {
             warn!(
                 "ExecStrategy: strategy_id={} invalid ExecRequest side={}",
@@ -682,7 +695,6 @@ impl ExecStrategy {
             );
             return;
         };
-        let symbol = normalize_symbol_for_internal(&ctx.get_exec_symbol());
         if symbol.is_empty() {
             warn!(
                 "ExecStrategy: strategy_id={} ExecRequest empty symbol",
@@ -896,11 +908,16 @@ impl ExecStrategy {
     }
 
     pub fn handle_exec_ctx(&mut self, ctx: ExecCtx) {
+        let symbol = normalize_symbol_for_internal(&ctx.get_exec_symbol());
+        self.handle_exec_ctx_with_symbol(ctx, symbol);
+    }
+
+    pub fn handle_exec_ctx_with_symbol(&mut self, ctx: ExecCtx, symbol: String) {
         let Some(expected_request_seq) = self.pending_exec_request_seq else {
             warn!(
                 "ExecStrategy: strategy_id={} drop unexpected Exec reply without pending query symbol={} request_seq={}",
                 self.strategy_id,
-                ctx.get_exec_symbol(),
+                symbol,
                 ctx.request_seq
             );
             return;
@@ -909,7 +926,7 @@ impl ExecStrategy {
             warn!(
                 "ExecStrategy: strategy_id={} drop stale/duplicate Exec reply symbol={} request_seq={} expected_request_seq={}",
                 self.strategy_id,
-                ctx.get_exec_symbol(),
+                symbol,
                 ctx.request_seq,
                 expected_request_seq
             );
@@ -926,7 +943,6 @@ impl ExecStrategy {
             );
             return;
         };
-        let symbol = normalize_symbol_for_internal(&ctx.get_exec_symbol());
         if symbol != self.symbol {
             warn!(
                 "ExecStrategy: strategy_id={} Exec symbol mismatch strategy_symbol={} signal_symbol={}",

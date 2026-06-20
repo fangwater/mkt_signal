@@ -1310,7 +1310,11 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = ArbCloseStrategy::new(strategy_id);
-                    strategy.handle_arb_close_ctx(close_ctx);
+                    strategy.handle_arb_close_ctx_with_symbols(
+                        close_ctx,
+                        opening_symbol.clone(),
+                        hedging_symbol.clone(),
+                    );
                     if strategy.is_active() {
                         debug!(
                             "🔔 收到 ArbClose 信号: opening={} {:?} hedging={} {:?} | side={:?} open_pos={:.4} hedge_pos={:.4} price={:.6}",
@@ -1620,7 +1624,8 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     if let Some(arb_hedge) =
                         strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>()
                     {
-                        arb_hedge.handle_arb_hedge_ctx(hedge_ctx);
+                        arb_hedge
+                            .handle_arb_hedge_ctx_with_symbol(hedge_ctx, hedging_symbol.clone());
                     } else {
                         warn!(
                             "ArbHedge: target strategy type mismatch strategy_id={}",
@@ -1942,7 +1947,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         .as_any_mut()
                         .downcast_mut::<MarketMakerHedgeStrategy>()
                     {
-                        mm_hedge.handle_mm_hedge_ctx(hedge_ctx);
+                        mm_hedge.handle_mm_hedge_ctx_with_symbol(hedge_ctx, symbol.clone());
                     } else {
                         warn!(
                             "MMHedge: target strategy type mismatch strategy_id={}",
@@ -1986,7 +1991,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
-                        exec.handle_exec_request_ctx(exec_ctx);
+                        exec.handle_exec_request_ctx_with_symbol(exec_ctx, symbol.clone());
                     } else {
                         warn!(
                             "ExecRequest: target strategy type mismatch strategy_id={}",
@@ -2025,7 +2030,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
-                        exec.handle_exec_ctx(exec_ctx);
+                        exec.handle_exec_ctx_with_symbol(exec_ctx, symbol.clone());
                     } else {
                         warn!(
                             "Exec: target strategy type mismatch strategy_id={}",
@@ -2080,7 +2085,10 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy_opt {
                     if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
-                        exec.handle_exec_position_target_ctx(target_ctx);
+                        exec.handle_exec_position_target_ctx_with_symbol(
+                            target_ctx,
+                            symbol.clone(),
+                        );
                     } else {
                         warn!(
                             "ExecPositionTarget: target strategy type mismatch strategy_id={}",

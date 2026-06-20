@@ -38,8 +38,18 @@ impl ArbCloseStrategy {
         self.open_side()
     }
 
-    pub fn handle_arb_close_ctx(&mut self, mut ctx: ArbOpenCtx) {
+    pub fn handle_arb_close_ctx(&mut self, ctx: ArbOpenCtx) {
         let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
+        let hedging_symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
+        self.handle_arb_close_ctx_with_symbols(ctx, symbol, hedging_symbol);
+    }
+
+    pub fn handle_arb_close_ctx_with_symbols(
+        &mut self,
+        mut ctx: ArbOpenCtx,
+        symbol: String,
+        hedging_symbol: String,
+    ) {
         if symbol.is_empty() {
             warn!(
                 "ArbCloseStrategy: strategy_id={} empty opening symbol",
@@ -48,7 +58,6 @@ impl ArbCloseStrategy {
             self.open_state.alive = false;
             return;
         }
-        let hedging_symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
         ctx.set_opening_symbol(&symbol);
         ctx.set_hedging_symbol(&hedging_symbol);
 

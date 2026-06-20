@@ -1119,11 +1119,16 @@ impl ArbHedgeStrategy {
     }
 
     pub fn handle_arb_hedge_ctx(&mut self, ctx: ArbHedgeCtx) {
+        let symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
+        self.handle_arb_hedge_ctx_with_symbol(ctx, symbol);
+    }
+
+    pub fn handle_arb_hedge_ctx_with_symbol(&mut self, ctx: ArbHedgeCtx, symbol: String) {
         let Some(expected_request_seq) = self.pending_hedge_request_seq else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedge reply without pending query: symbol={} request_seq={}",
                 self.strategy_id,
-                ctx.get_hedging_symbol(),
+                symbol,
                 ctx.request_seq
             );
             return;
@@ -1132,7 +1137,7 @@ impl ArbHedgeStrategy {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} drop stale/duplicate ArbHedge reply: symbol={} request_seq={} expected_request_seq={}",
                 self.strategy_id,
-                ctx.get_hedging_symbol(),
+                symbol,
                 ctx.request_seq,
                 expected_request_seq
             );
@@ -1151,7 +1156,6 @@ impl ArbHedgeStrategy {
             );
             return;
         };
-        let symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
         if symbol.is_empty() {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} ArbHedge empty symbol",
