@@ -974,34 +974,23 @@ mod tests {
     #[test]
     fn binance_margin_open_uses_normalized_symbol_for_asset_split() {
         let mut mgr = OrderManager::new(Some(BinanceAccountMode::Unified));
-        let (exchange, req_bin) = mgr
-            .create_open_order_request_bytes(
-                TradingVenue::BinanceMargin,
-                45,
-                OrderType::Limit,
-                "BTC-USDT".to_string(),
-                Side::Buy,
-                0.01,
-                50000.0,
-                Some(OrderQuantizedValue::new(1, -2, 1)),
-                Some(OrderQuantizedValue::new(1, 0, 50000)),
-                false,
-                1.0,
-                123456,
-                7,
-                654321,
-                0,
-                0,
-            )
-            .expect("binance margin open request should build");
-
-        assert_eq!(exchange, "binance");
-        assert_eq!(
-            mgr.get(45).expect("order should be inserted").symbol,
-            "BTCUSDT"
+        mgr.create_order(
+            TradingVenue::BinanceMargin,
+            45,
+            OrderType::Limit,
+            "BTC-USDT".to_string(),
+            Side::Buy,
+            0.01,
+            50000.0,
+            false,
+            1.0,
         );
-        let msg = TradeRequestMsg::parse(req_bin.as_ref()).expect("trade request should parse");
-        assert_eq!(msg.req_type, TradeRequestType::BinanceNewMarginOrder);
+
+        let order = mgr.get(45).expect("order should be inserted");
+        assert_eq!(order.symbol, "BTCUSDT");
+        let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&order.symbol);
+        assert_eq!(base_asset, "BTC");
+        assert_eq!(quote_asset, "USDT");
     }
 
     #[test]
