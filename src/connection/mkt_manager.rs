@@ -544,7 +544,11 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = BinanceKlineParser::new();
+                    let parser = if self.cfg.venue == TradingVenue::BinanceMargin {
+                        BinanceKlineParser::new()
+                    } else {
+                        BinanceKlineParser::raw_only()
+                    };
                     let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
                         self.cfg.venue,
                         BinanceFuturesStreamKind::Kline,
@@ -561,7 +565,11 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Aster => {
-                    let parser = BinanceKlineParser::new();
+                    let parser = if self.cfg.venue == TradingVenue::AsterMargin {
+                        BinanceKlineParser::new()
+                    } else {
+                        BinanceKlineParser::raw_only()
+                    };
                     let url =
                         SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
                     self.spawn_connection_with_mpsc(
@@ -1115,7 +1123,20 @@ impl MktManager {
         let tx = self.signal_tx.clone();
 
         let signal_parser: Box<dyn Parser> = match exchange {
-            Exchange::Binance | Exchange::Aster => Box::new(BinanceSignalParser::new(false)),
+            Exchange::Binance => {
+                if self.cfg.venue == TradingVenue::BinanceMargin {
+                    Box::new(BinanceSignalParser::new(false))
+                } else {
+                    Box::new(BinanceSignalParser::raw_only(false))
+                }
+            }
+            Exchange::Aster => {
+                if self.cfg.venue == TradingVenue::AsterMargin {
+                    Box::new(BinanceSignalParser::new(false))
+                } else {
+                    Box::new(BinanceSignalParser::raw_only(false))
+                }
+            }
             Exchange::Okex => Box::new(OkexSignalParser::new(false)),
             Exchange::Bybit => Box::new(BybitSignalParser::new(false)),
             Exchange::Bitget => Box::new(BitgetSignalParser::new()),

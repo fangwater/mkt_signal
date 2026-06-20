@@ -11,16 +11,26 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub struct BinanceSignalParser {
     source: SignalSource,
+    raw_only: bool,
 }
 
 impl BinanceSignalParser {
     pub fn new(is_ipc: bool) -> Self {
+        Self::with_raw_only(is_ipc, false)
+    }
+
+    pub fn raw_only(is_ipc: bool) -> Self {
+        Self::with_raw_only(is_ipc, true)
+    }
+
+    fn with_raw_only(is_ipc: bool, raw_only: bool) -> Self {
         Self {
             source: if is_ipc {
                 SignalSource::Ipc
             } else {
                 SignalSource::Tcp
             },
+            raw_only,
         }
     }
 }
@@ -34,6 +44,9 @@ impl Parser for BinanceSignalParser {
             } else {
                 0
             };
+        }
+        if self.raw_only {
+            return 0;
         }
 
         // Parse Binance depth message
@@ -59,7 +72,9 @@ impl Parser for BinanceSignalParser {
 }
 
 #[derive(Clone)]
-pub struct BinanceKlineParser;
+pub struct BinanceKlineParser {
+    raw_only: bool,
+}
 
 impl Default for BinanceKlineParser {
     fn default() -> Self {
@@ -69,7 +84,15 @@ impl Default for BinanceKlineParser {
 
 impl BinanceKlineParser {
     pub fn new() -> Self {
-        Self
+        Self::with_raw_only(false)
+    }
+
+    pub fn raw_only() -> Self {
+        Self::with_raw_only(true)
+    }
+
+    fn with_raw_only(raw_only: bool) -> Self {
+        Self { raw_only }
     }
 }
 
@@ -90,6 +113,9 @@ impl Parser for BinanceKlineParser {
             } else {
                 0
             };
+        }
+        if self.raw_only {
+            return 0;
         }
 
         // Parse Binance kline message
@@ -1320,6 +1346,20 @@ mod tests {
     }
 
     #[test]
+    fn binance_signal_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"\u0045":1700000000001}"#;
+
+        let fallback_parser = BinanceSignalParser::new(false);
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 1);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::TimeSignal);
+
+        let raw_only_parser = BinanceSignalParser::raw_only(false);
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
     fn binance_kline_parser_uses_raw_closed_kline() {
         let parser = BinanceKlineParser::new();
         let out = parse_one(
@@ -1332,6 +1372,21 @@ mod tests {
         assert_eq!(get_msg_type(&out[0]), MktMsgType::Kline);
         assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
         assert_eq!(kline_timestamp(&out[0]), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn binance_kline_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"e":"kline","E":1700000000001,"\u0073":"BTCUSDT",
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":true}}"#;
+
+        let fallback_parser = BinanceKlineParser::new();
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 1);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::Kline);
+
+        let raw_only_parser = BinanceKlineParser::raw_only();
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
     }
 
     #[test]
