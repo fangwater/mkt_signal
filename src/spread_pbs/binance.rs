@@ -26,6 +26,7 @@ const BINANCE_FUTURES_MM_WS_URL: &str = "wss://fstream-mm.binance.com/public/str
 const BINANCE_FUTURES_DERIVATIVES_WS_URL: &str = "wss://fstream.binance.com/market/ws";
 const BINANCE_FUTURES_MM_DERIVATIVES_WS_URL: &str = "wss://fstream-mm.binance.com/market/ws";
 const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
+const SYMBOL_SLOT_CACHE_SIZE: usize = 128;
 const ENV_BINANCE_FUTURES_BBO_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_BBO_MODE";
 const ENV_BINANCE_FUTURES_BOOK_TICKER: &str = "SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER";
 pub(crate) const ENV_BINANCE_FUTURES_MM_WS_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE";
@@ -39,17 +40,17 @@ pub(crate) fn binance_futures_standard_ws_url() -> &'static str {
 pub struct BinanceAdapter {
     venue: TradingVenue,
     symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,
-    last_symbol_slot: RefCell<Option<LastSymbolSlot>>,
+    symbol_slot_cache: RefCell<SymbolSlotCache>,
 }
 
-#[derive(Clone, Copy)]
-struct LastSymbolSlot {
+#[derive(Clone, Copy, Default)]
+struct SymbolSlotCacheEntry {
     symbol: [u8; 32],
     len: u8,
     slot: usize,
 }
 
-impl LastSymbolSlot {
+impl SymbolSlotCacheEntry {
     fn new(symbol: &str, slot: usize) -> Option<Self> {
         let bytes = symbol.as_bytes();
         let len = u8::try_from(bytes.len()).ok()?;
@@ -67,8 +68,44 @@ impl LastSymbolSlot {
 
     fn matches(self, symbol: &str) -> bool {
         let len = self.len as usize;
-        symbol.len() == len && symbol.as_bytes() == &self.symbol[..len]
+        len != 0 && symbol.len() == len && symbol.as_bytes() == &self.symbol[..len]
     }
+}
+
+struct SymbolSlotCache {
+    entries: [SymbolSlotCacheEntry; SYMBOL_SLOT_CACHE_SIZE],
+}
+
+impl SymbolSlotCache {
+    fn new() -> Self {
+        Self {
+            entries: [SymbolSlotCacheEntry::default(); SYMBOL_SLOT_CACHE_SIZE],
+        }
+    }
+
+    fn get(&self, symbol: &str) -> Option<usize> {
+        let entry = self.entries[slot_cache_index(symbol)];
+        entry.matches(symbol).then_some(entry.slot)
+    }
+
+    fn insert(&mut self, symbol: &str, slot: usize) {
+        if let Some(entry) = SymbolSlotCacheEntry::new(symbol, slot) {
+            self.entries[slot_cache_index(symbol)] = entry;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries = [SymbolSlotCacheEntry::default(); SYMBOL_SLOT_CACHE_SIZE];
+    }
+}
+
+fn slot_cache_index(symbol: &str) -> usize {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for b in symbol.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash as usize & (SYMBOL_SLOT_CACHE_SIZE - 1)
 }
 
 impl BinanceAdapter {
@@ -76,7 +113,7 @@ impl BinanceAdapter {
         Self {
             venue,
             symbol_slot_by_symbol: RefCell::new(fast_hash_map()),
-            last_symbol_slot: RefCell::new(None),
+            symbol_slot_cache: RefCell::new(SymbolSlotCache::new()),
         }
     }
 }
@@ -175,20 +212,16 @@ impl VenueAdapter for BinanceAdapter {
             let next_idx = slots.len();
             slots.entry(symbol.to_ascii_uppercase()).or_insert(next_idx);
         }
-        self.last_symbol_slot.borrow_mut().take();
+        self.symbol_slot_cache.borrow_mut().clear();
     }
 
     fn symbol_slot_index(&self, symbol: &str) -> Option<usize> {
-        if let Some(cached) = *self.last_symbol_slot.borrow() {
-            if cached.matches(symbol) {
-                return Some(cached.slot);
-            }
+        if let Some(slot) = self.symbol_slot_cache.borrow().get(symbol) {
+            return Some(slot);
         }
 
         let slot = self.symbol_slot_by_symbol.borrow().get(symbol).copied()?;
-        if let Some(cached) = LastSymbolSlot::new(symbol, slot) {
-            *self.last_symbol_slot.borrow_mut() = Some(cached);
-        }
+        self.symbol_slot_cache.borrow_mut().insert(symbol, slot);
         Some(slot)
     }
 
@@ -809,6 +842,20 @@ mod tests {
         assert_eq!(msgs[2]["params"].as_array().unwrap().len(), 50);
         assert_eq!(msgs[0]["params"][0], "sym0usdt@bookTicker");
         assert_eq!(msgs[0]["params"][1], "sym1usdt@bookTicker");
+    }
+
+    #[test]
+    fn symbol_slot_cache_handles_interleaved_symbols_and_seed_reset() {
+        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
+        a.seed_symbols(&["BTCUSDT".to_string(), "ETHUSDT".to_string()]);
+
+        assert_eq!(a.symbol_slot_index("BTCUSDT"), Some(0));
+        assert_eq!(a.symbol_slot_index("ETHUSDT"), Some(1));
+        assert_eq!(a.symbol_slot_index("BTCUSDT"), Some(0));
+
+        a.seed_symbols(&["SOLUSDT".to_string()]);
+        assert_eq!(a.symbol_slot_index("BTCUSDT"), None);
+        assert_eq!(a.symbol_slot_index("SOLUSDT"), Some(0));
     }
 
     #[test]
