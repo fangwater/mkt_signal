@@ -3,10 +3,10 @@ use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
 use mkt_parsers::msg::mkt_msg::{
     ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed,
-    index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed, liquidation_msg_bytes_borrowed,
-    mark_price_msg_bytes_borrowed, trade_msg_bytes_borrowed, AskBidSpreadMsg, FundingRateMsg,
-    IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg, SignalMsg, SignalSource,
-    TradeMsg,
+    inc_msg_bytes_borrowed, index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed,
+    liquidation_msg_bytes_borrowed, mark_price_msg_bytes_borrowed, trade_msg_bytes_borrowed,
+    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
+    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -604,27 +604,32 @@ fn publish_raw_book_chunks(
     for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
         chunks.into_iter().enumerate()
     {
-        let mut inc_msg = IncMsg::create(
-            book.symbol.to_string(),
+        let inc_bytes = inc_msg_bytes_borrowed(
+            book.symbol,
             book.first_update_id,
             book.final_update_id,
             book.timestamp_us,
             book.is_snapshot,
+            chunk_idx == total_chunks - 1,
+            chunk_idx as u8,
             bids_count as u32,
             asks_count as u32,
+            book.bids
+                .as_slice()
+                .iter()
+                .skip(bids_start)
+                .take(bids_count)
+                .copied()
+                .map(|level| Level::from_values(level.price, level.amount)),
+            book.asks
+                .as_slice()
+                .iter()
+                .skip(asks_start)
+                .take(asks_count)
+                .copied()
+                .map(|level| Level::from_values(level.price, level.amount)),
         );
-        inc_msg.set_chunk_index(chunk_idx as u8);
-        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-        set_inc_levels_from_raw(
-            book.bids.as_slice(),
-            book.asks.as_slice(),
-            bids_start,
-            bids_count,
-            asks_start,
-            asks_count,
-            &mut inc_msg,
-        );
-        if tx.send(inc_msg.to_bytes()).is_ok() {
+        if tx.send(inc_bytes).is_ok() {
             sent_count += 1;
         }
     }
@@ -644,27 +649,32 @@ fn publish_raw_book_view_chunks(
     for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
         chunks.into_iter().enumerate()
     {
-        let mut inc_msg = IncMsg::create(
-            book.symbol.to_string(),
+        let Some(bids_iter) = binance_codec::raw_levels_iter(book.bids_raw) else {
+            continue;
+        };
+        let Some(asks_iter) = binance_codec::raw_levels_iter(book.asks_raw) else {
+            continue;
+        };
+        let inc_bytes = inc_msg_bytes_borrowed(
+            book.symbol,
             book.first_update_id,
             book.final_update_id,
             book.timestamp_us,
             book.is_snapshot,
+            chunk_idx == total_chunks - 1,
+            chunk_idx as u8,
             bids_count as u32,
             asks_count as u32,
+            bids_iter
+                .skip(bids_start)
+                .take(bids_count)
+                .map(|level| Level::from_values(level.price, level.amount)),
+            asks_iter
+                .skip(asks_start)
+                .take(asks_count)
+                .map(|level| Level::from_values(level.price, level.amount)),
         );
-        inc_msg.set_chunk_index(chunk_idx as u8);
-        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-        set_inc_levels_from_raw_view(
-            book.bids_raw,
-            book.asks_raw,
-            bids_start,
-            bids_count,
-            asks_start,
-            asks_count,
-            &mut inc_msg,
-        );
-        if tx.send(inc_msg.to_bytes()).is_ok() {
+        if tx.send(inc_bytes).is_ok() {
             sent_count += 1;
         }
     }
@@ -690,41 +700,6 @@ fn set_inc_levels_from_parsed(
     for i in 0..asks_count {
         let src_idx = asks_start + i;
         if let Some(level) = asks.get(src_idx) {
-            inc_msg.set_ask_level(i, Level::from_values(level.price, level.amount));
-        }
-    }
-}
-
-fn set_inc_levels_from_raw(
-    bids: &[binance_codec::Level],
-    asks: &[binance_codec::Level],
-    bids_start: usize,
-    bids_count: usize,
-    asks_start: usize,
-    asks_count: usize,
-    inc_msg: &mut IncMsg,
-) {
-    set_inc_levels_from_parsed(
-        bids, asks, bids_start, bids_count, asks_start, asks_count, inc_msg,
-    );
-}
-
-fn set_inc_levels_from_raw_view(
-    bids_raw: &[u8],
-    asks_raw: &[u8],
-    bids_start: usize,
-    bids_count: usize,
-    asks_start: usize,
-    asks_count: usize,
-    inc_msg: &mut IncMsg,
-) {
-    if let Some(iter) = binance_codec::raw_levels_iter(bids_raw) {
-        for (i, level) in iter.skip(bids_start).take(bids_count).enumerate() {
-            inc_msg.set_bid_level(i, Level::from_values(level.price, level.amount));
-        }
-    }
-    if let Some(iter) = binance_codec::raw_levels_iter(asks_raw) {
-        for (i, level) in iter.skip(asks_start).take(asks_count).enumerate() {
             inc_msg.set_ask_level(i, Level::from_values(level.price, level.amount));
         }
     }

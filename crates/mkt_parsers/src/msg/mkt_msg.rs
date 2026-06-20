@@ -150,6 +150,45 @@ pub fn liquidation_msg_bytes_borrowed(
     buf.freeze()
 }
 
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn inc_msg_bytes_borrowed(
+    symbol: &str,
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    is_last: bool,
+    chunk_index: u8,
+    bids_count: u32,
+    asks_count: u32,
+    bids: impl IntoIterator<Item = Level>,
+    asks: impl IntoIterator<Item = Level>,
+) -> Bytes {
+    let levels_size = (bids_count + asks_count) as usize * std::mem::size_of::<Level>();
+    let mut buf =
+        BytesMut::with_capacity(4 + 4 + symbol.len() + 8 + 8 + 8 + 1 + 7 + 4 + 4 + levels_size);
+    put_symbol_header(&mut buf, MktMsgType::OrderBookInc, symbol);
+    buf.put_i64_le(first_update_id);
+    buf.put_i64_le(final_update_id);
+    buf.put_i64_le(timestamp);
+    buf.put_u8(if is_snapshot { 1 } else { 0 });
+    buf.put_u8(if is_last { 1 } else { 0 });
+    buf.put_u8(chunk_index);
+    buf.put_slice(&[0u8; 5]);
+    buf.put_u32_le(bids_count);
+    buf.put_u32_le(asks_count);
+    for level in bids {
+        buf.put_f64_le(level.price);
+        buf.put_f64_le(level.amount);
+    }
+    for level in asks {
+        buf.put_f64_le(level.price);
+        buf.put_f64_le(level.amount);
+    }
+    buf.freeze()
+}
+
 #[allow(dead_code)]
 pub struct MktMsg {
     pub msg_type: MktMsgType,
@@ -1557,6 +1596,32 @@ mod tests {
         assert_eq!(
             liquidation_msg_bytes_borrowed("BTCUSDT", 'S', 2.0, 3.0, 19),
             LiquidationMsg::create("BTCUSDT".to_string(), 'S', 2.0, 3.0, 19).to_bytes()
+        );
+
+        let mut inc = IncMsg::create("BTCUSDT".to_string(), 20, 21, 22, true, 1, 2);
+        inc.set_is_last(false);
+        inc.set_chunk_index(3);
+        inc.set_bid_level(0, Level::from_values(100.0, 1.0));
+        inc.set_ask_level(0, Level::from_values(101.0, 2.0));
+        inc.set_ask_level(1, Level::from_values(102.0, 3.0));
+        assert_eq!(
+            inc_msg_bytes_borrowed(
+                "BTCUSDT",
+                20,
+                21,
+                22,
+                true,
+                false,
+                3,
+                1,
+                2,
+                [Level::from_values(100.0, 1.0)],
+                [
+                    Level::from_values(101.0, 2.0),
+                    Level::from_values(102.0, 3.0),
+                ],
+            ),
+            inc.to_bytes()
         );
     }
 }
