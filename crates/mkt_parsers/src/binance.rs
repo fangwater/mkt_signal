@@ -479,7 +479,6 @@ pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
 
 pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
     let data = combined_payload(raw).unwrap_or(raw);
-    let stream_symbol = stream_name(raw).and_then(parse_stream_symbol_borrowed);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -518,7 +517,10 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
         }
     }
 
-    let symbol = symbol.or(stream_symbol)?;
+    let symbol = match symbol {
+        Some(symbol) => symbol,
+        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+    };
     if let Some(last_update_id) = last_update_id {
         return Some(RawBook {
             symbol,
@@ -558,7 +560,6 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
 
 pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
     let data = combined_payload(raw).unwrap_or(raw);
-    let stream_symbol = stream_name(raw).and_then(parse_stream_symbol_borrowed);
     let mut scanner = JsonObjectScanner::new(data);
     let mut seen_event = false;
     let mut symbol = None;
@@ -597,7 +598,10 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
         }
     }
 
-    let symbol = symbol.or(stream_symbol)?;
+    let symbol = match symbol {
+        Some(symbol) => symbol,
+        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+    };
     let bids_raw = bids_raw.unwrap_or(b"[]");
     let asks_raw = asks_raw.unwrap_or(b"[]");
     let bids_count = raw_levels_count(bids_raw)?;
