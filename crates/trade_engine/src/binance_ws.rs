@@ -8,20 +8,12 @@ use anyhow::{anyhow, Context, Result};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::Sha256;
-use std::collections::BTreeMap;
 
 type HmacSha256 = Hmac<Sha256>;
 
 const METHOD_ORDER_PLACE: &str = "order.place";
 const METHOD_ORDER_CANCEL: &str = "order.cancel";
 const METHOD_ORDER_STATUS: &str = "order.status";
-
-#[derive(serde::Serialize)]
-struct BinanceWsPayload<'a> {
-    id: i64,
-    method: &'a str,
-    params: &'a BTreeMap<String, String>,
-}
 
 fn parse_i64_value(v: &Value) -> Option<i64> {
     if let Some(n) = v.as_i64() {
@@ -71,31 +63,11 @@ fn parse_f64_value(v: &Value) -> Option<f64> {
     None
 }
 
-fn parse_params(raw: &[u8]) -> Result<BTreeMap<String, String>> {
-    let raw_str = std::str::from_utf8(raw).with_context(|| "binance ws params not utf8")?;
-    Ok(url::form_urlencoded::parse(raw_str.as_bytes())
-        .into_owned()
-        .collect())
-}
-
-fn serialize_params(params: &BTreeMap<String, String>) -> String {
-    let mut ser = url::form_urlencoded::Serializer::new(String::new());
-    for (k, v) in params.iter() {
-        ser.append_pair(k, v);
-    }
-    ser.finish()
-}
-
 fn sign_query(query: &str, secret: &str) -> Result<String> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .map_err(|_| anyhow!("invalid binance secret"))?;
     mac.update(query.as_bytes());
     Ok(hex::encode(mac.finalize().into_bytes()))
-}
-
-fn sign_params(params: &BTreeMap<String, String>, secret: &str) -> Result<String> {
-    let query = serialize_params(params);
-    sign_query(&query, secret)
 }
 
 fn sign_ordered_params(params: &[(&str, &str)], secret: &str) -> Result<String> {
@@ -105,22 +77,6 @@ fn sign_ordered_params(params: &[(&str, &str)], secret: &str) -> Result<String> 
     }
     let query = ser.finish();
     sign_query(&query, secret)
-}
-
-fn build_signed_params(raw: &[u8], creds: &ApiKey) -> Result<BTreeMap<String, String>> {
-    let mut params = parse_params(raw)?;
-    params.insert("apiKey".to_string(), creds.key.trim().to_string());
-    params.insert(
-        "timestamp".to_string(),
-        chrono::Utc::now().timestamp_millis().to_string(),
-    );
-    params
-        .entry("recvWindow".to_string())
-        .or_insert_with(|| RestConstants::RECV_WINDOW_MS.to_string());
-    params.remove("signature");
-    let sig = sign_params(&params, creds.secret.trim())?;
-    params.insert("signature".to_string(), sig);
-    Ok(params)
 }
 
 fn push_json_string(out: &mut String, value: &str) {
@@ -293,12 +249,15 @@ fn build_typed_order_payload_fast(
     msg: &TradeRequestMsg,
     transport_id: i64,
     creds: &ApiKey,
-) -> Result<Option<String>> {
+) -> Result<String> {
     match msg.req_type {
         TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
-            let Some(params) = BinanceNewOrderParams::from_bytes(&msg.params) else {
-                return Ok(None);
-            };
+            let params = BinanceNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+                anyhow!(
+                    "invalid typed binance ws new order params for {:?}",
+                    msg.req_type
+                )
+            })?;
             build_new_order_payload_fast(
                 &params,
                 msg.req_type,
@@ -306,15 +265,20 @@ fn build_typed_order_payload_fast(
                 transport_id,
                 creds,
             )
-            .map(Some)
         }
         TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
-            let Some(params) = BinanceCancelOrderParams::from_bytes(&msg.params) else {
-                return Ok(None);
-            };
-            build_cancel_order_payload_fast(&params, transport_id, creds).map(Some)
+            let params = BinanceCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+                anyhow!(
+                    "invalid typed binance ws cancel order params for {:?}",
+                    msg.req_type
+                )
+            })?;
+            build_cancel_order_payload_fast(&params, transport_id, creds)
         }
-        _ => Ok(None),
+        _ => Err(anyhow!(
+            "unsupported binance ws request type: {:?}",
+            msg.req_type
+        )),
     }
 }
 
@@ -326,10 +290,9 @@ struct OrderStatusParams {
     recv_window: Option<String>,
 }
 
-fn parse_order_status_params(raw: &[u8]) -> Result<Option<OrderStatusParams>> {
+fn parse_order_status_params(raw: &[u8]) -> Result<OrderStatusParams> {
     let raw_str = std::str::from_utf8(raw).with_context(|| "binance ws query params not utf8")?;
     let mut params = OrderStatusParams::default();
-    let mut has_unknown = false;
 
     for (key, value) in url::form_urlencoded::parse(raw_str.as_bytes()) {
         match key.as_ref() {
@@ -337,18 +300,24 @@ fn parse_order_status_params(raw: &[u8]) -> Result<Option<OrderStatusParams>> {
             "orderId" => params.order_id = Some(value.into_owned()),
             "origClientOrderId" => params.orig_client_order_id = Some(value.into_owned()),
             "recvWindow" => params.recv_window = Some(value.into_owned()),
-            "apiKey" | "timestamp" | "signature" => {}
-            _ => has_unknown = true,
+            _ => return Err(anyhow!("unsupported binance ws order.status param: {key}")),
         }
     }
 
-    if has_unknown
-        || params.symbol.is_none()
-        || (params.order_id.is_none() && params.orig_client_order_id.is_none())
-    {
-        Ok(None)
-    } else {
-        Ok(Some(params))
+    if params.symbol.is_none() {
+        return Err(anyhow!("missing binance ws order.status symbol param"));
+    }
+    match (
+        params.order_id.is_some(),
+        params.orig_client_order_id.is_some(),
+    ) {
+        (true, false) | (false, true) => Ok(params),
+        (false, false) => Err(anyhow!(
+            "missing binance ws order.status orderId/origClientOrderId param"
+        )),
+        (true, true) => Err(anyhow!(
+            "binance ws order.status params must not include both orderId and origClientOrderId"
+        )),
     }
 }
 
@@ -356,10 +325,8 @@ fn build_order_status_payload_fast(
     raw: &[u8],
     transport_id: i64,
     creds: &ApiKey,
-) -> Result<Option<String>> {
-    let Some(params) = parse_order_status_params(raw)? else {
-        return Ok(None);
-    };
+) -> Result<String> {
+    let params = parse_order_status_params(raw)?;
     let api_key = creds.key.trim();
     let recv_window = params
         .recv_window
@@ -379,26 +346,7 @@ fn build_order_status_payload_fast(
     ordered.push(("symbol", symbol.as_str()));
     ordered.push(("timestamp", timestamp.as_str()));
 
-    build_signed_payload_json(transport_id, METHOD_ORDER_STATUS, &ordered, creds).map(Some)
-}
-
-fn binance_trade_query(msg: &TradeRequestMsg) -> Option<String> {
-    match msg.req_type {
-        TradeRequestType::BinanceNewUMOrder
-        | TradeRequestType::BinanceNewMarginOrder
-        | TradeRequestType::BinanceWsNewUMOrder
-        | TradeRequestType::BinanceWsNewMarginOrder => {
-            BinanceNewOrderParams::from_bytes(&msg.params)
-                .map(|params| params.to_query_string(msg.req_type, msg.client_order_id))
-        }
-        TradeRequestType::BinanceCancelUMOrder
-        | TradeRequestType::BinanceCancelMarginOrder
-        | TradeRequestType::BinanceWsCancelUMOrder
-        | TradeRequestType::BinanceWsCancelMarginOrder => {
-            BinanceCancelOrderParams::from_bytes(&msg.params).map(|params| params.to_query_string())
-        }
-        _ => None,
-    }
+    build_signed_payload_json(transport_id, METHOD_ORDER_STATUS, &ordered, creds)
 }
 
 pub fn build_order_payload(
@@ -406,37 +354,18 @@ pub fn build_order_payload(
     transport_id: i64,
     creds: &ApiKey,
 ) -> Result<String> {
-    let method = match msg.req_type {
+    match msg.req_type {
         TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
-            METHOD_ORDER_PLACE
+            build_typed_order_payload_fast(msg, transport_id, creds)
         }
         TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
-            METHOD_ORDER_CANCEL
+            build_typed_order_payload_fast(msg, transport_id, creds)
         }
-        _ => {
-            return Err(anyhow!(
-                "unsupported binance ws request type: {:?}",
-                msg.req_type
-            ))
-        }
-    };
-
-    if let Some(payload) = build_typed_order_payload_fast(msg, transport_id, creds)? {
-        return Ok(payload);
+        _ => Err(anyhow!(
+            "unsupported binance ws request type: {:?}",
+            msg.req_type
+        )),
     }
-
-    let query = binance_trade_query(msg);
-    let params = if let Some(query) = query {
-        build_signed_params(query.as_bytes(), creds)?
-    } else {
-        build_signed_params(&msg.params, creds)?
-    };
-    serde_json::to_string(&BinanceWsPayload {
-        id: transport_id,
-        method,
-        params: &params,
-    })
-    .with_context(|| "serialize binance ws payload")
 }
 
 pub fn build_query_payload(
@@ -453,17 +382,7 @@ pub fn build_query_payload(
         ));
     }
 
-    if let Some(payload) = build_order_status_payload_fast(&msg.params, transport_id, creds)? {
-        return Ok(payload);
-    }
-
-    let params = build_signed_params(&msg.params, creds)?;
-    serde_json::to_string(&BinanceWsPayload {
-        id: transport_id,
-        method: METHOD_ORDER_STATUS,
-        params: &params,
-    })
-    .with_context(|| "serialize binance ws query payload")
+    build_order_status_payload_fast(&msg.params, transport_id, creds)
 }
 
 #[derive(Debug, Clone)]
@@ -538,7 +457,7 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) 
 
 #[cfg(test)]
 mod tests {
-    use super::{build_order_payload, build_query_payload, sign_params};
+    use super::{build_order_payload, build_query_payload, sign_ordered_params};
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
     use crate::trade_request::{
         BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
@@ -570,7 +489,11 @@ mod tests {
                 value.as_str().expect("string param").to_string(),
             );
         }
-        let expected = sign_params(&sorted, creds().secret.trim()).expect("signature");
+        let ordered: Vec<(&str, &str)> = sorted
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let expected = sign_ordered_params(&ordered, creds().secret.trim()).expect("signature");
         assert_eq!(
             value["params"]["signature"].as_str().expect("signature"),
             expected
@@ -671,5 +594,36 @@ mod tests {
             .as_str()
             .is_some_and(|s| !s.is_empty()));
         assert_signature_matches_sorted_params(&value);
+    }
+
+    #[test]
+    fn rejects_non_typed_binance_ws_order_params() {
+        let msg = TradeRequestMsg {
+            req_type: TradeRequestType::BinanceWsNewUMOrder,
+            create_time: 0,
+            client_order_id: 42,
+            params: Bytes::from_static(b"symbol=BTCUSDT&side=BUY"),
+            ipc_recv: None,
+        };
+
+        let err = build_order_payload(&msg, 99, &creds()).expect_err("should reject raw params");
+        assert!(err
+            .to_string()
+            .contains("invalid typed binance ws new order params"));
+    }
+
+    #[test]
+    fn rejects_unknown_binance_ws_query_param() {
+        let msg = QueryRequestMsg {
+            req_type: QueryRequestType::BinanceWsUMQuery,
+            create_time: 0,
+            client_query_id: 7,
+            params: Bytes::from_static(b"symbol=BTCUSDT&origClientOrderId=42&foo=bar"),
+        };
+
+        let err = build_query_payload(&msg, 100, &creds()).expect_err("should reject raw params");
+        assert!(err
+            .to_string()
+            .contains("unsupported binance ws order.status param"));
     }
 }
