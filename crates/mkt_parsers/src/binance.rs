@@ -176,6 +176,16 @@ struct RawLiquidationFields<'a> {
     order_timestamp_us: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RawKlineFields {
+    open_price: f64,
+    high_price: f64,
+    low_price: f64,
+    close_price: f64,
+    volume: f64,
+    timestamp: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Book {
     pub symbol: String,
@@ -669,8 +679,7 @@ pub fn parse_incremental_json(value: &Value) -> Option<Book> {
 }
 
 pub fn parse_event_time_ms_raw(raw: &[u8]) -> Option<i64> {
-    let data = combined_value(raw).unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject { mut scanner, .. } = raw_payload_object(raw);
     while let Some((key, value)) = scanner.next_field() {
         if key == b"E" {
             return value.i64();
@@ -680,20 +689,28 @@ pub fn parse_event_time_ms_raw(raw: &[u8]) -> Option<i64> {
 }
 
 pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
-    let data = combined_value(raw).unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject { mut scanner, .. } = raw_payload_object(raw);
     let mut symbol = None;
     let mut kline = None;
 
-    while let Some((key, value)) = scanner.next_field() {
+    while let Some(key) = scanner.next_key() {
         match key {
-            b"s" => symbol = Some(value.string_str()?),
-            b"k" => kline = Some(value.object_bytes()?),
-            _ => {}
+            b"s" => symbol = Some(scanner.take_value()?.string_str()?),
+            b"k" => kline = Some(parse_kline_object_scanner(&mut scanner)?),
+            _ => scanner.skip_value()?,
         }
     }
 
-    parse_kline_object_raw(kline?, symbol?)
+    let kline = kline?;
+    Some(RawKline {
+        symbol: symbol?,
+        open_price: kline.open_price,
+        high_price: kline.high_price,
+        low_price: kline.low_price,
+        close_price: kline.close_price,
+        volume: kline.volume,
+        timestamp: kline.timestamp,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1206,8 +1223,7 @@ fn parse_liquidation_json(payload: &Value) -> Vec<Derivative> {
     }]
 }
 
-fn parse_kline_object_raw<'a>(raw: &'a [u8], symbol: &'a str) -> Option<RawKline<'a>> {
-    let mut scanner = JsonObjectScanner::new(raw);
+fn parse_kline_object_scanner(scanner: &mut JsonObjectScanner<'_>) -> Option<RawKlineFields> {
     let mut is_closed = false;
     let mut open_price = None;
     let mut high_price = None;
@@ -1216,24 +1232,23 @@ fn parse_kline_object_raw<'a>(raw: &'a [u8], symbol: &'a str) -> Option<RawKline
     let mut volume = None;
     let mut timestamp = None;
 
-    while let Some((key, value)) = scanner.next_field() {
+    while let Some(key) = scanner.next_key() {
         match key {
-            b"x" => is_closed = value.bool()?,
-            b"o" => open_price = Some(value.f64()?),
-            b"h" => high_price = Some(value.f64()?),
-            b"l" => low_price = Some(value.f64()?),
-            b"c" => close_price = Some(value.f64()?),
-            b"v" => volume = Some(value.f64()?),
-            b"t" => timestamp = Some(value.i64()?),
-            _ => {}
+            b"x" => is_closed = scanner.take_value()?.bool()?,
+            b"o" => open_price = Some(scanner.take_value()?.f64()?),
+            b"h" => high_price = Some(scanner.take_value()?.f64()?),
+            b"l" => low_price = Some(scanner.take_value()?.f64()?),
+            b"c" => close_price = Some(scanner.take_value()?.f64()?),
+            b"v" => volume = Some(scanner.take_value()?.f64()?),
+            b"t" => timestamp = Some(scanner.take_value()?.i64()?),
+            _ => scanner.skip_value()?,
         }
     }
 
     if !is_closed {
         return None;
     }
-    Some(RawKline {
-        symbol,
+    Some(RawKlineFields {
         open_price: open_price?,
         high_price: high_price?,
         low_price: low_price?,
@@ -1808,16 +1823,6 @@ fn raw_payload_object(raw: &[u8]) -> RawPayloadObject<'_> {
         scanner: JsonObjectScanner::new(data.unwrap_or(raw)),
         stream,
     }
-}
-
-fn combined_value(raw: &[u8]) -> Option<&[u8]> {
-    let mut scanner = JsonObjectScanner::new(raw);
-    while let Some((key, value)) = scanner.next_field() {
-        if key == b"data" {
-            return Some(trim_ascii(value.raw));
-        }
-    }
-    None
 }
 
 #[derive(Clone, Copy)]
@@ -2444,6 +2449,19 @@ mod tests {
         assert!((kline.low_price - 24.5).abs() < 1e-9);
         assert!((kline.close_price - 25.5).abs() < 1e-9);
         assert!((kline.volume - 123.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_closed_kline_when_kline_precedes_symbol() {
+        let raw = br#"{"e":"kline","E":1700000000001,
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":true},
+            "s":"BTCUSDT"}"#;
+
+        let kline = parse_kline_raw_borrowed(raw).expect("closed kline");
+
+        assert_eq!(kline.symbol, "BTCUSDT");
+        assert_eq!(kline.timestamp, 1_700_000_000_000);
+        assert!((kline.close_price - 25.5).abs() < 1e-9);
     }
 
     #[test]
