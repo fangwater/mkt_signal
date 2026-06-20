@@ -1,3 +1,4 @@
+use ahash::RandomState;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -29,6 +30,13 @@ pub use trade_engine_response::{
 pub use trade_request_type::TradeRequestType;
 pub use trade_update::TradeUpdate;
 pub use trade_update_lite::TradeUpdateLite;
+
+type FastHashMap<K, V> = HashMap<K, V, RandomState>;
+
+#[inline]
+fn fast_hash_map<K, V>() -> FastHashMap<K, V> {
+    HashMap::with_hasher(RandomState::new())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceAccountMode {
@@ -520,10 +528,10 @@ pub struct ProtectedCumulativeFill {
 
 /// 订单管理器
 pub struct OrderManager {
-    orders: HashMap<i64, Order>,                     //映射order id到order
-    pending_limit_order_count: HashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
-    pending_limit_buy_order_count: HashMap<String, i32>,
-    pending_limit_sell_order_count: HashMap<String, i32>,
+    orders: FastHashMap<i64, Order>, //映射order id到order
+    pending_limit_order_count: FastHashMap<String, i32>, //单个交易品种当前有多少待成交的maker单
+    pending_limit_buy_order_count: FastHashMap<String, i32>,
+    pending_limit_sell_order_count: FastHashMap<String, i32>,
     binance_account_mode: Option<BinanceAccountMode>,
 }
 
@@ -536,10 +544,10 @@ impl OrderManager {
             );
         }
         Self {
-            orders: HashMap::new(),
-            pending_limit_order_count: HashMap::new(),
-            pending_limit_buy_order_count: HashMap::new(),
-            pending_limit_sell_order_count: HashMap::new(),
+            orders: fast_hash_map(),
+            pending_limit_order_count: fast_hash_map(),
+            pending_limit_buy_order_count: fast_hash_map(),
+            pending_limit_sell_order_count: fast_hash_map(),
             binance_account_mode,
         }
     }
@@ -1060,14 +1068,14 @@ impl OrderManager {
             .then(|| (normalize_symbol_for_internal(&order.symbol), order.side))
     }
 
-    fn pending_limit_side_count_map(&self, side: Side) -> &HashMap<String, i32> {
+    fn pending_limit_side_count_map(&self, side: Side) -> &FastHashMap<String, i32> {
         match side {
             Side::Buy => &self.pending_limit_buy_order_count,
             Side::Sell => &self.pending_limit_sell_order_count,
         }
     }
 
-    fn pending_limit_side_count_map_mut(&mut self, side: Side) -> &mut HashMap<String, i32> {
+    fn pending_limit_side_count_map_mut(&mut self, side: Side) -> &mut FastHashMap<String, i32> {
         match side {
             Side::Buy => &mut self.pending_limit_buy_order_count,
             Side::Sell => &mut self.pending_limit_sell_order_count,
@@ -1086,7 +1094,7 @@ impl OrderManager {
             .or_insert(0) += 1;
     }
 
-    fn decrement_count(map: &mut HashMap<String, i32>, symbol: &str) -> i32 {
+    fn decrement_count(map: &mut FastHashMap<String, i32>, symbol: &str) -> i32 {
         let mut should_remove = false;
         let remaining = match map.get_mut(symbol) {
             Some(entry) if *entry > 1 => {

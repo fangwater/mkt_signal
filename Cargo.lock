@@ -2540,6 +2540,7 @@ dependencies = [
 name = "order_common"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "anyhow",
  "bytes",
  "log",
