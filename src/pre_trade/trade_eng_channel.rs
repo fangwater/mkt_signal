@@ -82,6 +82,8 @@ fn log_open_order_slow_trace(
     exchange: &str,
     bytes_len: usize,
     meta: &OrderSubmitSignalMeta,
+    signal_type: SignalType,
+    order_manager: Option<&RefCell<order_common::OrderManager>>,
     publish_start_us: i64,
     publish_done_us: i64,
     result_status: &str,
@@ -89,9 +91,6 @@ fn log_open_order_slow_trace(
     if meta.signal_t <= 0 {
         return;
     }
-    let Some(signal_type) = SignalType::from_u32(meta.signal_kind as u32) else {
-        return;
-    };
     if !matches!(signal_type, SignalType::ArbOpen) {
         return;
     }
@@ -99,6 +98,12 @@ fn log_open_order_slow_trace(
     if signal_to_submit_us < OPEN_ORDER_SLOW_TRACE_US {
         return;
     }
+    let Some(order_manager) = order_manager else {
+        return;
+    };
+    let Some(order) = order_manager.borrow().get(client_order_id) else {
+        return;
+    };
     let signal_to_recv_us =
         (meta.pre_trade_recv_t > 0).then(|| meta.pre_trade_recv_t.saturating_sub(meta.signal_t));
     let recv_to_handle_us = (meta.pre_trade_recv_t > 0 && meta.pre_trade_handle_t > 0).then(|| {
@@ -114,10 +119,10 @@ fn log_open_order_slow_trace(
         signal_type.as_str(),
         client_order_id,
         exchange,
-        meta.venue,
-        meta.symbol.as_str(),
-        meta.side.as_str(),
-        meta.order_type,
+        order.venue,
+        order.symbol,
+        order.side.as_str(),
+        order.order_type,
         bytes_len,
         OPEN_ORDER_SLOW_TRACE_US,
         meta.signal_t,
@@ -240,7 +245,9 @@ impl TradeEngHub {
         let create_time_us = trade_request_create_time_us(bytes);
         let req_type = trade_request_type(bytes);
         let mut submit_meta = None;
-        if let Some(om) = MonitorChannel::try_order_manager() {
+        let mut submit_signal_type = None;
+        let order_manager = MonitorChannel::try_order_manager();
+        if let Some(om) = order_manager.as_ref() {
             // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
             let signal_meta = om.borrow_mut().set_submit_time_and_signal_meta(
                 client_order_id,
@@ -251,10 +258,15 @@ impl TradeEngHub {
             );
             if let Some(meta) = signal_meta {
                 if meta.signal_t > 0 {
-                    if let Some(st) = SignalType::from_u32(meta.signal_kind as u32) {
-                        record_signal_submit_latency(st.as_str(), publish_start_us, meta.signal_t);
+                    submit_signal_type = SignalType::from_u32(meta.signal_kind as u32);
+                    if let Some(signal_type) = submit_signal_type {
+                        record_signal_submit_latency(
+                            signal_type.as_str(),
+                            publish_start_us,
+                            meta.signal_t,
+                        );
                     }
-                    if meta.signal_kind == SignalType::ArbOpen as u8 {
+                    if submit_signal_type == Some(SignalType::ArbOpen) {
                         record_arb_open_latency(
                             "pt_publish_start_minus_generation",
                             publish_start_us.saturating_sub(meta.signal_t),
@@ -269,15 +281,19 @@ impl TradeEngHub {
         let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
         let result_status = if result.is_ok() { "ok" } else { "err" };
         if let Some(meta) = submit_meta.as_ref() {
-            log_open_order_slow_trace(
-                client_order_id,
-                exchange,
-                bytes.len(),
-                meta,
-                publish_start_us,
-                publish_done_us,
-                result_status,
-            );
+            if let Some(signal_type) = submit_signal_type {
+                log_open_order_slow_trace(
+                    client_order_id,
+                    exchange,
+                    bytes.len(),
+                    meta,
+                    signal_type,
+                    order_manager.as_deref(),
+                    publish_start_us,
+                    publish_done_us,
+                    result_status,
+                );
+            }
         }
         let build_to_publish_done_us = create_time_us
             .filter(|create_time_us| *create_time_us > 0)

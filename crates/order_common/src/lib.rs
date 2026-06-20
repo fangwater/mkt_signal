@@ -57,36 +57,6 @@ pub fn gate_text_from_client_order_id(client_order_id: i64) -> String {
     format!("t-{client_order_id}")
 }
 
-const ORDER_SUBMIT_SYMBOL_CAPACITY: usize = 64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OrderSubmitSymbol {
-    len: u8,
-    bytes: [u8; ORDER_SUBMIT_SYMBOL_CAPACITY],
-}
-
-impl OrderSubmitSymbol {
-    pub fn from_str(value: &str) -> Self {
-        assert!(
-            value.len() <= ORDER_SUBMIT_SYMBOL_CAPACITY,
-            "order submit symbol too long: len={} cap={}",
-            value.len(),
-            ORDER_SUBMIT_SYMBOL_CAPACITY
-        );
-        let mut bytes = [0u8; ORDER_SUBMIT_SYMBOL_CAPACITY];
-        bytes[..value.len()].copy_from_slice(value.as_bytes());
-        Self {
-            len: value.len() as u8,
-            bytes,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        // Constructed only from `&str`, so the occupied prefix remains valid UTF-8.
-        unsafe { std::str::from_utf8_unchecked(&self.bytes[..self.len as usize]) }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct OrderSubmitSignalMeta {
     pub signal_t: i64,
@@ -94,10 +64,6 @@ pub struct OrderSubmitSignalMeta {
     pub pre_trade_recv_t: i64,
     pub pre_trade_handle_t: i64,
     pub mkt_t: i64,
-    pub venue: TradingVenue,
-    pub symbol: OrderSubmitSymbol,
-    pub side: Side,
-    pub order_type: OrderType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1053,10 +1019,6 @@ impl OrderManager {
                 pre_trade_recv_t: order.timestamp.pre_trade_recv_t,
                 pre_trade_handle_t: order.timestamp.pre_trade_handle_t,
                 mkt_t: order.timestamp.mkt_t,
-                venue: order.venue,
-                symbol: OrderSubmitSymbol::from_str(&order.symbol),
-                side: order.side,
-                order_type: order.order_type,
             }
         })
     }
@@ -1385,7 +1347,6 @@ mod tests {
 
         let meta = manager.set_submit_time_and_signal_meta(client_order_id, 1_000, true);
         assert!(meta.is_some());
-        assert_eq!(meta.expect("submit meta").symbol.as_str(), "BTCUSDT");
         let order = manager.get(client_order_id).expect("order exists");
         assert_eq!(order.timestamp.create_t, 1_000);
         assert_eq!(order.timestamp.submit_t, 1_000);
