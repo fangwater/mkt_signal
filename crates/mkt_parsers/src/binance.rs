@@ -167,6 +167,12 @@ pub enum RawDerivative<'a> {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawDerivativeKind {
+    MarkPrice,
+    Liquidation,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RawLiquidationFields<'a> {
     symbol: &'a str,
@@ -1346,7 +1352,13 @@ fn parse_derivative_object_after_key<'a>(
 
     while let Some(current_key) = key.take().or_else(|| scanner.next_key()) {
         match current_key {
-            b"e" => event = Some(scanner.take_value()?.string_bytes()?),
+            b"e" => {
+                event = Some(match scanner.take_value()?.raw {
+                    br#""markPriceUpdate""# => RawDerivativeKind::MarkPrice,
+                    br#""forceOrder""# => RawDerivativeKind::Liquidation,
+                    _ => return None,
+                })
+            }
             b"E" => timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
             b"s" => symbol = Some(scanner.take_value()?.string_str()?),
             b"p" => mark_price = Some(scanner.take_value()?.f64()?),
@@ -1356,7 +1368,7 @@ fn parse_derivative_object_after_key<'a>(
             b"o" => liquidation = Some(parse_liquidation_object_scanner(scanner)?),
             _ => scanner.skip_value()?,
         }
-        if event == Some(b"markPriceUpdate")
+        if event == Some(RawDerivativeKind::MarkPrice)
             && symbol.is_some()
             && timestamp_us.is_some()
             && mark_price.is_some()
@@ -1370,7 +1382,7 @@ fn parse_derivative_object_after_key<'a>(
     }
 
     match event? {
-        b"markPriceUpdate" => Some(RawDerivative::MarkPrice {
+        RawDerivativeKind::MarkPrice => Some(RawDerivative::MarkPrice {
             symbol: symbol?,
             mark_price,
             index_price,
@@ -1378,7 +1390,7 @@ fn parse_derivative_object_after_key<'a>(
             next_funding_time_us,
             timestamp_us: timestamp_us.unwrap_or(0),
         }),
-        b"forceOrder" => {
+        RawDerivativeKind::Liquidation => {
             let liquidation = liquidation?;
             Some(RawDerivative::Liquidation {
                 symbol: liquidation.symbol,
@@ -1390,7 +1402,6 @@ fn parse_derivative_object_after_key<'a>(
                     .unwrap_or_else(|| timestamp_us.unwrap_or(0)),
             })
         }
-        _ => None,
     }
 }
 
@@ -1407,9 +1418,9 @@ fn parse_liquidation_object_scanner<'a>(
         match key {
             b"s" => symbol = Some(scanner.take_value()?.string_str()?),
             b"S" => {
-                side = Some(match scanner.take_value()?.string_bytes()? {
-                    b"BUY" => 'B',
-                    b"SELL" => 'S',
+                side = Some(match scanner.take_value()?.raw {
+                    br#""BUY""# => 'B',
+                    br#""SELL""# => 'S',
                     _ => return None,
                 })
             }
