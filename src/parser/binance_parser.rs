@@ -645,16 +645,14 @@ fn publish_raw_book_view_chunks(
     let chunks = split_levels(book.bids_count, book.asks_count, max_levels);
     let total_chunks = chunks.len();
     let mut sent_count = 0;
+    let Some(mut bids_iter) = binance_codec::raw_levels_iter(book.bids_raw) else {
+        return 0;
+    };
+    let Some(mut asks_iter) = binance_codec::raw_levels_iter(book.asks_raw) else {
+        return 0;
+    };
 
-    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-        chunks.into_iter().enumerate()
-    {
-        let Some(bids_iter) = binance_codec::raw_levels_iter(book.bids_raw) else {
-            continue;
-        };
-        let Some(asks_iter) = binance_codec::raw_levels_iter(book.asks_raw) else {
-            continue;
-        };
+    for (chunk_idx, (_, bids_count, _, asks_count)) in chunks.into_iter().enumerate() {
         let inc_bytes = inc_msg_bytes_borrowed(
             book.symbol,
             book.first_update_id,
@@ -666,11 +664,11 @@ fn publish_raw_book_view_chunks(
             bids_count as u32,
             asks_count as u32,
             bids_iter
-                .skip(bids_start)
+                .by_ref()
                 .take(bids_count)
                 .map(|level| Level::from_values(level.price, level.amount)),
             asks_iter
-                .skip(asks_start)
+                .by_ref()
                 .take(asks_count)
                 .map(|level| Level::from_values(level.price, level.amount)),
         );
