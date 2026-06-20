@@ -193,8 +193,7 @@ impl VenueAdapter for BinanceAdapter {
         if self.venue != TradingVenue::BinanceFutures {
             return None;
         }
-        binance_codec::parse_book_ticker_bbo_raw_borrowed(raw)
-            .or_else(|| binance_codec::parse_depth_bbo_raw_borrowed(raw))
+        binance_codec::parse_bbo_raw_borrowed(raw)
     }
 
     fn parse_trade_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawTrade<'a>> {

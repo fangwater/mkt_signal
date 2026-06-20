@@ -313,6 +313,94 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     Some(out)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RawBboKind {
+    BookTicker,
+    Depth,
+}
+
+pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let data = combined_payload(raw).unwrap_or(raw);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut event_kind = None;
+    let mut symbol = None;
+    let mut seq_id = None;
+    let mut timestamp_us = None;
+    let mut bid = None;
+    let mut bid_amount = None;
+    let mut ask = None;
+    let mut ask_amount = None;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => {
+                event_kind = Some(match value.string_bytes()? {
+                    b"bookTicker" => RawBboKind::BookTicker,
+                    b"depthUpdate" => RawBboKind::Depth,
+                    _ => return None,
+                });
+            }
+            b"s" => symbol = Some(value.string_str()?),
+            b"u" | b"lastUpdateId" => seq_id = Some(value.i64()?),
+            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"b" | b"bids" => bid = Some(value),
+            b"B" => bid_amount = Some(value),
+            b"a" | b"asks" => ask = Some(value),
+            b"A" => ask_amount = Some(value),
+            _ => {}
+        }
+    }
+
+    let stream_kind = if event_kind.is_none() {
+        stream_name(raw).and_then(raw_bbo_stream_kind)
+    } else {
+        None
+    };
+    let inferred_kind = infer_raw_bbo_kind(bid, bid_amount, ask, ask_amount);
+    if let (Some(stream_kind), Some(inferred_kind)) = (stream_kind, inferred_kind) {
+        if stream_kind != inferred_kind {
+            return None;
+        }
+    }
+    let kind = event_kind.or(inferred_kind).or(stream_kind)?;
+    let symbol = match symbol {
+        Some(symbol) => symbol,
+        None => stream_name(raw).and_then(parse_stream_symbol_borrowed)?,
+    };
+
+    let (bid_price, bid_amount, ask_price, ask_amount) = match kind {
+        RawBboKind::BookTicker => (
+            bid?.f64()?,
+            bid_amount?.f64()?,
+            ask?.f64()?,
+            ask_amount?.f64()?,
+        ),
+        RawBboKind::Depth => {
+            let bid = parse_raw_top_level(bid?.array_bytes()?)?;
+            let ask = parse_raw_top_level(ask?.array_bytes()?)?;
+            (bid.price, bid.amount, ask.price, ask.amount)
+        }
+    };
+    let out = RawBbo {
+        symbol,
+        timestamp_us: timestamp_us.unwrap_or(0),
+        seq_id: seq_id?,
+        bid_price,
+        bid_amount,
+        ask_price,
+        ask_amount,
+    };
+    if out.bid_price <= 0.0
+        || out.bid_amount <= 0.0
+        || out.ask_price <= 0.0
+        || out.ask_amount <= 0.0
+    {
+        return None;
+    }
+    Some(out)
+}
+
 pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let data = combined_payload(raw).unwrap_or(raw);
     let mut scanner = JsonObjectScanner::new(data);
@@ -1391,6 +1479,35 @@ fn parse_stream_symbol_borrowed(stream: &str) -> Option<&str> {
     Some(symbol)
 }
 
+fn raw_bbo_stream_kind(stream: &str) -> Option<RawBboKind> {
+    let channel = stream.split('@').nth(1)?;
+    if channel == "bookTicker" {
+        Some(RawBboKind::BookTicker)
+    } else if channel.starts_with("depth") {
+        Some(RawBboKind::Depth)
+    } else {
+        None
+    }
+}
+
+fn infer_raw_bbo_kind(
+    bid: Option<JsonValue<'_>>,
+    bid_amount: Option<JsonValue<'_>>,
+    ask: Option<JsonValue<'_>>,
+    ask_amount: Option<JsonValue<'_>>,
+) -> Option<RawBboKind> {
+    match (
+        bid?.raw.first().copied()?,
+        bid_amount.is_some(),
+        ask?.raw.first().copied()?,
+        ask_amount.is_some(),
+    ) {
+        (b'[', false, b'[', false) => Some(RawBboKind::Depth),
+        (_, true, _, true) => Some(RawBboKind::BookTicker),
+        _ => None,
+    }
+}
+
 fn combined_payload(raw: &[u8]) -> Option<&[u8]> {
     let mut scanner = JsonObjectScanner::new(raw);
     while let Some((key, value)) = scanner.next_field() {
@@ -1800,7 +1917,7 @@ fn read_group_levels(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
+        parse_bbo_raw_borrowed, parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
         parse_depth_bbo_raw_borrowed, parse_derivatives_raw_borrowed, parse_event_time_ms_raw,
         parse_incremental_raw_borrowed, parse_incremental_raw_view, parse_kline_raw_borrowed,
         parse_trade_raw, parse_trade_raw_borrowed, raw_level_at, RawDerivative,
@@ -1826,6 +1943,11 @@ mod tests {
         assert_eq!(borrowed.symbol, "BTCUSDT");
         assert_eq!(borrowed.seq_id, 22345);
         assert!((borrowed.bid_price - 25.0).abs() < 1e-9);
+
+        let routed = parse_bbo_raw_borrowed(raw).expect("routed book ticker");
+        assert_eq!(routed.symbol, "BTCUSDT");
+        assert_eq!(routed.seq_id, 22345);
+        assert!((routed.ask_amount - 50.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1861,6 +1983,11 @@ mod tests {
         assert!((bbo.bid_amount - 1.0).abs() < 1e-9);
         assert!((bbo.ask_price - 25.1).abs() < 1e-9);
         assert!((bbo.ask_amount - 3.0).abs() < 1e-9);
+
+        let routed = parse_bbo_raw_borrowed(raw).expect("routed depth top bbo");
+        assert_eq!(routed.symbol, "BTCUSDT");
+        assert_eq!(routed.seq_id, 2);
+        assert!((routed.bid_amount - 1.0).abs() < 1e-9);
     }
 
     #[test]
