@@ -64,7 +64,7 @@ fn parse_f64_value(v: &Value) -> Option<f64> {
     None
 }
 
-fn sign_ordered_params_fast(params: &[(&str, &str)], secret: &str) -> Result<String> {
+fn sign_ordered_params_fast(params: &[(&str, &str)], secret: &str) -> Result<[u8; 64]> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .map_err(|_| anyhow!("invalid binance secret"))?;
     for (idx, (key, value)) in params.iter().enumerate() {
@@ -75,7 +75,10 @@ fn sign_ordered_params_fast(params: &[(&str, &str)], secret: &str) -> Result<Str
         mac.update(b"=");
         mac.update(value.as_bytes());
     }
-    Ok(hex::encode(mac.finalize().into_bytes()))
+    let digest = mac.finalize().into_bytes();
+    let mut out = [0u8; 64];
+    hex::encode_to_slice(digest, &mut out).expect("sha256 hmac hex output is exactly 64 bytes");
+    Ok(out)
 }
 
 fn push_json_string(out: &mut String, value: &str) {
@@ -121,11 +124,11 @@ fn build_signed_payload_json(
     creds: &ApiKey,
 ) -> Result<String> {
     let signature = sign_ordered_params_fast(params, creds.secret.trim())?;
+    let signature = std::str::from_utf8(&signature).expect("hex signature is valid utf8");
     let id = transport_id.to_string();
     let params_bytes: usize = params.iter().map(|(k, v)| k.len() + v.len() + 6).sum();
-    let mut out = String::with_capacity(
-        32 + id.len() + method.len() + params_bytes + "signature".len() + signature.len(),
-    );
+    let mut out =
+        String::with_capacity(32 + id.len() + method.len() + params_bytes + "signature".len() + 64);
     out.push_str("{\"id\":");
     out.push_str(&id);
     out.push_str(",\"method\":");
@@ -514,6 +517,7 @@ mod tests {
             .collect();
         let expected =
             sign_ordered_params_fast(&ordered, creds().secret.trim()).expect("signature");
+        let expected = std::str::from_utf8(&expected).expect("hex signature utf8");
         assert_eq!(
             value["params"]["signature"].as_str().expect("signature"),
             expected
