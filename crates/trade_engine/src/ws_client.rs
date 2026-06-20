@@ -23,7 +23,7 @@ use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceNewOrderParams, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
+    BinanceNewOrderParamsRef, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
     TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
@@ -50,6 +50,7 @@ use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use signal_common::tick_math::QuantizedValue;
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -530,12 +531,39 @@ impl WsEndpointHandle {
     }
 }
 
-#[derive(Clone, Debug)]
+const INLINE_TRACE_SYMBOL_CAPACITY: usize = 64;
+
+#[derive(Clone, Copy, Debug)]
+struct InlineTraceSymbol {
+    len: u8,
+    bytes: [u8; INLINE_TRACE_SYMBOL_CAPACITY],
+}
+
+impl InlineTraceSymbol {
+    fn from_str(value: &str) -> Option<Self> {
+        if value.len() > INLINE_TRACE_SYMBOL_CAPACITY {
+            return None;
+        }
+        let mut bytes = [0u8; INLINE_TRACE_SYMBOL_CAPACITY];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        Some(Self {
+            len: value.len() as u8,
+            bytes,
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        // Constructed only from `&str`, so the occupied prefix remains valid UTF-8.
+        unsafe { std::str::from_utf8_unchecked(&self.bytes[..self.len as usize]) }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 struct TakerTraceMeta {
-    symbol: String,
+    symbol: InlineTraceSymbol,
     side: &'static str,
     order_type: &'static str,
-    quantity: String,
+    quantity_qv: QuantizedValue,
     reduce_only: bool,
     ws_response_mode: &'static str,
     create_time_us: i64,
@@ -1885,7 +1913,7 @@ impl TradeWsClient {
         if msg.req_type != TradeRequestType::BinanceWsNewUMOrder {
             return None;
         }
-        let params = BinanceNewOrderParams::from_bytes(&msg.params)?;
+        let params = BinanceNewOrderParamsRef::from_bytes(&msg.params)?;
         if !params.order_type.is_market() {
             return None;
         }
@@ -1893,10 +1921,10 @@ impl TradeWsClient {
         let create_to_ipc_recv_us = ipc_recv_to_ws_send_done_us
             .and_then(|delta| Self::wall_diff_us(sent_at_us - delta, msg.create_time));
         Some(TakerTraceMeta {
-            symbol: params.symbol,
+            symbol: InlineTraceSymbol::from_str(params.symbol)?,
             side: params.side.as_str(),
             order_type: params.order_type.as_str(),
-            quantity: params.quantity_qv.decimal_string(),
+            quantity_qv: params.quantity_qv,
             reduce_only: params.reduce_only,
             ws_response_mode: if params.ws_response_full {
                 "FULL"
@@ -2960,6 +2988,8 @@ impl TradeWsClient {
         let exchange_update_to_local_recv_us =
             exchange_update_us.and_then(|ts| Self::wall_diff_us(local_recv_us, ts));
         let create_to_local_recv_us = Self::wall_diff_us(local_recv_us, trace.create_time_us);
+        let symbol = trace.symbol.as_str();
+        let quantity = trace.quantity_qv.decimal_string();
         let remote_addr = self
             .current_remote_addr
             .map(|addr| addr.to_string())
@@ -2974,10 +3004,10 @@ impl TradeWsClient {
                 meta.req_type,
                 meta.client_order_id,
                 transport_id,
-                trace.symbol,
+                symbol,
                 trace.side,
                 trace.order_type,
-                trace.quantity,
+                quantity,
                 trace.reduce_only,
                 Self::binance_status(resp),
                 resp.error_code.unwrap_or(0),
@@ -3003,10 +3033,10 @@ impl TradeWsClient {
             meta.req_type,
             meta.client_order_id,
             transport_id,
-            trace.symbol,
+            symbol,
             trace.side,
             trace.order_type,
-            trace.quantity,
+            quantity,
             trace.reduce_only,
             trace.ws_response_mode,
             Self::binance_status(resp),
@@ -3607,7 +3637,8 @@ mod tests {
     };
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
-        BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg, TradeRequestType,
+        BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg,
+        TradeRequestType,
     };
     use order_common::{OrderType, Side};
     use runtime_common::fast_hash::fast_hash_map;
@@ -3760,5 +3791,36 @@ mod tests {
         assert!(!TradeWsClient::ws_open_update_enabled_for_request(
             &raw_json
         ));
+    }
+
+    #[test]
+    fn binance_um_taker_trace_keeps_params_inline() {
+        let request = BinanceNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BinanceWsNewUMOrder,
+            1_000,
+            42,
+            "BTCUSDT",
+            Side::Buy,
+            OrderType::Market,
+            QuantizedValue::from_parts(1, -3, 250),
+            QuantizedValue::zero(),
+            false,
+            false,
+            false,
+            true,
+            false,
+        )
+        .expect("typed binance request");
+        let msg = TradeRequestMsg::parse(&request).expect("binance typed msg");
+        let trace = TradeWsClient::build_binance_um_taker_trace(&msg, 1_100, Some(30))
+            .expect("taker trace");
+
+        assert_eq!(trace.symbol.as_str(), "BTCUSDT");
+        assert_eq!(trace.quantity_qv.decimal_string(), "0.250");
+        assert_eq!(trace.side, "BUY");
+        assert_eq!(trace.order_type, "MARKET");
+        assert_eq!(trace.ws_response_mode, "RESULT");
+        assert_eq!(trace.create_to_ws_send_done_us, Some(100));
+        assert_eq!(trace.create_to_ipc_recv_us, Some(70));
     }
 }
