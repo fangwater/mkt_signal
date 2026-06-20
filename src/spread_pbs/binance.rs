@@ -187,6 +187,16 @@ impl VenueAdapter for BinanceAdapter {
         binance_codec::parse_trade_raw_borrowed(raw)
     }
 
+    fn parse_incremental_raw_borrowed<'a>(
+        &self,
+        raw: &'a [u8],
+    ) -> Option<binance_codec::RawBook<'a>> {
+        if self.venue != TradingVenue::BinanceFutures {
+            return None;
+        }
+        binance_codec::parse_incremental_raw_borrowed(raw)
+    }
+
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
         Ok(binance_codec::parse_trade_json(value)
             .map(trade_to_frame)

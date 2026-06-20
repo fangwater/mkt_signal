@@ -28,7 +28,7 @@ use crate::spread_pbs::okex_derivatives::{
     build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
 };
 use crate::spread_pbs::publisher::{
-    SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
+    PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
     SpreadPublisher, SpreadTradePublisher,
 };
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
@@ -1394,8 +1394,28 @@ fn make_replacement_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
-        if incremental_publisher.is_none() && derivatives_publisher.is_none() {
-            if let (Some(trade_publisher), Some(trade)) = (
+        if derivatives_publisher.is_none() {
+            if let Some(incremental_publisher) = incremental_publisher.as_ref() {
+                if let Some(book) = adapter.parse_incremental_raw_borrowed(raw) {
+                    let mut s = state.borrow_mut();
+                    process_incremental_fields(
+                        &mut s,
+                        incremental_publisher,
+                        book.symbol,
+                        book.timestamp_us,
+                        book.seq_id,
+                        book.prev_seq_id,
+                        book.first_update_id,
+                        book.final_update_id,
+                        book.gap_check,
+                        book.is_snapshot,
+                        book.bids.as_slice(),
+                        book.asks.as_slice(),
+                        incremental_max_levels,
+                    );
+                    return;
+                }
+            } else if let (Some(trade_publisher), Some(trade)) = (
                 trade_publisher.as_ref(),
                 adapter.parse_trade_raw_borrowed(raw),
             ) {
@@ -1638,36 +1658,70 @@ fn process_incremental_frame(
         }
     };
 
-    let slot = state.symbol_state.incremental_slot(&symbol);
+    process_incremental_fields(
+        state,
+        publisher,
+        &symbol,
+        timestamp,
+        seq_id,
+        prev_seq_id,
+        first_update_id,
+        final_update_id,
+        gap_check,
+        is_snapshot,
+        &bids,
+        &asks,
+        max_levels,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_incremental_fields<L: PayloadLevel>(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadIncrementalPublisher>,
+    symbol: &str,
+    timestamp: i64,
+    seq_id: i64,
+    prev_seq_id: i64,
+    first_update_id: i64,
+    final_update_id: i64,
+    gap_check: bool,
+    is_snapshot: bool,
+    bids: &[L],
+    asks: &[L],
+    max_levels: Option<usize>,
+) {
+    let slot = state.symbol_state.incremental_slot(symbol);
     if !is_snapshot && seq_id <= slot.prev {
         state.incremental_dropped_by_seq += 1;
         return;
     }
 
     if gap_check {
-        warn_incremental_gap_if_needed(state, &symbol, seq_id, prev_seq_id, is_snapshot);
+        warn_incremental_gap_if_needed(state, symbol, seq_id, prev_seq_id, is_snapshot);
     }
 
     let total_levels = bids.len() + asks.len();
     match max_levels {
         Some(max) if total_levels > max && max > 0 => {
-            let chunks = split_levels(bids.len(), asks.len(), max);
-            let total_chunks = chunks.len();
-            for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-                chunks.into_iter().enumerate()
-            {
+            let total_chunks = level_chunk_count(bids.len(), asks.len(), max);
+            let mut bids_start = 0usize;
+            let mut asks_start = 0usize;
+            for chunk_idx in 0..total_chunks {
+                let (bids_count, asks_count) =
+                    next_level_chunk(bids.len() - bids_start, asks.len() - asks_start, max);
                 if !publish_incremental_chunk(
                     state,
                     publisher,
-                    &symbol,
+                    symbol,
                     first_update_id,
                     final_update_id,
                     timestamp,
                     is_snapshot,
-                    &bids,
+                    bids,
                     bids_start,
                     bids_count,
-                    &asks,
+                    asks,
                     asks_start,
                     asks_count,
                     chunk_idx,
@@ -1675,21 +1729,23 @@ fn process_incremental_frame(
                 ) {
                     return;
                 }
+                bids_start += bids_count;
+                asks_start += asks_count;
             }
         }
         _ => {
             if !publish_incremental_chunk(
                 state,
                 publisher,
-                &symbol,
+                symbol,
                 first_update_id,
                 final_update_id,
                 timestamp,
                 is_snapshot,
-                &bids,
+                bids,
                 0,
                 bids.len(),
-                &asks,
+                asks,
                 0,
                 asks.len(),
                 0,
@@ -1702,7 +1758,7 @@ fn process_incremental_frame(
     state.symbol_state.set_incremental_slot(slot, seq_id);
 }
 
-fn publish_incremental_chunk(
+fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
     symbol: &str,
@@ -1710,16 +1766,16 @@ fn publish_incremental_chunk(
     final_update_id: i64,
     timestamp: i64,
     is_snapshot: bool,
-    bids: &[mkt_parsers::msg::mkt_msg::Level],
+    bids: &[B],
     bids_start: usize,
     bids_count: usize,
-    asks: &[mkt_parsers::msg::mkt_msg::Level],
+    asks: &[A],
     asks_start: usize,
     asks_count: usize,
     chunk_idx: usize,
     total_chunks: usize,
 ) -> bool {
-    if let Err(e) = publisher.publish_chunk(
+    if let Err(e) = publisher.publish_chunk_from_levels(
         symbol,
         first_update_id,
         final_update_id,
@@ -1791,36 +1847,30 @@ fn warn_incremental_gap_if_needed(
     }
 }
 
-fn split_levels(
-    total_bids: usize,
-    total_asks: usize,
-    max: usize,
-) -> Vec<(usize, usize, usize, usize)> {
-    let total = total_bids + total_asks;
-    if total <= max || max == 0 {
-        return vec![(0, total_bids, 0, total_asks)];
+fn level_chunk_count(total_bids: usize, total_asks: usize, max: usize) -> usize {
+    if max == 0 {
+        return 1;
     }
-    let mut chunks = Vec::new();
-    let mut bids_sent = 0;
-    let mut asks_sent = 0;
-    while bids_sent < total_bids || asks_sent < total_asks {
-        let bids_remaining = total_bids - bids_sent;
-        let asks_remaining = total_asks - asks_sent;
-        let remaining = bids_remaining + asks_remaining;
-        let chunk_bids = if remaining <= max {
-            bids_remaining
-        } else {
-            let ratio = bids_remaining as f64 / remaining as f64;
-            ((max as f64 * ratio).round() as usize)
-                .max(1)
-                .min(bids_remaining)
-        };
-        let chunk_asks = (max - chunk_bids).min(asks_remaining);
-        chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
-        bids_sent += chunk_bids;
-        asks_sent += chunk_asks;
+    (total_bids + total_asks).max(1).div_ceil(max)
+}
+
+fn next_level_chunk(bids_remaining: usize, asks_remaining: usize, max: usize) -> (usize, usize) {
+    let remaining = bids_remaining + asks_remaining;
+    if remaining <= max || max == 0 {
+        return (bids_remaining, asks_remaining);
     }
-    chunks
+    let chunk_bids = if bids_remaining == 0 {
+        0
+    } else if asks_remaining == 0 {
+        max.min(bids_remaining)
+    } else {
+        let ratio = bids_remaining as f64 / remaining as f64;
+        ((max as f64 * ratio).round() as usize)
+            .max(1)
+            .min(bids_remaining)
+    };
+    let chunk_asks = (max - chunk_bids).min(asks_remaining);
+    (chunk_bids, chunk_asks)
 }
 
 fn process_frame(
@@ -2090,6 +2140,24 @@ mod tests {
         assert_eq!(state.bbo_seen(), 0);
         assert_eq!(state.trade_seen(), 1);
         assert_eq!(state.incremental_prev_seen("BTCUSDT"), Some(30));
+    }
+
+    #[test]
+    fn incremental_level_chunking_is_allocation_free_and_balanced() {
+        assert_eq!(level_chunk_count(7, 3, 4), 3);
+
+        let mut bids_start = 0usize;
+        let mut asks_start = 0usize;
+        let mut chunks = Vec::new();
+        for _ in 0..level_chunk_count(7, 3, 4) {
+            let (bids, asks) = next_level_chunk(7 - bids_start, 3 - asks_start, 4);
+            chunks.push((bids_start, bids, asks_start, asks));
+            bids_start += bids;
+            asks_start += asks;
+        }
+
+        assert_eq!(chunks, vec![(0, 3, 0, 1), (3, 3, 1, 1), (6, 1, 2, 1)]);
+        assert_eq!((bids_start, asks_start), (7, 3));
     }
 
     #[test]

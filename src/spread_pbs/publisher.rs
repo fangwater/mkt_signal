@@ -58,6 +58,31 @@ fn write_f64_le(buf: &mut [u8], offset: &mut usize, value: f64) {
     *offset += 8;
 }
 
+pub trait PayloadLevel {
+    fn price(&self) -> f64;
+    fn amount(&self) -> f64;
+}
+
+impl PayloadLevel for Level {
+    fn price(&self) -> f64 {
+        self.price
+    }
+
+    fn amount(&self) -> f64 {
+        self.amount
+    }
+}
+
+impl PayloadLevel for mkt_parsers::binance::Level {
+    fn price(&self) -> f64 {
+        self.price
+    }
+
+    fn amount(&self) -> f64 {
+        self.amount
+    }
+}
+
 #[inline]
 fn write_symbol(buf: &mut [u8], offset: &mut usize, symbol: &str) -> Result<()> {
     anyhow::ensure!(
@@ -211,6 +236,41 @@ fn write_incremental_payload(
     chunk_idx: usize,
     total_chunks: usize,
 ) -> Result<usize> {
+    write_incremental_payload_from_levels(
+        buf,
+        symbol,
+        first_update_id,
+        final_update_id,
+        timestamp,
+        is_snapshot,
+        bids,
+        bids_start,
+        bids_count,
+        asks,
+        asks_start,
+        asks_count,
+        chunk_idx,
+        total_chunks,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_incremental_payload_from_levels<B: PayloadLevel, A: PayloadLevel>(
+    buf: &mut [u8],
+    symbol: &str,
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    bids: &[B],
+    bids_start: usize,
+    bids_count: usize,
+    asks: &[A],
+    asks_start: usize,
+    asks_count: usize,
+    chunk_idx: usize,
+    total_chunks: usize,
+) -> Result<usize> {
     let mut off = 0usize;
     write_u32_le(buf, &mut off, MktMsgType::OrderBookInc as u32);
     write_symbol(buf, &mut off, symbol)?;
@@ -224,12 +284,12 @@ fn write_incremental_payload(
     write_u32_le(buf, &mut off, bids_count as u32);
     write_u32_le(buf, &mut off, asks_count as u32);
     for level in &bids[bids_start..bids_start + bids_count] {
-        write_f64_le(buf, &mut off, level.price);
-        write_f64_le(buf, &mut off, level.amount);
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
     }
     for level in &asks[asks_start..asks_start + asks_count] {
-        write_f64_le(buf, &mut off, level.price);
-        write_f64_le(buf, &mut off, level.amount);
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
     }
     Ok(off)
 }
@@ -531,6 +591,44 @@ impl SpreadIncrementalPublisher {
         let min_len = incremental_payload_len(symbol, bids_count, asks_count);
         publish_write(&self.publisher, min_len, "incremental", |buf| {
             write_incremental_payload(
+                buf,
+                symbol,
+                first_update_id,
+                final_update_id,
+                timestamp,
+                is_snapshot,
+                bids,
+                bids_start,
+                bids_count,
+                asks,
+                asks_start,
+                asks_count,
+                chunk_idx,
+                total_chunks,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_chunk_from_levels<B: PayloadLevel, A: PayloadLevel>(
+        &self,
+        symbol: &str,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        is_snapshot: bool,
+        bids: &[B],
+        bids_start: usize,
+        bids_count: usize,
+        asks: &[A],
+        asks_start: usize,
+        asks_count: usize,
+        chunk_idx: usize,
+        total_chunks: usize,
+    ) -> Result<()> {
+        let min_len = incremental_payload_len(symbol, bids_count, asks_count);
+        publish_write(&self.publisher, min_len, "incremental", |buf| {
+            write_incremental_payload_from_levels(
                 buf,
                 symbol,
                 first_update_id,

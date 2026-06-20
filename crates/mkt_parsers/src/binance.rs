@@ -4,6 +4,7 @@ pub const SBE_TEMPLATE_TRADE: u16 = 10000;
 pub const SBE_TEMPLATE_BBO: u16 = 10001;
 pub const SBE_TEMPLATE_DEPTH_SNAPSHOT: u16 = 10002;
 pub const SBE_TEMPLATE_DEPTH_DIFF: u16 = 10003;
+pub const RAW_DEPTH_LEVEL_CAP: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Level {
@@ -53,6 +54,65 @@ pub struct RawTrade<'a> {
     pub side: char,
     pub price: f64,
     pub amount: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawLevels {
+    levels: [Level; RAW_DEPTH_LEVEL_CAP],
+    len: usize,
+}
+
+impl RawLevels {
+    fn new() -> Self {
+        Self {
+            levels: [Level {
+                price: 0.0,
+                amount: 0.0,
+            }; RAW_DEPTH_LEVEL_CAP],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, level: Level) -> Option<()> {
+        if self.len >= RAW_DEPTH_LEVEL_CAP {
+            return None;
+        }
+        self.levels[self.len] = level;
+        self.len += 1;
+        Some(())
+    }
+
+    pub fn as_slice(&self) -> &[Level] {
+        &self.levels[..self.len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Default for RawLevels {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawBook<'a> {
+    pub symbol: &'a str,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub prev_seq_id: i64,
+    pub first_update_id: i64,
+    pub final_update_id: i64,
+    pub gap_check: bool,
+    pub is_snapshot: bool,
+    pub bids: RawLevels,
+    pub asks: RawLevels,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +378,85 @@ pub fn parse_incremental_json(value: &Value) -> Option<Book> {
         return parse_depth_snapshot_json(payload, stream_symbol.as_deref());
     }
     None
+}
+
+pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
+    let data = combined_payload(raw).unwrap_or(raw);
+    let stream_symbol = stream_name(raw).and_then(parse_stream_symbol_borrowed);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut seen_event = false;
+    let mut symbol = None;
+    let mut timestamp_us = None;
+    let mut first_update_id = None;
+    let mut final_update_id = None;
+    let mut last_update_id = None;
+    let mut bids = RawLevels::new();
+    let mut asks = RawLevels::new();
+    let mut has_bids = false;
+    let mut has_asks = false;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => {
+                if value.string_bytes()? != b"depthUpdate" {
+                    return None;
+                }
+                seen_event = true;
+            }
+            b"s" => symbol = Some(value.string_str()?),
+            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"U" => first_update_id = Some(value.i64()?),
+            b"u" => final_update_id = Some(value.i64()?),
+            b"lastUpdateId" => last_update_id = Some(value.i64()?),
+            b"b" | b"bids" => {
+                bids = parse_raw_levels(value.array_bytes()?)?;
+                has_bids = true;
+            }
+            b"a" | b"asks" => {
+                asks = parse_raw_levels(value.array_bytes()?)?;
+                has_asks = true;
+            }
+            _ => {}
+        }
+    }
+
+    let symbol = symbol.or(stream_symbol)?;
+    if let Some(last_update_id) = last_update_id {
+        return Some(RawBook {
+            symbol,
+            timestamp_us: timestamp_us.unwrap_or(0),
+            seq_id: last_update_id,
+            prev_seq_id: last_update_id,
+            first_update_id: last_update_id,
+            final_update_id: last_update_id,
+            gap_check: false,
+            is_snapshot: true,
+            bids,
+            asks,
+        });
+    }
+
+    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.contains("@depth")) {
+        return None;
+    }
+    if !has_bids && !has_asks {
+        return None;
+    }
+    let first_update_id = first_update_id?;
+    let final_update_id = final_update_id?;
+    Some(RawBook {
+        symbol,
+        timestamp_us: timestamp_us.unwrap_or(0),
+        seq_id: final_update_id,
+        prev_seq_id: first_update_id.saturating_sub(1),
+        first_update_id,
+        final_update_id,
+        gap_check: false,
+        is_snapshot: false,
+        bids,
+        asks,
+    })
 }
 
 pub fn parse_derivatives_json(value: &Value) -> Vec<Derivative> {
@@ -689,6 +828,90 @@ fn parse_json_levels(levels: &[Value]) -> Vec<Level> {
         .collect()
 }
 
+fn parse_raw_levels(raw: &[u8]) -> Option<RawLevels> {
+    let raw = trim_ascii(raw);
+    if raw.first() != Some(&b'[') || raw.last() != Some(&b']') {
+        return None;
+    }
+
+    let mut out = RawLevels::new();
+    let mut pos = 1usize;
+    loop {
+        skip_ws_at(raw, &mut pos);
+        match raw.get(pos).copied()? {
+            b']' => return Some(out),
+            b',' => {
+                pos += 1;
+                continue;
+            }
+            b'[' => {
+                let level = parse_raw_level(raw, &mut pos)?;
+                out.push(level)?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn parse_raw_level(raw: &[u8], pos: &mut usize) -> Option<Level> {
+    if raw.get(*pos) != Some(&b'[') {
+        return None;
+    }
+    *pos += 1;
+    let price = parse_raw_number(raw, pos)?;
+    skip_ws_at(raw, pos);
+    if raw.get(*pos) != Some(&b',') {
+        return None;
+    }
+    *pos += 1;
+    let amount = parse_raw_number(raw, pos)?;
+    skip_ws_at(raw, pos);
+    if raw.get(*pos) != Some(&b']') {
+        return None;
+    }
+    *pos += 1;
+    Some(Level { price, amount })
+}
+
+fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
+    skip_ws_at(raw, pos);
+    let bytes = if raw.get(*pos) == Some(&b'"') {
+        *pos += 1;
+        let start = *pos;
+        loop {
+            let b = *raw.get(*pos)?;
+            match b {
+                b'\\' => return None,
+                b'"' => {
+                    let end = *pos;
+                    *pos += 1;
+                    break &raw[start..end];
+                }
+                _ => *pos += 1,
+            }
+        }
+    } else {
+        let start = *pos;
+        while let Some(&b) = raw.get(*pos) {
+            if b == b',' || b == b']' || b.is_ascii_whitespace() {
+                break;
+            }
+            *pos += 1;
+        }
+        &raw[start..*pos]
+    };
+    if bytes.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(bytes).ok()?.parse::<f64>().ok()
+}
+
+fn skip_ws_at(raw: &[u8], pos: &mut usize) {
+    while raw.get(*pos).is_some_and(|b| b.is_ascii_whitespace()) {
+        *pos += 1;
+    }
+}
+
 fn parse_i64(v: &Value) -> Option<i64> {
     v.as_i64().or_else(|| v.as_str()?.parse::<i64>().ok())
 }
@@ -711,6 +934,14 @@ fn ms_to_us(ts: i64) -> i64 {
 
 fn parse_stream_symbol(stream: &str) -> Option<String> {
     stream.split('@').next().map(|s| s.to_ascii_uppercase())
+}
+
+fn parse_stream_symbol_borrowed(stream: &str) -> Option<&str> {
+    let symbol = stream.split('@').next()?;
+    if symbol.as_bytes().iter().any(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    Some(symbol)
 }
 
 fn combined_payload(raw: &[u8]) -> Option<&[u8]> {
@@ -757,6 +988,15 @@ impl<'a> JsonValue<'a> {
     fn object_bytes(self) -> Option<&'a [u8]> {
         let raw = trim_ascii(self.raw);
         if raw.first() == Some(&b'{') && raw.last() == Some(&b'}') {
+            Some(raw)
+        } else {
+            None
+        }
+    }
+
+    fn array_bytes(self) -> Option<&'a [u8]> {
+        let raw = trim_ascii(self.raw);
+        if raw.first() == Some(&b'[') && raw.last() == Some(&b']') {
             Some(raw)
         } else {
             None
@@ -1043,8 +1283,9 @@ fn read_group_levels(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed, parse_trade_raw,
-        parse_trade_raw_borrowed,
+        parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
+        parse_incremental_raw_borrowed, parse_trade_raw, parse_trade_raw_borrowed,
+        RAW_DEPTH_LEVEL_CAP,
     };
 
     #[test]
@@ -1125,5 +1366,72 @@ mod tests {
     fn raw_trade_rejects_book_ticker_shape() {
         let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":1,"s":"BTCUSDT","b":"25","B":"1","a":"25.1","A":"1"}}"#;
         assert!(parse_trade_raw(raw).is_none());
+    }
+
+    #[test]
+    fn parses_depth_update_without_value_tree() {
+        let raw = br#"{
+            "stream":"btcusdt@depth@0ms",
+            "data":{"e":"depthUpdate","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"],["24.9","0"]],"a":[["25.1","50"]]}
+        }"#;
+
+        let book = parse_incremental_raw_borrowed(raw).expect("depth update");
+
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(book.seq_id, 103);
+        assert_eq!(book.prev_seq_id, 100);
+        assert_eq!(book.first_update_id, 101);
+        assert_eq!(book.final_update_id, 103);
+        assert!(!book.is_snapshot);
+        assert_eq!(book.bids.len(), 2);
+        assert_eq!(book.asks.len(), 1);
+        assert!((book.bids.as_slice()[0].price - 25.0).abs() < 1e-9);
+        assert!((book.bids.as_slice()[1].amount - 0.0).abs() < 1e-9);
+        assert!((book.asks.as_slice()[0].amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_depth_snapshot_without_value_tree() {
+        let raw = br#"{"lastUpdateId":22345,"s":"BTCUSDT","E":1700000000001,
+            "bids":[["25.0","100"]],"asks":[["25.1","50"],["25.2","25"]]}"#;
+
+        let book = parse_incremental_raw_borrowed(raw).expect("depth snapshot");
+
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(book.seq_id, 22345);
+        assert_eq!(book.prev_seq_id, 22345);
+        assert!(book.is_snapshot);
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.asks.len(), 2);
+        assert!((book.asks.as_slice()[1].price - 25.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_depth_requires_uppercase_symbol_for_stream_only_shape() {
+        let raw = br#"{"stream":"btcusdt@depth@0ms","data":{"e":"depthUpdate","E":1700000000001,"U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}}"#;
+        assert!(parse_incremental_raw_borrowed(raw).is_none());
+
+        let raw = br#"{"stream":"BTCUSDT@depth@0ms","data":{"e":"depthUpdate","E":1700000000001,"U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}}"#;
+        let book = parse_incremental_raw_borrowed(raw).expect("uppercase stream symbol");
+        assert_eq!(book.symbol, "BTCUSDT");
+    }
+
+    #[test]
+    fn raw_depth_over_capacity_falls_back() {
+        let mut raw = br#"{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":["#.to_vec();
+        for i in 0..=RAW_DEPTH_LEVEL_CAP {
+            if i > 0 {
+                raw.push(b',');
+            }
+            raw.extend_from_slice(br#"["25.0","1"]"#);
+        }
+        raw.extend_from_slice(br#"],"a":[]}"#);
+
+        assert!(parse_incremental_raw_borrowed(&raw).is_none());
     }
 }
