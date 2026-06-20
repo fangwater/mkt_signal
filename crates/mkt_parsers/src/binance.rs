@@ -116,6 +116,22 @@ pub struct RawBook<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawBookView<'a> {
+    pub symbol: &'a str,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub prev_seq_id: i64,
+    pub first_update_id: i64,
+    pub final_update_id: i64,
+    pub gap_check: bool,
+    pub is_snapshot: bool,
+    pub bids_raw: &'a [u8],
+    pub asks_raw: &'a [u8],
+    pub bids_count: usize,
+    pub asks_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawKline<'a> {
     pub symbol: &'a str,
     pub open_price: f64,
@@ -537,6 +553,94 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
         is_snapshot: false,
         bids,
         asks,
+    })
+}
+
+pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
+    let data = combined_payload(raw).unwrap_or(raw);
+    let stream_symbol = stream_name(raw).and_then(parse_stream_symbol_borrowed);
+    let mut scanner = JsonObjectScanner::new(data);
+    let mut seen_event = false;
+    let mut symbol = None;
+    let mut timestamp_us = None;
+    let mut first_update_id = None;
+    let mut final_update_id = None;
+    let mut last_update_id = None;
+    let mut bids_raw = None;
+    let mut asks_raw = None;
+    let mut has_bids = false;
+    let mut has_asks = false;
+
+    while let Some((key, value)) = scanner.next_field() {
+        match key {
+            b"e" => {
+                if value.string_bytes()? != b"depthUpdate" {
+                    return None;
+                }
+                seen_event = true;
+            }
+            b"s" => symbol = Some(value.string_str()?),
+            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
+            b"U" => first_update_id = Some(value.i64()?),
+            b"u" => final_update_id = Some(value.i64()?),
+            b"lastUpdateId" => last_update_id = Some(value.i64()?),
+            b"b" | b"bids" => {
+                bids_raw = Some(value.array_bytes()?);
+                has_bids = true;
+            }
+            b"a" | b"asks" => {
+                asks_raw = Some(value.array_bytes()?);
+                has_asks = true;
+            }
+            _ => {}
+        }
+    }
+
+    let symbol = symbol.or(stream_symbol)?;
+    let bids_raw = bids_raw.unwrap_or(b"[]");
+    let asks_raw = asks_raw.unwrap_or(b"[]");
+    let bids_count = raw_levels_count(bids_raw)?;
+    let asks_count = raw_levels_count(asks_raw)?;
+
+    if let Some(last_update_id) = last_update_id {
+        return Some(RawBookView {
+            symbol,
+            timestamp_us: timestamp_us.unwrap_or(0),
+            seq_id: last_update_id,
+            prev_seq_id: last_update_id,
+            first_update_id: last_update_id,
+            final_update_id: last_update_id,
+            gap_check: false,
+            is_snapshot: true,
+            bids_raw,
+            asks_raw,
+            bids_count,
+            asks_count,
+        });
+    }
+
+    if !seen_event && stream_name(raw).is_some_and(|stream| !stream.contains("@depth")) {
+        return None;
+    }
+    if !has_bids && !has_asks {
+        return None;
+    }
+    let first_update_id = first_update_id?;
+    let final_update_id = final_update_id?;
+    Some(RawBookView {
+        symbol,
+        timestamp_us: timestamp_us.unwrap_or(0),
+        seq_id: final_update_id,
+        prev_seq_id: first_update_id.saturating_sub(1),
+        first_update_id,
+        final_update_id,
+        gap_check: false,
+        is_snapshot: false,
+        bids_raw,
+        asks_raw,
+        bids_count,
+        asks_count,
     })
 }
 
@@ -1066,6 +1170,81 @@ fn parse_raw_levels(raw: &[u8]) -> Option<RawLevels> {
     }
 }
 
+pub fn raw_level_at(raw: &[u8], index: usize) -> Option<Level> {
+    raw_levels_iter(raw)?.nth(index)
+}
+
+pub fn raw_levels_iter(raw: &[u8]) -> Option<RawLevelIter<'_>> {
+    RawLevelIter::new(raw)
+}
+
+fn raw_levels_count(raw: &[u8]) -> Option<usize> {
+    let raw = trim_ascii(raw);
+    if raw.first() != Some(&b'[') || raw.last() != Some(&b']') {
+        return None;
+    }
+
+    let mut count = 0usize;
+    let mut pos = 1usize;
+    loop {
+        skip_ws_at(raw, &mut pos);
+        match raw.get(pos).copied()? {
+            b']' => return Some(count),
+            b',' => pos += 1,
+            b'[' => {
+                parse_raw_level(raw, &mut pos)?;
+                count += 1;
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub struct RawLevelIter<'a> {
+    raw: &'a [u8],
+    pos: usize,
+    done: bool,
+}
+
+impl<'a> RawLevelIter<'a> {
+    fn new(raw: &'a [u8]) -> Option<Self> {
+        let raw = trim_ascii(raw);
+        if raw.first() != Some(&b'[') || raw.last() != Some(&b']') {
+            return None;
+        }
+        Some(Self {
+            raw,
+            pos: 1,
+            done: false,
+        })
+    }
+}
+
+impl Iterator for RawLevelIter<'_> {
+    type Item = Level;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        loop {
+            skip_ws_at(self.raw, &mut self.pos);
+            match self.raw.get(self.pos).copied()? {
+                b']' => {
+                    self.done = true;
+                    return None;
+                }
+                b',' => self.pos += 1,
+                b'[' => return parse_raw_level(self.raw, &mut self.pos),
+                _ => {
+                    self.done = true;
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 fn parse_raw_level(raw: &[u8], pos: &mut usize) -> Option<Level> {
     if raw.get(*pos) != Some(&b'[') {
         return None;
@@ -1568,8 +1747,9 @@ mod tests {
     use super::{
         parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
         parse_depth_bbo_raw_borrowed, parse_derivatives_raw_borrowed, parse_event_time_ms_raw,
-        parse_incremental_raw_borrowed, parse_kline_raw_borrowed, parse_trade_raw,
-        parse_trade_raw_borrowed, RawDerivative, RAW_DEPTH_LEVEL_CAP,
+        parse_incremental_raw_borrowed, parse_incremental_raw_view, parse_kline_raw_borrowed,
+        parse_trade_raw, parse_trade_raw_borrowed, raw_level_at, RawDerivative,
+        RAW_DEPTH_LEVEL_CAP,
     };
 
     #[test]
@@ -1742,6 +1922,27 @@ mod tests {
         raw.extend_from_slice(br#"],"a":[]}"#);
 
         assert!(parse_incremental_raw_borrowed(&raw).is_none());
+    }
+
+    #[test]
+    fn raw_depth_view_handles_over_capacity_books() {
+        let mut raw = br#"{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":["#.to_vec();
+        for i in 0..=RAW_DEPTH_LEVEL_CAP {
+            if i > 0 {
+                raw.push(b',');
+            }
+            raw.extend_from_slice(br#"["25.0","1"]"#);
+        }
+        raw.extend_from_slice(br#"],"a":[["25.1","2"]]}"#);
+
+        let view = parse_incremental_raw_view(&raw).expect("raw depth view");
+
+        assert_eq!(view.symbol, "BTCUSDT");
+        assert_eq!(view.bids_count, RAW_DEPTH_LEVEL_CAP + 1);
+        assert_eq!(view.asks_count, 1);
+        let bid = raw_level_at(view.bids_raw, RAW_DEPTH_LEVEL_CAP).expect("last bid");
+        assert!((bid.price - 25.0).abs() < 1e-9);
+        assert!((bid.amount - 1.0).abs() < 1e-9);
     }
 
     #[test]

@@ -393,6 +393,17 @@ impl Parser for BinanceSnapshotParser {
             book.final_update_id = update_id;
             return publish_raw_book_chunks(&book, self.max_levels, tx);
         }
+        if let Some(mut book) = binance_codec::parse_incremental_raw_view(&msg) {
+            if !book.is_snapshot {
+                return 0;
+            }
+            let update_id = book.seq_id.saturating_add(1);
+            book.seq_id = update_id;
+            book.prev_seq_id = update_id;
+            book.first_update_id = update_id;
+            book.final_update_id = update_id;
+            return publish_raw_book_view_chunks(&book, self.max_levels, tx);
+        }
 
         // 解析币安快照消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
@@ -578,6 +589,46 @@ fn publish_raw_book_chunks(
     sent_count
 }
 
+fn publish_raw_book_view_chunks(
+    book: &binance_codec::RawBookView<'_>,
+    max_levels: Option<usize>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let chunks = split_levels(book.bids_count, book.asks_count, max_levels);
+    let total_chunks = chunks.len();
+    let mut sent_count = 0;
+
+    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
+        chunks.into_iter().enumerate()
+    {
+        let mut inc_msg = IncMsg::create(
+            book.symbol.to_string(),
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            bids_count as u32,
+            asks_count as u32,
+        );
+        inc_msg.set_chunk_index(chunk_idx as u8);
+        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+        set_inc_levels_from_raw_view(
+            book.bids_raw,
+            book.asks_raw,
+            bids_start,
+            bids_count,
+            asks_start,
+            asks_count,
+            &mut inc_msg,
+        );
+        if tx.send(inc_msg.to_bytes()).is_ok() {
+            sent_count += 1;
+        }
+    }
+
+    sent_count
+}
+
 fn set_inc_levels_from_parsed(
     bids: &[binance_codec::Level],
     asks: &[binance_codec::Level],
@@ -613,6 +664,27 @@ fn set_inc_levels_from_raw(
     set_inc_levels_from_parsed(
         bids, asks, bids_start, bids_count, asks_start, asks_count, inc_msg,
     );
+}
+
+fn set_inc_levels_from_raw_view(
+    bids_raw: &[u8],
+    asks_raw: &[u8],
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    inc_msg: &mut IncMsg,
+) {
+    if let Some(iter) = binance_codec::raw_levels_iter(bids_raw) {
+        for (i, level) in iter.skip(bids_start).take(bids_count).enumerate() {
+            inc_msg.set_bid_level(i, Level::from_values(level.price, level.amount));
+        }
+    }
+    if let Some(iter) = binance_codec::raw_levels_iter(asks_raw) {
+        for (i, level) in iter.skip(asks_start).take(asks_count).enumerate() {
+            inc_msg.set_ask_level(i, Level::from_values(level.price, level.amount));
+        }
+    }
 }
 
 fn publish_trades(trades: Vec<binance_codec::Trade>, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
@@ -916,6 +988,23 @@ impl Parser for BinanceIncParser {
             }
             return publish_raw_book_chunks(&book, self.max_levels, tx);
         }
+        if let Some(mut book) = binance_codec::parse_incremental_raw_view(&msg) {
+            match self.mode {
+                BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                    if book.is_snapshot {
+                        return 0;
+                    }
+                    book.is_snapshot = self.is_snapshot;
+                }
+                BinanceDepthMode::SpotSnapshot => {
+                    if !book.is_snapshot {
+                        return 0;
+                    }
+                    book.is_snapshot = self.is_snapshot;
+                }
+            }
+            return publish_raw_book_view_chunks(&book, self.max_levels, tx);
+        }
 
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
@@ -1159,6 +1248,32 @@ mod tests {
         assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
         assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
         assert_eq!(inc_first_update_id(&out[0]), 22346);
+    }
+
+    #[test]
+    fn binance_incremental_parser_uses_raw_view_for_large_books() {
+        let parser = BinanceIncParser::futures_incremental(Some(50));
+        let mut raw = br#"{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":["#.to_vec();
+        for i in 0..70 {
+            if i > 0 {
+                raw.push(b',');
+            }
+            raw.extend_from_slice(br#"["25.0","1"]"#);
+        }
+        raw.extend_from_slice(br#"],"a":[["25.1","2"]]}"#);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let count = parser.parse(Bytes::from(raw), &tx);
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(msg);
+        }
+
+        assert_eq!(count, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
     }
 
     fn msg_symbol(data: &[u8]) -> &str {
