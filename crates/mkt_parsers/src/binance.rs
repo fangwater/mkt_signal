@@ -743,17 +743,25 @@ pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
     let mut payload = raw_payload_object(raw);
     let mut symbol = None;
     let mut kline = None;
+    let mut seen = 0u8;
+    const KLINE_TOP_SYMBOL: u8 = 1 << 0;
+    const KLINE_TOP_BODY: u8 = 1 << 1;
+    const KLINE_TOP_REQUIRED: u8 = KLINE_TOP_SYMBOL | KLINE_TOP_BODY;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
-            b"s" => symbol = Some(value.string_str()?),
+            b"s" => {
+                symbol = Some(value.string_str()?);
+                seen |= KLINE_TOP_SYMBOL;
+            }
             b"k" => {
                 let mut scanner = JsonObjectScanner::new(value.object_bytes()?);
                 kline = Some(parse_kline_object_scanner(&mut scanner)?);
+                seen |= KLINE_TOP_BODY;
             }
             _ => {}
         }
-        if symbol.is_some() && kline.is_some() {
+        if seen == KLINE_TOP_REQUIRED {
             break;
         }
     }
@@ -1327,6 +1335,21 @@ fn parse_kline_object_scanner(scanner: &mut JsonObjectScanner<'_>) -> Option<Raw
     let mut close_price = None;
     let mut volume = None;
     let mut timestamp = None;
+    let mut seen = 0u8;
+    const KLINE_CLOSED: u8 = 1 << 0;
+    const KLINE_OPEN: u8 = 1 << 1;
+    const KLINE_HIGH: u8 = 1 << 2;
+    const KLINE_LOW: u8 = 1 << 3;
+    const KLINE_CLOSE: u8 = 1 << 4;
+    const KLINE_VOLUME: u8 = 1 << 5;
+    const KLINE_TIMESTAMP: u8 = 1 << 6;
+    const KLINE_REQUIRED: u8 = KLINE_CLOSED
+        | KLINE_OPEN
+        | KLINE_HIGH
+        | KLINE_LOW
+        | KLINE_CLOSE
+        | KLINE_VOLUME
+        | KLINE_TIMESTAMP;
 
     while let Some(key) = scanner.next_key() {
         match key {
@@ -1335,23 +1358,35 @@ fn parse_kline_object_scanner(scanner: &mut JsonObjectScanner<'_>) -> Option<Raw
                 if !is_closed {
                     return None;
                 }
+                seen |= KLINE_CLOSED;
             }
-            b"o" => open_price = Some(scanner.take_value()?.f64()?),
-            b"h" => high_price = Some(scanner.take_value()?.f64()?),
-            b"l" => low_price = Some(scanner.take_value()?.f64()?),
-            b"c" => close_price = Some(scanner.take_value()?.f64()?),
-            b"v" => volume = Some(scanner.take_value()?.f64()?),
-            b"t" => timestamp = Some(scanner.take_value()?.i64()?),
+            b"o" => {
+                open_price = Some(scanner.take_value()?.f64()?);
+                seen |= KLINE_OPEN;
+            }
+            b"h" => {
+                high_price = Some(scanner.take_value()?.f64()?);
+                seen |= KLINE_HIGH;
+            }
+            b"l" => {
+                low_price = Some(scanner.take_value()?.f64()?);
+                seen |= KLINE_LOW;
+            }
+            b"c" => {
+                close_price = Some(scanner.take_value()?.f64()?);
+                seen |= KLINE_CLOSE;
+            }
+            b"v" => {
+                volume = Some(scanner.take_value()?.f64()?);
+                seen |= KLINE_VOLUME;
+            }
+            b"t" => {
+                timestamp = Some(scanner.take_value()?.i64()?);
+                seen |= KLINE_TIMESTAMP;
+            }
             _ => scanner.skip_value()?,
         }
-        if is_closed
-            && open_price.is_some()
-            && high_price.is_some()
-            && low_price.is_some()
-            && close_price.is_some()
-            && volume.is_some()
-            && timestamp.is_some()
-        {
+        if seen == KLINE_REQUIRED {
             break;
         }
     }
