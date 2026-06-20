@@ -260,6 +260,7 @@ impl VenueAdapter for BinanceAdapter {
         &self,
         raw: &[u8],
         publisher: &Rc<SpreadDerivativesPublisher>,
+        symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
         published: &mut u64,
     ) -> bool {
         if self.venue != TradingVenue::BinanceFutures {
@@ -273,7 +274,8 @@ impl VenueAdapter for BinanceAdapter {
             if !active.is_empty() && !active.contains(symbol) {
                 return Some(());
             }
-            match publish_raw_derivative(publisher, derivative) {
+            let slot_index = symbol_slot(symbol);
+            match publish_raw_derivative(publisher, slot_index, derivative) {
                 Ok(count) => *published += count as u64,
                 Err(e) => log::warn!("spread_pbs derivatives publish failed: {:#}", e),
             }
@@ -530,6 +532,7 @@ fn raw_derivative_symbol<'a>(derivative: &'a binance_codec::RawDerivative<'a>) -
 
 fn publish_raw_derivative(
     publisher: &Rc<SpreadDerivativesPublisher>,
+    slot_index: Option<usize>,
     derivative: binance_codec::RawDerivative<'_>,
 ) -> Result<usize> {
     match derivative {
@@ -543,22 +546,50 @@ fn publish_raw_derivative(
         } => {
             let mut count = 0usize;
             if let Some(price) = mark_price.filter(|price| *price > 0.0) {
-                publisher.publish_mark_price(symbol, price, timestamp_us)?;
+                if let Some(slot_index) = slot_index {
+                    publisher.publish_mark_price_for_slot(
+                        slot_index,
+                        symbol,
+                        price,
+                        timestamp_us,
+                    )?;
+                } else {
+                    publisher.publish_mark_price(symbol, price, timestamp_us)?;
+                }
                 count += 1;
             }
             if let Some(price) = index_price.filter(|price| *price > 0.0) {
-                publisher.publish_index_price(symbol, price, timestamp_us)?;
+                if let Some(slot_index) = slot_index {
+                    publisher.publish_index_price_for_slot(
+                        slot_index,
+                        symbol,
+                        price,
+                        timestamp_us,
+                    )?;
+                } else {
+                    publisher.publish_index_price(symbol, price, timestamp_us)?;
+                }
                 count += 1;
             }
             if let (Some(funding_rate), Some(next_funding_time_us)) =
                 (funding_rate, next_funding_time_us)
             {
-                publisher.publish_funding_rate(
-                    symbol,
-                    funding_rate,
-                    next_funding_time_us,
-                    timestamp_us,
-                )?;
+                if let Some(slot_index) = slot_index {
+                    publisher.publish_funding_rate_for_slot(
+                        slot_index,
+                        symbol,
+                        funding_rate,
+                        next_funding_time_us,
+                        timestamp_us,
+                    )?;
+                } else {
+                    publisher.publish_funding_rate(
+                        symbol,
+                        funding_rate,
+                        next_funding_time_us,
+                        timestamp_us,
+                    )?;
+                }
                 count += 1;
             }
             Ok(count)
@@ -570,7 +601,18 @@ fn publish_raw_derivative(
             price,
             timestamp_us,
         } => {
-            publisher.publish_liquidation(symbol, side, amount, price, timestamp_us)?;
+            if let Some(slot_index) = slot_index {
+                publisher.publish_liquidation_for_slot(
+                    slot_index,
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    timestamp_us,
+                )?;
+            } else {
+                publisher.publish_liquidation(symbol, side, amount, price, timestamp_us)?;
+            }
             Ok(1)
         }
     }

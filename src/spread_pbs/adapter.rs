@@ -194,6 +194,7 @@ pub trait VenueAdapter {
         &self,
         _raw: &[u8],
         _publisher: &Rc<SpreadDerivativesPublisher>,
+        _symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
         _published: &mut u64,
     ) -> bool {
         false

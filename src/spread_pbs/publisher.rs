@@ -680,6 +680,126 @@ fn write_price_payload(
     Ok(off)
 }
 
+#[derive(Clone)]
+struct DerivativePayloadPrefix {
+    bytes: [u8; SYMBOL_PREFIX_BYTES],
+    len: usize,
+    total_len: usize,
+}
+
+impl DerivativePayloadPrefix {
+    fn new(msg_type: MktMsgType, symbol: &str, total_len: usize) -> Result<Self> {
+        let len = 4 + 4 + symbol.len();
+        anyhow::ensure!(
+            len <= SYMBOL_PREFIX_BYTES,
+            "derivatives prefix {} exceeds {}",
+            len,
+            SYMBOL_PREFIX_BYTES
+        );
+        anyhow::ensure!(
+            total_len <= DERIVATIVES_PAYLOAD_BYTES,
+            "derivatives payload {} exceeds {}",
+            total_len,
+            DERIVATIVES_PAYLOAD_BYTES
+        );
+        let mut bytes = [0u8; SYMBOL_PREFIX_BYTES];
+        let mut off = 0usize;
+        write_u32_le(&mut bytes, &mut off, msg_type as u32);
+        write_symbol(&mut bytes, &mut off, symbol)?;
+        Ok(Self {
+            bytes,
+            len,
+            total_len,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct DerivativesPayloadPrefixes {
+    mark: DerivativePayloadPrefix,
+    index: DerivativePayloadPrefix,
+    funding: DerivativePayloadPrefix,
+    liquidation: DerivativePayloadPrefix,
+}
+
+impl DerivativesPayloadPrefixes {
+    fn new(symbol: &str) -> Result<Self> {
+        Ok(Self {
+            mark: DerivativePayloadPrefix::new(
+                MktMsgType::MarkPrice,
+                symbol,
+                mark_price_payload_len(symbol),
+            )?,
+            index: DerivativePayloadPrefix::new(
+                MktMsgType::IndexPrice,
+                symbol,
+                mark_price_payload_len(symbol),
+            )?,
+            funding: DerivativePayloadPrefix::new(
+                MktMsgType::FundingRate,
+                symbol,
+                funding_rate_payload_len(symbol),
+            )?,
+            liquidation: DerivativePayloadPrefix::new(
+                MktMsgType::LiquidationOrder,
+                symbol,
+                liquidation_payload_len(symbol),
+            )?,
+        })
+    }
+}
+
+fn ensure_derivatives_prefix_at_index(
+    cache: &mut FastHashMap<String, DerivativesPayloadPrefixes>,
+    by_index: &mut Vec<Option<DerivativesPayloadPrefixes>>,
+    symbol: &str,
+    index: usize,
+) -> Result<()> {
+    if index < by_index.len() && by_index[index].is_some() {
+        return Ok(());
+    }
+    let prefix = if let Some(prefix) = cache.get(symbol) {
+        prefix.clone()
+    } else {
+        let prefix = DerivativesPayloadPrefixes::new(symbol)?;
+        cache.insert(symbol.to_string(), prefix.clone());
+        prefix
+    };
+
+    if by_index.len() <= index {
+        by_index.resize_with(index + 1, || None);
+    }
+    by_index[index] = Some(prefix);
+    Ok(())
+}
+
+fn seed_derivatives_prefixes(
+    cache: &mut FastHashMap<String, DerivativesPayloadPrefixes>,
+    by_index: &mut Vec<Option<DerivativesPayloadPrefixes>>,
+    symbols: &[String],
+) -> Result<()> {
+    for symbol in symbols {
+        if !cache.contains_key(symbol.as_str()) {
+            let index = by_index.len();
+            ensure_derivatives_prefix_at_index(cache, by_index, symbol, index)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_price_payload_with_prefix(
+    buf: &mut [u8],
+    prefix: &DerivativePayloadPrefix,
+    price: f64,
+    timestamp: i64,
+) -> usize {
+    buf[..prefix.len].copy_from_slice(&prefix.bytes[..prefix.len]);
+    let mut off = prefix.len;
+    write_f64_le(buf, &mut off, price);
+    write_i64_le(buf, &mut off, timestamp);
+    off
+}
+
 fn write_funding_rate_payload(
     buf: &mut [u8],
     symbol: &str,
@@ -694,6 +814,21 @@ fn write_funding_rate_payload(
     write_i64_le(buf, &mut off, next_funding_time);
     write_i64_le(buf, &mut off, timestamp);
     Ok(off)
+}
+
+fn write_funding_rate_payload_with_prefix(
+    buf: &mut [u8],
+    prefix: &DerivativePayloadPrefix,
+    funding_rate: f64,
+    next_funding_time: i64,
+    timestamp: i64,
+) -> usize {
+    buf[..prefix.len].copy_from_slice(&prefix.bytes[..prefix.len]);
+    let mut off = prefix.len;
+    write_f64_le(buf, &mut off, funding_rate);
+    write_i64_le(buf, &mut off, next_funding_time);
+    write_i64_le(buf, &mut off, timestamp);
+    off
 }
 
 fn write_liquidation_payload(
@@ -713,6 +848,24 @@ fn write_liquidation_payload(
     write_f64_le(buf, &mut off, price);
     write_i64_le(buf, &mut off, timestamp);
     Ok(off)
+}
+
+fn write_liquidation_payload_with_prefix(
+    buf: &mut [u8],
+    prefix: &DerivativePayloadPrefix,
+    side: char,
+    amount: f64,
+    price: f64,
+    timestamp: i64,
+) -> usize {
+    buf[..prefix.len].copy_from_slice(&prefix.bytes[..prefix.len]);
+    let mut off = prefix.len;
+    buf[off] = side as u8;
+    off += 1;
+    write_f64_le(buf, &mut off, amount);
+    write_f64_le(buf, &mut off, price);
+    write_i64_le(buf, &mut off, timestamp);
+    off
 }
 
 /// `spread_pbs/<venue>/ask_bid_spread` 服务的 publisher 包装。
@@ -758,6 +911,8 @@ pub struct SpreadIncrementalPublisher {
 pub struct SpreadDerivativesPublisher {
     publisher: Publisher<ipc::Service, [u8; DERIVATIVES_PAYLOAD_BYTES], ()>,
     service_name: String,
+    derivatives_prefix_by_symbol: RefCell<FastHashMap<String, DerivativesPayloadPrefixes>>,
+    derivatives_prefix_by_index: RefCell<Vec<Option<DerivativesPayloadPrefixes>>>,
 }
 
 impl SpreadPublisher {
@@ -1377,6 +1532,8 @@ impl SpreadDerivativesPublisher {
         Ok(Self {
             publisher,
             service_name,
+            derivatives_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            derivatives_prefix_by_index: RefCell::new(Vec::new()),
         })
     }
 
@@ -1388,6 +1545,12 @@ impl SpreadDerivativesPublisher {
         publish_padded(&self.publisher, data, "derivatives")
     }
 
+    pub fn seed_symbols(&self, symbols: &[String]) -> Result<()> {
+        let mut cache = self.derivatives_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.derivatives_prefix_by_index.borrow_mut();
+        seed_derivatives_prefixes(&mut cache, &mut by_index, symbols)
+    }
+
     pub fn publish_mark_price(&self, symbol: &str, price: f64, timestamp: i64) -> Result<()> {
         let min_len = mark_price_payload_len(symbol);
         publish_write(&self.publisher, min_len, "derivatives", |buf| {
@@ -1395,11 +1558,99 @@ impl SpreadDerivativesPublisher {
         })
     }
 
+    pub fn publish_mark_price_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        price: f64,
+        timestamp: i64,
+    ) -> Result<()> {
+        let cache = self.derivatives_prefix_by_index.borrow();
+        if let Some(Some(prefixes)) = cache.get(slot_index) {
+            return publish_write(
+                &self.publisher,
+                prefixes.mark.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_price_payload_with_prefix(
+                        buf,
+                        &prefixes.mark,
+                        price,
+                        timestamp,
+                    ))
+                },
+            );
+        }
+        drop(cache);
+
+        let mut by_symbol = self.derivatives_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.derivatives_prefix_by_index.borrow_mut();
+        ensure_derivatives_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefixes = by_index[slot_index].as_ref().expect("prefix inserted");
+        publish_write(
+            &self.publisher,
+            prefixes.mark.total_len,
+            "derivatives",
+            |buf| {
+                Ok(write_price_payload_with_prefix(
+                    buf,
+                    &prefixes.mark,
+                    price,
+                    timestamp,
+                ))
+            },
+        )
+    }
+
     pub fn publish_index_price(&self, symbol: &str, price: f64, timestamp: i64) -> Result<()> {
         let min_len = mark_price_payload_len(symbol);
         publish_write(&self.publisher, min_len, "derivatives", |buf| {
             write_price_payload(buf, MktMsgType::IndexPrice, symbol, price, timestamp)
         })
+    }
+
+    pub fn publish_index_price_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        price: f64,
+        timestamp: i64,
+    ) -> Result<()> {
+        let cache = self.derivatives_prefix_by_index.borrow();
+        if let Some(Some(prefixes)) = cache.get(slot_index) {
+            return publish_write(
+                &self.publisher,
+                prefixes.index.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_price_payload_with_prefix(
+                        buf,
+                        &prefixes.index,
+                        price,
+                        timestamp,
+                    ))
+                },
+            );
+        }
+        drop(cache);
+
+        let mut by_symbol = self.derivatives_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.derivatives_prefix_by_index.borrow_mut();
+        ensure_derivatives_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefixes = by_index[slot_index].as_ref().expect("prefix inserted");
+        publish_write(
+            &self.publisher,
+            prefixes.index.total_len,
+            "derivatives",
+            |buf| {
+                Ok(write_price_payload_with_prefix(
+                    buf,
+                    &prefixes.index,
+                    price,
+                    timestamp,
+                ))
+            },
+        )
     }
 
     pub fn publish_funding_rate(
@@ -1415,6 +1666,53 @@ impl SpreadDerivativesPublisher {
         })
     }
 
+    pub fn publish_funding_rate_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        funding_rate: f64,
+        next_funding_time: i64,
+        timestamp: i64,
+    ) -> Result<()> {
+        let cache = self.derivatives_prefix_by_index.borrow();
+        if let Some(Some(prefixes)) = cache.get(slot_index) {
+            return publish_write(
+                &self.publisher,
+                prefixes.funding.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_funding_rate_payload_with_prefix(
+                        buf,
+                        &prefixes.funding,
+                        funding_rate,
+                        next_funding_time,
+                        timestamp,
+                    ))
+                },
+            );
+        }
+        drop(cache);
+
+        let mut by_symbol = self.derivatives_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.derivatives_prefix_by_index.borrow_mut();
+        ensure_derivatives_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefixes = by_index[slot_index].as_ref().expect("prefix inserted");
+        publish_write(
+            &self.publisher,
+            prefixes.funding.total_len,
+            "derivatives",
+            |buf| {
+                Ok(write_funding_rate_payload_with_prefix(
+                    buf,
+                    &prefixes.funding,
+                    funding_rate,
+                    next_funding_time,
+                    timestamp,
+                ))
+            },
+        )
+    }
+
     pub fn publish_liquidation(
         &self,
         symbol: &str,
@@ -1427,6 +1725,56 @@ impl SpreadDerivativesPublisher {
         publish_write(&self.publisher, min_len, "derivatives", |buf| {
             write_liquidation_payload(buf, symbol, side, amount, price, timestamp)
         })
+    }
+
+    pub fn publish_liquidation_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        side: char,
+        amount: f64,
+        price: f64,
+        timestamp: i64,
+    ) -> Result<()> {
+        let cache = self.derivatives_prefix_by_index.borrow();
+        if let Some(Some(prefixes)) = cache.get(slot_index) {
+            return publish_write(
+                &self.publisher,
+                prefixes.liquidation.total_len,
+                "derivatives",
+                |buf| {
+                    Ok(write_liquidation_payload_with_prefix(
+                        buf,
+                        &prefixes.liquidation,
+                        side,
+                        amount,
+                        price,
+                        timestamp,
+                    ))
+                },
+            );
+        }
+        drop(cache);
+
+        let mut by_symbol = self.derivatives_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.derivatives_prefix_by_index.borrow_mut();
+        ensure_derivatives_prefix_at_index(&mut by_symbol, &mut by_index, symbol, slot_index)?;
+        let prefixes = by_index[slot_index].as_ref().expect("prefix inserted");
+        publish_write(
+            &self.publisher,
+            prefixes.liquidation.total_len,
+            "derivatives",
+            |buf| {
+                Ok(write_liquidation_payload_with_prefix(
+                    buf,
+                    &prefixes.liquidation,
+                    side,
+                    amount,
+                    price,
+                    timestamp,
+                ))
+            },
+        )
     }
 }
 
@@ -1726,6 +2074,62 @@ mod tests {
         let written =
             write_liquidation_payload(&mut buf, "BTCUSDT", 'S', 10.0, 25.2, 1_700_000_000_000_000)
                 .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+    }
+
+    #[test]
+    fn cached_derivatives_prefix_writers_match_msg_bytes() {
+        let mut buf = [0u8; DERIVATIVES_PAYLOAD_BYTES];
+        let prefixes = DerivativesPayloadPrefixes::new("BTCUSDT").unwrap();
+
+        let expected =
+            MarkPriceMsg::create("BTCUSDT".to_string(), 25.0, 1_700_000_000_001_000).to_bytes();
+        let written =
+            write_price_payload_with_prefix(&mut buf, &prefixes.mark, 25.0, 1_700_000_000_001_000);
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+
+        let expected =
+            IndexPriceMsg::create("BTCUSDT".to_string(), 24.9, 1_700_000_000_001_000).to_bytes();
+        let written =
+            write_price_payload_with_prefix(&mut buf, &prefixes.index, 24.9, 1_700_000_000_001_000);
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+
+        let expected = FundingRateMsg::create(
+            "BTCUSDT".to_string(),
+            0.0001,
+            1_700_003_600_000_000,
+            1_700_000_000_001_000,
+        )
+        .to_bytes();
+        let written = write_funding_rate_payload_with_prefix(
+            &mut buf,
+            &prefixes.funding,
+            0.0001,
+            1_700_003_600_000_000,
+            1_700_000_000_001_000,
+        );
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+
+        let expected = LiquidationMsg::create(
+            "BTCUSDT".to_string(),
+            'S',
+            10.0,
+            25.2,
+            1_700_000_000_000_000,
+        )
+        .to_bytes();
+        let written = write_liquidation_payload_with_prefix(
+            &mut buf,
+            &prefixes.liquidation,
+            'S',
+            10.0,
+            25.2,
+            1_700_000_000_000_000,
+        );
         assert_eq!(written, expected.len());
         assert_eq!(&buf[..written], &expected[..]);
     }

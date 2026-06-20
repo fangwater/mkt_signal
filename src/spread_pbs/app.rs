@@ -405,14 +405,18 @@ impl SpreadPbsApp {
             None
         };
         let derivatives_publisher = if direct_derivatives_enabled {
-            Some(Rc::new(
+            let publisher = Rc::new(
                 SpreadDerivativesPublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
                     panic!(
                         "spread_pbs[{}] failed to open/create replacement derivatives ipc channel dat_pbs/{}/derivatives: {:#}",
                         venue_slug, venue_slug, e
                     )
                 }),
-            ))
+            );
+            publisher
+                .seed_symbols(&initial_symbols)
+                .with_context(|| format!("seed derivatives payload prefixes for {}", venue_slug))?;
+            Some(publisher)
         } else {
             None
         };
@@ -972,6 +976,15 @@ async fn restart_leg(
                 );
             }
         }
+        if let Some(derivatives_publisher) = ctx.derivatives_publisher.as_ref() {
+            if let Err(e) = derivatives_publisher.seed_symbols(&new_symbols) {
+                log::warn!(
+                    "spread_pbs[{}] failed to seed derivatives payload prefixes: {:#}",
+                    venue_slug,
+                    e
+                );
+            }
+        }
     }
     *current_symbols = new_set;
 
@@ -1447,9 +1460,11 @@ fn make_replacement_handler(
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
         if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
             let mut s = state.borrow_mut();
+            let mut symbol_slot = |symbol: &str| adapter.symbol_slot_index(symbol);
             if adapter.publish_derivatives_raw(
                 raw,
                 derivatives_publisher,
+                &mut symbol_slot,
                 &mut s.derivatives_published,
             ) {
                 return;
