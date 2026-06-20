@@ -1795,6 +1795,12 @@ fn raw_payload_object(raw: &[u8]) -> RawPayloadObject<'_> {
     let mut data = None;
     let mut stream = None;
     while let Some(key) = scanner.next_key() {
+        if key != b"stream" && key != b"data" && stream.is_none() && data.is_none() {
+            return RawPayloadObject {
+                scanner: JsonObjectScanner::new(raw),
+                stream: None,
+            };
+        }
         if key == b"stream" {
             if let Some(value) = scanner.take_value() {
                 stream = Some(value);
