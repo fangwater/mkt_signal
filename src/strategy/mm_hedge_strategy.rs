@@ -933,8 +933,14 @@ impl MarketMakerHedgeStrategy {
             self.period_buy_qty,
             self.period_sell_qty
         );
-        let payload = MmBackwardQueryMsg::Hedge(query_msg).to_bytes();
-        let send_result = SignalChannel::with(|ch| ch.publish_backward(&payload));
+        let query = MmBackwardQueryMsg::Hedge(query_msg);
+        let send_result = SignalChannel::with(|ch| {
+            ch.publish_backward_with(query.encoded_len(), |out| {
+                query
+                    .write_to_slice(out)
+                    .expect("MM hedge query encoded length must match writer");
+            })
+        });
         match send_result {
             Ok(true) => {
                 debug!(

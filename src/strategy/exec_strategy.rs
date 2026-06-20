@@ -790,8 +790,14 @@ impl ExecStrategy {
             self.pending_exec_queue.weighted_avg_price().unwrap_or(0.0),
             request_seq,
         );
-        let payload = ExecBackwardQueryMsg::Quote(query_msg).to_bytes();
-        match SignalChannel::with(|ch| ch.publish_backward(&payload)) {
+        let query = ExecBackwardQueryMsg::Quote(query_msg);
+        match SignalChannel::with(|ch| {
+            ch.publish_backward_with(query.encoded_len(), |out| {
+                query
+                    .write_to_slice(out)
+                    .expect("Exec query encoded length must match writer");
+            })
+        }) {
             Ok(true) => {
                 self.next_query_ts_us = now_ts.saturating_add(EXEC_QUERY_INTERVAL_US);
                 info!(

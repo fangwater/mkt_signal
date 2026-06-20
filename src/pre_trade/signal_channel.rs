@@ -627,6 +627,18 @@ impl SignalChannel {
         }
     }
 
+    pub fn publish_backward_with<F>(&self, len: usize, write: F) -> Result<bool>
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        if let Some(publisher) = &self.backward_pub {
+            publisher.publish_with(len, write)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// 检查反向发布器是否可用
     pub fn is_backward_publisher_available(&self) -> bool {
         self.backward_pub.is_some()

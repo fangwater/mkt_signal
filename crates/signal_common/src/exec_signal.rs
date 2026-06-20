@@ -25,6 +25,41 @@ fn write_qv(buf: &mut BytesMut, qv: &QuantizedValue) {
     buf.put_i64_le(qv.get_count());
 }
 
+fn write_i32_to_slice(out: &mut [u8], offset: usize, value: i32) -> Option<()> {
+    let end = offset.checked_add(4)?;
+    out.get_mut(offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
+fn write_u8_to_slice(out: &mut [u8], offset: usize, value: u8) -> Option<()> {
+    *out.get_mut(offset)? = value;
+    Some(())
+}
+
+fn write_u64_to_slice(out: &mut [u8], offset: usize, value: u64) -> Option<()> {
+    let end = offset.checked_add(8)?;
+    out.get_mut(offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
+fn write_f64_to_slice(out: &mut [u8], offset: usize, value: f64) -> Option<()> {
+    let end = offset.checked_add(8)?;
+    out.get_mut(offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    Some(())
+}
+
+fn write_fixed_symbol_to_slice(out: &mut [u8], offset: usize, symbol: &[u8; 32]) -> Option<usize> {
+    let end = symbol.iter().position(|&b| b == 0).unwrap_or(32);
+    *out.get_mut(offset)? = end as u8;
+    let start = offset.checked_add(1)?;
+    let stop = start.checked_add(end)?;
+    out.get_mut(start..stop)?.copy_from_slice(&symbol[..end]);
+    Some(stop)
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecRequestCtx {
     pub exec_leg: TradingLeg,
@@ -277,18 +312,47 @@ impl ExecSignalQueryMsg {
         fixed_symbol_to_string(&self.symbol)
     }
 
+    pub fn encoded_len(&self) -> usize {
+        4 + 1 + 1 + bytes_helper::fixed_bytes_len(&self.symbol) + 8 * 6
+    }
+
     pub fn to_bytes(&self) -> Bytes {
-        let mut buf = BytesMut::new();
+        let mut buf = BytesMut::with_capacity(self.encoded_len());
+        self.write_to(&mut buf);
+        buf.freeze()
+    }
+
+    pub fn write_to(&self, buf: &mut BytesMut) {
         buf.put_i32_le(self.strategy_id);
         buf.put_u8(self.exec_venue);
-        bytes_helper::write_fixed_bytes(&mut buf, &self.symbol);
+        bytes_helper::write_fixed_bytes(buf, &self.symbol);
         buf.put_f64_le(self.due_exec_qty);
         buf.put_f64_le(self.pending_exec_qty);
         buf.put_f64_le(self.position_qty);
         buf.put_f64_le(self.max_pos_u);
         buf.put_f64_le(self.weighted_exec_price);
         buf.put_u64_le(self.request_seq);
-        buf.freeze()
+    }
+
+    pub fn write_to_slice(&self, out: &mut [u8]) -> Option<()> {
+        if out.len() < self.encoded_len() {
+            return None;
+        }
+        write_i32_to_slice(out, 0, self.strategy_id)?;
+        write_u8_to_slice(out, 4, self.exec_venue)?;
+        let mut offset = write_fixed_symbol_to_slice(out, 5, &self.symbol)?;
+        write_f64_to_slice(out, offset, self.due_exec_qty)?;
+        offset += 8;
+        write_f64_to_slice(out, offset, self.pending_exec_qty)?;
+        offset += 8;
+        write_f64_to_slice(out, offset, self.position_qty)?;
+        offset += 8;
+        write_f64_to_slice(out, offset, self.max_pos_u)?;
+        offset += 8;
+        write_f64_to_slice(out, offset, self.weighted_exec_price)?;
+        offset += 8;
+        write_u64_to_slice(out, offset, self.request_seq)?;
+        Some(())
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
@@ -327,13 +391,36 @@ impl ExecSignalQueryMsg {
 impl ExecBackwardQueryMsg {
     pub fn to_bytes(&self) -> Bytes {
         let mut buf = BytesMut::new();
+        self.write_to(&mut buf);
+        buf.freeze()
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        1 + match self {
+            Self::Quote(msg) => msg.encoded_len(),
+        }
+    }
+
+    pub fn write_to(&self, buf: &mut BytesMut) {
         match self {
             Self::Quote(msg) => {
                 buf.put_u8(EXEC_BACKWARD_QUERY_QUOTE);
-                buf.put(msg.to_bytes());
+                msg.write_to(buf);
             }
         }
-        buf.freeze()
+    }
+
+    pub fn write_to_slice(&self, out: &mut [u8]) -> Option<()> {
+        if out.len() < self.encoded_len() {
+            return None;
+        }
+        match self {
+            Self::Quote(msg) => {
+                *out.get_mut(0)? = EXEC_BACKWARD_QUERY_QUOTE;
+                msg.write_to_slice(out.get_mut(1..)?)?;
+                Some(())
+            }
+        }
     }
 
     pub fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
@@ -607,6 +694,11 @@ mod tests {
             101.0,
             9,
         ));
+        let expected = msg.to_bytes();
+        let mut written = vec![0u8; msg.encoded_len()];
+        msg.write_to_slice(&mut written)
+            .expect("slice writer should fit");
+        assert_eq!(written.as_slice(), expected.as_ref());
         let parsed = ExecBackwardQueryMsg::from_bytes(msg.to_bytes()).unwrap();
         match parsed {
             ExecBackwardQueryMsg::Quote(inner) => {

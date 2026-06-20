@@ -174,6 +174,13 @@ impl MmBackwardQueryMsg {
         buf.freeze()
     }
 
+    pub fn encoded_len(&self) -> usize {
+        1 + match self {
+            Self::Hedge(msg) => msg.encoded_len(),
+            Self::CancelCandidates(msg) => msg.encoded_len(),
+        }
+    }
+
     pub fn write_to(&self, buf: &mut BytesMut) {
         match self {
             Self::Hedge(msg) => {
@@ -183,6 +190,20 @@ impl MmBackwardQueryMsg {
             Self::CancelCandidates(msg) => {
                 msg.write_backward_to(buf);
             }
+        }
+    }
+
+    pub fn write_to_slice(&self, out: &mut [u8]) -> Option<()> {
+        if out.len() < self.encoded_len() {
+            return None;
+        }
+        match self {
+            Self::Hedge(msg) => {
+                *out.get_mut(0)? = MM_BACKWARD_QUERY_HEDGE;
+                msg.write_to_slice(out.get_mut(1..)?)?;
+                Some(())
+            }
+            Self::CancelCandidates(_) => None,
         }
     }
 
@@ -268,6 +289,11 @@ mod tests {
         let msg = MmBackwardQueryMsg::Hedge(MmHedgeSignalQueryMsg::new(
             "BTCUSDT", 1.0, 2.0, 3.0, 100.0, 101.25, 7,
         ));
+        let expected = msg.to_bytes();
+        let mut written = vec![0u8; msg.encoded_len()];
+        msg.write_to_slice(&mut written)
+            .expect("slice writer should fit");
+        assert_eq!(written.as_slice(), expected.as_ref());
         let parsed = MmBackwardQueryMsg::from_bytes(msg.to_bytes()).expect("roundtrip");
         match parsed {
             MmBackwardQueryMsg::Hedge(inner) => {

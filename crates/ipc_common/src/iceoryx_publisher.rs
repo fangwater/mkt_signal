@@ -296,7 +296,28 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
     }
 
     pub fn publish(&self, data: &[u8]) -> Result<()> {
-        if data.len() > PAYLOAD {
+        self.publish_inner(
+            data.len(),
+            |out| {
+                out.copy_from_slice(data);
+            },
+            || describe_signal_payload(data),
+        )
+    }
+
+    pub fn publish_with<F>(&self, len: usize, write: F) -> Result<()>
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        self.publish_inner(len, write, || format!("payload_bytes={}", len))
+    }
+
+    fn publish_inner<F, D>(&self, len: usize, write: F, describe_dry_run: D) -> Result<()>
+    where
+        F: FnOnce(&mut [u8]),
+        D: FnOnce() -> String,
+    {
+        if len > PAYLOAD {
             anyhow::bail!("Data size exceeds {} bytes", PAYLOAD);
         }
 
@@ -310,23 +331,26 @@ impl<const PAYLOAD: usize> GenericPublisher<PAYLOAD> {
                     "Signal publish suppressed (dry-run): service={} count={} {}",
                     self.full_service,
                     suppressed,
-                    describe_signal_payload(data)
+                    describe_dry_run()
                 );
             }
             return Ok(());
         }
 
-        // Prepare a fixed-size buffer and copy the data
-        let mut buffer = [0u8; PAYLOAD];
-        buffer[..data.len()].copy_from_slice(data);
-
-        // Send via loan + write_payload pattern (same as forwarder)
         let publisher = self.publisher.as_ref().ok_or_else(|| {
             anyhow::anyhow!("publisher unavailable for service={}", self.full_service)
         })?;
-        let sample = publisher.loan_uninit()?;
-        let sample = sample.write_payload(buffer);
-        sample.send()?;
+        let mut sample = publisher.loan_uninit()?;
+        unsafe {
+            let payload = sample.payload_mut().as_mut_ptr().cast::<u8>();
+            let out = std::slice::from_raw_parts_mut(payload, len);
+            write(out);
+            if len < PAYLOAD {
+                std::ptr::write_bytes(payload.add(len), 0, PAYLOAD - len);
+            }
+            let sample = sample.assume_init();
+            sample.send()?;
+        }
 
         // 生产环境去除发布详情 DEBUG 日志，避免刷屏
 
