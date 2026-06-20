@@ -266,9 +266,10 @@ pub fn parse_book_ticker_bbo_raw(raw: &[u8]) -> Option<Bbo> {
 }
 
 pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let frame = combined_object_frame(raw);
-    let data = frame.data.unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject {
+        mut scanner,
+        stream,
+    } = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
     let mut seq_id = None;
@@ -309,9 +310,8 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     }
 
     if !seen_event
-        && frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        && stream
+            .and_then(|stream_value| stream_value.string_str())
             .is_some_and(|stream| !stream.ends_with("@bookTicker"))
     {
         return None;
@@ -343,9 +343,10 @@ enum RawBboKind {
 }
 
 pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let frame = combined_object_frame(raw);
-    let data = frame.data.unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject {
+        mut scanner,
+        stream,
+    } = raw_payload_object(raw);
     let mut event_kind = None;
     let mut symbol = None;
     let mut seq_id = None;
@@ -400,9 +401,8 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     }
 
     let stream_kind = if event_kind.is_none() {
-        frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        stream
+            .and_then(|stream_value| stream_value.string_str())
             .and_then(raw_bbo_stream_kind)
     } else {
         None
@@ -416,9 +416,8 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let kind = event_kind.or(inferred_kind).or(stream_kind)?;
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        None => stream
+            .and_then(|stream_value| stream_value.string_str())
             .and_then(parse_stream_symbol_borrowed)?,
     };
 
@@ -455,9 +454,10 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 }
 
 pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    let frame = combined_object_frame(raw);
-    let data = frame.data.unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject {
+        mut scanner,
+        stream,
+    } = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
     let mut timestamp_us = None;
@@ -494,15 +494,13 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        None => stream
+            .and_then(|stream_value| stream_value.string_str())
             .and_then(parse_stream_symbol_borrowed)?,
     };
     if !seen_event
-        && frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        && stream
+            .and_then(|stream_value| stream_value.string_str())
             .is_some_and(|stream| !stream.contains("@depth"))
     {
         return None;
@@ -571,9 +569,10 @@ pub fn parse_trade_raw(raw: &[u8]) -> Option<Trade> {
 }
 
 pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
-    let frame = combined_object_frame(raw);
-    let data = frame.data.unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject {
+        mut scanner,
+        stream,
+    } = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
     let mut trade_id = None;
@@ -616,9 +615,8 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
     }
 
     if !seen_event
-        && frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        && stream
+            .and_then(|stream_value| stream_value.string_str())
             .is_some_and(|stream| !stream.ends_with("@trade"))
     {
         return None;
@@ -782,9 +780,10 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
 }
 
 fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
-    let frame = combined_object_frame(raw);
-    let data = frame.data.unwrap_or(raw);
-    let mut scanner = JsonObjectScanner::new(data);
+    let RawPayloadObject {
+        mut scanner,
+        stream,
+    } = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
     let mut timestamp_us = None;
@@ -837,9 +836,8 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
 
     let symbol = match symbol {
         Some(symbol) => symbol,
-        None => frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        None => stream
+            .and_then(|stream_value| stream_value.string_str())
             .and_then(parse_stream_symbol_borrowed)?,
     };
     let bids_raw = bids_raw.unwrap_or(b"[]");
@@ -861,9 +859,8 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
     }
 
     if !seen_event
-        && frame
-            .stream
-            .and_then(|stream| stream.string_str())
+        && stream
+            .and_then(|stream_value| stream_value.string_str())
             .is_some_and(|stream| !stream.contains("@depth"))
     {
         return None;
@@ -1717,27 +1714,44 @@ fn infer_raw_bbo_kind(
     }
 }
 
-#[derive(Clone, Copy)]
-struct CombinedObjectFrame<'a> {
-    data: Option<&'a [u8]>,
+struct RawPayloadObject<'a> {
+    scanner: JsonObjectScanner<'a>,
     stream: Option<JsonValue<'a>>,
 }
 
-fn combined_object_frame(raw: &[u8]) -> CombinedObjectFrame<'_> {
+fn raw_payload_object(raw: &[u8]) -> RawPayloadObject<'_> {
     let mut scanner = JsonObjectScanner::new(raw);
     let mut data = None;
     let mut stream = None;
-    while let Some((key, value)) = scanner.next_field() {
-        match key {
-            b"data" => data = value.object_bytes(),
-            b"stream" => stream = Some(value),
-            _ => {}
+    while let Some(key) = scanner.next_key() {
+        if key == b"stream" {
+            if let Some(value) = scanner.take_value() {
+                stream = Some(value);
+                continue;
+            }
+            break;
         }
-        if data.is_some() && stream.is_some() {
+        if key == b"data" {
+            if scanner.value_starts_object() && stream.is_some() {
+                return RawPayloadObject {
+                    scanner: scanner.scanner_at_value(),
+                    stream,
+                };
+            }
+            let Some(value) = scanner.take_value() else {
+                break;
+            };
+            data = value.object_bytes();
+            continue;
+        }
+        if scanner.skip_value().is_none() {
             break;
         }
     }
-    CombinedObjectFrame { data, stream }
+    RawPayloadObject {
+        scanner: JsonObjectScanner::new(data.unwrap_or(raw)),
+        stream,
+    }
 }
 
 fn combined_value(raw: &[u8]) -> Option<&[u8]> {
@@ -1893,6 +1907,12 @@ impl<'a> JsonObjectScanner<'a> {
     }
 
     fn next_field(&mut self) -> Option<(&'a [u8], JsonValue<'a>)> {
+        let key = self.next_key()?;
+        let value = self.take_value()?;
+        Some((key, value))
+    }
+
+    fn next_key(&mut self) -> Option<&'a [u8]> {
         self.skip_object_separators();
         if self.raw.get(self.pos) == Some(&b'}') {
             self.pos += 1;
@@ -1905,15 +1925,27 @@ impl<'a> JsonObjectScanner<'a> {
         }
         self.pos += 1;
         self.skip_ws();
+        Some(&self.raw[key.0..key.1])
+    }
+
+    fn value_starts_object(&self) -> bool {
+        self.raw.get(self.pos) == Some(&b'{')
+    }
+
+    fn scanner_at_value(&self) -> JsonObjectScanner<'a> {
+        JsonObjectScanner {
+            raw: self.raw,
+            pos: self.pos,
+        }
+    }
+
+    fn take_value(&mut self) -> Option<JsonValue<'a>> {
         let start = self.pos;
         self.skip_value()?;
         let end = self.pos;
-        Some((
-            &self.raw[key.0..key.1],
-            JsonValue {
-                raw: &self.raw[start..end],
-            },
-        ))
+        Some(JsonValue {
+            raw: &self.raw[start..end],
+        })
     }
 
     fn skip_object_separators(&mut self) {
@@ -2170,6 +2202,20 @@ mod tests {
         assert_eq!(routed.symbol, "BTCUSDT");
         assert_eq!(routed.seq_id, 22345);
         assert!((routed.ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_combined_book_ticker_when_data_precedes_stream() {
+        let raw = br#"{
+            "data":{"e":"bookTicker","u":22345,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50","E":1700000000002},
+            "stream":"btcusdt@bookTicker"
+        }"#;
+
+        let bbo = parse_bbo_raw_borrowed(raw).expect("routed book ticker");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 22345);
+        assert!((bbo.bid_amount - 100.0).abs() < 1e-9);
     }
 
     #[test]
