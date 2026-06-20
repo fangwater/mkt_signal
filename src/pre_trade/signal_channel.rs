@@ -1044,7 +1044,6 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
         return;
     }
 
-    let open_ctx = open_ctx.to_owned_with_symbol(&symbol);
     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
     let _ = strategy_mgr
         .borrow_mut()
@@ -1052,7 +1051,7 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
 
     let strategy_id = StrategyManager::generate_strategy_id();
     let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-    strategy.handle_mm_open_ctx_with_symbol(open_ctx, symbol.clone());
+    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol.clone());
     if strategy.is_active() {
         debug!("MMOpen: strategy activated id={}", strategy_id);
         strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1720,7 +1719,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
 
-            let open_ctx = open_ctx_view.to_owned_with_symbol(&symbol);
             let strategy_mgr = MonitorChannel::instance().strategy_mgr();
             let _ = strategy_mgr
                 .borrow_mut()
@@ -1728,7 +1726,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_mm_open_ctx_with_symbol(open_ctx, symbol.clone());
+            strategy.handle_mm_open_view_with_symbol(open_ctx_view, symbol.clone());
             if strategy.is_active() {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
