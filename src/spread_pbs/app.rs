@@ -1426,6 +1426,16 @@ fn make_replacement_handler(
                     );
                     return;
                 }
+                if let Some(book) = adapter.parse_incremental_raw_view(raw) {
+                    let mut s = state.borrow_mut();
+                    process_incremental_view(
+                        &mut s,
+                        incremental_publisher,
+                        book,
+                        incremental_max_levels,
+                    );
+                    return;
+                }
             } else if let (Some(trade_publisher), Some(trade)) = (
                 trade_publisher.as_ref(),
                 adapter.parse_trade_raw_borrowed(raw),
@@ -1769,6 +1779,76 @@ fn process_incremental_fields<L: PayloadLevel>(
     state.symbol_state.set_incremental_slot(slot, seq_id);
 }
 
+fn process_incremental_view(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadIncrementalPublisher>,
+    book: mkt_parsers::binance::RawBookView<'_>,
+    max_levels: Option<usize>,
+) {
+    let slot = state.symbol_state.incremental_slot(book.symbol);
+    if !book.is_snapshot && book.seq_id <= slot.prev {
+        state.incremental_dropped_by_seq += 1;
+        return;
+    }
+
+    if book.gap_check {
+        warn_incremental_gap_if_needed(
+            state,
+            book.symbol,
+            book.seq_id,
+            book.prev_seq_id,
+            book.is_snapshot,
+        );
+    }
+
+    let total_levels = book.bids_count + book.asks_count;
+    match max_levels {
+        Some(max) if total_levels > max && max > 0 => {
+            let total_chunks = level_chunk_count(book.bids_count, book.asks_count, max);
+            let mut bids_start = 0usize;
+            let mut asks_start = 0usize;
+            for chunk_idx in 0..total_chunks {
+                let (bids_count, asks_count) = next_level_chunk(
+                    book.bids_count - bids_start,
+                    book.asks_count - asks_start,
+                    max,
+                );
+                if !publish_incremental_view_chunk(
+                    state,
+                    publisher,
+                    &book,
+                    bids_start,
+                    bids_count,
+                    asks_start,
+                    asks_count,
+                    chunk_idx,
+                    total_chunks,
+                ) {
+                    return;
+                }
+                bids_start += bids_count;
+                asks_start += asks_count;
+            }
+        }
+        _ => {
+            if !publish_incremental_view_chunk(
+                state,
+                publisher,
+                &book,
+                0,
+                book.bids_count,
+                0,
+                book.asks_count,
+                0,
+                1,
+            ) {
+                return;
+            }
+        }
+    }
+    state.symbol_state.set_incremental_slot(slot, book.seq_id);
+}
+
 fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
@@ -1797,6 +1877,43 @@ fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
         bids_count,
         asks,
         asks_start,
+        asks_count,
+        chunk_idx,
+        total_chunks,
+    ) {
+        log::warn!("spread_pbs incremental publish failed: {:#}", e);
+        return false;
+    }
+    state.incremental_published += 1;
+    true
+}
+
+fn publish_incremental_view_chunk(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadIncrementalPublisher>,
+    book: &mkt_parsers::binance::RawBookView<'_>,
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+    chunk_idx: usize,
+    total_chunks: usize,
+) -> bool {
+    let Some(bids) = mkt_parsers::binance::raw_levels_iter(book.bids_raw) else {
+        return false;
+    };
+    let Some(asks) = mkt_parsers::binance::raw_levels_iter(book.asks_raw) else {
+        return false;
+    };
+    if let Err(e) = publisher.publish_chunk_from_iter(
+        book.symbol,
+        book.first_update_id,
+        book.final_update_id,
+        book.timestamp_us,
+        book.is_snapshot,
+        bids.skip(bids_start).take(bids_count),
+        bids_count,
+        asks.skip(asks_start).take(asks_count),
         asks_count,
         chunk_idx,
         total_chunks,

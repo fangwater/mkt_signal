@@ -309,6 +309,48 @@ fn write_incremental_payload_from_levels<B: PayloadLevel, A: PayloadLevel>(
     Ok(off)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn write_incremental_payload_from_iter<B, A>(
+    buf: &mut [u8],
+    symbol: &str,
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    bids: B,
+    bids_count: usize,
+    asks: A,
+    asks_count: usize,
+    chunk_idx: usize,
+    total_chunks: usize,
+) -> Result<usize>
+where
+    B: IntoIterator<Item = mkt_parsers::binance::Level>,
+    A: IntoIterator<Item = mkt_parsers::binance::Level>,
+{
+    let mut off = 0usize;
+    write_u32_le(buf, &mut off, MktMsgType::OrderBookInc as u32);
+    write_symbol(buf, &mut off, symbol)?;
+    write_i64_le(buf, &mut off, first_update_id);
+    write_i64_le(buf, &mut off, final_update_id);
+    write_i64_le(buf, &mut off, timestamp);
+    buf[off] = u8::from(is_snapshot);
+    buf[off + 1] = u8::from(chunk_idx == total_chunks - 1);
+    buf[off + 2] = chunk_idx as u8;
+    off += 8;
+    write_u32_le(buf, &mut off, bids_count as u32);
+    write_u32_le(buf, &mut off, asks_count as u32);
+    for level in bids {
+        write_f64_le(buf, &mut off, level.price);
+        write_f64_le(buf, &mut off, level.amount);
+    }
+    for level in asks {
+        write_f64_le(buf, &mut off, level.price);
+        write_f64_le(buf, &mut off, level.amount);
+    }
+    Ok(off)
+}
+
 fn write_price_payload(
     buf: &mut [u8],
     msg_type: MktMsgType,
@@ -711,6 +753,44 @@ impl SpreadIncrementalPublisher {
             )
         })
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_chunk_from_iter<B, A>(
+        &self,
+        symbol: &str,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        is_snapshot: bool,
+        bids: B,
+        bids_count: usize,
+        asks: A,
+        asks_count: usize,
+        chunk_idx: usize,
+        total_chunks: usize,
+    ) -> Result<()>
+    where
+        B: IntoIterator<Item = mkt_parsers::binance::Level>,
+        A: IntoIterator<Item = mkt_parsers::binance::Level>,
+    {
+        let min_len = incremental_payload_len(symbol, bids_count, asks_count);
+        publish_write(&self.publisher, min_len, "incremental", |buf| {
+            write_incremental_payload_from_iter(
+                buf,
+                symbol,
+                first_update_id,
+                final_update_id,
+                timestamp,
+                is_snapshot,
+                bids,
+                bids_count,
+                asks,
+                asks_count,
+                chunk_idx,
+                total_chunks,
+            )
+        })
+    }
 }
 
 impl SpreadDerivativesPublisher {
@@ -904,6 +984,57 @@ mod tests {
         let mut buf = [0u8; INCREMENTAL_PAYLOAD_BYTES];
         let written = write_incremental_payload(
             &mut buf, "BTCUSDT", 10, 11, 123_456, false, &bids, 1, 1, &asks, 0, 2, 2, 3,
+        )
+        .unwrap();
+        assert_eq!(written, expected.len());
+        assert_eq!(&buf[..written], &expected[..]);
+        assert!(buf[written..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn direct_incremental_iter_writer_matches_inc_msg_bytes() {
+        let bids = [
+            mkt_parsers::binance::Level {
+                price: 100.0,
+                amount: 1.0,
+            },
+            mkt_parsers::binance::Level {
+                price: 99.5,
+                amount: 2.0,
+            },
+        ];
+        let asks = [
+            mkt_parsers::binance::Level {
+                price: 101.0,
+                amount: 3.0,
+            },
+            mkt_parsers::binance::Level {
+                price: 101.5,
+                amount: 4.0,
+            },
+        ];
+        let mut msg = IncMsg::create("BTCUSDT".to_string(), 10, 11, 123_456, false, 1, 2);
+        msg.set_chunk_index(2);
+        msg.set_is_last(true);
+        msg.set_bid_level(0, Level::from_values(99.5, 2.0));
+        msg.set_ask_level(0, Level::from_values(101.0, 3.0));
+        msg.set_ask_level(1, Level::from_values(101.5, 4.0));
+        let expected = msg.to_bytes();
+
+        let mut buf = [0u8; INCREMENTAL_PAYLOAD_BYTES];
+        let written = write_incremental_payload_from_iter(
+            &mut buf,
+            "BTCUSDT",
+            10,
+            11,
+            123_456,
+            false,
+            bids.into_iter().skip(1).take(1),
+            1,
+            asks.into_iter().take(2),
+            2,
+            2,
+            3,
         )
         .unwrap();
         assert_eq!(written, expected.len());
