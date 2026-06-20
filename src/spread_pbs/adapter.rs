@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
+use mkt_parsers::binance::{RawBbo, RawTrade};
 use serde_json::Value;
 
 use mkt_parsers::msg::mkt_msg::Level;
@@ -147,6 +148,16 @@ pub trait VenueAdapter {
         _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
     ) -> Result<bool> {
         Ok(false)
+    }
+    /// Optional borrowed raw BBO parser for hot paths that can consume fields
+    /// directly and avoid allocating the intermediate `BboFrame.symbol`.
+    fn parse_bbo_raw_borrowed<'a>(&self, _raw: &'a [u8]) -> Option<RawBbo<'a>> {
+        None
+    }
+    /// Optional borrowed raw trade parser for hot paths that can consume fields
+    /// directly and avoid `serde_json::Value`, `Vec<TradeFrame>`, and symbol `String`.
+    fn parse_trade_raw_borrowed<'a>(&self, _raw: &'a [u8]) -> Option<RawTrade<'a>> {
+        None
     }
     fn parse_trade_frame(&self, _value: &Value) -> Result<Vec<TradeFrame>> {
         Ok(Vec::new())

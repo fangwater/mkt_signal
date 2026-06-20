@@ -166,14 +166,25 @@ impl VenueAdapter for BinanceAdapter {
         raw: &[u8],
         emit: &mut dyn FnMut(BboFrame) -> Result<()>,
     ) -> Result<bool> {
-        if self.venue != TradingVenue::BinanceFutures {
-            return Ok(false);
-        }
-        let Some(bbo) = binance_codec::parse_book_ticker_bbo_raw(raw) else {
+        let Some(bbo) = self.parse_bbo_raw_borrowed(raw) else {
             return Ok(false);
         };
-        emit(bbo_to_frame(bbo))?;
+        emit(raw_bbo_to_frame(bbo))?;
         Ok(true)
+    }
+
+    fn parse_bbo_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawBbo<'a>> {
+        if self.venue != TradingVenue::BinanceFutures {
+            return None;
+        }
+        binance_codec::parse_book_ticker_bbo_raw_borrowed(raw)
+    }
+
+    fn parse_trade_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawTrade<'a>> {
+        if self.venue != TradingVenue::BinanceFutures {
+            return None;
+        }
+        binance_codec::parse_trade_raw_borrowed(raw)
     }
 
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
@@ -347,6 +358,19 @@ fn looks_like_bbo(payload: &Value) -> bool {
 fn bbo_to_frame(bbo: binance_codec::Bbo) -> BboFrame {
     BboFrame {
         symbol: bbo.symbol,
+        ts_us: bbo.timestamp_us,
+        seq_id: bbo.seq_id,
+        reset_seq: false,
+        bid_price: bbo.bid_price,
+        bid_amount: bbo.bid_amount,
+        ask_price: bbo.ask_price,
+        ask_amount: bbo.ask_amount,
+    }
+}
+
+fn raw_bbo_to_frame(bbo: binance_codec::RawBbo<'_>) -> BboFrame {
+    BboFrame {
+        symbol: bbo.symbol.to_ascii_uppercase(),
         ts_us: bbo.timestamp_us,
         seq_id: bbo.seq_id,
         reset_seq: false,

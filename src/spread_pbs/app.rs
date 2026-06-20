@@ -1394,6 +1394,27 @@ fn make_replacement_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
+        if incremental_publisher.is_none() && derivatives_publisher.is_none() {
+            if let (Some(trade_publisher), Some(trade)) = (
+                trade_publisher.as_ref(),
+                adapter.parse_trade_raw_borrowed(raw),
+            ) {
+                let mut s = state.borrow_mut();
+                process_trade_fields(
+                    &mut s,
+                    trade_publisher,
+                    trade.symbol,
+                    trade.seq_id,
+                    trade.trade_id,
+                    trade.timestamp_us,
+                    trade.side,
+                    trade.price,
+                    trade.amount,
+                );
+                return;
+            }
+        }
+
         let mut emit_noop = |_frame: BboFrame| Ok(());
         let batch = parse_replacement_batch(
             label,
@@ -1444,6 +1465,27 @@ fn make_handler(
     source: MarketSource,
 ) -> FrameHandler {
     Rc::new(move |recv_us: i64, raw: &[u8]| {
+        if let Some(bbo) = adapter.parse_bbo_raw_borrowed(raw) {
+            let accepted_us = get_timestamp_us();
+            let mut s = state.borrow_mut();
+            process_bbo_fields(
+                &mut s,
+                &publisher,
+                recv_us,
+                accepted_us,
+                bbo.symbol,
+                bbo.timestamp_us,
+                bbo.seq_id,
+                false,
+                bbo.bid_price,
+                bbo.bid_amount,
+                bbo.ask_price,
+                bbo.ask_amount,
+                source,
+            );
+            return;
+        }
+
         let mut accepted_us = 0;
         let mut bbo_count = 0usize;
         let mut s = state.borrow_mut();
@@ -1497,21 +1539,39 @@ fn process_trade_frame(
     publisher: &Rc<SpreadTradePublisher>,
     f: TradeFrame,
 ) {
-    let slot = state.symbol_state.trade_slot(&f.symbol);
-    if f.seq_id <= slot.prev {
-        state.trades_dropped_by_seq += 1;
-        return;
-    }
-    state.symbol_state.set_trade_slot(slot, f.seq_id);
-
-    if let Err(e) = publisher.publish_trade(
+    process_trade_fields(
+        state,
+        publisher,
         &f.symbol,
+        f.seq_id,
         f.trade_id,
         f.timestamp_us,
         f.side,
         f.price,
         f.amount,
-    ) {
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_trade_fields(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadTradePublisher>,
+    symbol: &str,
+    seq_id: i64,
+    trade_id: i64,
+    timestamp_us: i64,
+    side: char,
+    price: f64,
+    amount: f64,
+) {
+    let slot = state.symbol_state.trade_slot(symbol);
+    if seq_id <= slot.prev {
+        state.trades_dropped_by_seq += 1;
+        return;
+    }
+    state.symbol_state.set_trade_slot(slot, seq_id);
+
+    if let Err(e) = publisher.publish_trade(symbol, trade_id, timestamp_us, side, price, amount) {
         log::warn!("spread_pbs trade publish failed: {:#}", e);
         return;
     }
@@ -1771,14 +1831,47 @@ fn process_frame(
     f: BboFrame,
     source: MarketSource,
 ) {
+    process_bbo_fields(
+        state,
+        publisher,
+        recv_us,
+        accepted_us,
+        &f.symbol,
+        f.ts_us,
+        f.seq_id,
+        f.reset_seq,
+        f.bid_price,
+        f.bid_amount,
+        f.ask_price,
+        f.ask_amount,
+        source,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_bbo_fields(
+    state: &mut SharedState,
+    publisher: &Rc<SpreadPublisher>,
+    recv_us: i64,
+    accepted_us: i64,
+    symbol: &str,
+    ts_us: i64,
+    seq_id: i64,
+    reset_seq: bool,
+    bid_price: f64,
+    bid_amount: f64,
+    ask_price: f64,
+    ask_amount: f64,
+    source: MarketSource,
+) {
     reset_dedup_high_water_if_needed(state, accepted_us);
 
-    let slot = state.symbol_state.bbo_slot(&f.symbol);
-    if should_drop_bbo_frame(&slot, &f) {
+    let slot = state.symbol_state.bbo_slot(symbol);
+    if should_drop_bbo_fields(&slot, ts_us, seq_id, reset_seq) {
         state.dropped_by_seq += 1;
         return;
     }
-    state.symbol_state.set_bbo_slot(slot, f.seq_id, f.ts_us);
+    state.symbol_state.set_bbo_slot(slot, seq_id, ts_us);
     state.record_selected_source(source);
 
     record_latency_measurement_if_needed(
@@ -1786,17 +1879,12 @@ fn process_frame(
         slot.latency_measurement_symbol,
         recv_us,
         accepted_us,
-        f.ts_us,
+        ts_us,
     );
 
-    if let Err(e) = publisher.publish_bbo(
-        &f.symbol,
-        f.ts_us,
-        f.bid_price,
-        f.bid_amount,
-        f.ask_price,
-        f.ask_amount,
-    ) {
+    if let Err(e) =
+        publisher.publish_bbo(symbol, ts_us, bid_price, bid_amount, ask_price, ask_amount)
+    {
         log::warn!("spread_pbs publish failed: {:#}", e);
         return;
     }
@@ -1889,20 +1977,25 @@ fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64) {
     }
 }
 
+#[cfg(test)]
 fn should_drop_bbo_frame(slot: &SymbolSlot, f: &BboFrame) -> bool {
+    should_drop_bbo_fields(slot, f.ts_us, f.seq_id, f.reset_seq)
+}
+
+fn should_drop_bbo_fields(slot: &SymbolSlot, ts_us: i64, seq_id: i64, reset_seq: bool) -> bool {
     if slot.prev == i64::MIN {
         return false;
     }
 
-    if f.ts_us > 0 && slot.prev_ts_us > 0 && f.ts_us < slot.prev_ts_us {
+    if ts_us > 0 && slot.prev_ts_us > 0 && ts_us < slot.prev_ts_us {
         return true;
     }
 
-    if f.reset_seq && f.seq_id == 1 && slot.prev > f.seq_id && f.ts_us > slot.prev_ts_us {
+    if reset_seq && seq_id == 1 && slot.prev > seq_id && ts_us > slot.prev_ts_us {
         return false;
     }
 
-    f.seq_id <= slot.prev
+    seq_id <= slot.prev
 }
 
 #[cfg(test)]
