@@ -514,8 +514,12 @@ impl WsEndpointHandle {
         if !self.is_available() {
             return Err(());
         }
-        self.cmd_queue.push(cmd);
+        self.enqueue_available(cmd);
         Ok(())
+    }
+
+    pub(crate) fn enqueue_available(&self, cmd: WsCommand) {
+        self.cmd_queue.push(cmd);
     }
 
     pub(crate) fn is_available(&self) -> bool {

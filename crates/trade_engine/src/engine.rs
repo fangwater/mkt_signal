@@ -2083,22 +2083,24 @@ impl TradeEngine {
                         let start = ws_rr_cursor;
                         ws_rr_cursor = (ws_rr_cursor + 1) % len;
 
-                        let mut sent = false;
+                        let mut target_idx = None;
                         for offset in 0..len {
                             let idx = (start + offset) % len;
                             debug!(
                                 "routing order client_order_id={} to ws endpoint {}",
                                 msg.client_order_id, idx
                             );
-                            if endpoints[idx].send(WsCommand::Send(msg.clone())).is_ok() {
-                                sent = true;
+                            if endpoints[idx].is_available() {
+                                target_idx = Some(idx);
                                 break;
                             } else {
                                 warn!("ws endpoint {} not accepting messages, trying next", idx);
                             }
                         }
 
-                        if !sent {
+                        if let Some(idx) = target_idx {
+                            endpoints[idx].enqueue_available(WsCommand::Send(msg));
+                        } else {
                             warn!(
                                 "all ws endpoints unavailable for client_order_id={}",
                                 msg.client_order_id
@@ -2361,19 +2363,18 @@ impl TradeEngine {
                                 let start = binance_query_rr;
                                 binance_query_rr = (binance_query_rr + 1) % len;
 
-                                let mut sent = false;
+                                let mut target_idx = None;
                                 for offset in 0..len {
                                     let idx = (start + offset) % len;
-                                    if endpoints[idx]
-                                        .send(WsCommand::SendQuery(msg.clone()))
-                                        .is_ok()
-                                    {
-                                        sent = true;
+                                    if endpoints[idx].is_available() {
+                                        target_idx = Some(idx);
                                         break;
                                     }
                                 }
 
-                                if !sent {
+                                if let Some(idx) = target_idx {
+                                    endpoints[idx].enqueue_available(WsCommand::SendQuery(msg));
+                                } else {
                                     warn!(
                                         "binance ws query endpoints unavailable req_type={:?} client_query_id={}",
                                         msg.req_type, msg.client_query_id
@@ -2905,19 +2906,18 @@ impl TradeEngine {
                                     (start, len)
                                 };
 
-                                let mut sent = false;
+                                let mut target_idx = None;
                                 for offset in 0..len {
                                     let idx = (cursor + offset) % len;
-                                    if endpoints[idx]
-                                        .send(WsCommand::SendQuery(msg.clone()))
-                                        .is_ok()
-                                    {
-                                        sent = true;
+                                    if endpoints[idx].is_available() {
+                                        target_idx = Some(idx);
                                         break;
                                     }
                                 }
 
-                                if !sent {
+                                if let Some(idx) = target_idx {
+                                    endpoints[idx].enqueue_available(WsCommand::SendQuery(msg));
+                                } else {
                                     let _ = query_resp_sink.send(QueryExecOutcome {
                                         req_type: msg.req_type,
                                         client_query_id: msg.client_query_id,
