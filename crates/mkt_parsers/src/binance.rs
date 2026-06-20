@@ -722,6 +722,19 @@ pub fn parse_incremental_raw_borrowed(raw: &[u8]) -> Option<RawBook<'_>> {
             }
             _ => {}
         }
+        if last_update_id.is_some() && symbol.is_some() && has_bids && has_asks {
+            break;
+        }
+        if seen_event
+            && symbol.is_some()
+            && timestamp_us.is_some()
+            && first_update_id.is_some()
+            && final_update_id.is_some()
+            && has_bids
+            && has_asks
+        {
+            break;
+        }
     }
 
     let symbol = match symbol {
@@ -811,6 +824,19 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
                 has_asks = true;
             }
             _ => {}
+        }
+        if last_update_id.is_some() && symbol.is_some() && has_bids && has_asks {
+            break;
+        }
+        if seen_event
+            && symbol.is_some()
+            && timestamp_us.is_some()
+            && first_update_id.is_some()
+            && final_update_id.is_some()
+            && has_bids
+            && has_asks
+        {
+            break;
         }
     }
 
