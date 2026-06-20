@@ -1087,9 +1087,7 @@ impl Parser for BinanceTradeParser {
 
 impl Parser for BinanceAskBidSpreadParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        if let Some(bbo) = binance_codec::parse_book_ticker_bbo_raw_borrowed(&msg)
-            .or_else(|| binance_codec::parse_depth_bbo_raw_borrowed(&msg))
-        {
+        if let Some(bbo) = binance_codec::parse_bbo_raw_borrowed(&msg) {
             let spread_msg = AskBidSpreadMsg::create(
                 bbo.symbol.to_string(),
                 bbo.timestamp_us,
