@@ -188,13 +188,40 @@ fn write_bbo_payload_with_prefix(
     off
 }
 
+fn ensure_bbo_prefix_at_index(
+    cache: &mut FastHashMap<String, BboPayloadPrefix>,
+    by_index: &mut Vec<Option<BboPayloadPrefix>>,
+    symbol: &str,
+    index: usize,
+) -> Result<()> {
+    if index < by_index.len() && by_index[index].is_some() {
+        return Ok(());
+    }
+
+    let prefix = if let Some(prefix) = cache.get(symbol) {
+        prefix.clone()
+    } else {
+        let prefix = BboPayloadPrefix::new(symbol)?;
+        cache.insert(symbol.to_string(), prefix.clone());
+        prefix
+    };
+
+    if by_index.len() <= index {
+        by_index.resize_with(index + 1, || None);
+    }
+    by_index[index] = Some(prefix);
+    Ok(())
+}
+
 fn seed_bbo_prefixes(
     cache: &mut FastHashMap<String, BboPayloadPrefix>,
+    by_index: &mut Vec<Option<BboPayloadPrefix>>,
     symbols: &[String],
 ) -> Result<()> {
     for symbol in symbols {
         if !cache.contains_key(symbol.as_str()) {
-            cache.insert(symbol.clone(), BboPayloadPrefix::new(symbol)?);
+            let index = by_index.len();
+            ensure_bbo_prefix_at_index(cache, by_index, symbol, index)?;
         }
     }
     Ok(())
@@ -421,6 +448,7 @@ pub struct SpreadPublisher {
     publisher: Publisher<ipc::Service, [u8; SPREAD_PAYLOAD_BYTES], ()>,
     service_name: String,
     bbo_prefix_by_symbol: RefCell<FastHashMap<String, BboPayloadPrefix>>,
+    bbo_prefix_by_index: RefCell<Vec<Option<BboPayloadPrefix>>>,
 }
 
 /// `spread_pbs/<venue>/latency` 服务的 publisher。这个 service 不经过
@@ -483,6 +511,7 @@ impl SpreadPublisher {
             publisher,
             service_name,
             bbo_prefix_by_symbol: RefCell::new(fast_hash_map()),
+            bbo_prefix_by_index: RefCell::new(Vec::new()),
         })
     }
 
@@ -492,7 +521,8 @@ impl SpreadPublisher {
 
     pub fn seed_symbols(&self, symbols: &[String]) -> Result<()> {
         let mut cache = self.bbo_prefix_by_symbol.borrow_mut();
-        seed_bbo_prefixes(&mut cache, symbols)
+        let mut by_index = self.bbo_prefix_by_index.borrow_mut();
+        seed_bbo_prefixes(&mut cache, &mut by_index, symbols)
     }
 
     /// 同步 publish。`data` 长度需 ≤ `SPREAD_PAYLOAD_BYTES`。
@@ -527,6 +557,44 @@ impl SpreadPublisher {
             cache.insert(symbol.to_string(), BboPayloadPrefix::new(symbol)?);
         }
         let prefix = cache.get(symbol).expect("prefix inserted");
+        self.publish_bbo_with_prefix(
+            prefix,
+            timestamp_us,
+            bid_price,
+            bid_amount,
+            ask_price,
+            ask_amount,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_bbo_for_slot(
+        &self,
+        slot_index: usize,
+        symbol: &str,
+        timestamp_us: i64,
+        bid_price: f64,
+        bid_amount: f64,
+        ask_price: f64,
+        ask_amount: f64,
+    ) -> Result<()> {
+        let cache = self.bbo_prefix_by_index.borrow();
+        if let Some(Some(prefix)) = cache.get(slot_index) {
+            return self.publish_bbo_with_prefix(
+                prefix,
+                timestamp_us,
+                bid_price,
+                bid_amount,
+                ask_price,
+                ask_amount,
+            );
+        }
+        drop(cache);
+
+        let mut cache = self.bbo_prefix_by_symbol.borrow_mut();
+        let mut by_index = self.bbo_prefix_by_index.borrow_mut();
+        ensure_bbo_prefix_at_index(&mut cache, &mut by_index, symbol, slot_index)?;
+        let prefix = by_index[slot_index].as_ref().expect("prefix inserted");
         self.publish_bbo_with_prefix(
             prefix,
             timestamp_us,
@@ -983,11 +1051,13 @@ mod tests {
     #[test]
     fn bbo_prefix_seed_is_idempotent() {
         let mut cache = fast_hash_map();
+        let mut by_index = Vec::new();
         let symbols = ["BTCUSDT".to_string(), "ETHUSDT".to_string()];
-        seed_bbo_prefixes(&mut cache, &symbols).unwrap();
-        seed_bbo_prefixes(&mut cache, &symbols).unwrap();
+        seed_bbo_prefixes(&mut cache, &mut by_index, &symbols).unwrap();
+        seed_bbo_prefixes(&mut cache, &mut by_index, &symbols).unwrap();
 
         assert_eq!(cache.len(), 2);
+        assert_eq!(by_index.len(), 2);
         assert_eq!(cache.get("BTCUSDT").unwrap().len, 15);
         assert_eq!(cache.get("ETHUSDT").unwrap().len, 15);
     }

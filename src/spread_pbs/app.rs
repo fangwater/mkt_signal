@@ -2073,9 +2073,9 @@ fn process_bbo_fields(
         ts_us,
     );
 
-    if let Err(e) =
-        publisher.publish_bbo(symbol, ts_us, bid_price, bid_amount, ask_price, ask_amount)
-    {
+    if let Err(e) = publisher.publish_bbo_for_slot(
+        slot.idx, symbol, ts_us, bid_price, bid_amount, ask_price, ask_amount,
+    ) {
         log::warn!("spread_pbs publish failed: {:#}", e);
         return;
     }
