@@ -420,7 +420,7 @@ impl MktManager {
                             BinanceFuturesStreamKind::Trade,
                         )
                         .to_string();
-                        let parser = BinanceTradeParser::new();
+                        let parser = BinanceTradeParser::raw_only();
                         self.spawn_connection_with_mpsc(
                             exchange,
                             url,
@@ -435,7 +435,7 @@ impl MktManager {
                 Exchange::Aster => {
                     let url =
                         SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
-                    let parser = BinanceTradeParser::new();
+                    let parser = BinanceTradeParser::raw_only();
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url,
@@ -670,7 +670,7 @@ impl MktManager {
                             BinanceFuturesStreamKind::BookTicker,
                         )
                         .to_string();
-                        let parser = BinanceAskBidSpreadParser::new();
+                        let parser = BinanceAskBidSpreadParser::raw_only();
                         self.spawn_connection_with_mpsc(
                             exchange,
                             url,
@@ -685,7 +685,7 @@ impl MktManager {
                 Exchange::Aster => {
                     let url =
                         SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
-                    let parser = BinanceAskBidSpreadParser::new();
+                    let parser = BinanceAskBidSpreadParser::raw_only();
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url,

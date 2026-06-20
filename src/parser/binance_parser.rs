@@ -1071,7 +1071,9 @@ enum BinanceDepthMode {
 }
 
 #[derive(Clone)]
-pub struct BinanceTradeParser;
+pub struct BinanceTradeParser {
+    raw_only: bool,
+}
 
 impl Default for BinanceTradeParser {
     fn default() -> Self {
@@ -1081,12 +1083,18 @@ impl Default for BinanceTradeParser {
 
 impl BinanceTradeParser {
     pub fn new() -> Self {
-        Self
+        Self { raw_only: false }
+    }
+
+    pub fn raw_only() -> Self {
+        Self { raw_only: true }
     }
 }
 
 #[derive(Clone)]
-pub struct BinanceAskBidSpreadParser;
+pub struct BinanceAskBidSpreadParser {
+    raw_only: bool,
+}
 
 impl Default for BinanceAskBidSpreadParser {
     fn default() -> Self {
@@ -1096,7 +1104,11 @@ impl Default for BinanceAskBidSpreadParser {
 
 impl BinanceAskBidSpreadParser {
     pub fn new() -> Self {
-        Self
+        Self { raw_only: false }
+    }
+
+    pub fn raw_only() -> Self {
+        Self { raw_only: true }
     }
 }
 
@@ -1104,6 +1116,9 @@ impl Parser for BinanceTradeParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         if let Some(trade) = binance_codec::parse_trade_raw_borrowed(&msg) {
             return publish_raw_trade(trade, tx);
+        }
+        if self.raw_only {
+            return 0;
         }
 
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
@@ -1132,6 +1147,9 @@ impl Parser for BinanceAskBidSpreadParser {
             } else {
                 0
             };
+        }
+        if self.raw_only {
+            return 0;
         }
 
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
@@ -1188,6 +1206,17 @@ mod tests {
     }
 
     #[test]
+    fn binance_trade_raw_only_drops_json_fallback_shape() {
+        let parser = BinanceTradeParser::raw_only();
+        let out = parse_one(
+            &parser,
+            br#"{"data":{"e":"bookTicker","s":"BTCUSDT","u":1,"b":"25","B":"1","a":"25.1","A":"1"}}"#,
+        );
+
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn binance_bbo_parser_uses_raw_depth_top_shape() {
         let parser = BinanceAskBidSpreadParser::new();
         let out = parse_one(
@@ -1203,6 +1232,17 @@ mod tests {
             AskBidSpreadMsg::get_timestamp(&out[0]),
             1_700_000_000_001_000
         );
+    }
+
+    #[test]
+    fn binance_bbo_raw_only_drops_json_fallback_shape() {
+        let parser = BinanceAskBidSpreadParser::raw_only();
+        let out = parse_one(
+            &parser,
+            br#"{"data":{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}}"#,
+        );
+
+        assert!(out.is_empty());
     }
 
     #[test]
