@@ -166,9 +166,10 @@ pub struct BinanceDerivativesMetricsParser {
 impl BinanceDerivativesMetricsParser {
     pub fn new(symbols_set: HashSet<String>) -> Self {
         Self {
-            // Binance WS symbols are uppercase (e.g. "BTCUSDT"), while this parser uses
-            // lowercase keys for lookups.
-            symbols: symbols_set.into_iter().map(|s| s.to_lowercase()).collect(),
+            symbols: symbols_set
+                .into_iter()
+                .map(|s| s.to_ascii_uppercase())
+                .collect(),
         }
     }
 }
@@ -204,7 +205,7 @@ impl BinanceDerivativesMetricsParser {
                     next_funding_time_us,
                     timestamp_us,
                 } => {
-                    if !self.symbols.contains(&symbol.to_ascii_lowercase()) {
+                    if !self.symbols.contains(symbol) {
                         return Some(());
                     }
                     if let Some(price) = mark_price.filter(|price| *price > 0.0) {
@@ -255,7 +256,7 @@ impl BinanceDerivativesMetricsParser {
                     price,
                     timestamp_us,
                 } => {
-                    if self.symbols.contains(&symbol.to_ascii_lowercase())
+                    if self.symbols.contains(symbol)
                         && tx
                             .send(
                                 LiquidationMsg::create(
@@ -291,7 +292,7 @@ impl BinanceDerivativesMetricsParser {
                     price,
                     timestamp_us,
                 } => {
-                    if self.symbols.contains(&symbol.to_ascii_lowercase())
+                    if self.symbols.contains(&symbol.to_ascii_uppercase())
                         && tx
                             .send(MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes())
                             .is_ok()
@@ -304,7 +305,7 @@ impl BinanceDerivativesMetricsParser {
                     price,
                     timestamp_us,
                 } => {
-                    if self.symbols.contains(&symbol.to_ascii_lowercase())
+                    if self.symbols.contains(&symbol.to_ascii_uppercase())
                         && tx
                             .send(IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes())
                             .is_ok()
@@ -318,8 +319,8 @@ impl BinanceDerivativesMetricsParser {
                     next_funding_time_us,
                     timestamp_us,
                 } => {
-                    let s_lower = symbol.to_ascii_lowercase();
-                    if self.symbols.contains(&s_lower)
+                    let symbol_upper = symbol.to_ascii_uppercase();
+                    if self.symbols.contains(&symbol_upper)
                         && tx
                             .send(
                                 FundingRateMsg::create(
@@ -342,7 +343,7 @@ impl BinanceDerivativesMetricsParser {
                     price,
                     timestamp_us,
                 } => {
-                    if self.symbols.contains(&symbol.to_ascii_lowercase())
+                    if self.symbols.contains(&symbol.to_ascii_uppercase())
                         && tx
                             .send(
                                 LiquidationMsg::create(symbol, side, amount, price, timestamp_us)
