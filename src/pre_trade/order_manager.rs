@@ -811,6 +811,7 @@ mod tests {
     };
     use order_common::{BinanceAccountMode, TradingVenue};
     use serde_json::Value;
+    use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
     use trade_engine::trade_request::{
         BitgetCancelOrderParams, BitgetNewOrderParams, GateFuturesCancelOrderRequest,
         GateFuturesNewOrderRequest, GateUnifiedCancelOrderRequest, GateUnifiedNewOrderRequest,
