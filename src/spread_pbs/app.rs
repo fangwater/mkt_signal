@@ -228,6 +228,7 @@ struct LegCtx {
     incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
     url: String,
+    parse_okex_notices: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -469,6 +470,7 @@ impl SpreadPbsApp {
             incremental_max_levels: self.config.data_types.max_levels_per_msg,
             state: state.clone(),
             url: adapter.ws_url(),
+            parse_okex_notices: is_okex_venue(venue),
         };
         let primary_url = ctx.url.clone();
         let secondary_url = if binance_futures_mm_ws_race_enabled(venue) {
@@ -666,6 +668,7 @@ fn spawn_leg(
             headers: ctx.adapter.ws_headers(),
             subscribe_msgs: subs,
             keepalive: ctx.adapter.keepalive(),
+            parse_okex_notices: ctx.parse_okex_notices,
         },
         handler,
         rx,
@@ -697,6 +700,7 @@ fn spawn_okex_derivatives_leg(
             headers: Vec::new(),
             subscribe_msgs,
             keepalive: Some(KeepaliveSpec::text(Duration::from_secs(25), "ping")),
+            parse_okex_notices: true,
         },
         handler,
         rx,
@@ -845,6 +849,7 @@ fn spawn_direct_replacement_leg(
             headers: adapter.ws_headers(),
             subscribe_msgs,
             keepalive: adapter.keepalive(),
+            parse_okex_notices: adapter.name() == "okex",
         },
         handler,
         rx,

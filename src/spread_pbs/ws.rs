@@ -6,7 +6,6 @@
 //! 共享状态，borrow 区间内不 await，符合单线程模型。
 
 use anyhow::{Context, Result};
-use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use native_tls::TlsConnector as NativeTlsConnector;
@@ -46,6 +45,7 @@ pub struct WsLoopParams {
     pub headers: Vec<(String, String)>,
     pub subscribe_msgs: Vec<serde_json::Value>,
     pub keepalive: Option<KeepaliveSpec>,
+    pub parse_okex_notices: bool,
 }
 
 /// 一条 ws 的连接 + 自动重连主循环。每个业务帧同步调 `handler`。
@@ -61,6 +61,7 @@ pub async fn run_public_ws(
         headers,
         subscribe_msgs,
         keepalive,
+        parse_okex_notices,
     } = params;
 
     loop {
@@ -79,6 +80,7 @@ pub async fn run_public_ws(
                     &handler,
                     &mut shutdown_rx,
                     keepalive.as_ref(),
+                    parse_okex_notices,
                 )
                 .await;
                 if *shutdown_rx.borrow() {
@@ -225,6 +227,7 @@ async fn run_session(
     handler: &FrameHandler,
     shutdown_rx: &mut watch::Receiver<bool>,
     keepalive: Option<&KeepaliveSpec>,
+    parse_okex_notices: bool,
 ) {
     let interval = keepalive
         .map(|k| k.interval)
@@ -255,33 +258,33 @@ async fn run_session(
                 let recv_us = get_timestamp_us();
                 match next {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(notice) = parse_okex_notice(&text) {
-                            log::warn!(
-                                "spread_pbs ws[{}] received OKX notice code={} msg={} conn_id={:?}",
-                                label,
-                                notice.code,
-                                notice.msg,
-                                notice.conn_id
-                            );
-                            if notice.is_service_upgrade() {
+                        if parse_okex_notices {
+                            if let Some(notice) = parse_okex_notice(&text) {
                                 log::warn!(
-                                    "spread_pbs ws[{}] OKX service upgrade notice 64008 received; reconnecting before forced close",
-                                    label
+                                    "spread_pbs ws[{}] received OKX notice code={} msg={} conn_id={:?}",
+                                    label,
+                                    notice.code,
+                                    notice.msg,
+                                    notice.conn_id
                                 );
-                                let _ = sink.close().await;
-                                return;
+                                if notice.is_service_upgrade() {
+                                    log::warn!(
+                                        "spread_pbs ws[{}] OKX service upgrade notice 64008 received; reconnecting before forced close",
+                                        label
+                                    );
+                                    let _ = sink.close().await;
+                                    return;
+                                }
+                                continue;
                             }
-                            continue;
                         }
                         if is_keepalive_response(&text) {
                             continue;
                         }
-                        let bytes = Bytes::from(text);
-                        handler(recv_us, &bytes);
+                        handler(recv_us, text.as_bytes());
                     }
                     Some(Ok(Message::Binary(bin))) => {
-                        let bytes = Bytes::from(bin);
-                        handler(recv_us, &bytes);
+                        handler(recv_us, bin.as_slice());
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = sink.send(Message::Pong(payload)).await;
@@ -312,6 +315,18 @@ fn is_keepalive_response(text: &str) -> bool {
     if trimmed == "pong" || trimmed == "\"pong\"" {
         return true;
     }
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    let head = &trimmed[..trimmed.len().min(128)];
+    if !(head.contains("\"event\"")
+        || head.contains("\"op\"")
+        || head.contains("\"channel\"")
+        || head.contains("\"success\"")
+        || head.contains("\"result\""))
+    {
+        return false;
+    }
     // Bybit `{"op":"pong",...}` / `{"success":true,"op":"ping",...}`；
     // Gate `{"channel":"...pong",...}` / `{"event":"subscribe","result":...}`；
     // Binance / Bitget 订阅 ack 也走这里跳过。
@@ -319,8 +334,35 @@ fn is_keepalive_response(text: &str) -> bool {
         || trimmed.contains("\"op\":\"ping\"")
         || trimmed.contains("\"event\":\"subscribe\"")
         || trimmed.contains("\"event\":\"unsubscribe\"")
+        || trimmed.starts_with("{\"result\":")
     {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_keepalive_response;
+
+    #[test]
+    fn keepalive_filter_does_not_drop_binance_market_data() {
+        let agg_trade = r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1710000000000,"s":"BTCUSDT","a":1,"p":"68000.1","q":"0.02","T":1710000000000,"m":true}}"#;
+        let book_ticker = r#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":123,"s":"BTCUSDT","b":"68000.1","B":"1.2","a":"68000.2","A":"0.8"}}"#;
+
+        assert!(!is_keepalive_response(agg_trade));
+        assert!(!is_keepalive_response(book_ticker));
+    }
+
+    #[test]
+    fn keepalive_filter_skips_control_frames() {
+        assert!(is_keepalive_response("pong"));
+        assert!(is_keepalive_response(r#""pong""#));
+        assert!(is_keepalive_response(r#" {"result":null,"id":1}"#));
+        assert!(is_keepalive_response(r#"{"op":"pong","req_id":"x"}"#));
+        assert!(is_keepalive_response(r#"{"success":true,"op":"ping"}"#));
+        assert!(is_keepalive_response(
+            r#"{"event":"subscribe","result":{"channel":"futures.book_ticker"}}"#
+        ));
+    }
 }
