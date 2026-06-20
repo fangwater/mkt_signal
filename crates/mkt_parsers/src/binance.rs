@@ -1803,19 +1803,28 @@ fn ms_to_us(ts: i64) -> i64 {
 }
 
 fn parse_stream_symbol(stream: &str) -> Option<String> {
-    stream.split('@').next().map(|s| s.to_ascii_uppercase())
+    let end = stream_symbol_end(stream);
+    Some(stream[..end].to_ascii_uppercase())
 }
 
 fn parse_stream_symbol_borrowed(stream: &str) -> Option<&str> {
-    let symbol = stream.split('@').next()?;
-    if symbol.as_bytes().iter().any(|b| b.is_ascii_lowercase()) {
-        return None;
+    let bytes = stream.as_bytes();
+    let mut end = 0usize;
+    while end < bytes.len() {
+        let b = bytes[end];
+        if b == b'@' {
+            break;
+        }
+        if b.is_ascii_lowercase() {
+            return None;
+        }
+        end += 1;
     }
-    Some(symbol)
+    Some(&stream[..end])
 }
 
 fn raw_bbo_stream_kind(stream: &str) -> Option<RawBboKind> {
-    let channel = stream.split('@').nth(1)?;
+    let channel = stream_channel(stream)?;
     if channel == "bookTicker" {
         Some(RawBboKind::BookTicker)
     } else if channel.starts_with("depth") {
@@ -1823,6 +1832,32 @@ fn raw_bbo_stream_kind(stream: &str) -> Option<RawBboKind> {
     } else {
         None
     }
+}
+
+fn stream_symbol_end(stream: &str) -> usize {
+    let bytes = stream.as_bytes();
+    let mut end = 0usize;
+    while end < bytes.len() && bytes[end] != b'@' {
+        end += 1;
+    }
+    end
+}
+
+fn stream_channel(stream: &str) -> Option<&str> {
+    let bytes = stream.as_bytes();
+    let mut start = 0usize;
+    while start < bytes.len() && bytes[start] != b'@' {
+        start += 1;
+    }
+    if start == bytes.len() {
+        return None;
+    }
+    start += 1;
+    let mut end = start;
+    while end < bytes.len() && bytes[end] != b'@' {
+        end += 1;
+    }
+    Some(&stream[start..end])
 }
 
 fn infer_raw_bbo_kind(
