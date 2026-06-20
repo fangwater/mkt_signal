@@ -1978,11 +1978,7 @@ impl<'a> JsonValue<'a> {
 
     fn number_bytes(self) -> Option<&'a [u8]> {
         if self.raw.first() == Some(&b'"') && self.raw.last() == Some(&b'"') {
-            let inner = &self.raw[1..self.raw.len() - 1];
-            if inner.contains(&b'\\') {
-                return None;
-            }
-            Some(inner)
+            Some(&self.raw[1..self.raw.len() - 1])
         } else {
             Some(self.raw)
         }
