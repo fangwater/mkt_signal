@@ -272,15 +272,15 @@ impl VenueAdapter for BinanceAdapter {
         if self.venue != TradingVenue::BinanceFutures {
             return false;
         }
-        let active = self.derivatives_symbols.borrow();
+        let active_is_empty = self.derivatives_symbols.borrow().is_empty();
         let mut handled = false;
         let parsed = binance_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
             handled = true;
             let symbol = raw_derivative_symbol(&derivative);
-            if !active.is_empty() && !active.contains(symbol) {
+            let slot_index = symbol_slot(symbol);
+            if !active_is_empty && slot_index.is_none() {
                 return Some(());
             }
-            let slot_index = symbol_slot(symbol);
             match publish_raw_derivative(publisher, slot_index, derivative) {
                 Ok(count) => *published += count as u64,
                 Err(e) => log::warn!("spread_pbs derivatives publish failed: {:#}", e),
