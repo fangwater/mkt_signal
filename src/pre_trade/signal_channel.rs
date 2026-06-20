@@ -59,8 +59,35 @@ const SIGNAL_COUNT_BUCKETS: usize = 14;
 
 fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
     let end = bytes_helper::fixed_bytes_len(symbol);
-    let raw = std::str::from_utf8(&symbol[..end]).unwrap_or("");
-    normalize_symbol_for_internal(raw)
+    let raw = &symbol[..end];
+    if !raw.is_ascii() {
+        return std::str::from_utf8(raw)
+            .map(normalize_symbol_for_internal)
+            .unwrap_or_default();
+    }
+
+    let start = raw
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(end);
+    let stop = raw
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+
+    let mut out = Vec::with_capacity(stop.saturating_sub(start));
+    for &byte in &raw[start..stop] {
+        match byte {
+            b'-' | b'_' | b'/' => {}
+            b'a'..=b'z' => out.push(byte - 32),
+            _ => out.push(byte),
+        }
+    }
+    if out.ends_with(b"SWAP") {
+        out.truncate(out.len().saturating_sub(4));
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -638,12 +665,44 @@ impl SignalChannel {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_position_reducing, should_drop_open_signal_for_slow_round,
-        should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
-        OpenSignalDropReason,
+        is_position_reducing, normalize_fixed_symbol_for_internal,
+        should_drop_open_signal_for_slow_round, should_drop_startup_buffered_signal,
+        should_suppress_arb_open_inactive_warning, OpenSignalDropReason,
     };
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
+
+    fn fixed_symbol(value: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let bytes = value.as_bytes();
+        out[..bytes.len().min(32)].copy_from_slice(&bytes[..bytes.len().min(32)]);
+        out
+    }
+
+    #[test]
+    fn normalizes_fixed_ascii_symbols_without_general_string_path() {
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol("BTCUSDT")),
+            "BTCUSDT"
+        );
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol("btc-usdt-swap")),
+            "BTCUSDT"
+        );
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol(" eth_usdt ")),
+            "ETHUSDT"
+        );
+    }
+
+    #[test]
+    fn normalize_fixed_symbol_handles_empty_or_blank_values() {
+        assert_eq!(normalize_fixed_symbol_for_internal(&[0u8; 32]), "");
+        assert_eq!(
+            normalize_fixed_symbol_for_internal(&fixed_symbol("   ")),
+            ""
+        );
+    }
 
     #[test]
     fn position_reducing_allows_smaller_abs_position() {
