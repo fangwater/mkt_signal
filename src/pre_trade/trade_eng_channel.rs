@@ -115,7 +115,7 @@ fn log_open_order_slow_trace(
         client_order_id,
         exchange,
         meta.venue,
-        meta.symbol,
+        meta.symbol.as_str(),
         meta.side.as_str(),
         meta.order_type,
         bytes_len,
