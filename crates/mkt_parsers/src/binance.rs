@@ -1423,6 +1423,19 @@ fn parse_derivative_object_after_key<'a>(
     let mut funding_rate = None;
     let mut next_funding_time_us = None;
     let mut liquidation: Option<RawLiquidationFields<'a>> = None;
+    let mut seen = 0u8;
+    const DERIVATIVE_SYMBOL: u8 = 1 << 0;
+    const DERIVATIVE_TIMESTAMP: u8 = 1 << 1;
+    const DERIVATIVE_MARK_PRICE: u8 = 1 << 2;
+    const DERIVATIVE_INDEX_PRICE: u8 = 1 << 3;
+    const DERIVATIVE_FUNDING_RATE: u8 = 1 << 4;
+    const DERIVATIVE_NEXT_FUNDING: u8 = 1 << 5;
+    const DERIVATIVE_MARK_REQUIRED: u8 = DERIVATIVE_SYMBOL
+        | DERIVATIVE_TIMESTAMP
+        | DERIVATIVE_MARK_PRICE
+        | DERIVATIVE_INDEX_PRICE
+        | DERIVATIVE_FUNDING_RATE
+        | DERIVATIVE_NEXT_FUNDING;
     let mut key = Some(first_key);
 
     while let Some(current_key) = key.take().or_else(|| scanner.next_key()) {
@@ -1434,22 +1447,35 @@ fn parse_derivative_object_after_key<'a>(
                     _ => return None,
                 })
             }
-            b"E" => timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
-            b"s" => symbol = Some(scanner.take_value()?.string_str()?),
-            b"p" => mark_price = Some(scanner.take_value()?.f64()?),
-            b"i" => index_price = Some(scanner.take_value()?.f64()?),
-            b"r" => funding_rate = Some(scanner.take_value()?.f64()?),
-            b"T" => next_funding_time_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
+            b"E" => {
+                timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?));
+                seen |= DERIVATIVE_TIMESTAMP;
+            }
+            b"s" => {
+                symbol = Some(scanner.take_value()?.string_str()?);
+                seen |= DERIVATIVE_SYMBOL;
+            }
+            b"p" => {
+                mark_price = Some(scanner.take_value()?.f64()?);
+                seen |= DERIVATIVE_MARK_PRICE;
+            }
+            b"i" => {
+                index_price = Some(scanner.take_value()?.f64()?);
+                seen |= DERIVATIVE_INDEX_PRICE;
+            }
+            b"r" => {
+                funding_rate = Some(scanner.take_value()?.f64()?);
+                seen |= DERIVATIVE_FUNDING_RATE;
+            }
+            b"T" => {
+                next_funding_time_us = Some(ms_to_us(scanner.take_value()?.i64()?));
+                seen |= DERIVATIVE_NEXT_FUNDING;
+            }
             b"o" => liquidation = Some(parse_liquidation_object_scanner(scanner)?),
             _ => scanner.skip_value()?,
         }
         if event == Some(RawDerivativeKind::MarkPrice)
-            && symbol.is_some()
-            && timestamp_us.is_some()
-            && mark_price.is_some()
-            && index_price.is_some()
-            && funding_rate.is_some()
-            && next_funding_time_us.is_some()
+            && (seen & DERIVATIVE_MARK_REQUIRED) == DERIVATIVE_MARK_REQUIRED
         {
             scanner.skip_rest_of_object()?;
             break;
@@ -1488,28 +1514,43 @@ fn parse_liquidation_object_scanner<'a>(
     let mut amount = None;
     let mut price = None;
     let mut order_timestamp_us = None;
+    let mut seen = 0u8;
+    const LIQ_SYMBOL: u8 = 1 << 0;
+    const LIQ_SIDE: u8 = 1 << 1;
+    const LIQ_AMOUNT: u8 = 1 << 2;
+    const LIQ_PRICE: u8 = 1 << 3;
+    const LIQ_TIME: u8 = 1 << 4;
+    const LIQ_REQUIRED: u8 = LIQ_SYMBOL | LIQ_SIDE | LIQ_AMOUNT | LIQ_PRICE | LIQ_TIME;
 
     while let Some(key) = scanner.next_key() {
         match key {
-            b"s" => symbol = Some(scanner.take_value()?.string_str()?),
+            b"s" => {
+                symbol = Some(scanner.take_value()?.string_str()?);
+                seen |= LIQ_SYMBOL;
+            }
             b"S" => {
                 side = Some(match scanner.take_value()?.raw {
                     br#""BUY""# => 'B',
                     br#""SELL""# => 'S',
                     _ => return None,
-                })
+                });
+                seen |= LIQ_SIDE;
             }
-            b"z" => amount = Some(scanner.take_value()?.f64()?),
-            b"ap" => price = Some(scanner.take_value()?.f64()?),
-            b"T" => order_timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
+            b"z" => {
+                amount = Some(scanner.take_value()?.f64()?);
+                seen |= LIQ_AMOUNT;
+            }
+            b"ap" => {
+                price = Some(scanner.take_value()?.f64()?);
+                seen |= LIQ_PRICE;
+            }
+            b"T" => {
+                order_timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?));
+                seen |= LIQ_TIME;
+            }
             _ => scanner.skip_value()?,
         }
-        if symbol.is_some()
-            && side.is_some()
-            && amount.is_some()
-            && price.is_some()
-            && order_timestamp_us.is_some()
-        {
+        if seen == LIQ_REQUIRED {
             scanner.skip_rest_of_object()?;
             break;
         }
