@@ -22,7 +22,10 @@ use crate::query_parsers::gate_order_status::{
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::trade_request::{BinanceNewOrderParams, TradeRequestMsg, TradeRequestType};
+use crate::trade_request::{
+    BinanceNewOrderParams, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
+    TradeRequestType,
+};
 use crate::trade_response_handle::TradeExecOutcome;
 use account_common::bitget_auth::BitgetCredentials;
 use account_common::bybit_auth::BybitCredentials;
@@ -1858,7 +1861,7 @@ impl TradeWsClient {
         sent_at_us: i64,
         ipc_recv_to_ws_send_done_us: Option<i64>,
     ) {
-        let ws_open_update_enabled = self.ws_open_update_enabled_for_request(msg);
+        let ws_open_update_enabled = Self::ws_open_update_enabled_for_request(msg);
         let taker_trace =
             Self::build_binance_um_taker_trace(msg, sent_at_us, ipc_recv_to_ws_send_done_us);
         self.inflight.insert(
@@ -1931,7 +1934,7 @@ impl TradeWsClient {
         )
     }
 
-    fn ws_open_update_enabled_for_request(&self, msg: &TradeRequestMsg) -> bool {
+    fn ws_open_update_enabled_for_request(msg: &TradeRequestMsg) -> bool {
         match msg.req_type {
             TradeRequestType::BinanceWsNewUMOrder => {
                 crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
@@ -1970,59 +1973,13 @@ impl TradeWsClient {
                     .unwrap_or(false)
             }
             TradeRequestType::GateUnifiedNewOrder | TradeRequestType::GateFuturesNewOrder => {
-                match msg.req_type {
-                    TradeRequestType::GateUnifiedNewOrder => {
-                        crate::trade_request::GateUnifiedNewOrderRequest {
-                            header: crate::trade_request::TradeRequestHeader {
-                                msg_type: msg.req_type as u32,
-                                params_length: msg.params.len() as u32,
-                                create_time: msg.create_time,
-                                client_order_id: msg.client_order_id,
-                            },
-                            params: msg.params_bytes(),
-                        }
-                        .params_struct()
-                    }
-                    TradeRequestType::GateFuturesNewOrder => {
-                        crate::trade_request::GateFuturesNewOrderRequest {
-                            header: crate::trade_request::TradeRequestHeader {
-                                msg_type: msg.req_type as u32,
-                                params_length: msg.params.len() as u32,
-                                create_time: msg.create_time,
-                                client_order_id: msg.client_order_id,
-                            },
-                            params: msg.params_bytes(),
-                        }
-                        .params_struct()
-                    }
-                    _ => None,
-                }
-                .map(|params| params.order_type.is_limit())
-                .or_else(|| {
-                    serde_json::from_slice::<Value>(&msg.params)
-                        .ok()
-                        .and_then(|v| {
-                            v.get("time_in_force")
-                                .or_else(|| v.get("tif"))
-                                .and_then(|x| x.as_str())
-                                .map(|s| s.to_string())
-                        })
-                        .map(|tif| tif.eq_ignore_ascii_case("poc"))
-                })
-                .unwrap_or(false)
+                GateNewOrderParamsRef::from_bytes(&msg.params)
+                    .map(|params| params.order_type.is_limit())
+                    .unwrap_or(false)
             }
             TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-                crate::trade_request::BitgetNewOrderParams::from_bytes(&msg.params)
+                BitgetNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.order_type.is_limit())
-                    .or_else(|| {
-                        serde_json::from_slice::<Value>(&msg.params)
-                            .ok()
-                            .and_then(|v| {
-                                v.get("orderType")
-                                    .and_then(|x| x.as_str())
-                                    .map(|s| s.eq_ignore_ascii_case("limit"))
-                            })
-                    })
                     .unwrap_or(false)
             }
             _ => false,
@@ -3649,7 +3606,12 @@ mod tests {
         is_bitget_pong_response, parse_bitget_control_event, QueryInflightMeta, TradeWsClient,
     };
     use crate::query_request::QueryRequestType;
+    use crate::trade_request::{
+        BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg, TradeRequestType,
+    };
+    use order_common::{OrderType, Side};
     use runtime_common::fast_hash::fast_hash_map;
+    use signal_common::tick_math::QuantizedValue;
 
     #[test]
     fn parses_bitget_login_failure_control_event() {
@@ -3708,5 +3670,95 @@ mod tests {
 
         assert_eq!(req_type, QueryRequestType::GateFuturesOrderQuery);
         assert_eq!(client_query_id, 281474976710779);
+    }
+
+    #[test]
+    fn ws_open_update_gate_uses_typed_params_only() {
+        let typed_limit = GateNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::GateFuturesNewOrder,
+            1,
+            42,
+            "BTC_USDT",
+            Side::Buy,
+            OrderType::Limit,
+            QuantizedValue::from_parts(1, -3, 10),
+            QuantizedValue::from_parts(1, 0, 100000),
+            false,
+            false,
+        )
+        .expect("typed gate request");
+        let msg = TradeRequestMsg::parse(&typed_limit).expect("gate typed msg");
+        assert!(TradeWsClient::ws_open_update_enabled_for_request(&msg));
+
+        let typed_market = GateNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::GateFuturesNewOrder,
+            1,
+            43,
+            "BTC_USDT",
+            Side::Buy,
+            OrderType::Market,
+            QuantizedValue::from_parts(1, -3, 10),
+            QuantizedValue::zero(),
+            false,
+            false,
+        )
+        .expect("typed gate request");
+        let msg = TradeRequestMsg::parse(&typed_market).expect("gate typed msg");
+        assert!(!TradeWsClient::ws_open_update_enabled_for_request(&msg));
+
+        let raw_json = TradeRequestMsg::create(
+            TradeRequestType::GateFuturesNewOrder,
+            1,
+            44,
+            br#"{"contract":"BTC_USDT","tif":"poc"}"#,
+        )
+        .expect("raw gate msg");
+        assert!(!TradeWsClient::ws_open_update_enabled_for_request(
+            &raw_json
+        ));
+    }
+
+    #[test]
+    fn ws_open_update_bitget_uses_typed_params_only() {
+        let typed_limit = BitgetNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BitgetNewUMOrder,
+            1,
+            42,
+            "BTCUSDT",
+            Side::Buy,
+            OrderType::Limit,
+            QuantizedValue::from_parts(1, -3, 10),
+            QuantizedValue::from_parts(1, 0, 100000),
+            false,
+        )
+        .expect("typed bitget request");
+        let msg = TradeRequestMsg::parse(&typed_limit).expect("bitget typed msg");
+        assert!(TradeWsClient::ws_open_update_enabled_for_request(&msg));
+
+        let typed_market = BitgetNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BitgetNewUMOrder,
+            1,
+            43,
+            "BTCUSDT",
+            Side::Buy,
+            OrderType::Market,
+            QuantizedValue::from_parts(1, -3, 10),
+            QuantizedValue::zero(),
+            false,
+        )
+        .expect("typed bitget request");
+        let msg = TradeRequestMsg::parse(&typed_market).expect("bitget typed msg");
+        assert!(!TradeWsClient::ws_open_update_enabled_for_request(&msg));
+
+        let raw_json = TradeRequestMsg::create(
+            TradeRequestType::BitgetNewUMOrder,
+            1,
+            44,
+            br#"{"symbol":"BTCUSDT","orderType":"limit"}"#,
+        )
+        .expect("raw bitget msg");
+        assert!(!TradeWsClient::ws_open_update_enabled_for_request(
+            &raw_json
+        ));
     }
 }
