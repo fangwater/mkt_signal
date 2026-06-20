@@ -170,6 +170,26 @@ pub trait PreTradeOrderManagerRequestExt {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_open_order_request_bytes_normalized_symbol(
+        &mut self,
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        quantity_qv: Option<OrderQuantizedValue>,
+        price_qv: Option<OrderQuantizedValue>,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        signal_t: i64,
+        signal_kind: u8,
+        mkt_t: i64,
+        pre_trade_recv_t: i64,
+        pre_trade_handle_t: i64,
+    ) -> Result<(&'static str, Bytes), String>;
 }
 
 impl PreTradeOrderManagerRequestExt for OrderManager {
@@ -243,7 +263,47 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String> {
-        let Some(result) = self.create_order_with_mut(
+        let symbol = normalize_symbol_for_internal(&symbol);
+        self.create_open_order_request_bytes_normalized_symbol(
+            venue,
+            client_order_id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            qty_multiplier,
+            signal_t,
+            signal_kind,
+            mkt_t,
+            pre_trade_recv_t,
+            pre_trade_handle_t,
+        )
+    }
+
+    fn create_open_order_request_bytes_normalized_symbol(
+        &mut self,
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        quantity_qv: Option<OrderQuantizedValue>,
+        price_qv: Option<OrderQuantizedValue>,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        signal_t: i64,
+        signal_kind: u8,
+        mkt_t: i64,
+        pre_trade_recv_t: i64,
+        pre_trade_handle_t: i64,
+    ) -> Result<(&'static str, Bytes), String> {
+        let Some(result) = self.create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
             order_type,

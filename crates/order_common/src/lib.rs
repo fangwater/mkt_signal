@@ -819,6 +819,39 @@ impl OrderManager {
     where
         F: FnOnce(&mut Order) -> R,
     {
+        let symbol = normalize_symbol_for_internal(&symbol);
+        self.create_order_with_mut_normalized_symbol(
+            venue,
+            id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            count_pending_limit,
+            f,
+        )
+    }
+
+    pub fn create_order_with_mut_normalized_symbol<F, R>(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: String,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        count_pending_limit: bool,
+        f: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&mut Order) -> R,
+    {
         let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
             qty_multiplier
         } else {
@@ -831,7 +864,6 @@ impl OrderManager {
             );
             1.0
         };
-        let symbol = normalize_symbol_for_internal(&symbol);
         let mut order = Order::new(
             venue,
             id,

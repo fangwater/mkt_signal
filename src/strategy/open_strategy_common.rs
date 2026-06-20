@@ -157,7 +157,7 @@ fn build_open_order_request_bytes_scoped(
     venue: TradingVenue,
     client_order_id: i64,
     order_type: OrderType,
-    symbol: String,
+    normalized_symbol: String,
     side: Side,
     order_qty: f64,
     order_price: f64,
@@ -171,11 +171,11 @@ fn build_open_order_request_bytes_scoped(
     pre_trade_recv_ts: i64,
     pre_trade_handle_ts: i64,
 ) -> Result<(&'static str, Bytes), String> {
-    order_manager.create_open_order_request_bytes(
+    order_manager.create_open_order_request_bytes_normalized_symbol(
         venue,
         client_order_id,
         order_type,
-        symbol,
+        normalized_symbol,
         side,
         order_qty,
         order_price,
