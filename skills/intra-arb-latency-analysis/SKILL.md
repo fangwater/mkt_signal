@@ -16,7 +16,7 @@ Use repo-local parquet snapshots instead of re-reading remote persist services w
 5. Include a Chinese `含义` column in the table.
 6. For spot/open-leg rows, report:
    - `create_ts - signal_ts`
-   - `update_ts - submit_ts`
+   - `update_ts - submit_ts` on the `NEW` row
    - `local_ts - submit_ts`
 7. For futures hedge rows, report:
    - `futures.submit_ts - margin.local_ts`
@@ -129,12 +129,12 @@ Secondary reference metrics:
 ## Combined Table Meanings
 
 - `create_ts - signal_ts`: 行情延迟.
-- `update_ts - submit_ts`: 挂单延迟.
+- `update_ts - submit_ts`: 挂单延迟; for spot/open-leg analysis this is measured on the `NEW` row.
 - `local_ts - submit_ts`: 完整回报延迟.
 - `futures.submit_ts - margin.local_ts`: taker触发内部延迟.
 - `futures.submit_ts - margin.update_ts`: 合约挂到距离现货撤单/成交延迟.
 - `futures.update_ts - futures.submit_ts`: 合约挂单延迟.
-- `futures.local_ts - futures.submit_ts`: 合约rtt.
+- `futures.local_ts - futures.submit_ts`: 合约完整回报延迟.
 
 For futures hedge rows, `futures.submit_ts - margin.local_ts` is the preferred local-process taker hedge reaction metric.
 
