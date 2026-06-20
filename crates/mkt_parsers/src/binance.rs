@@ -599,7 +599,8 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
     let mut price = None;
     let mut amount = None;
     let mut is_buyer_maker = false;
-    let mut seen_buyer_maker = false;
+    let mut seen = 0u8;
+    const TRADE_REQUIRED: u8 = 0b0011_1111;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
@@ -609,26 +610,37 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
                 }
                 seen_event = true;
             }
-            b"s" => symbol = Some(value.string_str()?),
-            b"t" => trade_id = Some(value.i64()?),
-            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"p" => price = Some(value.f64()?),
-            b"q" => amount = Some(value.f64()?),
+            b"s" => {
+                symbol = Some(value.string_str()?);
+                seen |= 1 << 0;
+            }
+            b"t" => {
+                trade_id = Some(value.i64()?);
+                seen |= 1 << 1;
+            }
+            b"E" => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= 1 << 2;
+            }
+            b"T" if timestamp_us.is_none() => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= 1 << 2;
+            }
+            b"p" => {
+                price = Some(value.f64()?);
+                seen |= 1 << 3;
+            }
+            b"q" => {
+                amount = Some(value.f64()?);
+                seen |= 1 << 4;
+            }
             b"m" => {
                 is_buyer_maker = value.bool()?;
-                seen_buyer_maker = true;
+                seen |= 1 << 5;
             }
             _ => {}
         }
-        if seen_event
-            && symbol.is_some()
-            && trade_id.is_some()
-            && timestamp_us.is_some()
-            && price.is_some()
-            && amount.is_some()
-            && seen_buyer_maker
-        {
+        if seen_event && seen == TRADE_REQUIRED {
             break;
         }
     }
