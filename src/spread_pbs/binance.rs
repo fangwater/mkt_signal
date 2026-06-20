@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
-use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use serde_json::Value;
 use std::cell::RefCell;
 
@@ -38,7 +38,6 @@ pub(crate) fn binance_futures_standard_ws_url() -> &'static str {
 
 pub struct BinanceAdapter {
     venue: TradingVenue,
-    derivatives_symbols: RefCell<FastHashSet<String>>,
     symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,
     last_symbol_slot: RefCell<Option<LastSymbolSlot>>,
 }
@@ -76,7 +75,6 @@ impl BinanceAdapter {
     pub fn new(venue: TradingVenue) -> Self {
         Self {
             venue,
-            derivatives_symbols: RefCell::new(fast_hash_set()),
             symbol_slot_by_symbol: RefCell::new(fast_hash_map()),
             last_symbol_slot: RefCell::new(None),
         }
@@ -171,12 +169,8 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn seed_symbols(&self, symbols: &[String]) {
-        let mut active = self.derivatives_symbols.borrow_mut();
-        active.clear();
-        active.extend(symbols.iter().map(|symbol| symbol.to_ascii_uppercase()));
-        drop(active);
-
         let mut slots = self.symbol_slot_by_symbol.borrow_mut();
+        slots.clear();
         for symbol in symbols {
             let next_idx = slots.len();
             slots.entry(symbol.to_ascii_uppercase()).or_insert(next_idx);
@@ -290,11 +284,11 @@ impl VenueAdapter for BinanceAdapter {
         if self.venue != TradingVenue::BinanceFutures {
             return Ok(Vec::new());
         }
-        let active = self.derivatives_symbols.borrow();
+        let slots = self.symbol_slot_by_symbol.borrow();
         Ok(binance_codec::parse_derivatives_json(value)
             .into_iter()
             .filter(|derivative| {
-                active.is_empty() || active.contains(derivative_symbol(derivative))
+                slots.is_empty() || slots.contains_key(derivative_symbol(derivative))
             })
             .map(derivative_to_bytes)
             .collect())
@@ -314,7 +308,7 @@ impl VenueAdapter for BinanceAdapter {
         if self.venue != TradingVenue::BinanceFutures {
             return false;
         }
-        let active_is_empty = self.derivatives_symbols.borrow().is_empty();
+        let active_is_empty = self.symbol_slot_by_symbol.borrow().is_empty();
         let mut handled = false;
         let parsed = binance_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
             handled = true;
