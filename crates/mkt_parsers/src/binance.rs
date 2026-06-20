@@ -942,8 +942,9 @@ pub fn parse_derivatives_raw_borrowed<'a>(
         return parse_derivative_value_at(&mut scanner, &mut emit);
     }
     if key != b"stream" {
-        let mut scanner = JsonObjectScanner::new(raw);
-        return parse_derivative_value_at(&mut scanner, &mut emit);
+        let derivative = parse_derivative_object_after_key(&mut scanner, key)?;
+        emit(derivative)?;
+        return Some(());
     }
     scanner.skip_value()?;
 
@@ -1324,6 +1325,14 @@ fn parse_derivative_value_at<'a>(
 fn parse_derivative_object_scanner<'a>(
     scanner: &mut JsonObjectScanner<'a>,
 ) -> Option<RawDerivative<'a>> {
+    let first_key = scanner.next_key()?;
+    parse_derivative_object_after_key(scanner, first_key)
+}
+
+fn parse_derivative_object_after_key<'a>(
+    scanner: &mut JsonObjectScanner<'a>,
+    first_key: &'a [u8],
+) -> Option<RawDerivative<'a>> {
     let mut event = None;
     let mut symbol = None;
     let mut timestamp_us = None;
@@ -1332,9 +1341,10 @@ fn parse_derivative_object_scanner<'a>(
     let mut funding_rate = None;
     let mut next_funding_time_us = None;
     let mut liquidation: Option<RawLiquidationFields<'a>> = None;
+    let mut key = Some(first_key);
 
-    while let Some(key) = scanner.next_key() {
-        match key {
+    while let Some(current_key) = key.take().or_else(|| scanner.next_key()) {
+        match current_key {
             b"e" => event = Some(scanner.take_value()?.string_bytes()?),
             b"E" => timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
             b"s" => symbol = Some(scanner.take_value()?.string_str()?),
@@ -1369,7 +1379,7 @@ fn parse_derivative_object_scanner<'a>(
         }),
         b"forceOrder" => {
             let liquidation = liquidation?;
-            let out = RawDerivative::Liquidation {
+            Some(RawDerivative::Liquidation {
                 symbol: liquidation.symbol,
                 side: liquidation.side,
                 amount: liquidation.amount,
@@ -1377,8 +1387,7 @@ fn parse_derivative_object_scanner<'a>(
                 timestamp_us: liquidation
                     .order_timestamp_us
                     .unwrap_or_else(|| timestamp_us.unwrap_or(0)),
-            };
-            Some(out)
+            })
         }
         _ => None,
     }
