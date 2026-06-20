@@ -843,8 +843,22 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
     let mut last_update_id = None;
     let mut bids_raw = None;
     let mut asks_raw = None;
-    let mut has_bids = false;
-    let mut has_asks = false;
+    let mut seen = 0u8;
+    const RAW_BOOK_SYMBOL: u8 = 1 << 0;
+    const RAW_BOOK_TIMESTAMP: u8 = 1 << 1;
+    const RAW_BOOK_FIRST_ID: u8 = 1 << 2;
+    const RAW_BOOK_FINAL_ID: u8 = 1 << 3;
+    const RAW_BOOK_LAST_ID: u8 = 1 << 4;
+    const RAW_BOOK_BIDS: u8 = 1 << 5;
+    const RAW_BOOK_ASKS: u8 = 1 << 6;
+    const RAW_BOOK_SNAPSHOT_REQUIRED: u8 =
+        RAW_BOOK_SYMBOL | RAW_BOOK_LAST_ID | RAW_BOOK_BIDS | RAW_BOOK_ASKS;
+    const RAW_BOOK_UPDATE_REQUIRED: u8 = RAW_BOOK_SYMBOL
+        | RAW_BOOK_TIMESTAMP
+        | RAW_BOOK_FIRST_ID
+        | RAW_BOOK_FINAL_ID
+        | RAW_BOOK_BIDS
+        | RAW_BOOK_ASKS;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
@@ -854,33 +868,44 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
                 }
                 seen_event = true;
             }
-            b"s" => symbol = Some(value.string_str()?),
-            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"U" => first_update_id = Some(value.i64()?),
-            b"u" => final_update_id = Some(value.i64()?),
-            b"lastUpdateId" => last_update_id = Some(value.i64()?),
+            b"s" => {
+                symbol = Some(value.string_str()?);
+                seen |= RAW_BOOK_SYMBOL;
+            }
+            b"E" => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= RAW_BOOK_TIMESTAMP;
+            }
+            b"T" if timestamp_us.is_none() => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= RAW_BOOK_TIMESTAMP;
+            }
+            b"U" => {
+                first_update_id = Some(value.i64()?);
+                seen |= RAW_BOOK_FIRST_ID;
+            }
+            b"u" => {
+                final_update_id = Some(value.i64()?);
+                seen |= RAW_BOOK_FINAL_ID;
+            }
+            b"lastUpdateId" => {
+                last_update_id = Some(value.i64()?);
+                seen |= RAW_BOOK_LAST_ID;
+            }
             b"b" | b"bids" => {
                 bids_raw = Some(value.array_bytes()?);
-                has_bids = true;
+                seen |= RAW_BOOK_BIDS;
             }
             b"a" | b"asks" => {
                 asks_raw = Some(value.array_bytes()?);
-                has_asks = true;
+                seen |= RAW_BOOK_ASKS;
             }
             _ => {}
         }
-        if last_update_id.is_some() && symbol.is_some() && has_bids && has_asks {
+        if (seen & RAW_BOOK_SNAPSHOT_REQUIRED) == RAW_BOOK_SNAPSHOT_REQUIRED {
             break;
         }
-        if seen_event
-            && symbol.is_some()
-            && timestamp_us.is_some()
-            && first_update_id.is_some()
-            && final_update_id.is_some()
-            && has_bids
-            && has_asks
-        {
+        if seen_event && (seen & RAW_BOOK_UPDATE_REQUIRED) == RAW_BOOK_UPDATE_REQUIRED {
             break;
         }
     }
@@ -918,7 +943,7 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
     {
         return None;
     }
-    if !has_bids && !has_asks {
+    if (seen & (RAW_BOOK_BIDS | RAW_BOOK_ASKS)) == 0 {
         return None;
     }
     let first_update_id = first_update_id?;
