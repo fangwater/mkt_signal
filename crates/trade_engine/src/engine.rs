@@ -39,7 +39,7 @@ use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
     BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
-    TradeRequestMsg, TradeRequestType, TRADE_REQ_PAYLOAD,
+    TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -127,7 +127,7 @@ struct AsyncThreadQueues {
 
 enum OrderReqIngress {
     Spsc(Consumer<TradeRequestMsg>),
-    Ipc(Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>),
+    Ipc(Subscriber<ipc::Service, TradeRequestIpcPayload, ()>),
 }
 
 enum QueryReqIngress {
@@ -252,18 +252,18 @@ fn new_ipc_spsc_queues(
     )
 }
 
-fn parse_trade_request_payload(payload: &[u8]) -> Option<TradeRequestMsg> {
-    let Some(actual_len) = request_payload_len(payload) else {
+fn parse_trade_request_payload(payload: &TradeRequestIpcPayload) -> Option<TradeRequestMsg> {
+    let Some(raw) = payload.as_request_slice() else {
         warn!(
-            "invalid trade request binary payload (min_len=24, buf_len={})",
-            payload.len()
+            "invalid trade request ipc payload (capacity={})",
+            TradeRequestIpcPayload::CAPACITY
         );
         return None;
     };
-    let mut msg = match crate::trade_request::TradeRequestMsg::parse(&payload[..actual_len]) {
+    let mut msg = match crate::trade_request::TradeRequestMsg::parse(raw) {
         Some(msg) => msg,
         None => {
-            warn!("invalid trade request binary payload (len={})", actual_len);
+            warn!("invalid trade request binary payload (len={})", raw.len());
             return None;
         }
     };
@@ -463,7 +463,7 @@ fn pop_order_control_for_async(
 }
 
 fn recv_trade_req_from_ipc(
-    subscriber: &Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
+    subscriber: &Subscriber<ipc::Service, TradeRequestIpcPayload, ()>,
 ) -> Option<TradeRequestMsg> {
     match subscriber.receive() {
         Ok(Some(sample)) => {
@@ -652,10 +652,10 @@ fn run_te_ipc_thread(
 
     let order_service = node
         .service_builder(&ServiceName::new(order_req_service)?)
-        .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
+        .publish_subscribe::<TradeRequestIpcPayload>()
         .subscriber_max_buffer_size(256)
         .open_or_create()?;
-    let order_subscriber: Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()> =
+    let order_subscriber: Subscriber<ipc::Service, TradeRequestIpcPayload, ()> =
         order_service.subscriber_builder().create()?;
 
     let order_control_subscriber = if let Some(order_control_service) = order_control_service {
@@ -1305,10 +1305,10 @@ impl TradeEngine {
             } else {
                 let order_service = node
                     .service_builder(&ServiceName::new(&order_req_service)?)
-                    .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
+                    .publish_subscribe::<TradeRequestIpcPayload>()
                     .subscriber_max_buffer_size(256)
                     .open_or_create()?;
-                let order_subscriber: Subscriber<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()> =
+                let order_subscriber: Subscriber<ipc::Service, TradeRequestIpcPayload, ()> =
                     order_service.subscriber_builder().create()?;
 
                 let query_service = node

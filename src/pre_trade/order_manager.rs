@@ -20,9 +20,8 @@ use trade_engine::okex::{
     OkexOrderType,
 };
 use trade_engine::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams,
-    BitgetMarginCancelOrderRequest, BitgetMarginNewOrderRequest, BitgetNewOrderParams,
-    BitgetUmCancelOrderRequest, BitgetUmNewOrderRequest, GateCancelOrderParams, GateNewOrderParams,
+    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams, BitgetNewOrderParams,
+    GateCancelOrderParams, GateNewOrderParams,
 };
 fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     if let Some(qv) = QuantizedValue::from_decimal(value) {
@@ -399,34 +398,28 @@ impl PreTradeOrderRequestExt for Order {
                 Ok(request.to_bytes())
             }
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-                let params = BitgetCancelOrderParams {
-                    order_id: self
-                        .exchange_order_id
-                        .filter(|&id| id > 0)
-                        .map(|id| id.to_string()),
-                    client_order_id: self.client_order_id.to_string(),
-                };
-                match self.venue {
+                let order_id = self
+                    .exchange_order_id
+                    .filter(|&id| id > 0)
+                    .map(|id| id.to_string());
+                let client_order_id = self.client_order_id.to_string();
+                let req_type = match self.venue {
                     TradingVenue::BitgetMargin => {
-                        let request = BitgetMarginCancelOrderRequest::create_typed(
-                            now,
-                            self.client_order_id,
-                            params,
-                        )
-                        .ok_or_else(|| "failed to build bitget margin cancel params".to_string())?;
-                        Ok(request.to_bytes())
+                        trade_engine::trade_request::TradeRequestType::BitgetCancelMarginOrder
                     }
                     TradingVenue::BitgetFutures => {
-                        let request = BitgetUmCancelOrderRequest::create_typed(
-                            now,
-                            self.client_order_id,
-                            params,
-                        )
-                        .ok_or_else(|| "failed to build bitget um cancel params".to_string())?;
-                        Ok(request.to_bytes())
+                        trade_engine::trade_request::TradeRequestType::BitgetCancelUMOrder
                     }
                     _ => unreachable!(),
-                }
+                };
+                BitgetCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    now,
+                    self.client_order_id,
+                    order_id.as_deref(),
+                    &client_order_id,
+                )
+                .ok_or_else(|| "failed to build bitget cancel params".to_string())
             }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
@@ -708,38 +701,39 @@ impl PreTradeOrderRequestExt for Order {
             }
             TradingVenue::BitgetMargin => {
                 let create_ts = get_timestamp_us();
-                let params = BitgetNewOrderParams {
-                    symbol: self.symbol.clone(),
-                    side: self.side,
-                    order_type: self.order_type,
-                    quantity_qv: resolved.require_quantity_qv(self, "bitget")?,
-                    price_qv: resolved.limit_price_qv_or_zero(self, "bitget")?,
-                    reduce_only: self.reduce_only,
-                };
-                let request = BitgetMarginNewOrderRequest::create_typed(
+                let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                BitgetNewOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::BitgetNewMarginOrder,
                     create_ts,
                     self.client_order_id,
-                    params,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
                 )
-                .ok_or_else(|| "failed to build bitget margin order params".to_string())?;
-                Ok(request.to_bytes())
+                .ok_or_else(|| "failed to build bitget margin order params".to_string())
             }
             TradingVenue::BitgetFutures => {
                 let create_ts = get_timestamp_us();
                 // trade_engine precheck 强制 Bitget UTA futures 为 one_way_mode。
                 // one-way 模式下开/平仓由 side + reduceOnly 表达，不传 hedge-mode 的 posSide。
-                let params = BitgetNewOrderParams {
-                    symbol: self.symbol.clone(),
-                    side: self.side,
-                    order_type: self.order_type,
-                    quantity_qv: resolved.require_quantity_qv(self, "bitget")?,
-                    price_qv: resolved.limit_price_qv_or_zero(self, "bitget")?,
-                    reduce_only: self.reduce_only,
-                };
-                let request =
-                    BitgetUmNewOrderRequest::create_typed(create_ts, self.client_order_id, params)
-                        .ok_or_else(|| "failed to build bitget um order params".to_string())?;
-                Ok(request.to_bytes())
+                let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                BitgetNewOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::BitgetNewUMOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build bitget um order params".to_string())
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),

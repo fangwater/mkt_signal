@@ -16,7 +16,7 @@ use anyhow::Result;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use ipc_common::iceoryx_publisher::{SignalPublisher, SIGNAL_PAYLOAD, TRADE_SIGNAL_PAYLOAD};
+use ipc_common::iceoryx_publisher::{SignalPublisher, TradeSignalIpcPayload, SIGNAL_PAYLOAD};
 use log::{debug, info, warn};
 use order_common::TradingVenue;
 use rolling_common::arb_open_latency::record_arb_open_latency;
@@ -316,7 +316,7 @@ struct SignalListener {
     dropped_startup_buffered: usize,
     dropped_slow_round_open: usize,
     _node: Node<ipc::Service>,
-    subscriber: Subscriber<ipc::Service, [u8; TRADE_SIGNAL_PAYLOAD], ()>,
+    subscriber: Subscriber<ipc::Service, TradeSignalIpcPayload, ()>,
 }
 
 impl SignalListener {
@@ -331,14 +331,14 @@ impl SignalListener {
 
         let service = node
             .service_builder(&ServiceName::new(&service_path)?)
-            .publish_subscribe::<[u8; TRADE_SIGNAL_PAYLOAD]>()
+            .publish_subscribe::<TradeSignalIpcPayload>()
             .max_publishers(1)
             .max_subscribers(32)
             .history_size(128)
             .subscriber_max_buffer_size(256)
             .create()?;
 
-        let subscriber: Subscriber<ipc::Service, [u8; TRADE_SIGNAL_PAYLOAD], ()> =
+        let subscriber: Subscriber<ipc::Service, TradeSignalIpcPayload, ()> =
             service.subscriber_builder().create()?;
 
         info!(
@@ -396,11 +396,15 @@ impl SignalListener {
                     received += 1;
                     has_message = true;
                     let receive_us = get_timestamp_us();
-                    let payload = sample.payload();
+                    let ipc_payload = sample.payload();
+                    let Some(payload) = ipc_payload.as_signal_slice() else {
+                        warn!(
+                            "failed to decode trade signal from channel {}: invalid ipc payload",
+                            self.channel_name
+                        );
+                        continue;
+                    };
                     let Some(encoded_len) = TradeSignal::encoded_len(payload) else {
-                        if payload.iter().all(|&b| b == 0) {
-                            continue;
-                        }
                         warn!(
                             "failed to decode trade signal from channel {}: invalid payload length={} context_length={:?}",
                             self.channel_name,
@@ -409,7 +413,16 @@ impl SignalListener {
                         );
                         continue;
                     };
-                    match TradeSignalView::from_bytes(&payload[..encoded_len]) {
+                    if encoded_len != payload.len() {
+                        warn!(
+                            "failed to decode trade signal from channel {}: mismatched payload length={} encoded_len={}",
+                            self.channel_name,
+                            payload.len(),
+                            encoded_len
+                        );
+                        continue;
+                    }
+                    match TradeSignalView::from_bytes(payload) {
                         Ok(signal) => {
                             if should_drop_startup_buffered_signal(
                                 signal.generation_time,

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::fmt::Write as _;
 
 use crate::trade_request::{
-    BitgetCancelOrderParams, BitgetNewOrderParams, TradeRequestMsg, TradeRequestType,
+    BitgetCancelOrderParamsRef, BitgetNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
 use account_common::bitget_auth::BitgetCredentials;
 
@@ -43,7 +43,7 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
 
     match req_type {
         TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-            let params = BitgetNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = BitgetNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Bitget WS new order requires typed params, req_type={:?}",
                     req_type
@@ -52,7 +52,7 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
             push_bitget_new_order_arg(&mut out, &params, msg.client_order_id);
         }
         TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
-            let params = BitgetCancelOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+            let params = BitgetCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Bitget WS cancel order requires typed params, req_type={:?}",
                     req_type
@@ -81,12 +81,16 @@ fn bitget_category(req_type: TradeRequestType) -> Result<&'static str> {
 
 fn push_bitget_new_order_arg(
     out: &mut String,
-    params: &BitgetNewOrderParams,
+    params: &BitgetNewOrderParamsRef<'_>,
     client_order_id: i64,
 ) {
     let mut first = true;
-    let symbol = params.symbol.to_ascii_uppercase();
-    push_json_field(out, "symbol", &symbol, &mut first);
+    if params.symbol.bytes().all(|b| !b.is_ascii_lowercase()) {
+        push_json_field(out, "symbol", params.symbol, &mut first);
+    } else {
+        let symbol = params.symbol.to_ascii_uppercase();
+        push_json_field(out, "symbol", &symbol, &mut first);
+    }
     push_json_field(out, "side", params.side.as_str_lower(), &mut first);
     push_json_field(
         out,
@@ -109,12 +113,12 @@ fn push_bitget_new_order_arg(
     }
 }
 
-fn push_bitget_cancel_order_arg(out: &mut String, params: &BitgetCancelOrderParams) {
+fn push_bitget_cancel_order_arg(out: &mut String, params: &BitgetCancelOrderParamsRef<'_>) {
     let mut first = true;
-    if let Some(order_id) = params.order_id.as_deref() {
+    if let Some(order_id) = params.order_id {
         push_json_field(out, "orderId", order_id, &mut first);
     }
-    push_json_field(out, "clientOid", &params.client_order_id, &mut first);
+    push_json_field(out, "clientOid", params.client_order_id, &mut first);
 }
 
 fn push_json_field(out: &mut String, key: &str, value: &str, first: &mut bool) {

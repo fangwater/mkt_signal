@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use iceoryx2::prelude::ZeroCopySend;
 use log::debug;
 use order_common::{OrderType, Side};
 use serde_json::{json, Value};
@@ -12,6 +13,88 @@ pub use order_common::TradeRequestType;
 pub const TRADE_REQ_PAYLOAD: usize = 1_024;
 pub const TRADE_REQ_HEADER_LEN: usize = 24;
 pub const TRADE_REQ_PARAMS_CAP: usize = TRADE_REQ_PAYLOAD - TRADE_REQ_HEADER_LEN;
+
+#[repr(C)]
+pub struct TradeRequestIpcPayload {
+    len: u32,
+    buf: MaybeUninit<[u8; TRADE_REQ_PAYLOAD]>,
+}
+
+unsafe impl ZeroCopySend for TradeRequestIpcPayload {}
+
+impl std::fmt::Debug for TradeRequestIpcPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TradeRequestIpcPayload")
+            .field("request_len", &self.request_len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl TradeRequestIpcPayload {
+    pub const CAPACITY: usize = TRADE_REQ_PAYLOAD;
+    pub const MIN_REQUEST_LEN: usize = TRADE_REQ_HEADER_LEN;
+
+    pub fn uninit() -> Self {
+        Self {
+            len: 0,
+            buf: MaybeUninit::uninit(),
+        }
+    }
+
+    pub fn write_prefix(&mut self, raw: &[u8]) -> Option<()> {
+        if raw.len() > Self::CAPACITY {
+            return None;
+        }
+        self.len = raw.len() as u32;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                self.buf.as_mut_ptr().cast::<u8>(),
+                raw.len(),
+            );
+        }
+        Some(())
+    }
+
+    pub fn write_to_uninit_slot(slot: &mut MaybeUninit<Self>, raw: &[u8]) -> Option<()> {
+        if raw.len() > Self::CAPACITY {
+            return None;
+        }
+        unsafe {
+            let ptr = slot.as_mut_ptr();
+            std::ptr::addr_of_mut!((*ptr).len).write(raw.len() as u32);
+            std::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                std::ptr::addr_of_mut!((*ptr).buf).cast::<u8>(),
+                raw.len(),
+            );
+        }
+        Some(())
+    }
+
+    pub fn as_request_slice(&self) -> Option<&[u8]> {
+        let len = self.len as usize;
+        if len > Self::CAPACITY {
+            return None;
+        }
+        Some(self.initialized_prefix(len))
+    }
+
+    fn request_len(&self) -> Option<usize> {
+        let raw = self.as_request_slice()?;
+        if raw.len() < Self::MIN_REQUEST_LEN {
+            return None;
+        }
+        let params_len = u32::from_le_bytes(raw[4..8].try_into().ok()?) as usize;
+        let total = TRADE_REQ_HEADER_LEN.checked_add(params_len)?;
+        (total == raw.len()).then_some(total)
+    }
+
+    fn initialized_prefix(&self, len: usize) -> &[u8] {
+        debug_assert!(len <= Self::CAPACITY);
+        unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast::<u8>(), len) }
+    }
+}
 
 pub struct TradeRequestParams {
     len: usize,
@@ -230,10 +313,6 @@ fn write_string(buf: &mut BytesMut, value: &str) -> Option<()> {
     Some(())
 }
 
-fn read_string(raw: &[u8], offset: &mut usize) -> Option<String> {
-    read_str(raw, offset).map(str::to_string)
-}
-
 fn read_str<'a>(raw: &'a [u8], offset: &mut usize) -> Option<&'a str> {
     if raw.len() < *offset + 2 {
         return None;
@@ -261,14 +340,14 @@ fn write_optional_string(buf: &mut BytesMut, value: Option<&str>) -> Option<()> 
     }
 }
 
-fn read_optional_string(raw: &[u8], offset: &mut usize) -> Option<Option<String>> {
+fn read_optional_str<'a>(raw: &'a [u8], offset: &mut usize) -> Option<Option<&'a str>> {
     if raw.len() < *offset + 1 {
         return None;
     }
     let present = raw[*offset] != 0;
     *offset += 1;
     if present {
-        read_string(raw, offset).map(Some)
+        read_str(raw, offset).map(Some)
     } else {
         Some(None)
     }
@@ -1622,6 +1701,16 @@ pub struct BitgetNewOrderParams {
     pub reduce_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitgetNewOrderParamsRef<'a> {
+    pub symbol: &'a str,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+}
+
 impl BitgetNewOrderParams {
     const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 1 + 2;
 
@@ -1637,29 +1726,39 @@ impl BitgetNewOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        let mut offset = 0usize;
-        if raw.len() < 2 {
-            return None;
-        }
-        let side = Side::from_u8(raw[offset])?;
-        offset += 1;
-        let order_type = OrderType::from_u8(raw[offset])?;
-        offset += 1;
-        let quantity_qv = read_qv(raw, &mut offset)?;
-        let price_qv = read_qv(raw, &mut offset)?;
-        if raw.len() < offset + 1 {
-            return None;
-        }
-        let reduce_only = raw[offset] != 0;
-        offset += 1;
-        let symbol = read_string(raw, &mut offset)?;
+        let params = BitgetNewOrderParamsRef::from_bytes(raw)?;
         Some(Self {
-            symbol,
-            side,
-            order_type,
-            quantity_qv,
-            price_qv,
-            reduce_only,
+            symbol: params.symbol.to_string(),
+            side: params.side,
+            order_type: params.order_type,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            reduce_only: params.reduce_only,
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        let params_len = Self::FIXED_LEN + symbol.len();
+        trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
+            buf.put_u8(side.to_u8());
+            buf.put_u8(order_type.to_u8());
+            write_qv(buf, quantity_qv);
+            write_qv(buf, price_qv);
+            buf.put_u8(reduce_only as u8);
+            write_string(buf, symbol)
         })
     }
 
@@ -1694,6 +1793,35 @@ impl BitgetNewOrderParams {
             req_param.insert("reduceOnly".to_string(), json!("YES"));
         }
         Value::Object(req_param)
+    }
+}
+
+impl<'a> BitgetNewOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        if raw.len() < 2 {
+            return None;
+        }
+        let side = Side::from_u8(raw[offset])?;
+        offset += 1;
+        let order_type = OrderType::from_u8(raw[offset])?;
+        offset += 1;
+        let quantity_qv = read_qv(raw, &mut offset)?;
+        let price_qv = read_qv(raw, &mut offset)?;
+        if raw.len() < offset + 1 {
+            return None;
+        }
+        let reduce_only = raw[offset] != 0;
+        offset += 1;
+        let symbol = read_str(raw, &mut offset)?;
+        Some(Self {
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+        })
     }
 }
 
@@ -1795,6 +1923,12 @@ pub struct BitgetCancelOrderParams {
     pub client_order_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitgetCancelOrderParamsRef<'a> {
+    pub order_id: Option<&'a str>,
+    pub client_order_id: &'a str,
+}
+
 impl BitgetCancelOrderParams {
     const FIXED_LEN: usize = 1 + 2 + 2;
 
@@ -1810,12 +1944,32 @@ impl BitgetCancelOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        let mut offset = 0usize;
-        let order_id = read_optional_string(raw, &mut offset)?;
-        let client_order_id = read_string(raw, &mut offset)?;
+        let params = BitgetCancelOrderParamsRef::from_bytes(raw)?;
         Some(Self {
-            order_id,
-            client_order_id,
+            order_id: params.order_id.map(str::to_string),
+            client_order_id: params.client_order_id.to_string(),
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        order_id: Option<&str>,
+        bitget_client_order_id: &str,
+    ) -> Option<Bytes> {
+        if order_id.map(str::len).unwrap_or(0) > u16::MAX as usize
+            || bitget_client_order_id.len() > u16::MAX as usize
+        {
+            return None;
+        }
+        let params_len = 1
+            + order_id.map(|value| 2 + value.len()).unwrap_or(0)
+            + 2
+            + bitget_client_order_id.len();
+        trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
+            write_optional_string(buf, order_id)?;
+            write_string(buf, bitget_client_order_id)
         })
     }
 
@@ -1832,6 +1986,18 @@ impl BitgetCancelOrderParams {
         }
         req_param.insert("clientOid".to_string(), json!(self.client_order_id));
         Value::Object(req_param)
+    }
+}
+
+impl<'a> BitgetCancelOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        let order_id = read_optional_str(raw, &mut offset)?;
+        let client_order_id = read_str(raw, &mut offset)?;
+        Some(Self {
+            order_id,
+            client_order_id,
+        })
     }
 }
 
@@ -1923,12 +2089,14 @@ impl BitgetUmCancelOrderRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        BinanceCancelOrderParams, BinanceNewOrderParams, GateCancelOrderParams,
-        GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest, GateNewOrderParams,
-        TradeRequestType,
+        BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams,
+        GateCancelOrderParams, GateFuturesCancelOrderRequest, GateFuturesNewOrderRequest,
+        GateNewOrderParams, TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType,
+        TRADE_REQ_PAYLOAD,
     };
     use order_common::{OrderType, Side};
     use signal_common::tick_math::QuantizedValue;
+    use std::mem::MaybeUninit;
 
     #[test]
     fn binance_typed_new_order_params_render_query_string() {
@@ -1984,6 +2152,40 @@ mod tests {
     }
 
     #[test]
+    fn trade_request_ipc_payload_tracks_effective_request_len() {
+        let req = BinanceNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BinanceWsNewUMOrder,
+            11,
+            42,
+            "BTCUSDT",
+            Side::Buy,
+            OrderType::Limit,
+            QuantizedValue::from_decimal(0.25).unwrap(),
+            QuantizedValue::from_decimal(65000.0).unwrap(),
+            false,
+            false,
+            false,
+            true,
+            false,
+        )
+        .expect("request bytes");
+        assert!(req.len() < TRADE_REQ_PAYLOAD);
+
+        let mut slot = MaybeUninit::<TradeRequestIpcPayload>::uninit();
+        TradeRequestIpcPayload::write_to_uninit_slot(&mut slot, &req).expect("write ipc payload");
+        let payload = unsafe { slot.assume_init() };
+        let raw = payload.as_request_slice().expect("effective request slice");
+
+        assert_eq!(raw, req.as_ref());
+        assert_eq!(
+            TradeRequestMsg::parse(raw)
+                .expect("trade request")
+                .client_order_id,
+            42
+        );
+    }
+
+    #[test]
     fn binance_typed_cancel_params_render_query_string() {
         let params = BinanceCancelOrderParams {
             symbol: "BTCUSDT".to_string(),
@@ -1993,6 +2195,24 @@ mod tests {
         let query = params.to_query_string();
 
         assert_eq!(query, "symbol=BTCUSDT&origClientOrderId=42");
+    }
+
+    #[test]
+    fn bitget_cancel_request_bytes_without_order_id_roundtrips() {
+        let req = BitgetCancelOrderParams::request_bytes_from_parts(
+            TradeRequestType::BitgetCancelUMOrder,
+            7,
+            42,
+            None,
+            "42",
+        )
+        .expect("bitget cancel request bytes");
+        let msg = TradeRequestMsg::parse(&req).expect("trade request");
+        let params = BitgetCancelOrderParams::from_bytes(&msg.params).expect("cancel params");
+
+        assert_eq!(msg.req_type, TradeRequestType::BitgetCancelUMOrder);
+        assert_eq!(params.order_id, None);
+        assert_eq!(params.client_order_id, "42");
     }
 
     #[test]

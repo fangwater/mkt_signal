@@ -26,7 +26,7 @@ use trade_engine::internal_terminate::{
     parse_bool_env, InternalOpenTerminateMsg, ARB_OPEN_INTERNAL_TERMINATE_ENV,
     ORDER_TERMINATE_PAYLOAD_LEN,
 };
-use trade_engine::trade_request::TRADE_REQ_PAYLOAD;
+use trade_engine::trade_request::{TradeRequestIpcPayload, TRADE_REQ_PAYLOAD};
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };
@@ -385,7 +385,7 @@ impl TradeEngHub {
 
 struct TradeEngChannel {
     exchange: String,
-    order_req_publisher: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
+    order_req_publisher: Publisher<ipc::Service, TradeRequestIpcPayload, ()>,
     order_control_publisher: Option<Publisher<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()>>,
     _resp_node: Node<ipc::Service>,
     resp_subscriber: Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()>,
@@ -406,7 +406,7 @@ impl TradeEngChannel {
 
         let req_service = req_node
             .service_builder(&ServiceName::new(&order_req_service)?)
-            .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
+            .publish_subscribe::<TradeRequestIpcPayload>()
             .subscriber_max_buffer_size(TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
@@ -460,9 +460,9 @@ impl TradeEngChannel {
         let copy_len = bytes.len().min(TRADE_REQ_PAYLOAD);
 
         let mut sample = self.order_req_publisher.loan_uninit()?;
-        sample.payload_mut().write([0u8; TRADE_REQ_PAYLOAD]);
-        let mut sample = unsafe { sample.assume_init() };
-        sample.payload_mut()[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        TradeRequestIpcPayload::write_to_uninit_slot(sample.payload_mut(), &bytes[..copy_len])
+            .ok_or_else(|| anyhow!("order request exceeds ipc payload: len={}", bytes.len()))?;
+        let sample = unsafe { sample.assume_init() };
         sample.send()?;
 
         Ok(())
