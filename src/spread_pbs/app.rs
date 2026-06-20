@@ -1047,6 +1047,10 @@ impl SymbolSeqState {
 
     fn bbo_slot(&mut self, symbol: &str) -> SymbolSlot {
         let idx = self.ensure_symbol(symbol);
+        self.bbo_slot_by_index(idx)
+    }
+
+    fn bbo_slot_by_index(&self, idx: usize) -> SymbolSlot {
         SymbolSlot {
             idx,
             prev: self.bbo_seq[idx],
@@ -1067,6 +1071,10 @@ impl SymbolSeqState {
 
     fn trade_slot(&mut self, symbol: &str) -> SymbolSlot {
         let idx = self.ensure_symbol(symbol);
+        self.trade_slot_by_index(idx)
+    }
+
+    fn trade_slot_by_index(&self, idx: usize) -> SymbolSlot {
         SymbolSlot {
             idx,
             prev: self.trade_seq[idx],
@@ -1084,6 +1092,10 @@ impl SymbolSeqState {
 
     fn incremental_slot(&mut self, symbol: &str) -> SymbolSlot {
         let idx = self.ensure_symbol(symbol);
+        self.incremental_slot_by_index(idx)
+    }
+
+    fn incremental_slot_by_index(&self, idx: usize) -> SymbolSlot {
         SymbolSlot {
             idx,
             prev: self.incremental_seq[idx],
@@ -1421,10 +1433,12 @@ fn make_replacement_handler(
         if derivatives_publisher.is_none() {
             if let Some(incremental_publisher) = incremental_publisher.as_ref() {
                 if let Some(book) = adapter.parse_incremental_raw_borrowed(raw) {
+                    let slot_index = adapter.symbol_slot_index(book.symbol);
                     let mut s = state.borrow_mut();
                     process_incremental_fields(
                         &mut s,
                         incremental_publisher,
+                        slot_index,
                         book.symbol,
                         book.timestamp_us,
                         book.seq_id,
@@ -1440,10 +1454,12 @@ fn make_replacement_handler(
                     return;
                 }
                 if let Some(book) = adapter.parse_incremental_raw_view(raw) {
+                    let slot_index = adapter.symbol_slot_index(book.symbol);
                     let mut s = state.borrow_mut();
                     process_incremental_view(
                         &mut s,
                         incremental_publisher,
+                        slot_index,
                         book,
                         incremental_max_levels,
                     );
@@ -1453,10 +1469,12 @@ fn make_replacement_handler(
                 trade_publisher.as_ref(),
                 adapter.parse_trade_raw_borrowed(raw),
             ) {
+                let slot_index = adapter.symbol_slot_index(trade.symbol);
                 let mut s = state.borrow_mut();
                 process_trade_fields(
                     &mut s,
                     trade_publisher,
+                    slot_index,
                     trade.symbol,
                     trade.seq_id,
                     trade.trade_id,
@@ -1521,10 +1539,12 @@ fn make_handler(
     Rc::new(move |recv_us: i64, raw: &[u8]| {
         if let Some(bbo) = adapter.parse_bbo_raw_borrowed(raw) {
             let accepted_us = get_timestamp_us();
+            let slot_index = adapter.symbol_slot_index(bbo.symbol);
             let mut s = state.borrow_mut();
             process_bbo_fields(
                 &mut s,
                 &publisher,
+                slot_index,
                 recv_us,
                 accepted_us,
                 bbo.symbol,
@@ -1596,6 +1616,7 @@ fn process_trade_frame(
     process_trade_fields(
         state,
         publisher,
+        None,
         &f.symbol,
         f.seq_id,
         f.trade_id,
@@ -1610,6 +1631,7 @@ fn process_trade_frame(
 fn process_trade_fields(
     state: &mut SharedState,
     publisher: &Rc<SpreadTradePublisher>,
+    slot_index: Option<usize>,
     symbol: &str,
     seq_id: i64,
     trade_id: i64,
@@ -1618,7 +1640,9 @@ fn process_trade_fields(
     price: f64,
     amount: f64,
 ) {
-    let slot = state.symbol_state.trade_slot(symbol);
+    let slot = slot_index
+        .map(|idx| state.symbol_state.trade_slot_by_index(idx))
+        .unwrap_or_else(|| state.symbol_state.trade_slot(symbol));
     if seq_id <= slot.prev {
         state.trades_dropped_by_seq += 1;
         return;
@@ -1695,6 +1719,7 @@ fn process_incremental_frame(
     process_incremental_fields(
         state,
         publisher,
+        None,
         &symbol,
         timestamp,
         seq_id,
@@ -1713,6 +1738,7 @@ fn process_incremental_frame(
 fn process_incremental_fields<L: PayloadLevel>(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
+    slot_index: Option<usize>,
     symbol: &str,
     timestamp: i64,
     seq_id: i64,
@@ -1725,7 +1751,9 @@ fn process_incremental_fields<L: PayloadLevel>(
     asks: &[L],
     max_levels: Option<usize>,
 ) {
-    let slot = state.symbol_state.incremental_slot(symbol);
+    let slot = slot_index
+        .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
+        .unwrap_or_else(|| state.symbol_state.incremental_slot(symbol));
     if !is_snapshot && seq_id <= slot.prev {
         state.incremental_dropped_by_seq += 1;
         return;
@@ -1795,10 +1823,13 @@ fn process_incremental_fields<L: PayloadLevel>(
 fn process_incremental_view(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
+    slot_index: Option<usize>,
     book: mkt_parsers::binance::RawBookView<'_>,
     max_levels: Option<usize>,
 ) {
-    let slot = state.symbol_state.incremental_slot(book.symbol);
+    let slot = slot_index
+        .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
+        .unwrap_or_else(|| state.symbol_state.incremental_slot(book.symbol));
     if !book.is_snapshot && book.seq_id <= slot.prev {
         state.incremental_dropped_by_seq += 1;
         return;
@@ -2025,6 +2056,7 @@ fn process_frame(
     process_bbo_fields(
         state,
         publisher,
+        None,
         recv_us,
         accepted_us,
         &f.symbol,
@@ -2043,6 +2075,7 @@ fn process_frame(
 fn process_bbo_fields(
     state: &mut SharedState,
     publisher: &Rc<SpreadPublisher>,
+    slot_index: Option<usize>,
     recv_us: i64,
     accepted_us: i64,
     symbol: &str,
@@ -2057,7 +2090,9 @@ fn process_bbo_fields(
 ) {
     reset_dedup_high_water_if_needed(state, accepted_us);
 
-    let slot = state.symbol_state.bbo_slot(symbol);
+    let slot = slot_index
+        .map(|idx| state.symbol_state.bbo_slot_by_index(idx))
+        .unwrap_or_else(|| state.symbol_state.bbo_slot(symbol));
     if should_drop_bbo_fields(&slot, ts_us, seq_id, reset_seq) {
         state.dropped_by_seq += 1;
         return;

@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
-use runtime_common::fast_hash::{fast_hash_set, FastHashSet};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use serde_json::Value;
 use std::cell::RefCell;
 
@@ -39,6 +39,7 @@ pub(crate) fn binance_futures_standard_ws_url() -> &'static str {
 pub struct BinanceAdapter {
     venue: TradingVenue,
     derivatives_symbols: RefCell<FastHashSet<String>>,
+    symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,
 }
 
 impl BinanceAdapter {
@@ -46,6 +47,7 @@ impl BinanceAdapter {
         Self {
             venue,
             derivatives_symbols: RefCell::new(fast_hash_set()),
+            symbol_slot_by_symbol: RefCell::new(fast_hash_map()),
         }
     }
 }
@@ -141,6 +143,17 @@ impl VenueAdapter for BinanceAdapter {
         let mut active = self.derivatives_symbols.borrow_mut();
         active.clear();
         active.extend(symbols.iter().map(|symbol| symbol.to_ascii_uppercase()));
+        drop(active);
+
+        let mut slots = self.symbol_slot_by_symbol.borrow_mut();
+        for symbol in symbols {
+            let next_idx = slots.len();
+            slots.entry(symbol.to_ascii_uppercase()).or_insert(next_idx);
+        }
+    }
+
+    fn symbol_slot_index(&self, symbol: &str) -> Option<usize> {
+        self.symbol_slot_by_symbol.borrow().get(symbol).copied()
     }
 
     fn parse_frame(
