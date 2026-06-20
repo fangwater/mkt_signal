@@ -375,6 +375,9 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut bid_amount = None;
     let mut ask = None;
     let mut ask_amount = None;
+    let mut seen = 0u8;
+    const BBO_BOOK_TICKER_REQUIRED: u8 = 0b0111_1111;
+    const BBO_DEPTH_REQUIRED: u8 = 0b0010_0111;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
@@ -385,37 +388,43 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
                     _ => return None,
                 });
             }
-            b"s" => symbol = Some(value.string_str()?),
-            b"u" | b"lastUpdateId" => seq_id = Some(value.i64()?),
-            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"T" if timestamp_us.is_none() => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"b" | b"bids" => bid = Some(value),
-            b"B" => bid_amount = Some(value),
-            b"a" | b"asks" => ask = Some(value),
-            b"A" => ask_amount = Some(value),
+            b"s" => {
+                symbol = Some(value.string_str()?);
+                seen |= 1 << 0;
+            }
+            b"u" | b"lastUpdateId" => {
+                seq_id = Some(value.i64()?);
+                seen |= 1 << 1;
+            }
+            b"E" => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= 1 << 2;
+            }
+            b"T" if timestamp_us.is_none() => {
+                timestamp_us = Some(ms_to_us(value.i64()?));
+                seen |= 1 << 2;
+            }
+            b"b" | b"bids" => {
+                bid = Some(value);
+                seen |= 1 << 3;
+            }
+            b"B" => {
+                bid_amount = Some(value);
+                seen |= 1 << 4;
+            }
+            b"a" | b"asks" => {
+                ask = Some(value);
+                seen |= 1 << 5;
+            }
+            b"A" => {
+                ask_amount = Some(value);
+                seen |= 1 << 6;
+            }
             _ => {}
         }
         match event_kind {
-            Some(RawBboKind::BookTicker)
-                if symbol.is_some()
-                    && seq_id.is_some()
-                    && timestamp_us.is_some()
-                    && bid.is_some()
-                    && bid_amount.is_some()
-                    && ask.is_some()
-                    && ask_amount.is_some() =>
-            {
-                break;
-            }
-            Some(RawBboKind::Depth)
-                if symbol.is_some()
-                    && seq_id.is_some()
-                    && timestamp_us.is_some()
-                    && bid.is_some()
-                    && ask.is_some() =>
-            {
-                break;
-            }
+            Some(RawBboKind::BookTicker) if seen == BBO_BOOK_TICKER_REQUIRED => break,
+            Some(RawBboKind::Depth) if (seen & BBO_DEPTH_REQUIRED) == BBO_DEPTH_REQUIRED => break,
             _ => {}
         }
     }
