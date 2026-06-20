@@ -6,7 +6,6 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
@@ -19,6 +18,7 @@ use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate, OrderSubmitSignalMeta};
 use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::SignalType;
@@ -143,7 +143,7 @@ fn log_open_order_slow_trace(
 /// * 每个交易所对应独立的 `TradeEngChannel`（Iceoryx publisher + subscriber）
 /// * 可以在启动时显式注册多个交易所，也可以按需懒加载
 pub struct TradeEngHub {
-    channels: RefCell<HashMap<String, TradeEngChannel>>,
+    channels: RefCell<FastHashMap<String, TradeEngChannel>>,
     internal_open_terminate_enabled: bool,
 }
 
@@ -318,7 +318,7 @@ impl TradeEngHub {
 
     fn new(internal_open_terminate_enabled: bool) -> Self {
         Self {
-            channels: RefCell::new(HashMap::new()),
+            channels: RefCell::new(fast_hash_map()),
             internal_open_terminate_enabled,
         }
     }

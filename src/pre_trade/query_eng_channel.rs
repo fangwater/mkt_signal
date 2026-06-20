@@ -4,8 +4,8 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::pre_trade::account_open_block::handle_account_open_block_query_response;
@@ -24,6 +24,7 @@ use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use order_common::{QueryEngineResponse, QueryEngineResponseMessage};
 use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use trade_engine::query_request::QueryRequestType;
@@ -101,7 +102,7 @@ fn dispatch_query_response_to_orphan_manager(
 }
 
 pub struct QueryEngHub {
-    channels: RefCell<HashMap<String, QueryEngChannel>>,
+    channels: RefCell<FastHashMap<String, QueryEngChannel>>,
 }
 
 impl QueryEngHub {
@@ -218,15 +219,21 @@ impl QueryEngHub {
 
     fn new() -> Self {
         Self {
-            channels: RefCell::new(HashMap::new()),
+            channels: RefCell::new(fast_hash_map()),
         }
     }
 
     fn publish_to_exchange(&self, exchange: &str, bytes: &Bytes) -> Result<()> {
-        self.ensure_exchange(exchange)?;
         let key = Self::normalize_exchange(exchange);
+        {
+            let channels = self.channels.borrow();
+            if let Some(channel) = channels.get(key.as_ref()) {
+                return channel.publish_query_request(bytes);
+            }
+        }
+        self.ensure_exchange_key(key.as_ref())?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(&key) else {
+        let Some(channel) = channels.get(key.as_ref()) else {
             return Err(anyhow!("QueryEngHub: exchange '{}' not registered", key));
         };
         channel.publish_query_request(bytes)
@@ -234,7 +241,11 @@ impl QueryEngHub {
 
     fn ensure_exchange(&self, exchange: &str) -> Result<()> {
         let key = Self::normalize_exchange(exchange);
-        if self.channels.borrow().contains_key(&key) {
+        self.ensure_exchange_key(key.as_ref())
+    }
+
+    fn ensure_exchange_key(&self, key: &str) -> Result<()> {
+        if self.channels.borrow().contains_key(key) {
             return Ok(());
         }
 
@@ -242,13 +253,18 @@ impl QueryEngHub {
             "QueryEngHub: registering query engine channel for exchange '{}'",
             key
         );
-        let channel = QueryEngChannel::new(&key)?;
-        self.channels.borrow_mut().insert(key, channel);
+        let channel = QueryEngChannel::new(key)?;
+        self.channels.borrow_mut().insert(key.to_string(), channel);
         Ok(())
     }
 
-    fn normalize_exchange(exchange: &str) -> String {
-        exchange.trim().to_ascii_lowercase()
+    fn normalize_exchange(exchange: &str) -> Cow<'_, str> {
+        let trimmed = exchange.trim();
+        if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
+            Cow::Borrowed(trimmed)
+        } else {
+            Cow::Owned(trimmed.to_ascii_lowercase())
+        }
     }
 }
 
