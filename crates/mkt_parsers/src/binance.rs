@@ -1925,33 +1925,30 @@ impl<'a> JsonValue<'a> {
     }
 
     fn object_bytes(self) -> Option<&'a [u8]> {
-        let raw = trim_ascii(self.raw);
-        if raw.first() == Some(&b'{') && raw.last() == Some(&b'}') {
-            Some(raw)
+        if self.raw.first() == Some(&b'{') && self.raw.last() == Some(&b'}') {
+            Some(self.raw)
         } else {
             None
         }
     }
 
     fn array_bytes(self) -> Option<&'a [u8]> {
-        let raw = trim_ascii(self.raw);
-        if raw.first() == Some(&b'[') && raw.last() == Some(&b']') {
-            Some(raw)
+        if self.raw.first() == Some(&b'[') && self.raw.last() == Some(&b']') {
+            Some(self.raw)
         } else {
             None
         }
     }
 
     fn number_bytes(self) -> Option<&'a [u8]> {
-        let raw = trim_ascii(self.raw);
-        if raw.first() == Some(&b'"') && raw.last() == Some(&b'"') {
-            let inner = &raw[1..raw.len() - 1];
+        if self.raw.first() == Some(&b'"') && self.raw.last() == Some(&b'"') {
+            let inner = &self.raw[1..self.raw.len() - 1];
             if inner.contains(&b'\\') {
                 return None;
             }
             Some(inner)
         } else {
-            Some(raw)
+            Some(self.raw)
         }
     }
 
@@ -1964,7 +1961,7 @@ impl<'a> JsonValue<'a> {
     }
 
     fn bool(self) -> Option<bool> {
-        match trim_ascii(self.raw) {
+        match self.raw {
             b"true" => Some(true),
             b"false" => Some(false),
             _ => None,
