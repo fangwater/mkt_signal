@@ -915,12 +915,12 @@ impl OrderManager {
 
         if let Some(prev_order) = prev {
             if let Some((symbol, side)) = Self::pending_limit_key(&prev_order) {
-                self.decrement_pending_limit_count(&symbol, side);
+                self.decrement_pending_limit_count_normalized(&symbol, side);
             }
         }
 
         if let Some((symbol, side)) = pending_key {
-            self.increment_pending_limit_count(&symbol, side);
+            self.increment_pending_limit_count_normalized(symbol, side);
         }
 
         // 持久化
@@ -981,10 +981,10 @@ impl OrderManager {
 
         if before_key != after_key {
             if let Some((symbol, side)) = before_key {
-                self.decrement_pending_limit_count(&symbol, side);
+                self.decrement_pending_limit_count_normalized(&symbol, side);
             }
             if let Some((symbol, side)) = after_key {
-                self.increment_pending_limit_count(&symbol, side);
+                self.increment_pending_limit_count_normalized(symbol, side);
             }
         }
         true
@@ -1038,7 +1038,7 @@ impl OrderManager {
         if let Some(ref order) = removed {
             // 如果是限价单，减少计数
             if let Some((symbol, side)) = Self::pending_limit_key(order) {
-                self.decrement_pending_limit_count(&symbol, side);
+                self.decrement_pending_limit_count_normalized(&symbol, side);
             }
         }
 
@@ -1082,8 +1082,7 @@ impl OrderManager {
         }
     }
 
-    fn increment_pending_limit_count(&mut self, symbol: &str, side: Side) {
-        let symbol = normalize_symbol_for_internal(symbol);
+    fn increment_pending_limit_count_normalized(&mut self, symbol: String, side: Side) {
         *self
             .pending_limit_order_count
             .entry(symbol.clone())
@@ -1113,11 +1112,10 @@ impl OrderManager {
         remaining
     }
 
-    fn decrement_pending_limit_count(&mut self, symbol: &str, side: Side) {
-        let symbol = normalize_symbol_for_internal(symbol);
-        let remaining_total = Self::decrement_count(&mut self.pending_limit_order_count, &symbol);
+    fn decrement_pending_limit_count_normalized(&mut self, symbol: &str, side: Side) {
+        let remaining_total = Self::decrement_count(&mut self.pending_limit_order_count, symbol);
         let remaining_side =
-            Self::decrement_count(self.pending_limit_side_count_map_mut(side), &symbol);
+            Self::decrement_count(self.pending_limit_side_count_map_mut(side), symbol);
 
         debug!(
             "OrderManager: symbol={} side={} pending_limit_count dec -> total={} side={}",
