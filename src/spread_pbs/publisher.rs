@@ -188,6 +188,18 @@ fn write_bbo_payload_with_prefix(
     off
 }
 
+fn seed_bbo_prefixes(
+    cache: &mut FastHashMap<String, BboPayloadPrefix>,
+    symbols: &[String],
+) -> Result<()> {
+    for symbol in symbols {
+        if !cache.contains_key(symbol.as_str()) {
+            cache.insert(symbol.clone(), BboPayloadPrefix::new(symbol)?);
+        }
+    }
+    Ok(())
+}
+
 #[inline]
 fn trade_payload_len(symbol: &str) -> usize {
     4 + 4 + symbol.len() + 8 + 8 + 1 + 7 + 8 + 8
@@ -476,6 +488,11 @@ impl SpreadPublisher {
 
     pub fn service_name(&self) -> &str {
         &self.service_name
+    }
+
+    pub fn seed_symbols(&self, symbols: &[String]) -> Result<()> {
+        let mut cache = self.bbo_prefix_by_symbol.borrow_mut();
+        seed_bbo_prefixes(&mut cache, symbols)
     }
 
     /// 同步 publish。`data` 长度需 ≤ `SPREAD_PAYLOAD_BYTES`。
@@ -961,6 +978,18 @@ mod tests {
         assert_eq!(written, expected.len());
         assert_eq!(&buf[..written], &expected[..]);
         assert!(buf[written..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn bbo_prefix_seed_is_idempotent() {
+        let mut cache = fast_hash_map();
+        let symbols = ["BTCUSDT".to_string(), "ETHUSDT".to_string()];
+        seed_bbo_prefixes(&mut cache, &symbols).unwrap();
+        seed_bbo_prefixes(&mut cache, &symbols).unwrap();
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get("BTCUSDT").unwrap().len, 15);
+        assert_eq!(cache.get("ETHUSDT").unwrap().len, 15);
     }
 
     #[test]

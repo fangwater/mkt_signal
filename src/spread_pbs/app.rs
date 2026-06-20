@@ -369,6 +369,9 @@ impl SpreadPbsApp {
             SpreadPublisher::new(venue_slug)
                 .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
         );
+        publisher
+            .seed_symbols(&initial_symbols)
+            .with_context(|| format!("seed BBO payload prefixes for {}", venue_slug))?;
         let trade_publisher = if direct_trade_enabled {
             Some(Rc::new(
                 SpreadTradePublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
@@ -936,6 +939,13 @@ async fn restart_leg(
         let mut s = ctx.state.borrow_mut();
         s.symbol_state.ensure_symbols(&new_symbols);
         ctx.adapter.seed_symbols(&new_symbols);
+        if let Err(e) = ctx.publisher.seed_symbols(&new_symbols) {
+            log::warn!(
+                "spread_pbs[{}] failed to seed BBO payload prefixes: {:#}",
+                venue_slug,
+                e
+            );
+        }
     }
     *current_symbols = new_set;
 
