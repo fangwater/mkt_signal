@@ -730,13 +730,7 @@ pub fn parse_incremental_json(value: &Value) -> Option<Book> {
 }
 
 pub fn parse_event_time_ms_raw(raw: &[u8]) -> Option<i64> {
-    let mut payload = raw_payload_object(raw);
-    while let Some((key, value)) = payload.next_field() {
-        if key == b"E" {
-            return value.i64();
-        }
-    }
-    None
+    parse_raw_key_i64(raw, b'E')
 }
 
 pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
@@ -1936,6 +1930,75 @@ fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
     fast_float::parse::<f64, _>(bytes).ok()
 }
 
+fn parse_raw_key_i64(raw: &[u8], key: u8) -> Option<i64> {
+    let mut pos = 0usize;
+    while let Some(&b) = raw.get(pos) {
+        if b != b'"' {
+            pos += 1;
+            continue;
+        }
+        pos += 1;
+        let start = pos;
+        let mut escaped = false;
+        while let Some(&b) = raw.get(pos) {
+            match b {
+                b'\\' => {
+                    escaped = true;
+                    pos += 2;
+                }
+                b'"' => {
+                    let end = pos;
+                    pos += 1;
+                    if !escaped && end == start + 1 && raw[start] == key {
+                        let mut value_pos = pos;
+                        skip_ws_at(raw, &mut value_pos);
+                        if raw.get(value_pos) == Some(&b':') {
+                            value_pos += 1;
+                            return parse_raw_i64_value(raw, &mut value_pos);
+                        }
+                    }
+                    break;
+                }
+                _ => pos += 1,
+            }
+        }
+    }
+    None
+}
+
+fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
+    skip_ws_at(raw, pos);
+    let bytes = if raw.get(*pos) == Some(&b'"') {
+        *pos += 1;
+        let start = *pos;
+        loop {
+            let b = *raw.get(*pos)?;
+            match b {
+                b'\\' => return None,
+                b'"' => {
+                    let end = *pos;
+                    *pos += 1;
+                    break &raw[start..end];
+                }
+                _ => *pos += 1,
+            }
+        }
+    } else {
+        let start = *pos;
+        while let Some(&b) = raw.get(*pos) {
+            if b == b',' || b == b'}' || b == b']' || b.is_ascii_whitespace() {
+                break;
+            }
+            *pos += 1;
+        }
+        &raw[start..*pos]
+    };
+    if bytes.is_empty() {
+        return None;
+    }
+    parse_i64_bytes(bytes)
+}
+
 fn parse_i64_bytes(raw: &[u8]) -> Option<i64> {
     match raw.first().copied() {
         Some(b'+') => atoi_simd::parse::<i64>(&raw[1..]).ok(),
@@ -2751,6 +2814,20 @@ mod tests {
             "b":[["25.0","100"]],"a":[["25.1","50"]]}"#;
 
         assert_eq!(parse_event_time_ms_raw(raw), Some(1_700_000_000_001));
+    }
+
+    #[test]
+    fn parses_event_time_from_combined_stream_without_skipping_data() {
+        let raw = br#"{"stream":"btcusdt@depth@0ms","data":{"e":"depthUpdate","E":1700000000002,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}}"#;
+
+        assert_eq!(parse_event_time_ms_raw(raw), Some(1_700_000_000_002));
+    }
+
+    #[test]
+    fn raw_event_time_rejects_escaped_key() {
+        let raw = br#"{"e":"depthUpdate","\u0045":1700000000001,"s":"BTCUSDT"}"#;
+        assert_eq!(parse_event_time_ms_raw(raw), None);
     }
 
     #[test]
