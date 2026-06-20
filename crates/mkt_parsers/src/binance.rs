@@ -932,15 +932,29 @@ pub fn parse_derivatives_raw_borrowed<'a>(
     mut emit: impl FnMut(RawDerivative<'a>) -> Option<()>,
 ) -> Option<()> {
     let mut scanner = JsonObjectScanner::new(raw);
+    scanner.skip_ws();
+    if scanner.peek_byte() == Some(b'[') {
+        return parse_derivative_value_at(&mut scanner, &mut emit);
+    }
+    let Some(key) = scanner.next_key() else {
+        return None;
+    };
+    if key == b"data" {
+        return parse_derivative_value_at(&mut scanner, &mut emit);
+    }
+    if key != b"stream" {
+        let mut scanner = JsonObjectScanner::new(raw);
+        return parse_derivative_value_at(&mut scanner, &mut emit);
+    }
+    scanner.skip_value()?;
+
     while let Some(key) = scanner.next_key() {
         if key == b"data" {
             return parse_derivative_value_at(&mut scanner, &mut emit);
         }
         scanner.skip_value()?;
     }
-
-    let mut scanner = JsonObjectScanner::new(raw);
-    parse_derivative_value_at(&mut scanner, &mut emit)
+    None
 }
 
 pub fn parse_sbe_bbo(msg: &[u8]) -> Option<Bbo> {
