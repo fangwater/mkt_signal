@@ -959,7 +959,6 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             }
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = ArbOpenStrategy::new(strategy_id);
-            let log_symbol = symbol.clone();
             strategy.handle_arb_open_view_with_symbol(
                 open_ctx,
                 symbol,
@@ -972,6 +971,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 get_timestamp_us().saturating_sub(handle_start_us),
             );
             if strategy.is_active() {
+                let log_symbol = strategy.open_state().open_symbol.as_str();
                 if log::log_enabled!(log::Level::Debug) {
                     let from_key = String::from_utf8_lossy(&strategy.open_state().from_key);
                     debug!(
@@ -993,6 +993,12 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 );
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
             } else {
+                let log_symbol = strategy.open_state().open_symbol.as_str();
+                let log_symbol = if log_symbol.is_empty() {
+                    "-"
+                } else {
+                    log_symbol
+                };
                 let reason = strategy
                     .open_strategy_inactive_reason()
                     .unwrap_or("unknown");
@@ -1051,7 +1057,7 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
 
     let strategy_id = StrategyManager::generate_strategy_id();
     let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol.clone());
+    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol);
     if strategy.is_active() {
         debug!("MMOpen: strategy activated id={}", strategy_id);
         strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1240,7 +1246,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     }
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = ArbOpenStrategy::new(strategy_id);
-                    let log_symbol = symbol.clone();
                     strategy.handle_arb_open_ctx_with_symbol(
                         open_ctx,
                         symbol,
@@ -1253,6 +1258,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         get_timestamp_us().saturating_sub(handle_start_us),
                     );
                     if strategy.is_active() {
+                        let log_symbol = strategy.open_state().open_symbol.as_str();
                         // hedge_timeout 已不再做 close_ts 延迟（强制 0），原本根据这个字段
                         // 推断 MM/MT 的标签也就失效，去掉。
                         if log::log_enabled!(log::Level::Debug) {
@@ -1276,6 +1282,12 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                         );
                         strategy_mgr.borrow_mut().insert(Box::new(strategy));
                     } else {
+                        let log_symbol = strategy.open_state().open_symbol.as_str();
+                        let log_symbol = if log_symbol.is_empty() {
+                            "-"
+                        } else {
+                            log_symbol
+                        };
                         let reason = strategy
                             .open_strategy_inactive_reason()
                             .unwrap_or("unknown");
@@ -1726,7 +1738,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_mm_open_view_with_symbol(open_ctx_view, symbol.clone());
+            strategy.handle_mm_open_view_with_symbol(open_ctx_view, symbol);
             if strategy.is_active() {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));
