@@ -167,6 +167,15 @@ pub enum RawDerivative<'a> {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RawLiquidationFields<'a> {
+    symbol: &'a str,
+    side: char,
+    amount: f64,
+    price: f64,
+    order_timestamp_us: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Book {
     pub symbol: String,
@@ -905,16 +914,16 @@ pub fn parse_derivatives_raw_borrowed<'a>(
     raw: &'a [u8],
     mut emit: impl FnMut(RawDerivative<'a>) -> Option<()>,
 ) -> Option<()> {
-    let data = combined_value(raw).unwrap_or(raw);
-    let data = trim_ascii(data);
-    if data.first() == Some(&b'[') {
-        for item in JsonArrayObjectIter::new(data) {
-            emit(parse_derivative_object_raw(item?)?)?;
+    let mut scanner = JsonObjectScanner::new(raw);
+    while let Some(key) = scanner.next_key() {
+        if key == b"data" {
+            return parse_derivative_value_at(&mut scanner, &mut emit);
         }
-        return Some(());
+        scanner.skip_value()?;
     }
-    emit(parse_derivative_object_raw(data)?)?;
-    Some(())
+
+    let mut scanner = JsonObjectScanner::new(raw);
+    parse_derivative_value_at(&mut scanner, &mut emit)
 }
 
 pub fn parse_sbe_bbo(msg: &[u8]) -> Option<Bbo> {
@@ -1234,8 +1243,44 @@ fn parse_kline_object_raw<'a>(raw: &'a [u8], symbol: &'a str) -> Option<RawKline
     })
 }
 
-fn parse_derivative_object_raw(raw: &[u8]) -> Option<RawDerivative<'_>> {
-    let mut scanner = JsonObjectScanner::new(raw);
+fn parse_derivative_value_at<'a>(
+    scanner: &mut JsonObjectScanner<'a>,
+    emit: &mut impl FnMut(RawDerivative<'a>) -> Option<()>,
+) -> Option<()> {
+    scanner.skip_ws();
+    match scanner.peek_byte()? {
+        b'[' => {
+            scanner.start_array()?;
+            loop {
+                scanner.skip_ws();
+                match scanner.peek_byte()? {
+                    b']' => {
+                        scanner.pos += 1;
+                        return Some(());
+                    }
+                    b',' => {
+                        scanner.pos += 1;
+                    }
+                    b'{' => {
+                        let derivative = parse_derivative_object_scanner(scanner)?;
+                        emit(derivative)?;
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        b'{' => {
+            let derivative = parse_derivative_object_scanner(scanner)?;
+            emit(derivative)?;
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn parse_derivative_object_scanner<'a>(
+    scanner: &mut JsonObjectScanner<'a>,
+) -> Option<RawDerivative<'a>> {
     let mut event = None;
     let mut symbol = None;
     let mut timestamp_us = None;
@@ -1243,19 +1288,19 @@ fn parse_derivative_object_raw(raw: &[u8]) -> Option<RawDerivative<'_>> {
     let mut index_price = None;
     let mut funding_rate = None;
     let mut next_funding_time_us = None;
-    let mut order = None;
+    let mut liquidation: Option<RawLiquidationFields<'a>> = None;
 
-    while let Some((key, value)) = scanner.next_field() {
+    while let Some(key) = scanner.next_key() {
         match key {
-            b"e" => event = Some(value.string_bytes()?),
-            b"E" => timestamp_us = Some(ms_to_us(value.i64()?)),
-            b"s" => symbol = Some(value.string_str()?),
-            b"p" => mark_price = Some(value.f64()?),
-            b"i" => index_price = Some(value.f64()?),
-            b"r" => funding_rate = Some(value.f64()?),
-            b"T" => next_funding_time_us = Some(ms_to_us(value.i64()?)),
-            b"o" => order = Some(value.object_bytes()?),
-            _ => {}
+            b"e" => event = Some(scanner.take_value()?.string_bytes()?),
+            b"E" => timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
+            b"s" => symbol = Some(scanner.take_value()?.string_str()?),
+            b"p" => mark_price = Some(scanner.take_value()?.f64()?),
+            b"i" => index_price = Some(scanner.take_value()?.f64()?),
+            b"r" => funding_rate = Some(scanner.take_value()?.f64()?),
+            b"T" => next_funding_time_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
+            b"o" => liquidation = Some(parse_liquidation_object_scanner(scanner)?),
+            _ => scanner.skip_value()?,
         }
     }
 
@@ -1268,47 +1313,58 @@ fn parse_derivative_object_raw(raw: &[u8]) -> Option<RawDerivative<'_>> {
             next_funding_time_us,
             timestamp_us: timestamp_us.unwrap_or(0),
         }),
-        b"forceOrder" => parse_liquidation_object_raw(order?, timestamp_us.unwrap_or(0)),
+        b"forceOrder" => {
+            let liquidation = liquidation?;
+            let out = RawDerivative::Liquidation {
+                symbol: liquidation.symbol,
+                side: liquidation.side,
+                amount: liquidation.amount,
+                price: liquidation.price,
+                timestamp_us: liquidation
+                    .order_timestamp_us
+                    .unwrap_or_else(|| timestamp_us.unwrap_or(0)),
+            };
+            Some(out)
+        }
         _ => None,
     }
 }
 
-fn parse_liquidation_object_raw(raw: &[u8], event_timestamp_us: i64) -> Option<RawDerivative<'_>> {
-    let mut scanner = JsonObjectScanner::new(raw);
+fn parse_liquidation_object_scanner<'a>(
+    scanner: &mut JsonObjectScanner<'a>,
+) -> Option<RawLiquidationFields<'a>> {
     let mut symbol = None;
     let mut side = None;
     let mut amount = None;
     let mut price = None;
-    let mut timestamp_us = event_timestamp_us;
+    let mut order_timestamp_us = None;
 
-    while let Some((key, value)) = scanner.next_field() {
+    while let Some(key) = scanner.next_key() {
         match key {
-            b"s" => symbol = Some(value.string_str()?),
+            b"s" => symbol = Some(scanner.take_value()?.string_str()?),
             b"S" => {
-                side = Some(match value.string_bytes()? {
+                side = Some(match scanner.take_value()?.string_bytes()? {
                     b"BUY" => 'B',
                     b"SELL" => 'S',
                     _ => return None,
                 })
             }
-            b"z" => amount = Some(value.f64()?),
-            b"ap" => price = Some(value.f64()?),
-            b"T" => timestamp_us = ms_to_us(value.i64()?),
-            _ => {}
+            b"z" => amount = Some(scanner.take_value()?.f64()?),
+            b"ap" => price = Some(scanner.take_value()?.f64()?),
+            b"T" => order_timestamp_us = Some(ms_to_us(scanner.take_value()?.i64()?)),
+            _ => scanner.skip_value()?,
         }
     }
 
-    let out = RawDerivative::Liquidation {
+    let out = RawLiquidationFields {
         symbol: symbol?,
         side: side?,
         amount: amount?,
         price: price?,
-        timestamp_us,
+        order_timestamp_us,
     };
-    if let RawDerivative::Liquidation { amount, price, .. } = out {
-        if amount <= 0.0 || price <= 0.0 {
-            return None;
-        }
+    if out.amount <= 0.0 || out.price <= 0.0 {
+        return None;
     }
     Some(out)
 }
@@ -1838,69 +1894,6 @@ struct JsonObjectScanner<'a> {
     pos: usize,
 }
 
-struct JsonArrayObjectIter<'a> {
-    raw: &'a [u8],
-    pos: usize,
-    done: bool,
-}
-
-impl<'a> JsonArrayObjectIter<'a> {
-    fn new(raw: &'a [u8]) -> Self {
-        Self {
-            raw: trim_ascii(raw),
-            pos: 0,
-            done: false,
-        }
-    }
-}
-
-impl<'a> Iterator for JsonArrayObjectIter<'a> {
-    type Item = Option<&'a [u8]>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        skip_ws_at(self.raw, &mut self.pos);
-        if self.pos == 0 {
-            if self.raw.get(self.pos) != Some(&b'[') {
-                self.done = true;
-                return Some(None);
-            }
-            self.pos += 1;
-        }
-
-        loop {
-            skip_ws_at(self.raw, &mut self.pos);
-            match self.raw.get(self.pos).copied() {
-                Some(b']') => {
-                    self.pos += 1;
-                    self.done = true;
-                    return None;
-                }
-                Some(b',') => self.pos += 1,
-                Some(b'{') => break,
-                _ => {
-                    self.done = true;
-                    return Some(None);
-                }
-            }
-        }
-
-        let start = self.pos;
-        let mut scanner = JsonObjectScanner {
-            raw: self.raw,
-            pos: self.pos,
-        };
-        if scanner.skip_nested_value().is_none() {
-            self.done = true;
-            return Some(None);
-        }
-        self.pos = scanner.pos;
-        Some(Some(&self.raw[start..self.pos]))
-    }
-}
-
 impl<'a> JsonObjectScanner<'a> {
     fn new(raw: &'a [u8]) -> Self {
         Self { raw, pos: 0 }
@@ -1930,6 +1923,18 @@ impl<'a> JsonObjectScanner<'a> {
 
     fn value_starts_object(&self) -> bool {
         self.raw.get(self.pos) == Some(&b'{')
+    }
+
+    fn peek_byte(&self) -> Option<u8> {
+        self.raw.get(self.pos).copied()
+    }
+
+    fn start_array(&mut self) -> Option<()> {
+        if self.raw.get(self.pos) != Some(&b'[') {
+            return None;
+        }
+        self.pos += 1;
+        Some(())
     }
 
     fn scanner_at_value(&self) -> JsonObjectScanner<'a> {
@@ -2164,6 +2169,14 @@ mod tests {
         parse_incremental_raw_view, parse_kline_raw_borrowed, parse_trade_raw,
         parse_trade_raw_borrowed, raw_level_at, RawBookParse, RawDerivative, RAW_DEPTH_LEVEL_CAP,
     };
+
+    fn raw_derivative_symbol(derivative: RawDerivative<'_>) -> &str {
+        match derivative {
+            RawDerivative::MarkPrice { symbol, .. } | RawDerivative::Liquidation { symbol, .. } => {
+                symbol
+            }
+        }
+    }
 
     #[test]
     fn parses_i64_from_ascii_bytes() {
@@ -2466,6 +2479,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_direct_mark_price_derivative_without_data_wrapper() {
+        let raw = br#"{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000}"#;
+        let mut out = Vec::new();
+
+        parse_derivatives_raw_borrowed(raw, |derivative| {
+            out.push(derivative);
+            Some(())
+        })
+        .expect("raw mark price");
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(raw_derivative_symbol(out[0]), "BTCUSDT");
+    }
+
+    #[test]
     fn parses_mark_price_array_without_value_tree() {
         let raw = br#"{"data":[
             {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
@@ -2515,6 +2543,31 @@ mod tests {
                 amount: 10.0,
                 price: 25.2,
                 timestamp_us: 1_700_000_000_000_000,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_liquidation_with_fields_after_order() {
+        let raw = br#"{"data":{"e":"forceOrder",
+            "o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2"},
+            "E":1700000000001}}"#;
+        let mut out = Vec::new();
+
+        parse_derivatives_raw_borrowed(raw, |derivative| {
+            out.push(derivative);
+            Some(())
+        })
+        .expect("raw liquidation");
+
+        assert_eq!(
+            out,
+            vec![RawDerivative::Liquidation {
+                symbol: "BTCUSDT",
+                side: 'S',
+                amount: 10.0,
+                price: 25.2,
+                timestamp_us: 1_700_000_000_001_000,
             }]
         );
     }
