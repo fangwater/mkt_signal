@@ -267,6 +267,29 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     Some(out)
 }
 
+pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let book = parse_incremental_raw_borrowed(raw)?;
+    let bid = book.bids.as_slice().first()?;
+    let ask = book.asks.as_slice().first()?;
+    let out = RawBbo {
+        symbol: book.symbol,
+        timestamp_us: book.timestamp_us,
+        seq_id: book.seq_id,
+        bid_price: bid.price,
+        bid_amount: bid.amount,
+        ask_price: ask.price,
+        ask_amount: ask.amount,
+    };
+    if out.bid_price <= 0.0
+        || out.bid_amount <= 0.0
+        || out.ask_price <= 0.0
+        || out.ask_amount <= 0.0
+    {
+        return None;
+    }
+    Some(out)
+}
+
 pub fn parse_trade_json(value: &Value) -> Option<Trade> {
     let payload = payload(value);
     if payload.get("e").and_then(|v| v.as_str()) != Some("trade") {
@@ -1284,8 +1307,8 @@ fn read_group_levels(
 mod tests {
     use super::{
         parse_book_ticker_bbo_raw, parse_book_ticker_bbo_raw_borrowed,
-        parse_incremental_raw_borrowed, parse_trade_raw, parse_trade_raw_borrowed,
-        RAW_DEPTH_LEVEL_CAP,
+        parse_depth_bbo_raw_borrowed, parse_incremental_raw_borrowed, parse_trade_raw,
+        parse_trade_raw_borrowed, RAW_DEPTH_LEVEL_CAP,
     };
 
     #[test]
@@ -1326,6 +1349,31 @@ mod tests {
     fn raw_book_ticker_rejects_depth_shape() {
         let raw = br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":[["25","1"]],"a":[["25.1","1"]]}}"#;
         assert!(parse_book_ticker_bbo_raw(raw).is_none());
+    }
+
+    #[test]
+    fn parses_depth_top_bbo_without_value_tree() {
+        let raw = br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,
+            "b":[["25.0","1"],["24.9","2"]],"a":[["25.1","3"],["25.2","4"]]}}"#;
+
+        let bbo = parse_depth_bbo_raw_borrowed(raw).expect("depth top bbo");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(bbo.seq_id, 2);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
+        assert!((bbo.bid_amount - 1.0).abs() < 1e-9);
+        assert!((bbo.ask_price - 25.1).abs() < 1e-9);
+        assert!((bbo.ask_amount - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_depth_top_bbo_rejects_zero_top_levels() {
+        let raw =
+            br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,
+            "b":[["25.0","0"]],"a":[["25.1","3"]]}}"#;
+
+        assert!(parse_depth_bbo_raw_borrowed(raw).is_none());
     }
 
     #[test]
