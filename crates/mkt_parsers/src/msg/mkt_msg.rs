@@ -189,6 +189,15 @@ pub fn inc_msg_bytes_borrowed(
     buf.freeze()
 }
 
+#[inline]
+pub fn signal_msg_bytes(source: SignalSource, timestamp: i64) -> Bytes {
+    let mut buf = BytesMut::with_capacity(16);
+    buf.put_u32_le(MktMsgType::TimeSignal as u32);
+    buf.put_u32_le(source as u32);
+    buf.put_i64_le(timestamp);
+    buf.freeze()
+}
+
 #[allow(dead_code)]
 pub struct MktMsg {
     pub msg_type: MktMsgType,
@@ -833,11 +842,7 @@ impl SignalMsg {
     }
     /// 将消息转换为字节数组
     pub fn to_bytes(&self) -> Bytes {
-        let mut buf = BytesMut::with_capacity(16);
-        buf.put_u32_le(self.msg_type as u32);
-        buf.put_u32_le(self.source as u32);
-        buf.put_i64_le(self.timestamp);
-        buf.freeze()
+        signal_msg_bytes(self.source, self.timestamp)
     }
 }
 
@@ -1578,8 +1583,7 @@ mod tests {
         );
         assert_eq!(
             kline_msg_bytes_borrowed("BTCUSDT", 1.0, 2.0, 0.5, 1.5, 99.0, 14),
-            KlineMsg::create("BTCUSDT".to_string(), 1.0, 2.0, 0.5, 1.5, 99.0, 14)
-                .to_bytes()
+            KlineMsg::create("BTCUSDT".to_string(), 1.0, 2.0, 0.5, 1.5, 99.0, 14).to_bytes()
         );
         assert_eq!(
             mark_price_msg_bytes_borrowed("BTCUSDT", 25.0, 15),
@@ -1596,6 +1600,10 @@ mod tests {
         assert_eq!(
             liquidation_msg_bytes_borrowed("BTCUSDT", 'S', 2.0, 3.0, 19),
             LiquidationMsg::create("BTCUSDT".to_string(), 'S', 2.0, 3.0, 19).to_bytes()
+        );
+        assert_eq!(
+            signal_msg_bytes(SignalSource::Tcp, 23),
+            SignalMsg::create(SignalSource::Tcp, 23).to_bytes()
         );
 
         let mut inc = IncMsg::create("BTCUSDT".to_string(), 20, 21, 22, true, 1, 2);

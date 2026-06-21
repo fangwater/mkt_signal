@@ -4,9 +4,9 @@ use mkt_parsers::binance as binance_codec;
 use mkt_parsers::msg::mkt_msg::{
     ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed, inc_msg_bytes_borrowed,
     index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed, liquidation_msg_bytes_borrowed,
-    mark_price_msg_bytes_borrowed, trade_msg_bytes_borrowed, AskBidSpreadMsg, FundingRateMsg,
-    IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg, SignalMsg, SignalSource,
-    TradeMsg,
+    mark_price_msg_bytes_borrowed, signal_msg_bytes, trade_msg_bytes_borrowed, AskBidSpreadMsg,
+    FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg,
+    SignalSource, TradeMsg,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -41,8 +41,7 @@ impl BinanceSignalParser {
 impl Parser for BinanceSignalParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
         if let Some(timestamp) = binance_codec::parse_event_time_ms_raw(&msg) {
-            let signal_msg = SignalMsg::create(self.source, timestamp);
-            return if tx.send(signal_msg.to_bytes()).is_ok() {
+            return if tx.send(signal_msg_bytes(self.source, timestamp)).is_ok() {
                 1
             } else {
                 0
@@ -57,12 +56,8 @@ impl Parser for BinanceSignalParser {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // Extract Binance timestamp field "E"
                 if let Some(timestamp) = json_value.get("E").and_then(|v| v.as_i64()) {
-                    // Create signal message
-                    let signal_msg = SignalMsg::create(self.source, timestamp);
-                    let signal_bytes = signal_msg.to_bytes();
-
                     // Send signal
-                    if tx.send(signal_bytes).is_err() {
+                    if tx.send(signal_msg_bytes(self.source, timestamp)).is_err() {
                         return 0;
                     }
 
