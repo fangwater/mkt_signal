@@ -1366,6 +1366,9 @@ pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
     if let Some(kline) = parse_combined_kline_fast(raw) {
         return Some(kline);
     }
+    if let Some(kline) = parse_kline_object_fast(raw) {
+        return Some(kline);
+    }
 
     let mut payload = raw_payload_object(raw);
     let mut symbol = None;
@@ -1428,6 +1431,16 @@ fn parse_combined_kline_fast(raw: &[u8]) -> Option<RawKline<'_>> {
     Some(kline)
 }
 
+fn parse_kline_object_fast(raw: &[u8]) -> Option<RawKline<'_>> {
+    let mut pos = 0usize;
+    let kline = parse_kline_payload_fast(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(kline)
+}
+
 fn parse_kline_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawKline<'a>> {
     expect_raw_byte(raw, pos, b'{')?;
     consume_raw_literal(raw, pos, br#""e""#)?;
@@ -1473,11 +1486,41 @@ fn parse_kline_body_fast(raw: &[u8], pos: &mut usize) -> Option<RawKlineFields> 
         return None;
     }
 
+    loop {
+        if consume_raw_literal_if(raw, pos, br#""T""#)
+            || consume_raw_literal_if(raw, pos, br#""f""#)
+            || consume_raw_literal_if(raw, pos, br#""L""#)
+            || consume_raw_literal_if(raw, pos, br#""n""#)
+        {
+            expect_raw_byte(raw, pos, b':')?;
+            parse_raw_i64_value(raw, pos)?;
+        } else if consume_raw_literal_if(raw, pos, br#""s""#)
+            || consume_raw_literal_if(raw, pos, br#""i""#)
+        {
+            expect_raw_byte(raw, pos, b':')?;
+            take_unescaped_quoted_bytes(raw, pos)?;
+        } else {
+            break;
+        }
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+    }
+
     consume_raw_literal(raw, pos, br#""o""#)?;
     expect_raw_byte(raw, pos, b':')?;
     let open_price = parse_raw_number(raw, pos)?;
     if !consume_raw_field_separator(raw, pos)? {
         return None;
+    }
+
+    let mut close_price = None;
+    if consume_raw_literal_if(raw, pos, br#""c""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        close_price = Some(parse_raw_number(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
     }
 
     consume_raw_literal(raw, pos, br#""h""#)?;
@@ -1494,11 +1537,31 @@ fn parse_kline_body_fast(raw: &[u8], pos: &mut usize) -> Option<RawKlineFields> 
         return None;
     }
 
-    consume_raw_literal(raw, pos, br#""c""#)?;
-    expect_raw_byte(raw, pos, b':')?;
-    let close_price = parse_raw_number(raw, pos)?;
-    if !consume_raw_field_separator(raw, pos)? {
-        return None;
+    let close_price = if let Some(close_price) = close_price {
+        close_price
+    } else {
+        consume_raw_literal(raw, pos, br#""c""#)?;
+        expect_raw_byte(raw, pos, b':')?;
+        let close_price = parse_raw_number(raw, pos)?;
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        close_price
+    };
+
+    loop {
+        if consume_raw_literal_if(raw, pos, br#""q""#)
+            || consume_raw_literal_if(raw, pos, br#""V""#)
+            || consume_raw_literal_if(raw, pos, br#""Q""#)
+        {
+            expect_raw_byte(raw, pos, b':')?;
+            parse_raw_number(raw, pos)?;
+        } else {
+            break;
+        }
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
     }
 
     consume_raw_literal(raw, pos, br#""v""#)?;
@@ -4051,6 +4114,31 @@ mod tests {
         assert!((kline.open_price - 25.0).abs() < 1e-9);
         assert!((kline.high_price - 26.0).abs() < 1e-9);
         assert!((kline.low_price - 24.5).abs() < 1e-9);
+        assert!((kline.close_price - 25.5).abs() < 1e-9);
+        assert!((kline.volume - 123.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kline_fast_path_parses_binance_common_body_shape() {
+        let raw = br#"{"stream":"btcusdt@kline_1m","data":{"e":"kline","E":1700000000001,"s":"BTCUSDT","k":{"t":1700000000000,"T":1700000059999,"s":"BTCUSDT","i":"1m","f":100,"L":200,"o":"25.0","c":"25.5","h":"26.0","l":"24.5","v":"123.4","n":101,"x":true,"q":"3148.2","V":"12.3","Q":"315.0","B":"0"}}}"#;
+        let kline = super::parse_combined_kline_fast(raw).expect("fast kline");
+
+        assert_eq!(kline.symbol, "BTCUSDT");
+        assert_eq!(kline.timestamp, 1_700_000_000_000);
+        assert!((kline.open_price - 25.0).abs() < 1e-9);
+        assert!((kline.high_price - 26.0).abs() < 1e-9);
+        assert!((kline.low_price - 24.5).abs() < 1e-9);
+        assert!((kline.close_price - 25.5).abs() < 1e-9);
+        assert!((kline.volume - 123.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kline_fast_path_parses_raw_object_shape() {
+        let raw = br#"{"e":"kline","E":1700000000001,"s":"BTCUSDT","k":{"t":1700000000000,"T":1700000059999,"s":"BTCUSDT","i":"1m","f":100,"L":200,"o":"25.0","c":"25.5","h":"26.0","l":"24.5","v":"123.4","n":101,"x":true,"q":"3148.2","V":"12.3","Q":"315.0","B":"0"}}"#;
+        let kline = super::parse_kline_object_fast(raw).expect("fast kline");
+
+        assert_eq!(kline.symbol, "BTCUSDT");
+        assert_eq!(kline.timestamp, 1_700_000_000_000);
         assert!((kline.close_price - 25.5).abs() < 1e-9);
         assert!((kline.volume - 123.4).abs() < 1e-9);
     }
