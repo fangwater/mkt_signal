@@ -347,10 +347,10 @@ mod tests {
 
     #[test]
     fn keepalive_filter_does_not_drop_binance_market_data() {
-        let agg_trade = r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1710000000000,"s":"BTCUSDT","a":1,"p":"68000.1","q":"0.02","T":1710000000000,"m":true}}"#;
+        let trade = r#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1710000000000,"s":"BTCUSDT","t":1,"p":"68000.1","q":"0.02","T":1710000000000,"m":true}}"#;
         let book_ticker = r#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":123,"s":"BTCUSDT","b":"68000.1","B":"1.2","a":"68000.2","A":"0.8"}}"#;
 
-        assert!(!is_keepalive_response(agg_trade));
+        assert!(!is_keepalive_response(trade));
         assert!(!is_keepalive_response(book_ticker));
     }
 
