@@ -1278,6 +1278,14 @@ fn parse_trade_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawTra
             finish_raw_object(raw, pos)?;
             break value;
         }
+        if consume_raw_literal_if(raw, pos, br#""X""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            take_unescaped_quoted_bytes(raw, pos)?;
+            if !consume_raw_field_separator(raw, pos)? {
+                return None;
+            }
+            continue;
+        }
         take_unescaped_quoted_bytes(raw, pos)?;
         expect_raw_byte(raw, pos, b':')?;
         skip_raw_json_value(raw, pos)?;
@@ -4030,6 +4038,18 @@ mod tests {
         assert_eq!(trade.symbol, "BTCUSDT");
         assert_eq!(trade.trade_id, 1001);
         assert_eq!(trade.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(trade.side, 'B');
+        assert!((trade.price - 25.0).abs() < 1e-9);
+        assert!((trade.amount - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trade_fast_path_skips_futures_match_type() {
+        let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","X":"MARKET","m":false}}"#;
+        let trade = super::parse_combined_trade_fast(raw).expect("fast trade");
+
+        assert_eq!(trade.symbol, "BTCUSDT");
+        assert_eq!(trade.trade_id, 1001);
         assert_eq!(trade.side, 'B');
         assert!((trade.price - 25.0).abs() < 1e-9);
         assert!((trade.amount - 100.0).abs() < 1e-9);
