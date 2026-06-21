@@ -812,6 +812,113 @@ fn parse_depth_bbo_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<Ra
     Some(out)
 }
 
+fn parse_combined_depth_update_fields_fast(raw: &[u8]) -> Option<RawBookFields<'_>> {
+    let mut pos = 0usize;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""stream""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
+    if !stream.contains("@depth") {
+        return None;
+    }
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+    consume_raw_literal(raw, &mut pos, br#""data""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let fields = parse_depth_update_payload_fields_fast(raw, &mut pos)?;
+    finish_raw_object(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(fields)
+}
+
+fn parse_depth_update_payload_fields_fast<'a>(
+    raw: &'a [u8],
+    pos: &mut usize,
+) -> Option<RawBookFields<'a>> {
+    expect_raw_byte(raw, pos, b'{')?;
+    consume_raw_literal(raw, pos, br#""e""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    consume_raw_literal(raw, pos, br#""depthUpdate""#)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    let timestamp_us = if consume_raw_literal_if(raw, pos, br#""E""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let event_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        if consume_raw_literal_if(raw, pos, br#""T""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            parse_raw_i64_value(raw, pos)?;
+            if !consume_raw_field_separator(raw, pos)? {
+                return None;
+            }
+        }
+        event_time_us
+    } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let trade_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        trade_time_us
+    } else {
+        return None;
+    };
+
+    consume_raw_literal(raw, pos, br#""s""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let symbol = std::str::from_utf8(take_unescaped_quoted_bytes(raw, pos)?).ok()?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""U""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let first_update_id = parse_raw_i64_value(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""u""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let final_update_id = parse_raw_i64_value(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""b""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let bids_raw = take_raw_json_slice(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""a""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let asks_raw = take_raw_json_slice(raw, pos)?;
+    finish_raw_object(raw, pos)?;
+
+    Some(RawBookFields {
+        symbol,
+        timestamp_us,
+        seq_id: final_update_id,
+        prev_seq_id: first_update_id.saturating_sub(1),
+        first_update_id,
+        final_update_id,
+        gap_check: false,
+        is_snapshot: false,
+        bids_raw,
+        asks_raw,
+    })
+}
+
 pub fn parse_trade_json(value: &Value) -> Option<Trade> {
     let payload = payload(value);
     if payload.get("e").and_then(|v| v.as_str()) != Some("trade") {
@@ -1113,6 +1220,13 @@ fn skip_raw_json_value(raw: &[u8], pos: &mut usize) -> Option<()> {
     Some(())
 }
 
+fn take_raw_json_slice<'a>(raw: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    skip_ws_at(raw, pos);
+    let start = *pos;
+    skip_raw_json_value(raw, pos)?;
+    Some(&raw[start..*pos])
+}
+
 fn finish_raw_object(raw: &[u8], pos: &mut usize) -> Option<()> {
     let mut scanner = JsonObjectScanner { raw, pos: *pos };
     scanner.skip_rest_of_object()?;
@@ -1277,6 +1391,10 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
 }
 
 fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
+    if let Some(fields) = parse_combined_depth_update_fields_fast(raw) {
+        return Some(fields);
+    }
+
     let mut payload = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
@@ -3281,6 +3399,32 @@ mod tests {
         };
         assert_eq!(routed.symbol, "BTCUSDT");
         assert_eq!(routed.bids.len(), 2);
+    }
+
+    #[test]
+    fn depth_update_fast_path_returns_raw_level_slices() {
+        let raw = br#"{"stream":"btcusdt@depth@0ms","data":{"e":"depthUpdate","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","U":101,"u":103,"b":[["25.0","100"],["24.9","0"]],"a":[["25.1","50"]]}}"#;
+        let fields =
+            super::parse_combined_depth_update_fields_fast(raw).expect("fast depth update");
+
+        assert_eq!(fields.symbol, "BTCUSDT");
+        assert_eq!(fields.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(fields.seq_id, 103);
+        assert_eq!(fields.prev_seq_id, 100);
+        assert_eq!(fields.first_update_id, 101);
+        assert_eq!(fields.final_update_id, 103);
+        assert!(!fields.is_snapshot);
+        assert_eq!(raw_level_at(fields.bids_raw, 1).unwrap().amount, 0.0);
+        assert_eq!(raw_level_at(fields.asks_raw, 0).unwrap().price, 25.1);
+    }
+
+    #[test]
+    fn depth_update_fast_path_uses_trade_time_fallback() {
+        let raw = br#"{"stream":"btcusdt@depth@0ms","data":{"e":"depthUpdate","T":1700000000000,"s":"BTCUSDT","U":101,"u":103,"b":[["25.0","100"]],"a":[["25.1","50"]]}}"#;
+        let fields =
+            super::parse_combined_depth_update_fields_fast(raw).expect("fast depth update");
+
+        assert_eq!(fields.timestamp_us, 1_700_000_000_000_000);
     }
 
     #[test]
