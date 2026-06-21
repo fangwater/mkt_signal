@@ -4,7 +4,6 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
-use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
@@ -20,7 +19,6 @@ use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate, OrderSubmitSignalMeta};
 use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind};
 use rolling_common::arb_open_latency::record_arb_open_latency;
-use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::SignalType;
@@ -150,9 +148,9 @@ fn log_open_order_slow_trace(
 ///
 /// * 采用线程本地单例，通过 [`TradeEngHub::with`] 访问
 /// * 每个交易所对应独立的 `TradeEngChannel`（Iceoryx publisher + subscriber）
-/// * 可以在启动时显式注册多个交易所，也可以按需懒加载
+/// * 启动时显式注册交易所；发送路径只做固定槽位路由
 pub struct TradeEngHub {
-    channels: RefCell<FastHashMap<String, TradeEngChannel>>,
+    channels: RefCell<TradeEngChannels>,
     response_scratch: RefCell<Vec<TradeEngineResponseMessage>>,
     internal_open_terminate_enabled: bool,
 }
@@ -233,13 +231,7 @@ impl TradeEngHub {
         responses.clear();
         {
             let mut channels = self.channels.borrow_mut();
-            for channel in channels.values_mut() {
-                if responses.len() >= max_responses {
-                    break;
-                }
-                let remaining = max_responses.saturating_sub(responses.len());
-                channel.drain_trade_responses_into_limit(&mut responses, remaining);
-            }
+            channels.drain_trade_responses_into_limit(&mut responses, max_responses);
         }
         let any = !responses.is_empty();
         for response in responses.iter() {
@@ -433,7 +425,7 @@ impl TradeEngHub {
 
     fn new(internal_open_terminate_enabled: bool) -> Self {
         Self {
-            channels: RefCell::new(fast_hash_map()),
+            channels: RefCell::new(TradeEngChannels::new()),
             response_scratch: RefCell::new(Vec::with_capacity(
                 TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE,
             )),
@@ -442,17 +434,13 @@ impl TradeEngHub {
     }
 
     fn publish_to_exchange(&self, exchange: &str, bytes: &Bytes) -> Result<()> {
-        let key = Self::normalize_exchange(exchange);
-        {
-            let channels = self.channels.borrow();
-            if let Some(channel) = channels.get(key.as_ref()) {
-                return channel.publish_order_request(bytes);
-            }
-        }
-        self.ensure_exchange_key(key.as_ref())?;
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(key.as_ref()) else {
-            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        let Some(channel) = channels.get(slot) else {
+            return Err(anyhow!(
+                "TradeEngHub: exchange '{}' not registered",
+                slot.as_str()
+            ));
         };
         channel.publish_order_request(bytes)
     }
@@ -462,17 +450,13 @@ impl TradeEngHub {
         exchange: &str,
         request: &PreparedTradeRequest,
     ) -> Result<()> {
-        let key = Self::normalize_exchange(exchange);
-        {
-            let channels = self.channels.borrow();
-            if let Some(channel) = channels.get(key.as_ref()) {
-                return channel.publish_prepared_order_request(request);
-            }
-        }
-        self.ensure_exchange_key(key.as_ref())?;
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(key.as_ref()) else {
-            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        let Some(channel) = channels.get(slot) else {
+            return Err(anyhow!(
+                "TradeEngHub: exchange '{}' not registered",
+                slot.as_str()
+            ));
         };
         channel.publish_prepared_order_request(request)
     }
@@ -483,41 +467,148 @@ impl TradeEngHub {
         exchange: &str,
         trigger_ts: i64,
     ) -> Result<()> {
-        let key = Self::normalize_exchange(exchange);
-        self.ensure_exchange_key(key.as_ref())?;
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(key.as_ref()) else {
-            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        let Some(channel) = channels.get(slot) else {
+            return Err(anyhow!(
+                "TradeEngHub: exchange '{}' not registered",
+                slot.as_str()
+            ));
         };
         channel.publish_internal_open_terminate(client_order_id, trigger_ts)
     }
 
     fn ensure_exchange(&self, exchange: &str) -> Result<()> {
-        let key = Self::normalize_exchange(exchange);
-        self.ensure_exchange_key(key.as_ref())
-    }
-
-    fn ensure_exchange_key(&self, key: &str) -> Result<()> {
-        if self.channels.borrow().contains_key(key) {
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
+        if self.channels.borrow().get(slot).is_some() {
             return Ok(());
         }
 
+        let key = slot.as_str();
         info!(
             "TradeEngHub: registering trade engine channel for exchange '{}'",
             key
         );
         let channel = TradeEngChannel::new(key, self.internal_open_terminate_enabled)?;
-        self.channels.borrow_mut().insert(key.to_string(), channel);
+        self.channels.borrow_mut().set(slot, channel);
         Ok(())
     }
+}
 
-    fn normalize_exchange(exchange: &str) -> Cow<'_, str> {
-        let trimmed = exchange.trim();
-        if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
-            Cow::Borrowed(trimmed)
-        } else {
-            Cow::Owned(trimmed.to_ascii_lowercase())
+#[derive(Clone, Copy)]
+enum TradeEngExchangeSlot {
+    Binance,
+    Okex,
+    Bybit,
+    Bitget,
+    Gate,
+    Hyperliquid,
+    Aster,
+}
+
+impl TradeEngExchangeSlot {
+    fn parse(exchange: &str) -> Result<Self> {
+        match exchange.trim() {
+            "binance" => Ok(Self::Binance),
+            "okex" => Ok(Self::Okex),
+            "bybit" => Ok(Self::Bybit),
+            "bitget" => Ok(Self::Bitget),
+            "gate" => Ok(Self::Gate),
+            "hyperliquid" => Ok(Self::Hyperliquid),
+            "aster" => Ok(Self::Aster),
+            other => Err(anyhow!("TradeEngHub: unsupported exchange '{}'", other)),
         }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Binance => "binance",
+            Self::Okex => "okex",
+            Self::Bybit => "bybit",
+            Self::Bitget => "bitget",
+            Self::Gate => "gate",
+            Self::Hyperliquid => "hyperliquid",
+            Self::Aster => "aster",
+        }
+    }
+}
+
+struct TradeEngChannels {
+    binance: Option<TradeEngChannel>,
+    okex: Option<TradeEngChannel>,
+    bybit: Option<TradeEngChannel>,
+    bitget: Option<TradeEngChannel>,
+    gate: Option<TradeEngChannel>,
+    hyperliquid: Option<TradeEngChannel>,
+    aster: Option<TradeEngChannel>,
+}
+
+impl TradeEngChannels {
+    fn new() -> Self {
+        Self {
+            binance: None,
+            okex: None,
+            bybit: None,
+            bitget: None,
+            gate: None,
+            hyperliquid: None,
+            aster: None,
+        }
+    }
+
+    fn get(&self, slot: TradeEngExchangeSlot) -> Option<&TradeEngChannel> {
+        match slot {
+            TradeEngExchangeSlot::Binance => self.binance.as_ref(),
+            TradeEngExchangeSlot::Okex => self.okex.as_ref(),
+            TradeEngExchangeSlot::Bybit => self.bybit.as_ref(),
+            TradeEngExchangeSlot::Bitget => self.bitget.as_ref(),
+            TradeEngExchangeSlot::Gate => self.gate.as_ref(),
+            TradeEngExchangeSlot::Hyperliquid => self.hyperliquid.as_ref(),
+            TradeEngExchangeSlot::Aster => self.aster.as_ref(),
+        }
+    }
+
+    fn set(&mut self, slot: TradeEngExchangeSlot, channel: TradeEngChannel) {
+        match slot {
+            TradeEngExchangeSlot::Binance => self.binance = Some(channel),
+            TradeEngExchangeSlot::Okex => self.okex = Some(channel),
+            TradeEngExchangeSlot::Bybit => self.bybit = Some(channel),
+            TradeEngExchangeSlot::Bitget => self.bitget = Some(channel),
+            TradeEngExchangeSlot::Gate => self.gate = Some(channel),
+            TradeEngExchangeSlot::Hyperliquid => self.hyperliquid = Some(channel),
+            TradeEngExchangeSlot::Aster => self.aster = Some(channel),
+        }
+    }
+
+    fn drain_trade_responses_into_limit(
+        &mut self,
+        responses: &mut Vec<TradeEngineResponseMessage>,
+        max_responses: usize,
+    ) {
+        Self::drain_one(&mut self.binance, responses, max_responses);
+        Self::drain_one(&mut self.okex, responses, max_responses);
+        Self::drain_one(&mut self.bybit, responses, max_responses);
+        Self::drain_one(&mut self.bitget, responses, max_responses);
+        Self::drain_one(&mut self.gate, responses, max_responses);
+        Self::drain_one(&mut self.hyperliquid, responses, max_responses);
+        Self::drain_one(&mut self.aster, responses, max_responses);
+    }
+
+    fn drain_one(
+        channel: &mut Option<TradeEngChannel>,
+        responses: &mut Vec<TradeEngineResponseMessage>,
+        max_responses: usize,
+    ) {
+        if responses.len() >= max_responses {
+            return;
+        }
+        let Some(channel) = channel.as_mut() else {
+            return;
+        };
+        channel.drain_trade_responses_into_limit(
+            responses,
+            max_responses.saturating_sub(responses.len()),
+        );
     }
 }
 
