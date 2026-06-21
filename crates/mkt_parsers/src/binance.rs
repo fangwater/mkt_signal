@@ -1385,6 +1385,11 @@ fn take_raw_json_slice<'a>(raw: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
 }
 
 fn finish_raw_object(raw: &[u8], pos: &mut usize) -> Option<()> {
+    skip_ws_at(raw, pos);
+    if raw.get(*pos) == Some(&b'}') {
+        *pos += 1;
+        return Some(());
+    }
     let mut scanner = JsonObjectScanner { raw, pos: *pos };
     scanner.skip_rest_of_object()?;
     *pos = scanner.pos;
