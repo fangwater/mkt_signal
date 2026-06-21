@@ -292,6 +292,10 @@ pub fn parse_book_ticker_bbo_raw(raw: &[u8]) -> Option<Bbo> {
 }
 
 pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
+    if let Some(bbo) = parse_combined_book_ticker_fast(raw) {
+        return Some(bbo);
+    }
+
     let mut payload = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
@@ -382,6 +386,10 @@ enum RawBboKind {
 }
 
 pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
+    if let Some(bbo) = parse_combined_book_ticker_fast(raw) {
+        return Some(bbo);
+    }
+
     let mut payload = raw_payload_object(raw);
     let mut event_kind = None;
     let mut symbol = None;
@@ -576,6 +584,106 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
         bid_amount: bid.amount,
         ask_price: ask.price,
         ask_amount: ask.amount,
+    };
+    if out.bid_price <= 0.0
+        || out.bid_amount <= 0.0
+        || out.ask_price <= 0.0
+        || out.ask_amount <= 0.0
+    {
+        return None;
+    }
+    Some(out)
+}
+
+fn parse_combined_book_ticker_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let mut pos = 0usize;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""stream""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
+    if !stream.ends_with("@bookTicker") {
+        return None;
+    }
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+    consume_raw_literal(raw, &mut pos, br#""data""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let bbo = parse_book_ticker_payload_fast(raw, &mut pos)?;
+    finish_raw_object(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(bbo)
+}
+
+fn parse_book_ticker_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawBbo<'a>> {
+    expect_raw_byte(raw, pos, b'{')?;
+    consume_raw_literal(raw, pos, br#""e""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    consume_raw_literal(raw, pos, br#""bookTicker""#)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    if !consume_raw_literal_if(raw, pos, br#""E""#) {
+        return None;
+    }
+    expect_raw_byte(raw, pos, b':')?;
+    let timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""u""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let seq_id = parse_raw_i64_value(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""s""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let symbol = std::str::from_utf8(take_unescaped_quoted_bytes(raw, pos)?).ok()?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""b""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let bid_price = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""B""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let bid_amount = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""a""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let ask_price = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""A""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let ask_amount = parse_raw_number(raw, pos)?;
+    finish_raw_object(raw, pos)?;
+
+    let out = RawBbo {
+        symbol,
+        timestamp_us,
+        seq_id,
+        bid_price,
+        bid_amount,
+        ask_price,
+        ask_amount,
     };
     if out.bid_price <= 0.0
         || out.bid_amount <= 0.0
@@ -2815,6 +2923,26 @@ mod tests {
         assert_eq!(routed.symbol, "BTCUSDT");
         assert_eq!(routed.seq_id, 22345);
         assert!((routed.ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn book_ticker_fast_path_parses_combined_stream_shape() {
+        let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","E":1700000000001,"u":123,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50"}}"#;
+        let bbo = super::parse_combined_book_ticker_fast(raw).expect("fast book ticker");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 123);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
+        assert!((bbo.bid_amount - 100.0).abs() < 1e-9);
+        assert!((bbo.ask_price - 25.1).abs() < 1e-9);
+        assert!((bbo.ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn book_ticker_fast_path_rejects_non_book_ticker_stream() {
+        let raw = br#"{"stream":"btcusdt@trade","data":{"e":"bookTicker","u":123,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50"}}"#;
+        assert!(super::parse_combined_book_ticker_fast(raw).is_none());
     }
 
     #[test]
