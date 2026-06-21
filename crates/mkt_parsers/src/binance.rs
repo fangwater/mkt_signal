@@ -389,6 +389,9 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     if let Some(bbo) = parse_combined_book_ticker_fast(raw) {
         return Some(bbo);
     }
+    if let Some(bbo) = parse_combined_depth_bbo_fast(raw) {
+        return Some(bbo);
+    }
 
     let mut payload = raw_payload_object(raw);
     let mut event_kind = None;
@@ -510,6 +513,10 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 }
 
 pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
+    if let Some(bbo) = parse_combined_depth_bbo_fast(raw) {
+        return Some(bbo);
+    }
+
     let mut payload = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
@@ -684,6 +691,116 @@ fn parse_book_ticker_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<
         bid_amount,
         ask_price,
         ask_amount,
+    };
+    if out.bid_price <= 0.0
+        || out.bid_amount <= 0.0
+        || out.ask_price <= 0.0
+        || out.ask_amount <= 0.0
+    {
+        return None;
+    }
+    Some(out)
+}
+
+fn parse_combined_depth_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let mut pos = 0usize;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""stream""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
+    if !stream.contains("@depth") {
+        return None;
+    }
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+    consume_raw_literal(raw, &mut pos, br#""data""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let bbo = parse_depth_bbo_payload_fast(raw, &mut pos)?;
+    finish_raw_object(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(bbo)
+}
+
+fn parse_depth_bbo_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawBbo<'a>> {
+    expect_raw_byte(raw, pos, b'{')?;
+    consume_raw_literal(raw, pos, br#""e""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    consume_raw_literal(raw, pos, br#""depthUpdate""#)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    let timestamp_us = if consume_raw_literal_if(raw, pos, br#""E""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let event_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        if consume_raw_literal_if(raw, pos, br#""T""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            parse_raw_i64_value(raw, pos)?;
+            if !consume_raw_field_separator(raw, pos)? {
+                return None;
+            }
+        }
+        event_time_us
+    } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let trade_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        trade_time_us
+    } else {
+        return None;
+    };
+
+    consume_raw_literal(raw, pos, br#""s""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let symbol = std::str::from_utf8(take_unescaped_quoted_bytes(raw, pos)?).ok()?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    if consume_raw_literal_if(raw, pos, br#""U""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        parse_raw_i64_value(raw, pos)?;
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+    }
+
+    consume_raw_literal(raw, pos, br#""u""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let seq_id = parse_raw_i64_value(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""b""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let bid = parse_raw_top_level_at(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""a""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let ask = parse_raw_top_level_at(raw, pos)?;
+    finish_raw_object(raw, pos)?;
+
+    let out = RawBbo {
+        symbol,
+        timestamp_us,
+        seq_id,
+        bid_price: bid.price,
+        bid_amount: bid.amount,
+        ask_price: ask.price,
+        ask_amount: ask.amount,
     };
     if out.bid_price <= 0.0
         || out.bid_amount <= 0.0
@@ -2061,6 +2178,15 @@ fn parse_raw_top_level(raw: &[u8]) -> Option<Level> {
     }
 }
 
+fn parse_raw_top_level_at(raw: &[u8], pos: &mut usize) -> Option<Level> {
+    let start = *pos;
+    let mut scan = *pos;
+    skip_raw_json_value(raw, &mut scan)?;
+    let level = parse_raw_top_level(raw.get(start..scan)?)?;
+    *pos = scan;
+    Some(level)
+}
+
 fn raw_levels_count(raw: &[u8]) -> Option<usize> {
     let raw = trim_ascii(raw);
     if raw.first() != Some(&b'[') || raw.last() != Some(&b']') {
@@ -3014,6 +3140,26 @@ mod tests {
         assert_eq!(routed.symbol, "BTCUSDT");
         assert_eq!(routed.seq_id, 2);
         assert!((routed.bid_amount - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn depth_bbo_fast_path_parses_combined_stream_shape() {
+        let raw = br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,"b":[["25.0","1"],["24.9","2"]],"a":[["25.1","3"],["25.2","4"]]}}"#;
+        let bbo = super::parse_combined_depth_bbo_fast(raw).expect("fast depth bbo");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(bbo.seq_id, 2);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
+        assert!((bbo.bid_amount - 1.0).abs() < 1e-9);
+        assert!((bbo.ask_price - 25.1).abs() < 1e-9);
+        assert!((bbo.ask_amount - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn depth_bbo_fast_path_rejects_non_depth_stream() {
+        let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,"b":[["25.0","1"]],"a":[["25.1","3"]]}}"#;
+        assert!(super::parse_combined_depth_bbo_fast(raw).is_none());
     }
 
     #[test]
