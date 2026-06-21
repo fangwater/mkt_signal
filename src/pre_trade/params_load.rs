@@ -1,13 +1,15 @@
 use anyhow::Result;
 use log::{debug, info, warn};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use order_common::TradingVenue;
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_map_with_capacity, FastHashMap};
 use runtime_common::redis_client::{BlockingRedisClient, RedisClient, RedisSettings};
-use runtime_common::symbol_util::normalize_symbol_for_venue;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
 
 /// Redis Key 配置
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
@@ -19,11 +21,14 @@ const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
 const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 
+type MaxPosUOverrideTable = FastHashMap<String, f64>;
+type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
+
 /// 从 Redis 加载的 Pre-Trade 风控参数（内部数据结构）
 #[derive(Debug, Clone)]
 struct PreTradeParamsData {
     max_pos_u: f64,
-    max_pos_u_overrides: HashMap<(TradingVenue, String), f64>,
+    max_pos_u_overrides: MaxPosUOverrides,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
@@ -52,7 +57,7 @@ impl Default for PreTradeParamsData {
     fn default() -> Self {
         Self {
             max_pos_u: 1000.0,
-            max_pos_u_overrides: HashMap::new(),
+            max_pos_u_overrides: fast_hash_map(),
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
@@ -140,11 +145,37 @@ fn arb_max_pos_u_override_key(
     ))
 }
 
+fn is_internal_symbol_key(symbol: &str) -> bool {
+    !symbol.is_empty()
+        && !symbol.ends_with("SWAP")
+        && symbol
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+fn max_pos_u_symbol_key(symbol: &str) -> Cow<'_, str> {
+    if is_internal_symbol_key(symbol) {
+        Cow::Borrowed(symbol)
+    } else {
+        Cow::Owned(normalize_symbol_for_internal(symbol))
+    }
+}
+
+fn max_pos_u_override_count(overrides: &MaxPosUOverrides) -> usize {
+    overrides.values().map(MaxPosUOverrideTable::len).sum()
+}
+
+fn merge_max_pos_u_overrides(dst: &mut MaxPosUOverrides, src: MaxPosUOverrides) {
+    for (venue, table) in src {
+        dst.entry(venue).or_insert_with(fast_hash_map).extend(table);
+    }
+}
+
 fn parse_max_pos_u_overrides(
     raw: &str,
     open_venue: TradingVenue,
     redis_key: &str,
-) -> HashMap<(TradingVenue, String), f64> {
+) -> MaxPosUOverrides {
     let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
         panic!(
             "Redis string '{}' 不是合法 JSON(symbol->max_pos_u): {} ({})",
@@ -152,7 +183,8 @@ fn parse_max_pos_u_overrides(
         )
     });
 
-    let mut normalized = HashMap::new();
+    let mut normalized = fast_hash_map();
+    let mut venue_table = fast_hash_map_with_capacity(parsed.len());
     for (symbol, max_pos_u) in parsed {
         let symbol_trimmed = symbol.trim();
         if symbol_trimmed.is_empty() {
@@ -164,21 +196,25 @@ fn parse_max_pos_u_overrides(
                 redis_key, symbol_trimmed, max_pos_u
             );
         }
-        let symbol_key = normalize_symbol_for_venue(symbol_trimmed, open_venue);
-        normalized.insert((open_venue, symbol_key), max_pos_u);
+        let symbol_key = normalize_symbol_for_internal(symbol_trimmed);
+        venue_table.insert(symbol_key, max_pos_u);
     }
+    normalized.insert(open_venue, venue_table);
     normalized
 }
 
 fn resolve_max_pos_u_for_symbol(
     default_max_pos_u: f64,
-    overrides: &HashMap<(TradingVenue, String), f64>,
+    overrides: &MaxPosUOverrides,
     open_venue: TradingVenue,
     symbol: &str,
 ) -> f64 {
-    let symbol_key = normalize_symbol_for_venue(symbol, open_venue);
-    overrides
-        .get(&(open_venue, symbol_key))
+    let Some(venue_overrides) = overrides.get(&open_venue) else {
+        return default_max_pos_u;
+    };
+    let symbol_key = max_pos_u_symbol_key(symbol);
+    venue_overrides
+        .get(symbol_key.as_ref())
         .copied()
         .unwrap_or(default_max_pos_u)
 }
@@ -231,16 +267,16 @@ impl PreTradeParamsLoader {
             redis.prefix.as_deref()
         );
 
-        let mut max_pos_u_overrides: HashMap<(TradingVenue, String), f64> = HashMap::new();
+        let mut max_pos_u_overrides: MaxPosUOverrides = fast_hash_map();
         if let Some(override_key) = mm_max_pos_u_override_key(env_name, open_venue) {
             if let Some(raw) = client.get_string(&override_key).await? {
                 let parsed = parse_max_pos_u_overrides(&raw, open_venue, &override_key);
                 debug!(
                     "max_pos_u overrides loaded key='{}' symbols={}",
                     override_key,
-                    parsed.len()
+                    max_pos_u_override_count(&parsed)
                 );
-                max_pos_u_overrides.extend(parsed);
+                merge_max_pos_u_overrides(&mut max_pos_u_overrides, parsed);
             }
         }
         for venue in [open_venue, hedge_venue] {
@@ -250,9 +286,9 @@ impl PreTradeParamsLoader {
                     debug!(
                         "exec max_pos_u overrides loaded key='{}' symbols={}",
                         override_key,
-                        parsed.len()
+                        max_pos_u_override_count(&parsed)
                     );
-                    max_pos_u_overrides.extend(parsed);
+                    merge_max_pos_u_overrides(&mut max_pos_u_overrides, parsed);
                 }
             }
         }
@@ -262,9 +298,9 @@ impl PreTradeParamsLoader {
                 debug!(
                     "arb max_pos_u overrides loaded key='{}' symbols={}",
                     override_key,
-                    parsed.len()
+                    max_pos_u_override_count(&parsed)
                 );
-                max_pos_u_overrides.extend(parsed);
+                merge_max_pos_u_overrides(&mut max_pos_u_overrides, parsed);
             }
         }
 
@@ -301,16 +337,16 @@ impl PreTradeParamsLoader {
             redis.prefix.as_deref()
         );
 
-        let mut max_pos_u_overrides: HashMap<(TradingVenue, String), f64> = HashMap::new();
+        let mut max_pos_u_overrides: MaxPosUOverrides = fast_hash_map();
         if let Some(override_key) = mm_max_pos_u_override_key(env_name, open_venue) {
             if let Some(raw) = client.get_string(&override_key)? {
                 let parsed = parse_max_pos_u_overrides(&raw, open_venue, &override_key);
                 debug!(
                     "max_pos_u overrides loaded key='{}' symbols={}",
                     override_key,
-                    parsed.len()
+                    max_pos_u_override_count(&parsed)
                 );
-                max_pos_u_overrides.extend(parsed);
+                merge_max_pos_u_overrides(&mut max_pos_u_overrides, parsed);
             }
         }
         for venue in [open_venue, hedge_venue] {
@@ -320,9 +356,9 @@ impl PreTradeParamsLoader {
                     debug!(
                         "exec max_pos_u overrides loaded key='{}' symbols={}",
                         override_key,
-                        parsed.len()
+                        max_pos_u_override_count(&parsed)
                     );
-                    max_pos_u_overrides.extend(parsed);
+                    merge_max_pos_u_overrides(&mut max_pos_u_overrides, parsed);
                 }
             }
         }
@@ -332,9 +368,9 @@ impl PreTradeParamsLoader {
                 debug!(
                     "arb max_pos_u overrides loaded key='{}' symbols={}",
                     override_key,
-                    parsed.len()
+                    max_pos_u_override_count(&parsed)
                 );
-                max_pos_u_overrides.extend(parsed);
+                merge_max_pos_u_overrides(&mut max_pos_u_overrides, parsed);
             }
         }
 
@@ -345,7 +381,7 @@ impl PreTradeParamsLoader {
     fn apply_loaded_params(
         &self,
         hash_map: HashMap<String, String>,
-        max_pos_u_overrides: HashMap<(TradingVenue, String), f64>,
+        max_pos_u_overrides: MaxPosUOverrides,
     ) {
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };
@@ -480,7 +516,7 @@ impl PreTradeParamsLoader {
             debug!(
                 "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} min_non_trading_position_usdt={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
                 data.max_pos_u,
-                data.max_pos_u_overrides.len(),
+                max_pos_u_override_count(&data.max_pos_u_overrides),
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
@@ -935,11 +971,10 @@ mod tests {
 
     #[test]
     fn test_resolve_max_pos_u_for_symbol_uses_override() {
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            (TradingVenue::BinanceFutures, "BTCUSDT".to_string()),
-            2500.0,
-        );
+        let mut overrides = fast_hash_map();
+        let mut binance = fast_hash_map();
+        binance.insert("BTCUSDT".to_string(), 2500.0);
+        overrides.insert(TradingVenue::BinanceFutures, binance);
         let val = resolve_max_pos_u_for_symbol(
             1000.0,
             &overrides,
@@ -951,7 +986,7 @@ mod tests {
 
     #[test]
     fn test_resolve_max_pos_u_for_symbol_falls_back_to_default() {
-        let overrides = HashMap::new();
+        let overrides = fast_hash_map();
         let val = resolve_max_pos_u_for_symbol(
             1000.0,
             &overrides,
@@ -963,15 +998,13 @@ mod tests {
 
     #[test]
     fn test_resolve_max_pos_u_for_symbol_is_venue_scoped() {
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            (TradingVenue::BinanceFutures, "BTCUSDT".to_string()),
-            2500.0,
-        );
-        overrides.insert(
-            (TradingVenue::OkexFutures, "BTC-USDT-SWAP".to_string()),
-            1500.0,
-        );
+        let mut overrides = fast_hash_map();
+        let mut binance = fast_hash_map();
+        binance.insert("BTCUSDT".to_string(), 2500.0);
+        overrides.insert(TradingVenue::BinanceFutures, binance);
+        let mut okex = fast_hash_map();
+        okex.insert("BTCUSDT".to_string(), 1500.0);
+        overrides.insert(TradingVenue::OkexFutures, okex);
 
         let binance_val = resolve_max_pos_u_for_symbol(
             1000.0,
@@ -987,20 +1020,34 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_max_pos_u_overrides_preserves_same_venue_symbols() {
+        let mut dst =
+            parse_max_pos_u_overrides(r#"{"BTCUSDT":2500}"#, TradingVenue::BinanceFutures, "first");
+        let src = parse_max_pos_u_overrides(
+            r#"{"ETHUSDT":1200}"#,
+            TradingVenue::BinanceFutures,
+            "second",
+        );
+
+        merge_max_pos_u_overrides(&mut dst, src);
+
+        let binance = dst.get(&TradingVenue::BinanceFutures).expect("venue");
+        assert_eq!(binance.get("BTCUSDT"), Some(&2500.0));
+        assert_eq!(binance.get("ETHUSDT"), Some(&1200.0));
+    }
+
+    #[test]
     fn test_parse_max_pos_u_overrides_normalizes_symbols() {
         let overrides = parse_max_pos_u_overrides(
             r#"{"btc-usdt":2500,"ETH_USDT":1200}"#,
             TradingVenue::BinanceFutures,
             "binance_mm_alpha:binance-futures:mm:max_pos_u",
         );
-        assert_eq!(
-            overrides.get(&(TradingVenue::BinanceFutures, "BTCUSDT".to_string())),
-            Some(&2500.0)
-        );
-        assert_eq!(
-            overrides.get(&(TradingVenue::BinanceFutures, "ETHUSDT".to_string())),
-            Some(&1200.0)
-        );
+        let binance = overrides
+            .get(&TradingVenue::BinanceFutures)
+            .expect("venue overrides");
+        assert_eq!(binance.get("BTCUSDT"), Some(&2500.0));
+        assert_eq!(binance.get("ETHUSDT"), Some(&1200.0));
     }
 
     #[test]
