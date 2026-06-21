@@ -3198,22 +3198,46 @@ fn parse_raw_literal_key_i64(raw: &[u8], key: &[u8]) -> Option<i64> {
 }
 
 fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
-    let bytes = match raw.get(*pos).copied()? {
-        b'"' => take_unescaped_quoted_bytes(raw, pos)?,
+    match raw.get(*pos).copied()? {
+        b'"' => {
+            let bytes = take_unescaped_quoted_bytes(raw, pos)?;
+            if bytes.is_empty() {
+                return None;
+            }
+            parse_i64_bytes(bytes)
+        }
         b if is_json_ws(b) => {
             skip_ws_at(raw, pos);
             if raw.get(*pos) == Some(&b'"') {
-                take_unescaped_quoted_bytes(raw, pos)?
+                let bytes = take_unescaped_quoted_bytes(raw, pos)?;
+                if bytes.is_empty() {
+                    return None;
+                }
+                parse_i64_bytes(bytes)
             } else {
-                take_unquoted_json_scalar(raw, pos)?
+                parse_unquoted_i64_at(raw, pos)
             }
         }
-        _ => take_unquoted_json_scalar(raw, pos)?,
-    };
-    if bytes.is_empty() {
+        _ => parse_unquoted_i64_at(raw, pos),
+    }
+}
+
+fn parse_unquoted_i64_at(raw: &[u8], pos: &mut usize) -> Option<i64> {
+    let (value, len) = atoi_simd::parse_until_invalid::<i64>(raw.get(*pos..)?).ok()?;
+    if len == 0 {
         return None;
     }
-    parse_i64_bytes(bytes)
+    match raw.get(*pos + len).copied() {
+        Some(b',' | b'}' | b']') | None => {
+            *pos += len;
+            Some(value)
+        }
+        Some(b) if is_json_ws(b) => {
+            *pos += len;
+            Some(value)
+        }
+        _ => None,
+    }
 }
 
 fn take_unescaped_quoted_bytes<'a>(raw: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
@@ -3834,6 +3858,23 @@ mod tests {
         assert_eq!(parse_i64_bytes(b"-9223372036854775809"), None);
         assert_eq!(parse_i64_bytes(b""), None);
         assert_eq!(parse_i64_bytes(b"12x"), None);
+    }
+
+    #[test]
+    fn parses_unquoted_i64_and_stops_at_json_separator() {
+        let raw = br#"123,456"#;
+        let mut pos = 0usize;
+        assert_eq!(super::parse_raw_i64_value(raw, &mut pos), Some(123));
+        assert_eq!(raw.get(pos), Some(&b','));
+
+        let raw = br#"-42 }"#;
+        let mut pos = 0usize;
+        assert_eq!(super::parse_raw_i64_value(raw, &mut pos), Some(-42));
+        assert_eq!(raw.get(pos), Some(&b' '));
+
+        let raw = br#"12x"#;
+        let mut pos = 0usize;
+        assert_eq!(super::parse_raw_i64_value(raw, &mut pos), None);
     }
 
     #[test]
