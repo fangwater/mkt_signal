@@ -1858,6 +1858,18 @@ pub fn parse_derivatives_raw_borrowed<'a>(
     raw: &'a [u8],
     mut emit: impl FnMut(RawDerivative<'a>) -> Option<()>,
 ) -> Option<()> {
+    let mut fast_emitted = false;
+    let fast_result = parse_derivatives_fast(raw, &mut |derivative| {
+        fast_emitted = true;
+        emit(derivative)
+    });
+    if fast_result.is_some() {
+        return Some(());
+    }
+    if fast_emitted {
+        return None;
+    }
+
     let mut scanner = JsonObjectScanner::new(raw);
     scanner.skip_ws();
     if scanner.peek_byte() == Some(b'[') {
@@ -1883,6 +1895,87 @@ pub fn parse_derivatives_raw_borrowed<'a>(
         scanner.skip_value()?;
     }
     None
+}
+
+fn parse_derivatives_fast<'a>(
+    raw: &'a [u8],
+    emit: &mut impl FnMut(RawDerivative<'a>) -> Option<()>,
+) -> Option<()> {
+    let mut pos = 0usize;
+    skip_ws_at(raw, &mut pos);
+    match raw.get(pos).copied()? {
+        b'[' => {
+            parse_derivative_array_fast(raw, &mut pos, emit)?;
+            skip_ws_at(raw, &mut pos);
+            (pos == raw.len()).then_some(())
+        }
+        b'{' => {
+            let start = pos;
+            pos += 1;
+            skip_ws_at(raw, &mut pos);
+            if raw.get(pos) == Some(&b'"') {
+                let key = take_unescaped_quoted_bytes(raw, &mut pos)?;
+                expect_raw_byte(raw, &mut pos, b':')?;
+                if key == b"data" {
+                    parse_derivative_value_fast(raw, &mut pos, emit)?;
+                    finish_raw_object(raw, &mut pos)?;
+                    skip_ws_at(raw, &mut pos);
+                    return (pos == raw.len()).then_some(());
+                }
+            }
+            pos = start;
+            let mut scanner = JsonObjectScanner { raw, pos };
+            let derivative = parse_derivative_object_scanner(&mut scanner)?;
+            emit(derivative)?;
+            scanner.skip_ws();
+            (scanner.pos == raw.len()).then_some(())
+        }
+        _ => None,
+    }
+}
+
+fn parse_derivative_value_fast<'a>(
+    raw: &'a [u8],
+    pos: &mut usize,
+    emit: &mut impl FnMut(RawDerivative<'a>) -> Option<()>,
+) -> Option<()> {
+    skip_ws_at(raw, pos);
+    match raw.get(*pos).copied()? {
+        b'[' => parse_derivative_array_fast(raw, pos, emit),
+        b'{' => {
+            let mut scanner = JsonObjectScanner { raw, pos: *pos };
+            let derivative = parse_derivative_object_scanner(&mut scanner)?;
+            emit(derivative)?;
+            *pos = scanner.pos;
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+fn parse_derivative_array_fast<'a>(
+    raw: &'a [u8],
+    pos: &mut usize,
+    emit: &mut impl FnMut(RawDerivative<'a>) -> Option<()>,
+) -> Option<()> {
+    expect_raw_byte(raw, pos, b'[')?;
+    loop {
+        skip_ws_at(raw, pos);
+        match raw.get(*pos).copied()? {
+            b']' => {
+                *pos += 1;
+                return Some(());
+            }
+            b',' => *pos += 1,
+            b'{' => {
+                let mut scanner = JsonObjectScanner { raw, pos: *pos };
+                let derivative = parse_derivative_object_scanner(&mut scanner)?;
+                emit(derivative)?;
+                *pos = scanner.pos;
+            }
+            _ => return None,
+        }
+    }
 }
 
 pub fn parse_sbe_bbo(msg: &[u8]) -> Option<Bbo> {
@@ -4266,6 +4359,43 @@ mod tests {
                 ("BTCUSDT", 1_700_000_000_001_000),
                 ("ETHUSDT", 1_700_000_000_002_000)
             ]
+        );
+    }
+
+    #[test]
+    fn derivatives_fast_path_parses_data_array_wrapper() {
+        let raw = br#"{"data":[{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","P":"24.95","i":"24.9","r":"0.0001","T":1700003600000},{"e":"markPriceUpdate","E":1700000000002,"s":"ETHUSDT","p":"26.0","P":"25.95","i":"25.9","r":"0.0002","T":1700003600000}]}"#;
+        let mut symbols = Vec::new();
+
+        super::parse_derivatives_fast(raw, &mut |derivative| {
+            symbols.push(raw_derivative_symbol(derivative));
+            Some(())
+        })
+        .expect("fast derivatives");
+
+        assert_eq!(symbols, vec!["BTCUSDT", "ETHUSDT"]);
+    }
+
+    #[test]
+    fn derivatives_fast_path_parses_raw_array() {
+        let raw = br#"[{"e":"forceOrder","E":1700000000001,"o":{"s":"BTCUSDT","S":"SELL","o":"LIMIT","f":"IOC","q":"10","p":"25.0","ap":"25.2","X":"FILLED","l":"10","z":"10","T":1700000000000}}]"#;
+        let mut out = Vec::new();
+
+        super::parse_derivatives_fast(raw, &mut |derivative| {
+            out.push(derivative);
+            Some(())
+        })
+        .expect("fast derivatives");
+
+        assert_eq!(
+            out,
+            vec![RawDerivative::Liquidation {
+                symbol: "BTCUSDT",
+                side: 'S',
+                amount: 10.0,
+                price: 25.2,
+                timestamp_us: 1_700_000_000_000_000,
+            }]
         );
     }
 
