@@ -2429,24 +2429,30 @@ fn parse_liquidation_order_fast<'a>(
         return None;
     }
 
-    consume_raw_literal(raw, pos, br#""z""#)?;
-    expect_raw_byte(raw, pos, b':')?;
-    let amount = parse_raw_number(raw, pos)?;
-    if !consume_raw_field_separator(raw, pos)? {
-        return None;
+    let mut amount = None;
+    let mut price = None;
+    let mut order_timestamp_us = None;
+    loop {
+        if consume_raw_literal_if(raw, pos, br#""z""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            amount = Some(parse_raw_number(raw, pos)?);
+        } else if consume_raw_literal_if(raw, pos, br#""ap""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            price = Some(parse_raw_number(raw, pos)?);
+        } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            order_timestamp_us = Some(ms_to_us(parse_raw_i64_value(raw, pos)?));
+        } else {
+            take_unescaped_quoted_bytes(raw, pos)?;
+            expect_raw_byte(raw, pos, b':')?;
+            skip_raw_json_value(raw, pos)?;
+        }
+        if !consume_raw_field_separator(raw, pos)? {
+            break;
+        }
     }
-
-    consume_raw_literal(raw, pos, br#""ap""#)?;
-    expect_raw_byte(raw, pos, b':')?;
-    let price = parse_raw_number(raw, pos)?;
-    if !consume_raw_field_separator(raw, pos)? {
-        return None;
-    }
-
-    consume_raw_literal(raw, pos, br#""T""#)?;
-    expect_raw_byte(raw, pos, b':')?;
-    let order_timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
-    finish_raw_object(raw, pos)?;
+    let amount = amount?;
+    let price = price?;
     if amount <= 0.0 || price <= 0.0 {
         return None;
     }
@@ -2456,7 +2462,7 @@ fn parse_liquidation_order_fast<'a>(
         side,
         amount,
         price,
-        order_timestamp_us: Some(order_timestamp_us),
+        order_timestamp_us,
     })
 }
 
@@ -4332,6 +4338,26 @@ mod tests {
     #[test]
     fn liquidation_fast_path_parses_force_order_shape() {
         let raw = br#"{"e":"forceOrder","E":1700000000001,"o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2","T":1700000000000}}"#;
+        let mut scanner = super::JsonObjectScanner::new(raw);
+        let derivative =
+            super::parse_liquidation_object_fast(&mut scanner).expect("fast liquidation");
+
+        assert_eq!(
+            derivative,
+            RawDerivative::Liquidation {
+                symbol: "BTCUSDT",
+                side: 'S',
+                amount: 10.0,
+                price: 25.2,
+                timestamp_us: 1_700_000_000_000_000,
+            }
+        );
+        assert_eq!(scanner.pos, raw.len());
+    }
+
+    #[test]
+    fn liquidation_fast_path_skips_order_extra_fields() {
+        let raw = br#"{"e":"forceOrder","E":1700000000001,"o":{"s":"BTCUSDT","S":"SELL","o":"LIMIT","f":"IOC","q":"10","p":"25.0","ap":"25.2","X":"FILLED","l":"10","z":"10","T":1700000000000}}"#;
         let mut scanner = super::JsonObjectScanner::new(raw);
         let derivative =
             super::parse_liquidation_object_fast(&mut scanner).expect("fast liquidation");
