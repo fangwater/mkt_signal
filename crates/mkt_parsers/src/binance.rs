@@ -1,4 +1,4 @@
-use memchr::{memchr, memchr2, memchr3};
+use memchr::{memchr, memchr2, memchr3, memmem};
 use serde_json::Value;
 
 pub const SBE_TEMPLATE_TRADE: u16 = 10000;
@@ -731,7 +731,7 @@ pub fn parse_incremental_json(value: &Value) -> Option<Book> {
 }
 
 pub fn parse_event_time_ms_raw(raw: &[u8]) -> Option<i64> {
-    parse_raw_key_i64(raw, b'E')
+    parse_raw_literal_key_i64(raw, br#""E""#).or_else(|| parse_raw_key_i64(raw, b'E'))
 }
 
 pub fn parse_kline_raw_borrowed(raw: &[u8]) -> Option<RawKline<'_>> {
@@ -1949,6 +1949,29 @@ fn parse_raw_key_i64(raw: &[u8], key: u8) -> Option<i64> {
     None
 }
 
+fn parse_raw_literal_key_i64(raw: &[u8], key: &[u8]) -> Option<i64> {
+    let mut pos = 0usize;
+    while let Some(offset) = memmem::find(&raw[pos..], key) {
+        let key_start = pos + offset;
+        let after_key = key_start + key.len();
+        let prev = key_start
+            .checked_sub(1)
+            .and_then(|idx| raw.get(idx).copied());
+        if prev.is_some_and(|b| b == b'\\') {
+            pos = after_key;
+            continue;
+        }
+        let mut value_pos = after_key;
+        skip_ws_at(raw, &mut value_pos);
+        if raw.get(value_pos) == Some(&b':') {
+            value_pos += 1;
+            return parse_raw_i64_value(raw, &mut value_pos);
+        }
+        pos = after_key;
+    }
+    None
+}
+
 fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
     skip_ws_at(raw, pos);
     let bytes = if raw.get(*pos) == Some(&b'"') {
@@ -2871,6 +2894,12 @@ mod tests {
     #[test]
     fn raw_event_time_rejects_escaped_key() {
         let raw = br#"{"e":"depthUpdate","\u0045":1700000000001,"s":"BTCUSDT"}"#;
+        assert_eq!(parse_event_time_ms_raw(raw), None);
+    }
+
+    #[test]
+    fn raw_event_time_rejects_literal_inside_string_value() {
+        let raw = br#"{"x":"\"E\":1700000000001","s":"BTCUSDT"}"#;
         assert_eq!(parse_event_time_ms_raw(raw), None);
     }
 
