@@ -15,12 +15,46 @@ use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
-use signal_common::open_signal::ArbOpenCtx;
+use signal_common::common::TradingLeg;
+use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
+use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
 use std::borrow::Cow;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;
+
+struct CloseViewInput<'a> {
+    opening_leg: TradingLeg,
+    hedging_leg: TradingLeg,
+    side: u8,
+    order_type: u8,
+    price_qv: QuantizedValue,
+    amount_qv: QuantizedValue,
+    exp_time: i64,
+    create_ts: i64,
+    price_offset: f64,
+    from_key_len: u32,
+    from_key: Cow<'a, [u8]>,
+}
+
+impl CloseViewInput<'_> {
+    fn price_value(&self) -> f64 {
+        self.price_qv.get_val()
+    }
+
+    fn amount_value(&self) -> f64 {
+        self.amount_qv.get_val()
+    }
+
+    fn price_count(&self) -> i64 {
+        self.price_qv.get_count()
+    }
+
+    fn amount_count(&self) -> i64 {
+        self.amount_qv.get_count()
+    }
+}
 
 /// Arb close 复用 common open 下单生命周期，按信号数量逐单执行。
 pub struct ArbCloseStrategy {
@@ -50,6 +84,58 @@ impl ArbCloseStrategy {
         symbol: String,
         hedging_symbol: String,
     ) {
+        ctx.set_opening_symbol(&symbol);
+        ctx.set_hedging_symbol(&hedging_symbol);
+        self.handle_arb_close_view_inner(
+            CloseViewInput {
+                opening_leg: ctx.opening_leg,
+                hedging_leg: ctx.hedging_leg,
+                side: ctx.side,
+                order_type: ctx.order_type,
+                price_qv: ctx.price_qv,
+                amount_qv: ctx.amount_qv,
+                exp_time: ctx.exp_time,
+                create_ts: ctx.create_ts,
+                price_offset: ctx.price_offset,
+                from_key_len: ctx.from_key_len,
+                from_key: Cow::Owned(ctx.from_key),
+            },
+            Cow::Owned(symbol),
+            Cow::Owned(hedging_symbol),
+        )
+    }
+
+    pub fn handle_arb_close_view_with_symbols(
+        &mut self,
+        ctx: ArbOpenCtxView<'_>,
+        symbol: &str,
+        hedging_symbol: &str,
+    ) {
+        self.handle_arb_close_view_inner(
+            CloseViewInput {
+                opening_leg: ctx.opening_leg,
+                hedging_leg: ctx.hedging_leg,
+                side: ctx.side,
+                order_type: ctx.order_type,
+                price_qv: ctx.price_qv,
+                amount_qv: ctx.amount_qv,
+                exp_time: ctx.exp_time,
+                create_ts: ctx.create_ts,
+                price_offset: ctx.price_offset,
+                from_key_len: ctx.from_key_len,
+                from_key: Cow::Borrowed(ctx.from_key),
+            },
+            Cow::Borrowed(symbol),
+            Cow::Borrowed(hedging_symbol),
+        )
+    }
+
+    fn handle_arb_close_view_inner(
+        &mut self,
+        ctx: CloseViewInput<'_>,
+        symbol: Cow<'_, str>,
+        _hedging_symbol: Cow<'_, str>,
+    ) {
         if symbol.is_empty() {
             warn!(
                 "ArbCloseStrategy: strategy_id={} empty opening symbol",
@@ -58,8 +144,6 @@ impl ArbCloseStrategy {
             self.open_state.alive = false;
             return;
         }
-        ctx.set_opening_symbol(&symbol);
-        ctx.set_hedging_symbol(&hedging_symbol);
 
         let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) else {
             warn!(
@@ -210,7 +294,7 @@ impl ArbCloseStrategy {
             signal_kind: "ArbClose",
             order_log_name: "ArbClose",
             order_rate_bucket: OrderRateBucket::ArbOpen,
-            opening_symbol: Cow::Owned(symbol),
+            opening_symbol: symbol,
             opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
@@ -222,7 +306,7 @@ impl ArbCloseStrategy {
             exp_time: ctx.exp_time,
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
-            from_key: Cow::Owned(ctx.from_key),
+            from_key: ctx.from_key,
             price_qv: ctx.price_qv,
             order_qty_qv: None,
             order_price_qv: None,

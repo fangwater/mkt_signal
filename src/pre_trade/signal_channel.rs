@@ -37,7 +37,7 @@ use signal_common::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use signal_common::mm_signal::{
     MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
 };
-use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView, MmOpenCtxView};
+use signal_common::open_signal::{ArbOpenCtxView, MmOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignalView};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
@@ -138,7 +138,7 @@ fn arb_close_side_matches_open_position(close_side: Side, opening_pos: f64) -> b
     }
 }
 
-fn arb_close_notional_meets_min(ctx: &ArbOpenCtx) -> bool {
+fn arb_close_notional_meets_min_view(ctx: &ArbOpenCtxView<'_>) -> bool {
     let notional = ctx.amount_value() * ctx.price_value();
     notional.is_finite() && notional >= ARB_CLOSE_MIN_NOTIONAL_U
 }
@@ -1174,13 +1174,11 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
                     if !arb_close_side_matches_open_position(close_side, opening_pos) {
                         return;
                     }
-                    let close_ctx =
-                        close_ctx_view.to_owned_with_symbols(&opening_symbol, &hedging_symbol);
-                    if !arb_close_notional_meets_min(&close_ctx) {
+                    if !arb_close_notional_meets_min_view(&close_ctx_view) {
                         return;
                     }
                     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                    let close_price = close_ctx.price_value();
+                    let close_price = close_ctx_view.price_value();
 
                     {
                         let _ = strategy_mgr
@@ -1190,10 +1188,10 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
 
                     let strategy_id = StrategyManager::generate_strategy_id();
                     let mut strategy = ArbCloseStrategy::new(strategy_id);
-                    strategy.handle_arb_close_ctx_with_symbols(
-                        close_ctx,
-                        opening_symbol.clone(),
-                        hedging_symbol.clone(),
+                    strategy.handle_arb_close_view_with_symbols(
+                        close_ctx_view,
+                        opening_symbol.as_str(),
+                        hedging_symbol.as_str(),
                     );
                     if strategy.is_active() {
                         debug!(
