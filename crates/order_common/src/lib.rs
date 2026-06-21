@@ -888,16 +888,28 @@ impl OrderManager {
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
+        self.get_symbol_pending_limit_order_count_normalized(&symbol)
+    }
+
+    pub fn get_symbol_pending_limit_order_count_normalized(&self, symbol: &str) -> i32 {
         self.pending_limit_order_count
-            .get(&symbol)
+            .get(symbol)
             .copied()
             .unwrap_or(0)
     }
 
     pub fn get_symbol_pending_limit_order_count_by_side(&self, symbol: &str, side: Side) -> i32 {
         let symbol = normalize_symbol_for_internal(symbol);
+        self.get_symbol_pending_limit_order_count_by_side_normalized(&symbol, side)
+    }
+
+    pub fn get_symbol_pending_limit_order_count_by_side_normalized(
+        &self,
+        symbol: &str,
+        side: Side,
+    ) -> i32 {
         self.pending_limit_side_count_map(side)
-            .get(&symbol)
+            .get(symbol)
             .copied()
             .unwrap_or(0)
     }
@@ -1381,7 +1393,15 @@ mod tests {
         assert_eq!(order.symbol, "BTCUSDT");
         assert_eq!(manager.get_symbol_pending_limit_order_count("BTCUSDT"), 1);
         assert_eq!(
+            manager.get_symbol_pending_limit_order_count_normalized("BTCUSDT"),
+            1
+        );
+        assert_eq!(
             manager.get_symbol_pending_limit_order_count_by_side("BTCUSDT", Side::Buy),
+            1
+        );
+        assert_eq!(
+            manager.get_symbol_pending_limit_order_count_by_side_normalized("BTCUSDT", Side::Buy),
             1
         );
         assert_eq!(manager.get_symbol_pending_limit_order_count("BTC-USDT"), 1);

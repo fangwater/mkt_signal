@@ -3555,7 +3555,8 @@ impl MonitorChannel {
             let order_manager = inner.order_manager.borrow();
 
             if max_pending_limit_orders > 0 {
-                let count = order_manager.get_symbol_pending_limit_order_count(&symbol_upper);
+                let count =
+                    order_manager.get_symbol_pending_limit_order_count_normalized(&symbol_upper);
                 if count >= max_pending_limit_orders {
                     return Err(format!(
                         "symbol={} 当前限价挂单数={}，达到总上限 {}",
@@ -3565,8 +3566,8 @@ impl MonitorChannel {
             }
 
             if side_limit > 0 {
-                let side_count =
-                    order_manager.get_symbol_pending_limit_order_count_by_side(&symbol_upper, side);
+                let side_count = order_manager
+                    .get_symbol_pending_limit_order_count_by_side_normalized(&symbol_upper, side);
                 if side_count >= side_limit {
                     return Err(format!(
                         "symbol={} side={} 当前限价挂单数={}，达到方向上限 {}",
