@@ -31,7 +31,6 @@ use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, mi
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
-use signal_common::common::SignalBytes;
 use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use signal_common::mm_signal::MmBackwardQueryMsg;
 use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -1554,7 +1553,7 @@ impl MarketMakerHedgeStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::MMHedge => match MmHedgeCtx::from_bytes(signal.context.clone()) {
+            SignalType::MMHedge => match MmHedgeCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_mm_hedge_ctx(ctx),
                 Err(err) => {
                     warn!(

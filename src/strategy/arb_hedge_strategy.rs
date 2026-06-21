@@ -44,7 +44,7 @@ use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
-use signal_common::common::{align_price_floor, SignalBytes, TradingLeg};
+use signal_common::common::{align_price_floor, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -2294,7 +2294,7 @@ impl Strategy for ArbHedgeStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match signal.signal_type {
-            SignalType::ArbHedge => match ArbHedgeCtx::from_bytes(signal.context.clone()) {
+            SignalType::ArbHedge => match ArbHedgeCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_arb_hedge_ctx(ctx),
                 Err(err) => warn!(
                     "ArbHedgeStrategy: strategy_id={} decode ArbHedge failed err={}",

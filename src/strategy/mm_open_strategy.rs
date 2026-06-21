@@ -12,7 +12,6 @@ use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
 use order_common::TradingVenue;
 use signal_common::cancel_signal::MmCancelCtx;
-use signal_common::common::SignalBytes;
 use signal_common::open_signal::{MmOpenCtx, MmOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
@@ -124,7 +123,7 @@ impl MarketMakerOpenStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::MMOpen => match MmOpenCtx::from_bytes(signal.context.clone()) {
+            SignalType::MMOpen => match MmOpenCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_mm_open_ctx(ctx),
                 Err(err) => {
                     warn!(
@@ -134,7 +133,7 @@ impl MarketMakerOpenStrategy {
                     self.mark_open_strategy_inactive(format!("decode MMOpen failed: {}", err));
                 }
             },
-            SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
+            SignalType::MMCancel => match MmCancelCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_mm_cancel_ctx(&ctx),
                 Err(err) => {
                     warn!(

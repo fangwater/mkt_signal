@@ -4531,7 +4531,6 @@ mod tests {
         BasicBalanceMsg, BasicPositionMsg, BinanceBasicOrderMsg, GateBasicOrderMsg,
     };
     use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
-    use signal_common::common::SignalBytes;
     use signal_common::min_qty_table::MinQtyEntry;
     use signal_common::min_qty_table::MinQtyEntry as VenueMinQtyEntry;
     use signal_common::tick_math::QuantizedValue;
@@ -4666,11 +4665,12 @@ mod tests {
 
         fn handle_signal(&mut self, signal: &TradeSignal) {
             if signal.signal_type.clone() as u32 == SignalType::MMCancel as u32 {
-                let ctx = MmCancelCtx::from_bytes(signal.context.clone()).expect("mm cancel ctx");
+                let ctx = MmCancelCtx::from_slice(signal.context.as_ref()).expect("mm cancel ctx");
                 self.cancel_trigger_count += 1;
                 self.last_trigger_ts = ctx.trigger_ts;
             } else if signal.signal_type.clone() as u32 == SignalType::ArbCancel as u32 {
-                let ctx = ArbCancelCtx::from_bytes(signal.context.clone()).expect("arb cancel ctx");
+                let ctx =
+                    ArbCancelCtx::from_slice(signal.context.as_ref()).expect("arb cancel ctx");
                 self.arb_cancel_trigger_count += 1;
                 self.last_trigger_ts = ctx.trigger_ts;
             }

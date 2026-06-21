@@ -1,7 +1,7 @@
 use crate::common::TradingLeg;
 use crate::common::{bytes_helper, SignalBytes};
 use crate::tick_math::QuantizedValue;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use order_common::{OrderType, Side};
 
 /// Generic arbitrage open signal context
@@ -143,38 +143,6 @@ fn write_leg(buf: &mut BytesMut, leg: &TradingLeg, symbol: &[u8; 32]) {
     buf.put_f64_le(leg.ask0);
     buf.put_i64_le(leg.ts);
     bytes_helper::write_fixed_bytes(buf, symbol);
-}
-
-fn read_leg(
-    bytes: &mut Bytes,
-    with_ts: bool,
-    label: &str,
-) -> Result<(TradingLeg, [u8; 32]), String> {
-    let need = if with_ts { 1 + 8 + 8 + 8 } else { 1 + 8 + 8 };
-    if bytes.remaining() < need {
-        return Err(format!("Not enough bytes for {}", label));
-    }
-    let venue = bytes.get_u8();
-    let bid0 = bytes.get_f64_le();
-    let ask0 = bytes.get_f64_le();
-    let ts = if with_ts {
-        if bytes.remaining() < 8 {
-            return Err(format!("Not enough bytes for {} ts", label));
-        }
-        bytes.get_i64_le()
-    } else {
-        0
-    };
-    let symbol = bytes_helper::read_fixed_bytes(bytes)?;
-    Ok((
-        TradingLeg {
-            venue,
-            bid0,
-            ask0,
-            ts,
-        },
-        symbol,
-    ))
 }
 
 fn read_u8(raw: &[u8], offset: &mut usize, label: &str) -> Result<u8, String> {
@@ -735,64 +703,8 @@ impl SignalBytes for ArbOpenCtx {
         buf.put_slice(&self.from_key);
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        const TAIL_LEN: usize = 1 + 1 + 8 + 4 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8 + 4;
-
-        // Opening leg
-        let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
-
-        // Hedging leg
-        let (hedging_leg, hedging_symbol) = read_leg(&mut bytes, true, "hedging leg")?;
-
-        // Trade parameters + from_key_len
-        if bytes.remaining() < TAIL_LEN {
-            return Err("Not enough bytes for trade parameters".to_string());
-        }
-        let side = bytes.get_u8();
-        let order_type = bytes.get_u8();
-        let price_tick_i64 = bytes.get_i64_le();
-        let price_tick_exp = bytes.get_i32_le();
-        let price_count = bytes.get_i64_le();
-        let amount_tick_i64 = bytes.get_i64_le();
-        let amount_tick_exp = bytes.get_i32_le();
-        let amount_count = bytes.get_i64_le();
-        let exp_time = bytes.get_i64_le();
-        let create_ts = bytes.get_i64_le();
-        let price_offset = bytes.get_f64_le();
-        let spread_rate = bytes.get_f64_le();
-        let hedge_timeout_us = bytes.get_i64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
-
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for ArbOpenCtx".to_string());
-        }
-
-        Ok(ArbOpenCtx {
-            opening_leg,
-            opening_symbol,
-            hedging_leg,
-            hedging_symbol,
-            side,
-            order_type,
-            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
-            amount_qv: QuantizedValue::from_parts(amount_tick_i64, amount_tick_exp, amount_count),
-            exp_time,
-            create_ts,
-            price_offset,
-            spread_rate,
-            hedge_timeout_us,
-            from_key_len: from_key.len() as u32,
-            from_key,
-        })
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
     }
 }
 
@@ -827,53 +739,49 @@ impl SignalBytes for MmOpenCtx {
         buf.put_slice(&self.from_key);
     }
 
-    fn from_bytes(mut bytes: Bytes) -> Result<Self, String> {
-        const TAIL_LEN: usize = 1 + 1 + 8 + 4 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 4;
-        // Opening leg
-        let (opening_leg, opening_symbol) = read_leg(&mut bytes, true, "opening leg")?;
+    fn from_bytes(bytes: Bytes) -> Result<Self, String> {
+        Self::from_slice(bytes.as_ref())
+    }
+}
 
-        // Trade parameters + from_key_len
-        if bytes.remaining() < TAIL_LEN {
-            return Err("Not enough bytes for trade parameters".to_string());
-        }
-        let side = bytes.get_u8();
-        let order_type = bytes.get_u8();
-        let price_tick_i64 = bytes.get_i64_le();
-        let price_tick_exp = bytes.get_i32_le();
-        let price_count = bytes.get_i64_le();
-        let amount_tick_i64 = bytes.get_i64_le();
-        let amount_tick_exp = bytes.get_i32_le();
-        let amount_count = bytes.get_i64_le();
-        let exp_time = bytes.get_i64_le();
-        let create_ts = bytes.get_i64_le();
-        let price_offset = bytes.get_f64_le();
-        let from_key_len = bytes.get_u32_le() as usize;
+impl ArbOpenCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let view = ArbOpenCtxView::from_bytes(raw)?;
+        Ok(Self {
+            opening_leg: view.opening_leg,
+            opening_symbol: view.opening_symbol,
+            hedging_leg: view.hedging_leg,
+            hedging_symbol: view.hedging_symbol,
+            side: view.side,
+            order_type: view.order_type,
+            price_qv: view.price_qv,
+            amount_qv: view.amount_qv,
+            exp_time: view.exp_time,
+            create_ts: view.create_ts,
+            price_offset: view.price_offset,
+            spread_rate: view.spread_rate,
+            hedge_timeout_us: view.hedge_timeout_us,
+            from_key_len: view.from_key.len() as u32,
+            from_key: view.from_key.to_vec(),
+        })
+    }
+}
 
-        if bytes.remaining() < from_key_len {
-            return Err(format!(
-                "Not enough bytes for from_key: need {}, have {}",
-                from_key_len,
-                bytes.remaining()
-            ));
-        }
-        let from_key = bytes.copy_to_bytes(from_key_len).to_vec();
-
-        if bytes.remaining() != 0 {
-            return Err("Unexpected trailing bytes for MmOpenCtx".to_string());
-        }
-
-        Ok(MmOpenCtx {
-            opening_leg,
-            opening_symbol,
-            amount_qv: QuantizedValue::from_parts(amount_tick_i64, amount_tick_exp, amount_count),
-            side,
-            order_type,
-            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
-            exp_time,
-            create_ts,
-            price_offset,
-            from_key_len: from_key_len as u32,
-            from_key,
+impl MmOpenCtx {
+    pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
+        let view = MmOpenCtxView::from_bytes(raw)?;
+        Ok(Self {
+            opening_leg: view.opening_leg,
+            opening_symbol: view.opening_symbol,
+            amount_qv: view.amount_qv,
+            side: view.side,
+            order_type: view.order_type,
+            price_qv: view.price_qv,
+            exp_time: view.exp_time,
+            create_ts: view.create_ts,
+            price_offset: view.price_offset,
+            from_key_len: view.from_key.len() as u32,
+            from_key: view.from_key.to_vec(),
         })
     }
 }

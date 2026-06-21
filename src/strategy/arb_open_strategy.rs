@@ -14,7 +14,6 @@ use order_common::TradeUpdateLite;
 use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::ArbCancelCtx;
-use signal_common::common::SignalBytes;
 use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
@@ -202,7 +201,7 @@ impl ArbOpenStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::ArbOpen => match ArbOpenCtx::from_bytes(signal.context.clone()) {
+            SignalType::ArbOpen => match ArbOpenCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_arb_open_signal(ctx),
                 Err(err) => {
                     warn!(
@@ -212,7 +211,7 @@ impl ArbOpenStrategy {
                     self.mark_open_strategy_inactive(format!("decode ArbOpen failed: {}", err));
                 }
             },
-            SignalType::ArbCancel => match ArbCancelCtx::from_bytes(signal.context.clone()) {
+            SignalType::ArbCancel => match ArbCancelCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_arb_cancel_ctx(&ctx),
                 Err(err) => warn!(
                     "ArbOpenStrategy: strategy_id={} decode ArbCancel failed: {}",

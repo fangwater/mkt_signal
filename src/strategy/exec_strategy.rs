@@ -25,7 +25,6 @@ use order_common::{OrderStatus, TradingVenue};
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
-use signal_common::common::SignalBytes;
 use signal_common::exec_signal::{
     ExecBackwardQueryMsg, ExecCtx, ExecPositionTargetCtx, ExecRequestCtx, ExecSignalQueryMsg,
 };
@@ -1925,14 +1924,14 @@ impl Strategy for ExecStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match signal.signal_type {
-            SignalType::ExecRequest => match ExecRequestCtx::from_bytes(signal.context.clone()) {
+            SignalType::ExecRequest => match ExecRequestCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_exec_request_ctx(ctx),
                 Err(err) => warn!(
                     "ExecStrategy: strategy_id={} decode ExecRequest failed err={}",
                     self.strategy_id, err
                 ),
             },
-            SignalType::Exec => match ExecCtx::from_bytes(signal.context.clone()) {
+            SignalType::Exec => match ExecCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_exec_ctx(ctx),
                 Err(err) => warn!(
                     "ExecStrategy: strategy_id={} decode Exec failed err={}",
@@ -1940,7 +1939,7 @@ impl Strategy for ExecStrategy {
                 ),
             },
             SignalType::ExecPositionTarget => {
-                match ExecPositionTargetCtx::from_bytes(signal.context.clone()) {
+                match ExecPositionTargetCtx::from_slice(signal.context.as_ref()) {
                     Ok(ctx) => self.handle_exec_position_target_ctx(ctx),
                     Err(err) => warn!(
                         "ExecStrategy: strategy_id={} decode ExecPositionTarget failed err={}",

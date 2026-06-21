@@ -15,7 +15,6 @@ use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
 use order_common::TradingVenue;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
-use signal_common::common::SignalBytes;
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
@@ -245,7 +244,7 @@ impl ArbCloseStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::ArbClose => match ArbOpenCtx::from_bytes(signal.context.clone()) {
+            SignalType::ArbClose => match ArbOpenCtx::from_slice(signal.context.as_ref()) {
                 Ok(ctx) => self.handle_arb_close_ctx(ctx),
                 Err(err) => {
                     warn!(
