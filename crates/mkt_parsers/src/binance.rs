@@ -389,13 +389,10 @@ enum RawBboKind {
 }
 
 pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
-    if let Some(bbo) = parse_combined_book_ticker_fast(raw) {
+    if let Some(bbo) = parse_combined_bbo_fast(raw) {
         return Some(bbo);
     }
     if let Some(bbo) = parse_book_ticker_object_fast(raw) {
-        return Some(bbo);
-    }
-    if let Some(bbo) = parse_combined_depth_bbo_fast(raw) {
         return Some(bbo);
     }
     if let Some(bbo) = parse_depth_bbo_object_fast(raw) {
@@ -639,6 +636,36 @@ fn parse_combined_book_ticker_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     consume_raw_literal(raw, &mut pos, br#""data""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
     let bbo = parse_book_ticker_payload_fast(raw, &mut pos)?;
+    finish_raw_object(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(bbo)
+}
+
+fn parse_combined_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let mut pos = 0usize;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""stream""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
+    let kind = if bytes_ends_with(stream, b"@bookTicker") {
+        RawBboKind::BookTicker
+    } else if bytes_contains(stream, b"@depth") {
+        RawBboKind::Depth
+    } else {
+        return None;
+    };
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+    consume_raw_literal(raw, &mut pos, br#""data""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let bbo = match kind {
+        RawBboKind::BookTicker => parse_book_ticker_payload_fast(raw, &mut pos)?,
+        RawBboKind::Depth => parse_depth_bbo_payload_fast(raw, &mut pos)?,
+    };
     finish_raw_object(raw, &mut pos)?;
     skip_ws_at(raw, &mut pos);
     if pos != raw.len() {
