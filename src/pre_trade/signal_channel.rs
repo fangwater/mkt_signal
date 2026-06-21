@@ -39,6 +39,7 @@ use signal_common::mm_signal::{
 };
 use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView, MmOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignal, TradeSignalView};
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
@@ -58,12 +59,18 @@ const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
 const SIGNAL_COUNT_BUCKETS: usize = 14;
 
 fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
+    normalize_fixed_symbol_for_internal_cow(symbol).into_owned()
+}
+
+fn normalize_fixed_symbol_for_internal_cow(symbol: &[u8; 32]) -> Cow<'_, str> {
     let end = bytes_helper::fixed_bytes_len(symbol);
     let raw = &symbol[..end];
     if !raw.is_ascii() {
-        return std::str::from_utf8(raw)
-            .map(normalize_symbol_for_internal)
-            .unwrap_or_default();
+        return Cow::Owned(
+            std::str::from_utf8(raw)
+                .map(normalize_symbol_for_internal)
+                .unwrap_or_default(),
+        );
     }
 
     let start = raw
@@ -75,9 +82,13 @@ fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
         .rposition(|byte| !byte.is_ascii_whitespace())
         .map(|idx| idx + 1)
         .unwrap_or(start);
+    let raw = &raw[start..stop];
+    if is_internal_symbol_bytes(raw) {
+        return Cow::Borrowed(std::str::from_utf8(raw).unwrap_or_default());
+    }
 
-    let mut out = Vec::with_capacity(stop.saturating_sub(start));
-    for &byte in &raw[start..stop] {
+    let mut out = Vec::with_capacity(raw.len());
+    for &byte in raw {
         match byte {
             b'-' | b'_' | b'/' => {}
             b'a'..=b'z' => out.push(byte - 32),
@@ -87,7 +98,15 @@ fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
     if out.ends_with(b"SWAP") {
         out.truncate(out.len().saturating_sub(4));
     }
-    String::from_utf8(out).unwrap_or_default()
+    Cow::Owned(String::from_utf8(out).unwrap_or_default())
+}
+
+fn is_internal_symbol_bytes(symbol: &[u8]) -> bool {
+    !symbol.is_empty()
+        && !symbol.ends_with(b"SWAP")
+        && symbol
+            .iter()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -678,11 +697,13 @@ impl SignalChannel {
 mod tests {
     use super::{
         is_position_reducing, normalize_fixed_symbol_for_internal,
-        should_drop_open_signal_for_slow_round, should_drop_startup_buffered_signal,
-        should_suppress_arb_open_inactive_warning, OpenSignalDropReason,
+        normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
+        should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
+        OpenSignalDropReason,
     };
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
+    use std::borrow::Cow;
 
     fn fixed_symbol(value: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
@@ -714,6 +735,20 @@ mod tests {
             normalize_fixed_symbol_for_internal(&fixed_symbol("   ")),
             ""
         );
+    }
+
+    #[test]
+    fn normalize_fixed_symbol_borrows_internal_symbol() {
+        let internal = fixed_symbol("BTCUSDT");
+        let normalized = normalize_fixed_symbol_for_internal_cow(&internal);
+        assert!(matches!(normalized, Cow::Borrowed("BTCUSDT")));
+
+        let exchange_format = fixed_symbol("btc-usdt-swap");
+        let normalized = normalize_fixed_symbol_for_internal_cow(&exchange_format);
+        assert!(matches!(
+            normalized,
+            Cow::Owned(ref symbol) if symbol == "BTCUSDT"
+        ));
     }
 
     #[test]
@@ -814,12 +849,12 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     match ArbOpenCtxView::from_bytes(signal.context) {
         Ok(open_ctx) => {
             let handle_start_us = get_timestamp_us();
-            let symbol = normalize_fixed_symbol_for_internal(&open_ctx.opening_symbol);
+            let symbol = normalize_fixed_symbol_for_internal_cow(&open_ctx.opening_symbol);
             if symbol.is_empty() {
                 warn!("ArbOpen: empty symbol");
                 return;
             }
-            let hedging_symbol = normalize_fixed_symbol_for_internal(&open_ctx.hedging_symbol);
+            let hedging_symbol = normalize_fixed_symbol_for_internal_cow(&open_ctx.hedging_symbol);
             let Some(side) = open_ctx.get_side() else {
                 warn!("ArbOpen: invalid side {}", open_ctx.side);
                 return;
@@ -973,7 +1008,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let mut strategy = ArbOpenStrategy::new(strategy_id);
             strategy.handle_arb_open_view_with_symbol(
                 open_ctx,
-                symbol,
+                symbol.into_owned(),
                 pending_limit_prechecked,
                 receive_us,
                 handle_start_us,
@@ -1041,7 +1076,7 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
         warn!("failed to decode MMOpen context");
         return;
     };
-    let symbol = normalize_fixed_symbol_for_internal(&open_ctx.opening_symbol);
+    let symbol = normalize_fixed_symbol_for_internal_cow(&open_ctx.opening_symbol);
     if symbol.is_empty() {
         warn!("MMOpen: empty symbol");
         return;
@@ -1069,7 +1104,7 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
 
     let strategy_id = StrategyManager::generate_strategy_id();
     let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol);
+    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol.into_owned());
     if strategy.is_active() {
         debug!("MMOpen: strategy activated id={}", strategy_id);
         strategy_mgr.borrow_mut().insert(Box::new(strategy));
