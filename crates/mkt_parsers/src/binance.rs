@@ -1917,7 +1917,7 @@ fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
     } else {
         let start = *pos;
         while let Some(&b) = raw.get(*pos) {
-            if b == b',' || b == b']' || b.is_ascii_whitespace() {
+            if b == b',' || b == b']' || is_json_ws(b) {
                 break;
             }
             *pos += 1;
@@ -1986,7 +1986,7 @@ fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
     } else {
         let start = *pos;
         while let Some(&b) = raw.get(*pos) {
-            if b == b',' || b == b'}' || b == b']' || b.is_ascii_whitespace() {
+            if b == b',' || b == b'}' || b == b']' || is_json_ws(b) {
                 break;
             }
             *pos += 1;
@@ -2008,9 +2008,14 @@ fn parse_i64_bytes(raw: &[u8]) -> Option<i64> {
 }
 
 fn skip_ws_at(raw: &[u8], pos: &mut usize) {
-    while raw.get(*pos).is_some_and(|b| b.is_ascii_whitespace()) {
+    while raw.get(*pos).is_some_and(|b| is_json_ws(*b)) {
         *pos += 1;
     }
+}
+
+#[inline]
+fn is_json_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\n' | b'\r' | b'\t')
 }
 
 fn parse_i64(v: &Value) -> Option<i64> {
@@ -2353,11 +2358,7 @@ impl<'a> JsonObjectScanner<'a> {
     }
 
     fn skip_ws(&mut self) {
-        while self
-            .raw
-            .get(self.pos)
-            .is_some_and(|b| b.is_ascii_whitespace())
-        {
+        while self.raw.get(self.pos).is_some_and(|b| is_json_ws(*b)) {
             self.pos += 1;
         }
     }
@@ -2391,7 +2392,7 @@ impl<'a> JsonObjectScanner<'a> {
             }
             _ => {
                 while let Some(&b) = self.raw.get(self.pos) {
-                    if b == b',' || b == b'}' || b == b']' || b.is_ascii_whitespace() {
+                    if b == b',' || b == b'}' || b == b']' || is_json_ws(b) {
                         break;
                     }
                     self.pos += 1;
@@ -2449,10 +2450,10 @@ impl<'a> JsonObjectScanner<'a> {
 }
 
 fn trim_ascii(mut raw: &[u8]) -> &[u8] {
-    while raw.first().is_some_and(|b| b.is_ascii_whitespace()) {
+    while raw.first().is_some_and(|b| is_json_ws(*b)) {
         raw = &raw[1..];
     }
-    while raw.last().is_some_and(|b| b.is_ascii_whitespace()) {
+    while raw.last().is_some_and(|b| is_json_ws(*b)) {
         raw = &raw[..raw.len() - 1];
     }
     raw
