@@ -22,6 +22,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
+#[cfg(test)]
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use order_common::trade_error_code::describe_trade_error_code;
@@ -41,6 +42,7 @@ use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::SignalType;
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
+use trade_engine::trade_request::PreparedTradeRequest;
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
 const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
@@ -152,6 +154,7 @@ fn summarize_open_balance_reject(input: OpenBalanceRejectSummaryInput<'_>) {
     });
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn build_open_order_request_bytes_scoped(
     mut order_manager: RefMut<'_, OrderManager>,
@@ -173,6 +176,46 @@ fn build_open_order_request_bytes_scoped(
     pre_trade_handle_ts: i64,
 ) -> Result<(&'static str, Bytes), String> {
     order_manager.create_open_order_request_bytes_normalized_symbol(
+        venue,
+        client_order_id,
+        order_type,
+        normalized_symbol,
+        side,
+        order_qty,
+        order_price,
+        quantity_qv,
+        price_qv,
+        reduce_only,
+        qty_multiplier,
+        create_ts,
+        signal_type_u8,
+        mkt_ts,
+        pre_trade_recv_ts,
+        pre_trade_handle_ts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_open_order_request_prepared_scoped(
+    mut order_manager: RefMut<'_, OrderManager>,
+    venue: TradingVenue,
+    client_order_id: i64,
+    order_type: OrderType,
+    normalized_symbol: &str,
+    side: Side,
+    order_qty: f64,
+    order_price: f64,
+    quantity_qv: Option<OrderQuantizedValue>,
+    price_qv: Option<OrderQuantizedValue>,
+    reduce_only: bool,
+    qty_multiplier: f64,
+    create_ts: i64,
+    signal_type_u8: u8,
+    mkt_ts: i64,
+    pre_trade_recv_ts: i64,
+    pre_trade_handle_ts: i64,
+) -> Result<(&'static str, PreparedTradeRequest), String> {
+    order_manager.create_open_order_request_prepared_normalized_symbol(
         venue,
         client_order_id,
         order_type,
@@ -787,7 +830,7 @@ pub trait OpenStrategyCommon {
         client_order_id: i64,
         symbol: &str,
         exchange: &str,
-        req_bin: &Bytes,
+        request: &PreparedTradeRequest,
         watchdog_delay_us: i64,
     ) -> Result<(), String> {
         if self.enable_open_order_rate_limit() {
@@ -808,7 +851,9 @@ pub trait OpenStrategyCommon {
                 );
             }
         }
-        if let Err(e) = TradeEngHub::publish_order_request_for(client_order_id, exchange, req_bin) {
+        if let Err(e) =
+            TradeEngHub::publish_prepared_order_request_for(client_order_id, exchange, request)
+        {
             return Err(format!(
                 "publish order request failed: symbol={} exchange={} err={}",
                 symbol, exchange, e
@@ -1306,7 +1351,7 @@ pub trait OpenStrategyCommon {
         } else {
             None
         };
-        let request_build_result = build_open_order_request_bytes_scoped(
+        let request_build_result = build_open_order_request_prepared_scoped(
             order_manager.borrow_mut(),
             venue,
             client_order_id,
@@ -1325,7 +1370,7 @@ pub trait OpenStrategyCommon {
             input.pre_trade_recv_ts,
             input.pre_trade_handle_ts,
         );
-        let (exchange, req_bin) = match request_build_result {
+        let (exchange, request) = match request_build_result {
             Ok(request) => request,
             Err(err) => {
                 error!(
@@ -1369,7 +1414,7 @@ pub trait OpenStrategyCommon {
             client_order_id,
             &symbol,
             exchange,
-            &req_bin,
+            &request,
             order_query_watchdog_delay_us,
         ) {
             error!(
@@ -2750,8 +2795,9 @@ pub trait OpenStrategyCommon {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_open_order_request_bytes_scoped, should_promote_open_pending_query_reason,
-        OpenStrategyCommon, OpenStrategyState, PendingOrderQueryReason, QueryWatchdog,
+        build_open_order_request_bytes_scoped, build_open_order_request_prepared_scoped,
+        should_promote_open_pending_query_reason, OpenStrategyCommon, OpenStrategyState,
+        PendingOrderQueryReason, QueryWatchdog,
     };
     use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
     use crate::strategy::manager::OrphanStrategyRole;
@@ -2841,6 +2887,36 @@ mod tests {
         assert!(order_manager
             .borrow_mut()
             .remove((7_i64 << 32) | 1)
+            .is_some());
+    }
+
+    #[test]
+    fn prepared_open_order_request_build_err_releases_order_manager_borrow() {
+        let order_manager = RefCell::new(OrderManager::new(Some(BinanceAccountMode::Unified)));
+        let result = build_open_order_request_prepared_scoped(
+            order_manager.borrow_mut(),
+            TradingVenue::AsterMargin,
+            (7_i64 << 32) | 2,
+            OrderType::Limit,
+            "BNBUSDT",
+            Side::Buy,
+            0.16,
+            618.25,
+            None,
+            None,
+            true,
+            1.0,
+            1,
+            0,
+            1,
+            1,
+            1,
+        );
+
+        assert!(result.is_err());
+        assert!(order_manager
+            .borrow_mut()
+            .remove((7_i64 << 32) | 2)
             .is_some());
     }
 

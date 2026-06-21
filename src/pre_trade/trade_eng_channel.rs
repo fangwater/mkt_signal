@@ -26,7 +26,9 @@ use trade_engine::internal_terminate::{
     parse_bool_env, InternalOpenTerminateMsg, ARB_OPEN_INTERNAL_TERMINATE_ENV,
     ORDER_TERMINATE_PAYLOAD_LEN,
 };
-use trade_engine::trade_request::{TradeRequestIpcPayload, TRADE_REQ_PAYLOAD};
+use trade_engine::trade_request::{
+    PreparedTradeRequest, TradeRequestIpcPayload, TRADE_REQ_PAYLOAD,
+};
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };
@@ -201,6 +203,13 @@ impl TradeEngHub {
         Self::with(|hub| hub.publish_to_exchange(exchange, bytes))
     }
 
+    pub fn publish_prepared_order_request(
+        exchange: &str,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        Self::with(|hub| hub.publish_prepared_to_exchange(exchange, request))
+    }
+
     pub fn drain_pending_responses() -> bool {
         Self::with(|hub| hub.drain_pending_responses_inner())
     }
@@ -318,6 +327,87 @@ impl TradeEngHub {
         result
     }
 
+    pub fn publish_prepared_order_request_for(
+        client_order_id: i64,
+        exchange: &str,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        let publish_start_us = get_timestamp_us();
+        let create_time_us = Some(request.create_time());
+        let req_type = Some(request.req_type());
+        let mut submit_meta = None;
+        let mut submit_signal_type = None;
+        let order_manager = MonitorChannel::try_order_manager();
+        if let Some(om) = order_manager.as_ref() {
+            let signal_meta = om.borrow_mut().set_submit_time_and_signal_meta(
+                client_order_id,
+                publish_start_us,
+                req_type
+                    .map(TradeRequestType::is_new_order)
+                    .unwrap_or(false),
+            );
+            if let Some(meta) = signal_meta {
+                if meta.signal_t > 0 {
+                    submit_signal_type = SignalType::from_u32(meta.signal_kind as u32);
+                    if let Some(signal_type) = submit_signal_type {
+                        record_signal_submit_latency(
+                            signal_type.as_str(),
+                            publish_start_us,
+                            meta.signal_t,
+                        );
+                    }
+                    if submit_signal_type == Some(SignalType::ArbOpen) {
+                        record_arb_open_latency(
+                            "pt_publish_start_minus_generation",
+                            publish_start_us.saturating_sub(meta.signal_t),
+                        );
+                    }
+                }
+                submit_meta = Some(meta);
+            }
+        }
+        let result = Self::publish_prepared_order_request(exchange, request);
+        let publish_done_us = get_timestamp_us();
+        let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        let result_status = if result.is_ok() { "ok" } else { "err" };
+        if let Some(meta) = submit_meta.as_ref() {
+            if let Some(signal_type) = submit_signal_type {
+                log_open_order_slow_trace(
+                    client_order_id,
+                    exchange,
+                    request.encoded_len(),
+                    meta,
+                    signal_type,
+                    order_manager.as_deref(),
+                    publish_start_us,
+                    publish_done_us,
+                    result_status,
+                );
+            }
+        }
+        let build_to_publish_done_us = create_time_us
+            .filter(|create_time_us| *create_time_us > 0)
+            .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
+        let build_to_publish_slow = build_to_publish_done_us
+            .map(|latency_us| latency_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US)
+            .unwrap_or(false);
+        if publish_cost_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US || build_to_publish_slow {
+            warn!(
+                "TradeReqLatency: publish_slow client_order_id={} exchange={} bytes_len={} create_time_us={:?} publish_start_us={} publish_done_us={} publish_cost_us={} build_to_publish_done_us={:?} result={}",
+                client_order_id,
+                exchange,
+                request.encoded_len(),
+                create_time_us,
+                publish_start_us,
+                publish_done_us,
+                publish_cost_us,
+                build_to_publish_done_us,
+                result_status
+            );
+        }
+        result
+    }
+
     pub fn publish_internal_open_terminate_for(
         client_order_id: i64,
         exchange: &str,
@@ -353,6 +443,26 @@ impl TradeEngHub {
             return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
         };
         channel.publish_order_request(bytes)
+    }
+
+    fn publish_prepared_to_exchange(
+        &self,
+        exchange: &str,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        let key = Self::normalize_exchange(exchange);
+        {
+            let channels = self.channels.borrow();
+            if let Some(channel) = channels.get(key.as_ref()) {
+                return channel.publish_prepared_order_request(request);
+            }
+        }
+        self.ensure_exchange_key(key.as_ref())?;
+        let channels = self.channels.borrow();
+        let Some(channel) = channels.get(key.as_ref()) else {
+            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        };
+        channel.publish_prepared_order_request(request)
     }
 
     fn publish_internal_open_terminate_to_exchange(
@@ -478,6 +588,30 @@ impl TradeEngChannel {
         let mut sample = self.order_req_publisher.loan_uninit()?;
         TradeRequestIpcPayload::write_to_uninit_slot(sample.payload_mut(), &bytes[..copy_len])
             .ok_or_else(|| anyhow!("order request exceeds ipc payload: len={}", bytes.len()))?;
+        let sample = unsafe { sample.assume_init() };
+        sample.send()?;
+
+        Ok(())
+    }
+
+    fn publish_prepared_order_request(&self, request: &PreparedTradeRequest) -> Result<()> {
+        if request.encoded_len() > TRADE_REQ_PAYLOAD {
+            warn!(
+                "Order request exceeds payload: len={} capacity={}",
+                request.encoded_len(),
+                TRADE_REQ_PAYLOAD
+            );
+        }
+
+        let mut sample = self.order_req_publisher.loan_uninit()?;
+        request
+            .write_to_uninit_slot(sample.payload_mut())
+            .ok_or_else(|| {
+                anyhow!(
+                    "order request exceeds ipc payload: len={}",
+                    request.encoded_len()
+                )
+            })?;
         let sample = unsafe { sample.assume_init() };
         sample.send()?;
 

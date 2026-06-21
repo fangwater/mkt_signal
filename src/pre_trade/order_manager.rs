@@ -21,7 +21,7 @@ use trade_engine::okex::{
 };
 use trade_engine::trade_request::{
     BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams, BitgetNewOrderParams,
-    GateCancelOrderParams, GateNewOrderParams,
+    GateCancelOrderParams, GateNewOrderParams, PreparedTradeRequest,
 };
 fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     if let Some(qv) = QuantizedValue::from_decimal(value) {
@@ -190,6 +190,26 @@ pub trait PreTradeOrderManagerRequestExt {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_open_order_request_prepared_normalized_symbol(
+        &mut self,
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: &str,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        quantity_qv: Option<OrderQuantizedValue>,
+        price_qv: Option<OrderQuantizedValue>,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        signal_t: i64,
+        signal_kind: u8,
+        mkt_t: i64,
+        pre_trade_recv_t: i64,
+        pre_trade_handle_t: i64,
+    ) -> Result<(&'static str, PreparedTradeRequest), String>;
 }
 
 impl PreTradeOrderManagerRequestExt for OrderManager {
@@ -341,11 +361,70 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         };
         result
     }
+
+    fn create_open_order_request_prepared_normalized_symbol(
+        &mut self,
+        venue: TradingVenue,
+        client_order_id: i64,
+        order_type: OrderType,
+        symbol: &str,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        quantity_qv: Option<OrderQuantizedValue>,
+        price_qv: Option<OrderQuantizedValue>,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        signal_t: i64,
+        signal_kind: u8,
+        mkt_t: i64,
+        pre_trade_recv_t: i64,
+        pre_trade_handle_t: i64,
+    ) -> Result<(&'static str, PreparedTradeRequest), String> {
+        let Some(result) = self.create_order_with_mut_normalized_symbol(
+            venue,
+            client_order_id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            true,
+            |order| {
+                if let Some(quantity_qv) = quantity_qv {
+                    order.set_quantity_qv(quantity_qv);
+                }
+                if let Some(price_qv) = price_qv {
+                    order.set_price_qv(price_qv);
+                }
+                order.set_signal_meta(signal_t, signal_kind);
+                if mkt_t > 0 {
+                    order.set_mkt_time(mkt_t);
+                }
+                if pre_trade_recv_t > 0 || pre_trade_handle_t > 0 {
+                    order.set_pre_trade_open_trace(pre_trade_recv_t, pre_trade_handle_t);
+                }
+                let exchange = order.venue.trade_engine_exchange();
+                order
+                    .get_order_request_prepared()
+                    .map(|request| (exchange, request))
+            },
+        ) else {
+            return Err(format!(
+                "order not found after create: client_order_id={}",
+                client_order_id
+            ));
+        };
+        result
+    }
 }
 
 pub trait PreTradeOrderRequestExt {
     fn get_order_cancel_bytes(&self) -> Result<Bytes, String>;
     fn get_order_request_bytes(&self) -> Result<Bytes, String>;
+    fn get_order_request_prepared(&self) -> Result<PreparedTradeRequest, String>;
 }
 
 impl PreTradeOrderRequestExt for Order {
@@ -797,6 +876,243 @@ impl PreTradeOrderRequestExt for Order {
             }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
+        }
+    }
+
+    fn get_order_request_prepared(&self) -> Result<PreparedTradeRequest, String> {
+        if self.order_type.is_limit() && self.price <= 0.0 {
+            return Err(format!(
+                "invalid limit price: price={:.8} order_type={:?} symbol={} client_order_id={}",
+                self.price, self.order_type, self.symbol, self.client_order_id
+            ));
+        }
+        let resolved = ResolvedOrderQuantities::from_order(self);
+
+        match self.venue {
+            TradingVenue::BinanceMargin => {
+                let use_binance_ws_margin =
+                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let local_create_ts = get_timestamp_us();
+                let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&self.symbol);
+                let (check_asset, required_amount) = match self.side {
+                    Side::Buy => (quote_asset, self.quantity * self.price),
+                    Side::Sell => (base_asset, self.quantity),
+                };
+
+                use crate::pre_trade::monitor_channel::MonitorChannel;
+                let available_balance =
+                    MonitorChannel::instance().balance_position_for_venue(self.venue, &check_asset);
+
+                if available_balance < required_amount {
+                    let borrow_amount = required_amount - available_balance;
+                    if use_binance_ws_margin || self.reduce_only {
+                        return Err(format!(
+                            "BinanceMargin order has insufficient balance: mode={} asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} reduce_only={} qty={} price={}",
+                            if use_binance_ws_margin {
+                                "STANDARD"
+                            } else {
+                                "UNIFIED"
+                            },
+                            check_asset,
+                            required_amount,
+                            available_balance,
+                            borrow_amount,
+                            self.symbol,
+                            self.side,
+                            self.reduce_only,
+                            resolved.quantity_text(),
+                            resolved.price_text()
+                        ));
+                    }
+                    if !suppress_pre_submit_hot_path_logs()
+                        && !(use_binance_ws_margin && self.side == Side::Sell)
+                    {
+                        warn!(
+                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",
+                            check_asset, required_amount, available_balance, borrow_amount,
+                            self.symbol,
+                            self.side,
+                            resolved.quantity_text(),
+                            resolved.price_text()
+                        );
+                    }
+                    if use_binance_ws_margin && !suppress_pre_submit_hot_path_logs() {
+                        info!(
+                            "BinanceMargin STANDARD mode: omit sideEffectType for symbol={} side={:?}",
+                            self.symbol, self.side
+                        );
+                    }
+                } else if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
+                        check_asset, required_amount, available_balance, self.symbol, self.side
+                    );
+                }
+                let margin_buy =
+                    binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
+                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
+                        self.venue,
+                        self.client_order_id,
+                        self.symbol,
+                        self.side,
+                        self.order_type,
+                        self.reduce_only
+                    );
+                }
+                let req_type = if use_binance_ws_margin {
+                    trade_engine::trade_request::TradeRequestType::BinanceWsNewMarginOrder
+                } else {
+                    trade_engine::trade_request::TradeRequestType::BinanceNewMarginOrder
+                };
+                BinanceNewOrderParams::prepared_request_from_parts(
+                    req_type,
+                    local_create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    margin_buy,
+                    use_binance_ws_margin,
+                    false,
+                    use_binance_ws_margin,
+                )
+                .ok_or_else(|| "failed to build binance margin order params".to_string())
+            }
+            TradingVenue::BinanceFutures => {
+                let use_binance_ws_um =
+                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let local_create_ts = get_timestamp_us();
+                let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
+                if !suppress_pre_submit_hot_path_logs() {
+                    info!(
+                        "OrderManager: venue={:?} client_order_id={} symbol={} side={:?} type={:?} reduce_only={} typed_params=binance_new_order",
+                        self.venue,
+                        self.client_order_id,
+                        self.symbol,
+                        self.side,
+                        self.order_type,
+                        self.reduce_only
+                    );
+                }
+                let req_type = if use_binance_ws_um {
+                    trade_engine::trade_request::TradeRequestType::BinanceWsNewUMOrder
+                } else {
+                    trade_engine::trade_request::TradeRequestType::BinanceNewUMOrder
+                };
+                BinanceNewOrderParams::prepared_request_from_parts(
+                    req_type,
+                    local_create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    false,
+                    false,
+                    use_binance_ws_um,
+                    false,
+                )
+                .ok_or_else(|| "failed to build binance um order params".to_string())
+            }
+            TradingVenue::GateMargin => {
+                let create_ts = get_timestamp_us();
+                let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported gate order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                GateNewOrderParams::prepared_request_from_parts(
+                    trade_engine::trade_request::TradeRequestType::GateUnifiedNewOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &currency_pair,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    self.side == Side::Buy,
+                )
+                .ok_or_else(|| "failed to build gate unified order params".to_string())
+            }
+            TradingVenue::GateFutures => {
+                let create_ts = get_timestamp_us();
+                let contract = gate_currency_pair_from_symbol(&self.symbol);
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported gate order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let quantity_qv = resolved.require_quantity_qv(self, "gate")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "gate")?;
+                GateNewOrderParams::prepared_request_from_parts(
+                    trade_engine::trade_request::TradeRequestType::GateFuturesNewOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &contract,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    false,
+                )
+                .ok_or_else(|| "failed to build gate futures order params".to_string())
+            }
+            TradingVenue::BitgetMargin => {
+                let create_ts = get_timestamp_us();
+                let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                BitgetNewOrderParams::prepared_request_from_parts(
+                    trade_engine::trade_request::TradeRequestType::BitgetNewMarginOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build bitget margin order params".to_string())
+            }
+            TradingVenue::BitgetFutures => {
+                let create_ts = get_timestamp_us();
+                let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
+                BitgetNewOrderParams::prepared_request_from_parts(
+                    trade_engine::trade_request::TradeRequestType::BitgetNewUMOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build bitget um order params".to_string())
+            }
+            _ => {
+                let bytes = self.get_order_request_bytes()?;
+                PreparedTradeRequest::from_bytes(bytes.as_ref())
+                    .ok_or_else(|| "failed to prepare order request from bytes".to_string())
+            }
         }
     }
 }
