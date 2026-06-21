@@ -652,7 +652,7 @@ fn parse_combined_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
     let kind = if bytes_ends_with(stream, b"@bookTicker") {
         RawBboKind::BookTicker
-    } else if bytes_contains(stream, b"@depth") {
+    } else if stream_channel_starts_with(stream, b"depth") {
         RawBboKind::Depth
     } else {
         return None;
@@ -800,7 +800,7 @@ fn parse_combined_depth_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
     let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
-    if !bytes_contains(stream, b"@depth") {
+    if !stream_channel_starts_with(stream, b"depth") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
@@ -928,7 +928,7 @@ fn parse_combined_depth_update_fields_fast(raw: &[u8]) -> Option<RawBookFields<'
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
     let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
-    if !bytes_contains(stream, b"@depth") {
+    if !stream_channel_starts_with(stream, b"depth") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
@@ -1366,8 +1366,13 @@ fn bytes_ends_with(raw: &[u8], suffix: &[u8]) -> bool {
     raw.len() >= suffix.len() && raw[raw.len() - suffix.len()..] == *suffix
 }
 
-fn bytes_contains(raw: &[u8], needle: &[u8]) -> bool {
-    memmem::find(raw, needle).is_some()
+fn stream_channel_starts_with(stream: &[u8], prefix: &[u8]) -> bool {
+    let Some(at) = memchr(b'@', stream) else {
+        return false;
+    };
+    stream
+        .get(at + 1..at + 1 + prefix.len())
+        .is_some_and(|channel| channel == prefix)
 }
 
 fn skip_raw_json_value(raw: &[u8], pos: &mut usize) -> Option<()> {
@@ -1473,7 +1478,7 @@ fn parse_combined_kline_fast(raw: &[u8]) -> Option<RawKline<'_>> {
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
     let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
-    if !bytes_contains(stream, b"@kline") {
+    if !stream_channel_starts_with(stream, b"kline") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
