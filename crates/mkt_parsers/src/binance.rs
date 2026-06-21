@@ -1,4 +1,4 @@
-use memchr::{memchr, memchr2};
+use memchr::{memchr, memchr2, memchr3};
 use serde_json::Value;
 
 pub const SBE_TEMPLATE_TRADE: u16 = 10000;
@@ -1903,14 +1903,7 @@ fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
     let bytes = if raw.get(*pos) == Some(&b'"') {
         take_unescaped_quoted_bytes(raw, pos)?
     } else {
-        let start = *pos;
-        while let Some(&b) = raw.get(*pos) {
-            if b == b',' || b == b']' || is_json_ws(b) {
-                break;
-            }
-            *pos += 1;
-        }
-        &raw[start..*pos]
+        take_unquoted_json_scalar(raw, pos)?
     };
     if bytes.is_empty() {
         return None;
@@ -1955,14 +1948,7 @@ fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
     let bytes = if raw.get(*pos) == Some(&b'"') {
         take_unescaped_quoted_bytes(raw, pos)?
     } else {
-        let start = *pos;
-        while let Some(&b) = raw.get(*pos) {
-            if b == b',' || b == b'}' || b == b']' || is_json_ws(b) {
-                break;
-            }
-            *pos += 1;
-        }
-        &raw[start..*pos]
+        take_unquoted_json_scalar(raw, pos)?
     };
     if bytes.is_empty() {
         return None;
@@ -1987,6 +1973,19 @@ fn take_unescaped_quoted_bytes<'a>(raw: &'a [u8], pos: &mut usize) -> Option<&'a
         }
         _ => None,
     }
+}
+
+fn take_unquoted_json_scalar<'a>(raw: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    let start = *pos;
+    let rest = raw.get(*pos..)?;
+    let offset = memchr3(b',', b'}', b']', rest).unwrap_or(rest.len());
+    let end = *pos + offset;
+    let mut scalar_end = end;
+    while scalar_end > start && is_json_ws(raw[scalar_end - 1]) {
+        scalar_end -= 1;
+    }
+    *pos = scalar_end;
+    Some(&raw[start..scalar_end])
 }
 
 fn parse_i64_bytes(raw: &[u8]) -> Option<i64> {
@@ -2380,12 +2379,7 @@ impl<'a> JsonObjectScanner<'a> {
                 Some(false)
             }
             _ => {
-                while let Some(&b) = self.raw.get(self.pos) {
-                    if b == b',' || b == b'}' || b == b']' || is_json_ws(b) {
-                        break;
-                    }
-                    self.pos += 1;
-                }
+                take_unquoted_json_scalar(self.raw, &mut self.pos)?;
                 (self.pos < self.raw.len()).then_some(false)
             }
         }
@@ -2738,6 +2732,16 @@ mod tests {
     fn raw_trade_rejects_escaped_quoted_number() {
         let raw = br#"{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25\.0","q":"100","m":true}"#;
         assert!(parse_trade_raw_borrowed(raw).is_none());
+    }
+
+    #[test]
+    fn raw_trade_accepts_unquoted_numbers_with_trailing_ws() {
+        let raw = br#"{"e":"trade","E":1700000000001 ,"s":"BTCUSDT","t":1001 ,"p":25.0 ,"q":100 ,"m":true}"#;
+        let trade = parse_trade_raw_borrowed(raw).expect("unquoted trade");
+        assert_eq!(trade.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(trade.trade_id, 1001);
+        assert!((trade.price - 25.0).abs() < 1e-9);
+        assert!((trade.amount - 100.0).abs() < 1e-9);
     }
 
     #[test]
