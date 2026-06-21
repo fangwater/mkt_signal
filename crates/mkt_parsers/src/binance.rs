@@ -630,6 +630,10 @@ pub fn parse_trade_raw(raw: &[u8]) -> Option<Trade> {
 }
 
 pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
+    if let Some(trade) = parse_combined_trade_fast(raw) {
+        return Some(trade);
+    }
+
     let mut payload = raw_payload_object(raw);
     let mut seen_event = false;
     let mut symbol = None;
@@ -707,6 +711,188 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
         return None;
     }
     Some(out)
+}
+
+fn parse_combined_trade_fast(raw: &[u8]) -> Option<RawTrade<'_>> {
+    let mut pos = 0usize;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""stream""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
+    if !stream.ends_with("@trade") {
+        return None;
+    }
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+    consume_raw_literal(raw, &mut pos, br#""data""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let trade = parse_trade_payload_fast(raw, &mut pos)?;
+    finish_raw_object(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(trade)
+}
+
+fn parse_trade_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawTrade<'a>> {
+    expect_raw_byte(raw, pos, b'{')?;
+    consume_raw_literal(raw, pos, br#""e""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    consume_raw_literal(raw, pos, br#""trade""#)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    let timestamp_us = if consume_raw_literal_if(raw, pos, br#""E""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let event_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        if consume_raw_literal_if(raw, pos, br#""T""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            parse_raw_i64_value(raw, pos)?;
+            if !consume_raw_field_separator(raw, pos)? {
+                return None;
+            }
+        }
+        event_time_us
+    } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let trade_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        trade_time_us
+    } else {
+        return None;
+    };
+
+    consume_raw_literal(raw, pos, br#""s""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let symbol = std::str::from_utf8(take_unescaped_quoted_bytes(raw, pos)?).ok()?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""t""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let trade_id = parse_raw_i64_value(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""p""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let price = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""q""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let amount = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    let is_buyer_maker = loop {
+        if consume_raw_literal_if(raw, pos, br#""m""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            let value = parse_raw_bool_value(raw, pos)?;
+            finish_raw_object(raw, pos)?;
+            break value;
+        }
+        take_unescaped_quoted_bytes(raw, pos)?;
+        expect_raw_byte(raw, pos, b':')?;
+        skip_raw_json_value(raw, pos)?;
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+    };
+
+    let out = RawTrade {
+        symbol,
+        timestamp_us,
+        seq_id: trade_id,
+        trade_id,
+        side: if is_buyer_maker { 'S' } else { 'B' },
+        price,
+        amount,
+    };
+    if out.price <= 0.0 || out.amount <= 0.0 {
+        return None;
+    }
+    Some(out)
+}
+
+fn expect_raw_byte(raw: &[u8], pos: &mut usize, expected: u8) -> Option<()> {
+    skip_ws_at(raw, pos);
+    if raw.get(*pos) != Some(&expected) {
+        return None;
+    }
+    *pos += 1;
+    Some(())
+}
+
+fn consume_raw_literal(raw: &[u8], pos: &mut usize, literal: &[u8]) -> Option<()> {
+    skip_ws_at(raw, pos);
+    if raw.get(*pos..*pos + literal.len()) != Some(literal) {
+        return None;
+    }
+    *pos += literal.len();
+    Some(())
+}
+
+fn consume_raw_literal_if(raw: &[u8], pos: &mut usize, literal: &[u8]) -> bool {
+    skip_ws_at(raw, pos);
+    if raw.get(*pos..*pos + literal.len()) == Some(literal) {
+        *pos += literal.len();
+        true
+    } else {
+        false
+    }
+}
+
+fn consume_raw_field_separator(raw: &[u8], pos: &mut usize) -> Option<bool> {
+    skip_ws_at(raw, pos);
+    match raw.get(*pos).copied()? {
+        b',' => {
+            *pos += 1;
+            Some(true)
+        }
+        b'}' => {
+            *pos += 1;
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
+fn parse_raw_bool_value(raw: &[u8], pos: &mut usize) -> Option<bool> {
+    if consume_raw_literal_if(raw, pos, b"true") {
+        Some(true)
+    } else if consume_raw_literal_if(raw, pos, b"false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn skip_raw_json_value(raw: &[u8], pos: &mut usize) -> Option<()> {
+    let mut scanner = JsonObjectScanner { raw, pos: *pos };
+    scanner.skip_value()?;
+    *pos = scanner.pos;
+    Some(())
+}
+
+fn finish_raw_object(raw: &[u8], pos: &mut usize) -> Option<()> {
+    let mut scanner = JsonObjectScanner { raw, pos: *pos };
+    scanner.skip_rest_of_object()?;
+    *pos = scanner.pos;
+    Some(())
 }
 
 pub fn parse_incremental_json(value: &Value) -> Option<Book> {
@@ -2731,6 +2917,25 @@ mod tests {
         let borrowed = parse_trade_raw_borrowed(raw).expect("borrowed trade");
         assert_eq!(borrowed.symbol, "BTCUSDT");
         assert_eq!(borrowed.side, 'S');
+    }
+
+    #[test]
+    fn trade_fast_path_parses_combined_stream_shape() {
+        let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":false}}"#;
+        let trade = super::parse_combined_trade_fast(raw).expect("fast trade");
+
+        assert_eq!(trade.symbol, "BTCUSDT");
+        assert_eq!(trade.trade_id, 1001);
+        assert_eq!(trade.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(trade.side, 'B');
+        assert!((trade.price - 25.0).abs() < 1e-9);
+        assert!((trade.amount - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trade_fast_path_rejects_non_trade_stream() {
+        let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}}"#;
+        assert!(super::parse_combined_trade_fast(raw).is_none());
     }
 
     #[test]
