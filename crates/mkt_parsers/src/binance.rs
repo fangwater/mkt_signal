@@ -2884,12 +2884,30 @@ fn parse_raw_top_level(raw: &[u8]) -> Option<Level> {
 }
 
 fn parse_raw_top_level_at(raw: &[u8], pos: &mut usize) -> Option<Level> {
-    let start = *pos;
-    let mut scan = *pos;
-    skip_raw_json_value(raw, &mut scan)?;
-    let level = parse_raw_top_level(raw.get(start..scan)?)?;
-    *pos = scan;
-    Some(level)
+    expect_raw_byte(raw, pos, b'[')?;
+    loop {
+        skip_ws_at(raw, pos);
+        match raw.get(*pos).copied()? {
+            b']' => return None,
+            b',' => *pos += 1,
+            b'[' => {
+                let level = parse_raw_level(raw, pos)?;
+                loop {
+                    skip_ws_at(raw, pos);
+                    match raw.get(*pos).copied()? {
+                        b']' => {
+                            *pos += 1;
+                            return Some(level);
+                        }
+                        b',' => *pos += 1,
+                        b'[' => skip_raw_level(raw, pos)?,
+                        _ => return None,
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
 }
 
 fn raw_levels_count(raw: &[u8]) -> Option<usize> {
@@ -3934,6 +3952,17 @@ mod tests {
             "b":[["25.0","0"]],"a":[["25.1","3"]]}}"#;
 
         assert!(parse_depth_bbo_raw_borrowed(raw).is_none());
+    }
+
+    #[test]
+    fn raw_top_level_at_scans_array_once() {
+        let raw = br#"[["25.0","1"],["24.9","2"]] ,"#;
+        let mut pos = 0usize;
+        let level = super::parse_raw_top_level_at(raw, &mut pos).expect("top level");
+
+        assert_eq!(level.price, 25.0);
+        assert_eq!(level.amount, 1.0);
+        assert_eq!(raw.get(pos), Some(&b' '));
     }
 
     #[test]
