@@ -1,4 +1,3 @@
-use crate::pre_trade::runtime_flags::enable_ipc_fast_poll;
 use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::okex_auth::OkexCredentials;
@@ -159,7 +158,6 @@ struct LeverageGuardState {
     global_block: Option<GlobalBlock>,
     refresh_ctx: Option<GuardRefreshContext>,
     refresh_in_flight: bool,
-    pending_fast_poll_refresh_source: Option<&'static str>,
     last_refresh_request_us: i64,
     stats: BlockStats,
 }
@@ -172,7 +170,6 @@ impl LeverageGuardState {
             global_block: None,
             refresh_ctx: None,
             refresh_in_flight: false,
-            pending_fast_poll_refresh_source: None,
             last_refresh_request_us: 0,
             stats: BlockStats::new(get_timestamp_us()),
         }
@@ -188,7 +185,6 @@ impl LeverageGuardState {
             global_block: None,
             refresh_ctx: Some(refresh_ctx),
             refresh_in_flight: false,
-            pending_fast_poll_refresh_source: None,
             last_refresh_request_us: 0,
             stats: BlockStats::new(get_timestamp_us()),
         }
@@ -312,11 +308,7 @@ impl LeverageGuard {
             refresh_result.statuses,
             refresh_ctx,
         ));
-        if enable_ipc_fast_poll() {
-            info!("ArbOpen leverage guard background refresh disabled in fast-poll mode");
-        } else {
-            Self::start_background_refresh_task();
-        }
+        Self::start_background_refresh_task();
         Ok(())
     }
 
@@ -337,39 +329,8 @@ impl LeverageGuard {
     }
 
     fn request_refresh(source: &'static str) {
-        if enable_ipc_fast_poll() {
-            Self::mark_refresh_requested(source);
-            return;
-        }
-
         let now_us = get_timestamp_us();
-        let refresh_ctx = LEVERAGE_GUARD.with(|guard| {
-            let mut guard_ref = guard.borrow_mut();
-            let Some(state) = guard_ref.as_mut() else {
-                return None;
-            };
-            if !state.enabled {
-                return None;
-            }
-            let Some(refresh_ctx) = state.refresh_ctx.clone() else {
-                return None;
-            };
-            if state.refresh_in_flight {
-                return None;
-            }
-            if source != "background_interval"
-                && state.last_refresh_request_us > 0
-                && now_us.saturating_sub(state.last_refresh_request_us)
-                    < ON_DEMAND_REFRESH_DEBOUNCE_US
-            {
-                return None;
-            }
-            state.refresh_in_flight = true;
-            state.last_refresh_request_us = now_us;
-            Some(refresh_ctx)
-        });
-
-        let Some(refresh_ctx) = refresh_ctx else {
+        let Some(refresh_ctx) = Self::try_begin_refresh(source, now_us) else {
             return;
         };
 
@@ -388,26 +349,28 @@ impl LeverageGuard {
         });
     }
 
-    fn mark_refresh_requested(source: &'static str) {
-        let now_us = get_timestamp_us();
+    fn try_begin_refresh(source: &'static str, now_us: i64) -> Option<GuardRefreshContext> {
         LEVERAGE_GUARD.with(|guard| {
             let mut guard_ref = guard.borrow_mut();
-            let Some(state) = guard_ref.as_mut() else {
-                return;
-            };
+            let state = guard_ref.as_mut()?;
             if !state.enabled {
-                return;
+                return None;
+            }
+            let refresh_ctx = state.refresh_ctx.clone()?;
+            if state.refresh_in_flight {
+                return None;
             }
             if source != "background_interval"
                 && state.last_refresh_request_us > 0
                 && now_us.saturating_sub(state.last_refresh_request_us)
                     < ON_DEMAND_REFRESH_DEBOUNCE_US
             {
-                return;
+                return None;
             }
+            state.refresh_in_flight = true;
             state.last_refresh_request_us = now_us;
-            state.pending_fast_poll_refresh_source = Some(source);
-        });
+            Some(refresh_ctx)
+        })
     }
 
     async fn run_refresh(refresh_ctx: GuardRefreshContext, source: &'static str) -> Result<()> {
@@ -576,50 +539,6 @@ impl LeverageGuard {
         }
 
         blocked
-    }
-
-    pub fn refresh_blocking_for_fast_poll(source: &'static str) -> Result<bool> {
-        let Some((refresh_ctx, snapshot)) = LEVERAGE_GUARD.with(|guard| {
-            let guard_ref = guard.borrow();
-            let state = guard_ref.as_ref().filter(|state| state.enabled)?;
-            let refresh_ctx = state.refresh_ctx.clone()?;
-            Some((refresh_ctx, GuardRefreshSnapshot::from_state(state)))
-        }) else {
-            return Ok(false);
-        };
-
-        let existing_targets = snapshot.existing_targets.clone();
-        let global_trigger = snapshot.global_trigger.clone();
-        let handle = std::thread::Builder::new()
-            .name("pre_trade_leverage_guard_blocking_refresh".to_string())
-            .spawn(move || -> Result<GuardRefreshResult> {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("build blocking leverage guard runtime")?;
-                runtime.block_on(refresh_guard_targets_with_state(
-                    &refresh_ctx,
-                    existing_targets,
-                    global_trigger,
-                ))
-            })
-            .context("spawn blocking leverage guard refresh thread")?;
-        let refresh_result = handle
-            .join()
-            .map_err(|_| anyhow!("blocking leverage guard refresh thread panicked"))??;
-        Self::apply_refresh_result(source, snapshot.global_block_label, refresh_result);
-        Ok(true)
-    }
-
-    pub fn take_fast_poll_refresh_request() -> Option<&'static str> {
-        LEVERAGE_GUARD.with(|guard| {
-            let mut guard_ref = guard.borrow_mut();
-            let state = guard_ref.as_mut()?;
-            if !state.enabled {
-                return None;
-            }
-            state.pending_fast_poll_refresh_source.take()
-        })
     }
 }
 
@@ -1681,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_poll_refresh_request_is_taken_once() {
+    fn refresh_request_marks_in_flight_without_blocking_wait() {
         install_guard_state(LeverageGuardState::enabled(
             std::collections::HashMap::new(),
             GuardRefreshContext {
@@ -1695,13 +1614,15 @@ mod tests {
             },
         ));
 
-        LeverageGuard::mark_refresh_requested("arb_open_blocked");
-
-        assert_eq!(
-            LeverageGuard::take_fast_poll_refresh_request(),
-            Some("arb_open_blocked")
-        );
-        assert_eq!(LeverageGuard::take_fast_poll_refresh_request(), None);
+        let now_us = 1_000_000;
+        assert!(LeverageGuard::try_begin_refresh("arb_open_blocked", now_us).is_some());
+        LEVERAGE_GUARD.with(|guard| {
+            let guard_ref = guard.borrow();
+            let state = guard_ref.as_ref().expect("guard state");
+            assert!(state.refresh_in_flight);
+            assert_eq!(state.last_refresh_request_us, now_us);
+        });
+        assert!(LeverageGuard::try_begin_refresh("arb_open_blocked", now_us + 1).is_none());
 
         install_guard_state(LeverageGuardState::disabled());
     }
