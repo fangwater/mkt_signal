@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info, warn};
+use log::{info, warn};
 #[cfg(test)]
 use runtime_common::fast_hash::fast_hash_set;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set_from_iter, FastHashMap, FastHashSet};
@@ -339,12 +339,12 @@ pub fn query_batch_or_remote(
         match &mut *state {
             LocalTlenRuntime::Local(store) => {
                 if store.venue.data_pub_slug() != venue_slug {
-                    debug!(
-                        "{source}: local_tlen mode fixed to venue={} but requested venue={}; falling back to remote query",
+                    warn!(
+                        "{source}: local_tlen mode fixed to venue={} but requested venue={}; returning empty tlen without remote query",
                         store.venue.data_pub_slug(),
                         venue_slug
                     );
-                    return None;
+                    return Some(vec![TLEN_QUERY_AMOUNT_EMPTY; tick_indices.len()]);
                 }
                 Some(store.query_batch(&symbol_key, tick_indices))
             }
@@ -688,6 +688,22 @@ mod tests {
         assert_eq!(
             query_batch_local_only_for_cancel("test", "binance-margin", "BTCUSDT", &[100, 101],),
             Some(None)
+        );
+
+        LOCAL_TLEN.with(|state| {
+            *state.borrow_mut() = LocalTlenRuntime::Uninitialized;
+        });
+    }
+
+    #[test]
+    fn open_query_stays_local_on_venue_mismatch() {
+        LOCAL_TLEN.with(|state| {
+            *state.borrow_mut() = LocalTlenRuntime::Local(test_store(TradingVenue::BinanceMargin));
+        });
+
+        assert_eq!(
+            query_batch_or_remote("test", "gate-margin", "BTCUSDT", &[100, 101]),
+            Some(vec![TLEN_QUERY_AMOUNT_EMPTY, TLEN_QUERY_AMOUNT_EMPTY])
         );
 
         LOCAL_TLEN.with(|state| {
