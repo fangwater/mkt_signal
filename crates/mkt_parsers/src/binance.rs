@@ -614,8 +614,7 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 fn parse_book_ticker_object_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut pos = 0usize;
     let bbo = parse_book_ticker_payload_fast(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(bbo)
@@ -637,8 +636,7 @@ fn parse_combined_book_ticker_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     expect_raw_byte(raw, &mut pos, b':')?;
     let bbo = parse_book_ticker_payload_fast(raw, &mut pos)?;
     finish_raw_object(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(bbo)
@@ -667,8 +665,7 @@ fn parse_combined_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
         RawBboKind::Depth => parse_depth_bbo_payload_fast(raw, &mut pos)?,
     };
     finish_raw_object(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(bbo)
@@ -810,8 +807,7 @@ fn parse_combined_depth_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     expect_raw_byte(raw, &mut pos, b':')?;
     let bbo = parse_depth_bbo_payload_fast(raw, &mut pos)?;
     finish_raw_object(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(bbo)
@@ -820,8 +816,7 @@ fn parse_combined_depth_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
 fn parse_depth_bbo_object_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut pos = 0usize;
     let bbo = parse_depth_bbo_payload_fast(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(bbo)
@@ -938,8 +933,7 @@ fn parse_combined_depth_update_fields_fast(raw: &[u8]) -> Option<RawBookFields<'
     expect_raw_byte(raw, &mut pos, b':')?;
     let fields = parse_depth_update_payload_fields_fast(raw, &mut pos)?;
     finish_raw_object(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(fields)
@@ -948,8 +942,7 @@ fn parse_combined_depth_update_fields_fast(raw: &[u8]) -> Option<RawBookFields<'
 fn parse_depth_update_fields_object_fast(raw: &[u8]) -> Option<RawBookFields<'_>> {
     let mut pos = 0usize;
     let fields = parse_depth_update_payload_fields_fast(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(fields)
@@ -1179,8 +1172,7 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
 fn parse_trade_object_fast(raw: &[u8]) -> Option<RawTrade<'_>> {
     let mut pos = 0usize;
     let trade = parse_trade_payload_fast(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(trade)
@@ -1202,8 +1194,7 @@ fn parse_combined_trade_fast(raw: &[u8]) -> Option<RawTrade<'_>> {
     expect_raw_byte(raw, &mut pos, b':')?;
     let trade = parse_trade_payload_fast(raw, &mut pos)?;
     finish_raw_object(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(trade)
@@ -1424,6 +1415,14 @@ fn finish_raw_object(raw: &[u8], pos: &mut usize) -> Option<()> {
     Some(())
 }
 
+fn finish_raw_message(raw: &[u8], pos: &mut usize) -> bool {
+    if *pos == raw.len() {
+        return true;
+    }
+    skip_ws_at(raw, pos);
+    *pos == raw.len()
+}
+
 pub fn parse_incremental_json(value: &Value) -> Option<Book> {
     let payload = payload(value);
     if !payload.is_object() {
@@ -1511,8 +1510,7 @@ fn parse_combined_kline_fast(raw: &[u8]) -> Option<RawKline<'_>> {
     expect_raw_byte(raw, &mut pos, b':')?;
     let kline = parse_kline_payload_fast(raw, &mut pos)?;
     finish_raw_object(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(kline)
@@ -1521,8 +1519,7 @@ fn parse_combined_kline_fast(raw: &[u8]) -> Option<RawKline<'_>> {
 fn parse_kline_object_fast(raw: &[u8]) -> Option<RawKline<'_>> {
     let mut pos = 0usize;
     let kline = parse_kline_payload_fast(raw, &mut pos)?;
-    skip_ws_at(raw, &mut pos);
-    if pos != raw.len() {
+    if !finish_raw_message(raw, &mut pos) {
         return None;
     }
     Some(kline)
