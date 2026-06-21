@@ -6,6 +6,7 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
+use std::rc::Rc;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
@@ -13,6 +14,7 @@ use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
+use crate::strategy::StrategyManager;
 use order_common::TradeRequestType;
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate, OrderSubmitSignalMeta};
@@ -151,6 +153,7 @@ fn log_open_order_slow_trace(
 /// * 可以在启动时显式注册多个交易所，也可以按需懒加载
 pub struct TradeEngHub {
     channels: RefCell<FastHashMap<String, TradeEngChannel>>,
+    response_scratch: RefCell<Vec<TradeEngineResponseMessage>>,
     internal_open_terminate_enabled: bool,
 }
 
@@ -223,7 +226,11 @@ impl TradeEngHub {
     }
 
     fn drain_pending_responses_inner_limit(&self, max_responses: usize) -> bool {
-        let mut responses = Vec::new();
+        let mut responses = {
+            let mut scratch = self.response_scratch.borrow_mut();
+            std::mem::take(&mut *scratch)
+        };
+        responses.clear();
         {
             let mut channels = self.channels.borrow_mut();
             for channel in channels.values_mut() {
@@ -235,9 +242,11 @@ impl TradeEngHub {
             }
         }
         let any = !responses.is_empty();
-        for response in responses {
+        for response in responses.iter() {
             dispatch_trade_engine_response(&response);
         }
+        responses.clear();
+        *self.response_scratch.borrow_mut() = responses;
         any
     }
 
@@ -425,6 +434,9 @@ impl TradeEngHub {
     fn new(internal_open_terminate_enabled: bool) -> Self {
         Self {
             channels: RefCell::new(fast_hash_map()),
+            response_scratch: RefCell::new(Vec::with_capacity(
+                TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE,
+            )),
             internal_open_terminate_enabled,
         }
     }
@@ -795,31 +807,13 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
     };
 
     let order_id = response.client_order_id();
-    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
-    let mut matched = false;
-
-    for strategy_id in strategy_ids {
-        let strategy_opt = {
-            let mut mgr = strategy_mgr.borrow_mut();
-            mgr.take(strategy_id)
-        };
-
-        if let Some(mut strategy) = strategy_opt {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                if !apply_trade_response_as_update(strategy.as_mut(), response) {
-                    strategy.apply_trade_engine_response(response);
-                }
-            }
-            if strategy.is_active() {
-                strategy_mgr.borrow_mut().insert(strategy);
-            }
-        }
-    }
+    let expected_strategy_id = (order_id >> 32) as i32;
+    let matched =
+        dispatch_trade_engine_response_to_strategy(&strategy_mgr, expected_strategy_id, response)
+            || dispatch_trade_engine_response_fallback_scan(&strategy_mgr, response);
 
     if !matched {
         persist_unmatched_trade_engine_response(response);
-        let expected_strategy_id = (order_id >> 32) as i32;
         debug!(
             "tradeEngineResponse unmatched: cli_ord_id={} status={} expect_strategy={}",
             order_id,
@@ -827,6 +821,53 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
             expected_strategy_id
         );
     }
+}
+
+fn dispatch_trade_engine_response_to_strategy(
+    strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    strategy_id: i32,
+    response: &TradeEngineResponseMessage,
+) -> bool {
+    let order_id = response.client_order_id();
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+
+    let Some(mut strategy) = strategy_opt else {
+        return false;
+    };
+
+    let matched = strategy.is_strategy_order(order_id);
+    if matched {
+        if !apply_trade_response_as_update(strategy.as_mut(), response) {
+            strategy.apply_trade_engine_response(response);
+        }
+    }
+    if strategy.is_active() {
+        strategy_mgr.borrow_mut().insert(strategy);
+    }
+    matched
+}
+
+fn dispatch_trade_engine_response_fallback_scan(
+    strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    response: &TradeEngineResponseMessage,
+) -> bool {
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    let mut matched = false;
+
+    for strategy_id in strategy_ids {
+        if dispatch_trade_engine_response_to_strategy(strategy_mgr, strategy_id, response) {
+            matched = true;
+            break;
+        }
+    }
+    matched
 }
 
 fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage) {
