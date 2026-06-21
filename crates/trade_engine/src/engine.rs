@@ -76,7 +76,6 @@ const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
 const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
-const TE_IPC_IDLE_SLEEP_MICROS: u64 = 100;
 const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 64;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
@@ -691,12 +690,11 @@ fn run_te_ipc_thread(
         query_service.subscriber_builder().create()?;
 
     info!(
-        "trade_engine IPC thread started; order_req='{}' order_control='{}' query_req='{}' fast_poll={} idle_sleep_us={}",
+        "trade_engine IPC thread started; order_req='{}' order_control='{}' query_req='{}' fast_poll={} idle_policy=spin",
         order_req_service,
         order_control_service.unwrap_or("-"),
         query_req_service,
-        fast_poll,
-        TE_IPC_IDLE_SLEEP_MICROS
+        fast_poll
     );
 
     let mut pending_order_req: Option<TradeRequestMsg> = None;
@@ -826,12 +824,8 @@ fn run_te_ipc_thread(
             }
         }
 
-        if fast_poll {
+        if !did_work || fast_poll {
             std::hint::spin_loop();
-        } else if !did_work {
-            thread::sleep(Duration::from_micros(TE_IPC_IDLE_SLEEP_MICROS));
-        } else {
-            thread::yield_now();
         }
     }
 
