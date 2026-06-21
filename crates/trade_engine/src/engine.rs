@@ -76,7 +76,7 @@ const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
 const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
-const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 64;
+const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 1024;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
 
@@ -205,13 +205,12 @@ fn enable_ipc_fast_poll() -> bool {
 }
 
 fn router_idle_spin_iters(fast_poll: bool) -> usize {
-    if !fast_poll {
-        return 0;
-    }
-    env_usize_or(
-        "TE_ROUTER_IDLE_SPIN_ITERS",
-        DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
-    )
+    let default_iters = if fast_poll {
+        DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS
+    } else {
+        64
+    };
+    env_usize_or("TE_ROUTER_IDLE_SPIN_ITERS", default_iters)
 }
 
 fn internal_open_terminate_enabled_from_env() -> bool {
@@ -3520,7 +3519,10 @@ impl TradeEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{enable_ipc_fast_poll, parse_bool_env};
+    use super::{
+        enable_ipc_fast_poll, parse_bool_env, router_idle_spin_iters,
+        DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+    };
     use std::sync::{Mutex, OnceLock};
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -3563,5 +3565,25 @@ mod tests {
         std::env::set_var("enable_ipc_fast_poll", "yes");
         assert!(enable_ipc_fast_poll());
         std::env::remove_var("enable_ipc_fast_poll");
+    }
+
+    #[test]
+    fn router_idle_spin_iters_keeps_spin_when_fast_poll_disabled() {
+        let _guard = env_test_lock();
+        std::env::remove_var("TE_ROUTER_IDLE_SPIN_ITERS");
+        assert_eq!(
+            router_idle_spin_iters(true),
+            DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS
+        );
+        assert_eq!(router_idle_spin_iters(false), 64);
+    }
+
+    #[test]
+    fn router_idle_spin_iters_honors_env_override() {
+        let _guard = env_test_lock();
+        std::env::set_var("TE_ROUTER_IDLE_SPIN_ITERS", "2048");
+        assert_eq!(router_idle_spin_iters(true), 2048);
+        assert_eq!(router_idle_spin_iters(false), 2048);
+        std::env::remove_var("TE_ROUTER_IDLE_SPIN_ITERS");
     }
 }
