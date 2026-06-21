@@ -271,6 +271,19 @@ impl<'a> TradeSignalView<'a> {
         })
     }
 
+    pub fn from_exact_bytes(data: &'a [u8]) -> Result<Self, String> {
+        let signal = Self::from_bytes(data)?;
+        let expected_len = TRADE_SIGNAL_HEADER_LEN + signal.context.len();
+        if expected_len != data.len() {
+            return Err(format!(
+                "信号长度不匹配，期望{}字节，实际{}字节",
+                expected_len,
+                data.len()
+            ));
+        }
+        Ok(signal)
+    }
+
     pub fn to_owned_signal(self) -> TradeSignal {
         TradeSignal {
             signal_type: self.signal_type,
@@ -303,6 +316,21 @@ mod tests {
         assert_eq!(view.handle_time, owned.handle_time);
         assert_eq!(view.context, owned.context.as_ref());
         assert_eq!(view.to_owned_signal().context.as_ref(), b"ctx-bytes");
+    }
+
+    #[test]
+    fn trade_signal_view_exact_parse_rejects_trailing_bytes() {
+        let signal = TradeSignal::create(
+            SignalType::ArbOpen,
+            123456,
+            7.5,
+            Bytes::from_static(b"ctx-bytes"),
+        );
+        let mut bytes = signal.to_bytes().to_vec();
+        bytes.push(0);
+
+        assert!(TradeSignalView::from_bytes(&bytes).is_ok());
+        assert!(TradeSignalView::from_exact_bytes(&bytes).is_err());
     }
 
     #[test]

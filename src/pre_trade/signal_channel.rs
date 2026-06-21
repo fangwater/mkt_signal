@@ -38,7 +38,7 @@ use signal_common::mm_signal::{
     MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
 };
 use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView, MmOpenCtxView};
-use signal_common::trade_signal::{SignalType, TradeSignal, TradeSignalView};
+use signal_common::trade_signal::{SignalType, TradeSignalView};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
@@ -461,25 +461,7 @@ impl SignalListener {
                         );
                         continue;
                     };
-                    let Some(encoded_len) = TradeSignal::encoded_len(payload) else {
-                        warn!(
-                            "failed to decode trade signal from channel {}: invalid payload length={} context_length={:?}",
-                            self.channel_name,
-                            payload.len(),
-                            TradeSignal::get_context_length(payload)
-                        );
-                        continue;
-                    };
-                    if encoded_len != payload.len() {
-                        warn!(
-                            "failed to decode trade signal from channel {}: mismatched payload length={} encoded_len={}",
-                            self.channel_name,
-                            payload.len(),
-                            encoded_len
-                        );
-                        continue;
-                    }
-                    match TradeSignalView::from_bytes(payload) {
+                    match TradeSignalView::from_exact_bytes(payload) {
                         Ok(signal) => {
                             if should_drop_startup_buffered_signal(
                                 signal.generation_time,
