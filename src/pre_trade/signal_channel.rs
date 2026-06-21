@@ -1009,7 +1009,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let mut strategy = ArbOpenStrategy::new(strategy_id);
             strategy.handle_arb_open_view_with_symbol(
                 open_ctx,
-                symbol.into_owned(),
+                symbol,
                 pending_limit_prechecked,
                 receive_us,
                 handle_start_us,
@@ -1105,7 +1105,7 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
 
     let strategy_id = StrategyManager::generate_strategy_id();
     let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol.into_owned());
+    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol);
     if strategy.is_active() {
         debug!("MMOpen: strategy activated id={}", strategy_id);
         strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1296,7 +1296,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     let mut strategy = ArbOpenStrategy::new(strategy_id);
                     strategy.handle_arb_open_ctx_with_symbol(
                         open_ctx,
-                        symbol,
+                        Cow::Owned(symbol),
                         pending_limit_prechecked,
                         receive_us,
                         handle_start_us,
@@ -1777,7 +1777,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
 
             let strategy_id = StrategyManager::generate_strategy_id();
             let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-            strategy.handle_mm_open_view_with_symbol(open_ctx_view, symbol);
+            strategy.handle_mm_open_view_with_symbol(open_ctx_view, Cow::Owned(symbol));
             if strategy.is_active() {
                 debug!("MMOpen: strategy activated id={}", strategy_id);
                 strategy_mgr.borrow_mut().insert(Box::new(strategy));

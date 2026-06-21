@@ -358,7 +358,7 @@ pub struct OpenSignalInput<'a> {
     pub signal_kind: &'static str,
     pub order_log_name: &'static str,
     pub order_rate_bucket: OrderRateBucket,
-    pub opening_symbol: String,
+    pub opening_symbol: Cow<'a, str>,
     pub opening_symbol_normalized: bool,
     pub venue_u8: u8,
     pub side_u8: u8,
@@ -919,7 +919,7 @@ pub trait OpenStrategyCommon {
         let symbol = if input.opening_symbol_normalized {
             input.opening_symbol
         } else {
-            normalize_symbol_for_internal(&input.opening_symbol)
+            Cow::Owned(normalize_symbol_for_internal(&input.opening_symbol))
         };
         if symbol.is_empty() {
             warn!(
@@ -1013,15 +1013,16 @@ pub trait OpenStrategyCommon {
         let monitor = MonitorChannel::instance();
         let order_manager = monitor.order_manager();
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
-        let current_open_base_qty = monitor.get_position_qty(&symbol, venue);
+        let symbol_ref = symbol.as_ref();
+        let current_open_base_qty = monitor.get_position_qty(symbol_ref, venue);
         if !skip_position_risk_checks {
-            if let Err(err) = monitor.check_open_exposure(&symbol) {
+            if let Err(err) = monitor.check_open_exposure(symbol_ref) {
                 match err {
                     OpenExposureRiskError::Symbol(e) => {
                         self.log_open_deleveraging_risk_reject(
                             "单品种敞口风控",
                             &e,
-                            &symbol,
+                            symbol_ref,
                             venue,
                             side,
                             current_open_base_qty,
@@ -1031,7 +1032,7 @@ pub trait OpenStrategyCommon {
                             "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
                             self.strategy_name(),
                             self.strategy_id(),
-                            symbol,
+                            symbol_ref,
                             e
                         );
                         self.mark_open_strategy_inactive(format!(
@@ -1072,23 +1073,23 @@ pub trait OpenStrategyCommon {
             } else {
                 match input.order_rate_bucket {
                     OrderRateBucket::ArbOpen => {
-                        monitor.check_pending_limit_order_for_arb(&symbol, side)
+                        monitor.check_pending_limit_order_for_arb(symbol_ref, side)
                     }
-                    _ => monitor.check_pending_limit_order(&symbol, side),
+                    _ => monitor.check_pending_limit_order(symbol_ref, side),
                 }
             };
             if let Err(e) = limit_check {
                 log_pending_limit_summary(
                     self.strategy_name(),
                     Some(self.strategy_id()),
-                    &symbol,
+                    symbol_ref,
                     side,
                     &e,
                 );
                 self.log_open_deleveraging_risk_reject(
                     "限价挂单数量风控",
                     &e,
-                    &symbol,
+                    symbol_ref,
                     venue,
                     side,
                     current_open_base_qty,
@@ -1098,7 +1099,7 @@ pub trait OpenStrategyCommon {
                     "{}: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
                     self.strategy_id(),
-                    symbol,
+                    symbol_ref,
                     e
                 );
                 self.mark_open_strategy_inactive(format!("pending limit order risk failed: {}", e));
@@ -1446,7 +1447,7 @@ pub trait OpenStrategyCommon {
         }
         {
             let state = self.open_state_mut();
-            state.open_symbol = symbol;
+            state.open_symbol = symbol.into_owned();
             state.signal_ts = input.create_ts;
             state.from_key = input.from_key.into_owned();
             state.price_qv = input.price_qv;

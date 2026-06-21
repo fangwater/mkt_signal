@@ -31,10 +31,10 @@ impl MarketMakerOpenStrategy {
 
     pub fn handle_mm_open_ctx(&mut self, ctx: MmOpenCtx) {
         let symbol = ctx.get_opening_symbol();
-        self.handle_mm_open_ctx_with_symbol(ctx, symbol);
+        self.handle_mm_open_ctx_with_symbol(ctx, Cow::Owned(symbol));
     }
 
-    pub fn handle_mm_open_ctx_with_symbol(&mut self, ctx: MmOpenCtx, symbol: String) {
+    pub fn handle_mm_open_ctx_with_symbol(&mut self, ctx: MmOpenCtx, symbol: Cow<'_, str>) {
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
             order_log_name: "MM开仓",
@@ -67,7 +67,11 @@ impl MarketMakerOpenStrategy {
         });
     }
 
-    pub fn handle_mm_open_view_with_symbol(&mut self, ctx: MmOpenCtxView<'_>, symbol: String) {
+    pub fn handle_mm_open_view_with_symbol(
+        &mut self,
+        ctx: MmOpenCtxView<'_>,
+        symbol: Cow<'_, str>,
+    ) {
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
             order_log_name: "MM开仓",

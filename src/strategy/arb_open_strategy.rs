@@ -40,13 +40,19 @@ impl ArbOpenStrategy {
 
     pub fn handle_arb_open_ctx(&mut self, ctx: ArbOpenCtx, pending_limit_prechecked: bool) {
         let symbol = ctx.get_opening_symbol();
-        self.handle_arb_open_ctx_with_symbol(ctx, symbol, pending_limit_prechecked, 0, 0);
+        self.handle_arb_open_ctx_with_symbol(
+            ctx,
+            Cow::Owned(symbol),
+            pending_limit_prechecked,
+            0,
+            0,
+        );
     }
 
     pub fn handle_arb_open_ctx_with_symbol(
         &mut self,
         ctx: ArbOpenCtx,
-        symbol: String,
+        symbol: Cow<'_, str>,
         pending_limit_prechecked: bool,
         pre_trade_recv_ts: i64,
         pre_trade_handle_ts: i64,
@@ -111,7 +117,7 @@ impl ArbOpenStrategy {
     pub fn handle_arb_open_view_with_symbol(
         &mut self,
         ctx: ArbOpenCtxView<'_>,
-        symbol: String,
+        symbol: Cow<'_, str>,
         pending_limit_prechecked: bool,
         pre_trade_recv_ts: i64,
         pre_trade_handle_ts: i64,

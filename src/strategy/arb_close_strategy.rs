@@ -210,7 +210,7 @@ impl ArbCloseStrategy {
             signal_kind: "ArbClose",
             order_log_name: "ArbClose",
             order_rate_bucket: OrderRateBucket::ArbOpen,
-            opening_symbol: symbol,
+            opening_symbol: Cow::Owned(symbol),
             opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
