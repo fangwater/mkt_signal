@@ -1940,7 +1940,7 @@ impl TradeWsClient {
     fn ws_open_update_enabled_for_request(msg: &TradeRequestMsg) -> bool {
         match msg.req_type {
             TradeRequestType::BinanceWsNewUMOrder => {
-                crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                BinanceNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.order_type.is_limit())
                     .or_else(|| {
                         std::str::from_utf8(&msg.params)
@@ -1950,7 +1950,7 @@ impl TradeWsClient {
                     .unwrap_or(false)
             }
             TradeRequestType::BinanceWsNewMarginOrder => {
-                crate::trade_request::BinanceNewOrderParams::from_bytes(&msg.params)
+                BinanceNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.ws_margin_limit_maker && params.order_type.is_limit())
                     .or_else(|| {
                         std::str::from_utf8(&msg.params)

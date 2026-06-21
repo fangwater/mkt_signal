@@ -38,8 +38,9 @@ use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
-    TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType,
+    BinanceCancelOrderParams, BinanceNewOrderParams, BinanceNewOrderParamsRef,
+    BitgetNewOrderParams, GateNewOrderParams, TradeRequestIpcPayload, TradeRequestMsg,
+    TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -326,7 +327,7 @@ fn parse_urlencoded_rest_pairs(raw: &[u8], context: &str) -> Result<RestParamPai
 }
 
 fn binance_new_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
-    let params = BinanceNewOrderParams::from_bytes(&msg.params).ok_or_else(|| {
+    let params = BinanceNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
         anyhow!(
             "Binance REST new order requires typed params, req_type={:?}",
             msg.req_type
@@ -353,7 +354,7 @@ fn binance_new_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs>
     if is_margin && params.margin_buy {
         pairs.push(("sideEffectType".to_string(), "MARGIN_BUY".to_string()));
     }
-    pairs.push(("symbol".to_string(), params.symbol));
+    pairs.push(("symbol".to_string(), params.symbol.to_string()));
     if params.order_type.is_limit() {
         pairs.push((
             "timeInForce".to_string(),
