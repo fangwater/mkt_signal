@@ -1901,20 +1901,7 @@ fn skip_raw_string(raw: &[u8], pos: &mut usize) -> Option<()> {
 fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
     skip_ws_at(raw, pos);
     let bytes = if raw.get(*pos) == Some(&b'"') {
-        *pos += 1;
-        let start = *pos;
-        loop {
-            let b = *raw.get(*pos)?;
-            match b {
-                b'\\' => return None,
-                b'"' => {
-                    let end = *pos;
-                    *pos += 1;
-                    break &raw[start..end];
-                }
-                _ => *pos += 1,
-            }
-        }
+        take_unescaped_quoted_bytes(raw, pos)?
     } else {
         let start = *pos;
         while let Some(&b) = raw.get(*pos) {
@@ -1966,20 +1953,7 @@ fn parse_raw_key_i64(raw: &[u8], key: u8) -> Option<i64> {
 fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
     skip_ws_at(raw, pos);
     let bytes = if raw.get(*pos) == Some(&b'"') {
-        *pos += 1;
-        let start = *pos;
-        loop {
-            let b = *raw.get(*pos)?;
-            match b {
-                b'\\' => return None,
-                b'"' => {
-                    let end = *pos;
-                    *pos += 1;
-                    break &raw[start..end];
-                }
-                _ => *pos += 1,
-            }
-        }
+        take_unescaped_quoted_bytes(raw, pos)?
     } else {
         let start = *pos;
         while let Some(&b) = raw.get(*pos) {
@@ -1994,6 +1968,25 @@ fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
         return None;
     }
     parse_i64_bytes(bytes)
+}
+
+fn take_unescaped_quoted_bytes<'a>(raw: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
+    if raw.get(*pos) != Some(&b'"') {
+        return None;
+    }
+    *pos += 1;
+    let start = *pos;
+    let rest = raw.get(*pos..)?;
+    let offset = memchr2(b'"', b'\\', rest)?;
+    match rest[offset] {
+        b'\\' => None,
+        b'"' => {
+            let end = *pos + offset;
+            *pos = end + 1;
+            Some(&raw[start..end])
+        }
+        _ => None,
+    }
 }
 
 fn parse_i64_bytes(raw: &[u8]) -> Option<i64> {
@@ -2230,6 +2223,9 @@ impl<'a> JsonValue<'a> {
     }
 
     fn number_bytes(self) -> Option<&'a [u8]> {
+        if self.escaped {
+            return None;
+        }
         if self.raw.first() == Some(&b'"') && self.raw.last() == Some(&b'"') {
             Some(&self.raw[1..self.raw.len() - 1])
         } else {
@@ -2735,6 +2731,12 @@ mod tests {
     #[test]
     fn raw_trade_rejects_escaped_symbol() {
         let raw = br#"{"e":"trade","E":1700000000001,"s":"BTC\u0055SDT","t":1001,"p":"25.0","q":"100","m":true}"#;
+        assert!(parse_trade_raw_borrowed(raw).is_none());
+    }
+
+    #[test]
+    fn raw_trade_rejects_escaped_quoted_number() {
+        let raw = br#"{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25\.0","q":"100","m":true}"#;
         assert!(parse_trade_raw_borrowed(raw).is_none());
     }
 
