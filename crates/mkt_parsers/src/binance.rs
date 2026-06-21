@@ -295,6 +295,9 @@ pub fn parse_book_ticker_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     if let Some(bbo) = parse_combined_book_ticker_fast(raw) {
         return Some(bbo);
     }
+    if let Some(bbo) = parse_book_ticker_object_fast(raw) {
+        return Some(bbo);
+    }
 
     let mut payload = raw_payload_object(raw);
     let mut seen_event = false;
@@ -387,6 +390,9 @@ enum RawBboKind {
 
 pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     if let Some(bbo) = parse_combined_book_ticker_fast(raw) {
+        return Some(bbo);
+    }
+    if let Some(bbo) = parse_book_ticker_object_fast(raw) {
         return Some(bbo);
     }
     if let Some(bbo) = parse_combined_depth_bbo_fast(raw) {
@@ -602,6 +608,16 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     Some(out)
 }
 
+fn parse_book_ticker_object_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let mut pos = 0usize;
+    let bbo = parse_book_ticker_payload_fast(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(bbo)
+}
+
 fn parse_combined_book_ticker_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut pos = 0usize;
     expect_raw_byte(raw, &mut pos, b'{')?;
@@ -634,13 +650,24 @@ fn parse_book_ticker_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<
         return None;
     }
 
-    if !consume_raw_literal_if(raw, pos, br#""E""#) {
-        return None;
-    }
-    expect_raw_byte(raw, pos, b':')?;
-    let timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
-    if !consume_raw_field_separator(raw, pos)? {
-        return None;
+    let mut timestamp_us = 0i64;
+    loop {
+        if consume_raw_literal_if(raw, pos, br#""E""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            if timestamp_us == 0 {
+                timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+            } else {
+                parse_raw_i64_value(raw, pos)?;
+            }
+        } else {
+            break;
+        }
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
     }
 
     consume_raw_literal(raw, pos, br#""u""#)?;
@@ -681,7 +708,28 @@ fn parse_book_ticker_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<
     consume_raw_literal(raw, pos, br#""A""#)?;
     expect_raw_byte(raw, pos, b':')?;
     let ask_amount = parse_raw_number(raw, pos)?;
-    finish_raw_object(raw, pos)?;
+    if consume_raw_field_separator(raw, pos)? {
+        loop {
+            if consume_raw_literal_if(raw, pos, br#""E""#) {
+                expect_raw_byte(raw, pos, b':')?;
+                timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+            } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+                expect_raw_byte(raw, pos, b':')?;
+                if timestamp_us == 0 {
+                    timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+                } else {
+                    parse_raw_i64_value(raw, pos)?;
+                }
+            } else {
+                take_unescaped_quoted_bytes(raw, pos)?;
+                expect_raw_byte(raw, pos, b':')?;
+                skip_raw_json_value(raw, pos)?;
+            }
+            if !consume_raw_field_separator(raw, pos)? {
+                break;
+            }
+        }
+    }
 
     let out = RawBbo {
         symbol,
@@ -3487,6 +3535,30 @@ mod tests {
         assert!((bbo.bid_price - 25.0).abs() < 1e-9);
         assert!((bbo.bid_amount - 100.0).abs() < 1e-9);
         assert!((bbo.ask_price - 25.1).abs() < 1e-9);
+        assert!((bbo.ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn book_ticker_fast_path_accepts_event_time_after_quote_fields() {
+        let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":123,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50","E":1700000000001}}"#;
+        let bbo = super::parse_combined_book_ticker_fast(raw).expect("fast book ticker");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 123);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
+        assert!((bbo.ask_amount - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn book_ticker_fast_path_parses_raw_object_shape() {
+        let raw = br#"{"e":"bookTicker","u":123,"s":"BTCUSDT","b":"25.0","B":"100","a":"25.1","A":"50","E":1700000000001}"#;
+        let bbo = super::parse_book_ticker_object_fast(raw).expect("fast book ticker");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 123);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
         assert!((bbo.ask_amount - 50.0).abs() < 1e-9);
     }
 
