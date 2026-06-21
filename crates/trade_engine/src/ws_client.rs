@@ -1,8 +1,7 @@
 use crate::binance_ws;
 use crate::bitget_ws;
-use crate::bybit::{
-    BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest, BybitWsOrderResponse,
-};
+use crate::bybit;
+use crate::bybit::{BybitNewOrderParams, BybitWsOrderResponse};
 use crate::config::LimitConstants;
 use crate::engine::{
     internal_open_terminated_outcome, record_internal_open_terminate_summary,
@@ -10,9 +9,8 @@ use crate::engine::{
 };
 use crate::gate_ws;
 use crate::ltp_ws::{self, LtpCredentials};
-use crate::okex::{
-    OkexCancelOrderRequest, OkexNewOrderParams, OkexNewOrderRequest, OkexWsOrderResponse,
-};
+use crate::okex;
+use crate::okex::{OkexCancelOrderParams, OkexNewOrderParams, OkexWsOrderResponse};
 use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
@@ -1605,24 +1603,18 @@ impl TradeWsClient {
     }
 
     fn build_bybit_payload(&self, msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
-        use crate::trade_request::TradeRequestHeader;
-
-        let header = TradeRequestHeader {
-            msg_type: msg.req_type as u32,
-            params_length: msg.params.len() as u32,
-            create_time: msg.create_time,
-            client_order_id: msg.client_order_id,
-        };
         let req_id = transport_id.to_string();
         let timestamp_ms = chrono::Utc::now().timestamp_millis();
 
         match msg.req_type {
             TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
-                BybitNewOrderRequest {
-                    header,
-                    params: msg.params_bytes(),
-                }
-                .to_ws_json_string(&req_id, timestamp_ms)
+                bybit::build_new_ws_json_from_parts(
+                    msg.req_type,
+                    msg.client_order_id,
+                    &msg.params,
+                    &req_id,
+                    timestamp_ms,
+                )
                 .ok_or_else(|| {
                     anyhow!(
                         "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
@@ -1632,11 +1624,12 @@ impl TradeWsClient {
                 })
             }
             TradeRequestType::BybitCancelMarginOrder | TradeRequestType::BybitCancelUMOrder => {
-                BybitCancelOrderRequest {
-                    header,
-                    params: msg.params_bytes(),
-                }
-                .to_ws_json_string(&req_id, timestamp_ms)
+                bybit::build_cancel_ws_json_from_parts(
+                    msg.req_type,
+                    &msg.params,
+                    &req_id,
+                    timestamp_ms,
+                )
                 .ok_or_else(|| {
                     anyhow!(
                         "failed to build bybit ws payload (req_type={:?}, client_order_id={})",
@@ -1658,30 +1651,24 @@ impl TradeWsClient {
         msg: &TradeRequestMsg,
         transport_id: i64,
     ) -> Result<String> {
-        use crate::trade_request::TradeRequestHeader;
-
-        let header = TradeRequestHeader {
-            msg_type: msg.req_type as u32,
-            params_length: msg.params.len() as u32,
-            create_time: msg.create_time,
-            client_order_id: msg.client_order_id,
-        };
-
         let inst_id_code = self.resolve_okex_inst_id_code_for_trade_msg(msg).await?;
         let payload = match msg.req_type {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
-                OkexNewOrderRequest {
-                    header,
-                    params: msg.params_bytes(),
-                }
-                .to_ws_json_string(inst_id_code, transport_id)
+                okex::build_new_ws_json_from_parts(
+                    msg.req_type,
+                    &msg.params,
+                    inst_id_code,
+                    transport_id,
+                )
             }
             TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
-                OkexCancelOrderRequest {
-                    header,
-                    params: msg.params_bytes(),
-                }
-                .to_ws_json_string(inst_id_code, transport_id)
+                okex::build_cancel_ws_json_from_parts(
+                    msg.req_type,
+                    msg.client_order_id,
+                    &msg.params,
+                    inst_id_code,
+                    transport_id,
+                )
             }
             _ => None,
         };
@@ -1699,33 +1686,17 @@ impl TradeWsClient {
         &mut self,
         msg: &TradeRequestMsg,
     ) -> Result<i64> {
-        use crate::trade_request::TradeRequestHeader;
-
-        let header = TradeRequestHeader {
-            msg_type: msg.req_type as u32,
-            params_length: msg.params.len() as u32,
-            create_time: msg.create_time,
-            client_order_id: msg.client_order_id,
-        };
         let inst_type = Self::okex_inst_type_for_req(msg.req_type)?;
         let inst_id = match msg.req_type {
             TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => {
-                OkexNewOrderRequest {
-                    header,
-                    params: msg.params_bytes(),
-                }
-                .params_struct()
-                .map(|params| params.symbol)
-                .ok_or_else(|| anyhow!("decode okex new order params failed"))?
+                OkexNewOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.symbol)
+                    .ok_or_else(|| anyhow!("decode okex new order params failed"))?
             }
             TradeRequestType::OkexCancelMarginOrder | TradeRequestType::OkexCancelUMOrder => {
-                OkexCancelOrderRequest {
-                    header,
-                    params: msg.params_bytes(),
-                }
-                .params_struct()
-                .map(|params| params.inst_id)
-                .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?
+                OkexCancelOrderParams::from_bytes(&msg.params)
+                    .map(|params| params.inst_id)
+                    .ok_or_else(|| anyhow!("decode okex cancel order params failed"))?
             }
             _ => {
                 return Err(anyhow!(

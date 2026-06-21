@@ -354,37 +354,7 @@ impl OkexNewOrderRequest {
 
     pub fn to_ws_json_string(&self, inst_id_code: i64, transport_id: i64) -> Option<String> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        let params = OkexNewOrderParams::decode_raw(&self.params)?;
-        let td_mode = match req_type {
-            TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => "cross",
-            _ => return None,
-        };
-        let qty = params.quantity_qv.decimal_string();
-        let price = params.price_qv.decimal_string();
-        let cl_id = params.client_order_id;
-        let ord_type_str = params.order_type.as_str();
-        let mut out = okex_payload_prefix("order", transport_id, 192 + qty.len() + price.len());
-
-        push_i64_field(&mut out, "instIdCode", inst_id_code, true);
-        push_json_field(&mut out, "side", params.side.as_str_lower(), false);
-        push_json_field(&mut out, "ordType", ord_type_str, false);
-        push_json_field(&mut out, "sz", &qty, false);
-        if params.order_type != OkexOrderType::Market {
-            push_json_field(&mut out, "px", &price, false);
-        }
-        push_json_field(&mut out, "tdMode", td_mode, false);
-        push_i64_string_field(&mut out, "clOrdId", cl_id, false);
-        if params.order_type == OkexOrderType::Market
-            && req_type == TradeRequestType::OkexNewMarginOrder
-            && params.side.is_buy()
-        {
-            push_json_field(&mut out, "tgtCcy", "base_ccy", false);
-        }
-        if req_type == TradeRequestType::OkexNewUMOrder {
-            push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
-        }
-        out.push_str("}]}");
-        Some(out)
+        build_new_ws_json_from_parts(req_type, &self.params, inst_id_code, transport_id)
     }
 }
 
@@ -476,28 +446,83 @@ impl OkexCancelOrderRequest {
 
     pub fn to_ws_json_string(&self, inst_id_code: i64, transport_id: i64) -> Option<String> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        if req_type != TradeRequestType::OkexCancelMarginOrder
-            && req_type != TradeRequestType::OkexCancelUMOrder
-        {
-            return None;
-        }
-        let params = OkexCancelOrderParams::decode_raw(&self.params)?;
-        let cancel_cl_id = if params.cl_ord_id != 0 {
-            params.cl_ord_id
-        } else {
-            self.header.client_order_id
-        };
-        let mut out = okex_payload_prefix("cancel-order", transport_id, 128);
-        push_i64_field(&mut out, "instIdCode", inst_id_code, true);
-        if params.ord_id != 0 {
-            push_i64_string_field(&mut out, "ordId", params.ord_id, false);
-        }
-        if cancel_cl_id != 0 {
-            push_i64_string_field(&mut out, "clOrdId", cancel_cl_id, false);
-        }
-        out.push_str("}]}");
-        Some(out)
+        build_cancel_ws_json_from_parts(
+            req_type,
+            self.header.client_order_id,
+            &self.params,
+            inst_id_code,
+            transport_id,
+        )
     }
+}
+
+pub fn build_new_ws_json_from_parts(
+    req_type: TradeRequestType,
+    params: &[u8],
+    inst_id_code: i64,
+    transport_id: i64,
+) -> Option<String> {
+    let params = OkexNewOrderParams::decode_raw(params)?;
+    let td_mode = match req_type {
+        TradeRequestType::OkexNewMarginOrder | TradeRequestType::OkexNewUMOrder => "cross",
+        _ => return None,
+    };
+    let qty = params.quantity_qv.decimal_string();
+    let price = params.price_qv.decimal_string();
+    let cl_id = params.client_order_id;
+    let ord_type_str = params.order_type.as_str();
+    let mut out = okex_payload_prefix("order", transport_id, 192 + qty.len() + price.len());
+
+    push_i64_field(&mut out, "instIdCode", inst_id_code, true);
+    push_json_field(&mut out, "side", params.side.as_str_lower(), false);
+    push_json_field(&mut out, "ordType", ord_type_str, false);
+    push_json_field(&mut out, "sz", &qty, false);
+    if params.order_type != OkexOrderType::Market {
+        push_json_field(&mut out, "px", &price, false);
+    }
+    push_json_field(&mut out, "tdMode", td_mode, false);
+    push_i64_string_field(&mut out, "clOrdId", cl_id, false);
+    if params.order_type == OkexOrderType::Market
+        && req_type == TradeRequestType::OkexNewMarginOrder
+        && params.side.is_buy()
+    {
+        push_json_field(&mut out, "tgtCcy", "base_ccy", false);
+    }
+    if req_type == TradeRequestType::OkexNewUMOrder {
+        push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
+    }
+    out.push_str("}]}");
+    Some(out)
+}
+
+pub fn build_cancel_ws_json_from_parts(
+    req_type: TradeRequestType,
+    client_order_id: i64,
+    params: &[u8],
+    inst_id_code: i64,
+    transport_id: i64,
+) -> Option<String> {
+    if req_type != TradeRequestType::OkexCancelMarginOrder
+        && req_type != TradeRequestType::OkexCancelUMOrder
+    {
+        return None;
+    }
+    let params = OkexCancelOrderParams::decode_raw(params)?;
+    let cancel_cl_id = if params.cl_ord_id != 0 {
+        params.cl_ord_id
+    } else {
+        client_order_id
+    };
+    let mut out = okex_payload_prefix("cancel-order", transport_id, 128);
+    push_i64_field(&mut out, "instIdCode", inst_id_code, true);
+    if params.ord_id != 0 {
+        push_i64_string_field(&mut out, "ordId", params.ord_id, false);
+    }
+    if cancel_cl_id != 0 {
+        push_i64_string_field(&mut out, "clOrdId", cancel_cl_id, false);
+    }
+    out.push_str("}]}");
+    Some(out)
 }
 
 #[derive(Debug, Clone)]

@@ -428,74 +428,98 @@ impl BybitCancelOrderRequest {
 
     pub fn to_ws_json_string(&self, req_id: &str, timestamp_ms: i64) -> Option<String> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        let category = bybit_category_for_req(req_type)?;
-        let (order_link_id, symbol) = BybitCancelOrderParams::decode_raw(&self.params)?;
-        let mut out =
-            bybit_payload_prefix(req_id, timestamp_ms, "order.cancel", 160 + symbol.len());
-        push_json_field(&mut out, "category", category.as_str(), true);
-        push_json_field(&mut out, "symbol", symbol, false);
-        push_i64_string_field(&mut out, "orderLinkId", order_link_id, false);
-        if req_type == TradeRequestType::BybitCancelMarginOrder {
-            push_json_field(&mut out, "orderFilter", "Order", false);
-        }
-        out.push_str("}]}");
-        Some(out)
+        build_cancel_ws_json_from_parts(req_type, &self.params, req_id, timestamp_ms)
     }
 }
 
 impl BybitNewOrderRequest {
     pub fn to_ws_json_string(&self, req_id: &str, timestamp_ms: i64) -> Option<String> {
         let req_type = TradeRequestType::try_from(self.header.msg_type).ok()?;
-        let params = BybitNewOrderParams::decode_raw(&self.params)?;
-        let category = bybit_category_for_req(req_type)?;
-        let qty = params.quantity_qv.decimal_string();
-        let price = params.price_qv.decimal_string();
-        let mut out = bybit_payload_prefix(
+        build_new_ws_json_from_parts(
+            req_type,
+            self.header.client_order_id,
+            &self.params,
             req_id,
             timestamp_ms,
-            "order.create",
-            192 + params.symbol.len() + qty.len() + price.len(),
-        );
+        )
+    }
+}
 
-        push_json_field(&mut out, "category", category.as_str(), true);
-        push_json_field(&mut out, "symbol", params.symbol, false);
-        push_json_field(&mut out, "side", params.side.as_str(), false);
+pub fn build_cancel_ws_json_from_parts(
+    req_type: TradeRequestType,
+    params: &[u8],
+    req_id: &str,
+    timestamp_ms: i64,
+) -> Option<String> {
+    let category = bybit_category_for_req(req_type)?;
+    let (order_link_id, symbol) = BybitCancelOrderParams::decode_raw(params)?;
+    let mut out = bybit_payload_prefix(req_id, timestamp_ms, "order.cancel", 160 + symbol.len());
+    push_json_field(&mut out, "category", category.as_str(), true);
+    push_json_field(&mut out, "symbol", symbol, false);
+    push_i64_string_field(&mut out, "orderLinkId", order_link_id, false);
+    if req_type == TradeRequestType::BybitCancelMarginOrder {
+        push_json_field(&mut out, "orderFilter", "Order", false);
+    }
+    out.push_str("}]}");
+    Some(out)
+}
+
+pub fn build_new_ws_json_from_parts(
+    req_type: TradeRequestType,
+    client_order_id: i64,
+    params: &[u8],
+    req_id: &str,
+    timestamp_ms: i64,
+) -> Option<String> {
+    let params = BybitNewOrderParams::decode_raw(params)?;
+    let category = bybit_category_for_req(req_type)?;
+    let qty = params.quantity_qv.decimal_string();
+    let price = params.price_qv.decimal_string();
+    let mut out = bybit_payload_prefix(
+        req_id,
+        timestamp_ms,
+        "order.create",
+        192 + params.symbol.len() + qty.len() + price.len(),
+    );
+
+    push_json_field(&mut out, "category", category.as_str(), true);
+    push_json_field(&mut out, "symbol", params.symbol, false);
+    push_json_field(&mut out, "side", params.side.as_str(), false);
+    push_json_field(
+        &mut out,
+        "orderType",
+        bybit_order_type_str(params.order_type),
+        false,
+    );
+    push_json_field(&mut out, "qty", &qty, false);
+    push_i64_string_field(&mut out, "orderLinkId", client_order_id, false);
+
+    if params.order_type.is_limit() {
         push_json_field(
             &mut out,
-            "orderType",
-            bybit_order_type_str(params.order_type),
+            "timeInForce",
+            bybit_time_in_force_str(req_type, params.order_type),
             false,
         );
-        push_json_field(&mut out, "qty", &qty, false);
-        push_i64_string_field(&mut out, "orderLinkId", self.header.client_order_id, false);
-
-        if params.order_type.is_limit() {
-            push_json_field(
-                &mut out,
-                "timeInForce",
-                bybit_time_in_force_str(req_type, params.order_type),
-                false,
-            );
-            push_json_field(&mut out, "price", &price, false);
-        } else if req_type == TradeRequestType::BybitNewMarginOrder && params.side.is_buy() {
-            push_json_field(&mut out, "marketUnit", "baseCoin", false);
-        }
-
-        if req_type == TradeRequestType::BybitNewMarginOrder {
-            push_i32_field(
-                &mut out,
-                "isLeverage",
-                if params.is_leverage { 1 } else { 0 },
-                false,
-            );
-            push_json_field(&mut out, "orderFilter", "Order", false);
-        } else {
-            push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
-        }
-
-        out.push_str("}]}");
-        Some(out)
+        push_json_field(&mut out, "price", &price, false);
+    } else if req_type == TradeRequestType::BybitNewMarginOrder && params.side.is_buy() {
+        push_json_field(&mut out, "marketUnit", "baseCoin", false);
     }
+
+    if req_type == TradeRequestType::BybitNewMarginOrder {
+        push_i32_field(
+            &mut out,
+            "isLeverage",
+            if params.is_leverage { 1 } else { 0 },
+            false,
+        );
+        push_json_field(&mut out, "orderFilter", "Order", false);
+    } else {
+        push_bool_field(&mut out, "reduceOnly", params.reduce_only, false);
+    }
+
+    out.push_str("}]}");
+    Some(out)
 }
 
 #[derive(Debug, Clone)]
