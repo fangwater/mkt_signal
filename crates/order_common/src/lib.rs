@@ -1057,7 +1057,7 @@ impl OrderManager {
 
     fn pending_limit_key(order: &Order) -> Option<(String, Side)> {
         (order.order_type.is_limit() && order.count_pending_limit && !order.status.is_terminal())
-            .then(|| (normalize_symbol_for_internal(&order.symbol), order.side))
+            .then(|| (order.symbol.clone(), order.side))
     }
 
     fn pending_limit_side_count_map(&self, side: Side) -> &FastHashMap<String, i32> {
@@ -1360,6 +1360,31 @@ mod tests {
         let order = manager.get(client_order_id).expect("order exists");
         assert_eq!(order.timestamp.create_t, 1_000);
         assert_eq!(order.timestamp.submit_t, 3_000);
+    }
+
+    #[test]
+    fn pending_limit_counts_use_stored_normalized_symbol() {
+        let mut manager = OrderManager::new(None);
+        manager.create_order(
+            TradingVenue::OkexMargin,
+            7,
+            OrderType::Limit,
+            "btc-usdt-swap".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+        );
+
+        let order = manager.get(7).expect("order");
+        assert_eq!(order.symbol, "BTCUSDT");
+        assert_eq!(manager.get_symbol_pending_limit_order_count("BTCUSDT"), 1);
+        assert_eq!(
+            manager.get_symbol_pending_limit_order_count_by_side("BTCUSDT", Side::Buy),
+            1
+        );
+        assert_eq!(manager.get_symbol_pending_limit_order_count("BTC-USDT"), 1);
     }
 
     #[test]
