@@ -2,11 +2,11 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use mkt_parsers::binance as binance_codec;
 use mkt_parsers::msg::mkt_msg::{
-    ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed,
-    inc_msg_bytes_borrowed, index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed,
-    liquidation_msg_bytes_borrowed, mark_price_msg_bytes_borrowed, trade_msg_bytes_borrowed,
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+    ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed, inc_msg_bytes_borrowed,
+    index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed, liquidation_msg_bytes_borrowed,
+    mark_price_msg_bytes_borrowed, trade_msg_bytes_borrowed, AskBidSpreadMsg, FundingRateMsg,
+    IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg, SignalMsg, SignalSource,
+    TradeMsg,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -266,14 +266,12 @@ impl BinanceDerivativesMetricsParser {
                         (funding_rate, next_funding_time_us)
                     {
                         if tx
-                            .send(
-                                funding_rate_msg_bytes_borrowed(
-                                    symbol,
-                                    funding_rate,
-                                    next_funding_time_us,
-                                    timestamp_us,
-                                ),
-                            )
+                            .send(funding_rate_msg_bytes_borrowed(
+                                symbol,
+                                funding_rate,
+                                next_funding_time_us,
+                                timestamp_us,
+                            ))
                             .is_ok()
                         {
                             total_parsed += 1;
@@ -289,15 +287,13 @@ impl BinanceDerivativesMetricsParser {
                 } => {
                     if self.symbols.contains(symbol)
                         && tx
-                            .send(
-                                liquidation_msg_bytes_borrowed(
-                                    symbol,
-                                    side,
-                                    amount,
-                                    price,
-                                    timestamp_us,
-                                ),
-                            )
+                            .send(liquidation_msg_bytes_borrowed(
+                                symbol,
+                                side,
+                                amount,
+                                price,
+                                timestamp_us,
+                            ))
                             .is_ok()
                     {
                         total_parsed += 1;
@@ -505,51 +501,101 @@ fn parse_order_book_levels_with_offset(
     }
 }
 
-/// 计算如何拆分 levels 成多个 chunk
-/// 返回 Vec<(bids_start, bids_count, asks_start, asks_count)>
-/// 每个 chunk 的总档数不超过 max_levels
-fn split_levels(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LevelChunk {
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LevelChunks {
     total_bids: usize,
     total_asks: usize,
-    max_levels: Option<usize>,
-) -> Vec<(usize, usize, usize, usize)> {
-    let total = total_bids + total_asks;
+    max_levels: usize,
+    bids_sent: usize,
+    asks_sent: usize,
+    done_single: bool,
+}
 
-    match max_levels {
-        Some(max) if total > max && max > 0 => {
-            let mut chunks = Vec::new();
-            let mut bids_sent = 0;
-            let mut asks_sent = 0;
-
-            while bids_sent < total_bids || asks_sent < total_asks {
-                let bids_remaining = total_bids - bids_sent;
-                let asks_remaining = total_asks - asks_sent;
-                let remaining = bids_remaining + asks_remaining;
-
-                // 按比例分配本次 chunk 的 bids 和 asks
-                let chunk_bids = if remaining <= max {
-                    bids_remaining
-                } else {
-                    // 按原始比例分配
-                    let ratio = bids_remaining as f64 / remaining as f64;
-                    ((max as f64 * ratio).round() as usize)
-                        .max(1)
-                        .min(bids_remaining)
-                };
-                let chunk_asks = (max - chunk_bids).min(asks_remaining);
-
-                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
-                bids_sent += chunk_bids;
-                asks_sent += chunk_asks;
-            }
-
-            chunks
-        }
-        _ => {
-            // 不需要拆分，返回单个 chunk
-            vec![(0, total_bids, 0, total_asks)]
+impl LevelChunks {
+    fn new(total_bids: usize, total_asks: usize, max_levels: Option<usize>) -> Self {
+        let total = total_bids + total_asks;
+        let max_levels = match max_levels {
+            Some(max) if total > max && max > 0 => max,
+            _ => total,
+        };
+        Self {
+            total_bids,
+            total_asks,
+            max_levels,
+            bids_sent: 0,
+            asks_sent: 0,
+            done_single: false,
         }
     }
+
+    fn total_chunks(self) -> usize {
+        let total = self.total_bids + self.total_asks;
+        if total == 0 || total <= self.max_levels {
+            1
+        } else {
+            total.div_ceil(self.max_levels)
+        }
+    }
+}
+
+impl Iterator for LevelChunks {
+    type Item = LevelChunk;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total = self.total_bids + self.total_asks;
+        if total <= self.max_levels {
+            if self.done_single {
+                return None;
+            }
+            self.done_single = true;
+            return Some(LevelChunk {
+                bids_start: 0,
+                bids_count: self.total_bids,
+                asks_start: 0,
+                asks_count: self.total_asks,
+            });
+        }
+
+        if self.bids_sent >= self.total_bids && self.asks_sent >= self.total_asks {
+            return None;
+        }
+
+        let bids_remaining = self.total_bids - self.bids_sent;
+        let asks_remaining = self.total_asks - self.asks_sent;
+        let remaining = bids_remaining + asks_remaining;
+        let chunk_bids = if remaining <= self.max_levels {
+            bids_remaining
+        } else if bids_remaining == 0 {
+            0
+        } else {
+            let ratio = bids_remaining as f64 / remaining as f64;
+            ((self.max_levels as f64 * ratio).round() as usize)
+                .max(1)
+                .min(bids_remaining)
+        };
+        let chunk_asks = (self.max_levels - chunk_bids).min(asks_remaining);
+        let chunk = LevelChunk {
+            bids_start: self.bids_sent,
+            bids_count: chunk_bids,
+            asks_start: self.asks_sent,
+            asks_count: chunk_asks,
+        };
+        self.bids_sent += chunk_bids;
+        self.asks_sent += chunk_asks;
+        Some(chunk)
+    }
+}
+
+fn split_levels(total_bids: usize, total_asks: usize, max_levels: Option<usize>) -> LevelChunks {
+    LevelChunks::new(total_bids, total_asks, max_levels)
 }
 
 fn publish_book_chunks(
@@ -558,30 +604,28 @@ fn publish_book_chunks(
     tx: &mpsc::UnboundedSender<Bytes>,
 ) -> usize {
     let chunks = split_levels(book.bids.len(), book.asks.len(), max_levels);
-    let total_chunks = chunks.len();
+    let total_chunks = chunks.total_chunks();
     let mut sent_count = 0;
 
-    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-        chunks.into_iter().enumerate()
-    {
+    for (chunk_idx, chunk) in chunks.enumerate() {
         let mut inc_msg = IncMsg::create(
             book.symbol.clone(),
             book.first_update_id,
             book.final_update_id,
             book.timestamp_us,
             book.is_snapshot,
-            bids_count as u32,
-            asks_count as u32,
+            chunk.bids_count as u32,
+            chunk.asks_count as u32,
         );
         inc_msg.set_chunk_index(chunk_idx as u8);
         inc_msg.set_is_last(chunk_idx == total_chunks - 1);
         set_inc_levels_from_parsed(
             &book.bids,
             &book.asks,
-            bids_start,
-            bids_count,
-            asks_start,
-            asks_count,
+            chunk.bids_start,
+            chunk.bids_count,
+            chunk.asks_start,
+            chunk.asks_count,
             &mut inc_msg,
         );
         if tx.send(inc_msg.to_bytes()).is_ok() {
@@ -598,12 +642,10 @@ fn publish_raw_book_chunks(
     tx: &mpsc::UnboundedSender<Bytes>,
 ) -> usize {
     let chunks = split_levels(book.bids.len(), book.asks.len(), max_levels);
-    let total_chunks = chunks.len();
+    let total_chunks = chunks.total_chunks();
     let mut sent_count = 0;
 
-    for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-        chunks.into_iter().enumerate()
-    {
+    for (chunk_idx, chunk) in chunks.enumerate() {
         let inc_bytes = inc_msg_bytes_borrowed(
             book.symbol,
             book.first_update_id,
@@ -612,20 +654,20 @@ fn publish_raw_book_chunks(
             book.is_snapshot,
             chunk_idx == total_chunks - 1,
             chunk_idx as u8,
-            bids_count as u32,
-            asks_count as u32,
+            chunk.bids_count as u32,
+            chunk.asks_count as u32,
             book.bids
                 .as_slice()
                 .iter()
-                .skip(bids_start)
-                .take(bids_count)
+                .skip(chunk.bids_start)
+                .take(chunk.bids_count)
                 .copied()
                 .map(|level| Level::from_values(level.price, level.amount)),
             book.asks
                 .as_slice()
                 .iter()
-                .skip(asks_start)
-                .take(asks_count)
+                .skip(chunk.asks_start)
+                .take(chunk.asks_count)
                 .copied()
                 .map(|level| Level::from_values(level.price, level.amount)),
         );
@@ -643,7 +685,7 @@ fn publish_raw_book_view_chunks(
     tx: &mpsc::UnboundedSender<Bytes>,
 ) -> usize {
     let chunks = split_levels(book.bids_count, book.asks_count, max_levels);
-    let total_chunks = chunks.len();
+    let total_chunks = chunks.total_chunks();
     let mut sent_count = 0;
     let Some(mut bids_iter) = binance_codec::raw_levels_iter(book.bids_raw) else {
         return 0;
@@ -652,7 +694,7 @@ fn publish_raw_book_view_chunks(
         return 0;
     };
 
-    for (chunk_idx, (_, bids_count, _, asks_count)) in chunks.into_iter().enumerate() {
+    for (chunk_idx, chunk) in chunks.enumerate() {
         let inc_bytes = inc_msg_bytes_borrowed(
             book.symbol,
             book.first_update_id,
@@ -661,15 +703,15 @@ fn publish_raw_book_view_chunks(
             book.is_snapshot,
             chunk_idx == total_chunks - 1,
             chunk_idx as u8,
-            bids_count as u32,
-            asks_count as u32,
+            chunk.bids_count as u32,
+            chunk.asks_count as u32,
             bids_iter
                 .by_ref()
-                .take(bids_count)
+                .take(chunk.bids_count)
                 .map(|level| Level::from_values(level.price, level.amount)),
             asks_iter
                 .by_ref()
-                .take(asks_count)
+                .take(chunk.asks_count)
                 .map(|level| Level::from_values(level.price, level.amount)),
         );
         if tx.send(inc_bytes).is_ok() {
@@ -733,7 +775,11 @@ fn publish_raw_trade(
         trade.price,
         trade.amount,
     );
-    if tx.send(trade_bytes).is_ok() { 1 } else { 0 }
+    if tx.send(trade_bytes).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[derive(Clone)]
@@ -879,12 +925,10 @@ impl BinanceSnapshotParser {
         ) {
             // 计算拆分方案
             let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
-            let total_chunks = chunks.len();
+            let total_chunks = chunks.total_chunks();
             let mut sent_count = 0;
 
-            for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-                chunks.into_iter().enumerate()
-            {
+            for (chunk_idx, chunk) in chunks.enumerate() {
                 // 创建快照消息
                 let mut inc_msg = IncMsg::create(
                     symbol.to_string(),
@@ -892,8 +936,8 @@ impl BinanceSnapshotParser {
                     last_update_id + 1, // final_update_id（对于快照相同）
                     0,                  // timestamp（快照没有实际时间戳）
                     true,               // is_snapshot = true
-                    bids_count as u32,
-                    asks_count as u32,
+                    chunk.bids_count as u32,
+                    chunk.asks_count as u32,
                 );
 
                 // 设置 chunk_index 和 is_last
@@ -904,10 +948,10 @@ impl BinanceSnapshotParser {
                 parse_order_book_levels_with_offset(
                     bids_array,
                     asks_array,
-                    bids_start,
-                    bids_count,
-                    asks_start,
-                    asks_count,
+                    chunk.bids_start,
+                    chunk.bids_count,
+                    chunk.asks_start,
+                    chunk.asks_count,
                     &mut inc_msg,
                 );
 
@@ -950,15 +994,30 @@ impl BinanceIncParser {
     }
 
     pub fn futures_incremental(max_levels: Option<usize>) -> Self {
-        Self::with_depth_mode(max_levels, false, BinanceDepthMode::FuturesDepthUpdate, false)
+        Self::with_depth_mode(
+            max_levels,
+            false,
+            BinanceDepthMode::FuturesDepthUpdate,
+            false,
+        )
     }
 
     pub fn futures_incremental_raw_only(max_levels: Option<usize>) -> Self {
-        Self::with_depth_mode(max_levels, false, BinanceDepthMode::FuturesDepthUpdate, true)
+        Self::with_depth_mode(
+            max_levels,
+            false,
+            BinanceDepthMode::FuturesDepthUpdate,
+            true,
+        )
     }
 
     pub fn futures_snapshot(max_levels: Option<usize>) -> Self {
-        Self::with_depth_mode(max_levels, true, BinanceDepthMode::FuturesDepthUpdate, false)
+        Self::with_depth_mode(
+            max_levels,
+            true,
+            BinanceDepthMode::FuturesDepthUpdate,
+            false,
+        )
     }
 
     pub fn futures_snapshot_raw_only(max_levels: Option<usize>) -> Self {
@@ -1197,6 +1256,39 @@ mod tests {
         out
     }
 
+    fn chunk_tuple(chunk: LevelChunk) -> (usize, usize, usize, usize) {
+        (
+            chunk.bids_start,
+            chunk.bids_count,
+            chunk.asks_start,
+            chunk.asks_count,
+        )
+    }
+
+    #[test]
+    fn level_chunks_iterates_without_materializing_plan() {
+        let chunks = split_levels(4, 3, Some(3));
+        assert_eq!(chunks.total_chunks(), 3);
+        assert_eq!(
+            chunks.map(chunk_tuple).collect::<Vec<_>>(),
+            vec![(0, 2, 0, 1), (2, 2, 1, 1), (4, 0, 2, 1)]
+        );
+
+        let chunks = split_levels(1, 1, Some(1));
+        assert_eq!(chunks.total_chunks(), 2);
+        assert_eq!(
+            chunks.map(chunk_tuple).collect::<Vec<_>>(),
+            vec![(0, 1, 0, 0), (1, 0, 0, 1)]
+        );
+
+        let chunks = split_levels(2, 1, None);
+        assert_eq!(chunks.total_chunks(), 1);
+        assert_eq!(
+            chunks.map(chunk_tuple).collect::<Vec<_>>(),
+            vec![(0, 2, 0, 1)]
+        );
+    }
+
     #[test]
     fn binance_trade_parser_uses_raw_trade_shape() {
         let parser = BinanceTradeParser::new();
@@ -1298,8 +1390,7 @@ mod tests {
 
     #[test]
     fn binance_derivatives_raw_only_drops_json_fallback_shape() {
-        let raw =
-            br#"{"\u0065":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0"}"#;
+        let raw = br#"{"\u0065":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0"}"#;
 
         let fallback_parser =
             BinanceDerivativesMetricsParser::new(HashSet::from(["BTCUSDT".to_string()]));
