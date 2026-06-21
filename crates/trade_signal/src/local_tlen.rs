@@ -25,7 +25,7 @@ const INC_DRAIN_BUDGET: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlenQueryMode {
-    Disabled,
+    Remote,
     Local,
 }
 
@@ -232,7 +232,7 @@ impl LocalTlenStore {
 
 enum LocalTlenRuntime {
     Uninitialized,
-    Disabled,
+    Remote,
     Local(LocalTlenStore),
 }
 
@@ -242,35 +242,35 @@ thread_local! {
 
 pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
     if force_remote {
-        return TlenQueryMode::Disabled;
+        return TlenQueryMode::Remote;
     }
 
     if let Ok(raw) = std::env::var(LOCAL_TLEN_MODE_ENV) {
         match raw.trim().to_ascii_lowercase().as_str() {
             "local" => return TlenQueryMode::Local,
-            "remote" | "query" | "uds" | "disabled" | "off" => return TlenQueryMode::Disabled,
+            "remote" | "query" | "uds" => return TlenQueryMode::Remote,
             other => {
                 warn!(
-                    "invalid {}='{}'; disabling local tlen query",
+                    "invalid {}='{}'; using remote tlen query",
                     LOCAL_TLEN_MODE_ENV, other
                 );
-                return TlenQueryMode::Disabled;
+                return TlenQueryMode::Remote;
             }
         }
     }
 
-    TlenQueryMode::Disabled
+    TlenQueryMode::Remote
 }
 
 pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool) -> Result<()> {
     let mode = startup_mode_from_env(force_remote);
     match mode {
-        TlenQueryMode::Disabled => {
+        TlenQueryMode::Remote => {
             LOCAL_TLEN.with(|state| {
-                *state.borrow_mut() = LocalTlenRuntime::Disabled;
+                *state.borrow_mut() = LocalTlenRuntime::Remote;
             });
             info!(
-                "local_tlen disabled: mode=disabled venue={} force_remote={}",
+                "local_tlen disabled: mode=remote venue={} force_remote={}",
                 open_venue.data_pub_slug(),
                 force_remote
             );
@@ -348,7 +348,7 @@ pub fn query_batch_local(
                 }
                 Some(store.query_batch(&symbol_key, tick_indices))
             }
-            LocalTlenRuntime::Disabled | LocalTlenRuntime::Uninitialized => None,
+            LocalTlenRuntime::Remote | LocalTlenRuntime::Uninitialized => None,
         }
     })
 }
@@ -382,7 +382,7 @@ pub fn query_batch_local_only_for_cancel(
                 }
                 Some(Some(store.query_batch(&symbol_key, tick_indices)))
             }
-            LocalTlenRuntime::Disabled | LocalTlenRuntime::Uninitialized => None,
+            LocalTlenRuntime::Remote | LocalTlenRuntime::Uninitialized => None,
         }
     })
 }
@@ -637,6 +637,12 @@ fn amount_scale_for_symbol(table: &VenueMinQtyTable, venue: TradingVenue, symbol
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn test_store(venue: TradingVenue) -> LocalTlenStore {
         LocalTlenStore {
@@ -652,6 +658,33 @@ mod tests {
             query_bbo_hit_count: 0,
             last_stats_log: Instant::now(),
         }
+    }
+
+    #[test]
+    fn startup_mode_defaults_to_remote_query() {
+        let _guard = env_test_lock();
+        std::env::remove_var(LOCAL_TLEN_MODE_ENV);
+
+        assert_eq!(startup_mode_from_env(false), TlenQueryMode::Remote);
+        assert_eq!(startup_mode_from_env(true), TlenQueryMode::Remote);
+    }
+
+    #[test]
+    fn startup_mode_parses_explicit_local_and_remote_modes() {
+        let _guard = env_test_lock();
+
+        std::env::set_var(LOCAL_TLEN_MODE_ENV, "local");
+        assert_eq!(startup_mode_from_env(false), TlenQueryMode::Local);
+
+        for mode in ["remote", "query", "uds"] {
+            std::env::set_var(LOCAL_TLEN_MODE_ENV, mode);
+            assert_eq!(startup_mode_from_env(false), TlenQueryMode::Remote);
+        }
+
+        std::env::set_var(LOCAL_TLEN_MODE_ENV, "local");
+        assert_eq!(startup_mode_from_env(true), TlenQueryMode::Remote);
+
+        std::env::remove_var(LOCAL_TLEN_MODE_ENV);
     }
 
     #[test]

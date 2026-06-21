@@ -8,6 +8,7 @@
 use std::collections::VecDeque;
 
 use depth_pub_common::query_client::DepthQueryClient;
+use log::warn;
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
@@ -24,7 +25,7 @@ pub fn append_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
     format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
 }
 
-pub fn query_batch_tlens_local_or_zero(
+pub fn query_batch_tlens_or_zero(
     source: &str,
     depth_query_client: &DepthQueryClient,
     symbol: &str,
@@ -43,7 +44,32 @@ pub fn query_batch_tlens_local_or_zero(
         return tlens;
     }
 
-    vec![0.0; tick_indices.len()]
+    match depth_query_client.query_batch_tick_indices(symbol, tick_indices) {
+        Ok(tlens) => {
+            if tlens.len() == tick_indices.len() {
+                tlens
+            } else {
+                warn!(
+                    "{source}: tlen batch query returned mismatched length symbol={} requested={} got={}",
+                    symbol,
+                    tick_indices.len(),
+                    tlens.len()
+                );
+                let mut out = tlens;
+                out.resize(tick_indices.len(), 0.0);
+                out
+            }
+        }
+        Err(err) => {
+            warn!(
+                "{source}: tlen batch query failed symbol={} levels={} err={:#}",
+                symbol,
+                tick_indices.len(),
+                err
+            );
+            vec![0.0; tick_indices.len()]
+        }
+    }
 }
 
 pub fn normalize_tlen_for_compare(
@@ -89,7 +115,7 @@ pub fn apply_open_tlen_gate_and_build_from_keys(
         table,
         venue,
         symbol,
-        query_batch_tlens_local_or_zero(source, depth_query_client, symbol, tick_indices),
+        query_batch_tlens_or_zero(source, depth_query_client, symbol, tick_indices),
     );
     let mut filtered = 0usize;
     let out = tlens
