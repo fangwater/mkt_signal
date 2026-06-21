@@ -460,21 +460,14 @@ impl PreTrade {
         let mut next_period_clock = Instant::now();
         let mut pending_period_strategy_inspect = 0usize;
         let mut pending_period_orphan_inspect = 0usize;
-        let idle_spin_iters = if fast_poll {
-            std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(64)
-        } else {
-            0
-        };
-        let idle_sleep = Duration::from_micros(500);
+        let idle_spin_iters = std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(if fast_poll { 1024 } else { 64 });
         let mut idle_spin_count = 0usize;
         info!(
-            "pre_trade reactor idle spin configured (enable_ipc_fast_poll={} iters={} idle_sleep_us={})",
-            fast_poll,
-            idle_spin_iters,
-            idle_sleep.as_micros()
+            "pre_trade reactor idle spin configured (enable_ipc_fast_poll={} iters={} idle_policy=yield)",
+            fast_poll, idle_spin_iters
         );
         info!(
             "pre_trade hot-path log suppression configured (suppress_pre_submit_hot_path_logs={})",
@@ -869,8 +862,7 @@ impl PreTrade {
             last_loop_end_us = get_timestamp_us();
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
-                _ = tokio::task::yield_now(), if fast_poll => {}
-                _ = tokio::time::sleep(idle_sleep), if !fast_poll => {}
+                _ = tokio::task::yield_now() => {}
             }
         }
 
