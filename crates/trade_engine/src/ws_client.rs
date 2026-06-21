@@ -1,7 +1,7 @@
 use crate::binance_ws;
 use crate::bitget_ws;
 use crate::bybit;
-use crate::bybit::{BybitNewOrderParams, BybitWsOrderResponse};
+use crate::bybit::BybitWsOrderResponse;
 use crate::config::LimitConstants;
 use crate::engine::{
     internal_open_terminated_outcome, record_internal_open_terminate_summary,
@@ -1960,7 +1960,7 @@ impl TradeWsClient {
                     .unwrap_or(false)
             }
             TradeRequestType::BybitNewMarginOrder | TradeRequestType::BybitNewUMOrder => {
-                BybitNewOrderParams::from_bytes(&msg.params)
+                bybit::BybitNewOrderParams::ref_from_bytes(&msg.params)
                     .map(|params| params.order_type.is_limit() && params.price_qv.get_count() > 0)
                     .unwrap_or(false)
             }

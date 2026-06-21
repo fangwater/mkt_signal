@@ -80,40 +80,19 @@ impl BybitNewOrderParams {
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
-        if raw.len() < Self::MIN_BIN_LEN {
-            return None;
-        }
-
-        let side = Side::from_u8(raw[0])?;
-        let order_type = OrderType::from_u8(raw[1])?;
-        let reduce_only = raw[2] != 0;
-        let is_leverage = raw[3] != 0;
-        let qty_tick_i64 = i64::from_le_bytes(raw[4..12].try_into().ok()?);
-        let qty_tick_exp = i32::from_le_bytes(raw[12..16].try_into().ok()?);
-        let qty_count = i64::from_le_bytes(raw[16..24].try_into().ok()?);
-        let price_tick_i64 = i64::from_le_bytes(raw[24..32].try_into().ok()?);
-        let price_tick_exp = i32::from_le_bytes(raw[32..36].try_into().ok()?);
-        let price_count = i64::from_le_bytes(raw[36..44].try_into().ok()?);
-        let symbol_len = raw[44] as usize;
-
-        if raw.len() < Self::MIN_BIN_LEN + symbol_len {
-            return None;
-        }
-
-        let symbol = std::str::from_utf8(&raw[45..45 + symbol_len]).ok()?;
-
+        let params = Self::ref_from_bytes(raw)?;
         Some(Self {
-            side,
-            order_type,
-            reduce_only,
-            is_leverage,
-            quantity_qv: QuantizedValue::from_parts(qty_tick_i64, qty_tick_exp, qty_count),
-            price_qv: QuantizedValue::from_parts(price_tick_i64, price_tick_exp, price_count),
-            symbol: symbol.to_string(),
+            side: params.side,
+            order_type: params.order_type,
+            reduce_only: params.reduce_only,
+            is_leverage: params.is_leverage,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            symbol: params.symbol.to_string(),
         })
     }
 
-    fn decode_raw(raw: &[u8]) -> Option<BybitNewOrderParamsRef<'_>> {
+    pub fn ref_from_bytes(raw: &[u8]) -> Option<BybitNewOrderParamsRef<'_>> {
         if raw.len() < Self::MIN_BIN_LEN {
             return None;
         }
@@ -147,14 +126,14 @@ impl BybitNewOrderParams {
     }
 }
 
-struct BybitNewOrderParamsRef<'a> {
-    side: Side,
-    order_type: OrderType,
-    reduce_only: bool,
-    is_leverage: bool,
-    quantity_qv: QuantizedValue,
-    price_qv: QuantizedValue,
-    symbol: &'a str,
+pub struct BybitNewOrderParamsRef<'a> {
+    pub side: Side,
+    pub order_type: OrderType,
+    pub reduce_only: bool,
+    pub is_leverage: bool,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub symbol: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -471,7 +450,7 @@ pub fn build_new_ws_json_from_parts(
     req_id: &str,
     timestamp_ms: i64,
 ) -> Option<String> {
-    let params = BybitNewOrderParams::decode_raw(params)?;
+    let params = BybitNewOrderParams::ref_from_bytes(params)?;
     let category = bybit_category_for_req(req_type)?;
     let qty = params.quantity_qv.decimal_string();
     let price = params.price_qv.decimal_string();
