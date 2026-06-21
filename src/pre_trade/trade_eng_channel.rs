@@ -333,9 +333,34 @@ impl TradeEngHub {
         exchange: &str,
         request: &PreparedTradeRequest,
     ) -> Result<()> {
+        Self::publish_prepared_order_request_for_inner(
+            client_order_id,
+            TradeEngExchangeSlot::parse(exchange)?,
+            request,
+        )
+    }
+
+    pub fn publish_prepared_order_request_for_venue(
+        client_order_id: i64,
+        venue: TradingVenue,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        Self::publish_prepared_order_request_for_inner(
+            client_order_id,
+            TradeEngExchangeSlot::from_venue(venue),
+            request,
+        )
+    }
+
+    fn publish_prepared_order_request_for_inner(
+        client_order_id: i64,
+        slot: TradeEngExchangeSlot,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
         let publish_start_us = get_timestamp_us();
         let create_time_us = Some(request.create_time());
         let req_type = Some(request.req_type());
+        let exchange = slot.as_str();
         let mut submit_meta = None;
         let mut submit_signal_type = None;
         let order_manager = MonitorChannel::try_order_manager();
@@ -367,7 +392,7 @@ impl TradeEngHub {
                 submit_meta = Some(meta);
             }
         }
-        let result = Self::publish_prepared_order_request(exchange, request);
+        let result = Self::with(|hub| hub.publish_prepared_to_slot(slot, request));
         let publish_done_us = get_timestamp_us();
         let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
         let result_status = if result.is_ok() { "ok" } else { "err" };
@@ -451,6 +476,14 @@ impl TradeEngHub {
         request: &PreparedTradeRequest,
     ) -> Result<()> {
         let slot = TradeEngExchangeSlot::parse(exchange)?;
+        self.publish_prepared_to_slot(slot, request)
+    }
+
+    fn publish_prepared_to_slot(
+        &self,
+        slot: TradeEngExchangeSlot,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
         let channels = self.channels.borrow();
         let Some(channel) = channels.get(slot) else {
             return Err(anyhow!(
@@ -507,6 +540,18 @@ enum TradeEngExchangeSlot {
 }
 
 impl TradeEngExchangeSlot {
+    fn from_venue(venue: TradingVenue) -> Self {
+        match venue {
+            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Self::Binance,
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => Self::Okex,
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => Self::Bybit,
+            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Self::Bitget,
+            TradingVenue::GateMargin | TradingVenue::GateFutures => Self::Gate,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Self::Hyperliquid,
+            TradingVenue::AsterMargin | TradingVenue::AsterFutures => Self::Aster,
+        }
+    }
+
     fn parse(exchange: &str) -> Result<Self> {
         match exchange.trim() {
             "binance" => Ok(Self::Binance),

@@ -214,25 +214,27 @@ fn build_open_order_request_prepared_scoped(
     mkt_ts: i64,
     pre_trade_recv_ts: i64,
     pre_trade_handle_ts: i64,
-) -> Result<(&'static str, PreparedTradeRequest), String> {
-    order_manager.create_open_order_request_prepared_normalized_symbol(
-        venue,
-        client_order_id,
-        order_type,
-        normalized_symbol,
-        side,
-        order_qty,
-        order_price,
-        quantity_qv,
-        price_qv,
-        reduce_only,
-        qty_multiplier,
-        create_ts,
-        signal_type_u8,
-        mkt_ts,
-        pre_trade_recv_ts,
-        pre_trade_handle_ts,
-    )
+) -> Result<PreparedTradeRequest, String> {
+    order_manager
+        .create_open_order_request_prepared_normalized_symbol(
+            venue,
+            client_order_id,
+            order_type,
+            normalized_symbol,
+            side,
+            order_qty,
+            order_price,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            qty_multiplier,
+            create_ts,
+            signal_type_u8,
+            mkt_ts,
+            pre_trade_recv_ts,
+            pre_trade_handle_ts,
+        )
+        .map(|(_, request)| request)
 }
 
 fn summarize_open_order_rate_limit(
@@ -829,7 +831,7 @@ pub trait OpenStrategyCommon {
         &mut self,
         client_order_id: i64,
         symbol: &str,
-        exchange: &str,
+        venue: TradingVenue,
         request: &PreparedTradeRequest,
         watchdog_delay_us: i64,
     ) -> Result<(), String> {
@@ -852,11 +854,11 @@ pub trait OpenStrategyCommon {
             }
         }
         if let Err(e) =
-            TradeEngHub::publish_prepared_order_request_for(client_order_id, exchange, request)
+            TradeEngHub::publish_prepared_order_request_for_venue(client_order_id, venue, request)
         {
             return Err(format!(
-                "publish order request failed: symbol={} exchange={} err={}",
-                symbol, exchange, e
+                "publish order request failed: symbol={} venue={:?} err={}",
+                symbol, venue, e
             ));
         }
         self.schedule_order_query_watchdog_with_delay(client_order_id, watchdog_delay_us);
@@ -1371,7 +1373,7 @@ pub trait OpenStrategyCommon {
             input.pre_trade_recv_ts,
             input.pre_trade_handle_ts,
         );
-        let (exchange, request) = match request_build_result {
+        let request = match request_build_result {
             Ok(request) => request,
             Err(err) => {
                 error!(
@@ -1414,7 +1416,7 @@ pub trait OpenStrategyCommon {
         if let Err(err) = self.send_open_order_request_common(
             client_order_id,
             &symbol,
-            exchange,
+            venue,
             &request,
             order_query_watchdog_delay_us,
         ) {
