@@ -1,3 +1,4 @@
+use memchr::memchr;
 use serde_json::Value;
 
 pub const SBE_TEMPLATE_TRADE: u16 = 10000;
@@ -1932,12 +1933,8 @@ fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
 
 fn parse_raw_key_i64(raw: &[u8], key: u8) -> Option<i64> {
     let mut pos = 0usize;
-    while let Some(&b) = raw.get(pos) {
-        if b != b'"' {
-            pos += 1;
-            continue;
-        }
-        pos += 1;
+    while let Some(quote_offset) = memchr(b'"', raw.get(pos..)?) {
+        pos += quote_offset + 1;
         let start = pos;
         let mut escaped = false;
         while let Some(&b) = raw.get(pos) {

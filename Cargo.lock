@@ -2215,6 +2215,7 @@ dependencies = [
  "bytes",
  "fast-float",
  "log",
+ "memchr",
  "serde",
  "serde_json",
  "sonic-rs",
