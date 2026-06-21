@@ -24,6 +24,8 @@ use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 
 const STRATEGY_ID_MASK: i64 = 0x7FFF_FFFF;
+const TRADING_VENUE_INDEX_LEN: usize = 14;
+type ExecStrategyIdsByVenue = [i32; TRADING_VENUE_INDEX_LEN];
 
 static STRATEGY_ID_OWNER_THREAD: OnceLock<ThreadId> = OnceLock::new();
 
@@ -112,6 +114,14 @@ pub struct OpenPriceMapEntry {
     pub side: Side,
     pub client_order_id: i64,
     pub price_qv: QuantizedValueKey,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StrategyKindIndexFlags {
+    is_mm_hedge: bool,
+    is_arb_hedge: bool,
+    exec_venue: Option<TradingVenue>,
+    has_order_terminal_recorder: bool,
 }
 
 pub trait Strategy {
@@ -237,6 +247,10 @@ pub struct StrategyManager {
     strategy_queue: VecDeque<i32>,
     known_ids: FastHashSet<i32>,
     symbol_index: FastHashMap<String, BTreeSet<i32>>,
+    mm_hedge_index: FastHashMap<String, i32>,
+    arb_hedge_index: FastHashMap<String, i32>,
+    exec_strategy_index: FastHashMap<String, ExecStrategyIdsByVenue>,
+    order_terminal_recorder_index: FastHashMap<String, i32>,
     mm_open_price_index: FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
     mm_open_strategy_index: FastHashMap<i32, OpenPriceMapEntry>,
     arb_open_price_index: FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
@@ -257,6 +271,10 @@ impl StrategyManager {
             strategy_queue: VecDeque::new(),
             known_ids: fast_hash_set(),
             symbol_index: fast_hash_map(),
+            mm_hedge_index: fast_hash_map(),
+            arb_hedge_index: fast_hash_map(),
+            exec_strategy_index: fast_hash_map(),
+            order_terminal_recorder_index: fast_hash_map(),
             mm_open_price_index: fast_hash_map(),
             mm_open_strategy_index: fast_hash_map(),
             arb_open_price_index: fast_hash_map(),
@@ -302,6 +320,83 @@ impl StrategyManager {
         }
         if should_remove_symbol {
             price_index.remove(&entry.symbol);
+        }
+    }
+
+    #[inline]
+    fn venue_index(venue: TradingVenue) -> usize {
+        let index = venue.to_u8() as usize;
+        debug_assert!(index < TRADING_VENUE_INDEX_LEN);
+        index
+    }
+
+    fn kind_index_flags(strategy: &dyn Strategy) -> StrategyKindIndexFlags {
+        StrategyKindIndexFlags {
+            is_mm_hedge: strategy.as_any().is::<MarketMakerHedgeStrategy>(),
+            is_arb_hedge: strategy.as_any().is::<ArbHedgeStrategy>(),
+            exec_venue: strategy
+                .as_any()
+                .downcast_ref::<ExecStrategy>()
+                .map(ExecStrategy::exec_venue),
+            has_order_terminal_recorder: strategy.has_order_terminal_recorder(),
+        }
+    }
+
+    fn register_kind_indexes_for_symbol(
+        &mut self,
+        id: i32,
+        symbol: &str,
+        flags: StrategyKindIndexFlags,
+    ) {
+        if flags.is_mm_hedge {
+            self.mm_hedge_index.insert(symbol.to_string(), id);
+        }
+        if flags.is_arb_hedge {
+            self.arb_hedge_index.insert(symbol.to_string(), id);
+        }
+        if let Some(exec_venue) = flags.exec_venue {
+            self.exec_strategy_index
+                .entry(symbol.to_string())
+                .or_insert([0; TRADING_VENUE_INDEX_LEN])[Self::venue_index(exec_venue)] = id;
+        }
+        if flags.has_order_terminal_recorder {
+            self.order_terminal_recorder_index
+                .insert(symbol.to_string(), id);
+        }
+    }
+
+    fn unregister_kind_indexes_for_symbol(
+        &mut self,
+        id: i32,
+        symbol: &str,
+        flags: StrategyKindIndexFlags,
+    ) {
+        if flags.is_mm_hedge && self.mm_hedge_index.get(symbol).is_some_and(|v| *v == id) {
+            self.mm_hedge_index.remove(symbol);
+        }
+        if flags.is_arb_hedge && self.arb_hedge_index.get(symbol).is_some_and(|v| *v == id) {
+            self.arb_hedge_index.remove(symbol);
+        }
+        if let Some(exec_venue) = flags.exec_venue {
+            let mut remove_symbol = false;
+            if let Some(ids) = self.exec_strategy_index.get_mut(symbol) {
+                let index = Self::venue_index(exec_venue);
+                if ids[index] == id {
+                    ids[index] = 0;
+                }
+                remove_symbol = ids.iter().all(|value| *value == 0);
+            }
+            if remove_symbol {
+                self.exec_strategy_index.remove(symbol);
+            }
+        }
+        if flags.has_order_terminal_recorder
+            && self
+                .order_terminal_recorder_index
+                .get(symbol)
+                .is_some_and(|v| *v == id)
+        {
+            self.order_terminal_recorder_index.remove(symbol);
         }
     }
 
@@ -425,17 +520,23 @@ impl StrategyManager {
     pub fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
         let id = strategy.get_id();
         let new_symbol = strategy.symbol().map(normalize_symbol_for_internal);
+        let new_kind_flags = Self::kind_index_flags(strategy.as_ref());
         let mm_open_entry = strategy.mm_open_price_map_entry();
         let arb_open_entry = strategy.arb_open_price_map_entry();
-        if let Some(old_symbol) = self
-            .strategies
-            .get(&id)
-            .and_then(|existing| existing.symbol().map(normalize_symbol_for_internal))
-        {
-            if let Some(set) = self.symbol_index.get_mut(&old_symbol) {
+        let old_symbol_and_flags = self.strategies.get(&id).and_then(|existing| {
+            existing.symbol().map(|symbol| {
+                (
+                    normalize_symbol_for_internal(symbol),
+                    Self::kind_index_flags(existing.as_ref()),
+                )
+            })
+        });
+        if let Some((old_symbol, old_kind_flags)) = old_symbol_and_flags.as_ref() {
+            self.unregister_kind_indexes_for_symbol(id, old_symbol, *old_kind_flags);
+            if let Some(set) = self.symbol_index.get_mut(old_symbol.as_str()) {
                 set.remove(&id);
                 if set.is_empty() {
-                    self.symbol_index.remove(&old_symbol);
+                    self.symbol_index.remove(old_symbol.as_str());
                 }
             }
         }
@@ -450,6 +551,7 @@ impl StrategyManager {
             self.register_arb_open_price_entry(id, entry);
         }
         if let Some(symbol) = new_symbol {
+            self.register_kind_indexes_for_symbol(id, &symbol, new_kind_flags);
             self.symbol_index.entry(symbol).or_default().insert(id);
         }
         if old.is_none() {
@@ -480,14 +582,16 @@ impl StrategyManager {
     /// 移除策略
     pub fn remove(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
         let removed = self.strategies.remove(&strategy_id);
-        if removed.is_some() {
+        if let Some(strategy) = removed.as_ref() {
             self.unregister_mm_open_price_entry(strategy_id);
             self.unregister_arb_open_price_entry(strategy_id);
             self.known_ids.remove(&strategy_id);
-            if let Some(symbol) = removed
-                .as_ref()
-                .and_then(|strategy| strategy.symbol().map(normalize_symbol_for_internal))
-            {
+            if let Some(symbol) = strategy.symbol().map(normalize_symbol_for_internal) {
+                self.unregister_kind_indexes_for_symbol(
+                    strategy_id,
+                    &symbol,
+                    Self::kind_index_flags(strategy.as_ref()),
+                );
                 if let Some(set) = self.symbol_index.get_mut(&symbol) {
                     set.remove(&strategy_id);
                     if set.is_empty() {
@@ -512,14 +616,18 @@ impl StrategyManager {
         }
         self.unregister_mm_open_price_entry(strategy_id);
         self.unregister_arb_open_price_entry(strategy_id);
-        if let Some(symbol) = removed
-            .as_ref()
-            .and_then(|strategy| strategy.symbol().map(normalize_symbol_for_internal))
-        {
-            if let Some(set) = self.symbol_index.get_mut(&symbol) {
-                set.remove(&strategy_id);
-                if set.is_empty() {
-                    self.symbol_index.remove(&symbol);
+        if let Some(strategy) = removed.as_ref() {
+            if let Some(symbol) = strategy.symbol().map(normalize_symbol_for_internal) {
+                self.unregister_kind_indexes_for_symbol(
+                    strategy_id,
+                    &symbol,
+                    Self::kind_index_flags(strategy.as_ref()),
+                );
+                if let Some(set) = self.symbol_index.get_mut(&symbol) {
+                    set.remove(&strategy_id);
+                    if set.is_empty() {
+                        self.symbol_index.remove(&symbol);
+                    }
                 }
             }
         }
@@ -709,6 +817,9 @@ impl StrategyManager {
     }
 
     pub fn find_mm_hedge_id_for_normalized_symbol(&self, symbol_upper: &str) -> Option<i32> {
+        if let Some(id) = self.mm_hedge_index.get(symbol_upper) {
+            return Some(*id);
+        }
         let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
@@ -780,6 +891,12 @@ impl StrategyManager {
         symbol_upper: &str,
         exec_venue: TradingVenue,
     ) -> Option<i32> {
+        if let Some(ids) = self.exec_strategy_index.get(symbol_upper) {
+            let id = ids[Self::venue_index(exec_venue)];
+            if id != 0 {
+                return Some(id);
+            }
+        }
         let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
@@ -834,6 +951,9 @@ impl StrategyManager {
     }
 
     pub fn find_arb_hedge_id_for_normalized_symbol(&self, symbol_upper: &str) -> Option<i32> {
+        if let Some(id) = self.arb_hedge_index.get(symbol_upper) {
+            return Some(*id);
+        }
         let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
@@ -896,7 +1016,7 @@ impl StrategyManager {
         hedge_venue: TradingVenue,
     ) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        if let Some(id) = self.find_arb_hedge_id(&symbol_upper) {
+        if let Some(id) = self.find_arb_hedge_id_for_normalized_symbol(&symbol_upper) {
             return id;
         }
         let strategy_id = StrategyManager::generate_strategy_id();
@@ -914,6 +1034,9 @@ impl StrategyManager {
 
     fn find_order_terminal_recorder_id(&self, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
+        if let Some(id) = self.order_terminal_recorder_index.get(&symbol_upper) {
+            return Some(*id);
+        }
         let ids = self.symbol_index.get(&symbol_upper)?;
         // 这里按 symbol 找 terminal recorder，依赖部署侧保证同一 symbol 不会同时启用
         // MM hedge 和 Arb hedge recorder；否则两个账本都能接 terminal record，会出现串账。
@@ -1136,8 +1259,11 @@ mod tests {
         next_strategy_id_state, OpenPriceMapEntry, OpenPriceMapKey, QuantizedValueKey, Strategy,
         StrategyManager, STRATEGY_ID_MASK,
     };
-    use order_common::Side;
+    use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
+    use crate::strategy::exec_strategy::ExecStrategy;
+    use crate::strategy::mm_hedge_strategy::MarketMakerHedgeStrategy;
     use order_common::{OrderUpdate, TradeUpdate};
+    use order_common::{Side, TradingVenue};
     use signal_common::tick_math::QuantizedValue;
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
@@ -1353,6 +1479,101 @@ mod tests {
         assert_eq!(
             manager.mm_open_strategy_ids_by_price_qv("SOL-USDT-SWAP", qv),
             vec![41]
+        );
+    }
+
+    #[test]
+    fn hedge_and_exec_strategy_indexes_follow_lifecycle() {
+        let mut manager = StrategyManager::new();
+
+        manager.insert(Box::new(MarketMakerHedgeStrategy::new(
+            51,
+            "BTCUSDT".to_string(),
+        )));
+        manager.insert(Box::new(ArbHedgeStrategy::new(
+            52,
+            "ETHUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        )));
+        manager.insert(Box::new(ExecStrategy::new(
+            53,
+            "SOLUSDT",
+            TradingVenue::GateFutures,
+        )));
+
+        assert_eq!(
+            manager.find_mm_hedge_id_for_normalized_symbol("BTCUSDT"),
+            Some(51)
+        );
+        assert_eq!(
+            manager.find_arb_hedge_id_for_normalized_symbol("ETHUSDT"),
+            Some(52)
+        );
+        assert_eq!(
+            manager
+                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateFutures),
+            Some(53)
+        );
+        assert_eq!(
+            manager
+                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateMargin),
+            None
+        );
+
+        let exec = manager.take(53).expect("exec strategy should exist");
+        assert_eq!(
+            manager
+                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateFutures),
+            None
+        );
+        manager.insert(exec);
+        assert_eq!(
+            manager
+                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateFutures),
+            Some(53)
+        );
+
+        assert!(manager.remove(51).is_some());
+        assert_eq!(
+            manager.find_mm_hedge_id_for_normalized_symbol("BTCUSDT"),
+            None
+        );
+        assert!(manager.remove(52).is_some());
+        assert_eq!(
+            manager.find_arb_hedge_id_for_normalized_symbol("ETHUSDT"),
+            None
+        );
+    }
+
+    #[test]
+    fn replacing_strategy_clears_old_kind_index() {
+        let mut manager = StrategyManager::new();
+
+        manager.insert(Box::new(MarketMakerHedgeStrategy::new(
+            61,
+            "BTCUSDT".to_string(),
+        )));
+        assert_eq!(
+            manager.find_mm_hedge_id_for_normalized_symbol("BTCUSDT"),
+            Some(61)
+        );
+
+        manager.insert(Box::new(DummyOpenStrategy {
+            id: 61,
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Buy,
+            client_order_id: 601,
+            price_qv: QuantizedValue::from_parts(1, -2, 100),
+        }));
+
+        assert_eq!(
+            manager.find_mm_hedge_id_for_normalized_symbol("BTCUSDT"),
+            None
+        );
+        assert_eq!(
+            manager.ids_for_normalized_symbol("BTCUSDT").unwrap().len(),
+            1
         );
     }
 
