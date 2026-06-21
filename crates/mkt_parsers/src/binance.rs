@@ -1917,11 +1917,17 @@ fn parse_raw_key_i64(raw: &[u8], key: u8) -> Option<i64> {
         pos += quote_offset + 1;
         let start = pos;
         let mut escaped = false;
-        while let Some(&b) = raw.get(pos) {
-            match b {
+        loop {
+            let rest = raw.get(pos..)?;
+            let offset = memchr2(b'"', b'\\', rest)?;
+            pos += offset;
+            match raw.get(pos).copied()? {
                 b'\\' => {
                     escaped = true;
                     pos += 2;
+                    if pos > raw.len() {
+                        return None;
+                    }
                 }
                 b'"' => {
                     let end = pos;
@@ -1936,7 +1942,7 @@ fn parse_raw_key_i64(raw: &[u8], key: u8) -> Option<i64> {
                     }
                     break;
                 }
-                _ => pos += 1,
+                _ => return None,
             }
         }
     }
