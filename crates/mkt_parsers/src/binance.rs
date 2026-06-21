@@ -1310,6 +1310,10 @@ fn parse_trade_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawTra
 }
 
 fn expect_raw_byte(raw: &[u8], pos: &mut usize, expected: u8) -> Option<()> {
+    if raw.get(*pos) == Some(&expected) {
+        *pos += 1;
+        return Some(());
+    }
     skip_ws_at(raw, pos);
     if raw.get(*pos) != Some(&expected) {
         return None;
@@ -1319,6 +1323,10 @@ fn expect_raw_byte(raw: &[u8], pos: &mut usize, expected: u8) -> Option<()> {
 }
 
 fn consume_raw_literal(raw: &[u8], pos: &mut usize, literal: &[u8]) -> Option<()> {
+    if raw.get(*pos..*pos + literal.len()) == Some(literal) {
+        *pos += literal.len();
+        return Some(());
+    }
     skip_ws_at(raw, pos);
     if raw.get(*pos..*pos + literal.len()) != Some(literal) {
         return None;
@@ -1328,6 +1336,10 @@ fn consume_raw_literal(raw: &[u8], pos: &mut usize, literal: &[u8]) -> Option<()
 }
 
 fn consume_raw_literal_if(raw: &[u8], pos: &mut usize, literal: &[u8]) -> bool {
+    if raw.get(*pos..*pos + literal.len()) == Some(literal) {
+        *pos += literal.len();
+        return true;
+    }
     skip_ws_at(raw, pos);
     if raw.get(*pos..*pos + literal.len()) == Some(literal) {
         *pos += literal.len();
@@ -1338,6 +1350,17 @@ fn consume_raw_literal_if(raw: &[u8], pos: &mut usize, literal: &[u8]) -> bool {
 }
 
 fn consume_raw_field_separator(raw: &[u8], pos: &mut usize) -> Option<bool> {
+    match raw.get(*pos).copied()? {
+        b',' => {
+            *pos += 1;
+            return Some(true);
+        }
+        b'}' => {
+            *pos += 1;
+            return Some(false);
+        }
+        _ => {}
+    }
     skip_ws_at(raw, pos);
     match raw.get(*pos).copied()? {
         b',' => {
@@ -3095,11 +3118,17 @@ fn skip_raw_string(raw: &[u8], pos: &mut usize) -> Option<()> {
 }
 
 fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
-    skip_ws_at(raw, pos);
-    let bytes = if raw.get(*pos) == Some(&b'"') {
-        take_unescaped_quoted_bytes(raw, pos)?
-    } else {
-        take_unquoted_json_scalar(raw, pos)?
+    let bytes = match raw.get(*pos).copied()? {
+        b'"' => take_unescaped_quoted_bytes(raw, pos)?,
+        b if is_json_ws(b) => {
+            skip_ws_at(raw, pos);
+            if raw.get(*pos) == Some(&b'"') {
+                take_unescaped_quoted_bytes(raw, pos)?
+            } else {
+                take_unquoted_json_scalar(raw, pos)?
+            }
+        }
+        _ => take_unquoted_json_scalar(raw, pos)?,
     };
     if bytes.is_empty() {
         return None;
@@ -3169,11 +3198,17 @@ fn parse_raw_literal_key_i64(raw: &[u8], key: &[u8]) -> Option<i64> {
 }
 
 fn parse_raw_i64_value(raw: &[u8], pos: &mut usize) -> Option<i64> {
-    skip_ws_at(raw, pos);
-    let bytes = if raw.get(*pos) == Some(&b'"') {
-        take_unescaped_quoted_bytes(raw, pos)?
-    } else {
-        take_unquoted_json_scalar(raw, pos)?
+    let bytes = match raw.get(*pos).copied()? {
+        b'"' => take_unescaped_quoted_bytes(raw, pos)?,
+        b if is_json_ws(b) => {
+            skip_ws_at(raw, pos);
+            if raw.get(*pos) == Some(&b'"') {
+                take_unescaped_quoted_bytes(raw, pos)?
+            } else {
+                take_unquoted_json_scalar(raw, pos)?
+            }
+        }
+        _ => take_unquoted_json_scalar(raw, pos)?,
     };
     if bytes.is_empty() {
         return None;
