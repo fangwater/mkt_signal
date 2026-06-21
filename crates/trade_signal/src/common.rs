@@ -8,7 +8,6 @@
 use std::collections::VecDeque;
 
 use depth_pub_common::query_client::DepthQueryClient;
-use log::warn;
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
@@ -25,7 +24,7 @@ pub fn append_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
     format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
 }
 
-pub fn query_batch_tlens_or_zero(
+pub fn query_batch_tlens_local_or_zero(
     source: &str,
     depth_query_client: &DepthQueryClient,
     symbol: &str,
@@ -35,7 +34,7 @@ pub fn query_batch_tlens_or_zero(
         return Vec::new();
     }
 
-    if let Some(tlens) = super::local_tlen::query_batch_or_remote(
+    if let Some(tlens) = super::local_tlen::query_batch_local(
         source,
         depth_query_client.venue_slug(),
         symbol,
@@ -44,31 +43,7 @@ pub fn query_batch_tlens_or_zero(
         return tlens;
     }
 
-    match depth_query_client.query_batch_tick_indices(symbol, tick_indices) {
-        Ok(mut tlens) => {
-            if tlens.len() < tick_indices.len() {
-                warn!(
-                    "{source}: tlen batch query partial result symbol={} requested={} got={}, missing -> 0.0",
-                    symbol,
-                    tick_indices.len(),
-                    tlens.len()
-                );
-                tlens.resize(tick_indices.len(), 0.0);
-            } else if tlens.len() > tick_indices.len() {
-                tlens.truncate(tick_indices.len());
-            }
-            tlens
-        }
-        Err(err) => {
-            warn!(
-                "{source}: tlen batch query failed symbol={} levels={} err={:#}",
-                symbol,
-                tick_indices.len(),
-                err
-            );
-            vec![0.0; tick_indices.len()]
-        }
-    }
+    vec![0.0; tick_indices.len()]
 }
 
 pub fn normalize_tlen_for_compare(
@@ -114,7 +89,7 @@ pub fn apply_open_tlen_gate_and_build_from_keys(
         table,
         venue,
         symbol,
-        query_batch_tlens_or_zero(source, depth_query_client, symbol, tick_indices),
+        query_batch_tlens_local_or_zero(source, depth_query_client, symbol, tick_indices),
     );
     let mut filtered = 0usize;
     let out = tlens

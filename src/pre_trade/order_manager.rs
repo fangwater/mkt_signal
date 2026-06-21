@@ -1024,6 +1024,36 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build binance um order params".to_string())
             }
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
+                let create_ts = get_timestamp_us();
+                let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
+                let okex_order_type = okex_order_type_from_order_type(self.order_type)?;
+                let quantity_qv = resolved.require_quantity_qv(self, "okex")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "okex")?;
+
+                let params = OkexNewOrderParams {
+                    side: self.side,
+                    order_type: okex_order_type,
+                    quantity_qv,
+                    price_qv,
+                    symbol: inst_id,
+                    reduce_only: self.reduce_only,
+                    client_order_id: self.client_order_id,
+                };
+
+                match self.venue {
+                    TradingVenue::OkexMargin => OkexNewOrderRequest::prepared_margin(
+                        create_ts,
+                        self.client_order_id,
+                        params,
+                    ),
+                    TradingVenue::OkexFutures => {
+                        OkexNewOrderRequest::prepared_um(create_ts, self.client_order_id, params)
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| "failed to build okex new order request".to_string())
+            }
             TradingVenue::GateMargin => {
                 let create_ts = get_timestamp_us();
                 let currency_pair = gate_currency_pair_from_symbol(&self.symbol);
@@ -1108,11 +1138,40 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget um order params".to_string())
             }
-            _ => {
-                let bytes = self.get_order_request_bytes()?;
-                PreparedTradeRequest::from_bytes(bytes.as_ref())
-                    .ok_or_else(|| "failed to prepare order request from bytes".to_string())
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
+                let create_ts = get_timestamp_us();
+                let quantity_qv = resolved.require_quantity_qv(self, "bybit")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bybit")?;
+                let symbol = bybit_symbol_from_symbol(&self.symbol);
+                let params = BybitNewOrderParams {
+                    side: self.side,
+                    order_type: self.order_type,
+                    reduce_only: self.reduce_only,
+                    is_leverage: matches!(self.venue, TradingVenue::BybitMargin)
+                        && bybit_margin_should_use_leverage(self.reduce_only),
+                    quantity_qv,
+                    price_qv,
+                    symbol,
+                };
+                match self.venue {
+                    TradingVenue::BybitMargin => BybitNewOrderRequest::prepared_margin_order(
+                        create_ts,
+                        self.client_order_id,
+                        &params,
+                    ),
+                    TradingVenue::BybitFutures => BybitNewOrderRequest::prepared_um_order(
+                        create_ts,
+                        self.client_order_id,
+                        &params,
+                    ),
+                    _ => None,
+                }
+                .ok_or_else(|| "failed to build bybit new order request".to_string())
             }
+            _ => Err(format!(
+                "prepared order request unsupported for venue {:?}",
+                self.venue
+            )),
         }
     }
 }

@@ -25,7 +25,7 @@ const INC_DRAIN_BUDGET: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlenQueryMode {
-    Remote,
+    Disabled,
     Local,
 }
 
@@ -232,7 +232,7 @@ impl LocalTlenStore {
 
 enum LocalTlenRuntime {
     Uninitialized,
-    Remote,
+    Disabled,
     Local(LocalTlenStore),
 }
 
@@ -242,35 +242,35 @@ thread_local! {
 
 pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
     if force_remote {
-        return TlenQueryMode::Remote;
+        return TlenQueryMode::Disabled;
     }
 
     if let Ok(raw) = std::env::var(LOCAL_TLEN_MODE_ENV) {
         match raw.trim().to_ascii_lowercase().as_str() {
             "local" => return TlenQueryMode::Local,
-            "remote" | "query" | "uds" => return TlenQueryMode::Remote,
+            "remote" | "query" | "uds" | "disabled" | "off" => return TlenQueryMode::Disabled,
             other => {
                 warn!(
-                    "invalid {}='{}'; falling back to remote tlen query",
+                    "invalid {}='{}'; disabling local tlen query",
                     LOCAL_TLEN_MODE_ENV, other
                 );
-                return TlenQueryMode::Remote;
+                return TlenQueryMode::Disabled;
             }
         }
     }
 
-    TlenQueryMode::Remote
+    TlenQueryMode::Disabled
 }
 
 pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool) -> Result<()> {
     let mode = startup_mode_from_env(force_remote);
     match mode {
-        TlenQueryMode::Remote => {
+        TlenQueryMode::Disabled => {
             LOCAL_TLEN.with(|state| {
-                *state.borrow_mut() = LocalTlenRuntime::Remote;
+                *state.borrow_mut() = LocalTlenRuntime::Disabled;
             });
             info!(
-                "local_tlen disabled: mode=remote venue={} force_remote={}",
+                "local_tlen disabled: mode=disabled venue={} force_remote={}",
                 open_venue.data_pub_slug(),
                 force_remote
             );
@@ -324,7 +324,7 @@ pub fn update_bbo(
     });
 }
 
-pub fn query_batch_or_remote(
+pub fn query_batch_local(
     source: &str,
     venue_slug: &str,
     symbol: &str,
@@ -340,7 +340,7 @@ pub fn query_batch_or_remote(
             LocalTlenRuntime::Local(store) => {
                 if store.venue.data_pub_slug() != venue_slug {
                     warn!(
-                        "{source}: local_tlen mode fixed to venue={} but requested venue={}; returning empty tlen without remote query",
+                        "{source}: local_tlen mode fixed to venue={} but requested venue={}; returning empty tlen in local-only mode",
                         store.venue.data_pub_slug(),
                         venue_slug
                     );
@@ -348,7 +348,7 @@ pub fn query_batch_or_remote(
                 }
                 Some(store.query_batch(&symbol_key, tick_indices))
             }
-            LocalTlenRuntime::Remote | LocalTlenRuntime::Uninitialized => None,
+            LocalTlenRuntime::Disabled | LocalTlenRuntime::Uninitialized => None,
         }
     })
 }
@@ -382,7 +382,7 @@ pub fn query_batch_local_only_for_cancel(
                 }
                 Some(Some(store.query_batch(&symbol_key, tick_indices)))
             }
-            LocalTlenRuntime::Remote | LocalTlenRuntime::Uninitialized => None,
+            LocalTlenRuntime::Disabled | LocalTlenRuntime::Uninitialized => None,
         }
     })
 }
@@ -702,7 +702,7 @@ mod tests {
         });
 
         assert_eq!(
-            query_batch_or_remote("test", "gate-margin", "BTCUSDT", &[100, 101]),
+            query_batch_local("test", "gate-margin", "BTCUSDT", &[100, 101]),
             Some(vec![TLEN_QUERY_AMOUNT_EMPTY, TLEN_QUERY_AMOUNT_EMPTY])
         );
 

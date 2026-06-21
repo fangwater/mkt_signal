@@ -7,7 +7,7 @@ use serde_json::Value;
 use order_common::Side;
 use signal_common::tick_math::QuantizedValue;
 
-use super::trade_request::{TradeRequestHeader, TradeRequestType};
+use super::trade_request::{PreparedTradeRequest, TradeRequestHeader, TradeRequestType};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +58,35 @@ impl OkexOrderType {
     }
 }
 
+fn write_u8_at(out: &mut [u8], offset: &mut usize, value: u8) -> Option<()> {
+    *out.get_mut(*offset)? = value;
+    *offset += 1;
+    Some(())
+}
+
+fn write_i64_le_at(out: &mut [u8], offset: &mut usize, value: i64) -> Option<()> {
+    let end = (*offset).checked_add(8)?;
+    out.get_mut(*offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    *offset = end;
+    Some(())
+}
+
+fn write_i32_le_at(out: &mut [u8], offset: &mut usize, value: i32) -> Option<()> {
+    let end = (*offset).checked_add(4)?;
+    out.get_mut(*offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    *offset = end;
+    Some(())
+}
+
+fn write_bytes_at(out: &mut [u8], offset: &mut usize, value: &[u8]) -> Option<()> {
+    let end = (*offset).checked_add(value.len())?;
+    out.get_mut(*offset..end)?.copy_from_slice(value);
+    *offset = end;
+    Some(())
+}
+
 /// 紧凑的 okex 下单参数：
 /// side | order_type | reduce_only
 /// | qty_tick_i64 | qty_tick_exp | qty_count
@@ -100,6 +129,41 @@ impl OkexNewOrderParams {
         buf.put_u8(symbol_bytes.len() as u8);
         buf.put_slice(symbol_bytes);
         Some(buf.freeze())
+    }
+
+    fn encoded_len(&self) -> Option<usize> {
+        let symbol_len = self.symbol.len();
+        if symbol_len > u8::MAX as usize {
+            return None;
+        }
+        Some(Self::MIN_BIN_LEN + symbol_len)
+    }
+
+    fn write_to_slice(&self, out: &mut [u8]) -> Option<()> {
+        let symbol_bytes = self.symbol.as_bytes();
+        if symbol_bytes.len() > u8::MAX as usize {
+            return None;
+        }
+        if out.len() != Self::MIN_BIN_LEN + symbol_bytes.len() {
+            return None;
+        }
+
+        let (qty_tick_i64, qty_tick_exp) = self.quantity_qv.get_tick_parts();
+        let (price_tick_i64, price_tick_exp) = self.price_qv.get_tick_parts();
+        let mut offset = 0usize;
+        write_u8_at(out, &mut offset, self.side.to_u8())?;
+        write_u8_at(out, &mut offset, self.order_type as u8)?;
+        write_u8_at(out, &mut offset, self.reduce_only as u8)?;
+        write_i64_le_at(out, &mut offset, qty_tick_i64)?;
+        write_i32_le_at(out, &mut offset, qty_tick_exp)?;
+        write_i64_le_at(out, &mut offset, self.quantity_qv.get_count())?;
+        write_i64_le_at(out, &mut offset, price_tick_i64)?;
+        write_i32_le_at(out, &mut offset, price_tick_exp)?;
+        write_i64_le_at(out, &mut offset, self.price_qv.get_count())?;
+        write_i64_le_at(out, &mut offset, self.client_order_id)?;
+        write_u8_at(out, &mut offset, symbol_bytes.len() as u8)?;
+        write_bytes_at(out, &mut offset, symbol_bytes)?;
+        (offset == out.len()).then_some(())
     }
 
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
@@ -301,6 +365,50 @@ impl OkexNewOrderRequest {
             client_order_id,
             params,
         ))
+    }
+
+    fn prepared_with_type(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        params: OkexNewOrderParams,
+    ) -> Option<PreparedTradeRequest> {
+        let mut params = params;
+        params.client_order_id = client_order_id;
+        let params_len = params.encoded_len()?;
+        PreparedTradeRequest::with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            params_len,
+            |out| params.write_to_slice(out),
+        )
+    }
+
+    pub fn prepared_margin(
+        create_time: i64,
+        client_order_id: i64,
+        params: OkexNewOrderParams,
+    ) -> Option<PreparedTradeRequest> {
+        Self::prepared_with_type(
+            TradeRequestType::OkexNewMarginOrder,
+            create_time,
+            client_order_id,
+            params,
+        )
+    }
+
+    pub fn prepared_um(
+        create_time: i64,
+        client_order_id: i64,
+        params: OkexNewOrderParams,
+    ) -> Option<PreparedTradeRequest> {
+        Self::prepared_with_type(
+            TradeRequestType::OkexNewUMOrder,
+            create_time,
+            client_order_id,
+            params,
+        )
     }
 
     pub fn to_bytes(&self) -> Bytes {
@@ -808,6 +916,26 @@ mod tests {
         assert_eq!(arg["clOrdId"], json!("42"));
         assert_eq!(arg["sz"], json!("1.25"));
         assert_eq!(arg["px"], json!("123.45"));
+    }
+
+    #[test]
+    fn prepared_okex_new_order_matches_legacy_bytes() {
+        let params = OkexNewOrderParams {
+            side: Side::Buy,
+            order_type: OkexOrderType::Limit,
+            reduce_only: false,
+            quantity_qv: QuantizedValue::from_decimal(1.25).unwrap(),
+            price_qv: QuantizedValue::from_decimal(123.45).unwrap(),
+            symbol: "BTC-USDT-SWAP".to_string(),
+            client_order_id: 0,
+        };
+
+        let legacy = OkexNewOrderRequest::create_um(1, 42, params.clone())
+            .unwrap()
+            .to_bytes();
+        let prepared = OkexNewOrderRequest::prepared_um(1, 42, params).unwrap();
+
+        assert_eq!(prepared.to_bytes().as_ref(), legacy.as_ref());
     }
 
     #[test]

@@ -3396,7 +3396,7 @@ fn emit_spread_arb_close_signals(
                 .as_ref()
                 .expect("missing open-side depth query client")
         };
-        let tlens = super::common::query_batch_tlens_or_zero(
+        let tlens = super::common::query_batch_tlens_local_or_zero(
             SPREAD_ARB_SHELL_NAME,
             open_depth_query_client,
             &query_symbol,

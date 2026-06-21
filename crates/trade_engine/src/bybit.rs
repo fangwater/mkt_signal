@@ -8,7 +8,7 @@ use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{OrderType, Side};
 use signal_common::tick_math::QuantizedValue;
 
-use super::trade_request::{TradeRequestHeader, TradeRequestType};
+use super::trade_request::{PreparedTradeRequest, TradeRequestHeader, TradeRequestType};
 
 const DEFAULT_RECV_WINDOW_MS: i64 = 5_000;
 
@@ -25,6 +25,35 @@ impl BybitCategory {
             BybitCategory::Linear => "linear",
         }
     }
+}
+
+fn write_u8_at(out: &mut [u8], offset: &mut usize, value: u8) -> Option<()> {
+    *out.get_mut(*offset)? = value;
+    *offset += 1;
+    Some(())
+}
+
+fn write_i64_le_at(out: &mut [u8], offset: &mut usize, value: i64) -> Option<()> {
+    let end = (*offset).checked_add(8)?;
+    out.get_mut(*offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    *offset = end;
+    Some(())
+}
+
+fn write_i32_le_at(out: &mut [u8], offset: &mut usize, value: i32) -> Option<()> {
+    let end = (*offset).checked_add(4)?;
+    out.get_mut(*offset..end)?
+        .copy_from_slice(&value.to_le_bytes());
+    *offset = end;
+    Some(())
+}
+
+fn write_bytes_at(out: &mut [u8], offset: &mut usize, value: &[u8]) -> Option<()> {
+    let end = (*offset).checked_add(value.len())?;
+    out.get_mut(*offset..end)?.copy_from_slice(value);
+    *offset = end;
+    Some(())
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +100,33 @@ impl BybitNewOrderParams {
         buf.put_u8(symbol_bytes.len() as u8);
         buf.put_slice(symbol_bytes);
         Some(())
+    }
+
+    fn write_to_slice(&self, out: &mut [u8]) -> Option<()> {
+        let symbol_bytes = self.symbol.as_bytes();
+        if symbol_bytes.len() > u8::MAX as usize {
+            return None;
+        }
+        if out.len() != Self::MIN_BIN_LEN + symbol_bytes.len() {
+            return None;
+        }
+
+        let (qty_tick_i64, qty_tick_exp) = self.quantity_qv.get_tick_parts();
+        let (price_tick_i64, price_tick_exp) = self.price_qv.get_tick_parts();
+        let mut offset = 0usize;
+        write_u8_at(out, &mut offset, self.side.to_u8())?;
+        write_u8_at(out, &mut offset, self.order_type.to_u8())?;
+        write_u8_at(out, &mut offset, self.reduce_only as u8)?;
+        write_u8_at(out, &mut offset, self.is_leverage as u8)?;
+        write_i64_le_at(out, &mut offset, qty_tick_i64)?;
+        write_i32_le_at(out, &mut offset, qty_tick_exp)?;
+        write_i64_le_at(out, &mut offset, self.quantity_qv.get_count())?;
+        write_i64_le_at(out, &mut offset, price_tick_i64)?;
+        write_i32_le_at(out, &mut offset, price_tick_exp)?;
+        write_i64_le_at(out, &mut offset, self.price_qv.get_count())?;
+        write_u8_at(out, &mut offset, symbol_bytes.len() as u8)?;
+        write_bytes_at(out, &mut offset, symbol_bytes)?;
+        (offset == out.len()).then_some(())
     }
 
     pub fn to_bytes(&self) -> Option<Bytes> {
@@ -252,6 +308,22 @@ impl BybitNewOrderRequest {
         Some(buf.freeze())
     }
 
+    fn prepared_with_type(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        params: &BybitNewOrderParams,
+    ) -> Option<PreparedTradeRequest> {
+        let params_len = params.encoded_len()?;
+        PreparedTradeRequest::with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            params_len,
+            |out| params.write_to_slice(out),
+        )
+    }
+
     pub fn margin_order_bytes(
         create_time: i64,
         client_order_id: i64,
@@ -265,12 +337,38 @@ impl BybitNewOrderRequest {
         )
     }
 
+    pub fn prepared_margin_order(
+        create_time: i64,
+        client_order_id: i64,
+        params: &BybitNewOrderParams,
+    ) -> Option<PreparedTradeRequest> {
+        Self::prepared_with_type(
+            TradeRequestType::BybitNewMarginOrder,
+            create_time,
+            client_order_id,
+            params,
+        )
+    }
+
     pub fn um_order_bytes(
         create_time: i64,
         client_order_id: i64,
         params: &BybitNewOrderParams,
     ) -> Option<Bytes> {
         Self::to_bytes_with_type(
+            TradeRequestType::BybitNewUMOrder,
+            create_time,
+            client_order_id,
+            params,
+        )
+    }
+
+    pub fn prepared_um_order(
+        create_time: i64,
+        client_order_id: i64,
+        params: &BybitNewOrderParams,
+    ) -> Option<PreparedTradeRequest> {
+        Self::prepared_with_type(
             TradeRequestType::BybitNewUMOrder,
             create_time,
             client_order_id,
@@ -782,6 +880,24 @@ mod tests {
         assert_eq!(arg["orderType"], json!("Market"));
         assert_eq!(arg["reduceOnly"], json!(true));
         assert!(arg.get("price").is_none());
+    }
+
+    #[test]
+    fn prepared_bybit_new_order_matches_legacy_bytes() {
+        let params = BybitNewOrderParams {
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            reduce_only: false,
+            is_leverage: true,
+            quantity_qv: QuantizedValue::from_decimal(0.25).unwrap(),
+            price_qv: QuantizedValue::from_decimal(123.45).unwrap(),
+            symbol: "BTCUSDT".to_string(),
+        };
+
+        let legacy = BybitNewOrderRequest::margin_order_bytes(1, 42, &params).unwrap();
+        let prepared = BybitNewOrderRequest::prepared_margin_order(1, 42, &params).unwrap();
+
+        assert_eq!(prepared.to_bytes().as_ref(), legacy.as_ref());
     }
 
     #[test]
