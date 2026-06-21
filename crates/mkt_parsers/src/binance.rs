@@ -2102,8 +2102,76 @@ fn parse_derivative_value_at<'a>(
 fn parse_derivative_object_scanner<'a>(
     scanner: &mut JsonObjectScanner<'a>,
 ) -> Option<RawDerivative<'a>> {
+    if let Some(derivative) = parse_mark_price_object_fast(scanner) {
+        return Some(derivative);
+    }
+
     let first_key = scanner.next_key()?;
     parse_derivative_object_after_key(scanner, first_key)
+}
+
+fn parse_mark_price_object_fast<'a>(
+    scanner: &mut JsonObjectScanner<'a>,
+) -> Option<RawDerivative<'a>> {
+    let raw = scanner.raw;
+    let mut pos = scanner.pos;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""e""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    consume_raw_literal(raw, &mut pos, br#""markPriceUpdate""#)?;
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""E""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let timestamp_us = ms_to_us(parse_raw_i64_value(raw, &mut pos)?);
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""s""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let symbol = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""p""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let mark_price = parse_raw_number(raw, &mut pos)?;
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""i""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let index_price = parse_raw_number(raw, &mut pos)?;
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""r""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let funding_rate = parse_raw_number(raw, &mut pos)?;
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""T""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let next_funding_time_us = ms_to_us(parse_raw_i64_value(raw, &mut pos)?);
+    finish_raw_object(raw, &mut pos)?;
+    scanner.pos = pos;
+
+    Some(RawDerivative::MarkPrice {
+        symbol,
+        mark_price: Some(mark_price),
+        index_price: Some(index_price),
+        funding_rate: Some(funding_rate),
+        next_funding_time_us: Some(next_funding_time_us),
+        timestamp_us,
+    })
 }
 
 fn parse_derivative_object_after_key<'a>(
@@ -3784,6 +3852,27 @@ mod tests {
                 ("ETHUSDT", 1_700_000_000_002_000)
             ]
         );
+    }
+
+    #[test]
+    fn mark_price_fast_path_parses_array_item_shape() {
+        let raw = br#"{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000}"#;
+        let mut scanner = super::JsonObjectScanner::new(raw);
+        let derivative =
+            super::parse_mark_price_object_fast(&mut scanner).expect("fast mark price");
+
+        assert_eq!(
+            derivative,
+            RawDerivative::MarkPrice {
+                symbol: "BTCUSDT",
+                mark_price: Some(25.0),
+                index_price: Some(24.9),
+                funding_rate: Some(0.0001),
+                next_funding_time_us: Some(1_700_003_600_000_000),
+                timestamp_us: 1_700_000_000_001_000,
+            }
+        );
+        assert_eq!(scanner.pos, raw.len());
     }
 
     #[test]
