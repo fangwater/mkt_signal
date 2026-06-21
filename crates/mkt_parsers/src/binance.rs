@@ -965,6 +965,9 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
     if let Some(trade) = parse_combined_trade_fast(raw) {
         return Some(trade);
     }
+    if let Some(trade) = parse_trade_object_fast(raw) {
+        return Some(trade);
+    }
 
     let mut payload = raw_payload_object(raw);
     let mut seen_event = false;
@@ -1043,6 +1046,16 @@ pub fn parse_trade_raw_borrowed(raw: &[u8]) -> Option<RawTrade<'_>> {
         return None;
     }
     Some(out)
+}
+
+fn parse_trade_object_fast(raw: &[u8]) -> Option<RawTrade<'_>> {
+    let mut pos = 0usize;
+    let trade = parse_trade_payload_fast(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(trade)
 }
 
 fn parse_combined_trade_fast(raw: &[u8]) -> Option<RawTrade<'_>> {
@@ -3609,6 +3622,19 @@ mod tests {
     fn trade_fast_path_parses_combined_stream_shape() {
         let raw = br#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":false}}"#;
         let trade = super::parse_combined_trade_fast(raw).expect("fast trade");
+
+        assert_eq!(trade.symbol, "BTCUSDT");
+        assert_eq!(trade.trade_id, 1001);
+        assert_eq!(trade.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(trade.side, 'B');
+        assert!((trade.price - 25.0).abs() < 1e-9);
+        assert!((trade.amount - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trade_fast_path_parses_raw_trade_object_shape() {
+        let raw = br#"{"e":"trade","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":false}"#;
+        let trade = super::parse_trade_object_fast(raw).expect("fast trade");
 
         assert_eq!(trade.symbol, "BTCUSDT");
         assert_eq!(trade.trade_id, 1001);
