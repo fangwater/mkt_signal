@@ -198,6 +198,19 @@ impl BasicUmManager {
             .replace('-', "")
     }
 
+    fn normalized_symbol_key(symbol: &str) -> std::borrow::Cow<'_, str> {
+        if !symbol.is_empty()
+            && !symbol.ends_with("SWAP")
+            && symbol
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        {
+            std::borrow::Cow::Borrowed(symbol)
+        } else {
+            std::borrow::Cow::Owned(Self::normalized_symbol(symbol))
+        }
+    }
+
     fn refresh_net_contracts_for_inst(&mut self, inst_id: &str) {
         let symbol = self.normalized_symbol_for_inst(inst_id);
         let mut inst_ids = HashSet::new();
@@ -220,10 +233,10 @@ impl BasicUmManager {
 
 impl NetPosition for BasicUmManager {
     fn net_position(&self, symbol: &str, min_qty_table: Option<&MinQtyTable>) -> f64 {
-        let symbol_normalized = Self::normalized_symbol(symbol);
+        let symbol_normalized = Self::normalized_symbol_key(symbol);
         let net_contracts = self
             .net_contracts_by_symbol
-            .get(&symbol_normalized)
+            .get(symbol_normalized.as_ref())
             .copied()
             .unwrap_or(0.0);
 

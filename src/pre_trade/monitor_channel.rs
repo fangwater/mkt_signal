@@ -30,7 +30,9 @@ use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{ExecutionType, OrderStatus, TradingVenue};
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
-use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
+use runtime_common::symbol_util::{
+    extract_assets_from_internal_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
+};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
 use signal_common::common::{SignalBytes, TradingLeg};
@@ -3549,7 +3551,7 @@ impl MonitorChannel {
             let params = PreTradeParamsLoader::instance();
             let max_pending_limit_orders = params.max_pending_limit_orders();
 
-            let symbol_upper = symbol.to_uppercase();
+            let symbol_upper = uppercase_symbol_key(symbol);
             let order_manager = inner.order_manager.borrow();
 
             if max_pending_limit_orders > 0 {
@@ -3618,9 +3620,8 @@ impl MonitorChannel {
             } else {
                 None
             };
-            let symbol_upper = symbol.to_uppercase();
             let base_asset = if symbol_limit > 0.0 {
-                Some(extract_base_asset(&symbol_upper).ok_or_else(|| {
+                Some(extract_base_asset_key(symbol).ok_or_else(|| {
                     OpenExposureRiskError::Symbol(format!(
                         "无法识别 symbol={} 的基础资产，无法校验敞口比例",
                         symbol
@@ -3629,16 +3630,13 @@ impl MonitorChannel {
             } else {
                 None
             };
-            let base_asset_upper = base_asset.as_ref().map(|asset| asset.to_uppercase());
 
             Self::with_basic_state_cached(|state| {
-                if let (Some(base_asset), Some(base_asset_upper), Some(max_pos_u)) =
-                    (base_asset.as_ref(), base_asset_upper.as_ref(), max_pos_u)
-                {
+                if let (Some(base_asset), Some(max_pos_u)) = (base_asset.as_ref(), max_pos_u) {
                     Self::check_symbol_exposure_from_state(
                         symbol,
-                        base_asset,
-                        base_asset_upper,
+                        base_asset.as_ref(),
+                        base_asset.as_ref(),
                         symbol_limit,
                         max_pos_u,
                         state,
@@ -3664,20 +3662,18 @@ impl MonitorChannel {
             return Err("max_pos_u 配置无效，无法校验敞口比例".to_string());
         }
 
-        let symbol_upper = symbol.to_uppercase();
-        let Some(base_asset) = extract_base_asset(&symbol_upper) else {
+        let Some(base_asset) = extract_base_asset_key(symbol) else {
             return Err(format!(
                 "无法识别 symbol={} 的基础资产，无法校验敞口比例",
                 symbol
             ));
         };
 
-        let base_asset_upper = base_asset.to_uppercase();
         Self::with_basic_state_cached(|state| {
             Self::check_symbol_exposure_from_state(
                 symbol,
-                &base_asset,
-                &base_asset_upper,
+                base_asset.as_ref(),
+                base_asset.as_ref(),
                 limit,
                 max_pos_u,
                 state,
@@ -3777,20 +3773,18 @@ impl MonitorChannel {
         let loader = PreTradeParamsLoader::instance();
         let symbol_limit_ratio = loader.max_symbol_exposure_ratio();
         let total_limit_ratio = loader.max_total_exposure_ratio();
-        let symbol_upper = symbol.to_uppercase();
-        let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
+        let base_asset = extract_base_asset_key(symbol).ok_or_else(|| {
             format!(
                 "无法识别 symbol={} 的基础资产，无法校验 ArbHedge 敞口",
                 symbol
             )
         })?;
-        let base_asset_upper = base_asset.to_uppercase();
         let mark = if base_asset.eq_ignore_ascii_case("USDT") {
             1.0
         } else {
             let price = state
                 .mark_usdt_by_asset
-                .get(&base_asset_upper)
+                .get(base_asset.as_ref())
                 .copied()
                 .unwrap_or(0.0);
             if price <= 0.0 {
@@ -3803,7 +3797,7 @@ impl MonitorChannel {
         };
         let (open_qty, hedge_qty) = state
             .exposures
-            .get(&base_asset_upper)
+            .get(base_asset.as_ref())
             .copied()
             .unwrap_or((0.0, 0.0));
         let current_net_qty = open_qty + hedge_qty;
@@ -3918,21 +3912,21 @@ impl MonitorChannel {
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
             let venue = venue_override.unwrap_or(inner.open_venue);
-            let symbol_upper = symbol.to_uppercase();
-            let base_asset = extract_base_asset(&symbol_upper).ok_or_else(|| {
+            let base_asset = extract_base_asset_key(symbol).ok_or_else(|| {
                 format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol)
             })?;
+            let symbol_upper = uppercase_symbol_key(symbol);
             let (qty_unit, fut_symbol_key, qty_multiplier) = match venue {
                 TradingVenue::BinanceFutures => {
-                    ("contracts(mult=1)", Some(symbol_upper.clone()), Some(1.0))
+                    ("contracts(mult=1)", Some(symbol_upper), Some(1.0))
                 }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                    let symbol_key = min_qty_symbol_key(venue, &symbol_upper);
+                    let symbol_key = min_qty_symbol_key(venue, symbol_upper.as_ref());
                     let mult = inner
                         .venue_min_qty_tables
                         .get(&venue)
                         .and_then(|t| t.contract_multiplier_opt(&symbol_key));
-                    ("contracts", Some(symbol_key), mult)
+                    ("contracts", Some(Cow::Owned(symbol_key)), mult)
                 }
                 _ => ("base_qty", None, None),
             };
@@ -3986,11 +3980,11 @@ impl MonitorChannel {
         qty_multiplier: f64,
     ) -> Result<(), String> {
         Self::with_inner(|inner| {
-            let symbol_upper = symbol.to_uppercase();
+            let symbol_upper = uppercase_symbol_key(symbol);
             let fut_symbol_key = match venue {
-                TradingVenue::BinanceFutures => Some(symbol_upper.clone()),
+                TradingVenue::BinanceFutures => Some(symbol_upper),
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
-                    Some(min_qty_symbol_key(venue, &symbol_upper))
+                    Some(Cow::Owned(min_qty_symbol_key(venue, symbol_upper.as_ref())))
                 }
                 _ => None,
             };
@@ -4031,20 +4025,18 @@ impl MonitorChannel {
             panic!("max_pos_u not set!!");
         }
 
-        let symbol_upper = symbol.to_uppercase();
-        let base_asset = extract_base_asset(&symbol_upper)
+        let base_asset = extract_base_asset_key(symbol)
             .ok_or_else(|| format!("无法识别 symbol={} 的基础资产，无法校验 max_pos_u", symbol))?;
-        let base_upper = base_asset.to_uppercase();
         let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
             inner.open_venue,
             inner.hedge_venue,
         ));
-        let mark_symbol = price_mapper.asset_to_price_symbol(&base_upper);
-        let price_from_table = if base_upper == "USDT" {
+        let mark_symbol = price_mapper.asset_to_price_symbol(base_asset.as_ref());
+        let price_from_table = if base_asset.as_ref() == "USDT" {
             Some(1.0)
         } else {
             Self::with_basic_state_cached(|state| {
-                state.mark_usdt_by_asset.get(&base_upper).copied()
+                state.mark_usdt_by_asset.get(base_asset.as_ref()).copied()
             })
         };
         let price = price_from_table.or({
@@ -4070,7 +4062,7 @@ impl MonitorChannel {
         };
         Self::ensure_max_pos_u_projected(MaxPosUCheckCtx {
             symbol,
-            base_asset: &base_asset,
+            base_asset: base_asset.as_ref(),
             venue,
             price_source,
             mark_symbol: &mark_symbol,
@@ -4159,8 +4151,7 @@ impl MonitorChannel {
 
         match leg {
             LegMgr::Margin { bal, .. } => {
-                let symbol_upper = symbol.to_uppercase();
-                let Some(base_asset) = extract_base_asset(&symbol_upper) else {
+                let Some(base_asset) = extract_base_asset_key(symbol) else {
                     return 0.0;
                 };
                 bal.borrow().net_position(&base_asset, None)
@@ -4204,6 +4195,27 @@ fn is_internal_symbol_key(symbol: &str) -> bool {
         && symbol
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+fn uppercase_symbol_key(symbol: &str) -> Cow<'_, str> {
+    if is_internal_symbol_key(symbol) {
+        Cow::Borrowed(symbol)
+    } else {
+        Cow::Owned(symbol.to_uppercase())
+    }
+}
+
+fn extract_base_asset_key(symbol: &str) -> Option<Cow<'_, str>> {
+    if is_internal_symbol_key(symbol) {
+        let (base, quote) = extract_assets_from_internal_symbol(symbol);
+        if base.is_empty() || base.len() == symbol.len() || quote.is_empty() {
+            None
+        } else {
+            Some(Cow::Borrowed(base))
+        }
+    } else {
+        extract_base_asset(symbol).map(Cow::Owned)
+    }
 }
 
 impl<T> OrderUpdate for NormalizedUpdate<'_, T>
