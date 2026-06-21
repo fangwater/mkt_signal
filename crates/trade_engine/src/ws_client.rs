@@ -574,6 +574,12 @@ struct TakerTraceMeta {
     create_to_ws_send_done_us: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct InflightRequestFlags {
+    ws_open_update_enabled: bool,
+    taker_trace: Option<TakerTraceMeta>,
+}
+
 #[derive(Clone, Debug)]
 struct TradeInflightMeta {
     req_type: TradeRequestType,
@@ -1864,22 +1870,59 @@ impl TradeWsClient {
         sent_at_us: i64,
         ipc_recv_to_ws_send_done_us: Option<i64>,
     ) {
-        let ws_open_update_enabled = Self::ws_open_update_enabled_for_request(msg);
-        let taker_trace =
-            Self::build_binance_um_taker_trace(msg, sent_at_us, ipc_recv_to_ws_send_done_us);
+        let flags = Self::inflight_request_flags(msg, sent_at_us, ipc_recv_to_ws_send_done_us);
         self.inflight.insert(
             transport_id,
             TradeInflightMeta {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
-                ws_open_update_enabled,
-                taker_trace,
+                ws_open_update_enabled: flags.ws_open_update_enabled,
+                taker_trace: flags.taker_trace,
                 sent_at,
                 sent_at_us,
             },
         );
     }
 
+    fn inflight_request_flags(
+        msg: &TradeRequestMsg,
+        sent_at_us: i64,
+        ipc_recv_to_ws_send_done_us: Option<i64>,
+    ) -> InflightRequestFlags {
+        match msg.req_type {
+            TradeRequestType::BinanceWsNewUMOrder => {
+                let Some(params) = BinanceNewOrderParamsRef::from_bytes(&msg.params) else {
+                    return InflightRequestFlags::default();
+                };
+                InflightRequestFlags {
+                    ws_open_update_enabled: params.order_type.is_limit(),
+                    taker_trace: Self::binance_um_taker_trace_from_params(
+                        msg,
+                        params,
+                        sent_at_us,
+                        ipc_recv_to_ws_send_done_us,
+                    ),
+                }
+            }
+            TradeRequestType::BinanceWsNewMarginOrder => InflightRequestFlags {
+                ws_open_update_enabled: BinanceNewOrderParamsRef::from_bytes(&msg.params)
+                    .map(|params| params.ws_margin_limit_maker && params.order_type.is_limit())
+                    .or_else(|| {
+                        std::str::from_utf8(&msg.params)
+                            .ok()
+                            .map(|raw| raw.contains("price=") && !raw.contains("timeInForce="))
+                    })
+                    .unwrap_or(false),
+                taker_trace: None,
+            },
+            _ => InflightRequestFlags {
+                ws_open_update_enabled: Self::ws_open_update_enabled_for_request(msg),
+                taker_trace: None,
+            },
+        }
+    }
+
+    #[cfg(test)]
     fn build_binance_um_taker_trace(
         msg: &TradeRequestMsg,
         sent_at_us: i64,
@@ -1889,6 +1932,20 @@ impl TradeWsClient {
             return None;
         }
         let params = BinanceNewOrderParamsRef::from_bytes(&msg.params)?;
+        Self::binance_um_taker_trace_from_params(
+            msg,
+            params,
+            sent_at_us,
+            ipc_recv_to_ws_send_done_us,
+        )
+    }
+
+    fn binance_um_taker_trace_from_params(
+        msg: &TradeRequestMsg,
+        params: BinanceNewOrderParamsRef<'_>,
+        sent_at_us: i64,
+        ipc_recv_to_ws_send_done_us: Option<i64>,
+    ) -> Option<TakerTraceMeta> {
         if !params.order_type.is_market() {
             return None;
         }
@@ -3797,5 +3854,56 @@ mod tests {
         assert_eq!(trace.ws_response_mode, "RESULT");
         assert_eq!(trace.create_to_ws_send_done_us, Some(100));
         assert_eq!(trace.create_to_ipc_recv_us, Some(70));
+    }
+
+    #[test]
+    fn binance_inflight_flags_use_single_typed_params_pass() {
+        let limit_request = BinanceNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BinanceWsNewUMOrder,
+            1_000,
+            42,
+            "BTCUSDT",
+            Side::Buy,
+            OrderType::Limit,
+            QuantizedValue::from_parts(1, -3, 250),
+            QuantizedValue::from_parts(1, 0, 100000),
+            false,
+            false,
+            false,
+            true,
+            false,
+        )
+        .expect("typed binance limit request");
+        let limit_msg = TradeRequestMsg::parse(&limit_request).expect("binance typed msg");
+        let flags = TradeWsClient::inflight_request_flags(&limit_msg, 1_100, Some(30));
+        assert!(flags.ws_open_update_enabled);
+        assert!(flags.taker_trace.is_none());
+
+        let market_request = BinanceNewOrderParams::request_bytes_from_parts(
+            TradeRequestType::BinanceWsNewUMOrder,
+            2_000,
+            43,
+            "ETHUSDT",
+            Side::Sell,
+            OrderType::Market,
+            QuantizedValue::from_parts(1, -3, 500),
+            QuantizedValue::zero(),
+            true,
+            false,
+            false,
+            true,
+            false,
+        )
+        .expect("typed binance market request");
+        let market_msg = TradeRequestMsg::parse(&market_request).expect("binance typed msg");
+        let flags = TradeWsClient::inflight_request_flags(&market_msg, 2_150, Some(50));
+        assert!(!flags.ws_open_update_enabled);
+        let trace = flags.taker_trace.expect("market taker trace");
+        assert_eq!(trace.symbol.as_str(), "ETHUSDT");
+        assert_eq!(trace.side, "SELL");
+        assert_eq!(trace.order_type, "MARKET");
+        assert!(trace.reduce_only);
+        assert_eq!(trace.create_to_ws_send_done_us, Some(150));
+        assert_eq!(trace.create_to_ipc_recv_us, Some(100));
     }
 }
