@@ -1,4 +1,4 @@
-use memchr::memchr;
+use memchr::{memchr, memchr2};
 use serde_json::Value;
 
 pub const SBE_TEMPLATE_TRADE: u16 = 10000;
@@ -2366,18 +2366,14 @@ impl<'a> JsonObjectScanner<'a> {
         }
         self.pos += 1;
         let start = self.pos;
-        while let Some(&b) = self.raw.get(self.pos) {
-            match b {
-                b'\\' => return None,
-                b'"' => {
-                    let end = self.pos;
-                    self.pos += 1;
-                    return Some((start, end));
-                }
-                _ => self.pos += 1,
-            }
+        let rest = self.raw.get(self.pos..)?;
+        let quote_offset = memchr(b'"', rest)?;
+        if memchr(b'\\', &rest[..quote_offset]).is_some() {
+            return None;
         }
-        None
+        let end = self.pos + quote_offset;
+        self.pos = end + 1;
+        Some((start, end))
     }
 
     fn skip_value(&mut self) -> Option<bool> {
@@ -2405,20 +2401,25 @@ impl<'a> JsonObjectScanner<'a> {
         }
         self.pos += 1;
         let mut escaped = false;
-        while let Some(&b) = self.raw.get(self.pos) {
-            match b {
+        loop {
+            let rest = self.raw.get(self.pos..)?;
+            let offset = memchr2(b'"', b'\\', rest)?;
+            self.pos += offset;
+            match self.raw.get(self.pos).copied()? {
                 b'\\' => {
                     escaped = true;
                     self.pos += 2;
+                    if self.pos > self.raw.len() {
+                        return None;
+                    }
                 }
                 b'"' => {
                     self.pos += 1;
                     return Some(escaped);
                 }
-                _ => self.pos += 1,
+                _ => return None,
             }
         }
-        None
     }
 
     fn skip_nested_value(&mut self) -> Option<()> {
