@@ -398,6 +398,9 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     if let Some(bbo) = parse_combined_depth_bbo_fast(raw) {
         return Some(bbo);
     }
+    if let Some(bbo) = parse_depth_bbo_object_fast(raw) {
+        return Some(bbo);
+    }
 
     let mut payload = raw_payload_object(raw);
     let mut event_kind = None;
@@ -520,6 +523,9 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
 
 pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     if let Some(bbo) = parse_combined_depth_bbo_fast(raw) {
+        return Some(bbo);
+    }
+    if let Some(bbo) = parse_depth_bbo_object_fast(raw) {
         return Some(bbo);
     }
 
@@ -773,6 +779,16 @@ fn parse_combined_depth_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     Some(bbo)
 }
 
+fn parse_depth_bbo_object_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
+    let mut pos = 0usize;
+    let bbo = parse_depth_bbo_payload_fast(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(bbo)
+}
+
 fn parse_depth_bbo_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<RawBbo<'a>> {
     expect_raw_byte(raw, pos, b'{')?;
     consume_raw_literal(raw, pos, br#""e""#)?;
@@ -829,6 +845,14 @@ fn parse_depth_bbo_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<Ra
         return None;
     }
 
+    if consume_raw_literal_if(raw, pos, br#""pu""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        parse_raw_i64_value(raw, pos)?;
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+    }
+
     consume_raw_literal(raw, pos, br#""b""#)?;
     expect_raw_byte(raw, pos, b':')?;
     let bid = parse_raw_top_level_at(raw, pos)?;
@@ -876,6 +900,16 @@ fn parse_combined_depth_update_fields_fast(raw: &[u8]) -> Option<RawBookFields<'
     expect_raw_byte(raw, &mut pos, b':')?;
     let fields = parse_depth_update_payload_fields_fast(raw, &mut pos)?;
     finish_raw_object(raw, &mut pos)?;
+    skip_ws_at(raw, &mut pos);
+    if pos != raw.len() {
+        return None;
+    }
+    Some(fields)
+}
+
+fn parse_depth_update_fields_object_fast(raw: &[u8]) -> Option<RawBookFields<'_>> {
+    let mut pos = 0usize;
+    let fields = parse_depth_update_payload_fields_fast(raw, &mut pos)?;
     skip_ws_at(raw, &mut pos);
     if pos != raw.len() {
         return None;
@@ -939,6 +973,14 @@ fn parse_depth_update_payload_fields_fast<'a>(
     let final_update_id = parse_raw_i64_value(raw, pos)?;
     if !consume_raw_field_separator(raw, pos)? {
         return None;
+    }
+
+    if consume_raw_literal_if(raw, pos, br#""pu""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        parse_raw_i64_value(raw, pos)?;
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
     }
 
     consume_raw_literal(raw, pos, br#""b""#)?;
@@ -1587,6 +1629,9 @@ pub fn parse_incremental_raw_view(raw: &[u8]) -> Option<RawBookView<'_>> {
 
 fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
     if let Some(fields) = parse_combined_depth_update_fields_fast(raw) {
+        return Some(fields);
+    }
+    if let Some(fields) = parse_depth_update_fields_object_fast(raw) {
         return Some(fields);
     }
 
@@ -3654,6 +3699,30 @@ mod tests {
     }
 
     #[test]
+    fn depth_bbo_fast_path_skips_previous_update_id() {
+        let raw = br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,"pu":0,"b":[["25.0","1"],["24.9","2"]],"a":[["25.1","3"],["25.2","4"]]}}"#;
+        let bbo = super::parse_combined_depth_bbo_fast(raw).expect("fast depth bbo");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 2);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert!((bbo.bid_price - 25.0).abs() < 1e-9);
+        assert!((bbo.ask_amount - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn depth_bbo_fast_path_parses_raw_object_shape() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,"pu":0,"b":[["25.0","1"],["24.9","2"]],"a":[["25.1","3"],["25.2","4"]]}"#;
+        let bbo = super::parse_depth_bbo_object_fast(raw).expect("fast depth bbo");
+
+        assert_eq!(bbo.symbol, "BTCUSDT");
+        assert_eq!(bbo.seq_id, 2);
+        assert_eq!(bbo.timestamp_us, 1_700_000_000_001_000);
+        assert!((bbo.bid_amount - 1.0).abs() < 1e-9);
+        assert!((bbo.ask_price - 25.1).abs() < 1e-9);
+    }
+
+    #[test]
     fn depth_bbo_fast_path_rejects_non_depth_stream() {
         let raw = br#"{"stream":"btcusdt@bookTicker","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,"b":[["25.0","1"]],"a":[["25.1","3"]]}}"#;
         assert!(super::parse_combined_depth_bbo_fast(raw).is_none());
@@ -3808,6 +3877,31 @@ mod tests {
         assert!(!fields.is_snapshot);
         assert_eq!(raw_level_at(fields.bids_raw, 1).unwrap().amount, 0.0);
         assert_eq!(raw_level_at(fields.asks_raw, 0).unwrap().price, 25.1);
+    }
+
+    #[test]
+    fn depth_update_fast_path_skips_previous_update_id() {
+        let raw = br#"{"stream":"btcusdt@depth@0ms","data":{"e":"depthUpdate","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","U":101,"u":103,"pu":100,"b":[["25.0","100"],["24.9","0"]],"a":[["25.1","50"]]}}"#;
+        let fields =
+            super::parse_combined_depth_update_fields_fast(raw).expect("fast depth update");
+
+        assert_eq!(fields.symbol, "BTCUSDT");
+        assert_eq!(fields.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(fields.seq_id, 103);
+        assert_eq!(raw_level_at(fields.bids_raw, 0).unwrap().amount, 100.0);
+        assert_eq!(raw_level_at(fields.asks_raw, 0).unwrap().price, 25.1);
+    }
+
+    #[test]
+    fn depth_update_fast_path_parses_raw_object_shape() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","U":101,"u":103,"pu":100,"b":[["25.0","100"],["24.9","0"]],"a":[["25.1","50"]]}"#;
+        let fields = super::parse_depth_update_fields_object_fast(raw).expect("fast depth update");
+
+        assert_eq!(fields.symbol, "BTCUSDT");
+        assert_eq!(fields.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(fields.seq_id, 103);
+        assert_eq!(fields.prev_seq_id, 100);
+        assert_eq!(raw_level_at(fields.bids_raw, 1).unwrap().amount, 0.0);
     }
 
     #[test]
