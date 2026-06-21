@@ -4321,25 +4321,9 @@ fn dispatch_trade_update_lite_generic<T>(
     MonitorChannel::instance().bump_trade_update_seq();
 
     let order_id = trade.client_order_id();
-    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
-    let mut matched = false;
-
-    for strategy_id in strategy_ids {
-        let strategy_opt = {
-            let mut mgr = strategy_mgr.borrow_mut();
-            mgr.take(strategy_id)
-        };
-
-        if let Some(mut strategy) = strategy_opt {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                strategy.apply_trade_update_lite(trade);
-            }
-            if strategy.is_active() {
-                strategy_mgr.borrow_mut().insert(strategy);
-            }
-        }
-    }
+    let strategy_id = (order_id >> 32) as i32;
+    let matched = dispatch_trade_update_lite_to_strategy(strategy_mgr, strategy_id, trade)
+        || dispatch_trade_update_lite_fallback_scan(strategy_mgr, trade);
 
     if !matched {
         debug!(
@@ -4349,6 +4333,54 @@ fn dispatch_trade_update_lite_generic<T>(
             trade.trade_id()
         );
     }
+}
+
+fn dispatch_trade_update_lite_to_strategy<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    strategy_id: i32,
+    trade: &T,
+) -> bool
+where
+    T: TradeUpdateLite,
+{
+    let order_id = trade.client_order_id();
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+
+    let Some(mut strategy) = strategy_opt else {
+        return false;
+    };
+
+    let matched = strategy.is_strategy_order(order_id);
+    if matched {
+        strategy.apply_trade_update_lite(trade);
+    }
+    if strategy.is_active() {
+        strategy_mgr.borrow_mut().insert(strategy);
+    }
+    matched
+}
+
+fn dispatch_trade_update_lite_fallback_scan<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    trade: &T,
+) -> bool
+where
+    T: TradeUpdateLite,
+{
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    for strategy_id in strategy_ids {
+        if dispatch_trade_update_lite_to_strategy(strategy_mgr, strategy_id, trade) {
+            return true;
+        }
+    }
+    false
 }
 
 fn dispatch_order_update_generic<T>(
@@ -4364,53 +4396,9 @@ fn dispatch_order_update_generic<T>(
     }
 
     let order_id = OrderUpdate::client_order_id(&normalized_update);
-    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
-    let mut matched = false;
-
-    for strategy_id in strategy_ids {
-        let strategy_opt = {
-            let mut mgr = strategy_mgr.borrow_mut();
-            mgr.take(strategy_id)
-        };
-
-        if let Some(mut strategy) = strategy_opt {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                match normalized_update.execution_type() {
-                    ExecutionType::New | ExecutionType::Canceled => {
-                        strategy.apply_order_update(&normalized_update);
-                    }
-                    ExecutionType::Trade => {
-                        strategy.apply_trade_update(&normalized_update);
-                    }
-                    ExecutionType::Expired
-                    | ExecutionType::Rejected
-                    | ExecutionType::TradePrevention => {
-                        warn!(
-                            "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            normalized_update.execution_type(),
-                            OrderUpdate::symbol(&normalized_update),
-                            OrderUpdate::client_order_id(&normalized_update),
-                            OrderUpdate::order_id(&normalized_update)
-                        );
-                        strategy.apply_order_update(&normalized_update);
-                    }
-                    _ => {
-                        log::error!(
-                            "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                            normalized_update.execution_type(),
-                            OrderUpdate::symbol(&normalized_update),
-                            OrderUpdate::client_order_id(&normalized_update),
-                            OrderUpdate::order_id(&normalized_update)
-                        );
-                    }
-                }
-            }
-            if strategy.is_active() {
-                strategy_mgr.borrow_mut().insert(strategy);
-            }
-        }
-    }
+    let strategy_id = (order_id >> 32) as i32;
+    let matched = dispatch_order_update_to_strategy(strategy_mgr, strategy_id, &normalized_update)
+        || dispatch_order_update_fallback_scan(strategy_mgr, &normalized_update);
 
     if !matched {
         let orphan_strategy_mgr = MonitorChannel::instance().orphan_strategy_mgr();
@@ -4443,6 +4431,80 @@ fn dispatch_order_update_generic<T>(
             adopted_by_orphan
         );
     }
+}
+
+fn dispatch_order_update_to_strategy<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    strategy_id: i32,
+    normalized_update: &NormalizedUpdate<'_, T>,
+) -> bool
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    let order_id = OrderUpdate::client_order_id(normalized_update);
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+
+    let Some(mut strategy) = strategy_opt else {
+        return false;
+    };
+
+    let matched = strategy.is_strategy_order(order_id);
+    if matched {
+        match normalized_update.execution_type() {
+            ExecutionType::New | ExecutionType::Canceled => {
+                strategy.apply_order_update(normalized_update);
+            }
+            ExecutionType::Trade => {
+                strategy.apply_trade_update(normalized_update);
+            }
+            ExecutionType::Expired | ExecutionType::Rejected | ExecutionType::TradePrevention => {
+                warn!(
+                    "Unexpected execution type: {:?}, sym={} cli_id={} ord_id={}",
+                    normalized_update.execution_type(),
+                    OrderUpdate::symbol(normalized_update),
+                    OrderUpdate::client_order_id(normalized_update),
+                    OrderUpdate::order_id(normalized_update)
+                );
+                strategy.apply_order_update(normalized_update);
+            }
+            _ => {
+                log::error!(
+                    "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
+                    normalized_update.execution_type(),
+                    OrderUpdate::symbol(normalized_update),
+                    OrderUpdate::client_order_id(normalized_update),
+                    OrderUpdate::order_id(normalized_update)
+                );
+            }
+        }
+    }
+    if strategy.is_active() {
+        strategy_mgr.borrow_mut().insert(strategy);
+    }
+    matched
+}
+
+fn dispatch_order_update_fallback_scan<T>(
+    strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
+    normalized_update: &NormalizedUpdate<'_, T>,
+) -> bool
+where
+    T: OrderUpdate + TradeUpdate,
+{
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    for strategy_id in strategy_ids {
+        if dispatch_order_update_to_strategy(strategy_mgr, strategy_id, normalized_update) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
