@@ -29,7 +29,7 @@ use crate::spread_pbs::okex_derivatives::{
 };
 use crate::spread_pbs::publisher::{
     PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
-    SpreadPublisher, SpreadTradePublisher,
+    SpreadPbsPublishRoots, SpreadPublisher, SpreadTradePublisher,
 };
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
 
@@ -41,6 +41,7 @@ const ENV_SYMBOLS: &str = "SPREAD_PBS_SYMBOLS";
 
 pub struct SpreadPbsApp {
     config: Config,
+    publish_roots: SpreadPbsPublishRoots,
 }
 
 fn is_okex_venue(venue: order_common::TradingVenue) -> bool {
@@ -250,7 +251,17 @@ impl MarketSource {
 
 impl SpreadPbsApp {
     pub fn new(config: Config) -> Self {
-        Self { config }
+        Self {
+            config,
+            publish_roots: SpreadPbsPublishRoots::production(),
+        }
+    }
+
+    pub fn new_with_publish_roots(config: Config, publish_roots: SpreadPbsPublishRoots) -> Self {
+        Self {
+            config,
+            publish_roots,
+        }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -273,6 +284,7 @@ impl SpreadPbsApp {
     pub async fn run_with_shutdown(self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
         let venue = self.config.venue;
         let venue_slug: &'static str = venue.data_pub_slug();
+        let publish_roots = self.publish_roots.clone();
 
         let adapter = match create_adapter(venue).await? {
             Some(a) => Rc::<dyn VenueAdapter>::from(a),
@@ -282,9 +294,11 @@ impl SpreadPbsApp {
             ),
         };
         log::info!(
-            "spread_pbs starting venue={} adapter={}",
+            "spread_pbs starting venue={} adapter={} spread_root={} dat_root={}",
             venue_slug,
-            adapter.name()
+            adapter.name(),
+            publish_roots.spread_root(),
+            publish_roots.dat_root()
         );
         let local_ip_override = binance_futures_mm_ws_local_ip_override(venue);
         let primary_local_ip = local_ip_override
@@ -367,7 +381,7 @@ impl SpreadPbsApp {
 
         // ---- IceOryx publisher + 共享态（Rc<RefCell> 单线程零锁，跨重启复用）----
         let publisher = Rc::new(
-            SpreadPublisher::new(venue_slug)
+            SpreadPublisher::new_with_root(venue_slug, publish_roots.spread_root())
                 .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
         );
         publisher
@@ -375,10 +389,17 @@ impl SpreadPbsApp {
             .with_context(|| format!("seed BBO payload prefixes for {}", venue_slug))?;
         let trade_publisher = if direct_trade_enabled {
             let publisher = Rc::new(
-                SpreadTradePublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
+                SpreadTradePublisher::new_open_or_create_with_root(
+                    venue_slug,
+                    publish_roots.dat_root(),
+                )
+                .unwrap_or_else(|e| {
                     panic!(
-                        "spread_pbs[{}] failed to open/create replacement trade ipc channel dat_pbs/{}/trade: {:#}",
-                        venue_slug, venue_slug, e
+                        "spread_pbs[{}] failed to open/create replacement trade ipc channel {}/{}/trade: {:#}",
+                        venue_slug,
+                        publish_roots.dat_root(),
+                        venue_slug,
+                        e
                     )
                 }),
             );
@@ -391,10 +412,17 @@ impl SpreadPbsApp {
         };
         let incremental_publisher = if direct_incremental_enabled {
             let publisher = Rc::new(
-                SpreadIncrementalPublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
+                SpreadIncrementalPublisher::new_open_or_create_with_root(
+                    venue_slug,
+                    publish_roots.dat_root(),
+                )
+                .unwrap_or_else(|e| {
                     panic!(
-                        "spread_pbs[{}] failed to open/create replacement incremental ipc channel dat_pbs/{}/incremental: {:#}",
-                        venue_slug, venue_slug, e
+                        "spread_pbs[{}] failed to open/create replacement incremental ipc channel {}/{}/incremental: {:#}",
+                        venue_slug,
+                        publish_roots.dat_root(),
+                        venue_slug,
+                        e
                     )
                 }),
             );
@@ -407,10 +435,17 @@ impl SpreadPbsApp {
         };
         let derivatives_publisher = if direct_derivatives_enabled {
             let publisher = Rc::new(
-                SpreadDerivativesPublisher::new_open_or_create(venue_slug).unwrap_or_else(|e| {
+                SpreadDerivativesPublisher::new_open_or_create_with_root(
+                    venue_slug,
+                    publish_roots.dat_root(),
+                )
+                .unwrap_or_else(|e| {
                     panic!(
-                        "spread_pbs[{}] failed to open/create replacement derivatives ipc channel dat_pbs/{}/derivatives: {:#}",
-                        venue_slug, venue_slug, e
+                        "spread_pbs[{}] failed to open/create replacement derivatives ipc channel {}/{}/derivatives: {:#}",
+                        venue_slug,
+                        publish_roots.dat_root(),
+                        venue_slug,
+                        e
                     )
                 }),
             );
@@ -422,7 +457,7 @@ impl SpreadPbsApp {
             None
         };
         let latency_publisher = Rc::new(
-            SpreadLatencyPublisher::new(venue_slug)
+            SpreadLatencyPublisher::new_with_root(venue_slug, publish_roots.spread_root())
                 .with_context(|| format!("create iceoryx latency publisher for {}", venue_slug))?,
         );
         let ipc_label = format!("{}-ipc", venue_slug);

@@ -20,6 +20,103 @@ const SYMBOL_PREFIX_BYTES: usize = 128;
 const HISTORY_SIZE: usize = 100;
 const SUBSCRIBER_MAX_BUFFER: usize = 8192;
 
+pub const DEFAULT_SPREAD_SERVICE_ROOT: &str = "spread_pbs";
+pub const TEST_SPREAD_SERVICE_ROOT: &str = "spread_pbs_test";
+pub const DEFAULT_DAT_SERVICE_ROOT: &str = "dat_pbs";
+pub const TEST_DAT_SERVICE_ROOT: &str = "dat_pbs_test";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpreadPbsPublishRoots {
+    spread_root: String,
+    dat_root: String,
+}
+
+impl SpreadPbsPublishRoots {
+    pub fn production() -> Self {
+        Self {
+            spread_root: DEFAULT_SPREAD_SERVICE_ROOT.to_string(),
+            dat_root: DEFAULT_DAT_SERVICE_ROOT.to_string(),
+        }
+    }
+
+    pub fn test() -> Self {
+        Self {
+            spread_root: TEST_SPREAD_SERVICE_ROOT.to_string(),
+            dat_root: TEST_DAT_SERVICE_ROOT.to_string(),
+        }
+    }
+
+    pub fn new(spread_root: impl Into<String>, dat_root: impl Into<String>) -> Result<Self> {
+        Ok(Self {
+            spread_root: clean_service_root(spread_root.into())?,
+            dat_root: clean_service_root(dat_root.into())?,
+        })
+    }
+
+    pub fn spread_root(&self) -> &str {
+        &self.spread_root
+    }
+
+    pub fn dat_root(&self) -> &str {
+        &self.dat_root
+    }
+}
+
+impl Default for SpreadPbsPublishRoots {
+    fn default() -> Self {
+        Self::production()
+    }
+}
+
+fn clean_service_root(root: String) -> Result<String> {
+    let root = root.trim().trim_matches('/').to_string();
+    anyhow::ensure!(!root.is_empty(), "iceoryx service root cannot be empty");
+    anyhow::ensure!(
+        !root.contains('/'),
+        "iceoryx service root must be a single path component: {}",
+        root
+    );
+    Ok(root)
+}
+
+fn service_name(root: &str, venue_slug: &str, channel: &str) -> Result<String> {
+    let root = clean_service_root(root.to_string())?;
+    Ok(format!("{}/{}/{}", root, venue_slug, channel))
+}
+
+fn sanitize_node_component(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn publisher_node_name(
+    default_root: &str,
+    default_prefix: &str,
+    root: &str,
+    venue_slug: &str,
+    suffix: &str,
+) -> Result<String> {
+    let root = clean_service_root(root.to_string())?;
+    let prefix = if root == default_root {
+        default_prefix.to_string()
+    } else {
+        sanitize_node_component(&root)
+    };
+    let venue = venue_slug.replace('-', "_");
+    if suffix.is_empty() {
+        Ok(format!("{}_{}", prefix, venue))
+    } else {
+        Ok(format!("{}_{}_{}", prefix, venue, suffix))
+    }
+}
+
 fn publish_padded<const N: usize>(
     publisher: &Publisher<ipc::Service, [u8; N], ()>,
     data: &[u8],
@@ -928,8 +1025,19 @@ pub struct SpreadDerivativesPublisher {
 impl SpreadPublisher {
     /// `venue_slug` 直接使用 `data_pub_slug()`（如 `okex-futures`）。
     pub fn new(venue_slug: &str) -> Result<Self> {
-        let service_name = format!("spread_pbs/{}/ask_bid_spread", venue_slug);
-        let node_name = format!("spread_pbs_{}", venue_slug.replace('-', "_"));
+        Self::new_with_root(venue_slug, DEFAULT_SPREAD_SERVICE_ROOT)
+    }
+
+    /// Same BBO payload, but published under a caller-selected service root.
+    pub fn new_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
+        let service_name = service_name(service_root, venue_slug, "ask_bid_spread")?;
+        let node_name = publisher_node_name(
+            DEFAULT_SPREAD_SERVICE_ROOT,
+            "spread_pbs",
+            service_root,
+            venue_slug,
+            "",
+        )?;
 
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
@@ -1074,8 +1182,18 @@ impl SpreadPublisher {
 
 impl SpreadLatencyPublisher {
     pub fn new(venue_slug: &str) -> Result<Self> {
-        let service_name = format!("spread_pbs/{}/latency", venue_slug);
-        let node_name = format!("spread_pbs_{}_latency", venue_slug.replace('-', "_"));
+        Self::new_with_root(venue_slug, DEFAULT_SPREAD_SERVICE_ROOT)
+    }
+
+    pub fn new_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
+        let service_name = service_name(service_root, venue_slug, "latency")?;
+        let node_name = publisher_node_name(
+            DEFAULT_SPREAD_SERVICE_ROOT,
+            "spread_pbs",
+            service_root,
+            venue_slug,
+            "latency",
+        )?;
 
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
@@ -1115,8 +1233,18 @@ impl SpreadLatencyPublisher {
 
 impl SpreadTradePublisher {
     pub fn new_open_or_create(venue_slug: &str) -> Result<Self> {
-        let service_name = format!("dat_pbs/{}/trade", venue_slug);
-        let node_name = format!("spread_pbs_{}_trade", venue_slug.replace('-', "_"));
+        Self::new_open_or_create_with_root(venue_slug, DEFAULT_DAT_SERVICE_ROOT)
+    }
+
+    pub fn new_open_or_create_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
+        let service_name = service_name(service_root, venue_slug, "trade")?;
+        let node_name = publisher_node_name(
+            DEFAULT_DAT_SERVICE_ROOT,
+            "spread_pbs",
+            service_root,
+            venue_slug,
+            "trade",
+        )?;
 
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
@@ -1222,8 +1350,18 @@ impl SpreadTradePublisher {
 
 impl SpreadIncrementalPublisher {
     pub fn new_open_or_create(venue_slug: &str) -> Result<Self> {
-        let service_name = format!("dat_pbs/{}/incremental", venue_slug);
-        let node_name = format!("spread_pbs_{}_incremental", venue_slug.replace('-', "_"));
+        Self::new_open_or_create_with_root(venue_slug, DEFAULT_DAT_SERVICE_ROOT)
+    }
+
+    pub fn new_open_or_create_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
+        let service_name = service_name(service_root, venue_slug, "incremental")?;
+        let node_name = publisher_node_name(
+            DEFAULT_DAT_SERVICE_ROOT,
+            "spread_pbs",
+            service_root,
+            venue_slug,
+            "incremental",
+        )?;
 
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
@@ -1516,8 +1654,18 @@ impl SpreadIncrementalPublisher {
 
 impl SpreadDerivativesPublisher {
     pub fn new_open_or_create(venue_slug: &str) -> Result<Self> {
-        let service_name = format!("dat_pbs/{}/derivatives", venue_slug);
-        let node_name = format!("spread_pbs_{}_derivatives", venue_slug.replace('-', "_"));
+        Self::new_open_or_create_with_root(venue_slug, DEFAULT_DAT_SERVICE_ROOT)
+    }
+
+    pub fn new_open_or_create_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
+        let service_name = service_name(service_root, venue_slug, "derivatives")?;
+        let node_name = publisher_node_name(
+            DEFAULT_DAT_SERVICE_ROOT,
+            "spread_pbs",
+            service_root,
+            venue_slug,
+            "derivatives",
+        )?;
 
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
+use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
 use mkt_signal::spread_pbs::SpreadPbsApp;
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
@@ -20,6 +21,10 @@ struct Args {
     /// 绑定到的 CPU 核心编号
     #[arg(short, long)]
     core: usize,
+
+    /// Publish to isolated test channels instead of production market-data channels.
+    #[arg(long)]
+    test: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -33,11 +38,22 @@ async fn main() -> Result<()> {
     log::info!("spread_pbs cfg path: {}", config_path.display());
     let config_str = config_path.to_string_lossy();
     log::info!("spread_pbs venue selection: {}", args.venue.label());
+    let publish_roots = if args.test {
+        SpreadPbsPublishRoots::test()
+    } else {
+        SpreadPbsPublishRoots::production()
+    };
+    log::info!(
+        "spread_pbs publish roots: spread_root={} dat_root={} test={}",
+        publish_roots.spread_root(),
+        publish_roots.dat_root(),
+        args.test
+    );
     let configs = load_selected_configs(&config_str, &args.venue).await?;
 
     // current_thread runtime + spawn_local 需要 LocalSet 上下文
     let local = tokio::task::LocalSet::new();
-    local.run_until(run_selected(configs)).await
+    local.run_until(run_selected(configs, publish_roots)).await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -141,7 +157,7 @@ async fn load_selected_configs(
     Ok(configs)
 }
 
-async fn run_selected(configs: Vec<Config>) -> Result<()> {
+async fn run_selected(configs: Vec<Config>, publish_roots: SpreadPbsPublishRoots) -> Result<()> {
     let labels: Vec<&'static str> = configs
         .iter()
         .map(|config| config.venue.data_pub_slug())
@@ -153,7 +169,7 @@ async fn run_selected(configs: Vec<Config>) -> Result<()> {
     for config in configs {
         let venue_slug = config.venue.data_pub_slug();
         let rx = shutdown_rx.clone();
-        let app = SpreadPbsApp::new(config);
+        let app = SpreadPbsApp::new_with_publish_roots(config, publish_roots.clone());
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)
         }));

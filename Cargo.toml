@@ -52,6 +52,10 @@ name = "spread_pbs"
 path = "src/bin/spread_pbs.rs"
 
 [[bin]]
+name = "spread_pbs_compare"
+path = "src/bin/spread_pbs_compare.rs"
+
+[[bin]]
 name = "target_pos_exec_signal"
 path = "src/bin/target_pos_exec_signal.rs"
 
@@ -208,6 +212,10 @@ path = "src/bin/inspect_latency_snapshot.rs"
 [[bin]]
 name = "binance_bbo_time_probe"
 path = "src/bin/binance_bbo_time_probe.rs"
+
+[[bin]]
+name = "binance_bbo_parser_bench"
+path = "src/bin/binance_bbo_parser_bench.rs"
 
 [[bin]]
 name = "inspect_model_output"
