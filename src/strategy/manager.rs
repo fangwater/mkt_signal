@@ -552,6 +552,14 @@ impl StrategyManager {
         self.symbol_index.get(symbol)
     }
 
+    pub fn copy_ids_for_normalized_symbol_into(&self, symbol: &str, out: &mut Vec<i32>) {
+        out.clear();
+        if let Some(ids) = self.symbol_index.get(symbol) {
+            out.reserve(ids.len());
+            out.extend(ids.iter().copied());
+        }
+    }
+
     /// 指定 symbol 是否存在活跃策略。
     pub fn has_symbol(&self, symbol: &str) -> bool {
         let symbol = normalize_symbol_for_internal(symbol);
@@ -1292,6 +1300,38 @@ mod tests {
             }
         );
         assert_eq!(snapshot[0].1, vec![31]);
+    }
+
+    #[test]
+    fn copy_ids_for_normalized_symbol_reuses_output_vec() {
+        let mut manager = StrategyManager::new();
+        let qv = QuantizedValue::from_parts(1, -3, 456);
+        manager.insert(Box::new(DummyOpenStrategy {
+            id: 31,
+            symbol: "TRXUSDT".to_string(),
+            side: Side::Buy,
+            client_order_id: 301,
+            price_qv: qv,
+        }));
+        manager.insert(Box::new(DummyOpenStrategy {
+            id: 32,
+            symbol: "TRXUSDT".to_string(),
+            side: Side::Sell,
+            client_order_id: 302,
+            price_qv: qv,
+        }));
+
+        let mut ids = Vec::with_capacity(16);
+        let capacity = ids.capacity();
+        ids.push(999);
+
+        manager.copy_ids_for_normalized_symbol_into("TRXUSDT", &mut ids);
+        assert_eq!(ids, vec![31, 32]);
+        assert_eq!(ids.capacity(), capacity);
+
+        manager.copy_ids_for_normalized_symbol_into("BTCUSDT", &mut ids);
+        assert!(ids.is_empty());
+        assert_eq!(ids.capacity(), capacity);
     }
 
     #[test]

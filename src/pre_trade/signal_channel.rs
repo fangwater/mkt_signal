@@ -46,6 +46,7 @@ use std::collections::HashMap;
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
     static SIGNAL_COUNTS: RefCell<[u64; SIGNAL_COUNT_BUCKETS]> = const { RefCell::new([0; SIGNAL_COUNT_BUCKETS]) };
+    static CANCEL_CANDIDATE_IDS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
 }
 
 /// 默认信号频道名称（与 trade_signal 的发布频道一致）
@@ -1450,88 +1451,79 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
             }
         }
 
-        SignalType::ArbCancel => {
-            match ArbCancelCtx::from_slice(signal.context) {
-                Ok(mut cancel_ctx) => {
-                    let symbol = normalize_fixed_symbol_for_internal(&cancel_ctx.opening_symbol);
-                    let hedging_symbol =
-                        normalize_fixed_symbol_for_internal(&cancel_ctx.hedging_symbol);
-                    let cancel_side = cancel_ctx.get_side();
-                    let cancel_reason = cancel_ctx.get_reason();
-                    let require_direction_match = matches!(
-                        cancel_reason,
-                        signal_common::cancel_signal::ArbCancelReason::Spread
-                    ) && cancel_ctx.strategy_id <= 0;
-                    let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
-                        .unwrap_or(TradingVenue::BinanceMargin);
-                    let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
-                        .unwrap_or(TradingVenue::BinanceFutures);
+        SignalType::ArbCancel => match ArbCancelCtx::from_slice(signal.context) {
+            Ok(mut cancel_ctx) => {
+                let symbol = normalize_fixed_symbol_for_internal(&cancel_ctx.opening_symbol);
+                let hedging_symbol =
+                    normalize_fixed_symbol_for_internal(&cancel_ctx.hedging_symbol);
+                let cancel_side = cancel_ctx.get_side();
+                let cancel_reason = cancel_ctx.get_reason();
+                let require_direction_match = matches!(
+                    cancel_reason,
+                    signal_common::cancel_signal::ArbCancelReason::Spread
+                ) && cancel_ctx.strategy_id <= 0;
+                let opening_venue = TradingVenue::from_u8(cancel_ctx.opening_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceMargin);
+                let hedging_venue = TradingVenue::from_u8(cancel_ctx.hedging_leg.venue)
+                    .unwrap_or(TradingVenue::BinanceFutures);
 
-                    let configured_open_venue = MonitorChannel::instance().open_venue();
-                    let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
-                    if opening_venue != configured_open_venue
-                        || hedging_venue != configured_hedge_venue
-                    {
-                        warn!(
+                let configured_open_venue = MonitorChannel::instance().open_venue();
+                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
+                if opening_venue != configured_open_venue || hedging_venue != configured_hedge_venue
+                {
+                    warn!(
                         "ArbCancel: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
                         configured_open_venue, configured_hedge_venue, opening_venue, hedging_venue
                     );
-                        return;
-                    }
+                    return;
+                }
 
-                    cancel_ctx.set_opening_symbol(&symbol);
-                    cancel_ctx.set_hedging_symbol(&hedging_symbol);
-                    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                cancel_ctx.set_opening_symbol(&symbol);
+                cancel_ctx.set_hedging_symbol(&hedging_symbol);
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
 
-                    if cancel_ctx.strategy_id > 0 {
-                        let strategy_id = cancel_ctx.strategy_id;
-                        let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
-                        if let Some(mut strategy) = strategy_opt {
-                            let should_handle = strategy
-                                .as_any()
-                                .downcast_ref::<ArbOpenStrategy>()
-                                .is_some_and(|arb| {
-                                    !require_direction_match || arb.open_side() == Some(cancel_side)
-                                });
-                            if !should_handle {
-                                strategy_mgr.borrow_mut().insert(strategy);
-                                return;
-                            }
-                            if let Some(arb_open) =
-                                strategy.as_any_mut().downcast_mut::<ArbOpenStrategy>()
-                            {
-                                arb_open.handle_arb_cancel_ctx(&cancel_ctx);
-                            } else {
-                                warn!(
-                                    "ArbCancel: target strategy type mismatch strategy_id={}",
-                                    strategy_id
-                                );
-                            }
-                            if strategy.is_active() {
-                                strategy_mgr.borrow_mut().insert(strategy);
-                            }
+                if cancel_ctx.strategy_id > 0 {
+                    let strategy_id = cancel_ctx.strategy_id;
+                    let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                    if let Some(mut strategy) = strategy_opt {
+                        let should_handle = strategy
+                            .as_any()
+                            .downcast_ref::<ArbOpenStrategy>()
+                            .is_some_and(|arb| {
+                                !require_direction_match || arb.open_side() == Some(cancel_side)
+                            });
+                        if !should_handle {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                            return;
+                        }
+                        if let Some(arb_open) =
+                            strategy.as_any_mut().downcast_mut::<ArbOpenStrategy>()
+                        {
+                            arb_open.handle_arb_cancel_ctx(&cancel_ctx);
                         } else {
-                            debug!(
+                            warn!(
+                                "ArbCancel: target strategy type mismatch strategy_id={}",
+                                strategy_id
+                            );
+                        }
+                        if strategy.is_active() {
+                            strategy_mgr.borrow_mut().insert(strategy);
+                        }
+                    } else {
+                        debug!(
                             "ArbCancel: targeted strategy missing strategy_id={} symbol={} trigger_ts={}",
                             strategy_id, symbol, cancel_ctx.trigger_ts
                         );
-                        }
-                        return;
                     }
+                    return;
+                }
 
-                    // 使用代码块限制借用作用域，确保在进入循环前释放
-                    let candidate_ids: Vec<i32> = {
-                        strategy_mgr
-                            .borrow()
-                            .ids_for_normalized_symbol(&symbol)
-                            .map(|set| set.iter().copied().collect())
-                            .unwrap_or_default()
-                    };
-
-                    if candidate_ids.is_empty() {
-                        return;
-                    }
-                    for strategy_id in candidate_ids {
+                CANCEL_CANDIDATE_IDS.with(|ids| {
+                    let mut ids = ids.borrow_mut();
+                    strategy_mgr
+                        .borrow()
+                        .copy_ids_for_normalized_symbol_into(&symbol, &mut ids);
+                    for strategy_id in ids.iter().copied() {
                         let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
                         if let Some(mut strategy) = strategy_opt {
                             let should_handle = strategy
@@ -1559,11 +1551,11 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                             }
                         }
                     }
-                    drop(strategy_mgr);
-                }
-                Err(err) => warn!("failed to decode ArbCancel context: {err}"),
+                });
+                drop(strategy_mgr);
             }
-        }
+            Err(err) => warn!("failed to decode ArbCancel context: {err}"),
+        },
         SignalType::ArbCancelTrigger => match ArbCancelTriggerCtx::from_slice(signal.context) {
             Ok(trigger_ctx) => {
                 if current_is_mm_mode() {
@@ -1982,36 +1974,31 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, receive_us: i64) {
                     return;
                 }
 
-                let candidate_ids: Vec<i32> = {
+                CANCEL_CANDIDATE_IDS.with(|ids| {
+                    let mut ids = ids.borrow_mut();
                     strategy_mgr
                         .borrow()
-                        .ids_for_normalized_symbol(&symbol)
-                        .map(|set| set.iter().copied().collect())
-                        .unwrap_or_default()
-                };
-
-                if candidate_ids.is_empty() {
-                    return;
-                }
-                for strategy_id in candidate_ids {
-                    let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
-                    if let Some(mut strategy) = strategy_opt {
-                        let handled = if let Some(mm_open) = strategy
-                            .as_any_mut()
-                            .downcast_mut::<MarketMakerOpenStrategy>(
-                        ) {
-                            mm_open.handle_mm_cancel_ctx(&cancel_ctx);
-                            true
-                        } else {
-                            false
-                        };
-                        if handled && strategy.is_active() {
-                            strategy_mgr.borrow_mut().insert(strategy);
-                        } else if !handled {
-                            strategy_mgr.borrow_mut().insert(strategy);
+                        .copy_ids_for_normalized_symbol_into(&symbol, &mut ids);
+                    for strategy_id in ids.iter().copied() {
+                        let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
+                        if let Some(mut strategy) = strategy_opt {
+                            let handled = if let Some(mm_open) = strategy
+                                .as_any_mut()
+                                .downcast_mut::<MarketMakerOpenStrategy>(
+                            ) {
+                                mm_open.handle_mm_cancel_ctx(&cancel_ctx);
+                                true
+                            } else {
+                                false
+                            };
+                            if handled && strategy.is_active() {
+                                strategy_mgr.borrow_mut().insert(strategy);
+                            } else if !handled {
+                                strategy_mgr.borrow_mut().insert(strategy);
+                            }
                         }
                     }
-                }
+                });
                 drop(strategy_mgr);
             }
             Err(err) => warn!("failed to decode MMCancel context: {err}"),
