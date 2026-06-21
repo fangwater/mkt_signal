@@ -2105,6 +2105,9 @@ fn parse_derivative_object_scanner<'a>(
     if let Some(derivative) = parse_mark_price_object_fast(scanner) {
         return Some(derivative);
     }
+    if let Some(derivative) = parse_liquidation_object_fast(scanner) {
+        return Some(derivative);
+    }
 
     let first_key = scanner.next_key()?;
     parse_derivative_object_after_key(scanner, first_key)
@@ -2171,6 +2174,95 @@ fn parse_mark_price_object_fast<'a>(
         funding_rate: Some(funding_rate),
         next_funding_time_us: Some(next_funding_time_us),
         timestamp_us,
+    })
+}
+
+fn parse_liquidation_object_fast<'a>(
+    scanner: &mut JsonObjectScanner<'a>,
+) -> Option<RawDerivative<'a>> {
+    let raw = scanner.raw;
+    let mut pos = scanner.pos;
+    expect_raw_byte(raw, &mut pos, b'{')?;
+    consume_raw_literal(raw, &mut pos, br#""e""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    consume_raw_literal(raw, &mut pos, br#""forceOrder""#)?;
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""E""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let event_time_us = ms_to_us(parse_raw_i64_value(raw, &mut pos)?);
+    if !consume_raw_field_separator(raw, &mut pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, &mut pos, br#""o""#)?;
+    expect_raw_byte(raw, &mut pos, b':')?;
+    let order = parse_liquidation_order_fast(raw, &mut pos)?;
+    finish_raw_object(raw, &mut pos)?;
+    scanner.pos = pos;
+
+    Some(RawDerivative::Liquidation {
+        symbol: order.symbol,
+        side: order.side,
+        amount: order.amount,
+        price: order.price,
+        timestamp_us: order.order_timestamp_us.unwrap_or(event_time_us),
+    })
+}
+
+fn parse_liquidation_order_fast<'a>(
+    raw: &'a [u8],
+    pos: &mut usize,
+) -> Option<RawLiquidationFields<'a>> {
+    expect_raw_byte(raw, pos, b'{')?;
+    consume_raw_literal(raw, pos, br#""s""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let symbol = std::str::from_utf8(take_unescaped_quoted_bytes(raw, pos)?).ok()?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""S""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let side = match take_unescaped_quoted_bytes(raw, pos)? {
+        b"BUY" => 'B',
+        b"SELL" => 'S',
+        _ => return None,
+    };
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""z""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let amount = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""ap""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let price = parse_raw_number(raw, pos)?;
+    if !consume_raw_field_separator(raw, pos)? {
+        return None;
+    }
+
+    consume_raw_literal(raw, pos, br#""T""#)?;
+    expect_raw_byte(raw, pos, b':')?;
+    let order_timestamp_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+    finish_raw_object(raw, pos)?;
+    if amount <= 0.0 || price <= 0.0 {
+        return None;
+    }
+
+    Some(RawLiquidationFields {
+        symbol,
+        side,
+        amount,
+        price,
+        order_timestamp_us: Some(order_timestamp_us),
     })
 }
 
@@ -3897,6 +3989,26 @@ mod tests {
                 timestamp_us: 1_700_000_000_000_000,
             }]
         );
+    }
+
+    #[test]
+    fn liquidation_fast_path_parses_force_order_shape() {
+        let raw = br#"{"e":"forceOrder","E":1700000000001,"o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2","T":1700000000000}}"#;
+        let mut scanner = super::JsonObjectScanner::new(raw);
+        let derivative =
+            super::parse_liquidation_object_fast(&mut scanner).expect("fast liquidation");
+
+        assert_eq!(
+            derivative,
+            RawDerivative::Liquidation {
+                symbol: "BTCUSDT",
+                side: 'S',
+                amount: 10.0,
+                price: 25.2,
+                timestamp_us: 1_700_000_000_000_000,
+            }
+        );
+        assert_eq!(scanner.pos, raw.len());
     }
 
     #[test]
