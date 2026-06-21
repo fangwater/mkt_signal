@@ -3,6 +3,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
@@ -4179,7 +4180,7 @@ impl MonitorChannel {
 /// 通用订单/成交回报分发：适用于实现了 OrderUpdate + TradeUpdate 的消息
 struct NormalizedUpdate<'a, T> {
     inner: &'a T,
-    symbol: String,
+    symbol: Cow<'a, str>,
 }
 
 impl<'a, T> NormalizedUpdate<'a, T>
@@ -4187,11 +4188,22 @@ where
     T: OrderUpdate + TradeUpdate,
 {
     fn new(inner: &'a T) -> Self {
-        Self {
-            inner,
-            symbol: normalize_symbol_for_internal(OrderUpdate::symbol(inner)),
-        }
+        let raw_symbol = OrderUpdate::symbol(inner);
+        let symbol = if is_internal_symbol_key(raw_symbol) {
+            Cow::Borrowed(raw_symbol)
+        } else {
+            Cow::Owned(normalize_symbol_for_internal(raw_symbol))
+        };
+        Self { inner, symbol }
     }
+}
+
+fn is_internal_symbol_key(symbol: &str) -> bool {
+    !symbol.is_empty()
+        && !symbol.ends_with("SWAP")
+        && symbol
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
 impl<T> OrderUpdate for NormalizedUpdate<'_, T>
@@ -4203,7 +4215,7 @@ where
     }
 
     fn symbol(&self) -> &str {
-        &self.symbol
+        self.symbol.as_ref()
     }
 
     fn order_id(&self) -> i64 {
@@ -4276,7 +4288,7 @@ where
     }
 
     fn symbol(&self) -> &str {
-        &self.symbol
+        self.symbol.as_ref()
     }
 
     fn order_id(&self) -> i64 {
@@ -4515,7 +4527,9 @@ mod tests {
     use crate::pre_trade::usdt_balance_manager::UsdtBalanceManager;
     use crate::strategy::manager::OpenPriceMapEntry;
     use crate::strategy::{Strategy, StrategyManager};
-    use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicPositionMsg};
+    use mkt_parsers::msg::basic_account_msg::{
+        BasicBalanceMsg, BasicPositionMsg, BinanceBasicOrderMsg, GateBasicOrderMsg,
+    };
     use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
     use signal_common::common::SignalBytes;
     use signal_common::min_qty_table::MinQtyEntry;
@@ -4542,6 +4556,69 @@ mod tests {
             MONITOR_FAST_POLL_LOW_WEIGHT
         );
         assert_eq!(monitor_fast_poll_raw_limit(0), 1);
+    }
+
+    #[test]
+    fn normalized_update_borrows_internal_symbol_key() {
+        let update = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
+            1,
+            1,
+            "BTCUSDT".to_string(),
+            100,
+            42,
+            7,
+            Side::Buy.to_u8(),
+            order_common::OrderType::Limit.to_u8(),
+            order_common::TimeInForce::GTC.to_u8(),
+            ExecutionType::New.to_u8(),
+            OrderStatus::New.to_u8(),
+            false,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            "USDT".to_string(),
+        );
+
+        let normalized = NormalizedUpdate::new(&update);
+
+        assert_eq!(order_common::OrderUpdate::symbol(&normalized), "BTCUSDT");
+        assert!(matches!(normalized.symbol, Cow::Borrowed("BTCUSDT")));
+    }
+
+    #[test]
+    fn normalized_update_allocates_exchange_symbol_format() {
+        let update = GateBasicOrderMsg::create(
+            GateBasicOrderMsg::VENUE_SPOT,
+            1,
+            "BTC_USDT".to_string(),
+            100,
+            42,
+            Side::Buy.to_u8(),
+            order_common::OrderType::Limit.to_u8(),
+            order_common::TimeInForce::GTC.to_u8(),
+            ExecutionType::New.to_u8(),
+            OrderStatus::New.to_u8(),
+            0,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            "USDT".to_string(),
+        );
+
+        let normalized = NormalizedUpdate::new(&update);
+
+        assert_eq!(order_common::OrderUpdate::symbol(&normalized), "BTCUSDT");
+        assert!(matches!(
+            normalized.symbol,
+            Cow::Owned(ref symbol) if symbol == "BTCUSDT"
+        ));
     }
 
     struct TestMmOpenStrategy {
