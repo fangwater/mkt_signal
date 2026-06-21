@@ -2327,6 +2327,20 @@ fn parse_mark_price_object_fast<'a>(
         return None;
     }
 
+    loop {
+        if consume_raw_literal_if(raw, &mut pos, br#""ap""#)
+            || consume_raw_literal_if(raw, &mut pos, br#""P""#)
+        {
+            expect_raw_byte(raw, &mut pos, b':')?;
+            parse_raw_number(raw, &mut pos)?;
+        } else {
+            break;
+        }
+        if !consume_raw_field_separator(raw, &mut pos)? {
+            return None;
+        }
+    }
+
     consume_raw_literal(raw, &mut pos, br#""i""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
     let index_price = parse_raw_number(raw, &mut pos)?;
@@ -4252,6 +4266,27 @@ mod tests {
     #[test]
     fn mark_price_fast_path_parses_array_item_shape() {
         let raw = br#"{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000}"#;
+        let mut scanner = super::JsonObjectScanner::new(raw);
+        let derivative =
+            super::parse_mark_price_object_fast(&mut scanner).expect("fast mark price");
+
+        assert_eq!(
+            derivative,
+            RawDerivative::MarkPrice {
+                symbol: "BTCUSDT",
+                mark_price: Some(25.0),
+                index_price: Some(24.9),
+                funding_rate: Some(0.0001),
+                next_funding_time_us: Some(1_700_003_600_000_000),
+                timestamp_us: 1_700_000_000_001_000,
+            }
+        );
+        assert_eq!(scanner.pos, raw.len());
+    }
+
+    #[test]
+    fn mark_price_fast_path_skips_futures_extra_price_fields() {
+        let raw = br#"{"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","P":"24.95","i":"24.9","r":"0.0001","T":1700003600000}"#;
         let mut scanner = super::JsonObjectScanner::new(raw);
         let derivative =
             super::parse_mark_price_object_fast(&mut scanner).expect("fast mark price");
