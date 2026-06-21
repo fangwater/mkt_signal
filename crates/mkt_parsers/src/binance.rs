@@ -629,8 +629,8 @@ fn parse_combined_book_ticker_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     expect_raw_byte(raw, &mut pos, b'{')?;
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
-    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
-    if !stream.ends_with("@bookTicker") {
+    let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
+    if !bytes_ends_with(stream, b"@bookTicker") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
@@ -772,8 +772,8 @@ fn parse_combined_depth_bbo_fast(raw: &[u8]) -> Option<RawBbo<'_>> {
     expect_raw_byte(raw, &mut pos, b'{')?;
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
-    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
-    if !stream.contains("@depth") {
+    let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
+    if !bytes_contains(stream, b"@depth") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
@@ -900,8 +900,8 @@ fn parse_combined_depth_update_fields_fast(raw: &[u8]) -> Option<RawBookFields<'
     expect_raw_byte(raw, &mut pos, b'{')?;
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
-    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
-    if !stream.contains("@depth") {
+    let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
+    if !bytes_contains(stream, b"@depth") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
@@ -1164,8 +1164,8 @@ fn parse_combined_trade_fast(raw: &[u8]) -> Option<RawTrade<'_>> {
     expect_raw_byte(raw, &mut pos, b'{')?;
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
-    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
-    if !stream.ends_with("@trade") {
+    let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
+    if !bytes_ends_with(stream, b"@trade") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
@@ -1327,6 +1327,14 @@ fn parse_raw_bool_value(raw: &[u8], pos: &mut usize) -> Option<bool> {
     }
 }
 
+fn bytes_ends_with(raw: &[u8], suffix: &[u8]) -> bool {
+    raw.len() >= suffix.len() && raw[raw.len() - suffix.len()..] == *suffix
+}
+
+fn bytes_contains(raw: &[u8], needle: &[u8]) -> bool {
+    memmem::find(raw, needle).is_some()
+}
+
 fn skip_raw_json_value(raw: &[u8], pos: &mut usize) -> Option<()> {
     let mut scanner = JsonObjectScanner { raw, pos: *pos };
     scanner.skip_value()?;
@@ -1424,8 +1432,8 @@ fn parse_combined_kline_fast(raw: &[u8]) -> Option<RawKline<'_>> {
     expect_raw_byte(raw, &mut pos, b'{')?;
     consume_raw_literal(raw, &mut pos, br#""stream""#)?;
     expect_raw_byte(raw, &mut pos, b':')?;
-    let stream = std::str::from_utf8(take_unescaped_quoted_bytes(raw, &mut pos)?).ok()?;
-    if !stream.contains("@kline") {
+    let stream = take_unescaped_quoted_bytes(raw, &mut pos)?;
+    if !bytes_contains(stream, b"@kline") {
         return None;
     }
     if !consume_raw_field_separator(raw, &mut pos)? {
