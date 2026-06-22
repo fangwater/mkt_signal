@@ -769,7 +769,7 @@ impl WsEndpointHandle {
         local_ip: IpAddr,
         remote_addr: Option<SocketAddr>,
         url: &str,
-    ) {
+    ) -> BinanceUmWsHealthAction {
         let action = health.record(rtt_us);
         let mut state = self.state.borrow_mut();
         state.recent_binance_um_new_ack_rtts_us.push_back(rtt_us);
@@ -800,6 +800,7 @@ impl WsEndpointHandle {
                 pause_ms
             );
         }
+        action
     }
 
     pub(crate) fn binance_um_health_stats(&self, select_recent: usize) -> (i64, usize, i64) {
@@ -3329,31 +3330,37 @@ impl TradeWsClient {
                 );
             }
         }
+        let mut log_taker_trace = false;
         if meta.req_type == TradeRequestType::BinanceWsNewUMOrder {
             let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
             handle.clear_binance_um_new_inflight(meta.client_order_id, id);
             if let Some(health) = self.binance_um_ws_health.as_ref() {
                 let rtt_us = meta.sent_at.elapsed().as_micros() as i64;
-                handle.mark_binance_um_new_ack_rtt(
-                    rtt_us,
-                    health,
-                    self.id,
-                    self.local_ip,
-                    self.current_remote_addr,
-                    &self.url,
+                log_taker_trace = matches!(
+                    handle.mark_binance_um_new_ack_rtt(
+                        rtt_us,
+                        health,
+                        self.id,
+                        self.local_ip,
+                        self.current_remote_addr,
+                        &self.url,
+                    ),
+                    BinanceUmWsHealthAction::Pause { .. }
                 );
             }
         }
-        self.log_binance_taker_trace(
-            id,
-            &meta,
-            &resp,
-            order_id,
-            order_status_u8,
-            update_time_ms,
-            executed_qty,
-            response_price,
-        );
+        if log_taker_trace {
+            self.log_binance_taker_trace(
+                id,
+                &meta,
+                &resp,
+                order_id,
+                order_status_u8,
+                update_time_ms,
+                executed_qty,
+                response_price,
+            );
+        }
         self.publish_binance_ws_response(
             meta.client_order_id,
             meta.req_type,
