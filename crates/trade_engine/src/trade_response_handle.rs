@@ -8,6 +8,8 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 const MAX_TRADE_RESP_ERROR_DETAIL_CHARS: usize = 512;
+const BINANCE_NEW_ORDER_REJECTED: i32 = -2010;
+const BINANCE_POST_ONLY_REJECTED: i32 = -5022;
 
 // REST 请求执行后的输出（内部使用）
 #[derive(Debug, Clone)]
@@ -168,11 +170,22 @@ fn trade_error_detail_for_log(msg: Option<&str>, body: &str) -> Option<String> {
     }
 }
 
+fn is_binance_post_only_reject_msg(msg: &str) -> bool {
+    msg.to_ascii_lowercase()
+        .contains("would immediately match and take")
+}
+
 fn normalize_trade_error(
     exchange: Exchange,
     code: i32,
     msg: Option<String>,
 ) -> (i32, Option<String>) {
+    if exchange == Exchange::Binance && code == BINANCE_NEW_ORDER_REJECTED {
+        if msg.as_deref().is_some_and(is_binance_post_only_reject_msg) {
+            return (BINANCE_POST_ONLY_REJECTED, msg);
+        }
+    }
+
     if exchange == Exchange::Gate && code == 0 {
         if let Some(m) = msg.as_deref() {
             if let Some(mapped_code) = gate::parse_error_label(m) {
@@ -272,6 +285,27 @@ mod tests {
         let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
         assert_eq!(code, gate::ORDER_NOT_FOUND);
         assert_eq!(msg.as_deref(), Some("ORDER_NOT_FOUND"));
+    }
+
+    #[test]
+    fn normalizes_binance_limit_maker_cross_reject_from_message() {
+        let body = r#"{"code":-2010,"msg":"Order would immediately match and take."}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Binance, code, msg);
+        assert_eq!(code, BINANCE_POST_ONLY_REJECTED);
+        assert_eq!(
+            msg.as_deref(),
+            Some("Order would immediately match and take.")
+        );
+    }
+
+    #[test]
+    fn keeps_other_binance_new_order_rejected_messages() {
+        let body = r#"{"code":-2010,"msg":"New order rejected"}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Binance, code, msg);
+        assert_eq!(code, BINANCE_NEW_ORDER_REJECTED);
+        assert_eq!(msg.as_deref(), Some("New order rejected"));
     }
 
     #[test]
