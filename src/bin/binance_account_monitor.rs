@@ -39,6 +39,7 @@ use tokio::signal;
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
+use trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
 use trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
 use trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
@@ -324,6 +325,23 @@ async fn bootstrap_unified_snapshots(
         "bootstrap unified snapshots via local_ip={}",
         local_ip.unwrap_or("system-default")
     );
+
+    let pm_balance_body = signed_get_binance(
+        &client,
+        "https://papi.binance.com",
+        "/papi/v1/balance",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_pm_balance_snapshot(&pm_balance_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
+                let _ = forward_account_event(wrapped);
+                emitted += 1;
+            }
+        }
+    }
 
     let um_account_body = signed_get_binance(
         &client,
