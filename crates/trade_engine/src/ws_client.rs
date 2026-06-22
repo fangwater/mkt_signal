@@ -495,6 +495,128 @@ fn classify_ws_action(rt: TradeRequestType) -> WsAction {
 #[derive(Debug, Default)]
 pub(crate) struct WsEndpointState {
     cooldown_until: Option<std::time::Instant>,
+    health_pause_until: Option<std::time::Instant>,
+    recent_binance_um_new_ack_rtts_us: VecDeque<i64>,
+    binance_um_new_inflight: VecDeque<BinanceUmNewInflightState>,
+    last_binance_um_new_inflight_block_log: Option<std::time::Instant>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BinanceUmNewInflightState {
+    client_order_id: i64,
+    transport_id: i64,
+    create_time_us: i64,
+    sent_at_us: i64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BinanceUmWsHealthConfig {
+    pub rolling_window: usize,
+    pub percentile: u8,
+    pub pause_ms: u64,
+    pub select_recent: usize,
+    pub inflight_create_block_ms: u64,
+}
+
+#[derive(Debug)]
+struct BinanceUmWsHealthState {
+    samples_us: VecDeque<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BinanceUmWsHealthSnapshot {
+    pub latest_us: Option<i64>,
+    pub threshold_us: Option<i64>,
+    pub percentile: u8,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BinanceUmWsHealthRuntime {
+    cfg: BinanceUmWsHealthConfig,
+    state: Rc<RefCell<BinanceUmWsHealthState>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BinanceUmWsHealthAction {
+    Healthy,
+    Pause { threshold_us: i64, pause_ms: u64 },
+}
+
+impl BinanceUmWsHealthRuntime {
+    pub(crate) fn new(cfg: BinanceUmWsHealthConfig) -> Self {
+        Self {
+            cfg,
+            state: Rc::new(RefCell::new(BinanceUmWsHealthState {
+                samples_us: VecDeque::with_capacity(256),
+            })),
+        }
+    }
+
+    pub(crate) fn select_recent(&self) -> usize {
+        self.cfg.select_recent
+    }
+
+    pub(crate) fn pause_ms(&self) -> u64 {
+        self.cfg.pause_ms
+    }
+
+    pub(crate) fn inflight_create_block_us(&self) -> i64 {
+        (self.cfg.inflight_create_block_ms as i64).saturating_mul(1_000)
+    }
+
+    fn percentile(sorted: &[i64], percentile: u8) -> i64 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let idx = ((sorted.len() - 1) * percentile as usize).div_ceil(100);
+        sorted[idx.min(sorted.len() - 1)]
+    }
+
+    pub(crate) fn record(&self, rtt_us: i64) -> BinanceUmWsHealthAction {
+        let mut state = self.state.borrow_mut();
+        let threshold_us = if state.samples_us.is_empty() {
+            None
+        } else {
+            let mut sorted: Vec<i64> = state.samples_us.iter().copied().collect();
+            sorted.sort_unstable();
+            Some(Self::percentile(&sorted, self.cfg.percentile))
+        };
+        let action = if let Some(threshold_us) = threshold_us {
+            if rtt_us > threshold_us {
+                BinanceUmWsHealthAction::Pause {
+                    threshold_us,
+                    pause_ms: self.cfg.pause_ms,
+                }
+            } else {
+                BinanceUmWsHealthAction::Healthy
+            }
+        } else {
+            BinanceUmWsHealthAction::Healthy
+        };
+        state.samples_us.push_back(rtt_us);
+        while state.samples_us.len() > self.cfg.rolling_window {
+            state.samples_us.pop_front();
+        }
+        action
+    }
+
+    pub(crate) fn snapshot(&self) -> BinanceUmWsHealthSnapshot {
+        let state = self.state.borrow();
+        if state.samples_us.is_empty() {
+            return BinanceUmWsHealthSnapshot {
+                latest_us: None,
+                threshold_us: None,
+                percentile: self.cfg.percentile,
+            };
+        }
+        let mut sorted: Vec<i64> = state.samples_us.iter().copied().collect();
+        sorted.sort_unstable();
+        BinanceUmWsHealthSnapshot {
+            latest_us: state.samples_us.back().copied(),
+            threshold_us: Some(Self::percentile(&sorted, self.cfg.percentile)),
+            percentile: self.cfg.percentile,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -521,7 +643,24 @@ impl WsEndpointHandle {
     }
 
     pub(crate) fn is_available(&self) -> bool {
-        let now = std::time::Instant::now();
+        self.is_available_at(std::time::Instant::now(), true, 0, 0)
+    }
+
+    pub(crate) fn is_available_for_new_binance_um(
+        &self,
+        block_after_us: i64,
+        pause_ms: u64,
+    ) -> bool {
+        self.is_available_at(std::time::Instant::now(), false, block_after_us, pause_ms)
+    }
+
+    fn is_available_at(
+        &self,
+        now: std::time::Instant,
+        ignore_health_pause: bool,
+        binance_um_new_inflight_block_after_us: i64,
+        binance_um_new_inflight_pause_ms: u64,
+    ) -> bool {
         let mut state = self.state.borrow_mut();
         if let Some(until) = state.cooldown_until {
             if now < until {
@@ -529,7 +668,168 @@ impl WsEndpointHandle {
             }
             state.cooldown_until = None;
         }
+        if !ignore_health_pause {
+            if let Some(until) = state.health_pause_until {
+                if now < until {
+                    return false;
+                }
+                state.health_pause_until = None;
+            }
+        }
+        if binance_um_new_inflight_block_after_us > 0 {
+            if let Some(inflight) = state.binance_um_new_inflight.front().copied() {
+                let now_us = get_timestamp_us();
+                let anchor_us = if inflight.create_time_us > 0 {
+                    inflight.create_time_us
+                } else {
+                    inflight.sent_at_us
+                };
+                if anchor_us > 0 {
+                    let age_us = now_us.saturating_sub(anchor_us);
+                    if age_us >= binance_um_new_inflight_block_after_us {
+                        let _ = state.binance_um_new_inflight.pop_front();
+                        if binance_um_new_inflight_pause_ms > 0 {
+                            let until =
+                                now + Duration::from_millis(binance_um_new_inflight_pause_ms);
+                            state.health_pause_until = Some(match state.health_pause_until {
+                                Some(existing) if existing > until => existing,
+                                _ => until,
+                            });
+                        }
+                        let should_log = state
+                            .last_binance_um_new_inflight_block_log
+                            .map(|last| now.duration_since(last) >= Duration::from_secs(1))
+                            .unwrap_or(true);
+                        if should_log {
+                            state.last_binance_um_new_inflight_block_log = Some(now);
+                            warn!(
+                                "binance UM WS endpoint blocked by stale NEW inflight client_order_id={} transport_id={} age_us={} threshold_us={} pause_ms={}",
+                                inflight.client_order_id,
+                                inflight.transport_id,
+                                age_us,
+                                binance_um_new_inflight_block_after_us,
+                                binance_um_new_inflight_pause_ms
+                            );
+                        }
+                        return false;
+                    }
+                }
+            }
+        }
         true
+    }
+
+    pub(crate) fn mark_binance_um_new_inflight(
+        &self,
+        client_order_id: i64,
+        transport_id: i64,
+        create_time_us: i64,
+        sent_at_us: i64,
+    ) {
+        self.state
+            .borrow_mut()
+            .binance_um_new_inflight
+            .push_back(BinanceUmNewInflightState {
+                client_order_id,
+                transport_id,
+                create_time_us,
+                sent_at_us,
+            });
+    }
+
+    pub(crate) fn clear_binance_um_new_inflight(&self, client_order_id: i64, transport_id: i64) {
+        let mut state = self.state.borrow_mut();
+        let Some(pos) = state.binance_um_new_inflight.iter().position(|inflight| {
+            (transport_id > 0 && inflight.transport_id == transport_id)
+                || (client_order_id > 0 && inflight.client_order_id == client_order_id)
+        }) else {
+            return;
+        };
+        let _ = state.binance_um_new_inflight.remove(pos);
+    }
+
+    pub(crate) fn recent_binance_um_new_ack_rtt_sum_count(&self, n: usize) -> (i64, usize) {
+        let state = self.state.borrow();
+        let count = state.recent_binance_um_new_ack_rtts_us.len().min(n);
+        let sum = state
+            .recent_binance_um_new_ack_rtts_us
+            .iter()
+            .rev()
+            .take(n)
+            .copied()
+            .sum();
+        (sum, count)
+    }
+
+    pub(crate) fn mark_binance_um_new_ack_rtt(
+        &self,
+        rtt_us: i64,
+        health: &BinanceUmWsHealthRuntime,
+        endpoint_id: usize,
+        local_ip: IpAddr,
+        remote_addr: Option<SocketAddr>,
+        url: &str,
+    ) {
+        let action = health.record(rtt_us);
+        let mut state = self.state.borrow_mut();
+        state.recent_binance_um_new_ack_rtts_us.push_back(rtt_us);
+        while state.recent_binance_um_new_ack_rtts_us.len() > health.select_recent() {
+            state.recent_binance_um_new_ack_rtts_us.pop_front();
+        }
+        if let BinanceUmWsHealthAction::Pause {
+            threshold_us,
+            pause_ms,
+        } = action
+        {
+            state.recent_binance_um_new_ack_rtts_us.clear();
+            let until = std::time::Instant::now() + Duration::from_millis(pause_ms);
+            state.health_pause_until = Some(match state.health_pause_until {
+                Some(existing) if existing > until => existing,
+                _ => until,
+            });
+            warn!(
+                "binance UM WS endpoint health pause endpoint_id={} local_ip={} remote_addr={} ws_url={} rtt_us={} threshold_us={} pause_ms={}",
+                endpoint_id,
+                local_ip,
+                remote_addr
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                url,
+                rtt_us,
+                threshold_us,
+                pause_ms
+            );
+        }
+    }
+
+    pub(crate) fn binance_um_health_stats(&self, select_recent: usize) -> (i64, usize, i64) {
+        let now = std::time::Instant::now();
+        let mut state = self.state.borrow_mut();
+        let pause_ms_left = match state.health_pause_until {
+            Some(until) if now < until => until.duration_since(now).as_millis() as i64,
+            Some(_) => {
+                state.health_pause_until = None;
+                0
+            }
+            None => 0,
+        };
+        let recent_count = state
+            .recent_binance_um_new_ack_rtts_us
+            .len()
+            .min(select_recent);
+        let sum = state
+            .recent_binance_um_new_ack_rtts_us
+            .iter()
+            .rev()
+            .take(select_recent)
+            .copied()
+            .sum::<i64>();
+        let mean_us = if recent_count > 0 {
+            sum / recent_count as i64
+        } else {
+            0
+        };
+        (mean_us, recent_count, pause_ms_left)
     }
 }
 
@@ -620,6 +920,7 @@ pub struct TradeWsClient {
     use_ltp_backend: bool,
     local_ip: IpAddr,
     url: String,
+    remote_ip_override: Option<IpAddr>,
     current_remote_addr: Option<SocketAddr>,
     connect_timeout_ms: u64,
     ping_interval_ms: u64,
@@ -657,6 +958,7 @@ pub struct TradeWsClient {
     last_okex_login_ts: Option<String>,
     last_gate_login_req_id: Option<String>,
     lat_buckets: WsLatencyBuckets,
+    binance_um_ws_health: Option<BinanceUmWsHealthRuntime>,
 }
 
 impl TradeWsClient {
@@ -784,6 +1086,7 @@ impl TradeWsClient {
             use_ltp_backend,
             local_ip,
             url,
+            remote_ip_override: None,
             current_remote_addr: None,
             connect_timeout_ms,
             ping_interval_ms,
@@ -821,7 +1124,18 @@ impl TradeWsClient {
             last_okex_login_ts: None,
             last_gate_login_req_id: None,
             lat_buckets,
+            binance_um_ws_health: None,
         }
+    }
+
+    pub(crate) fn with_remote_ip_override(mut self, remote_ip: IpAddr) -> Self {
+        self.remote_ip_override = Some(remote_ip);
+        self
+    }
+
+    pub(crate) fn with_binance_um_ws_health(mut self, health: BinanceUmWsHealthRuntime) -> Self {
+        self.binance_um_ws_health = Some(health);
+        self
     }
 
     pub fn local_ip(&self) -> IpAddr {
@@ -977,6 +1291,7 @@ impl TradeWsClient {
 
             let local_ip = self.local_ip;
             let url = self.url.clone();
+            let remote_ip_override = self.remote_ip_override;
             let connect_timeout_ms = self.connect_timeout_ms;
             let ws_headers = self.ws_handshake_headers();
             tokio::select! {
@@ -993,7 +1308,7 @@ impl TradeWsClient {
                     }
                     continue;
                 }
-                res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms, &ws_headers) => {
+                res = Self::establish_connection_with(local_ip, &url, remote_ip_override, connect_timeout_ms, &ws_headers) => {
                     match res {
                         Ok((mut ws, remote_addr)) => {
                             self.current_remote_addr = Some(remote_addr);
@@ -1273,6 +1588,7 @@ impl TradeWsClient {
     async fn establish_connection_with(
         local_ip: IpAddr,
         url_str: &str,
+        remote_ip_override: Option<IpAddr>,
         connect_timeout_ms: u64,
         headers: &[(String, String)],
     ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, SocketAddr)> {
@@ -1284,17 +1600,32 @@ impl TradeWsClient {
             .port_or_known_default()
             .ok_or_else(|| anyhow!("websocket url missing port"))?;
 
-        let mut candidates = lookup_host((host, port))
-            .await
-            .with_context(|| format!("resolve {}:{}", host, port))?;
-        let target = candidates
-            .find(|addr| {
-                matches!(
-                    (addr, local_ip),
-                    (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
-                )
-            })
-            .ok_or_else(|| anyhow!("no compatible address family for {}", local_ip))?;
+        let target = if let Some(remote_ip) = remote_ip_override {
+            match (remote_ip, local_ip) {
+                (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => {
+                    SocketAddr::new(remote_ip, port)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "remote ip override {} is not compatible with local ip {}",
+                        remote_ip,
+                        local_ip
+                    ));
+                }
+            }
+        } else {
+            let mut candidates = lookup_host((host, port))
+                .await
+                .with_context(|| format!("resolve {}:{}", host, port))?;
+            candidates
+                .find(|addr| {
+                    matches!(
+                        (addr, local_ip),
+                        (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+                    )
+                })
+                .ok_or_else(|| anyhow!("no compatible address family for {}", local_ip))?
+        };
 
         let socket = match local_ip {
             IpAddr::V4(ip) => {
@@ -1507,6 +1838,7 @@ impl TradeWsClient {
             sent_at_us,
             ipc_recv_to_ws_send_done_us,
         );
+        self.mark_binance_um_new_inflight_sent(msg, transport_id, sent_at_us);
         Ok(())
     }
 
@@ -1881,6 +2213,24 @@ impl TradeWsClient {
                 sent_at,
                 sent_at_us,
             },
+        );
+    }
+
+    fn mark_binance_um_new_inflight_sent(
+        &self,
+        msg: &TradeRequestMsg,
+        transport_id: i64,
+        sent_at_us: i64,
+    ) {
+        if msg.req_type != TradeRequestType::BinanceWsNewUMOrder {
+            return;
+        }
+        let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
+        handle.mark_binance_um_new_inflight(
+            msg.client_order_id,
+            transport_id,
+            msg.create_time,
+            sent_at_us,
         );
     }
 
@@ -2979,6 +3329,21 @@ impl TradeWsClient {
                 );
             }
         }
+        if meta.req_type == TradeRequestType::BinanceWsNewUMOrder {
+            let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
+            handle.clear_binance_um_new_inflight(meta.client_order_id, id);
+            if let Some(health) = self.binance_um_ws_health.as_ref() {
+                let rtt_us = meta.sent_at.elapsed().as_micros() as i64;
+                handle.mark_binance_um_new_ack_rtt(
+                    rtt_us,
+                    health,
+                    self.id,
+                    self.local_ip,
+                    self.current_remote_addr,
+                    &self.url,
+                );
+            }
+        }
         self.log_binance_taker_trace(
             id,
             &meta,
@@ -3666,6 +4031,7 @@ impl TradeWsClient {
 mod tests {
     use super::{
         is_bitget_pong_response, parse_bitget_control_event, QueryInflightMeta, TradeWsClient,
+        WsCommandQueue, WsEndpointHandle, WsEndpointState,
     };
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
@@ -3675,6 +4041,8 @@ mod tests {
     use order_common::{OrderType, Side};
     use runtime_common::fast_hash::fast_hash_map;
     use signal_common::tick_math::QuantizedValue;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn parses_bitget_login_failure_control_event() {
@@ -3733,6 +4101,34 @@ mod tests {
 
         assert_eq!(req_type, QueryRequestType::GateFuturesOrderQuery);
         assert_eq!(client_query_id, 281474976710779);
+    }
+
+    #[test]
+    fn binance_um_new_inflight_blocks_then_recovers() {
+        let handle = WsEndpointHandle::new(
+            WsCommandQueue::new(),
+            Rc::new(RefCell::new(WsEndpointState::default())),
+        );
+        let now_us = runtime_common::time_util::get_timestamp_us();
+        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
+
+        assert!(!handle.is_available_for_new_binance_um(100_000, 1));
+        assert!(!handle.is_available_for_new_binance_um(100_000, 1));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(handle.is_available_for_new_binance_um(100_000, 1));
+    }
+
+    #[test]
+    fn binance_um_new_inflight_clear_prevents_block() {
+        let handle = WsEndpointHandle::new(
+            WsCommandQueue::new(),
+            Rc::new(RefCell::new(WsEndpointState::default())),
+        );
+        let now_us = runtime_common::time_util::get_timestamp_us();
+        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
+        handle.clear_binance_um_new_inflight(42, 281474976710657);
+
+        assert!(handle.is_available_for_new_binance_um(100_000, 1));
     }
 
     #[test]

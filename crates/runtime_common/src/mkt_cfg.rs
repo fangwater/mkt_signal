@@ -18,12 +18,47 @@ struct TradeEngineTomlConfig {
     secondary_local_ip: Option<String>,
     #[serde(alias = "binance_um_ip_whitelist_ip")]
     binance_um_whitelist_ip: Option<String>,
+    #[serde(default, alias = "binance_um_ws_direct_ip")]
+    binance_um_ws_direct_ips: Vec<String>,
+    binance_um_ws_health: Option<BinanceUmWsHealthTomlConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TradeEngineLocalIpConfig {
     pub local_ips: Vec<String>,
     pub binance_um_whitelist_ip: Option<String>,
+    pub binance_um_ws_direct_ips: Vec<String>,
+    pub binance_um_ws_health: BinanceUmWsHealthConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceUmWsHealthConfig {
+    pub rolling_window: usize,
+    pub percentile: u8,
+    pub pause_ms: u64,
+    pub select_recent: usize,
+    pub inflight_create_block_ms: u64,
+}
+
+impl Default for BinanceUmWsHealthConfig {
+    fn default() -> Self {
+        Self {
+            rolling_window: 200,
+            percentile: 85,
+            pause_ms: 500,
+            select_recent: 3,
+            inflight_create_block_ms: 100,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BinanceUmWsHealthTomlConfig {
+    rolling_window: Option<usize>,
+    percentile: Option<u8>,
+    pause_ms: Option<u64>,
+    select_recent: Option<usize>,
+    inflight_create_block_ms: Option<u64>,
 }
 
 pub fn home_mkt_cfg_path() -> Result<PathBuf> {
@@ -88,6 +123,8 @@ pub async fn load_trade_engine_local_ip_config_preferring_trade_engine(
         TradeEngineLocalIpConfig {
             local_ips: vec![primary_ip, secondary_ip],
             binance_um_whitelist_ip: None,
+            binance_um_ws_direct_ips: Vec::new(),
+            binance_um_ws_health: BinanceUmWsHealthConfig::default(),
         },
         format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     ))
@@ -240,6 +277,66 @@ fn trim_optional_empty_ok(value: Option<String>) -> Option<String> {
     })
 }
 
+fn parse_trimmed_ip_list(
+    values: Vec<String>,
+    field_name: &str,
+    path: &Path,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (idx, value) in values.into_iter().enumerate() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!(
+                "{}[{}] is empty in {}",
+                field_name,
+                idx,
+                path.display()
+            ));
+        }
+        out.push(trimmed.to_string());
+    }
+    Ok(out)
+}
+
+fn parse_binance_um_ws_health_config(
+    raw: Option<BinanceUmWsHealthTomlConfig>,
+    path: &Path,
+) -> Result<BinanceUmWsHealthConfig> {
+    let defaults = BinanceUmWsHealthConfig::default();
+    let Some(raw) = raw else {
+        return Ok(defaults);
+    };
+
+    let cfg = BinanceUmWsHealthConfig {
+        rolling_window: raw.rolling_window.unwrap_or(defaults.rolling_window),
+        percentile: raw.percentile.unwrap_or(defaults.percentile),
+        pause_ms: raw.pause_ms.unwrap_or(defaults.pause_ms),
+        select_recent: raw.select_recent.unwrap_or(defaults.select_recent),
+        inflight_create_block_ms: raw
+            .inflight_create_block_ms
+            .unwrap_or(defaults.inflight_create_block_ms),
+    };
+    if cfg.rolling_window == 0 {
+        return Err(anyhow!(
+            "binance_um_ws_health.rolling_window must be > 0 in {}",
+            path.display()
+        ));
+    }
+    if cfg.percentile > 100 {
+        return Err(anyhow!(
+            "binance_um_ws_health.percentile must be <= 100 in {}",
+            path.display()
+        ));
+    }
+    if cfg.select_recent == 0 {
+        return Err(anyhow!(
+            "binance_um_ws_health.select_recent must be > 0 in {}",
+            path.display()
+        ));
+    }
+    Ok(cfg)
+}
+
 fn parse_trade_engine_local_ip_config_toml(
     content: &str,
     path: &Path,
@@ -277,6 +374,12 @@ fn parse_trade_engine_local_ip_config_toml(
     Ok(TradeEngineLocalIpConfig {
         local_ips,
         binance_um_whitelist_ip: trim_optional_empty_ok(cfg.binance_um_whitelist_ip),
+        binance_um_ws_direct_ips: parse_trimmed_ip_list(
+            cfg.binance_um_ws_direct_ips,
+            "binance_um_ws_direct_ips",
+            path,
+        )?,
+        binance_um_ws_health: parse_binance_um_ws_health_config(cfg.binance_um_ws_health, path)?,
     })
 }
 
@@ -340,6 +443,40 @@ mod tests {
         assert_eq!(
             parsed,
             vec!["172.31.33.133".to_string(), "172.31.46.90".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_trade_engine_toml_accepts_binance_um_ws_direct_ips() {
+        let parsed = parse_trade_engine_local_ip_config_toml(
+            r#"
+                local_ips = ["172.31.33.133", "172.31.46.90"]
+                binance_um_whitelist_ip = "172.31.46.90"
+                binance_um_ws_direct_ips = [" 13.112.240.202 ", "13.158.151.48"]
+                [binance_um_ws_health]
+                rolling_window = 200
+                percentile = 85
+                pause_ms = 500
+                select_recent = 3
+                inflight_create_block_ms = 80
+            "#,
+            Path::new("trade_engine.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed.binance_um_ws_direct_ips,
+            vec!["13.112.240.202".to_string(), "13.158.151.48".to_string()]
+        );
+        assert_eq!(
+            parsed.binance_um_ws_health,
+            BinanceUmWsHealthConfig {
+                rolling_window: 200,
+                percentile: 85,
+                pause_ms: 500,
+                select_recent: 3,
+                inflight_create_block_ms: 80,
+            }
         );
     }
 }

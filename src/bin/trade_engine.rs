@@ -9,7 +9,8 @@ use runtime_common::exchange::Exchange;
 use runtime_common::mkt_cfg::{
     binance_um_ip_whitelist_mode_enabled, find_trade_engine_local_cfg_path, home_mkt_cfg_path,
     load_local_ips_from_path, load_trade_engine_local_ip_config_from_toml_path,
-    validate_binance_um_whitelist_ip_config, BINANCE_UM_IP_WHITELIST_MODE_ENV,
+    validate_binance_um_whitelist_ip_config, BinanceUmWsHealthConfig,
+    BINANCE_UM_IP_WHITELIST_MODE_ENV,
 };
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -120,6 +121,8 @@ struct TradeEngineLocalIpRuntimeConfig {
     local_ips: Vec<IpAddr>,
     local_ip_values: Vec<String>,
     binance_um_whitelist_ip_value: Option<String>,
+    binance_um_ws_direct_ip_values: Vec<String>,
+    binance_um_ws_health: BinanceUmWsHealthConfig,
     source: String,
 }
 
@@ -154,10 +157,27 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
                 })
             })
             .transpose()?;
+        let _binance_um_ws_direct_ips = cfg
+            .binance_um_ws_direct_ips
+            .iter()
+            .enumerate()
+            .map(|(idx, ip)| {
+                ip.parse::<IpAddr>().with_context(|| {
+                    format!(
+                        "invalid binance_um_ws_direct_ips[{}] in trade_engine config {}: {}",
+                        idx,
+                        path.display(),
+                        ip
+                    )
+                })
+            })
+            .collect::<Result<Vec<IpAddr>>>()?;
         return Ok(TradeEngineLocalIpRuntimeConfig {
             local_ips,
             local_ip_values,
             binance_um_whitelist_ip_value,
+            binance_um_ws_direct_ip_values: cfg.binance_um_ws_direct_ips,
+            binance_um_ws_health: cfg.binance_um_ws_health,
             source: path.display().to_string(),
         });
     }
@@ -174,6 +194,8 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
         local_ips: vec![primary_ip, secondary_ip],
         local_ip_values: vec![primary_ip_raw, secondary_ip_raw],
         binance_um_whitelist_ip_value: None,
+        binance_um_ws_direct_ip_values: Vec::new(),
+        binance_um_ws_health: BinanceUmWsHealthConfig::default(),
         source: format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     })
 }
@@ -381,6 +403,19 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    let binance_um_ws_direct_ips = local_ip_cfg
+        .binance_um_ws_direct_ip_values
+        .iter()
+        .enumerate()
+        .map(|(idx, ip)| {
+            ip.parse::<IpAddr>().with_context(|| {
+                format!(
+                    "parse binance_um_ws_direct_ips[{}] for trade_engine dispatch: {}",
+                    idx, ip
+                )
+            })
+        })
+        .collect::<Result<Vec<IpAddr>>>()?;
     info!(
         "using local IPs from {}: {}",
         local_ip_cfg.source,
@@ -399,6 +434,27 @@ async fn main() -> Result<()> {
                 .map(|ip| ip.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
+        );
+    }
+    if exchange_name == "binance" && !binance_um_ws_direct_ips.is_empty() {
+        info!(
+            "configured Binance UM WS direct IPs (+1 DNS fallback): {}",
+            binance_um_ws_direct_ips
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if exchange_name == "binance" {
+        let cfg = &local_ip_cfg.binance_um_ws_health;
+        info!(
+            "configured Binance UM WS health: rolling_window={} percentile={} pause_ms={} select_recent={} inflight_create_block_ms={}",
+            cfg.rolling_window,
+            cfg.percentile,
+            cfg.pause_ms,
+            cfg.select_recent,
+            cfg.inflight_create_block_ms
         );
     }
 
@@ -502,7 +558,14 @@ async fn main() -> Result<()> {
     };
 
     info!("trade_engine initialized");
-    let engine = TradeEngine::new(local_ips, accounts, ipc_core, binance_um_whitelist_ip);
+    let engine = TradeEngine::new(
+        local_ips,
+        accounts,
+        ipc_core,
+        binance_um_whitelist_ip,
+        binance_um_ws_direct_ips,
+        local_ip_cfg.binance_um_ws_health,
+    );
 
     let local = tokio::task::LocalSet::new();
     let shutdown = CancellationToken::new();

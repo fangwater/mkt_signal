@@ -44,6 +44,7 @@ use crate::trade_request::{
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
 use crate::ws_client::{
+    BinanceUmWsHealthConfig as WsBinanceUmWsHealthConfig, BinanceUmWsHealthRuntime,
     RespLatencyBuckets, TradeWsClient, WsCommand, WsCommandQueue, WsEndpointHandle,
     WsLatencyBuckets,
 };
@@ -62,7 +63,7 @@ use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
-use runtime_common::mkt_cfg::binance_um_ip_whitelist_mode_enabled;
+use runtime_common::mkt_cfg::{binance_um_ip_whitelist_mode_enabled, BinanceUmWsHealthConfig};
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
 use std::net::IpAddr;
@@ -79,6 +80,64 @@ const IPC_THREAD_DRAIN_BUDGET: usize = 64;
 const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 1024;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
+
+#[derive(Clone, Debug)]
+struct WsEndpointGroup {
+    handles: Vec<WsEndpointHandle>,
+    rr_cursor: usize,
+}
+
+impl WsEndpointGroup {
+    fn new(handles: Vec<WsEndpointHandle>) -> Self {
+        Self {
+            handles,
+            rr_cursor: 0,
+        }
+    }
+
+    fn is_available(&self) -> bool {
+        self.handles
+            .first()
+            .map(|handle| handle.is_available())
+            .unwrap_or(false)
+    }
+
+    fn is_available_for_new_binance_um(&self, block_after_us: i64, pause_ms: u64) -> bool {
+        self.handles
+            .first()
+            .map(|handle| handle.is_available_for_new_binance_um(block_after_us, pause_ms))
+            .unwrap_or(false)
+    }
+
+    fn recent_binance_um_new_ack_rtt_sum_count(&self, n: usize) -> (i64, usize) {
+        self.handles
+            .first()
+            .map(|handle| handle.recent_binance_um_new_ack_rtt_sum_count(n))
+            .unwrap_or((0, 0))
+    }
+
+    fn binance_um_health_stats(&self, select_recent: usize) -> (i64, usize, i64) {
+        self.handles
+            .first()
+            .map(|handle| handle.binance_um_health_stats(select_recent))
+            .unwrap_or((0, 0, 0))
+    }
+
+    fn enqueue_available(&mut self, cmd: WsCommand) {
+        if self.handles.is_empty() {
+            return;
+        }
+        let start = self.rr_cursor % self.handles.len();
+        for offset in 0..self.handles.len() {
+            let idx = (start + offset) % self.handles.len();
+            if self.handles[idx].is_available() {
+                self.rr_cursor = (idx + 1) % self.handles.len();
+                self.handles[idx].enqueue_available(cmd);
+                return;
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InternalOpenTerminateState {
@@ -1141,6 +1200,8 @@ pub struct TradeEngine {
     accounts: Vec<ApiKey>,
     ipc_core: Option<usize>,
     binance_um_whitelist_ip: Option<IpAddr>,
+    binance_um_ws_direct_ips: Vec<IpAddr>,
+    binance_um_ws_health: BinanceUmWsHealthConfig,
 }
 
 impl TradeEngine {
@@ -1149,12 +1210,16 @@ impl TradeEngine {
         accounts: Vec<ApiKey>,
         ipc_core: Option<usize>,
         binance_um_whitelist_ip: Option<IpAddr>,
+        binance_um_ws_direct_ips: Vec<IpAddr>,
+        binance_um_ws_health: BinanceUmWsHealthConfig,
     ) -> Self {
         Self {
             local_ips,
             accounts,
             ipc_core,
             binance_um_whitelist_ip,
+            binance_um_ws_direct_ips,
+            binance_um_ws_health,
         }
     }
 
@@ -1446,6 +1511,8 @@ impl TradeEngine {
 
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
+        let mut binance_um_ws_endpoint_groups: Option<Vec<WsEndpointGroup>> = None;
+        let mut binance_um_ws_health_runtime: Option<BinanceUmWsHealthRuntime> = None;
 
         let ws_endpoints = if use_ltp_backend {
             crate::ltp_ws::warn_if_unsupported_ltp_exchange(exchange)?;
@@ -1855,48 +1922,93 @@ impl TradeEngine {
                 (local_ips.clone(), local_ips.clone())
             };
 
-            let um_shutdown_on_rate_limit = um_local_ips.len() <= 1;
-            let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
-            let mut um_endpoints = Vec::with_capacity(um_local_ips.len());
-            let mut spot_endpoints = Vec::with_capacity(spot_local_ips.len());
-            for (idx, ip) in um_local_ips.into_iter().enumerate() {
-                let um_cmd_queue = WsCommandQueue::new();
-                let um_state = StdRc::new(RefCell::new(Default::default()));
-                let um_client = TradeWsClient::new(
-                    idx,
-                    exchange,
-                    exchange,
-                    false,
-                    ip,
-                    binance_um_ws_url.to_string(),
-                    connect_timeout_ms,
-                    ping_interval_ms,
-                    max_inflight,
-                    None,
-                    binance_creds.clone(),
-                    None,
-                    Some(query_resp_sink.clone()),
-                    um_cmd_queue.clone(),
-                    trade_resp_sink.clone(),
-                    internal_open_terminates.clone(),
-                    internal_open_terminate_summary.clone(),
-                    shutdown.clone(),
-                    um_state.clone(),
-                    um_shutdown_on_rate_limit,
-                    lat_buckets.clone(),
-                );
-                info!(
-                    "spawning binance um ws client id={} ip={} max_inflight={}",
-                    idx,
-                    um_client.local_ip(),
-                    max_inflight
-                );
-                let handle = tokio::task::spawn_local(async move {
-                    um_client.run().await;
-                });
-                worker_handles.push(("binance_um_ws_client", handle));
-                um_endpoints.push(WsEndpointHandle::new(um_cmd_queue, um_state));
+            let mut um_logical_endpoint_specs: Vec<(Option<IpAddr>, &'static str)> = Vec::new();
+            um_logical_endpoint_specs.push((None, "dns"));
+            for &remote_ip in &self.binance_um_ws_direct_ips {
+                um_logical_endpoint_specs.push((Some(remote_ip), "direct"));
             }
+            if !self.binance_um_ws_direct_ips.is_empty() {
+                info!(
+                    "binance UM WS direct IP mode enabled; spawning {} logical endpoint group(s), {} connection(s): 1 DNS fallback group + {} direct group(s), local_ips={}",
+                    um_logical_endpoint_specs.len(),
+                    um_logical_endpoint_specs.len() * um_local_ips.len(),
+                    self.binance_um_ws_direct_ips.len(),
+                    um_local_ips.len()
+                );
+            }
+
+            let um_shutdown_on_rate_limit = um_logical_endpoint_specs.len() <= 1;
+            let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
+            let mut um_endpoints =
+                Vec::with_capacity(um_logical_endpoint_specs.len() * um_local_ips.len());
+            let mut um_endpoint_groups = Vec::with_capacity(um_logical_endpoint_specs.len());
+            let mut spot_endpoints = Vec::with_capacity(spot_local_ips.len());
+            let binance_um_ws_health = BinanceUmWsHealthRuntime::new(WsBinanceUmWsHealthConfig {
+                rolling_window: self.binance_um_ws_health.rolling_window,
+                percentile: self.binance_um_ws_health.percentile,
+                pause_ms: self.binance_um_ws_health.pause_ms,
+                select_recent: self.binance_um_ws_health.select_recent,
+                inflight_create_block_ms: self.binance_um_ws_health.inflight_create_block_ms,
+            });
+            binance_um_ws_health_runtime = Some(binance_um_ws_health.clone());
+            let mut um_client_id = 0usize;
+            for (group_idx, (remote_ip_override, source)) in
+                um_logical_endpoint_specs.into_iter().enumerate()
+            {
+                let group_state = StdRc::new(RefCell::new(Default::default()));
+                let mut group_handles = Vec::with_capacity(um_local_ips.len());
+                for &ip in &um_local_ips {
+                    let um_cmd_queue = WsCommandQueue::new();
+                    let mut um_client = TradeWsClient::new(
+                        um_client_id,
+                        exchange,
+                        exchange,
+                        false,
+                        ip,
+                        binance_um_ws_url.to_string(),
+                        connect_timeout_ms,
+                        ping_interval_ms,
+                        max_inflight,
+                        None,
+                        binance_creds.clone(),
+                        None,
+                        Some(query_resp_sink.clone()),
+                        um_cmd_queue.clone(),
+                        trade_resp_sink.clone(),
+                        internal_open_terminates.clone(),
+                        internal_open_terminate_summary.clone(),
+                        shutdown.clone(),
+                        group_state.clone(),
+                        um_shutdown_on_rate_limit,
+                        lat_buckets.clone(),
+                    );
+                    um_client = um_client.with_binance_um_ws_health(binance_um_ws_health.clone());
+                    if let Some(remote_ip) = remote_ip_override {
+                        um_client = um_client.with_remote_ip_override(remote_ip);
+                    }
+                    info!(
+                        "spawning binance um ws client id={} group_id={} ip={} source={} remote_ip={} max_inflight={}",
+                        um_client_id,
+                        group_idx,
+                        um_client.local_ip(),
+                        source,
+                        remote_ip_override
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_else(|| "dns".to_string()),
+                        max_inflight
+                    );
+                    let handle = tokio::task::spawn_local(async move {
+                        um_client.run().await;
+                    });
+                    worker_handles.push(("binance_um_ws_client", handle));
+                    let endpoint = WsEndpointHandle::new(um_cmd_queue, group_state.clone());
+                    group_handles.push(endpoint.clone());
+                    um_endpoints.push(endpoint);
+                    um_client_id = um_client_id.saturating_add(1);
+                }
+                um_endpoint_groups.push(WsEndpointGroup::new(group_handles));
+            }
+            binance_um_ws_endpoint_groups = Some(um_endpoint_groups);
 
             for (idx, ip) in spot_local_ips.into_iter().enumerate() {
                 let spot_cmd_queue = WsCommandQueue::new();
@@ -1946,6 +2058,8 @@ impl TradeEngine {
         let ws_endpoints_for_req_worker = ws_endpoints.clone();
         let gate_futures_ws_endpoints_for_req_worker = gate_futures_ws_endpoints.clone();
         let binance_spot_ws_endpoints_for_req_worker = binance_spot_ws_endpoints.clone();
+        let binance_um_ws_endpoint_groups_for_req_worker = binance_um_ws_endpoint_groups.clone();
+        let binance_um_ws_health_for_req_worker = binance_um_ws_health_runtime.clone();
         let rest_dispatcher_for_orders = rest_dispatcher.clone();
         let trade_resp_sink_for_req_worker = trade_resp_sink.clone();
         let exchange_for_req_worker = exchange;
@@ -1959,13 +2073,19 @@ impl TradeEngine {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
             let mut binance_spot_ws_endpoints = binance_spot_ws_endpoints_for_req_worker;
+            let mut binance_um_ws_endpoint_groups = binance_um_ws_endpoint_groups_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
+            let mut binance_um_group_rr_cursor = 0usize;
             let rest_dispatcher = rest_dispatcher_for_orders;
             let mut order_req_ingress = order_req_ingress;
             let mut order_control_ingress = order_control_ingress;
             let internal_open_terminates = internal_open_terminates_for_req_worker;
             let internal_open_terminate_summary = internal_open_terminate_summary_for_req_worker;
             let mut idle_spin_count = 0usize;
+            let mut last_binance_um_health_log = Instant::now();
+            let mut binance_um_rr_routes = 0usize;
+            let mut binance_um_health_routes = 0usize;
+            let mut binance_um_endpoint_routes: Vec<usize> = Vec::new();
 
             loop {
                 if shutdown_for_req_worker.is_cancelled() {
@@ -2024,6 +2144,172 @@ impl TradeEngine {
 
                 // 根据 mapping 判断是否走 WebSocket；LTP 后端统一从 WS 执行。
                 if use_ltp_backend_for_req_worker || TradeTypeMapping::is_websocket(msg.req_type) {
+                    let is_binance_um_new = exchange_for_req_worker == Exchange::Binance
+                        && msg.req_type == TradeRequestType::BinanceWsNewUMOrder;
+                    if is_binance_um_new {
+                        if let Some(groups) = binance_um_ws_endpoint_groups.as_mut() {
+                            let len = groups.len();
+                            if len == 0 {
+                                warn!("no Binance UM websocket endpoint groups available");
+                                continue;
+                            }
+                            let select_recent = binance_um_ws_health_for_req_worker
+                                .as_ref()
+                                .map(|h| h.select_recent())
+                                .unwrap_or(3);
+                            let inflight_block_after_us = binance_um_ws_health_for_req_worker
+                                .as_ref()
+                                .map(|h| h.inflight_create_block_us())
+                                .unwrap_or(0);
+                            let inflight_block_pause_ms = binance_um_ws_health_for_req_worker
+                                .as_ref()
+                                .map(|h| h.pause_ms())
+                                .unwrap_or(0);
+                            let start = binance_um_group_rr_cursor;
+                            binance_um_group_rr_cursor = (binance_um_group_rr_cursor + 1) % len;
+                            let mut has_blocked_endpoint = false;
+                            let mut fallback_idx = None;
+                            for offset in 0..len {
+                                let idx = (start + offset) % len;
+                                let base_available = groups[idx].is_available();
+                                let um_available = groups[idx].is_available_for_new_binance_um(
+                                    inflight_block_after_us,
+                                    inflight_block_pause_ms,
+                                );
+                                if base_available && !um_available {
+                                    has_blocked_endpoint = true;
+                                } else if um_available && fallback_idx.is_none() {
+                                    fallback_idx = Some(idx);
+                                }
+                            }
+
+                            let mut target_idx = None;
+                            let mut health_selected = false;
+                            if has_blocked_endpoint {
+                                let mut best: Option<(usize, i64, usize)> = None;
+                                for offset in 0..len {
+                                    let idx = (start + offset) % len;
+                                    if !groups[idx].is_available_for_new_binance_um(
+                                        inflight_block_after_us,
+                                        inflight_block_pause_ms,
+                                    ) {
+                                        continue;
+                                    }
+                                    let (sum, count) = groups[idx]
+                                        .recent_binance_um_new_ack_rtt_sum_count(select_recent);
+                                    if count == 0 {
+                                        continue;
+                                    }
+                                    if best
+                                        .map(|(_, best_sum, best_count)| {
+                                            (sum as i128) * (best_count as i128)
+                                                < (best_sum as i128) * (count as i128)
+                                        })
+                                        .unwrap_or(true)
+                                    {
+                                        best = Some((idx, sum, count));
+                                    }
+                                }
+                                target_idx = best.map(|(idx, _, _)| idx).or(fallback_idx);
+                                health_selected = target_idx.is_some();
+                            }
+
+                            if target_idx.is_none() {
+                                for offset in 0..len {
+                                    let idx = (start + offset) % len;
+                                    if groups[idx].is_available_for_new_binance_um(
+                                        inflight_block_after_us,
+                                        inflight_block_pause_ms,
+                                    ) {
+                                        target_idx = Some(idx);
+                                        break;
+                                    }
+                                    warn!(
+                                        "Binance UM WS endpoint group {} not accepting NEW messages, trying next",
+                                        idx
+                                    );
+                                }
+                            }
+
+                            if last_binance_um_health_log.elapsed() >= Duration::from_secs(60) {
+                                if let Some(health) = binance_um_ws_health_for_req_worker.as_ref() {
+                                    let snap = health.snapshot();
+                                    let mut table = String::from(
+                                        "\n+----+----------+---------+---+----------+\n| ep | selected | mean_us | n | pause_ms |\n+----+----------+---------+---+----------+",
+                                    );
+                                    for (idx, group) in groups.iter().enumerate() {
+                                        let selected = binance_um_endpoint_routes
+                                            .get(idx)
+                                            .copied()
+                                            .unwrap_or(0);
+                                        let (mean_us, recent_count, pause_ms_left) =
+                                            group.binance_um_health_stats(select_recent);
+                                        table.push_str(&format!(
+                                            "\n| {:>2} | {:>8} | {:>7} | {:>1} | {:>8} |",
+                                            idx, selected, mean_us, recent_count, pause_ms_left
+                                        ));
+                                    }
+                                    table.push_str("\n+----+----------+---------+---+----------+");
+                                    info!(
+                                        "binance UM WS sched rr={} health={} p{}={:?} latest={:?} inflight_create_block_us={}{}",
+                                        binance_um_rr_routes,
+                                        binance_um_health_routes,
+                                        snap.percentile,
+                                        snap.threshold_us,
+                                        snap.latest_us,
+                                        inflight_block_after_us,
+                                        table
+                                    );
+                                }
+                                last_binance_um_health_log = Instant::now();
+                                binance_um_rr_routes = 0;
+                                binance_um_health_routes = 0;
+                                binance_um_endpoint_routes.clear();
+                            }
+
+                            if let Some(idx) = target_idx {
+                                if binance_um_endpoint_routes.len() < len {
+                                    binance_um_endpoint_routes.resize(len, 0);
+                                }
+                                if let Some(count) = binance_um_endpoint_routes.get_mut(idx) {
+                                    *count = count.saturating_add(1);
+                                }
+                                if health_selected {
+                                    binance_um_health_routes =
+                                        binance_um_health_routes.saturating_add(1);
+                                } else {
+                                    binance_um_rr_routes = binance_um_rr_routes.saturating_add(1);
+                                }
+                                groups[idx].enqueue_available(WsCommand::Send(msg));
+                            } else {
+                                warn!(
+                                    "all Binance UM WS endpoint groups unavailable for client_order_id={}",
+                                    msg.client_order_id
+                                );
+                                let body = serde_json::json!({
+                                    "transport": "ws",
+                                    "state": "error",
+                                    "reason": "all Binance UM websocket endpoint groups unavailable",
+                                    "clientOrderId": msg.client_order_id,
+                                })
+                                .to_string();
+                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_order_id: msg.client_order_id,
+                                    status: 503,
+                                    body,
+                                    exchange: exchange_for_req_worker,
+                                    order_id: 0,
+                                    order_status_u8: 0,
+                                    order_update_time: 0,
+                                    executed_qty: 0.0,
+                                    response_price: 0.0,
+                                });
+                            }
+                            continue;
+                        }
+                    }
+
                     let mut target_endpoints = if use_ltp_backend_for_req_worker {
                         ws_endpoints.as_mut()
                     } else if exchange_for_req_worker == Exchange::Gate
@@ -2058,21 +2344,145 @@ impl TradeEngine {
                         ws_rr_cursor = (ws_rr_cursor + 1) % len;
 
                         let mut target_idx = None;
-                        for offset in 0..len {
-                            let idx = (start + offset) % len;
-                            debug!(
-                                "routing order client_order_id={} to ws endpoint {}",
-                                msg.client_order_id, idx
-                            );
-                            if endpoints[idx].is_available() {
-                                target_idx = Some(idx);
-                                break;
-                            } else {
-                                warn!("ws endpoint {} not accepting messages, trying next", idx);
+                        let mut has_binance_um_health_selected_this_order = false;
+                        let mut inflight_block_after_us = 0;
+                        let mut inflight_block_pause_ms = 0;
+                        if is_binance_um_new {
+                            let select_recent = binance_um_ws_health_for_req_worker
+                                .as_ref()
+                                .map(|h| h.select_recent())
+                                .unwrap_or(3);
+                            inflight_block_after_us = binance_um_ws_health_for_req_worker
+                                .as_ref()
+                                .map(|h| h.inflight_create_block_us())
+                                .unwrap_or(0);
+                            inflight_block_pause_ms = binance_um_ws_health_for_req_worker
+                                .as_ref()
+                                .map(|h| h.pause_ms())
+                                .unwrap_or(0);
+                            let mut has_blocked_endpoint = false;
+                            let mut fallback_idx = None;
+                            for offset in 0..len {
+                                let idx = (start + offset) % len;
+                                let base_available = endpoints[idx].is_available();
+                                let um_available = endpoints[idx].is_available_for_new_binance_um(
+                                    inflight_block_after_us,
+                                    inflight_block_pause_ms,
+                                );
+                                if base_available && !um_available {
+                                    has_blocked_endpoint = true;
+                                } else if um_available && fallback_idx.is_none() {
+                                    fallback_idx = Some(idx);
+                                }
+                            }
+                            if has_blocked_endpoint {
+                                let mut best: Option<(usize, i64, usize)> = None;
+                                for offset in 0..len {
+                                    let idx = (start + offset) % len;
+                                    if !endpoints[idx].is_available_for_new_binance_um(
+                                        inflight_block_after_us,
+                                        inflight_block_pause_ms,
+                                    ) {
+                                        continue;
+                                    }
+                                    let (sum, count) = endpoints[idx]
+                                        .recent_binance_um_new_ack_rtt_sum_count(select_recent);
+                                    if count == 0 {
+                                        continue;
+                                    }
+                                    if best
+                                        .map(|(_, best_sum, best_count)| {
+                                            (sum as i128) * (best_count as i128)
+                                                < (best_sum as i128) * (count as i128)
+                                        })
+                                        .unwrap_or(true)
+                                    {
+                                        best = Some((idx, sum, count));
+                                    }
+                                }
+                                target_idx = best.map(|(idx, _, _)| idx).or(fallback_idx);
+                                if target_idx.is_some() {
+                                    has_binance_um_health_selected_this_order = true;
+                                    binance_um_health_routes =
+                                        binance_um_health_routes.saturating_add(1);
+                                }
+                            }
+                            if last_binance_um_health_log.elapsed() >= Duration::from_secs(60) {
+                                if let Some(health) = binance_um_ws_health_for_req_worker.as_ref() {
+                                    let snap = health.snapshot();
+                                    let mut table = String::from(
+                                        "\n+----+----------+---------+---+----------+\n| ep | selected | mean_us | n | pause_ms |\n+----+----------+---------+---+----------+",
+                                    );
+                                    for (idx, endpoint) in endpoints.iter().enumerate() {
+                                        let selected = binance_um_endpoint_routes
+                                            .get(idx)
+                                            .copied()
+                                            .unwrap_or(0);
+                                        let (mean_us, recent_count, pause_ms_left) =
+                                            endpoint.binance_um_health_stats(select_recent);
+                                        table.push_str(&format!(
+                                            "\n| {:>2} | {:>8} | {:>7} | {:>1} | {:>8} |",
+                                            idx, selected, mean_us, recent_count, pause_ms_left
+                                        ));
+                                    }
+                                    table.push_str("\n+----+----------+---------+---+----------+");
+                                    info!(
+                                        "binance UM WS sched rr={} health={} p{}={:?} latest={:?} inflight_create_block_us={}{}",
+                                        binance_um_rr_routes,
+                                        binance_um_health_routes,
+                                        snap.percentile,
+                                        snap.threshold_us,
+                                        snap.latest_us,
+                                        inflight_block_after_us,
+                                        table
+                                    );
+                                }
+                                last_binance_um_health_log = Instant::now();
+                                binance_um_rr_routes = 0;
+                                binance_um_health_routes = 0;
+                                binance_um_endpoint_routes.clear();
+                            }
+                        }
+
+                        if target_idx.is_none() {
+                            for offset in 0..len {
+                                let idx = (start + offset) % len;
+                                debug!(
+                                    "routing order client_order_id={} to ws endpoint {}",
+                                    msg.client_order_id, idx
+                                );
+                                let available = if is_binance_um_new {
+                                    endpoints[idx].is_available_for_new_binance_um(
+                                        inflight_block_after_us,
+                                        inflight_block_pause_ms,
+                                    )
+                                } else {
+                                    endpoints[idx].is_available()
+                                };
+                                if available {
+                                    target_idx = Some(idx);
+                                    break;
+                                } else {
+                                    warn!(
+                                        "ws endpoint {} not accepting messages, trying next",
+                                        idx
+                                    );
+                                }
                             }
                         }
 
                         if let Some(idx) = target_idx {
+                            if is_binance_um_new {
+                                if binance_um_endpoint_routes.len() < len {
+                                    binance_um_endpoint_routes.resize(len, 0);
+                                }
+                                if let Some(count) = binance_um_endpoint_routes.get_mut(idx) {
+                                    *count = count.saturating_add(1);
+                                }
+                                if !has_binance_um_health_selected_this_order {
+                                    binance_um_rr_routes = binance_um_rr_routes.saturating_add(1);
+                                }
+                            }
                             endpoints[idx].enqueue_available(WsCommand::Send(msg));
                         } else {
                             warn!(
