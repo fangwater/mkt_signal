@@ -514,7 +514,6 @@ pub(crate) struct BinanceUmWsHealthConfig {
     pub percentile: u8,
     pub pause_ms: u64,
     pub select_recent: usize,
-    pub inflight_create_block_ms: u64,
 }
 
 #[derive(Debug)]
@@ -559,8 +558,14 @@ impl BinanceUmWsHealthRuntime {
         self.cfg.pause_ms
     }
 
-    pub(crate) fn inflight_create_block_us(&self) -> i64 {
-        (self.cfg.inflight_create_block_ms as i64).saturating_mul(1_000)
+    pub(crate) fn inflight_create_block_threshold_us(&self) -> Option<i64> {
+        let state = self.state.borrow();
+        if state.samples_us.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<i64> = state.samples_us.iter().copied().collect();
+        sorted.sort_unstable();
+        Some(Self::percentile(&sorted, self.cfg.percentile))
     }
 
     fn percentile(sorted: &[i64], percentile: u8) -> i64 {
@@ -642,22 +647,27 @@ impl WsEndpointHandle {
     }
 
     pub(crate) fn is_available(&self) -> bool {
-        self.is_available_at(std::time::Instant::now(), true, 0, 0)
+        self.is_available_at(std::time::Instant::now(), true, None, 0)
     }
 
     pub(crate) fn is_available_for_new_binance_um(
         &self,
-        block_after_us: i64,
+        block_threshold_us: Option<i64>,
         pause_ms: u64,
     ) -> bool {
-        self.is_available_at(std::time::Instant::now(), false, block_after_us, pause_ms)
+        self.is_available_at(
+            std::time::Instant::now(),
+            false,
+            block_threshold_us,
+            pause_ms,
+        )
     }
 
     fn is_available_at(
         &self,
         now: std::time::Instant,
         ignore_health_pause: bool,
-        binance_um_new_inflight_block_after_us: i64,
+        binance_um_new_inflight_block_threshold_us: Option<i64>,
         binance_um_new_inflight_pause_ms: u64,
     ) -> bool {
         let mut state = self.state.borrow_mut();
@@ -675,7 +685,9 @@ impl WsEndpointHandle {
                 state.health_pause_until = None;
             }
         }
-        if binance_um_new_inflight_block_after_us > 0 {
+        if let Some(block_threshold_us) =
+            binance_um_new_inflight_block_threshold_us.filter(|threshold| *threshold > 0)
+        {
             if let Some(inflight) = state.binance_um_new_inflight.front().copied() {
                 let now_us = get_timestamp_us();
                 let anchor_us = if inflight.create_time_us > 0 {
@@ -685,7 +697,7 @@ impl WsEndpointHandle {
                 };
                 if anchor_us > 0 {
                     let age_us = now_us.saturating_sub(anchor_us);
-                    if age_us >= binance_um_new_inflight_block_after_us {
+                    if age_us >= block_threshold_us {
                         let _ = state.binance_um_new_inflight.pop_front();
                         if binance_um_new_inflight_pause_ms > 0 {
                             let until =
@@ -706,7 +718,7 @@ impl WsEndpointHandle {
                                 inflight.client_order_id,
                                 inflight.transport_id,
                                 age_us,
-                                binance_um_new_inflight_block_after_us,
+                                block_threshold_us,
                                 binance_um_new_inflight_pause_ms
                             );
                         }
@@ -3912,8 +3924,9 @@ impl TradeWsClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_bitget_pong_response, parse_bitget_control_event, QueryInflightMeta, TradeWsClient,
-        WsCommandQueue, WsEndpointHandle, WsEndpointState,
+        is_bitget_pong_response, parse_bitget_control_event, BinanceUmWsHealthConfig,
+        BinanceUmWsHealthRuntime, QueryInflightMeta, TradeWsClient, WsCommandQueue,
+        WsEndpointHandle, WsEndpointState,
     };
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
@@ -3994,10 +4007,10 @@ mod tests {
         let now_us = runtime_common::time_util::get_timestamp_us();
         handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
 
-        assert!(!handle.is_available_for_new_binance_um(100_000, 1));
-        assert!(!handle.is_available_for_new_binance_um(100_000, 1));
+        assert!(!handle.is_available_for_new_binance_um(Some(100_000), 1));
+        assert!(!handle.is_available_for_new_binance_um(Some(100_000), 1));
         std::thread::sleep(std::time::Duration::from_millis(2));
-        assert!(handle.is_available_for_new_binance_um(100_000, 1));
+        assert!(handle.is_available_for_new_binance_um(Some(100_000), 1));
     }
 
     #[test]
@@ -4010,7 +4023,25 @@ mod tests {
         handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
         handle.clear_binance_um_new_inflight(42, 281474976710657);
 
-        assert!(handle.is_available_for_new_binance_um(100_000, 1));
+        assert!(handle.is_available_for_new_binance_um(Some(100_000), 1));
+    }
+
+    #[test]
+    fn binance_um_inflight_block_threshold_uses_rolling_percentile() {
+        let health = BinanceUmWsHealthRuntime::new(BinanceUmWsHealthConfig {
+            rolling_window: 4,
+            percentile: 85,
+            pause_ms: 1,
+            select_recent: 3,
+        });
+        assert_eq!(health.inflight_create_block_threshold_us(), None);
+
+        let _ = health.record(5_000);
+        let _ = health.record(10_000);
+        let _ = health.record(20_000);
+        let _ = health.record(30_000);
+
+        assert_eq!(health.inflight_create_block_threshold_us(), Some(30_000));
     }
 
     #[test]

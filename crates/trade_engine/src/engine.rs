@@ -102,10 +102,14 @@ impl WsEndpointGroup {
             .unwrap_or(false)
     }
 
-    fn is_available_for_new_binance_um(&self, block_after_us: i64, pause_ms: u64) -> bool {
+    fn is_available_for_new_binance_um(
+        &self,
+        block_threshold_us: Option<i64>,
+        pause_ms: u64,
+    ) -> bool {
         self.handles
             .first()
-            .map(|handle| handle.is_available_for_new_binance_um(block_after_us, pause_ms))
+            .map(|handle| handle.is_available_for_new_binance_um(block_threshold_us, pause_ms))
             .unwrap_or(false)
     }
 
@@ -1948,7 +1952,6 @@ impl TradeEngine {
                 percentile: self.binance_um_ws_health.percentile,
                 pause_ms: self.binance_um_ws_health.pause_ms,
                 select_recent: self.binance_um_ws_health.select_recent,
-                inflight_create_block_ms: self.binance_um_ws_health.inflight_create_block_ms,
             });
             binance_um_ws_health_runtime = Some(binance_um_ws_health.clone());
             let mut um_client_id = 0usize;
@@ -2157,10 +2160,9 @@ impl TradeEngine {
                                 .as_ref()
                                 .map(|h| h.select_recent())
                                 .unwrap_or(3);
-                            let inflight_block_after_us = binance_um_ws_health_for_req_worker
+                            let inflight_block_threshold_us = binance_um_ws_health_for_req_worker
                                 .as_ref()
-                                .map(|h| h.inflight_create_block_us())
-                                .unwrap_or(0);
+                                .and_then(|h| h.inflight_create_block_threshold_us());
                             let inflight_block_pause_ms = binance_um_ws_health_for_req_worker
                                 .as_ref()
                                 .map(|h| h.pause_ms())
@@ -2173,7 +2175,7 @@ impl TradeEngine {
                                 let idx = (start + offset) % len;
                                 let base_available = groups[idx].is_available();
                                 let um_available = groups[idx].is_available_for_new_binance_um(
-                                    inflight_block_after_us,
+                                    inflight_block_threshold_us,
                                     inflight_block_pause_ms,
                                 );
                                 if base_available && !um_available {
@@ -2190,7 +2192,7 @@ impl TradeEngine {
                                 for offset in 0..len {
                                     let idx = (start + offset) % len;
                                     if !groups[idx].is_available_for_new_binance_um(
-                                        inflight_block_after_us,
+                                        inflight_block_threshold_us,
                                         inflight_block_pause_ms,
                                     ) {
                                         continue;
@@ -2218,7 +2220,7 @@ impl TradeEngine {
                                 for offset in 0..len {
                                     let idx = (start + offset) % len;
                                     if groups[idx].is_available_for_new_binance_um(
-                                        inflight_block_after_us,
+                                        inflight_block_threshold_us,
                                         inflight_block_pause_ms,
                                     ) {
                                         target_idx = Some(idx);
@@ -2252,13 +2254,13 @@ impl TradeEngine {
                                     }
                                     table.push_str("\n+----+----------+---------+---+----------+");
                                     info!(
-                                        "binance UM WS sched rr={} health={} p{}={:?} latest={:?} inflight_create_block_us={}{}",
+                                        "binance UM WS sched rr={} health={} p{}={:?} latest={:?} inflight_block_threshold_us={:?}{}",
                                         binance_um_rr_routes,
                                         binance_um_health_routes,
                                         snap.percentile,
                                         snap.threshold_us,
                                         snap.latest_us,
-                                        inflight_block_after_us,
+                                        inflight_block_threshold_us,
                                         table
                                     );
                                 }
@@ -2357,17 +2359,16 @@ impl TradeEngine {
                         let mut target_idx = None;
                         let mut has_binance_um_health_selected_this_order = false;
                         let mut has_binance_um_blocked_endpoint = false;
-                        let mut inflight_block_after_us = 0;
+                        let mut inflight_block_threshold_us = None;
                         let mut inflight_block_pause_ms = 0;
                         if is_binance_um_new {
                             let select_recent = binance_um_ws_health_for_req_worker
                                 .as_ref()
                                 .map(|h| h.select_recent())
                                 .unwrap_or(3);
-                            inflight_block_after_us = binance_um_ws_health_for_req_worker
+                            inflight_block_threshold_us = binance_um_ws_health_for_req_worker
                                 .as_ref()
-                                .map(|h| h.inflight_create_block_us())
-                                .unwrap_or(0);
+                                .and_then(|h| h.inflight_create_block_threshold_us());
                             inflight_block_pause_ms = binance_um_ws_health_for_req_worker
                                 .as_ref()
                                 .map(|h| h.pause_ms())
@@ -2378,7 +2379,7 @@ impl TradeEngine {
                                 let idx = (start + offset) % len;
                                 let base_available = endpoints[idx].is_available();
                                 let um_available = endpoints[idx].is_available_for_new_binance_um(
-                                    inflight_block_after_us,
+                                    inflight_block_threshold_us,
                                     inflight_block_pause_ms,
                                 );
                                 if base_available && !um_available {
@@ -2393,7 +2394,7 @@ impl TradeEngine {
                                 for offset in 0..len {
                                     let idx = (start + offset) % len;
                                     if !endpoints[idx].is_available_for_new_binance_um(
-                                        inflight_block_after_us,
+                                        inflight_block_threshold_us,
                                         inflight_block_pause_ms,
                                     ) {
                                         continue;
@@ -2440,13 +2441,13 @@ impl TradeEngine {
                                     }
                                     table.push_str("\n+----+----------+---------+---+----------+");
                                     info!(
-                                        "binance UM WS sched rr={} health={} p{}={:?} latest={:?} inflight_create_block_us={}{}",
+                                        "binance UM WS sched rr={} health={} p{}={:?} latest={:?} inflight_block_threshold_us={:?}{}",
                                         binance_um_rr_routes,
                                         binance_um_health_routes,
                                         snap.percentile,
                                         snap.threshold_us,
                                         snap.latest_us,
-                                        inflight_block_after_us,
+                                        inflight_block_threshold_us,
                                         table
                                     );
                                 }
@@ -2466,7 +2467,7 @@ impl TradeEngine {
                                 );
                                 let available = if is_binance_um_new {
                                     endpoints[idx].is_available_for_new_binance_um(
-                                        inflight_block_after_us,
+                                        inflight_block_threshold_us,
                                         inflight_block_pause_ms,
                                     )
                                 } else {

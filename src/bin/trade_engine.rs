@@ -449,12 +449,11 @@ async fn main() -> Result<()> {
     if exchange_name == "binance" {
         let cfg = &local_ip_cfg.binance_um_ws_health;
         info!(
-            "configured Binance UM WS health: rolling_window={} percentile={} pause_ms={} select_recent={} inflight_create_block_ms={}",
+            "configured Binance UM WS health: rolling_window={} percentile={} pause_ms={} select_recent={} inflight_block_threshold=rolling_percentile",
             cfg.rolling_window,
             cfg.percentile,
             cfg.pause_ms,
-            cfg.select_recent,
-            cfg.inflight_create_block_ms
+            cfg.select_recent
         );
     }
 

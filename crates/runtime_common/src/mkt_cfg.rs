@@ -37,7 +37,6 @@ pub struct BinanceUmWsHealthConfig {
     pub percentile: u8,
     pub pause_ms: u64,
     pub select_recent: usize,
-    pub inflight_create_block_ms: u64,
 }
 
 impl Default for BinanceUmWsHealthConfig {
@@ -47,7 +46,6 @@ impl Default for BinanceUmWsHealthConfig {
             percentile: 85,
             pause_ms: 500,
             select_recent: 3,
-            inflight_create_block_ms: 100,
         }
     }
 }
@@ -58,7 +56,6 @@ struct BinanceUmWsHealthTomlConfig {
     percentile: Option<u8>,
     pause_ms: Option<u64>,
     select_recent: Option<usize>,
-    inflight_create_block_ms: Option<u64>,
 }
 
 pub fn home_mkt_cfg_path() -> Result<PathBuf> {
@@ -312,9 +309,6 @@ fn parse_binance_um_ws_health_config(
         percentile: raw.percentile.unwrap_or(defaults.percentile),
         pause_ms: raw.pause_ms.unwrap_or(defaults.pause_ms),
         select_recent: raw.select_recent.unwrap_or(defaults.select_recent),
-        inflight_create_block_ms: raw
-            .inflight_create_block_ms
-            .unwrap_or(defaults.inflight_create_block_ms),
     };
     if cfg.rolling_window == 0 {
         return Err(anyhow!(
@@ -458,6 +452,8 @@ mod tests {
                 percentile = 85
                 pause_ms = 500
                 select_recent = 3
+                # Legacy fixed block threshold is ignored; stale inflight block
+                # now uses the same rolling percentile threshold as RTT health.
                 inflight_create_block_ms = 80
             "#,
             Path::new("trade_engine.toml"),
@@ -475,7 +471,6 @@ mod tests {
                 percentile: 85,
                 pause_ms: 500,
                 select_recent: 3,
-                inflight_create_block_ms: 80,
             }
         );
     }
