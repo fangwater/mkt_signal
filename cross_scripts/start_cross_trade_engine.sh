@@ -134,6 +134,50 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+validate_core_value() {
+  local var_name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] ${var_name} 必须为单个整数 (got: $value)" >&2
+    exit 1
+  fi
+}
+
+side_core_args() {
+  local side="$1"
+  local main_var="" ipc_var="" main_core="" ipc_core=""
+  if [[ "$side" == "open" ]]; then
+    main_var="TRADE_ENGINE_OPEN_CORE"
+    ipc_var="TRADE_ENGINE_OPEN_IPC_CORE"
+  else
+    main_var="TRADE_ENGINE_HEDGE_CORE"
+    ipc_var="TRADE_ENGINE_HEDGE_IPC_CORE"
+  fi
+
+  main_core="${!main_var:-}"
+  ipc_core="${!ipc_var:-}"
+
+  if [[ -z "$main_core" && -n "${TRADE_ENGINE_CORE:-}" ]]; then
+    main_var="TRADE_ENGINE_CORE"
+    main_core="$TRADE_ENGINE_CORE"
+  fi
+  if [[ -z "$ipc_core" && -n "${TRADE_ENGINE_IPC_CORE:-}" ]]; then
+    ipc_var="TRADE_ENGINE_IPC_CORE"
+    ipc_core="$TRADE_ENGINE_IPC_CORE"
+  fi
+
+  if [[ -n "$main_core" ]]; then
+    validate_core_value "$main_var" "$main_core"
+    printf '%s\n' "--core" "$main_core"
+    echo "[INFO] core bind ${main_core} for ${side} trade_engine main (from $ENV_FILE:${main_var})" >&2
+  fi
+  if [[ -n "$ipc_core" ]]; then
+    validate_core_value "$ipc_var" "$ipc_core"
+    printf '%s\n' "--ipc-core" "$ipc_core"
+    echo "[INFO] core bind ${ipc_core} for ${side} trade_engine ipc (from $ENV_FILE:${ipc_var})" >&2
+  fi
+}
+
 proc_base_name() {
   if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
     echo "cross_te_${OPEN_EXCHANGE}_${ENV_TAG}"
@@ -163,6 +207,9 @@ start_one() {
   cfg_file="$(mktemp)"
   TMP_CFGS+=("$cfg_file")
 
+  local core_args=()
+  mapfile -t core_args < <(side_core_args "$side")
+
   local json_name json_base json_rust_log json_ipc_ns json_shell json_cmd cmd
   json_name="$(json_escape "$proc_name")"
   json_shell="$(json_escape "/bin/bash")"
@@ -170,6 +217,9 @@ start_one() {
   json_rust_log="$(json_escape "$RUST_LOG")"
   json_ipc_ns="$(json_escape "$IPC_NS")"
   cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --exchange $(shell_quote "$exchange")"
+  for arg in "${core_args[@]}"; do
+    cmd+=" $(shell_quote "$arg")"
+  done
   json_cmd="$(json_escape "$cmd")"
 
   cat >"$cfg_file" <<JSON

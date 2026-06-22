@@ -88,7 +88,17 @@ fn parse_namespace_and_key_suffix(name: &str) -> Option<(String, String)> {
     }
 
     let (base, _env_tag) = split_last_segment(name)?;
-    let (prefix, ns) = split_last_segment(base)?;
+    let (prefix, ns) = match split_last_segment(base) {
+        Some(parts) => parts,
+        None if _env_tag == "exec"
+            || _env_tag
+                .strip_prefix("exec")
+                .is_some_and(|n| !n.is_empty() && n.as_bytes().iter().all(u8::is_ascii_digit)) =>
+        {
+            (base, "exec")
+        }
+        None => return None,
+    };
     if prefix.is_empty() || ns.is_empty() {
         return None;
     }
@@ -186,6 +196,25 @@ fn infer_cross_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue,
         return None;
     }
     Some((open, hedge))
+}
+
+fn infer_exec_venue_from_key_suffix(key_suffix: &str) -> Option<TradingVenue> {
+    let raw = key_suffix.trim().to_ascii_lowercase().replace('_', "-");
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Some(venue) = venue_from_slug(&raw) {
+        return Some(venue);
+    }
+
+    futures_venue_for_exchange(normalize_exchange_str(&raw))
+}
+
+fn infer_exec_venue_from_env() -> Option<TradingVenue> {
+    std::env::var("EXEC_VENUE")
+        .ok()
+        .and_then(|venue| venue_from_slug(&venue))
 }
 
 fn infer_arb_venues_from_env() -> Option<(TradingVenue, TradingVenue)> {
@@ -377,26 +406,43 @@ async fn run(
         DecisionBranch::Mm => {
             MmDecision::init_singleton(open_venue, hedge_venue).await?;
         }
+        DecisionBranch::Exec => {
+            info!(
+                "Exec branch initialized: exec_venue={:?}; signal response worker not enabled yet",
+                open_venue
+            );
+        }
     }
 
     // 2️⃣ 立即加载所有配置（策略参数、符号列表、阈值等）
     let redis = get_redis_settings();
-    info!("加载所有配置...");
-    if let Err(err) = load_all_once_with_namespace(
-        &redis,
-        &symbol_namespace,
-        &symbol_key_suffix,
-        open_venue,
-        hedge_venue,
-    )
-    .await
-    {
-        log::warn!("配置加载失败: {:?}，将使用默认值", err);
+    if matches!(branch, DecisionBranch::Exec) {
+        info!(
+            "Exec branch: skip arb/mm config bootstrap (ns={} suffix={})",
+            symbol_namespace, symbol_key_suffix
+        );
+    } else {
+        info!("加载所有配置...");
+        if let Err(err) = load_all_once_with_namespace(
+            &redis,
+            &symbol_namespace,
+            &symbol_key_suffix,
+            open_venue,
+            hedge_venue,
+        )
+        .await
+        {
+            log::warn!("配置加载失败: {:?}，将使用默认值", err);
+        }
     }
 
     let force_remote_tlen = matches!(arb_mode, Some(ArbMode::FundingArb));
     trade_signal::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen).await?;
-    MktChannel::init_singleton(open_venue, hedge_venue)?;
+    if matches!(branch, DecisionBranch::Exec) {
+        MktChannel::init_singleton_readonly(open_venue, hedge_venue)?;
+    } else {
+        MktChannel::init_singleton(open_venue, hedge_venue)?;
+    }
     RateFetcher::init_for_venues(open_venue, hedge_venue)?;
 
     // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
@@ -407,21 +453,29 @@ async fn run(
     // Gate 特化：futures.tickers 是事件驱动，冷门 symbol 长时间无推送 → current_fr_ma 一直空。
     // 用 REST `/futures/usdt/contracts`（与 WS 同字段）每 5s 兜底 seed 一次，WS 到达会通过
     // VecDeque rolling buffer 自然顶替。其它 venue 不调用，零影响。
-    trade_signal::gate_fr_supplement::spawn_gate_current_fr_seeder(hedge_venue);
+    if !matches!(branch, DecisionBranch::Exec) {
+        trade_signal::gate_fr_supplement::spawn_gate_current_fr_seeder(hedge_venue);
+    }
 
     // 调试：延迟2秒后打印价差数据（等待盘口数据）
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    spread_factor.debug_print_stored_spreads(open_venue, hedge_venue);
+    if !matches!(branch, DecisionBranch::Exec) {
+        spread_factor.debug_print_stored_spreads(open_venue, hedge_venue);
+    }
 
     // 3️⃣ 启动统一配置定时重载器（60秒）
-    spawn_config_loader_with_namespace(
-        redis,
-        symbol_namespace,
-        symbol_key_suffix,
-        open_venue,
-        hedge_venue,
-    );
-    info!("配置加载器已启动（60秒定时重载）");
+    if matches!(branch, DecisionBranch::Exec) {
+        info!("Exec branch: config reloader not started");
+    } else {
+        spawn_config_loader_with_namespace(
+            redis,
+            symbol_namespace,
+            symbol_key_suffix,
+            open_venue,
+            hedge_venue,
+        );
+        info!("配置加载器已启动（60秒定时重载）");
+    }
 
     if matches!(branch, DecisionBranch::Mm) {
         spawn_mm_open_worker(token.clone());
@@ -491,7 +545,14 @@ async fn run(
     //     info!("资费信号表打印器已启动（10秒间隔）");
     // }
 
-    info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
+    if matches!(branch, DecisionBranch::Exec) {
+        info!(
+            "✅ {} 启动完成，等待 exec signal worker 接入...",
+            PROCESS_NAME
+        );
+    } else {
+        info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
+    }
 
     // 4️⃣ 主循环：等待退出信号
     token.cancelled().await;
@@ -621,6 +682,38 @@ async fn main() -> Result<()> {
                     hedge_venue,
                 )
             }
+            Some((ns, suffix)) if ns.eq_ignore_ascii_case("exec") => {
+                let exec_venue = infer_exec_venue_from_key_suffix(&suffix)
+                    .or_else(infer_exec_venue_from_env)
+                    .with_context(|| {
+                        format!(
+                            "failed to infer exec venue from CWD suffix='{}' or env EXEC_VENUE",
+                            suffix
+                        )
+                    })?;
+                if let Some(cli_ex) = args.exchange {
+                    let inferred = Exchange::from_str(exec_venue.trade_engine_exchange())
+                        .with_context(|| {
+                            format!("invalid exec venue exchange: {:?}", exec_venue)
+                        })?;
+                    if cli_ex != inferred {
+                        anyhow::bail!(
+                            "--exchange mismatch with CWD: cwd_exchange={} cli_exchange={}",
+                            inferred,
+                            cli_ex
+                        );
+                    }
+                }
+                (
+                    DecisionBranch::Exec,
+                    None,
+                    "exec".to_string(),
+                    exec_venue.data_pub_slug().to_string(),
+                    None,
+                    exec_venue,
+                    exec_venue,
+                )
+            }
             Some((ns, suffix)) if ns.eq_ignore_ascii_case("mm") => {
                 let venue = infer_mm_venue_from_key_suffix(&suffix).with_context(|| {
                     format!("failed to infer mm venue from CWD suffix='{}'", suffix)
@@ -696,8 +789,8 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        infer_cross_venues_from_key_suffix, infer_intra_venues_from_key_suffix,
-        parse_namespace_and_key_suffix,
+        infer_cross_venues_from_key_suffix, infer_exec_venue_from_key_suffix,
+        infer_intra_venues_from_key_suffix, parse_namespace_and_key_suffix,
     };
     use order_common::TradingVenue;
 
@@ -723,6 +816,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_exec_dir_with_plain_env_tag() {
+        let parsed = parse_namespace_and_key_suffix("binance_exec_trade");
+        assert_eq!(parsed, Some(("exec".to_string(), "binance".to_string())));
+    }
+
+    #[test]
+    fn parse_exec_dir_with_compact_numeric_tag() {
+        let parsed = parse_namespace_and_key_suffix("binance-exec01");
+        assert_eq!(parsed, Some(("exec".to_string(), "binance".to_string())));
+    }
+
+    #[test]
     fn parse_cross_dir_with_plain_env_tag() {
         let parsed = parse_namespace_and_key_suffix("okex-binance-cross-test");
         assert_eq!(
@@ -743,6 +848,18 @@ mod tests {
         let (open, hedge) = infer_cross_venues_from_key_suffix("binance-okex").unwrap();
         assert_eq!(open, TradingVenue::BinanceFutures);
         assert_eq!(hedge, TradingVenue::OkexFutures);
+    }
+
+    #[test]
+    fn exec_suffix_resolves_exchange_to_futures() {
+        let venue = infer_exec_venue_from_key_suffix("binance").unwrap();
+        assert_eq!(venue, TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn exec_suffix_accepts_full_venue_slug() {
+        let venue = infer_exec_venue_from_key_suffix("binance-futures").unwrap();
+        assert_eq!(venue, TradingVenue::BinanceFutures);
     }
 
     #[test]

@@ -19,6 +19,7 @@ use order_common::TradingVenue;
 pub enum DecisionBranch {
     Arb,
     Mm,
+    Exec,
 }
 
 thread_local! {
@@ -124,6 +125,9 @@ pub fn trigger_decision(
             ArbDecision::trigger_decision(open_symbol, hedge_symbol, open_venue, hedge_venue);
         }
         DecisionBranch::Mm => {
+            let _ = (open_symbol, hedge_symbol, open_venue, hedge_venue);
+        }
+        DecisionBranch::Exec => {
             let _ = (open_symbol, hedge_symbol, open_venue, hedge_venue);
         }
     }
