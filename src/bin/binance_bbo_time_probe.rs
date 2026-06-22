@@ -174,6 +174,7 @@ async fn run(args: Args) -> Result<()> {
             headers: Vec::new(),
             subscribe_msgs,
             keepalive: None,
+            parse_okex_notices: false,
         },
         handler,
         shutdown_rx,
