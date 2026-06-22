@@ -2224,8 +2224,9 @@ impl TradeEngine {
                                         target_idx = Some(idx);
                                         break;
                                     }
-                                    warn!(
-                                        "Binance UM WS endpoint group {} not accepting NEW messages, trying next",
+                                    debug!(
+                                        "BinanceUmWsRouteSkip: client_order_id={} group={} reason=blocked",
+                                        msg.client_order_id,
                                         idx
                                     );
                                 }
@@ -2268,6 +2269,16 @@ impl TradeEngine {
                             }
 
                             if let Some(idx) = target_idx {
+                                if idx != start {
+                                    let mode = if health_selected { "health" } else { "rr" };
+                                    info!(
+                                        "BinanceUmWsRouteSwitch: client_order_id={} from_group={} to_group={} reason=blocked mode={}",
+                                        msg.client_order_id,
+                                        start,
+                                        idx,
+                                        mode
+                                    );
+                                }
                                 if binance_um_endpoint_routes.len() < len {
                                     binance_um_endpoint_routes.resize(len, 0);
                                 }
@@ -2345,6 +2356,7 @@ impl TradeEngine {
 
                         let mut target_idx = None;
                         let mut has_binance_um_health_selected_this_order = false;
+                        let mut has_binance_um_blocked_endpoint = false;
                         let mut inflight_block_after_us = 0;
                         let mut inflight_block_pause_ms = 0;
                         if is_binance_um_new {
@@ -2376,6 +2388,7 @@ impl TradeEngine {
                                 }
                             }
                             if has_blocked_endpoint {
+                                has_binance_um_blocked_endpoint = true;
                                 let mut best: Option<(usize, i64, usize)> = None;
                                 for offset in 0..len {
                                     let idx = (start + offset) % len;
@@ -2462,6 +2475,12 @@ impl TradeEngine {
                                 if available {
                                     target_idx = Some(idx);
                                     break;
+                                } else if is_binance_um_new {
+                                    debug!(
+                                        "BinanceUmWsRouteSkip: client_order_id={} endpoint={} reason=blocked",
+                                        msg.client_order_id,
+                                        idx
+                                    );
                                 } else {
                                     warn!(
                                         "ws endpoint {} not accepting messages, trying next",
@@ -2473,6 +2492,26 @@ impl TradeEngine {
 
                         if let Some(idx) = target_idx {
                             if is_binance_um_new {
+                                if idx != start {
+                                    let mode = if has_binance_um_health_selected_this_order {
+                                        "health"
+                                    } else {
+                                        "rr"
+                                    };
+                                    let reason = if has_binance_um_blocked_endpoint {
+                                        "blocked"
+                                    } else {
+                                        "unavailable"
+                                    };
+                                    info!(
+                                        "BinanceUmWsRouteSwitch: client_order_id={} from_endpoint={} to_endpoint={} reason={} mode={}",
+                                        msg.client_order_id,
+                                        start,
+                                        idx,
+                                        reason,
+                                        mode
+                                    );
+                                }
                                 if binance_um_endpoint_routes.len() < len {
                                     binance_um_endpoint_routes.resize(len, 0);
                                 }

@@ -48,7 +48,6 @@ use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use signal_common::tick_math::QuantizedValue;
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -834,41 +833,8 @@ impl WsEndpointHandle {
     }
 }
 
-const INLINE_TRACE_SYMBOL_CAPACITY: usize = 64;
-
-#[derive(Clone, Copy, Debug)]
-struct InlineTraceSymbol {
-    len: u8,
-    bytes: [u8; INLINE_TRACE_SYMBOL_CAPACITY],
-}
-
-impl InlineTraceSymbol {
-    fn from_str(value: &str) -> Option<Self> {
-        if value.len() > INLINE_TRACE_SYMBOL_CAPACITY {
-            return None;
-        }
-        let mut bytes = [0u8; INLINE_TRACE_SYMBOL_CAPACITY];
-        bytes[..value.len()].copy_from_slice(value.as_bytes());
-        Some(Self {
-            len: value.len() as u8,
-            bytes,
-        })
-    }
-
-    fn as_str(&self) -> &str {
-        // Constructed only from `&str`, so the occupied prefix remains valid UTF-8.
-        unsafe { std::str::from_utf8_unchecked(&self.bytes[..self.len as usize]) }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct TakerTraceMeta {
-    symbol: InlineTraceSymbol,
-    side: &'static str,
-    order_type: &'static str,
-    quantity_qv: QuantizedValue,
-    reduce_only: bool,
-    ws_response_mode: &'static str,
     create_time_us: i64,
     create_to_ipc_recv_us: Option<i64>,
     ipc_recv_to_ws_send_done_us: Option<i64>,
@@ -2304,18 +2270,6 @@ impl TradeWsClient {
         let create_to_ipc_recv_us = ipc_recv_to_ws_send_done_us
             .and_then(|delta| Self::wall_diff_us(sent_at_us - delta, msg.create_time));
         Some(TakerTraceMeta {
-            symbol: InlineTraceSymbol::from_str(params.symbol)?,
-            side: params.side.as_str(),
-            order_type: params.order_type.as_str(),
-            quantity_qv: params.quantity_qv,
-            reduce_only: params.reduce_only,
-            ws_response_mode: if params.ws_response_full {
-                "FULL"
-            } else if params.ws_um_response_result {
-                "RESULT"
-            } else {
-                "ACK"
-            },
             create_time_us: msg.create_time,
             create_to_ipc_recv_us,
             ipc_recv_to_ws_send_done_us,
@@ -3316,8 +3270,7 @@ impl TradeWsClient {
             TradeRequestType::BinanceWsNewMarginOrder
                 | TradeRequestType::BinanceWsCancelMarginOrder
         );
-        let (order_id, order_status_u8, update_time_ms, executed_qty, response_price) =
-            binance_ws::extract_order_info(&resp);
+        let (_, _, update_time_ms, _, _) = binance_ws::extract_order_info(&resp);
         if resp.status == Some(200) && !is_binance_margin {
             if update_time_ms > 0 {
                 let ts_us = update_time_ms.saturating_mul(1000);
@@ -3350,16 +3303,7 @@ impl TradeWsClient {
             }
         }
         if log_taker_trace {
-            self.log_binance_taker_trace(
-                id,
-                &meta,
-                &resp,
-                order_id,
-                order_status_u8,
-                update_time_ms,
-                executed_qty,
-                response_price,
-            );
+            self.log_binance_taker_trace(&meta, update_time_ms);
         }
         self.publish_binance_ws_response(
             meta.client_order_id,
@@ -3370,17 +3314,7 @@ impl TradeWsClient {
         true
     }
 
-    fn log_binance_taker_trace(
-        &self,
-        transport_id: i64,
-        meta: &TradeInflightMeta,
-        resp: &binance_ws::BinanceWsResponse,
-        order_id: i64,
-        order_status_u8: u8,
-        update_time_ms: i64,
-        executed_qty: f64,
-        response_price: f64,
-    ) {
+    fn log_binance_taker_trace(&self, meta: &TradeInflightMeta, update_time_ms: i64) {
         let Some(trace) = meta.taker_trace.as_ref() else {
             return;
         };
@@ -3392,75 +3326,16 @@ impl TradeWsClient {
         let exchange_update_to_local_recv_us =
             exchange_update_us.and_then(|ts| Self::wall_diff_us(local_recv_us, ts));
         let create_to_local_recv_us = Self::wall_diff_us(local_recv_us, trace.create_time_us);
-        let symbol = trace.symbol.as_str();
-        let quantity = trace.quantity_qv.decimal_string();
-        let remote_addr = self
-            .current_remote_addr
-            .map(|addr| addr.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        if trace.ws_response_mode == "ACK" {
-            info!(
-                "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} ws_response_mode=ACK status={} code={} order_id={} create_time_us={} ws_send_done_us={} response_local_us={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
-                self.id,
-                self.local_ip,
-                remote_addr,
-                self.url,
-                meta.req_type,
-                meta.client_order_id,
-                transport_id,
-                symbol,
-                trace.side,
-                trace.order_type,
-                quantity,
-                trace.reduce_only,
-                Self::binance_status(resp),
-                resp.error_code.unwrap_or(0),
-                order_id,
-                trace.create_time_us,
-                meta.sent_at_us,
-                local_recv_us,
-                trace.create_to_ipc_recv_us,
-                trace.ipc_recv_to_ws_send_done_us,
-                trace.create_to_ws_send_done_us,
-                ws_rtt_us,
-                create_to_local_recv_us,
-                resp.error_msg.as_deref().unwrap_or("")
-            );
-            return;
-        }
         info!(
-            "TakerOrderTrace: exchange=binance venue=um_ws endpoint_id={} local_ip={} remote_addr={} ws_url={} req_type={:?} client_order_id={} transport_id={} symbol={} side={} order_type={} quantity={} reduce_only={} ws_response_mode={} status={} code={} order_id={} order_status_u8={} executed_qty={:.12} response_price={:.12} create_time_us={} ws_send_done_us={} response_local_us={} exchange_update_time_ms={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?} error_msg={}",
-            self.id,
-            self.local_ip,
-            remote_addr,
-            self.url,
-            meta.req_type,
+            "TakerOrderTrace: reason=rtt_pause client_order_id={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?}",
             meta.client_order_id,
-            transport_id,
-            symbol,
-            trace.side,
-            trace.order_type,
-            quantity,
-            trace.reduce_only,
-            trace.ws_response_mode,
-            Self::binance_status(resp),
-            resp.error_code.unwrap_or(0),
-            order_id,
-            order_status_u8,
-            executed_qty,
-            response_price,
-            trace.create_time_us,
-            meta.sent_at_us,
-            local_recv_us,
-            update_time_ms,
             trace.create_to_ipc_recv_us,
             trace.ipc_recv_to_ws_send_done_us,
             trace.create_to_ws_send_done_us,
             ws_send_done_to_exchange_update_us,
             exchange_update_to_local_recv_us,
             ws_rtt_us,
-            create_to_local_recv_us,
-            resp.error_msg.as_deref().unwrap_or("")
+            create_to_local_recv_us
         );
     }
 
@@ -4229,7 +4104,7 @@ mod tests {
     }
 
     #[test]
-    fn binance_um_taker_trace_keeps_params_inline() {
+    fn binance_um_taker_trace_records_latency_segments() {
         let request = BinanceNewOrderParams::request_bytes_from_parts(
             TradeRequestType::BinanceWsNewUMOrder,
             1_000,
@@ -4250,13 +4125,9 @@ mod tests {
         let trace = TradeWsClient::build_binance_um_taker_trace(&msg, 1_100, Some(30))
             .expect("taker trace");
 
-        assert_eq!(trace.symbol.as_str(), "BTCUSDT");
-        assert_eq!(trace.quantity_qv.decimal_string(), "0.250");
-        assert_eq!(trace.side, "BUY");
-        assert_eq!(trace.order_type, "MARKET");
-        assert_eq!(trace.ws_response_mode, "RESULT");
         assert_eq!(trace.create_to_ws_send_done_us, Some(100));
         assert_eq!(trace.create_to_ipc_recv_us, Some(70));
+        assert_eq!(trace.ipc_recv_to_ws_send_done_us, Some(30));
     }
 
     #[test]
@@ -4302,11 +4173,8 @@ mod tests {
         let flags = TradeWsClient::inflight_request_flags(&market_msg, 2_150, Some(50));
         assert!(!flags.ws_open_update_enabled);
         let trace = flags.taker_trace.expect("market taker trace");
-        assert_eq!(trace.symbol.as_str(), "ETHUSDT");
-        assert_eq!(trace.side, "SELL");
-        assert_eq!(trace.order_type, "MARKET");
-        assert!(trace.reduce_only);
         assert_eq!(trace.create_to_ws_send_done_us, Some(150));
         assert_eq!(trace.create_to_ipc_recv_us, Some(100));
+        assert_eq!(trace.ipc_recv_to_ws_send_done_us, Some(50));
     }
 }
