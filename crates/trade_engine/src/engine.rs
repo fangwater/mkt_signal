@@ -3,9 +3,8 @@ use crate::config::WsConstants;
 use crate::dispatcher::Dispatcher;
 use crate::exec_backend::ExecBackend;
 use crate::internal_terminate::{
-    parse_bool_env as parse_internal_terminate_bool_env, InternalOpenTerminateMsg,
-    ARB_OPEN_INTERNAL_TERMINATE_ENV, INTERNAL_OPEN_TERMINATED_ERROR_CODE,
-    INTERNAL_OPEN_TERMINATE_TTL_US, ORDER_TERMINATE_PAYLOAD_LEN,
+    InternalOpenTerminateMsg, INTERNAL_OPEN_TERMINATED_ERROR_CODE, INTERNAL_OPEN_TERMINATE_TTL_US,
+    ORDER_TERMINATE_PAYLOAD_LEN,
 };
 use crate::okex::OkexNewOrderParams;
 use crate::okex_query_rate_limiter::OkexQueryRateLimiter;
@@ -212,22 +211,6 @@ fn router_idle_spin_iters(fast_poll: bool) -> usize {
         64
     };
     env_usize_or("TE_ROUTER_IDLE_SPIN_ITERS", default_iters)
-}
-
-fn internal_open_terminate_enabled_from_env() -> bool {
-    match std::env::var(ARB_OPEN_INTERNAL_TERMINATE_ENV) {
-        Ok(value) => match parse_internal_terminate_bool_env(&value) {
-            Some(enabled) => enabled,
-            None => {
-                warn!(
-                    "invalid {}='{}', treating internal open terminate as disabled",
-                    ARB_OPEN_INTERNAL_TERMINATE_ENV, value
-                );
-                false
-            }
-        },
-        Err(_) => false,
-    }
 }
 
 fn new_ipc_spsc_queues(
@@ -1211,8 +1194,7 @@ impl TradeEngine {
         let canonical_exchange = exchange.as_str();
         let fast_poll = enable_ipc_fast_poll();
         let router_idle_spin_iters = router_idle_spin_iters(fast_poll);
-        let internal_open_terminate_env_enabled = internal_open_terminate_enabled_from_env();
-        let internal_open_terminate_enabled = fast_poll && internal_open_terminate_env_enabled;
+        let internal_open_terminate_enabled = fast_poll;
 
         // 构建带命名空间的服务名
         let order_req_service = build_service_name(&format!("order_reqs/{}", canonical_exchange));
@@ -1223,7 +1205,7 @@ impl TradeEngine {
         let query_resp_service = build_service_name(&format!("query_resps/{}", canonical_exchange));
 
         info!(
-            "trade_engine starting; exchange={}, order_req='{}', order_control='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={} router_idle_spin_iters={} internal_open_terminate_env_enabled={} internal_open_terminate_effective={} env={}",
+            "trade_engine starting; exchange={}, order_req='{}', order_control='{}', order_resp='{}', query_req='{}', query_resp='{}', enable_ipc_fast_poll={} router_idle_spin_iters={} internal_open_terminate_enabled={}",
             canonical_exchange,
             order_req_service,
             order_control_service,
@@ -1232,9 +1214,7 @@ impl TradeEngine {
             query_resp_service,
             fast_poll,
             router_idle_spin_iters,
-            internal_open_terminate_env_enabled,
-            internal_open_terminate_enabled,
-            ARB_OPEN_INTERNAL_TERMINATE_ENV
+            internal_open_terminate_enabled
         );
 
         // Async thread owns outbound publishers and other network-facing IPC publications.

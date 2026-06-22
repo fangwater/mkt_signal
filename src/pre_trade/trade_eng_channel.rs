@@ -22,10 +22,7 @@ use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::SignalType;
-use trade_engine::internal_terminate::{
-    parse_bool_env, InternalOpenTerminateMsg, ARB_OPEN_INTERNAL_TERMINATE_ENV,
-    ORDER_TERMINATE_PAYLOAD_LEN,
-};
+use trade_engine::internal_terminate::{InternalOpenTerminateMsg, ORDER_TERMINATE_PAYLOAD_LEN};
 use trade_engine::trade_request::{
     PreparedTradeRequest, TradeRequestIpcPayload, TRADE_REQ_PAYLOAD,
 };
@@ -58,25 +55,11 @@ fn trade_request_type(bytes: &Bytes) -> Option<TradeRequestType> {
 
 fn read_internal_open_terminate_enabled() -> bool {
     let fast_poll = fast_poll_hot_path_mode();
-    let env_enabled = match std::env::var(ARB_OPEN_INTERNAL_TERMINATE_ENV) {
-        Ok(value) => match parse_bool_env(&value) {
-            Some(enabled) => enabled,
-            None => {
-                warn!(
-                    "invalid {}='{}', treating internal open terminate as disabled",
-                    ARB_OPEN_INTERNAL_TERMINATE_ENV, value
-                );
-                false
-            }
-        },
-        Err(_) => false,
-    };
-    let enabled = fast_poll && env_enabled;
     info!(
-        "TradeEngHub internal open terminate configured fast_poll={} env_enabled={} effective={} env={}",
-        fast_poll, env_enabled, enabled, ARB_OPEN_INTERNAL_TERMINATE_ENV
+        "TradeEngHub internal open terminate configured fast_poll={} enabled={}",
+        fast_poll, fast_poll
     );
-    enabled
+    fast_poll
 }
 
 fn log_open_order_slow_trace(

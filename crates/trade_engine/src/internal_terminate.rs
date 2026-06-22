@@ -1,6 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
-pub const ARB_OPEN_INTERNAL_TERMINATE_ENV: &str = "ARB_OPEN_INTERNAL_TERMINATE";
 pub const ORDER_TERMINATE_PAYLOAD_LEN: usize = 32;
 pub const INTERNAL_OPEN_TERMINATED_ERROR_CODE: i32 = -900001;
 pub const INTERNAL_OPEN_TERMINATE_TTL_US: i64 = 1_000;
@@ -62,33 +61,14 @@ impl InternalOpenTerminateMsg {
     }
 }
 
-pub fn parse_bool_env(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "y" | "on" => Some(true),
-        "0" | "false" | "no" | "n" | "off" => Some(false),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_bool_env, InternalOpenTerminateMsg};
+    use super::InternalOpenTerminateMsg;
 
     #[test]
     fn internal_open_terminate_roundtrips_fixed_payload() {
         let msg = InternalOpenTerminateMsg::new(11, 22, 33);
         let payload = msg.to_payload();
         assert_eq!(InternalOpenTerminateMsg::parse(&payload), Some(msg));
-    }
-
-    #[test]
-    fn parse_bool_env_accepts_common_values() {
-        assert_eq!(parse_bool_env("1"), Some(true));
-        assert_eq!(parse_bool_env("true"), Some(true));
-        assert_eq!(parse_bool_env("on"), Some(true));
-        assert_eq!(parse_bool_env("0"), Some(false));
-        assert_eq!(parse_bool_env("false"), Some(false));
-        assert_eq!(parse_bool_env("off"), Some(false));
-        assert_eq!(parse_bool_env("maybe"), None);
     }
 }
