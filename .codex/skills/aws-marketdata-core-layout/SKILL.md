@@ -1,6 +1,6 @@
 ---
 name: aws-marketdata-core-layout
-description: AWS market-data deployment layout for mkt_signal. Use when deploying or documenting the current AWS market-data host core binding for spread_pbs and depth_pub, especially the second L3 group CPU8-15 with Binance/Gate/OKEx/Bitget market-data publishers.
+description: AWS market-data deployment layout for mkt_signal. Use when deploying or documenting the current AWS market-data host core binding for spread_pbs and depth_pub, especially Binance/Gate/OKEx/Bitget market-data publishers and the live Binance depth override.
 ---
 
 # AWS Marketdata Core Layout
@@ -9,7 +9,10 @@ description: AWS market-data deployment layout for mkt_signal. Use when deployin
 
 Use this skill in `/home/ubuntu/crypto_mkt/mkt_signal` when redeploying the current AWS market-data host.
 
-This layout pins 8 market-data processes to the second L3 CPU group, `CPU8-15`, one process per core:
+This layout pins market-data processes to dedicated cores where possible. The
+current live host has a Binance depth override on CPU28 because CPU15 is
+reserved for persist managers and CPU11 is occupied by Binance futures
+bookticker `spread_pbs`.
 
 - 5 `spread_pbs` processes:
   - Binance split into 2 processes: `binance-margin` and `binance-futures`.
@@ -26,13 +29,17 @@ This layout pins 8 market-data processes to the second L3 CPU group, `CPU8-15`, 
 | 8 | `spread_pbs` | `~/spread_pbs/binance-margin` | `SPREAD_PBS_CORE=8` | `spp_bn_mg` |
 | 9 | `spread_pbs` | `~/spread_pbs/binance-futures` | `SPREAD_PBS_CORE=9` | `spp_bn_fu` |
 | 10 | `spread_pbs` | `~/spread_pbs/gate-both` | `SPREAD_PBS_CORE=10` | `spp_gt_bo` |
-| 11 | reserved | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=11` | `spp_ok_bo` |
+| 11 | reserved / Binance futures bookticker live override | `~/spread_pbs/binance-futures` | `SPREAD_PBS_CORE=11` | `spp_bn_fu_bookticker` |
 | 12 | `spread_pbs` | `~/spread_pbs/bitget-both` | `SPREAD_PBS_CORE=12` | `spp_bg_bo` |
 | 13 | `depth_pub` | `~/depth_pub/bitget-both` | `DEPTH_PUB_CORE=13` | `dp_bg_both` |
 | 14 | `depth_pub` | `~/depth_pub/gate-both` | `DEPTH_PUB_CORE=14` | `dp_gt_both` |
-| 15 | `depth_pub` | `~/depth_pub/binance-both` | `DEPTH_PUB_CORE=15` | `dp_bn_both` |
+| 15 | `persist_manager` only | FR/intra envs | `PERSIST_MANAGER_CORE=15` | multiple |
+| 28 | `depth_pub` live override | `~/depth_pub/binance-both` | start with `--core 28` | `dp_bn_both` |
 
 Treat the table as authoritative for this AWS host unless the user explicitly updates the topology.
+Do not start Binance `depth_pub` on CPU15; it is reserved for persist managers.
+If CPU11 is occupied, use a quiet helper/overflow core such as CPU28 and run
+Binance margin+futures together as `dp_bn_both`.
 
 ## Deployment Notes
 
@@ -78,14 +85,21 @@ cd ~/spread_pbs/bitget-both && ./scripts/start_spread_pbs.sh
 
 cd ~/depth_pub/bitget-both && ./scripts/start_depth_pub.sh
 cd ~/depth_pub/gate-both && ./scripts/start_depth_pub.sh
-cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh
+cd ~/depth_pub/binance-both && pmdaemon delete dp_bn_fu || true
+cd ~/depth_pub/binance-both && pmdaemon delete dp_bn_both || true
+cd ~/depth_pub/binance-both && pmdaemon start ./depth_pub \
+  --name dp_bn_both \
+  --cwd "$HOME/depth_pub/binance-both" \
+  --env RUST_LOG=info \
+  -- --venue binance-margin --venue binance-futures --core 28
 ```
 
 Before starting a `*-both` `spread_pbs`, stop conflicting single-side processes for the same exchange. The start script checks for conflicts, but do not rely on it as the only guard when operating live deployments.
 
 ## Verification
 
-After startup, verify all 8 process names exist and are pinned to CPU8-15:
+After startup, verify the market-data process names exist and are pinned to the
+expected live cores:
 
 ```bash
 pmdaemon list

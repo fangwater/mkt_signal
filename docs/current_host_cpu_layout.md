@@ -12,7 +12,7 @@ host used by the active Binance/Bitget intra and model/factor pipeline.
 8      spread_pbs binance-margin
 9      spread_pbs binance-futures
 10     spread_pbs gate-both
-11     depth_pub binance-both
+11     depth_pub binance-both (target; see live override below)
 12     spread_pbs bitget-both
 13     depth_pub bitget-both
 14     depth_pub gate-both
@@ -29,6 +29,23 @@ host used by the active Binance/Bitget intra and model/factor pipeline.
 25     bitget-intra-arb01 trade_engine IPC/other threads
 26-31  overflow/helper; do not include 15 in helper cpusets
 ```
+
+## Live Market-Data Override
+
+As of 2026-06-23, `dp_bn_both` is intentionally running on core 28:
+
+```bash
+pmdaemon start /home/ubuntu/depth_pub/binance-both/depth_pub \
+  --name dp_bn_both \
+  --cwd /home/ubuntu/depth_pub/binance-both \
+  --env RUST_LOG=info \
+  -- --venue binance-margin --venue binance-futures --core 28
+```
+
+This override was chosen because core 15 is reserved for persist managers and
+was busy, while core 11 was already occupied by the Binance futures bookticker
+`spread_pbs` process. Keep Binance depth on a quiet helper/overflow core until
+the market-data core map is consolidated.
 
 ## Persisted Runtime Env
 
@@ -89,6 +106,9 @@ export PERSIST_MANAGER_CORE='15'
   housekeeping cores.
 - Core 15 is reserved for persist managers. Helper/overflow cpusets should use
   `26-31` or another explicitly approved range, not `15`.
+- Do not start Binance `depth_pub` on core 15. If core 11 is occupied, prefer a
+  quiet helper/overflow core such as 28 and run both margin and futures under
+  the single `dp_bn_both` process.
 - Live `taskset` changes do not update process argv. Trust
   `Cpus_allowed_list` in `/proc/<pid>/status` or `/proc/<pid>/task/<tid>/status`
   for the actual affinity.
