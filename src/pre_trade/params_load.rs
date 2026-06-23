@@ -45,6 +45,8 @@ struct PreTradeParamsData {
     hedge_order_rate_limit_10s: i32,
     arb_max_pending_limit_buy_orders: i32,
     arb_max_pending_limit_sell_orders: i32,
+    arb_close_max_pending_limit_buy_orders: i32,
+    arb_close_max_pending_limit_sell_orders: i32,
     arb_open_order_rate_limit_per_min: i32,
     arb_open_order_rate_limit_10s: i32,
     arb_hedge_order_rate_limit_per_min: i32,
@@ -74,6 +76,8 @@ impl Default for PreTradeParamsData {
             hedge_order_rate_limit_10s: 0,
             arb_max_pending_limit_buy_orders: 0,
             arb_max_pending_limit_sell_orders: 0,
+            arb_close_max_pending_limit_buy_orders: 3,
+            arb_close_max_pending_limit_sell_orders: 3,
             arb_open_order_rate_limit_per_min: 0,
             arb_open_order_rate_limit_10s: 0,
             arb_hedge_order_rate_limit_per_min: 0,
@@ -489,6 +493,26 @@ impl PreTradeParamsLoader {
                 data.arb_max_pending_limit_sell_orders = v.max(0) as i32;
             }
 
+            data.arb_close_max_pending_limit_buy_orders = parse_i64(
+                "arb_close_max_pending_limit_buy_orders",
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_buy_orders"
+                )
+            })
+            .max(0) as i32;
+
+            data.arb_close_max_pending_limit_sell_orders = parse_i64(
+                "arb_close_max_pending_limit_sell_orders",
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_sell_orders"
+                )
+            })
+            .max(0) as i32;
+
             if let Some(v) = parse_i64("arb_open_order_rate_limit_per_min") {
                 data.arb_open_order_rate_limit_per_min = v.max(0) as i32;
             }
@@ -514,7 +538,7 @@ impl PreTradeParamsLoader {
             }
 
             debug!(
-                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} min_non_trading_position_usdt={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
+                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} min_non_trading_position_usdt={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_close_max_pending_buy={} arb_close_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
                 data.max_pos_u,
                 max_pos_u_override_count(&data.max_pos_u_overrides),
                 data.max_symbol_exposure_ratio,
@@ -533,6 +557,8 @@ impl PreTradeParamsLoader {
                 data.hedge_order_rate_limit_10s,
                 data.arb_max_pending_limit_buy_orders,
                 data.arb_max_pending_limit_sell_orders,
+                data.arb_close_max_pending_limit_buy_orders,
+                data.arb_close_max_pending_limit_sell_orders,
                 data.arb_open_order_rate_limit_per_min,
                 data.arb_open_order_rate_limit_10s,
                 data.arb_hedge_order_rate_limit_per_min,
@@ -645,6 +671,14 @@ impl PreTradeParamsLoader {
         println!(
             "{:<40} {:>18}",
             "arb_max_pending_limit_sell_orders", data.arb_max_pending_limit_sell_orders
+        );
+        println!(
+            "{:<40} {:>18}",
+            "arb_close_max_pending_limit_buy_orders", data.arb_close_max_pending_limit_buy_orders
+        );
+        println!(
+            "{:<40} {:>18}",
+            "arb_close_max_pending_limit_sell_orders", data.arb_close_max_pending_limit_sell_orders
         );
         println!(
             "{:<40} {:>18}",
@@ -817,6 +851,16 @@ impl PreTradeParamsLoader {
         PARAMS_DATA.with(|data| data.borrow().arb_max_pending_limit_sell_orders)
     }
 
+    /// 获取 arb_close_max_pending_limit_buy_orders
+    pub fn arb_close_max_pending_limit_buy_orders(&self) -> i32 {
+        PARAMS_DATA.with(|data| data.borrow().arb_close_max_pending_limit_buy_orders)
+    }
+
+    /// 获取 arb_close_max_pending_limit_sell_orders
+    pub fn arb_close_max_pending_limit_sell_orders(&self) -> i32 {
+        PARAMS_DATA.with(|data| data.borrow().arb_close_max_pending_limit_sell_orders)
+    }
+
     /// 获取 arb_open_order_rate_limit_per_min
     pub fn arb_open_order_rate_limit_per_min(&self) -> i32 {
         PARAMS_DATA.with(|data| data.borrow().arb_open_order_rate_limit_per_min)
@@ -867,6 +911,9 @@ impl PreTradeParamsLoader {
                 hedge_order_rate_limit_10s: data.hedge_order_rate_limit_10s,
                 arb_max_pending_limit_buy_orders: data.arb_max_pending_limit_buy_orders,
                 arb_max_pending_limit_sell_orders: data.arb_max_pending_limit_sell_orders,
+                arb_close_max_pending_limit_buy_orders: data.arb_close_max_pending_limit_buy_orders,
+                arb_close_max_pending_limit_sell_orders: data
+                    .arb_close_max_pending_limit_sell_orders,
                 arb_open_order_rate_limit_per_min: data.arb_open_order_rate_limit_per_min,
                 arb_open_order_rate_limit_10s: data.arb_open_order_rate_limit_10s,
                 arb_hedge_order_rate_limit_per_min: data.arb_hedge_order_rate_limit_per_min,
@@ -898,6 +945,8 @@ pub struct PreTradeParamsSnapshot {
     pub hedge_order_rate_limit_10s: i32,
     pub arb_max_pending_limit_buy_orders: i32,
     pub arb_max_pending_limit_sell_orders: i32,
+    pub arb_close_max_pending_limit_buy_orders: i32,
+    pub arb_close_max_pending_limit_sell_orders: i32,
     pub arb_open_order_rate_limit_per_min: i32,
     pub arb_open_order_rate_limit_10s: i32,
     pub arb_hedge_order_rate_limit_per_min: i32,
@@ -933,6 +982,8 @@ mod tests {
         assert_eq!(loader.hedge_order_rate_limit_10s(), 0);
         assert_eq!(loader.arb_max_pending_limit_buy_orders(), 0);
         assert_eq!(loader.arb_max_pending_limit_sell_orders(), 0);
+        assert_eq!(loader.arb_close_max_pending_limit_buy_orders(), 3);
+        assert_eq!(loader.arb_close_max_pending_limit_sell_orders(), 3);
         assert_eq!(loader.arb_open_order_rate_limit_per_min(), 0);
         assert_eq!(loader.arb_open_order_rate_limit_10s(), 0);
         assert_eq!(loader.arb_hedge_order_rate_limit_per_min(), 0);
@@ -961,6 +1012,8 @@ mod tests {
         assert_eq!(snapshot.hedge_order_rate_limit_10s, 0);
         assert_eq!(snapshot.arb_max_pending_limit_buy_orders, 0);
         assert_eq!(snapshot.arb_max_pending_limit_sell_orders, 0);
+        assert_eq!(snapshot.arb_close_max_pending_limit_buy_orders, 3);
+        assert_eq!(snapshot.arb_close_max_pending_limit_sell_orders, 3);
         assert_eq!(snapshot.arb_open_order_rate_limit_per_min, 0);
         assert_eq!(snapshot.arb_open_order_rate_limit_10s, 0);
         assert_eq!(snapshot.arb_hedge_order_rate_limit_per_min, 0);

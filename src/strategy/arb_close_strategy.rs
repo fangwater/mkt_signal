@@ -176,7 +176,8 @@ impl ArbCloseStrategy {
             return;
         }
 
-        if let Err(e) = MonitorChannel::instance().check_pending_limit_order_for_arb(&symbol, side)
+        if let Err(e) =
+            MonitorChannel::instance().check_pending_limit_order_for_arb_close(&symbol, side)
         {
             log_pending_limit_summary(
                 "ArbCloseStrategy",
@@ -313,7 +314,7 @@ impl ArbCloseStrategy {
             price_offset: ctx.price_offset,
             reduce_only: true,
             client_order_id: Some(client_order_id),
-            pending_limit_prechecked: false,
+            pending_limit_prechecked: true,
             close_ts: 0,
             mkt_ts,
             signal_type_u8: SignalType::ArbClose as u8,

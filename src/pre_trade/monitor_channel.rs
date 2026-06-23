@@ -3533,6 +3533,21 @@ impl MonitorChannel {
         Self::check_pending_limit_order_with_side_limit(symbol, side, side_limit)
     }
 
+    /// 检查 ArbClose 当前 symbol/side 的限价挂单数量。
+    /// Close 使用独立计数和独立方向上限，不占用 open/MM/exec 的挂单额度。
+    pub fn check_pending_limit_order_for_arb_close(
+        &self,
+        symbol: &str,
+        side: Side,
+    ) -> Result<(), String> {
+        let params = PreTradeParamsLoader::instance();
+        let side_limit = match side {
+            Side::Buy => params.arb_close_max_pending_limit_buy_orders(),
+            Side::Sell => params.arb_close_max_pending_limit_sell_orders(),
+        };
+        Self::check_pending_arb_close_limit_order_with_side_limit(symbol, side, side_limit)
+    }
+
     /// 检查当前 symbol 的限价挂单数量（Exec 路径，仅使用 max_pending_limit_orders）
     pub fn check_pending_limit_order_for_exec(
         &self,
@@ -3571,6 +3586,36 @@ impl MonitorChannel {
                 if side_count >= side_limit {
                     return Err(format!(
                         "symbol={} side={} 当前限价挂单数={}，达到方向上限 {}",
+                        symbol,
+                        side.as_str(),
+                        side_count,
+                        side_limit
+                    ));
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    fn check_pending_arb_close_limit_order_with_side_limit(
+        symbol: &str,
+        side: Side,
+        side_limit: i32,
+    ) -> Result<(), String> {
+        Self::with_inner(|inner| {
+            if side_limit > 0 {
+                let symbol_upper = uppercase_symbol_key(symbol);
+                let side_count = inner
+                    .order_manager
+                    .borrow()
+                    .get_symbol_pending_arb_close_limit_order_count_by_side_normalized(
+                        &symbol_upper,
+                        side,
+                    );
+                if side_count >= side_limit {
+                    return Err(format!(
+                        "symbol={} side={} 当前平仓限价挂单数={}，达到平仓方向上限 {}",
                         symbol,
                         side.as_str(),
                         side_count,
