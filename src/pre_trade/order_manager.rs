@@ -127,6 +127,88 @@ fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only
     !use_binance_ws_margin && !reduce_only
 }
 
+const BINANCE_STANDARD_BALANCE_EPS: f64 = 1e-12;
+
+fn binance_standard_order_lock_for_asset(order: &Order, asset: &str) -> f64 {
+    if order.venue != TradingVenue::BinanceMargin
+        || order.status.is_terminal()
+        || !order.order_type.is_limit()
+    {
+        return 0.0;
+    }
+
+    let remaining_qty = (order.quantity - order.cumulative_filled_quantity).max(0.0);
+    if remaining_qty <= BINANCE_STANDARD_BALANCE_EPS {
+        return 0.0;
+    }
+
+    let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&order.symbol);
+    if order.side == Side::Buy && quote_asset.eq_ignore_ascii_case(asset) {
+        (remaining_qty * order.price).max(0.0)
+    } else if order.side == Side::Sell && base_asset.eq_ignore_ascii_case(asset) {
+        remaining_qty
+    } else {
+        0.0
+    }
+}
+
+fn binance_standard_available_after_local_locks(
+    order_manager: &OrderManager,
+    asset: &str,
+    balance_position: f64,
+) -> (f64, f64) {
+    let local_locked = order_manager
+        .get_all_ids()
+        .into_iter()
+        .filter_map(|order_id| order_manager.get(order_id))
+        .map(|order| binance_standard_order_lock_for_asset(&order, asset))
+        .sum::<f64>();
+    ((balance_position - local_locked).max(0.0), local_locked)
+}
+
+fn ensure_binance_standard_margin_open_balance(
+    order_manager: &OrderManager,
+    venue: TradingVenue,
+    symbol: &str,
+    side: Side,
+    quantity: f64,
+    price: f64,
+    reduce_only: bool,
+) -> Result<(), String> {
+    if venue != TradingVenue::BinanceMargin || !order_manager.binance_is_standard() || reduce_only {
+        return Ok(());
+    }
+
+    let (base_asset, quote_asset) = extract_assets_from_internal_symbol(symbol);
+    let (check_asset, required_amount) = match side {
+        Side::Buy => (quote_asset, quantity * price),
+        Side::Sell => (base_asset, quantity),
+    };
+
+    use crate::pre_trade::monitor_channel::MonitorChannel;
+    let balance_position =
+        MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
+    let (available_estimated, local_locked) =
+        binance_standard_available_after_local_locks(order_manager, &check_asset, balance_position);
+
+    if available_estimated + BINANCE_STANDARD_BALANCE_EPS < required_amount {
+        return Err(format!(
+            "BinanceMargin STANDARD estimated free balance insufficient: asset={} required={:.8} balance_position={:.8} local_locked={:.8} estimated_free={:.8} symbol={} side={:?} qty={:.8} price={:.8}",
+            check_asset,
+            required_amount,
+            balance_position,
+            local_locked,
+            available_estimated,
+            symbol,
+            side,
+            quantity,
+            price
+        ));
+    }
+
+    Ok(())
+}
+
 fn bybit_margin_should_use_leverage(reduce_only: bool) -> bool {
     !reduce_only
 }
@@ -323,6 +405,15 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String> {
+        ensure_binance_standard_margin_open_balance(
+            self,
+            venue,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+        )?;
         let Some(result) = self.create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
@@ -381,6 +472,15 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, PreparedTradeRequest), String> {
+        ensure_binance_standard_margin_open_balance(
+            self,
+            venue,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+        )?;
         let Some(result) = self.create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
@@ -1179,10 +1279,10 @@ impl PreTradeOrderRequestExt for Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
-        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
-        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
-        TradeUpdateSkipReason,
+        binance_margin_should_use_margin_buy, binance_standard_available_after_local_locks,
+        bybit_margin_should_use_leverage, BybitNewOrderRequest, Order, OrderExecutionStatus,
+        OrderManager, OrderQuantizedValue, OrderStatus, OrderType, PreTradeOrderManagerRequestExt,
+        PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
     };
     use order_common::{BinanceAccountMode, TradingVenue};
     use serde_json::Value;
@@ -1233,6 +1333,38 @@ mod tests {
     fn binance_standard_or_reduce_only_margin_open_omits_margin_buy() {
         assert!(!binance_margin_should_use_margin_buy(true, false));
         assert!(!binance_margin_should_use_margin_buy(false, true));
+    }
+
+    #[test]
+    fn binance_standard_available_subtracts_local_open_order_locks() {
+        let mut manager = OrderManager::new(Some(BinanceAccountMode::Standard));
+        manager.create_order(
+            TradingVenue::BinanceMargin,
+            1001,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Buy,
+            2.0,
+            100.0,
+            false,
+            1.0,
+        );
+        manager.update(1001, |order| {
+            order.status = OrderExecutionStatus::Create;
+            order.cumulative_filled_quantity = 0.25;
+        });
+
+        let (available, locked) =
+            binance_standard_available_after_local_locks(&manager, "USDT", 1_000.0);
+
+        assert!((locked - 175.0).abs() < 1e-12);
+        assert!((available - 825.0).abs() < 1e-12);
+
+        manager.update(1001, |order| order.status = OrderExecutionStatus::Cancelled);
+        let (available_after_cancel, locked_after_cancel) =
+            binance_standard_available_after_local_locks(&manager, "USDT", 1_000.0);
+        assert_eq!(locked_after_cancel, 0.0);
+        assert_eq!(available_after_cancel, 1_000.0);
     }
 
     #[test]
