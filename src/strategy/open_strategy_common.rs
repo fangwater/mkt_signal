@@ -2887,10 +2887,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(order_manager
-            .borrow_mut()
-            .remove((7_i64 << 32) | 1)
-            .is_some());
+        assert!(order_manager.borrow().get((7_i64 << 32) | 1).is_none());
     }
 
     #[test]
@@ -2917,10 +2914,7 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(order_manager
-            .borrow_mut()
-            .remove((7_i64 << 32) | 2)
-            .is_some());
+        assert!(order_manager.borrow().get((7_i64 << 32) | 2).is_none());
     }
 
     #[test]

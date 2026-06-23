@@ -993,7 +993,7 @@ impl WsEndpointHandle {
                 Some(existing) if existing > until => existing,
                 _ => until,
             });
-            warn!(
+            debug!(
                 "binance UM WS endpoint NEW health pause endpoint_id={} local_ip={} remote_addr={} ws_url={} rtt_us={} threshold_us={} pause_ms={}",
                 endpoint_id,
                 local_ip,
@@ -1035,7 +1035,7 @@ impl WsEndpointHandle {
                 Some(existing) if existing > until => existing,
                 _ => until,
             });
-            warn!(
+            debug!(
                 "binance UM WS endpoint CANCEL health pause endpoint_id={} local_ip={} remote_addr={} ws_url={} rtt_us={} threshold_us={} pause_ms={}",
                 endpoint_id,
                 local_ip,

@@ -864,6 +864,41 @@ impl OrderManager {
     where
         F: FnOnce(&mut Order) -> R,
     {
+        match self.try_create_order_with_mut_normalized_symbol(
+            venue,
+            id,
+            order_type,
+            symbol,
+            side,
+            quantity,
+            price,
+            reduce_only,
+            qty_multiplier,
+            count_pending_limit,
+            |order| Ok::<R, std::convert::Infallible>(f(order)),
+        ) {
+            Ok(result) => Some(result),
+            Err(never) => match never {},
+        }
+    }
+
+    pub fn try_create_order_with_mut_normalized_symbol<F, R, E>(
+        &mut self,
+        venue: TradingVenue,
+        id: i64,
+        order_type: OrderType,
+        symbol: &str,
+        side: Side,
+        quantity: f64,
+        price: f64,
+        reduce_only: bool,
+        qty_multiplier: f64,
+        count_pending_limit: bool,
+        f: F,
+    ) -> Result<R, E>
+    where
+        F: FnOnce(&mut Order) -> Result<R, E>,
+    {
         let qty_multiplier = if qty_multiplier.is_finite() && qty_multiplier > 0.0 {
             qty_multiplier
         } else {
@@ -889,9 +924,13 @@ impl OrderManager {
             self.binance_account_mode,
             count_pending_limit,
         );
-        let result = f(&mut order);
-        self.insert(order);
-        Some(result)
+        match f(&mut order) {
+            Ok(result) => {
+                self.insert(order);
+                Ok(result)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub fn get_symbol_pending_limit_order_count(&self, symbol: &str) -> i32 {
@@ -1511,6 +1550,32 @@ mod tests {
             1
         );
         assert_eq!(manager.get_symbol_pending_limit_order_count("BTC-USDT"), 1);
+    }
+
+    #[test]
+    fn try_create_order_with_mut_does_not_insert_on_error() {
+        let mut manager = OrderManager::new(None);
+        let result = manager.try_create_order_with_mut_normalized_symbol(
+            TradingVenue::OkexMargin,
+            7,
+            OrderType::Limit,
+            "BTCUSDT",
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+            true,
+            |_order| Err::<(), _>("request build failed"),
+        );
+
+        assert_eq!(result, Err("request build failed"));
+        assert!(manager.get(7).is_none());
+        assert_eq!(manager.get_symbol_pending_limit_order_count("BTCUSDT"), 0);
+        assert_eq!(
+            manager.get_symbol_pending_limit_order_count_by_side("BTCUSDT", Side::Buy),
+            0
+        );
     }
 
     #[test]

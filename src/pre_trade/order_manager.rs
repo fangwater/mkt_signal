@@ -414,7 +414,7 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
             price,
             reduce_only,
         )?;
-        let Some(result) = self.create_order_with_mut_normalized_symbol(
+        self.try_create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
             order_type,
@@ -444,13 +444,7 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                     .get_order_request_bytes()
                     .map(|req_bin| (exchange, req_bin))
             },
-        ) else {
-            return Err(format!(
-                "order not found after create: client_order_id={}",
-                client_order_id
-            ));
-        };
-        result
+        )
     }
 
     fn create_open_order_request_prepared_normalized_symbol(
@@ -481,7 +475,7 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
             price,
             reduce_only,
         )?;
-        let Some(result) = self.create_order_with_mut_normalized_symbol(
+        self.try_create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
             order_type,
@@ -511,13 +505,7 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                     .get_order_request_prepared()
                     .map(|request| (exchange, request))
             },
-        ) else {
-            return Err(format!(
-                "order not found after create: client_order_id={}",
-                client_order_id
-            ));
-        };
-        result
+        )
     }
 }
 
