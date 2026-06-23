@@ -2452,8 +2452,8 @@ impl TradeEngine {
                                         inflight_block_threshold_us,
                                         inflight_block_pause_ms,
                                     );
-                                    let (rtt_sum_us, rtt_count) = group
-                                        .recent_binance_um_rtt_sum_count(select_recent);
+                                    let (rtt_sum_us, rtt_count) =
+                                        group.recent_binance_um_rtt_sum_count(select_recent);
                                     BinanceUmWsRouteCandidate {
                                         base_available,
                                         um_available,
@@ -2464,8 +2464,11 @@ impl TradeEngine {
                                 .collect();
                             let fallback: Vec<bool> =
                                 groups.iter().map(|group| group.is_fallback()).collect();
-                            let route =
-                                select_binance_um_ws_route_with_fallback(&candidates, &fallback, start);
+                            let route = select_binance_um_ws_route_with_fallback(
+                                &candidates,
+                                &fallback,
+                                start,
+                            );
                             for (idx, candidate) in candidates.iter().enumerate() {
                                 if candidate.base_available && !candidate.um_available {
                                     debug!(
@@ -2649,8 +2652,8 @@ impl TradeEngine {
                                         inflight_block_threshold_us,
                                         inflight_block_pause_ms,
                                     );
-                                    let (rtt_sum_us, rtt_count) = endpoint
-                                        .recent_binance_um_rtt_sum_count(select_recent);
+                                    let (rtt_sum_us, rtt_count) =
+                                        endpoint.recent_binance_um_rtt_sum_count(select_recent);
                                     BinanceUmWsRouteCandidate {
                                         base_available,
                                         um_available,

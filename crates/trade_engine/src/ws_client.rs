@@ -53,8 +53,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 use symbol_utils::internal_client_order_id::{
-    binance_um_ws_cancel_probe_client_order_id,
-    is_binance_um_ws_cancel_probe_client_order_id,
+    binance_um_ws_cancel_probe_client_order_id, is_binance_um_ws_cancel_probe_client_order_id,
 };
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::Notify;
@@ -4249,10 +4248,11 @@ mod tests {
         BinanceUmWsHealthRuntime, QueryInflightMeta, TradeWsClient, WsCommandQueue,
         WsEndpointHandle, WsEndpointState,
     };
+    use crate::binance_ws;
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
-        BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams,
-        GateNewOrderParams, TradeRequestMsg, TradeRequestType,
+        BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
+        TradeRequestMsg, TradeRequestType,
     };
     use order_common::{OrderType, Side};
     use runtime_common::fast_hash::fast_hash_map;
@@ -4410,7 +4410,11 @@ mod tests {
 
         assert_eq!(msg.req_type, TradeRequestType::BinanceWsCancelUMOrder);
         assert_eq!(msg.client_order_id, probe_id);
-        assert!(symbol_utils::internal_client_order_id::is_binance_um_ws_cancel_probe_client_order_id(probe_id));
+        assert!(
+            symbol_utils::internal_client_order_id::is_binance_um_ws_cancel_probe_client_order_id(
+                probe_id
+            )
+        );
         assert!(probe_id < 0);
         assert_eq!(params.symbol, "btcusdt");
         assert_eq!(params.orig_client_order_id, probe_id);
