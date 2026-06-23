@@ -501,6 +501,7 @@ fn classify_ws_action(rt: TradeRequestType) -> WsAction {
 pub(crate) struct WsEndpointState {
     cooldown_until: Option<std::time::Instant>,
     health_pause_until: Option<std::time::Instant>,
+    recent_binance_um_new_ack_rtts_us: VecDeque<i64>,
     recent_binance_um_cancel_rtts_us: VecDeque<i64>,
     binance_um_new_inflight: VecDeque<BinanceUmNewInflightState>,
     binance_um_cancel_inflight: VecDeque<BinanceUmCancelInflightState>,
@@ -561,6 +562,13 @@ pub(crate) struct BinanceUmWsLatencySummary {
     pub p90_us: i64,
     pub p99_us: i64,
     pub max_us: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BinanceUmWsEndpointRouteEvalStats {
+    pub sample_n: usize,
+    pub mean_us: i64,
+    pub latest_us: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -820,6 +828,7 @@ impl WsEndpointHandle {
                     let age_us = now_us.saturating_sub(anchor_us);
                     if age_us >= block_threshold_us {
                         let _ = state.binance_um_new_inflight.pop_front();
+                        state.recent_binance_um_new_ack_rtts_us.clear();
                         state.recent_binance_um_cancel_rtts_us.clear();
                         if binance_um_new_inflight_pause_ms > 0 {
                             let until =
@@ -958,6 +967,7 @@ impl WsEndpointHandle {
         let _ = state.binance_um_cancel_inflight.remove(pos);
     }
 
+    #[cfg(test)]
     pub(crate) fn recent_binance_um_cancel_rtt_sum_count(&self, n: usize) -> (i64, usize) {
         let state = self.state.borrow();
         let count = state.recent_binance_um_cancel_rtts_us.len().min(n);
@@ -971,6 +981,46 @@ impl WsEndpointHandle {
         (sum, count)
     }
 
+    pub(crate) fn recent_binance_um_new_ack_rtt_sum_count(&self, n: usize) -> (i64, usize) {
+        let state = self.state.borrow();
+        let count = state.recent_binance_um_new_ack_rtts_us.len().min(n);
+        let sum = state
+            .recent_binance_um_new_ack_rtts_us
+            .iter()
+            .rev()
+            .take(n)
+            .copied()
+            .sum();
+        (sum, count)
+    }
+
+    pub(crate) fn binance_um_new_ack_route_eval_stats(
+        &self,
+        select_recent: usize,
+    ) -> BinanceUmWsEndpointRouteEvalStats {
+        let state = self.state.borrow();
+        let sample_n = state
+            .recent_binance_um_new_ack_rtts_us
+            .len()
+            .min(select_recent);
+        let sum = state
+            .recent_binance_um_new_ack_rtts_us
+            .iter()
+            .rev()
+            .take(select_recent)
+            .copied()
+            .sum::<i64>();
+        BinanceUmWsEndpointRouteEvalStats {
+            sample_n,
+            mean_us: if sample_n > 0 {
+                sum / sample_n as i64
+            } else {
+                0
+            },
+            latest_us: state.recent_binance_um_new_ack_rtts_us.back().copied(),
+        }
+    }
+
     pub(crate) fn mark_binance_um_new_ack_rtt(
         &self,
         rtt_us: i64,
@@ -982,6 +1032,10 @@ impl WsEndpointHandle {
     ) -> BinanceUmWsHealthAction {
         let action = health.record_new(rtt_us);
         let mut state = self.state.borrow_mut();
+        state.recent_binance_um_new_ack_rtts_us.push_back(rtt_us);
+        while state.recent_binance_um_new_ack_rtts_us.len() > health.select_recent() {
+            state.recent_binance_um_new_ack_rtts_us.pop_front();
+        }
         if let BinanceUmWsHealthAction::Pause {
             threshold_us,
             pause_ms,
@@ -1126,11 +1180,11 @@ impl WsEndpointHandle {
             None => 0,
         };
         let recent_count = state
-            .recent_binance_um_cancel_rtts_us
+            .recent_binance_um_new_ack_rtts_us
             .len()
             .min(select_recent);
         let sum = state
-            .recent_binance_um_cancel_rtts_us
+            .recent_binance_um_new_ack_rtts_us
             .iter()
             .rev()
             .take(select_recent)
@@ -4572,6 +4626,31 @@ mod tests {
     }
 
     #[test]
+    fn binance_um_new_inflight_block_clears_actual_new_route_samples() {
+        let handle = WsEndpointHandle::new(
+            WsCommandQueue::new(),
+            Rc::new(RefCell::new(WsEndpointState::default())),
+        );
+        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(10, 10));
+        let _ = handle.mark_binance_um_new_ack_rtt(
+            5_000,
+            &health,
+            0,
+            "0.0.0.0".parse().unwrap(),
+            None,
+            "wss://example.invalid",
+        );
+        let now_us = runtime_common::time_util::get_timestamp_us();
+        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
+
+        assert!(!handle.is_available_for_new_binance_um(Some(100_000), None, 1));
+
+        let (sum, count) = handle.recent_binance_um_new_ack_rtt_sum_count(3);
+        assert_eq!(sum, 0);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn binance_um_new_inflight_clear_prevents_block() {
         let handle = WsEndpointHandle::new(
             WsCommandQueue::new(),
@@ -4723,6 +4802,43 @@ mod tests {
         let (sum, count) = handle.recent_binance_um_cancel_rtt_sum_count(3);
         assert_eq!(sum, 0);
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn binance_um_new_ack_samples_drive_endpoint_health_stats() {
+        let handle = WsEndpointHandle::new(
+            WsCommandQueue::new(),
+            Rc::new(RefCell::new(WsEndpointState::default())),
+        );
+        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(10, 10));
+
+        for rtt_us in [3_000, 2_000, 1_000] {
+            let _ = handle.mark_binance_um_new_ack_rtt(
+                rtt_us,
+                &health,
+                0,
+                "0.0.0.0".parse().unwrap(),
+                None,
+                "wss://example.invalid",
+            );
+        }
+        let _ = handle.mark_binance_um_cancel_rtt(
+            100_000,
+            &health,
+            0,
+            "0.0.0.0".parse().unwrap(),
+            None,
+            "wss://example.invalid",
+        );
+
+        let (sum, count) = handle.recent_binance_um_new_ack_rtt_sum_count(3);
+        assert_eq!(sum, 6_000);
+        assert_eq!(count, 3);
+
+        let (mean_us, recent_count, pause_ms_left) = handle.binance_um_health_stats(3);
+        assert_eq!(mean_us, 2_000);
+        assert_eq!(recent_count, 3);
+        assert_eq!(pause_ms_left, 0);
     }
 
     #[test]

@@ -123,6 +123,7 @@ struct TradeEngineLocalIpRuntimeConfig {
     binance_um_whitelist_ip_value: Option<String>,
     binance_um_ws_direct_ip_values: Vec<String>,
     binance_um_ws_health: BinanceUmWsHealthConfig,
+    binance_um_ws_route_eval: runtime_common::mkt_cfg::BinanceUmWsRouteEvalConfig,
     source: String,
 }
 
@@ -178,6 +179,7 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
             binance_um_whitelist_ip_value,
             binance_um_ws_direct_ip_values: cfg.binance_um_ws_direct_ips,
             binance_um_ws_health: cfg.binance_um_ws_health,
+            binance_um_ws_route_eval: cfg.binance_um_ws_route_eval,
             source: path.display().to_string(),
         });
     }
@@ -196,6 +198,7 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
         binance_um_whitelist_ip_value: None,
         binance_um_ws_direct_ip_values: Vec::new(),
         binance_um_ws_health: BinanceUmWsHealthConfig::default(),
+        binance_um_ws_route_eval: runtime_common::mkt_cfg::BinanceUmWsRouteEvalConfig::default(),
         source: format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     })
 }
@@ -459,6 +462,15 @@ async fn main() -> Result<()> {
             cfg.select_recent,
             cfg.cancel_probe_rate_limit_guard_pct
         );
+        let eval_cfg = &local_ip_cfg.binance_um_ws_route_eval;
+        info!(
+            "configured Binance UM WS route eval: enabled={} redis_key_suffix={} write_interval_ms={} route_family={} min_samples={}",
+            eval_cfg.enabled,
+            eval_cfg.redis_key_suffix,
+            eval_cfg.write_interval_ms,
+            eval_cfg.route_family,
+            eval_cfg.min_samples
+        );
     }
 
     // OKEx 不需要从环境变量读取 API key，因为在 WebSocket 客户端中会自动处理
@@ -568,6 +580,7 @@ async fn main() -> Result<()> {
         binance_um_whitelist_ip,
         binance_um_ws_direct_ips,
         local_ip_cfg.binance_um_ws_health,
+        local_ip_cfg.binance_um_ws_route_eval,
     );
 
     let local = tokio::task::LocalSet::new();
