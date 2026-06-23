@@ -84,17 +84,12 @@ const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
 #[derive(Clone, Debug)]
 struct WsEndpointGroup {
     handles: Vec<WsEndpointHandle>,
-    rr_cursor: usize,
     fallback: bool,
 }
 
 impl WsEndpointGroup {
     fn new(handles: Vec<WsEndpointHandle>, fallback: bool) -> Self {
-        Self {
-            handles,
-            rr_cursor: 0,
-            fallback,
-        }
+        Self { handles, fallback }
     }
 
     fn is_fallback(&self) -> bool {
@@ -140,19 +135,14 @@ impl WsEndpointGroup {
             .unwrap_or((0, 0, 0))
     }
 
-    fn enqueue_available(&mut self, cmd: WsCommand) {
-        if self.handles.is_empty() {
-            return;
-        }
-        let start = self.rr_cursor % self.handles.len();
-        for offset in 0..self.handles.len() {
-            let idx = (start + offset) % self.handles.len();
+    fn enqueue_available(&mut self, cmd: WsCommand) -> Option<usize> {
+        for idx in 0..self.handles.len() {
             if self.handles[idx].is_available() {
-                self.rr_cursor = (idx + 1) % self.handles.len();
                 self.handles[idx].enqueue_available(cmd);
-                return;
+                return Some(idx);
             }
         }
+        None
     }
 }
 
@@ -280,6 +270,20 @@ mod route_selection_tests {
         assert_eq!(selected.mode, BinanceUmWsRouteMode::Health);
         assert!(selected.has_blocked_endpoint);
     }
+
+    #[test]
+    fn binance_um_route_ties_choose_lowest_index() {
+        let candidates = [
+            candidate(true, 3_000, 3),
+            candidate(true, 3_000, 3),
+            candidate(true, 4_500, 3),
+        ];
+
+        let selected = select_binance_um_ws_route(&candidates, 1, 3);
+
+        assert_eq!(selected.idx, Some(0));
+        assert_eq!(selected.mode, BinanceUmWsRouteMode::Health);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -310,6 +314,58 @@ struct BinanceUmWsRouteSelection {
     idx: Option<usize>,
     mode: BinanceUmWsRouteMode,
     has_blocked_endpoint: bool,
+}
+
+fn binance_um_route_candidate_mean_us(candidate: BinanceUmWsRouteCandidate) -> Option<i64> {
+    if candidate.rtt_count == 0 {
+        None
+    } else {
+        Some(candidate.rtt_sum_us / candidate.rtt_count as i64)
+    }
+}
+
+fn format_binance_um_route_candidates(
+    candidates: &[BinanceUmWsRouteCandidate],
+    fallback: Option<&[bool]>,
+    min_cancel_samples: usize,
+    selected_idx: Option<usize>,
+) -> String {
+    let mut out = String::from("[");
+    for (idx, candidate) in candidates.iter().copied().enumerate() {
+        if idx > 0 {
+            out.push(';');
+        }
+        let source = fallback
+            .and_then(|fallback| fallback.get(idx))
+            .map(|is_fallback| if *is_fallback { "fallback" } else { "direct" })
+            .unwrap_or("endpoint");
+        let mean_us = binance_um_route_candidate_mean_us(candidate)
+            .map(|mean| mean.to_string())
+            .unwrap_or_else(|| "NA".to_string());
+        let health_eligible = candidate.um_available && candidate.rtt_count >= min_cancel_samples;
+        out.push_str(&format!(
+            "{}{{src={},base={},um={},n={},mean_us={},health_eligible={},selected={}}}",
+            idx,
+            source,
+            candidate.base_available as u8,
+            candidate.um_available as u8,
+            candidate.rtt_count,
+            mean_us,
+            health_eligible as u8,
+            (selected_idx == Some(idx)) as u8
+        ));
+    }
+    out.push(']');
+    out
+}
+
+fn binance_um_route_reason(route: BinanceUmWsRouteSelection) -> &'static str {
+    match route.mode {
+        BinanceUmWsRouteMode::Health if route.idx.is_some() => "best_cancel_rtt",
+        BinanceUmWsRouteMode::Health => "no_eligible_cancel_rtt",
+        BinanceUmWsRouteMode::Fallback if route.idx.is_some() => "direct_unavailable_fallback",
+        BinanceUmWsRouteMode::Fallback => "no_available_endpoint",
+    }
 }
 
 fn select_binance_um_ws_route_with_fallback(
@@ -374,7 +430,7 @@ fn select_binance_um_ws_route_with_fallback(
 
 fn select_binance_um_ws_route(
     candidates: &[BinanceUmWsRouteCandidate],
-    start: usize,
+    _start: usize,
     min_cancel_samples: usize,
 ) -> BinanceUmWsRouteSelection {
     if candidates.is_empty() {
@@ -386,12 +442,10 @@ fn select_binance_um_ws_route(
     }
 
     let len = candidates.len();
-    let start = start % len;
     let mut has_blocked_endpoint = false;
     let mut best: Option<(usize, i64, usize)> = None;
 
-    for offset in 0..len {
-        let idx = (start + offset) % len;
+    for idx in 0..len {
         let candidate = candidates[idx];
         if candidate.base_available && !candidate.um_available {
             has_blocked_endpoint = true;
@@ -2373,7 +2427,6 @@ impl TradeEngine {
             let mut binance_spot_ws_endpoints = binance_spot_ws_endpoints_for_req_worker;
             let mut binance_um_ws_endpoint_groups = binance_um_ws_endpoint_groups_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
-            let mut binance_um_group_rr_cursor = 0usize;
             let rest_dispatcher = rest_dispatcher_for_orders;
             let mut order_req_ingress = order_req_ingress;
             let mut order_control_ingress = order_control_ingress;
@@ -2466,8 +2519,7 @@ impl TradeEngine {
                                 .as_ref()
                                 .map(|h| h.pause_ms())
                                 .unwrap_or(0);
-                            let start = binance_um_group_rr_cursor;
-                            binance_um_group_rr_cursor = (binance_um_group_rr_cursor + 1) % len;
+                            let start = 0usize;
                             let candidates: Vec<BinanceUmWsRouteCandidate> = groups
                                 .iter()
                                 .map(|group| {
@@ -2495,15 +2547,13 @@ impl TradeEngine {
                                 start,
                                 select_recent,
                             );
-                            for (idx, candidate) in candidates.iter().enumerate() {
-                                if candidate.base_available && !candidate.um_available {
-                                    debug!(
-                                        "BinanceUmWsRouteSkip: client_order_id={} group={} reason=blocked",
-                                        msg.client_order_id,
-                                        idx
-                                    );
-                                }
-                            }
+                            let route_candidates = format_binance_um_route_candidates(
+                                &candidates,
+                                Some(&fallback),
+                                select_recent,
+                                route.idx,
+                            );
+                            let route_reason = binance_um_route_reason(route);
 
                             if last_binance_um_health_log.elapsed() >= Duration::from_secs(60) {
                                 if let Some(health) = binance_um_ws_health_for_req_worker.as_ref() {
@@ -2545,32 +2595,55 @@ impl TradeEngine {
                             }
 
                             if let Some(idx) = route.idx {
-                                let reason = if route.has_blocked_endpoint {
-                                    "blocked"
-                                } else if idx != start {
-                                    "preferred"
-                                } else {
-                                    "current"
-                                };
-                                if idx != start {
-                                    info!(
-                                        "BinanceUmWsRouteSwitch: client_order_id={} from_group={} to_group={} reason={} mode={}",
-                                        msg.client_order_id,
-                                        start,
-                                        idx,
-                                        reason,
-                                        route.mode.as_str()
-                                    );
-                                }
+                                let client_order_id = msg.client_order_id;
+                                let req_type = msg.req_type;
+                                let selected_handle =
+                                    groups[idx].enqueue_available(WsCommand::Send(msg));
                                 info!(
-                                    "BinanceUmWsRouteSelected: client_order_id={} route_type=group from_group={} to_group={} switched={} reason={} mode={}",
-                                    msg.client_order_id,
-                                    start,
+                                    "BinanceUmWsRouteDecision: client_order_id={} route_type=group selected_group={} selected_group_handle={} mode={} reason={} min_cancel_samples={} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?} pause_ms={} candidates={}",
+                                    client_order_id,
                                     idx,
-                                    idx != start,
-                                    reason,
-                                    route.mode.as_str()
+                                    selected_handle
+                                        .map(|handle_idx| handle_idx.to_string())
+                                        .unwrap_or_else(|| "NA".to_string()),
+                                    route.mode.as_str(),
+                                    if selected_handle.is_some() {
+                                        route_reason
+                                    } else {
+                                        "enqueue_unavailable"
+                                    },
+                                    select_recent,
+                                    inflight_block_threshold_us,
+                                    cancel_inflight_block_threshold_us,
+                                    inflight_block_pause_ms,
+                                    route_candidates
                                 );
+                                if selected_handle.is_none() {
+                                    warn!(
+                                        "selected Binance UM websocket endpoint group unavailable at enqueue for client_order_id={}",
+                                        client_order_id
+                                    );
+                                    let body = serde_json::json!({
+                                        "transport": "ws",
+                                        "state": "error",
+                                        "reason": "selected Binance UM websocket endpoint group unavailable at enqueue",
+                                        "clientOrderId": client_order_id,
+                                    })
+                                    .to_string();
+                                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                        req_type,
+                                        client_order_id,
+                                        status: 503,
+                                        body,
+                                        exchange: exchange_for_req_worker,
+                                        order_id: 0,
+                                        order_status_u8: 0,
+                                        order_update_time: 0,
+                                        executed_qty: 0.0,
+                                        response_price: 0.0,
+                                    });
+                                    continue;
+                                }
                                 if binance_um_endpoint_routes.len() < len {
                                     binance_um_endpoint_routes.resize(len, 0);
                                 }
@@ -2587,8 +2660,18 @@ impl TradeEngine {
                                             binance_um_fallback_routes.saturating_add(1);
                                     }
                                 }
-                                groups[idx].enqueue_available(WsCommand::Send(msg));
                             } else {
+                                info!(
+                                    "BinanceUmWsRouteDecision: client_order_id={} route_type=group selected_group=NA selected_group_handle=NA mode={} reason={} min_cancel_samples={} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?} pause_ms={} candidates={}",
+                                    msg.client_order_id,
+                                    route.mode.as_str(),
+                                    route_reason,
+                                    select_recent,
+                                    inflight_block_threshold_us,
+                                    cancel_inflight_block_threshold_us,
+                                    inflight_block_pause_ms,
+                                    route_candidates
+                                );
                                 warn!(
                                     "no Binance UM websocket endpoint group eligible by cancel RTT route for client_order_id={}",
                                     msg.client_order_id
@@ -2647,12 +2730,13 @@ impl TradeEngine {
                             continue;
                         }
 
-                        let start = ws_rr_cursor;
-                        ws_rr_cursor = (ws_rr_cursor + 1) % len;
+                        let start = if is_binance_um_new { 0 } else { ws_rr_cursor };
+                        if !is_binance_um_new {
+                            ws_rr_cursor = (ws_rr_cursor + 1) % len;
+                        }
 
                         let mut target_idx = None;
                         let mut binance_um_route_mode = BinanceUmWsRouteMode::Fallback;
-                        let mut has_binance_um_blocked_endpoint = false;
                         let mut inflight_block_threshold_us = None;
                         let mut cancel_inflight_block_threshold_us = None;
                         let mut inflight_block_pause_ms = 0;
@@ -2695,16 +2779,28 @@ impl TradeEngine {
                                 select_binance_um_ws_route(&candidates, start, select_recent);
                             target_idx = route.idx;
                             binance_um_route_mode = route.mode;
-                            has_binance_um_blocked_endpoint = route.has_blocked_endpoint;
-                            for (idx, candidate) in candidates.iter().enumerate() {
-                                if candidate.base_available && !candidate.um_available {
-                                    debug!(
-                                        "BinanceUmWsRouteSkip: client_order_id={} endpoint={} reason=blocked",
-                                        msg.client_order_id,
-                                        idx
-                                    );
-                                }
-                            }
+                            let route_reason = binance_um_route_reason(route);
+                            let route_candidates = format_binance_um_route_candidates(
+                                &candidates,
+                                None,
+                                select_recent,
+                                route.idx,
+                            );
+                            info!(
+                                "BinanceUmWsRouteDecision: client_order_id={} route_type=endpoint selected_endpoint={} mode={} reason={} min_cancel_samples={} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?} pause_ms={} candidates={}",
+                                msg.client_order_id,
+                                route
+                                    .idx
+                                    .map(|idx| idx.to_string())
+                                    .unwrap_or_else(|| "NA".to_string()),
+                                route.mode.as_str(),
+                                route_reason,
+                                select_recent,
+                                inflight_block_threshold_us,
+                                cancel_inflight_block_threshold_us,
+                                inflight_block_pause_ms,
+                                route_candidates
+                            );
                             if last_binance_um_health_log.elapsed() >= Duration::from_secs(60) {
                                 if let Some(health) = binance_um_ws_health_for_req_worker.as_ref() {
                                     let snap = health.snapshot();
@@ -2781,32 +2877,6 @@ impl TradeEngine {
 
                         if let Some(idx) = target_idx {
                             if is_binance_um_new {
-                                let reason = if has_binance_um_blocked_endpoint {
-                                    "blocked"
-                                } else if idx != start {
-                                    "preferred"
-                                } else {
-                                    "current"
-                                };
-                                if idx != start {
-                                    info!(
-                                        "BinanceUmWsRouteSwitch: client_order_id={} from_endpoint={} to_endpoint={} reason={} mode={}",
-                                        msg.client_order_id,
-                                        start,
-                                        idx,
-                                        reason,
-                                        binance_um_route_mode.as_str()
-                                    );
-                                }
-                                info!(
-                                    "BinanceUmWsRouteSelected: client_order_id={} route_type=endpoint from_endpoint={} to_endpoint={} switched={} reason={} mode={}",
-                                    msg.client_order_id,
-                                    start,
-                                    idx,
-                                    idx != start,
-                                    reason,
-                                    binance_um_route_mode.as_str()
-                                );
                                 if binance_um_endpoint_routes.len() < len {
                                     binance_um_endpoint_routes.resize(len, 0);
                                 }
