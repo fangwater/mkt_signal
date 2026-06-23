@@ -4063,6 +4063,41 @@ mod tests {
     }
 
     #[test]
+    fn binance_um_health_pause_clears_recent_rtt_samples_for_probe() {
+        let handle = WsEndpointHandle::new(
+            WsCommandQueue::new(),
+            Rc::new(RefCell::new(WsEndpointState::default())),
+        );
+        let health = BinanceUmWsHealthRuntime::new(BinanceUmWsHealthConfig {
+            rolling_window: 4,
+            percentile: 50,
+            pause_ms: 1,
+            select_recent: 3,
+        });
+
+        let _ = handle.mark_binance_um_new_ack_rtt(
+            1_000,
+            &health,
+            0,
+            "0.0.0.0".parse().unwrap(),
+            None,
+            "wss://example.invalid",
+        );
+        let _ = handle.mark_binance_um_new_ack_rtt(
+            10_000,
+            &health,
+            0,
+            "0.0.0.0".parse().unwrap(),
+            None,
+            "wss://example.invalid",
+        );
+
+        let (sum, count) = handle.recent_binance_um_new_ack_rtt_sum_count(3);
+        assert_eq!(sum, 0);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn ws_open_update_gate_uses_typed_params_only() {
         let typed_limit = GateNewOrderParams::request_bytes_from_parts(
             TradeRequestType::GateFuturesNewOrder,
