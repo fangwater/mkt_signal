@@ -171,8 +171,8 @@ fn trade_error_detail_for_log(msg: Option<&str>, body: &str) -> Option<String> {
 }
 
 fn is_binance_post_only_reject_msg(msg: &str) -> bool {
-    msg.to_ascii_lowercase()
-        .contains("would immediately match and take")
+    let msg = msg.to_ascii_lowercase();
+    msg.contains("would immediately match and take") || msg.contains("post only")
 }
 
 fn normalize_trade_error(
@@ -244,6 +244,21 @@ fn is_cancel_not_cancellable(exchange: Exchange, error_code: i32) -> bool {
 
 fn should_downgrade_trade_resp_error(out: &TradeExecOutcome, error_code: i32) -> bool {
     is_cancel_request(out.req_type) && is_cancel_not_cancellable(out.exchange, error_code)
+}
+
+fn is_post_only_rejected(exchange: Exchange, error_code: i32) -> bool {
+    match exchange {
+        Exchange::Binance => error_code == BINANCE_POST_ONLY_REJECTED,
+        Exchange::Okex => error_code == 51511,
+        Exchange::Gate => error_code == gate::ORDER_POC,
+        Exchange::Bybit => matches!(error_code, 170217 | 170218),
+        Exchange::Bitget => false,
+        _ => false,
+    }
+}
+
+fn should_suppress_trade_resp_error_log(out: &TradeExecOutcome, error_code: i32) -> bool {
+    out.req_type.is_new_order() && is_post_only_rejected(out.exchange, error_code)
 }
 
 #[cfg(test)]
@@ -379,6 +394,30 @@ mod tests {
         let out = sample_outcome(TradeRequestType::OkexNewUMOrder, Exchange::Okex);
         assert!(!should_downgrade_trade_resp_error(&out, 51400));
     }
+
+    #[test]
+    fn classifies_binance_ws_margin_cross_as_post_only_reject() {
+        let body = r#"{"code":-2010,"msg":"Order would immediately match and take."}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, _) = normalize_trade_error(Exchange::Binance, code, msg);
+        let out = sample_outcome(TradeRequestType::BinanceWsNewMarginOrder, Exchange::Binance);
+
+        assert_eq!(code, BINANCE_POST_ONLY_REJECTED);
+        assert!(should_suppress_trade_resp_error_log(&out, code));
+        assert!(!should_downgrade_trade_resp_error(&out, code));
+    }
+
+    #[test]
+    fn does_not_classify_cancel_as_post_only_reject() {
+        let out = sample_outcome(
+            TradeRequestType::BinanceWsCancelMarginOrder,
+            Exchange::Binance,
+        );
+        assert!(!should_suppress_trade_resp_error_log(
+            &out,
+            BINANCE_POST_ONLY_REJECTED
+        ));
+    }
 }
 
 pub fn publish_trade_response(
@@ -390,38 +429,45 @@ pub fn publish_trade_response(
     let is_2xx = (200..300).contains(&(out.status as u32));
     if !is_2xx || error_code != 0 {
         let downgrade = should_downgrade_trade_resp_error(&out, error_code);
-        let detail = trade_error_detail_for_log(msg.as_deref(), &out.body);
-        if let Some(detail) = detail.as_deref() {
-            if downgrade {
+        if !should_suppress_trade_resp_error_log(&out, error_code) {
+            let detail = trade_error_detail_for_log(msg.as_deref(), &out.body);
+            if let Some(detail) = detail.as_deref() {
+                if downgrade {
+                    debug!(
+                        "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
+                        out.exchange,
+                        out.req_type,
+                        out.client_order_id,
+                        out.status,
+                        error_code,
+                        detail
+                    );
+                } else {
+                    warn!(
+                        "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
+                        out.exchange,
+                        out.req_type,
+                        out.client_order_id,
+                        out.status,
+                        error_code,
+                        detail
+                    );
+                }
+            } else if downgrade {
                 debug!(
-                    "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
+                    "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={}",
                     out.exchange,
                     out.req_type,
                     out.client_order_id,
                     out.status,
-                    error_code,
-                    detail
+                    error_code
                 );
             } else {
                 warn!(
-                    "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={} {}",
-                    out.exchange, out.req_type, out.client_order_id, out.status, error_code, detail
+                    "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
+                    out.exchange, out.req_type, out.client_order_id, out.status, error_code
                 );
             }
-        } else if downgrade {
-            debug!(
-                "trade resp benign cancel terminal: ex={:?} type={:?} cli_ord_id={} status={} code={}",
-                out.exchange,
-                out.req_type,
-                out.client_order_id,
-                out.status,
-                error_code
-            );
-        } else {
-            warn!(
-                "trade resp error: ex={:?} type={:?} cli_ord_id={} status={} code={}",
-                out.exchange, out.req_type, out.client_order_id, out.status, error_code
-            );
         }
     }
 

@@ -3359,6 +3359,23 @@ impl TradeWsClient {
         }
     }
 
+    fn is_binance_post_only_reject_response(
+        req_type: TradeRequestType,
+        resp: &binance_ws::BinanceWsResponse,
+    ) -> bool {
+        if !req_type.is_new_order() {
+            return false;
+        }
+        if !matches!(resp.error_code, Some(-2010) | Some(-5022)) {
+            return false;
+        }
+        let Some(msg) = resp.error_msg.as_deref() else {
+            return resp.error_code == Some(-5022);
+        };
+        let msg = msg.to_ascii_lowercase();
+        msg.contains("would immediately match and take") || msg.contains("post only")
+    }
+
     fn publish_binance_ws_response(
         &self,
         client_order_id: i64,
@@ -3373,6 +3390,7 @@ impl TradeWsClient {
         let (order_id, order_status_u8, order_update_time, executed_qty, response_price) =
             binance_ws::extract_order_info(resp);
         let error_code = resp.error_code.unwrap_or(0);
+        let suppress_error_log = Self::is_binance_post_only_reject_response(req_type, resp);
         if (200..300).contains(&(status as u32)) && error_code == 0 {
             debug!(
                 "trade ws client id={} exchange=binance recv {} response req_type={:?} client_order_id={} status={} code={} order_id={} executed_qty={:.8}",
@@ -3385,7 +3403,7 @@ impl TradeWsClient {
                 order_id,
                 executed_qty
             );
-        } else {
+        } else if !suppress_error_log {
             warn!(
                 "trade ws client id={} exchange=binance recv {} response req_type={:?} client_order_id={} status={} code={} order_id={} executed_qty={:.8}",
                 self.id,
