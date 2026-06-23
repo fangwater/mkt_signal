@@ -2575,14 +2575,24 @@ impl TradeEngine {
                                     }
                                     table.push_str("\n+----+----------+---------+---+----------+");
                                     info!(
-                                        "binance UM WS sched fallback={} health={} p{} new_threshold_us={:?} new_latest_us={:?} cancel_threshold_us={:?} cancel_latest_us={:?} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?}{}",
+                                        "binance UM WS sched fallback={} health={} p{} new_threshold_us={:?} new_latest_us={:?} new_n={} new_p50_us={} new_p90_us={} new_p99_us={} new_max_us={} cancel_threshold_us={:?} cancel_latest_us={:?} cancel_n={} cancel_p50_us={} cancel_p90_us={} cancel_p99_us={} cancel_max_us={} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?}{}",
                                         binance_um_fallback_routes,
                                         binance_um_health_routes,
                                         snap.percentile,
                                         snap.new_threshold_us,
                                         snap.latest_new_us,
+                                        snap.new_summary.n,
+                                        snap.new_summary.p50_us,
+                                        snap.new_summary.p90_us,
+                                        snap.new_summary.p99_us,
+                                        snap.new_summary.max_us,
                                         snap.cancel_threshold_us,
                                         snap.latest_cancel_us,
+                                        snap.cancel_summary.n,
+                                        snap.cancel_summary.p50_us,
+                                        snap.cancel_summary.p90_us,
+                                        snap.cancel_summary.p99_us,
+                                        snap.cancel_summary.max_us,
                                         inflight_block_threshold_us,
                                         cancel_inflight_block_threshold_us,
                                         table
@@ -2821,14 +2831,24 @@ impl TradeEngine {
                                     }
                                     table.push_str("\n+----+----------+---------+---+----------+");
                                     info!(
-                                        "binance UM WS sched fallback={} health={} p{} new_threshold_us={:?} new_latest_us={:?} cancel_threshold_us={:?} cancel_latest_us={:?} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?}{}",
+                                        "binance UM WS sched fallback={} health={} p{} new_threshold_us={:?} new_latest_us={:?} new_n={} new_p50_us={} new_p90_us={} new_p99_us={} new_max_us={} cancel_threshold_us={:?} cancel_latest_us={:?} cancel_n={} cancel_p50_us={} cancel_p90_us={} cancel_p99_us={} cancel_max_us={} new_inflight_block_threshold_us={:?} cancel_inflight_block_threshold_us={:?}{}",
                                         binance_um_fallback_routes,
                                         binance_um_health_routes,
                                         snap.percentile,
                                         snap.new_threshold_us,
                                         snap.latest_new_us,
+                                        snap.new_summary.n,
+                                        snap.new_summary.p50_us,
+                                        snap.new_summary.p90_us,
+                                        snap.new_summary.p99_us,
+                                        snap.new_summary.max_us,
                                         snap.cancel_threshold_us,
                                         snap.latest_cancel_us,
+                                        snap.cancel_summary.n,
+                                        snap.cancel_summary.p50_us,
+                                        snap.cancel_summary.p90_us,
+                                        snap.cancel_summary.p99_us,
+                                        snap.cancel_summary.max_us,
                                         inflight_block_threshold_us,
                                         cancel_inflight_block_threshold_us,
                                         table

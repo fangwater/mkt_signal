@@ -128,7 +128,7 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "[INFO] build $BIN_NAME (release)"
-  cargo build --release -p persist_manager --bin "$BIN_NAME"
+  cargo build --release -p persist_manager --features runtime --bin "$BIN_NAME"
 fi
 
 mkdir -p "$TARGET_DIR"

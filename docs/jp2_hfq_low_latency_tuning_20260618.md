@@ -1266,3 +1266,84 @@ XRPUSDT positionAmt=0.1 unrealizedProfit=-0.00488698 notional=0.11570407
 ```
 
 因此此时 viz 的 `total_position=0`、`total_exposure=0` 基本符合真实账户状态：大额 futures 仓位已在 `13:40-13:42 UTC` 期间被平掉，只剩 XRPUSDT 0.1 的尘埃仓。该变化发生在本次 `trade_signal` 于 `13:45 UTC` 启动之前。
+
+## 2026-06-23: 部署 binance_mm_alpha 到 jp2
+
+目标：
+
+```text
+jp2:/home/ubuntu/binance_mm_alpha
+```
+
+本次只部署二进制、脚本、配置、dashboard 和 nginx mapping；没有启动任何 `binance_mm_alpha` 交易进程。
+
+部署命令：
+
+```bash
+FR_DEPLOY_HOST=jp2 \
+FR_DEPLOY_KEY=/home/ubuntu/.ssh/aws-jp-aws-hfq.pem \
+bash scripts/deploy_mm_binance.sh --env-suffix alpha \
+  --local-ip 0.0.0.0 \
+  --local-ip 0.0.0.0
+```
+
+已同步的顶层二进制：
+
+```text
+account_monitor
+trade_engine
+trade_signal
+pre_trade
+persist_manager
+viz_server
+```
+
+远端 `env.sh` 使用本机 `binance_mm_alpha/env.sh` 的 Binance 凭证，且不在本文档记录凭证值。非敏感配置：
+
+```text
+IPC_NAMESPACE=binance_mm_alpha
+BINANCE_ACCOUNT_MODE=STANDARD
+BINANCE_UM_IP_WHITELIST_MODE=off
+RUST_LOG=info
+```
+
+核心绑定：
+
+```text
+ACCOUNT_MONITOR_CORE=27
+TRADE_SIGNAL_CORE=28
+PRE_TRADE_CORE=29
+TRADE_ENGINE_CORE=30
+TRADE_ENGINE_IPC_CORE=31
+PERSIST_MANAGER_CORE=32
+```
+
+`trade_engine.toml`：
+
+```text
+local_ips = ["0.0.0.0", "0.0.0.0"]
+```
+
+这是 jp2 当前单网卡、未使用 Binance UM 白名单 IP 模式的配置。`BINANCE_UM_IP_WHITELIST_MODE=off` 与双 `0.0.0.0` 同时保留，满足 account monitor 至少两路 local IP 的启动要求。
+
+nginx mapping 已写入并 reload：
+
+```text
+/mm/binance_mm_alpha/config  -> http://127.0.0.1:18132/
+/mm/binance_mm_alpha/        -> static:$HOME/binance_mm_alpha/www/
+/mm/binance_mm_alpha/ws      -> http://127.0.0.1:10232/ws
+/mm/binance_mm_alpha/healthz -> http://127.0.0.1:10232/healthz
+/mm/binance_mm_alpha/snapshot -> http://127.0.0.1:10232/snapshot
+```
+
+部署后只读校验：
+
+```text
+远端二进制存在并有 sha256sum。
+start_account_monitor.sh 支持 ACCOUNT_MONITOR_CORE。
+start_trade_signal.sh 支持 TRADE_SIGNAL_CORE。
+start_mm_pre_trade.sh 支持 PRE_TRADE_CORE。
+start_mm_trade_engine.sh 支持 TRADE_ENGINE_CORE / TRADE_ENGINE_IPC_CORE。
+start_mm_persist_manager.sh 支持 PERSIST_MANAGER_CORE。
+ps 检查没有 /home/ubuntu/binance_mm_alpha 进程，确认未误启动。
+```

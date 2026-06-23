@@ -550,14 +550,27 @@ pub(crate) struct BinanceUmWsHealthConfig {
 struct BinanceUmWsHealthState {
     new_samples_us: VecDeque<i64>,
     cancel_samples_us: VecDeque<i64>,
+    new_summary: BinanceUmWsLatencySummary,
+    cancel_summary: BinanceUmWsLatencySummary,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BinanceUmWsLatencySummary {
+    pub n: usize,
+    pub p50_us: i64,
+    pub p90_us: i64,
+    pub p99_us: i64,
+    pub max_us: i64,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct BinanceUmWsHealthSnapshot {
     pub latest_new_us: Option<i64>,
     pub new_threshold_us: Option<i64>,
+    pub new_summary: BinanceUmWsLatencySummary,
     pub latest_cancel_us: Option<i64>,
     pub cancel_threshold_us: Option<i64>,
+    pub cancel_summary: BinanceUmWsLatencySummary,
     pub percentile: u8,
 }
 
@@ -580,6 +593,8 @@ impl BinanceUmWsHealthRuntime {
             state: Rc::new(RefCell::new(BinanceUmWsHealthState {
                 new_samples_us: VecDeque::with_capacity(256),
                 cancel_samples_us: VecDeque::with_capacity(256),
+                new_summary: BinanceUmWsLatencySummary::default(),
+                cancel_summary: BinanceUmWsLatencySummary::default(),
             })),
         }
     }
@@ -624,6 +639,21 @@ impl BinanceUmWsHealthRuntime {
         sorted[idx.min(sorted.len() - 1)]
     }
 
+    fn summary(samples_us: &VecDeque<i64>) -> BinanceUmWsLatencySummary {
+        if samples_us.is_empty() {
+            return BinanceUmWsLatencySummary::default();
+        }
+        let mut sorted: Vec<i64> = samples_us.iter().copied().collect();
+        sorted.sort_unstable();
+        BinanceUmWsLatencySummary {
+            n: sorted.len(),
+            p50_us: Self::percentile(&sorted, 50),
+            p90_us: Self::percentile(&sorted, 90),
+            p99_us: Self::percentile(&sorted, 99),
+            max_us: sorted.last().copied().unwrap_or(0),
+        }
+    }
+
     fn threshold(samples_us: &VecDeque<i64>, min_period: usize, percentile: u8) -> Option<i64> {
         if samples_us.len() < min_period {
             return None;
@@ -663,26 +693,30 @@ impl BinanceUmWsHealthRuntime {
 
     pub(crate) fn record_new(&self, rtt_us: i64) -> BinanceUmWsHealthAction {
         let mut state = self.state.borrow_mut();
-        Self::record_sample(
+        let action = Self::record_sample(
             &mut state.new_samples_us,
             rtt_us,
             self.cfg.new_rolling_window,
             self.cfg.new_min_period,
             self.cfg.percentile,
             self.cfg.pause_ms,
-        )
+        );
+        state.new_summary = Self::summary(&state.new_samples_us);
+        action
     }
 
     pub(crate) fn record_cancel(&self, rtt_us: i64) -> BinanceUmWsHealthAction {
         let mut state = self.state.borrow_mut();
-        Self::record_sample(
+        let action = Self::record_sample(
             &mut state.cancel_samples_us,
             rtt_us,
             self.cfg.cancel_rolling_window,
             self.cfg.cancel_min_period,
             self.cfg.percentile,
             self.cfg.pause_ms,
-        )
+        );
+        state.cancel_summary = Self::summary(&state.cancel_samples_us);
+        action
     }
 
     pub(crate) fn snapshot(&self) -> BinanceUmWsHealthSnapshot {
@@ -694,12 +728,14 @@ impl BinanceUmWsHealthRuntime {
                 self.cfg.new_min_period,
                 self.cfg.percentile,
             ),
+            new_summary: state.new_summary,
             latest_cancel_us: state.cancel_samples_us.back().copied(),
             cancel_threshold_us: Self::threshold(
                 &state.cancel_samples_us,
                 self.cfg.cancel_min_period,
                 self.cfg.percentile,
             ),
+            cancel_summary: state.cancel_summary,
             percentile: self.cfg.percentile,
         }
     }
@@ -4587,6 +4623,30 @@ mod tests {
 
         let _ = health.record_cancel(3_000);
         assert_eq!(health.cancel_inflight_block_threshold_us(), Some(3_000));
+    }
+
+    #[test]
+    fn binance_um_health_snapshot_exposes_rolling_latency_summary() {
+        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(1, 1));
+
+        for rtt_us in [1_000, 2_000, 3_000, 4_000, 10_000] {
+            let _ = health.record_new(rtt_us);
+        }
+        for rtt_us in [5_000, 6_000, 7_000, 8_000] {
+            let _ = health.record_cancel(rtt_us);
+        }
+
+        let snap = health.snapshot();
+        assert_eq!(snap.new_summary.n, 4);
+        assert_eq!(snap.new_summary.p50_us, 4_000);
+        assert_eq!(snap.new_summary.p90_us, 10_000);
+        assert_eq!(snap.new_summary.p99_us, 10_000);
+        assert_eq!(snap.new_summary.max_us, 10_000);
+        assert_eq!(snap.cancel_summary.n, 4);
+        assert_eq!(snap.cancel_summary.p50_us, 7_000);
+        assert_eq!(snap.cancel_summary.p90_us, 8_000);
+        assert_eq!(snap.cancel_summary.p99_us, 8_000);
+        assert_eq!(snap.cancel_summary.max_us, 8_000);
     }
 
     #[test]
