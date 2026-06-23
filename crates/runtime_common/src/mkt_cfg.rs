@@ -33,29 +33,42 @@ pub struct TradeEngineLocalIpConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinanceUmWsHealthConfig {
-    pub rolling_window: usize,
+    pub new_rolling_window: usize,
+    pub new_min_period: usize,
+    pub cancel_rolling_window: usize,
+    pub cancel_min_period: usize,
     pub percentile: u8,
     pub pause_ms: u64,
     pub select_recent: usize,
+    pub cancel_probe_rate_limit_guard_pct: u32,
 }
 
 impl Default for BinanceUmWsHealthConfig {
     fn default() -> Self {
         Self {
-            rolling_window: 200,
+            new_rolling_window: 200,
+            new_min_period: 10,
+            cancel_rolling_window: 200,
+            cancel_min_period: 10,
             percentile: 85,
             pause_ms: 500,
             select_recent: 3,
+            cancel_probe_rate_limit_guard_pct: 70,
         }
     }
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BinanceUmWsHealthTomlConfig {
-    rolling_window: Option<usize>,
+    new_rolling_window: Option<usize>,
+    new_min_period: Option<usize>,
+    cancel_rolling_window: Option<usize>,
+    cancel_min_period: Option<usize>,
     percentile: Option<u8>,
     pause_ms: Option<u64>,
     select_recent: Option<usize>,
+    cancel_probe_rate_limit_guard_pct: Option<u32>,
 }
 
 pub fn home_mkt_cfg_path() -> Result<PathBuf> {
@@ -305,14 +318,58 @@ fn parse_binance_um_ws_health_config(
     };
 
     let cfg = BinanceUmWsHealthConfig {
-        rolling_window: raw.rolling_window.unwrap_or(defaults.rolling_window),
+        new_rolling_window: raw.new_rolling_window.ok_or_else(|| {
+            anyhow!(
+                "binance_um_ws_health.new_rolling_window is required in {}",
+                path.display()
+            )
+        })?,
+        new_min_period: raw.new_min_period.ok_or_else(|| {
+            anyhow!(
+                "binance_um_ws_health.new_min_period is required in {}",
+                path.display()
+            )
+        })?,
+        cancel_rolling_window: raw.cancel_rolling_window.ok_or_else(|| {
+            anyhow!(
+                "binance_um_ws_health.cancel_rolling_window is required in {}",
+                path.display()
+            )
+        })?,
+        cancel_min_period: raw.cancel_min_period.ok_or_else(|| {
+            anyhow!(
+                "binance_um_ws_health.cancel_min_period is required in {}",
+                path.display()
+            )
+        })?,
         percentile: raw.percentile.unwrap_or(defaults.percentile),
         pause_ms: raw.pause_ms.unwrap_or(defaults.pause_ms),
         select_recent: raw.select_recent.unwrap_or(defaults.select_recent),
+        cancel_probe_rate_limit_guard_pct: raw
+            .cancel_probe_rate_limit_guard_pct
+            .unwrap_or(defaults.cancel_probe_rate_limit_guard_pct),
     };
-    if cfg.rolling_window == 0 {
+    if cfg.new_rolling_window == 0 {
         return Err(anyhow!(
-            "binance_um_ws_health.rolling_window must be > 0 in {}",
+            "binance_um_ws_health.new_rolling_window must be > 0 in {}",
+            path.display()
+        ));
+    }
+    if cfg.cancel_rolling_window == 0 {
+        return Err(anyhow!(
+            "binance_um_ws_health.cancel_rolling_window must be > 0 in {}",
+            path.display()
+        ));
+    }
+    if cfg.new_min_period == 0 || cfg.new_min_period > cfg.new_rolling_window {
+        return Err(anyhow!(
+            "binance_um_ws_health.new_min_period must be in 1..=new_rolling_window in {}",
+            path.display()
+        ));
+    }
+    if cfg.cancel_min_period == 0 || cfg.cancel_min_period > cfg.cancel_rolling_window {
+        return Err(anyhow!(
+            "binance_um_ws_health.cancel_min_period must be in 1..=cancel_rolling_window in {}",
             path.display()
         ));
     }
@@ -325,6 +382,12 @@ fn parse_binance_um_ws_health_config(
     if cfg.select_recent == 0 {
         return Err(anyhow!(
             "binance_um_ws_health.select_recent must be > 0 in {}",
+            path.display()
+        ));
+    }
+    if cfg.cancel_probe_rate_limit_guard_pct == 0 || cfg.cancel_probe_rate_limit_guard_pct > 100 {
+        return Err(anyhow!(
+            "binance_um_ws_health.cancel_probe_rate_limit_guard_pct must be in 1..=100 in {}",
             path.display()
         ));
     }
@@ -448,13 +511,14 @@ mod tests {
                 binance_um_whitelist_ip = "172.31.46.90"
                 binance_um_ws_direct_ips = [" 13.112.240.202 ", "13.158.151.48"]
                 [binance_um_ws_health]
-                rolling_window = 200
+                new_rolling_window = 200
+                new_min_period = 10
+                cancel_rolling_window = 200
+                cancel_min_period = 10
                 percentile = 85
                 pause_ms = 500
                 select_recent = 3
-                # Legacy fixed block threshold is ignored; stale inflight block
-                # now uses the same rolling percentile threshold as RTT health.
-                inflight_create_block_ms = 80
+                cancel_probe_rate_limit_guard_pct = 70
             "#,
             Path::new("trade_engine.toml"),
         )
@@ -467,11 +531,30 @@ mod tests {
         assert_eq!(
             parsed.binance_um_ws_health,
             BinanceUmWsHealthConfig {
-                rolling_window: 200,
+                new_rolling_window: 200,
+                new_min_period: 10,
+                cancel_rolling_window: 200,
+                cancel_min_period: 10,
                 percentile: 85,
                 pause_ms: 500,
                 select_recent: 3,
+                cancel_probe_rate_limit_guard_pct: 70,
             }
         );
+    }
+
+    #[test]
+    fn parse_trade_engine_toml_rejects_legacy_binance_um_ws_health_window() {
+        let err = parse_trade_engine_local_ip_config_toml(
+            r#"
+                local_ips = ["172.31.33.133"]
+                [binance_um_ws_health]
+                rolling_window = 111
+            "#,
+            Path::new("trade_engine.toml"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("rolling_window"));
     }
 }
