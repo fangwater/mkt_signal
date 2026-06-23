@@ -94,7 +94,26 @@ if [[ -f "$BASE_DIR/env.sh" ]]; then
   set -a; source "$BASE_DIR/env.sh"; set +a
 fi
 
-if [[ -n "${SPREAD_PBS_CORE:-}" ]]; then
+if [[ "$venue" == "binance-futures" ]]; then
+  : "${SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE:?SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE is required for binance-futures split spread_pbs}"
+  : "${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE:?SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE is required for binance-futures split spread_pbs}"
+  : "${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_LOCAL_IP:?SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_LOCAL_IP is required for binance-futures bookTicker role}"
+  : "${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_DIRECT_IPS:?SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_DIRECT_IPS is required for binance-futures bookTicker role}"
+  if [[ ! "$SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE 必须为单个整数 (got: $SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE)" >&2
+    exit 1
+  fi
+  if [[ ! "$SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE 必须为单个整数 (got: $SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE)" >&2
+    exit 1
+  fi
+  case "${SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE:-}" in
+    on|ON|On|1|true|TRUE|True|yes|YES|Yes)
+      : "${SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP:?SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP is required when SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE is on}"
+      ;;
+  esac
+  CORE="$SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE"
+elif [[ -n "${SPREAD_PBS_CORE:-}" ]]; then
   if [[ ! "$SPREAD_PBS_CORE" =~ ^[0-9]+$ ]]; then
     echo "[ERROR] SPREAD_PBS_CORE 必须为单个整数 (got: $SPREAD_PBS_CORE)" >&2
     exit 1
@@ -135,6 +154,12 @@ if [[ -z "$BIN_PATH" ]]; then
 fi
 
 name="spp_$(venue_short_tag "$venue")"
+market_name="$name"
+bookticker_name="$name"
+if [[ "$venue" == "binance-futures" ]]; then
+  market_name="${name}_market"
+  bookticker_name="${name}_bookticker"
+fi
 rust_log="${RUST_LOG:-info}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 cfg_file="$(mktemp)"
@@ -199,6 +224,8 @@ check_conflicting_spread_pbs_processes() {
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 json_name="$(json_escape "$name")"
+json_market_name="$(json_escape "$market_name")"
+json_bookticker_name="$(json_escape "$bookticker_name")"
 json_bin="$(json_escape "$(command -v taskset)")"
 json_base="$(json_escape "$BASE_DIR")"
 json_venue="$(json_escape "$venue")"
@@ -226,11 +253,36 @@ if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_BBO_MODE:-}" ]]; then
         \"SPREAD_PBS_BINANCE_FUTURES_BBO_MODE\": \"${json_binance_futures_bbo_mode}\""
 fi
 
+binance_futures_mm_ws_env_line=""
+if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE:-}" ]]; then
+  json_binance_futures_mm_ws_mode="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE")"
+  binance_futures_mm_ws_env_line=",
+        \"SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE\": \"${json_binance_futures_mm_ws_mode}\""
+fi
+if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP:-}" ]]; then
+  json_binance_futures_mm_ws_local_ip="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP")"
+  binance_futures_mm_ws_env_line="${binance_futures_mm_ws_env_line},
+        \"SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP\": \"${json_binance_futures_mm_ws_local_ip}\""
+fi
+
 spread_pbs_symbols_env_line=""
 if [[ -n "${SPREAD_PBS_SYMBOLS:-}" ]]; then
   json_spread_pbs_symbols="$(json_escape "$SPREAD_PBS_SYMBOLS")"
   spread_pbs_symbols_env_line=",
         \"SPREAD_PBS_SYMBOLS\": \"${json_spread_pbs_symbols}\""
+fi
+
+binance_futures_split_env_line=""
+if [[ "$venue" == "binance-futures" ]]; then
+  json_bf_market_core="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE")"
+  json_bf_bookticker_core="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE")"
+  json_bf_bookticker_local_ip="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_LOCAL_IP")"
+  json_bf_bookticker_direct_ips="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_DIRECT_IPS")"
+  binance_futures_split_env_line=",
+        \"SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE\": \"${json_bf_market_core}\",
+        \"SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE\": \"${json_bf_bookticker_core}\",
+        \"SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_LOCAL_IP\": \"${json_bf_bookticker_local_ip}\",
+        \"SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_DIRECT_IPS\": \"${json_bf_bookticker_direct_ips}\""
 fi
 
 okex_sbe_env_line=""
@@ -259,7 +311,46 @@ if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.tom
 fi
 
 # pmdaemon args = ["-c", "<core>", "<bin>", "--venue", "<v>", "--core", "<core>"]
-cat >"$cfg_file" <<JSON
+common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${okex_sbe_env_line}"
+if [[ "$venue" == "binance-futures" ]]; then
+  cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_market_name}",
+      "script": "${json_bin}",
+      "args": [
+        "-c", "${SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE}",
+        "${json_inner_bin}",
+        "--venue", "${json_venue}",
+        "--core", "${SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE}",
+        "--binance-futures-role", "market"
+      ],
+      "cwd": "${json_base}",
+      "env": {
+        ${common_env}
+      }
+    },
+    {
+      "name": "${json_bookticker_name}",
+      "script": "${json_bin}",
+      "args": [
+        "-c", "${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE}",
+        "${json_inner_bin}",
+        "--venue", "${json_venue}",
+        "--core", "${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE}",
+        "--binance-futures-role", "bookticker"
+      ],
+      "cwd": "${json_base}",
+      "env": {
+        ${common_env}
+      }
+    }
+  ]
+}
+JSON
+else
+  cat >"$cfg_file" <<JSON
 {
   "apps": [
     {
@@ -273,15 +364,21 @@ cat >"$cfg_file" <<JSON
       ],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"${binance_sbe_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${spread_pbs_symbols_env_line}${okex_sbe_env_line}
+        ${common_env}
       }
     }
   ]
 }
 JSON
+fi
 
 echo "[INFO] Restarting ${name} (venue=${venue}, core=${CORE})"
-"${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+if [[ "$venue" == "binance-futures" ]]; then
+  "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+else
+  "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+fi
 check_conflicting_spread_pbs_processes
 
 mapfile -t leaked_pids < <(find_running_pids || true)
@@ -301,10 +398,23 @@ if [[ ${#leaked_pids[@]} -gt 0 ]]; then
   fi
 fi
 
-"${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
+"${PMDAEMON[@]}" --config "$cfg_file" start --name "$market_name"
+if [[ "$venue" == "binance-futures" ]]; then
+  "${PMDAEMON[@]}" --config "$cfg_file" start --name "$bookticker_name"
+fi
 
 echo ""
-echo "[INFO] Started: ${name} pinned to core ${CORE}"
+if [[ "$venue" == "binance-futures" ]]; then
+  echo "[INFO] Started: ${market_name} pinned to core ${SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE}"
+  echo "[INFO] Started: ${bookticker_name} pinned to core ${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE}"
+else
+  echo "[INFO] Started: ${name} pinned to core ${CORE}"
+fi
 echo "Venue:  ${venue}"
-echo "Logs:   ${PMDAEMON[*]} logs ${name} --follow"
+if [[ "$venue" == "binance-futures" ]]; then
+  echo "Logs:   ${PMDAEMON[*]} logs ${market_name} --follow"
+  echo "        ${PMDAEMON[*]} logs ${bookticker_name} --follow"
+else
+  echo "Logs:   ${PMDAEMON[*]} logs ${name} --follow"
+fi
 echo "Status: ${PMDAEMON[*]} list"

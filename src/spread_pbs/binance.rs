@@ -37,6 +37,14 @@ pub(crate) fn binance_futures_standard_ws_url() -> &'static str {
     BINANCE_FUTURES_WS_URL
 }
 
+pub(crate) fn binance_futures_mm_ws_url() -> &'static str {
+    BINANCE_FUTURES_MM_WS_URL
+}
+
+pub(crate) fn binance_futures_bookticker_subscribe(symbols: &[String]) -> Vec<Value> {
+    build_stream_subscribe(symbols, "bookTicker")
+}
+
 pub struct BinanceAdapter {
     venue: TradingVenue,
     symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,

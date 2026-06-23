@@ -6,7 +6,7 @@ use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
 use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
-use mkt_signal::spread_pbs::SpreadPbsApp;
+use mkt_signal::spread_pbs::{BinanceFuturesRole, SpreadPbsApp};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
 
@@ -25,6 +25,10 @@ struct Args {
     /// Publish to isolated test channels instead of production market-data channels.
     #[arg(long)]
     test: bool,
+
+    /// Binance futures only: full, market, or bookticker.
+    #[arg(long, value_parser = parse_binance_futures_role, default_value = "full")]
+    binance_futures_role: BinanceFuturesRole,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -38,6 +42,11 @@ async fn main() -> Result<()> {
     log::info!("spread_pbs cfg path: {}", config_path.display());
     let config_str = config_path.to_string_lossy();
     log::info!("spread_pbs venue selection: {}", args.venue.label());
+    validate_role_selection(&args.venue, args.binance_futures_role)?;
+    log::info!(
+        "spread_pbs binance_futures_role={}",
+        args.binance_futures_role.as_str()
+    );
     let publish_roots = if args.test {
         SpreadPbsPublishRoots::test()
     } else {
@@ -53,7 +62,13 @@ async fn main() -> Result<()> {
 
     // current_thread runtime + spawn_local 需要 LocalSet 上下文
     let local = tokio::task::LocalSet::new();
-    local.run_until(run_selected(configs, publish_roots)).await
+    local
+        .run_until(run_selected(
+            configs,
+            publish_roots,
+            args.binance_futures_role,
+        ))
+        .await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +111,26 @@ fn parse_venue_selection(raw: &str) -> std::result::Result<SpreadVenueSelection,
     single_venue_from_slug(&normalized)
         .map(SpreadVenueSelection::Single)
         .ok_or_else(|| format!("unsupported trading venue '{raw}'"))
+}
+
+fn parse_binance_futures_role(raw: &str) -> std::result::Result<BinanceFuturesRole, String> {
+    BinanceFuturesRole::parse(raw)
+}
+
+fn validate_role_selection(
+    selection: &SpreadVenueSelection,
+    role: BinanceFuturesRole,
+) -> Result<()> {
+    if role == BinanceFuturesRole::Full {
+        return Ok(());
+    }
+    match selection {
+        SpreadVenueSelection::Single(TradingVenue::BinanceFutures) => Ok(()),
+        _ => bail!(
+            "--binance-futures-role={} only supports --venue binance-futures",
+            role.as_str()
+        ),
+    }
 }
 
 fn both_selection_for_exchange(exchange: &str) -> Option<SpreadVenueSelection> {
@@ -157,7 +192,11 @@ async fn load_selected_configs(
     Ok(configs)
 }
 
-async fn run_selected(configs: Vec<Config>, publish_roots: SpreadPbsPublishRoots) -> Result<()> {
+async fn run_selected(
+    configs: Vec<Config>,
+    publish_roots: SpreadPbsPublishRoots,
+    binance_futures_role: BinanceFuturesRole,
+) -> Result<()> {
     let labels: Vec<&'static str> = configs
         .iter()
         .map(|config| config.venue.data_pub_slug())
@@ -169,7 +208,16 @@ async fn run_selected(configs: Vec<Config>, publish_roots: SpreadPbsPublishRoots
     for config in configs {
         let venue_slug = config.venue.data_pub_slug();
         let rx = shutdown_rx.clone();
-        let app = SpreadPbsApp::new_with_publish_roots(config, publish_roots.clone());
+        let role = if config.venue == TradingVenue::BinanceFutures {
+            binance_futures_role
+        } else {
+            BinanceFuturesRole::Full
+        };
+        let app = SpreadPbsApp::new_with_publish_roots_and_binance_futures_role(
+            config,
+            publish_roots.clone(),
+            role,
+        );
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)
         }));
@@ -295,5 +343,15 @@ mod tests {
                 futures: TradingVenue::OkexFutures
             }
         ));
+    }
+
+    #[test]
+    fn validates_binance_futures_split_roles() {
+        let selection = parse_venue_selection("binance-futures").unwrap();
+        validate_role_selection(&selection, BinanceFuturesRole::Market).unwrap();
+        validate_role_selection(&selection, BinanceFuturesRole::BookTicker).unwrap();
+
+        let both = parse_venue_selection("binance-both").unwrap();
+        assert!(validate_role_selection(&both, BinanceFuturesRole::Market).is_err());
     }
 }

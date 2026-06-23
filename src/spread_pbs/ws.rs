@@ -42,6 +42,7 @@ pub struct WsLoopParams {
     pub label: &'static str,
     pub url: String,
     pub local_ip: String,
+    pub remote_ip: Option<String>,
     pub headers: Vec<(String, String)>,
     pub subscribe_msgs: Vec<serde_json::Value>,
     pub keepalive: Option<KeepaliveSpec>,
@@ -58,6 +59,7 @@ pub async fn run_public_ws(
         label,
         url,
         local_ip,
+        remote_ip,
         headers,
         subscribe_msgs,
         keepalive,
@@ -70,9 +72,22 @@ pub async fn run_public_ws(
             return;
         }
 
-        match connect_and_subscribe(&url, &local_ip, &headers, &subscribe_msgs).await {
+        match connect_and_subscribe(
+            &url,
+            &local_ip,
+            remote_ip.as_deref(),
+            &headers,
+            &subscribe_msgs,
+        )
+        .await
+        {
             Ok((sink, read)) => {
-                log::info!("spread_pbs ws[{}] connected to {}", label, url);
+                log::info!(
+                    "spread_pbs ws[{}] connected to {} remote_ip={}",
+                    label,
+                    url,
+                    remote_ip.as_deref().unwrap_or("dns")
+                );
                 run_session(
                     label,
                     sink,
@@ -108,10 +123,11 @@ pub async fn run_public_ws(
 async fn connect_and_subscribe(
     url: &str,
     local_ip: &str,
+    remote_ip: Option<&str>,
     headers: &[(String, String)],
     subscribe_msgs: &[serde_json::Value],
 ) -> Result<(WsSink, WsRead)> {
-    let stream = open_ws(url, local_ip, headers).await?;
+    let stream = open_ws(url, local_ip, remote_ip, headers).await?;
     let (mut sink, read) = stream.split();
     for msg in subscribe_msgs {
         let payload = msg.to_string();
@@ -122,7 +138,12 @@ async fn connect_and_subscribe(
     Ok((sink, read))
 }
 
-async fn open_ws(url: &str, local_ip: &str, headers: &[(String, String)]) -> Result<WsStream> {
+async fn open_ws(
+    url: &str,
+    local_ip: &str,
+    remote_ip: Option<&str>,
+    headers: &[(String, String)],
+) -> Result<WsStream> {
     let parsed = Url::parse(url).with_context(|| format!("invalid ws url: {}", url))?;
     let scheme = parsed.scheme().to_string();
     let host = parsed
@@ -142,12 +163,25 @@ async fn open_ws(url: &str, local_ip: &str, headers: &[(String, String)]) -> Res
                 .with_context(|| format!("invalid local_ip {}", local_ip))?,
         )
     };
+    let remote_addr_opt = remote_ip
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+        .map(|ip| {
+            ip.parse::<IpAddr>()
+                .with_context(|| format!("invalid remote_ip {}", ip))
+        })
+        .transpose()?;
 
-    let tcp = match local_addr_opt {
-        Some(local_addr) => connect_tcp_with_local_ip(&host, port, local_addr).await?,
-        None => TcpStream::connect((host.as_str(), port))
+    let tcp = if let Some(local_addr) = local_addr_opt {
+        connect_tcp_with_local_ip(&host, port, local_addr, remote_addr_opt).await?
+    } else if let Some(remote_addr) = remote_addr_opt {
+        TcpStream::connect(SocketAddr::new(remote_addr, port))
             .await
-            .with_context(|| format!("tcp connect to {}:{}", host, port))?,
+            .with_context(|| format!("tcp connect to {}:{}", remote_addr, port))?
+    } else {
+        TcpStream::connect((host.as_str(), port))
+            .await
+            .with_context(|| format!("tcp connect to {}:{}", host, port))?
     };
     tune_tcp_stream(
         &tcp,
@@ -187,18 +221,38 @@ async fn open_ws(url: &str, local_ip: &str, headers: &[(String, String)]) -> Res
     Ok(stream)
 }
 
-async fn connect_tcp_with_local_ip(host: &str, port: u16, local: IpAddr) -> Result<TcpStream> {
-    let mut addrs = lookup_host((host, port))
-        .await
-        .with_context(|| format!("resolve {}:{}", host, port))?;
-    let target = addrs
-        .find(|sa| {
-            matches!(
-                (sa, local),
-                (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
-            )
-        })
-        .ok_or_else(|| anyhow::anyhow!("no matching address family for {}", host))?;
+async fn connect_tcp_with_local_ip(
+    host: &str,
+    port: u16,
+    local: IpAddr,
+    remote: Option<IpAddr>,
+) -> Result<TcpStream> {
+    let target = if let Some(remote) = remote {
+        match (remote, local) {
+            (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => {
+                SocketAddr::new(remote, port)
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "remote_ip {} is not compatible with local_ip {}",
+                    remote,
+                    local
+                ));
+            }
+        }
+    } else {
+        let mut addrs = lookup_host((host, port))
+            .await
+            .with_context(|| format!("resolve {}:{}", host, port))?;
+        addrs
+            .find(|sa| {
+                matches!(
+                    (sa, local),
+                    (SocketAddr::V4(_), IpAddr::V4(_)) | (SocketAddr::V6(_), IpAddr::V6(_))
+                )
+            })
+            .ok_or_else(|| anyhow::anyhow!("no matching address family for {}", host))?
+    };
 
     let socket = match local {
         IpAddr::V4(ip) => {

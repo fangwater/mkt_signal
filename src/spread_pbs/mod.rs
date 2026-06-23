@@ -23,4 +23,4 @@ pub mod ws;
 pub use adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
-pub use app::SpreadPbsApp;
+pub use app::{BinanceFuturesRole, SpreadPbsApp};

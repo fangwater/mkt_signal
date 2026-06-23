@@ -53,8 +53,19 @@ PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 
 name="spp_$(venue_short_tag "$venue")"
+market_name="$name"
+bookticker_name="$name"
+if [[ "$venue" == "binance-futures" ]]; then
+  market_name="${name}_market"
+  bookticker_name="${name}_bookticker"
+fi
 echo "[INFO] Stopping ${name}"
-"${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+if [[ "$venue" == "binance-futures" ]]; then
+  "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+else
+  "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+fi
 
 # 兜底 kill 进程
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
@@ -87,4 +98,8 @@ if [[ ${#pids[@]} -gt 0 ]]; then
   fi
 fi
 
-echo "[INFO] ${name} stopped"
+if [[ "$venue" == "binance-futures" ]]; then
+  echo "[INFO] ${market_name}/${bookticker_name} stopped"
+else
+  echo "[INFO] ${name} stopped"
+fi
