@@ -158,6 +158,15 @@ fi
 PROC_NAME="${PM2_NAME:-$DEFAULT_PROC_NAME}"
 RUST_LOG="${RUST_LOG:-info}"
 
+if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
+  if [[ ! "$TRADE_SIGNAL_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_SIGNAL_CORE 必须为单个整数 (got: $TRADE_SIGNAL_CORE)" >&2
+    exit 1
+  fi
+  ARGS+=(--core "$TRADE_SIGNAL_CORE")
+  echo "[INFO] core bind ${TRADE_SIGNAL_CORE} (from $ENV_FILE:TRADE_SIGNAL_CORE)"
+fi
+
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
 if [[ -n "$LEGACY_PROC_NAME" ]]; then
   npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true

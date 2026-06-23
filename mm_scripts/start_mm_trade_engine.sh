@@ -145,6 +145,24 @@ fi
 
 ensure_pmdaemon
 
+core_args=()
+if [[ -n "${TRADE_ENGINE_CORE:-}" ]]; then
+  if [[ ! "$TRADE_ENGINE_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_ENGINE_CORE 必须为单个整数 (got: $TRADE_ENGINE_CORE)" >&2
+    exit 1
+  fi
+  core_args+=(--core "$TRADE_ENGINE_CORE")
+  echo "[INFO] core bind ${TRADE_ENGINE_CORE} (main thread, from $ENV_FILE:TRADE_ENGINE_CORE)"
+fi
+if [[ -n "${TRADE_ENGINE_IPC_CORE:-}" ]]; then
+  if [[ ! "$TRADE_ENGINE_IPC_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_ENGINE_IPC_CORE 必须为单个整数 (got: $TRADE_ENGINE_IPC_CORE)" >&2
+    exit 1
+  fi
+  core_args+=(--ipc-core "$TRADE_ENGINE_IPC_CORE")
+  echo "[INFO] core bind ${TRADE_ENGINE_IPC_CORE} (te-ipc thread, from $ENV_FILE:TRADE_ENGINE_IPC_CORE)"
+fi
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -162,6 +180,9 @@ json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NS")"
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --exchange $(shell_quote "$EXCHANGE")"
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON

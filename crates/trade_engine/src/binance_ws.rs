@@ -46,6 +46,19 @@ fn parse_u16_value(v: &Value) -> Option<u16> {
     None
 }
 
+fn parse_u32_value(v: &Value) -> Option<u32> {
+    if let Some(n) = v.as_u64() {
+        return u32::try_from(n).ok();
+    }
+    if let Some(n) = v.as_i64() {
+        return u32::try_from(n).ok();
+    }
+    if let Some(s) = v.as_str() {
+        return s.parse::<u32>().ok();
+    }
+    None
+}
+
 fn parse_f64_value(v: &Value) -> Option<f64> {
     if let Some(n) = v.as_f64() {
         return Some(n);
@@ -406,12 +419,40 @@ pub fn build_query_payload(
 }
 
 #[derive(Debug, Clone)]
+pub struct BinanceWsRateLimit {
+    pub rate_limit_type: String,
+    pub interval: String,
+    pub interval_num: u32,
+    pub limit: u32,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct BinanceWsResponse {
     pub id: Option<i64>,
     pub status: Option<u16>,
     pub error_code: Option<i32>,
     pub error_msg: Option<String>,
     pub result: Option<Value>,
+    pub rate_limits: Vec<BinanceWsRateLimit>,
+}
+
+fn parse_rate_limits(val: &Value) -> Vec<BinanceWsRateLimit> {
+    let Some(items) = val.get("rateLimits").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            Some(BinanceWsRateLimit {
+                rate_limit_type: item.get("rateLimitType")?.as_str()?.to_string(),
+                interval: item.get("interval")?.as_str()?.to_string(),
+                interval_num: item.get("intervalNum").and_then(parse_u32_value)?,
+                limit: item.get("limit").and_then(parse_u32_value)?,
+                count: item.get("count").and_then(parse_u32_value)?,
+            })
+        })
+        .collect()
 }
 
 pub fn parse_ws_response(payload: &str) -> Option<BinanceWsResponse> {
@@ -435,6 +476,7 @@ pub fn parse_ws_response(payload: &str) -> Option<BinanceWsResponse> {
         error_code,
         error_msg,
         result,
+        rate_limits: parse_rate_limits(&val),
     })
 }
 
@@ -477,7 +519,9 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) 
 
 #[cfg(test)]
 mod tests {
-    use super::{build_order_payload, build_query_payload, sign_ordered_params_fast};
+    use super::{
+        build_order_payload, build_query_payload, parse_ws_response, sign_ordered_params_fast,
+    };
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
     use crate::trade_request::{
         BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
@@ -614,6 +658,43 @@ mod tests {
             .as_str()
             .is_some_and(|s| !s.is_empty()));
         assert_signature_matches_sorted_params(&value);
+    }
+
+    #[test]
+    fn parses_binance_ws_rate_limits() {
+        let payload = r#"{
+            "id": 101,
+            "status": 400,
+            "error": {"code": -2011, "msg": "Unknown order sent."},
+            "rateLimits": [
+                {
+                    "rateLimitType": "REQUEST_WEIGHT",
+                    "interval": "MINUTE",
+                    "intervalNum": 1,
+                    "limit": 2400,
+                    "count": 17
+                },
+                {
+                    "rateLimitType": "ORDERS",
+                    "interval": "MINUTE",
+                    "intervalNum": 1,
+                    "limit": 1200,
+                    "count": 3
+                }
+            ]
+        }"#;
+
+        let resp = parse_ws_response(payload).expect("binance ws response");
+
+        assert_eq!(resp.id, Some(101));
+        assert_eq!(resp.status, Some(400));
+        assert_eq!(resp.error_code, Some(-2011));
+        assert_eq!(resp.rate_limits.len(), 2);
+        assert_eq!(resp.rate_limits[0].rate_limit_type, "REQUEST_WEIGHT");
+        assert_eq!(resp.rate_limits[0].limit, 2400);
+        assert_eq!(resp.rate_limits[0].count, 17);
+        assert_eq!(resp.rate_limits[1].rate_limit_type, "ORDERS");
+        assert_eq!(resp.rate_limits[1].count, 3);
     }
 
     #[test]

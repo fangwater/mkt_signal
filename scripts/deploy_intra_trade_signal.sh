@@ -126,6 +126,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
         "cancel_binance_std_orders.py"
         "binance_cancel_all_std_spot_orders.py"
         "binance_cancel_all_std_um_ws_orders.py"
+        "binance_std_um_funding_fees.py"
         "binance_local_ip.py"
         "sell_margin_spot.py"
         "set_online_futures_leverage.py"
