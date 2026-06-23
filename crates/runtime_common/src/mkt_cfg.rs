@@ -51,7 +51,7 @@ impl Default for BinanceUmWsHealthConfig {
             cancel_rolling_window: 200,
             cancel_min_period: 10,
             percentile: 85,
-            pause_ms: 500,
+            pause_ms: 3_000,
             select_recent: 3,
             cancel_probe_rate_limit_guard_pct: 70,
         }
@@ -516,7 +516,7 @@ mod tests {
                 cancel_rolling_window = 200
                 cancel_min_period = 10
                 percentile = 85
-                pause_ms = 500
+                pause_ms = 3000
                 select_recent = 3
                 cancel_probe_rate_limit_guard_pct = 70
             "#,
@@ -536,7 +536,7 @@ mod tests {
                 cancel_rolling_window: 200,
                 cancel_min_period: 10,
                 percentile: 85,
-                pause_ms: 500,
+                pause_ms: 3_000,
                 select_recent: 3,
                 cancel_probe_rate_limit_guard_pct: 70,
             }
