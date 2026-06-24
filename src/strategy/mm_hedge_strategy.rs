@@ -26,6 +26,7 @@ use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
 use order_common::{Order, OrderExecutionStatus, OrderManager, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
+use quote_plan::common::align_price_floor;
 use quote_plan::hedge_split::{split_hedge_orders_round_robin, HedgeLevel, HedgeSplitOrder};
 use quote_plan::order_align::{align_final_order_qty, contract_qty_multiplier, min_qty_symbol_key};
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
@@ -358,6 +359,51 @@ impl MarketMakerHedgeStrategy {
                     > NET_EXPOSURE_EPS_USDT
             })
             .unwrap_or(false)
+    }
+
+    fn hedge_query_qty_below_min(
+        &self,
+        hedge_venue: TradingVenue,
+        mark_price: f64,
+    ) -> Option<String> {
+        if !(self.net_qty.is_finite() && self.net_qty.abs() > 0.0) {
+            return None;
+        }
+        if !(mark_price.is_finite() && mark_price > 0.0) {
+            return None;
+        }
+        let symbol_key = min_qty_symbol_key(hedge_venue, &self.symbol);
+        let table = MonitorChannel::instance().try_venue_min_qty_table(hedge_venue)?;
+        let min_qty = table.min_qty(&symbol_key).unwrap_or(0.0);
+        let min_notional = table.min_notional(&symbol_key).unwrap_or(0.0);
+        let multiplier = contract_qty_multiplier(table.as_ref(), hedge_venue, &symbol_key)?;
+        if !(multiplier.is_finite() && multiplier > 0.0) {
+            return None;
+        }
+        let raw_qty_venue = self.net_qty.abs() / multiplier;
+        let step = table.step_size(&symbol_key).unwrap_or(0.0);
+        let aligned_qty_venue = if step.is_finite() && step > 0.0 {
+            align_price_floor(raw_qty_venue, step)
+        } else {
+            raw_qty_venue
+        };
+        if min_qty.is_finite() && min_qty > 0.0 && aligned_qty_venue + 1e-12 < min_qty {
+            return Some(format!(
+                "qty_below_min raw_qty_venue={:.8} aligned_qty_venue={:.8} min_qty={:.8}",
+                raw_qty_venue, aligned_qty_venue, min_qty
+            ));
+        }
+        if min_notional.is_finite() && min_notional > 0.0 {
+            let aligned_base_qty = aligned_qty_venue * multiplier;
+            let notional = aligned_base_qty * mark_price;
+            if notional + 1e-8 < min_notional {
+                return Some(format!(
+                    "notional_below_min aligned_base_qty={:.8} mark_price={:.8} notional={:.8} min_notional={:.8}",
+                    aligned_base_qty, mark_price, notional, min_notional
+                ));
+            }
+        }
+        None
     }
 
     fn handle_flat_inventory_no_query(&mut self, now: i64) {
@@ -731,6 +777,22 @@ impl MarketMakerHedgeStrategy {
             return;
         }
 
+        let hedge_venue = MonitorChannel::instance().hedge_venue();
+        if let Some(mark_price) = mark_price {
+            if let Some(reason) = self.hedge_query_qty_below_min(hedge_venue, mark_price) {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} symbol={} skip hedge query because hedge qty below venue minimum venue={:?} net_qty_base={:.8} {}",
+                    self.strategy_id,
+                    self.symbol,
+                    hedge_venue,
+                    self.net_qty,
+                    reason
+                );
+                self.handle_flat_inventory_no_query(now);
+                return;
+            }
+        }
+
         self.send_hedge_query();
         self.next_query_ts_us = 0;
     }
@@ -747,6 +809,21 @@ impl MarketMakerHedgeStrategy {
         if !self.should_send_hedge_query() {
             self.handle_flat_inventory_no_query(now);
             return;
+        }
+        let hedge_venue = MonitorChannel::instance().hedge_venue();
+        if let Some(mark_price) = self.mark_price() {
+            if let Some(reason) = self.hedge_query_qty_below_min(hedge_venue, mark_price) {
+                info!(
+                    "MarketMakerHedgeStrategy: strategy_id={} symbol={} skip hedge query watchdog resend because hedge qty below venue minimum venue={:?} net_qty_base={:.8} {}",
+                    self.strategy_id,
+                    self.symbol,
+                    hedge_venue,
+                    self.net_qty,
+                    reason
+                );
+                self.handle_flat_inventory_no_query(now);
+                return;
+            }
         }
         warn!(
             "MarketMakerHedgeStrategy: strategy_id={} symbol={} query watchdog timeout, resend hedge query",

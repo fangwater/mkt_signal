@@ -544,12 +544,29 @@ where
             base_price,
             table,
         );
-    let target_below_min = use_target_base_qty
+    let hedge_target_base_qty = hedge_target_qty.abs();
+    let fallback_target_base_qty = if use_target_base_qty.is_none()
+        && one_hand_below_min
+        && !target_base_qty_below_min(
+            input.venue,
+            &symbol_key,
+            hedge_target_base_qty,
+            base_price,
+            table,
+        ) {
+        Some(hedge_target_base_qty)
+    } else {
+        None
+    };
+    let effective_target_base_qty = use_target_base_qty.or(fallback_target_base_qty);
+    let target_below_min = effective_target_base_qty
         .map(|target_base_qty| {
             target_base_qty_below_min(input.venue, &symbol_key, target_base_qty, base_price, table)
         })
         .unwrap_or(false);
-    let (price_tick, qty_tick, levels) = if one_hand_below_min || target_below_min {
+    let (price_tick, qty_tick, levels) = if target_below_min
+        || (one_hand_below_min && fallback_target_base_qty.is_none())
+    {
         warn!(
             "InventoryHedge: skip hedge levels because requested hedge qty is below venue minimum symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} target_base_qty={:?}",
             symbol,
@@ -558,7 +575,7 @@ where
             base_price,
             hedge_target_qty,
             inventory_net_qty,
-            use_target_base_qty
+            effective_target_base_qty
         );
         (
             table.price_tick(&symbol_key).unwrap_or(0.0),
@@ -566,7 +583,22 @@ where
             Vec::new(),
         )
     } else {
-        let build_result = if let Some(target_base_qty) = use_target_base_qty {
+        let build_result = if let Some(target_base_qty) = fallback_target_base_qty {
+            info!(
+                "InventoryHedge: use hedge target qty as first level because one-hand order_amount_u is below venue minimum symbol={} venue={:?} order_amount_u={:.8} target_base_qty={:.8}",
+                symbol,
+                input.venue,
+                input.order_amount_u,
+                target_base_qty
+            );
+            build_quote_plan_levels_for_base_qty(
+                input.venue,
+                &symbol,
+                target_base_qty,
+                &specs[..1],
+                table,
+            )
+        } else if let Some(target_base_qty) = use_target_base_qty {
             build_quote_plan_levels_for_base_qty(
                 input.venue,
                 &symbol,
@@ -771,5 +803,49 @@ mod tests {
 
         let zero_qv = QuantizedValue::encode_floor(0.0, plan.qty_tick);
         assert!(zero_qv.is_none());
+    }
+
+    #[test]
+    fn one_hand_below_min_uses_target_qty_when_total_is_tradeable() {
+        let table = TestMinQtyTable {
+            min_qty: 0.001,
+            step_size: 0.001,
+            price_tick: 0.1,
+            min_notional: Some(50.0),
+            contract_multiplier: Some(1.0),
+        };
+        let input = InventoryHedgeBuildInput {
+            venue: Venue::BinanceFutures,
+            symbol: "BTCUSDT",
+            quote: Quote {
+                bid: 62_664.3,
+                ask: 62_664.4,
+                ts: 1,
+            },
+            volatility: 0.0003122,
+            signal: 0.0,
+            signal_qtl: Some(0.5),
+            enable_return_score_adjust_hedge: true,
+            hedge_vol_multiplier: 1.0,
+            hedge_offset_ratio: 1.0,
+            order_amount_u: 50.0,
+            hedge_target_qty: -0.002,
+            target_base_qty: None,
+            inventory_net_qty: -0.002,
+            symbol_exposure_u: 400.0,
+            hedge_orders_per_round: 10,
+            offset_low: 0.0005,
+            offset_high_limit: 0.001,
+            hedge_window_scale_low: 1.0,
+            hedge_window_scale_high: 1.0,
+            next_query_delay_ms: 60_000,
+            clock_shift_ms: 0,
+        };
+
+        let plan = build_inventory_hedge_quote_plan(input, &table).expect("plan");
+
+        assert_eq!(plan.levels.len(), 1);
+        assert!(plan.levels[0].aligned_qty >= 0.001);
+        assert!(plan.levels[0].aligned_qty <= 0.002);
     }
 }

@@ -502,6 +502,10 @@ impl TradeSignalPublisher {
         )
     }
 
+    pub fn open_or_create(channel_name: &str) -> Result<Self> {
+        Self::new(channel_name)
+    }
+
     pub fn create(channel_name: &str) -> Result<Self> {
         Self::new_with_prefix_mode("signal_pubs", channel_name, PublisherServiceMode::Create)
     }
