@@ -2,8 +2,11 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use mkt_parsers::bybit as bybit_codec;
 use mkt_parsers::msg::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
+    ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed, inc_msg_bytes_borrowed,
+    index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed, liquidation_msg_bytes_borrowed,
+    mark_price_msg_bytes_borrowed, signal_msg_bytes, trade_msg_bytes_borrowed, AskBidSpreadMsg,
+    FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg,
+    SignalSource, TradeMsg,
 };
 use tokio::sync::mpsc;
 
@@ -26,17 +29,21 @@ impl BybitSignalParser {
 
 impl Parser for BybitSignalParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(timestamp) = bybit_codec::parse_event_time_ms_raw(&msg) {
+            return if tx.send(signal_msg_bytes(self.source, timestamp)).is_ok() {
+                1
+            } else {
+                0
+            };
+        }
+
         // Parse Bybit depth message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // Extract Bybit timestamp field "cts"
                 if let Some(timestamp) = json_value.get("cts").and_then(|v| v.as_i64()) {
                     // Create signal message
-                    let signal_msg = SignalMsg::create(self.source, timestamp);
-                    let signal_bytes = signal_msg.to_bytes();
-
-                    // Send signal
-                    if tx.send(signal_bytes).is_ok() {
+                    if tx.send(signal_msg_bytes(self.source, timestamp)).is_ok() {
                         return 1;
                     }
                 }
@@ -63,6 +70,19 @@ impl BybitKlineParser {
 
 impl Parser for BybitKlineParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(kline) = bybit_codec::parse_kline_raw_borrowed(&msg) {
+            let kline_bytes = kline_msg_bytes_borrowed(
+                kline.symbol,
+                kline.open_price,
+                kline.high_price,
+                kline.low_price,
+                kline.close_price,
+                kline.volume,
+                kline.timestamp,
+            );
+            return if tx.send(kline_bytes).is_ok() { 1 } else { 0 };
+        }
+
         // Parse Bybit kline message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -161,6 +181,10 @@ impl BybitDerivativesMetricsParser {
 
 impl Parser for BybitDerivativesMetricsParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(count) = self.publish_derivatives_raw(&msg, tx) {
+            return count;
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
         };
@@ -172,6 +196,88 @@ impl Parser for BybitDerivativesMetricsParser {
             }
         }
         parsed_count
+    }
+}
+
+impl BybitDerivativesMetricsParser {
+    fn publish_derivatives_raw(
+        &self,
+        msg: &[u8],
+        tx: &mpsc::UnboundedSender<Bytes>,
+    ) -> Option<usize> {
+        let mut parsed_count = 0usize;
+        bybit_codec::parse_derivatives_raw_borrowed(msg, |derivative| {
+            match derivative {
+                bybit_codec::RawDerivative::Ticker {
+                    symbol,
+                    mark_price,
+                    index_price,
+                    funding_rate,
+                    next_funding_time_us,
+                    timestamp_us,
+                } => {
+                    if let Some(price) = mark_price.filter(|price| *price > 0.0) {
+                        if tx
+                            .send(mark_price_msg_bytes_borrowed(
+                                symbol,
+                                price,
+                                bybit_codec::us_to_ms(timestamp_us),
+                            ))
+                            .is_ok()
+                        {
+                            parsed_count += 1;
+                        }
+                    }
+                    if let Some(price) = index_price.filter(|price| *price > 0.0) {
+                        if tx
+                            .send(index_price_msg_bytes_borrowed(
+                                symbol,
+                                price,
+                                bybit_codec::us_to_ms(timestamp_us),
+                            ))
+                            .is_ok()
+                        {
+                            parsed_count += 1;
+                        }
+                    }
+                    if let Some(funding_rate) = funding_rate {
+                        if tx
+                            .send(funding_rate_msg_bytes_borrowed(
+                                symbol,
+                                funding_rate,
+                                bybit_codec::us_to_ms(next_funding_time_us.unwrap_or(0)),
+                                bybit_codec::us_to_ms(timestamp_us),
+                            ))
+                            .is_ok()
+                        {
+                            parsed_count += 1;
+                        }
+                    }
+                }
+                bybit_codec::RawDerivative::Liquidation {
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    timestamp_us,
+                } => {
+                    if tx
+                        .send(liquidation_msg_bytes_borrowed(
+                            symbol,
+                            side,
+                            amount,
+                            price,
+                            bybit_codec::us_to_ms(timestamp_us),
+                        ))
+                        .is_ok()
+                    {
+                        parsed_count += 1;
+                    }
+                }
+            }
+            Some(())
+        })?;
+        Some(parsed_count)
     }
 }
 
@@ -192,6 +298,21 @@ impl BybitTradeParser {
 
 impl Parser for BybitTradeParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(count) = bybit_codec::parse_trades_raw_borrowed(&msg, |trade| {
+            tx.send(trade_msg_bytes_borrowed(
+                trade.symbol,
+                trade.trade_id,
+                bybit_codec::us_to_ms(trade.timestamp_us),
+                trade.side,
+                trade.price,
+                trade.amount,
+            ))
+            .ok()
+            .map(|_| ())
+        }) {
+            return count;
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
             return 0;
         };
@@ -216,6 +337,24 @@ impl Parser for BybitTradeParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
+
+    fn msg_symbol(data: &[u8]) -> &str {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        std::str::from_utf8(&data[8..8 + len]).unwrap()
+    }
+
+    fn trade_timestamp(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len + 8;
+        i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+    }
+
+    fn inc_first_update_id(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len;
+        i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+    }
 
     #[test]
     fn bybit_trade_parser_emits_all_trade_items() {
@@ -262,6 +401,23 @@ mod tests {
     }
 
     #[test]
+    fn bybit_trade_parser_uses_raw_trade_shape() {
+        let parser = BybitTradeParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from_static(
+            br#"{"topic":"publicTrade.BTCUSDT","data":[{"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.2","p":"100.6","i":"120","seq":77}]}"#,
+        );
+
+        assert_eq!(parser.parse(msg, &tx), 1);
+
+        let trade = rx.try_recv().expect("trade message should be emitted");
+        assert_eq!(get_msg_type(&trade), MktMsgType::TradeInfo);
+        assert_eq!(msg_symbol(&trade), "BTCUSDT");
+        assert_eq!(trade_timestamp(&trade), 1_700_000_000_123);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn bybit_kline_parser_uses_start_time_as_timestamp() {
         let parser = BybitKlineParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -291,6 +447,26 @@ mod tests {
 
         let kline = rx.try_recv().expect("kline message should be emitted");
         assert_eq!(read_kline_timestamp(&kline), 1672324800000);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn bybit_derivatives_parser_uses_raw_ticker_shape() {
+        let parser = BybitDerivativesMetricsParser::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from_static(
+            br#"{"topic":"tickers.BTCUSDT","type":"snapshot","ts":1700000000123,"data":{"symbol":"BTCUSDT","markPrice":"100.1","indexPrice":"99.9","fundingRate":"0.0001","nextFundingTime":"1700003600000"}}"#,
+        );
+
+        assert_eq!(parser.parse(msg, &tx), 3);
+
+        let mark = rx.try_recv().expect("mark price");
+        let index = rx.try_recv().expect("index price");
+        let funding = rx.try_recv().expect("funding rate");
+        assert_eq!(get_msg_type(&mark), MktMsgType::MarkPrice);
+        assert_eq!(get_msg_type(&index), MktMsgType::IndexPrice);
+        assert_eq!(get_msg_type(&funding), MktMsgType::FundingRate);
+        assert_eq!(msg_symbol(&mark), "BTCUSDT");
         assert!(rx.try_recv().is_err());
     }
 
@@ -362,6 +538,25 @@ mod tests {
     }
 
     #[test]
+    fn bybit_incremental_parser_uses_raw_orderbook_shape() {
+        let parser = BybitIncParser::with_max_levels(Some(1));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let msg = Bytes::from_static(
+            br#"{"topic":"orderbook.1000.BTCUSDT","type":"delta","ts":1700000000999,"cts":1700000000123,"data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","3"]],"u":12345}}"#,
+        );
+
+        assert_eq!(parser.parse(msg, &tx), 2);
+
+        let first = rx.try_recv().expect("first chunk");
+        let second = rx.try_recv().expect("second chunk");
+        assert_eq!(get_msg_type(&first), MktMsgType::OrderBookInc);
+        assert_eq!(msg_symbol(&first), "BTCUSDT");
+        assert_eq!(inc_first_update_id(&first), 12345);
+        assert_eq!(get_msg_type(&second), MktMsgType::OrderBookInc);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn bybit_ask_bid_parser_accepts_sbe_bbo_binary() {
         let parser = BybitAskBidSpreadParser::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -400,6 +595,18 @@ impl BybitAskBidSpreadParser {
     }
 
     fn parse_legacy_json(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(bbo) = bybit_codec::parse_bbo_raw_borrowed(msg) {
+            let spread_bytes = ask_bid_spread_msg_bytes_borrowed(
+                bbo.symbol,
+                bybit_codec::us_to_ms(bbo.timestamp_us),
+                bbo.bid_price,
+                bbo.bid_amount,
+                bbo.ask_price,
+                bbo.ask_amount,
+            );
+            return if tx.send(spread_bytes).is_ok() { 1 } else { 0 };
+        }
+
         let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(msg) else {
             return 0;
         };
@@ -517,6 +724,10 @@ impl BybitIncParser {
 
 impl Parser for BybitIncParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(book) = bybit_codec::parse_incremental_raw_view(&msg) {
+            return publish_raw_book_view_chunks(&book, self.max_levels, tx);
+        }
+
         // 解析Bybit增量/快照消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -530,6 +741,51 @@ impl Parser for BybitIncParser {
         }
         0
     }
+}
+
+fn publish_raw_book_view_chunks(
+    book: &bybit_codec::RawBookView<'_>,
+    max_levels: Option<usize>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let chunks = split_levels(book.bids_count, book.asks_count, max_levels);
+    let total_chunks = chunks.len();
+    let mut sent_count = 0;
+    let Some(mut bids_iter) = bybit_codec::raw_levels_iter(book.bids_raw) else {
+        return 0;
+    };
+    let Some(mut asks_iter) = bybit_codec::raw_levels_iter(book.asks_raw) else {
+        return 0;
+    };
+
+    for (chunk_idx, (_bids_start, bids_count, _asks_start, asks_count)) in
+        chunks.into_iter().enumerate()
+    {
+        let inc_bytes = inc_msg_bytes_borrowed(
+            book.symbol,
+            book.first_update_id,
+            book.final_update_id,
+            bybit_codec::us_to_ms(book.timestamp_us),
+            book.is_snapshot,
+            chunk_idx == total_chunks - 1,
+            chunk_idx as u8,
+            bids_count as u32,
+            asks_count as u32,
+            bids_iter
+                .by_ref()
+                .take(bids_count)
+                .map(|level| Level::from_values(level.price, level.amount)),
+            asks_iter
+                .by_ref()
+                .take(asks_count)
+                .map(|level| Level::from_values(level.price, level.amount)),
+        );
+        if tx.send(inc_bytes).is_ok() {
+            sent_count += 1;
+        }
+    }
+
+    sent_count
 }
 
 impl BybitIncParser {
