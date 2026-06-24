@@ -6,7 +6,7 @@ use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
 use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
-use mkt_signal::spread_pbs::{BinanceFuturesRole, SpreadPbsApp};
+use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, SpreadPbsApp};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
 
@@ -29,6 +29,10 @@ struct Args {
     /// Binance futures only: full, market, or bookticker.
     #[arg(long, value_parser = parse_binance_futures_role, default_value = "full")]
     binance_futures_role: BinanceFuturesRole,
+
+    /// Bybit only: full, market, or bookticker.
+    #[arg(long, value_parser = parse_bybit_role, default_value = "full")]
+    bybit_role: BybitRole,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -42,10 +46,11 @@ async fn main() -> Result<()> {
     log::info!("spread_pbs cfg path: {}", config_path.display());
     let config_str = config_path.to_string_lossy();
     log::info!("spread_pbs venue selection: {}", args.venue.label());
-    validate_role_selection(&args.venue, args.binance_futures_role)?;
+    validate_role_selection(&args.venue, args.binance_futures_role, args.bybit_role)?;
     log::info!(
-        "spread_pbs binance_futures_role={}",
-        args.binance_futures_role.as_str()
+        "spread_pbs binance_futures_role={} bybit_role={}",
+        args.binance_futures_role.as_str(),
+        args.bybit_role.as_str(),
     );
     let publish_roots = if args.test {
         SpreadPbsPublishRoots::test()
@@ -67,6 +72,7 @@ async fn main() -> Result<()> {
             configs,
             publish_roots,
             args.binance_futures_role,
+            args.bybit_role,
         ))
         .await
 }
@@ -117,20 +123,41 @@ fn parse_binance_futures_role(raw: &str) -> std::result::Result<BinanceFuturesRo
     BinanceFuturesRole::parse(raw)
 }
 
+fn parse_bybit_role(raw: &str) -> std::result::Result<BybitRole, String> {
+    BybitRole::parse(raw)
+}
+
 fn validate_role_selection(
     selection: &SpreadVenueSelection,
     role: BinanceFuturesRole,
+    bybit_role: BybitRole,
 ) -> Result<()> {
-    if role == BinanceFuturesRole::Full {
-        return Ok(());
+    if role != BinanceFuturesRole::Full {
+        match selection {
+            SpreadVenueSelection::Single(TradingVenue::BinanceFutures) => {}
+            _ => bail!(
+                "--binance-futures-role={} only supports --venue binance-futures",
+                role.as_str()
+            ),
+        }
     }
-    match selection {
-        SpreadVenueSelection::Single(TradingVenue::BinanceFutures) => Ok(()),
-        _ => bail!(
-            "--binance-futures-role={} only supports --venue binance-futures",
-            role.as_str()
-        ),
+
+    if bybit_role != BybitRole::Full {
+        match selection {
+            SpreadVenueSelection::Single(
+                TradingVenue::BybitMargin | TradingVenue::BybitFutures,
+            )
+            | SpreadVenueSelection::Both {
+                exchange: "bybit", ..
+            } => {}
+            _ => bail!(
+                "--bybit-role={} only supports --venue bybit-margin/bybit-futures/bybit-both",
+                bybit_role.as_str()
+            ),
+        }
     }
+
+    Ok(())
 }
 
 fn both_selection_for_exchange(exchange: &str) -> Option<SpreadVenueSelection> {
@@ -196,6 +223,7 @@ async fn run_selected(
     configs: Vec<Config>,
     publish_roots: SpreadPbsPublishRoots,
     binance_futures_role: BinanceFuturesRole,
+    bybit_role: BybitRole,
 ) -> Result<()> {
     let labels: Vec<&'static str> = configs
         .iter()
@@ -213,10 +241,19 @@ async fn run_selected(
         } else {
             BinanceFuturesRole::Full
         };
-        let app = SpreadPbsApp::new_with_publish_roots_and_binance_futures_role(
+        let bybit_role = if matches!(
+            config.venue,
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures
+        ) {
+            bybit_role
+        } else {
+            BybitRole::Full
+        };
+        let app = SpreadPbsApp::new_with_publish_roots_and_roles(
             config,
             publish_roots.clone(),
             role,
+            bybit_role,
         );
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)

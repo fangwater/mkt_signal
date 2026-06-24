@@ -76,6 +76,7 @@ aws_marketdata_spread_core_for_venue() {
     gate-both)       echo 10 ;;
     okex-both)       echo 11 ;;
     bitget-both)     echo 12 ;;
+    bybit-both)      echo "bybit-split" ;;
     *) return 1 ;;
   esac
 }
@@ -143,6 +144,7 @@ Notes:
   - --local-only 强制所有 venue 只部署到本机，不做远端 rsync。
   - --aws-marketdata-core-layout 按 AWS 行情机 CPU8-15 布局写入 env.sh：
       binance-margin=8 binance-futures=9 gate-both=10 okex-both=11 bitget-both=12
+      bybit-both 拆成 SPREAD_PBS_BYBIT_MARKET_CORE=8 / SPREAD_PBS_BYBIT_BOOKTICKER_CORE=9
 USAGE
 }
 
@@ -238,12 +240,22 @@ for venue in "${VENUES[@]}"; do
   done
 
   if [[ "$AWS_MARKETDATA_CORE_LAYOUT" == "1" ]] && core_override="$(aws_marketdata_spread_core_for_venue "$venue")"; then
-    upsert_env_exports_block \
-      "$TARGET_DIR/env.sh" \
-      "managed AWS marketdata core layout" \
-      "AWS market-data host: pin spread_pbs to the second L3 CPU group, CPU8-12." \
-      "SPREAD_PBS_CORE='${core_override}'"
-    echo "[INFO] AWS marketdata spread_pbs core override written: $venue -> core $core_override"
+    if [[ "$core_override" == "bybit-split" ]]; then
+      upsert_env_exports_block \
+        "$TARGET_DIR/env.sh" \
+        "managed AWS marketdata core layout" \
+        "AWS SG Bybit: split JSON market and bookticker roles across CPU8/9." \
+        "SPREAD_PBS_BYBIT_MARKET_CORE='8'" \
+        "SPREAD_PBS_BYBIT_BOOKTICKER_CORE='9'"
+      echo "[INFO] AWS marketdata split override written: $venue -> market core 8, bookticker core 9"
+    else
+      upsert_env_exports_block \
+        "$TARGET_DIR/env.sh" \
+        "managed AWS marketdata core layout" \
+        "AWS market-data host: pin spread_pbs to the second L3 CPU group, CPU8-12." \
+        "SPREAD_PBS_CORE='${core_override}'"
+      echo "[INFO] AWS marketdata spread_pbs core override written: $venue -> core $core_override"
+    fi
   elif core_override="$(hk_okex_spread_core_for_venue "$venue")"; then
     upsert_env_exports_block \
       "$TARGET_DIR/env.sh" \

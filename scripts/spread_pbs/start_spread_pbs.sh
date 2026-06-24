@@ -16,6 +16,7 @@ Behavior:
   - 由当前目录名推断 venue，并查表得到默认 CPU 核（0-9）。
   - 若 env.sh 设置 SPREAD_PBS_CORE，则优先使用该覆盖值。
   - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
+    Bybit-both 默认拆成 market/bookticker 两个进程，避免 JSON market 流和 BBO 流互相抢 CPU。
     启动 both 前需要先停止同 exchange 的单独 margin/futures spread_pbs 进程。
   - 启动方式：taskset -c <core> + pmdaemon，进程名 spp_<ex>_<market>。
 USAGE
@@ -113,6 +114,18 @@ if [[ "$venue" == "binance-futures" ]]; then
       ;;
   esac
   CORE="$SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE"
+elif [[ "$venue" == "bybit-both" ]]; then
+  SPREAD_PBS_BYBIT_MARKET_CORE="${SPREAD_PBS_BYBIT_MARKET_CORE:-8}"
+  SPREAD_PBS_BYBIT_BOOKTICKER_CORE="${SPREAD_PBS_BYBIT_BOOKTICKER_CORE:-9}"
+  if [[ ! "$SPREAD_PBS_BYBIT_MARKET_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] SPREAD_PBS_BYBIT_MARKET_CORE 必须为单个整数 (got: $SPREAD_PBS_BYBIT_MARKET_CORE)" >&2
+    exit 1
+  fi
+  if [[ ! "$SPREAD_PBS_BYBIT_BOOKTICKER_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] SPREAD_PBS_BYBIT_BOOKTICKER_CORE 必须为单个整数 (got: $SPREAD_PBS_BYBIT_BOOKTICKER_CORE)" >&2
+    exit 1
+  fi
+  CORE="$SPREAD_PBS_BYBIT_MARKET_CORE"
 elif [[ -n "${SPREAD_PBS_CORE:-}" ]]; then
   if [[ ! "$SPREAD_PBS_CORE" =~ ^[0-9]+$ ]]; then
     echo "[ERROR] SPREAD_PBS_CORE 必须为单个整数 (got: $SPREAD_PBS_CORE)" >&2
@@ -157,6 +170,9 @@ name="spp_$(venue_short_tag "$venue")"
 market_name="$name"
 bookticker_name="$name"
 if [[ "$venue" == "binance-futures" ]]; then
+  market_name="${name}_market"
+  bookticker_name="${name}_bookticker"
+elif [[ "$venue" == "bybit-both" ]]; then
   market_name="${name}_market"
   bookticker_name="${name}_bookticker"
 fi
@@ -285,6 +301,15 @@ if [[ "$venue" == "binance-futures" ]]; then
         \"SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_DIRECT_IPS\": \"${json_bf_bookticker_direct_ips}\""
 fi
 
+bybit_split_env_line=""
+if [[ "$venue" == "bybit-both" ]]; then
+  json_bybit_market_core="$(json_escape "$SPREAD_PBS_BYBIT_MARKET_CORE")"
+  json_bybit_bookticker_core="$(json_escape "$SPREAD_PBS_BYBIT_BOOKTICKER_CORE")"
+  bybit_split_env_line=",
+        \"SPREAD_PBS_BYBIT_MARKET_CORE\": \"${json_bybit_market_core}\",
+        \"SPREAD_PBS_BYBIT_BOOKTICKER_CORE\": \"${json_bybit_bookticker_core}\""
+fi
+
 okex_sbe_env_line=""
 if [[ "$venue" == "okex-margin" || "$venue" == "okex-futures" || "$venue" == "okex-both" ]]; then
   for v in OKX_API_KEY OKX_API_SECRET OKX_PASSPHRASE; do
@@ -311,7 +336,7 @@ if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.tom
 fi
 
 # pmdaemon args = ["-c", "<core>", "<bin>", "--venue", "<v>", "--core", "<core>"]
-common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${okex_sbe_env_line}"
+common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
 if [[ "$venue" == "binance-futures" ]]; then
   cat >"$cfg_file" <<JSON
 {
@@ -349,6 +374,43 @@ if [[ "$venue" == "binance-futures" ]]; then
   ]
 }
 JSON
+elif [[ "$venue" == "bybit-both" ]]; then
+  cat >"$cfg_file" <<JSON
+{
+  "apps": [
+    {
+      "name": "${json_market_name}",
+      "script": "${json_bin}",
+      "args": [
+        "-c", "${SPREAD_PBS_BYBIT_MARKET_CORE}",
+        "${json_inner_bin}",
+        "--venue", "${json_venue}",
+        "--core", "${SPREAD_PBS_BYBIT_MARKET_CORE}",
+        "--bybit-role", "market"
+      ],
+      "cwd": "${json_base}",
+      "env": {
+        ${common_env}
+      }
+    },
+    {
+      "name": "${json_bookticker_name}",
+      "script": "${json_bin}",
+      "args": [
+        "-c", "${SPREAD_PBS_BYBIT_BOOKTICKER_CORE}",
+        "${json_inner_bin}",
+        "--venue", "${json_venue}",
+        "--core", "${SPREAD_PBS_BYBIT_BOOKTICKER_CORE}",
+        "--bybit-role", "bookticker"
+      ],
+      "cwd": "${json_base}",
+      "env": {
+        ${common_env}
+      }
+    }
+  ]
+}
+JSON
 else
   cat >"$cfg_file" <<JSON
 {
@@ -376,6 +438,10 @@ echo "[INFO] Restarting ${name} (venue=${venue}, core=${CORE})"
 if [[ "$venue" == "binance-futures" ]]; then
   "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
   "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+elif [[ "$venue" == "bybit-both" ]]; then
+  "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
 else
   "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
 fi
@@ -399,7 +465,7 @@ if [[ ${#leaked_pids[@]} -gt 0 ]]; then
 fi
 
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$market_name"
-if [[ "$venue" == "binance-futures" ]]; then
+if [[ "$venue" == "binance-futures" || "$venue" == "bybit-both" ]]; then
   "${PMDAEMON[@]}" --config "$cfg_file" start --name "$bookticker_name"
 fi
 
@@ -407,11 +473,14 @@ echo ""
 if [[ "$venue" == "binance-futures" ]]; then
   echo "[INFO] Started: ${market_name} pinned to core ${SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE}"
   echo "[INFO] Started: ${bookticker_name} pinned to core ${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE}"
+elif [[ "$venue" == "bybit-both" ]]; then
+  echo "[INFO] Started: ${market_name} pinned to core ${SPREAD_PBS_BYBIT_MARKET_CORE}"
+  echo "[INFO] Started: ${bookticker_name} pinned to core ${SPREAD_PBS_BYBIT_BOOKTICKER_CORE}"
 else
   echo "[INFO] Started: ${name} pinned to core ${CORE}"
 fi
 echo "Venue:  ${venue}"
-if [[ "$venue" == "binance-futures" ]]; then
+if [[ "$venue" == "binance-futures" || "$venue" == "bybit-both" ]]; then
   echo "Logs:   ${PMDAEMON[*]} logs ${market_name} --follow"
   echo "        ${PMDAEMON[*]} logs ${bookticker_name} --follow"
 else

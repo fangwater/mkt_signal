@@ -58,11 +58,15 @@ bookticker_name="$name"
 if [[ "$venue" == "binance-futures" ]]; then
   market_name="${name}_market"
   bookticker_name="${name}_bookticker"
+elif [[ "$venue" == "bybit-both" ]]; then
+  market_name="${name}_market"
+  bookticker_name="${name}_bookticker"
 fi
 echo "[INFO] Stopping ${name}"
-if [[ "$venue" == "binance-futures" ]]; then
+if [[ "$venue" == "binance-futures" || "$venue" == "bybit-both" ]]; then
   "${PMDAEMON[@]}" delete "$market_name" >/dev/null 2>&1 || true
   "${PMDAEMON[@]}" delete "$bookticker_name" >/dev/null 2>&1 || true
+  "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
 else
   "${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
 fi
@@ -98,7 +102,7 @@ if [[ ${#pids[@]} -gt 0 ]]; then
   fi
 fi
 
-if [[ "$venue" == "binance-futures" ]]; then
+if [[ "$venue" == "binance-futures" || "$venue" == "bybit-both" ]]; then
   echo "[INFO] ${market_name}/${bookticker_name} stopped"
 else
   echo "[INFO] ${name} stopped"

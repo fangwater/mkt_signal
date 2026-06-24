@@ -75,10 +75,40 @@ impl BinanceFuturesRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BybitRole {
+    Full,
+    Market,
+    BookTicker,
+}
+
+impl BybitRole {
+    pub fn parse(raw: &str) -> std::result::Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "" | "full" | "all" => Ok(Self::Full),
+            "market" | "trade-depth" | "trade-depth-derivatives" => Ok(Self::Market),
+            "bookticker" | "book-ticker" | "bbo" => Ok(Self::BookTicker),
+            other => Err(format!(
+                "invalid Bybit spread_pbs role {:?}; expected full/market/bookticker",
+                other
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Market => "market",
+            Self::BookTicker => "bookticker",
+        }
+    }
+}
+
 pub struct SpreadPbsApp {
     config: Config,
     publish_roots: SpreadPbsPublishRoots,
     binance_futures_role: BinanceFuturesRole,
+    bybit_role: BybitRole,
 }
 
 fn is_okex_venue(venue: order_common::TradingVenue) -> bool {
@@ -254,11 +284,16 @@ fn apply_symbol_filter(mut symbols: Vec<String>, venue_slug: &str) -> Vec<String
 fn build_market_subscribe(
     adapter: &Rc<dyn VenueAdapter>,
     symbols: &[String],
+    include_bbo: bool,
     include_trade: bool,
     include_incremental: bool,
     include_derivatives: bool,
 ) -> Vec<serde_json::Value> {
-    let mut out = adapter.build_subscribe(symbols);
+    let mut out = if include_bbo {
+        adapter.build_subscribe(symbols)
+    } else {
+        Vec::new()
+    };
     if include_trade && adapter.trade_ws_url().is_none() {
         out.extend(adapter.build_trade_subscribe(symbols));
     }
@@ -354,6 +389,7 @@ impl SpreadPbsApp {
             config,
             publish_roots: SpreadPbsPublishRoots::production(),
             binance_futures_role: BinanceFuturesRole::Full,
+            bybit_role: BybitRole::Full,
         }
     }
 
@@ -362,6 +398,7 @@ impl SpreadPbsApp {
             config,
             publish_roots,
             binance_futures_role: BinanceFuturesRole::Full,
+            bybit_role: BybitRole::Full,
         }
     }
 
@@ -374,6 +411,21 @@ impl SpreadPbsApp {
             config,
             publish_roots,
             binance_futures_role,
+            bybit_role: BybitRole::Full,
+        }
+    }
+
+    pub fn new_with_publish_roots_and_roles(
+        config: Config,
+        publish_roots: SpreadPbsPublishRoots,
+        binance_futures_role: BinanceFuturesRole,
+        bybit_role: BybitRole,
+    ) -> Self {
+        Self {
+            config,
+            publish_roots,
+            binance_futures_role,
+            bybit_role,
         }
     }
 
@@ -403,6 +455,11 @@ impl SpreadPbsApp {
         } else {
             BinanceFuturesRole::Full
         };
+        let bybit_role = if is_bybit_venue(venue) {
+            self.bybit_role
+        } else {
+            BybitRole::Full
+        };
 
         let adapter = match create_adapter(venue).await? {
             Some(a) => Rc::<dyn VenueAdapter>::from(a),
@@ -412,12 +469,13 @@ impl SpreadPbsApp {
             ),
         };
         log::info!(
-            "spread_pbs starting venue={} adapter={} spread_root={} dat_root={} binance_futures_role={}",
+            "spread_pbs starting venue={} adapter={} spread_root={} dat_root={} binance_futures_role={} bybit_role={}",
             venue_slug,
             adapter.name(),
             publish_roots.spread_root(),
             publish_roots.dat_root(),
             binance_futures_role.as_str(),
+            bybit_role.as_str(),
         );
         if venue == TradingVenue::BinanceFutures
             && binance_futures_role == BinanceFuturesRole::BookTicker
@@ -461,21 +519,29 @@ impl SpreadPbsApp {
         );
         let is_binance_futures_market_role = venue == TradingVenue::BinanceFutures
             && binance_futures_role == BinanceFuturesRole::Market;
-        let direct_trade_enabled = enable_trade && direct_trade_replacement_enabled(venue);
+        let is_bybit_market_role = is_bybit_venue(venue) && bybit_role == BybitRole::Market;
+        let is_bybit_bookticker_role = is_bybit_venue(venue) && bybit_role == BybitRole::BookTicker;
+        let bbo_enabled = !is_binance_futures_market_role && !is_bybit_market_role;
+        let replacement_enabled = !is_bybit_bookticker_role;
+        let direct_trade_enabled =
+            replacement_enabled && enable_trade && direct_trade_replacement_enabled(venue);
         let direct_incremental_enabled = enable_incremental
+            && replacement_enabled
             && direct_incremental_replacement_enabled(venue)
             && !adapter
                 .build_incremental_subscribe(&initial_symbols)
                 .is_empty();
         let direct_derivatives_enabled = enable_derivatives
+            && replacement_enabled
             && direct_derivatives_replacement_enabled(venue)
             && (is_okex_derivatives_venue(venue)
                 || !adapter
                     .build_derivatives_subscribe(&initial_symbols)
                     .is_empty());
         log::info!(
-            "spread_pbs[{}] data_types askbid=true trade={} incremental={} derivatives={} env_overrides {}={:?} {}={:?} {}={:?}",
+            "spread_pbs[{}] data_types askbid={} trade={} incremental={} derivatives={} env_overrides {}={:?} {}={:?} {}={:?}",
             venue_slug,
+            bbo_enabled,
             direct_trade_enabled,
             direct_incremental_enabled,
             direct_derivatives_enabled,
@@ -492,6 +558,7 @@ impl SpreadPbsApp {
             build_market_subscribe(
                 &adapter,
                 &initial_symbols,
+                bbo_enabled,
                 direct_trade_enabled,
                 direct_incremental_enabled,
                 direct_derivatives_enabled,
@@ -512,9 +579,7 @@ impl SpreadPbsApp {
         );
 
         // ---- IceOryx publisher + 共享态（Rc<RefCell> 单线程零锁，跨重启复用）----
-        let publisher = if is_binance_futures_market_role {
-            None
-        } else {
+        let publisher = if bbo_enabled {
             let publisher = Rc::new(
                 SpreadPublisher::new_with_root(venue_slug, publish_roots.spread_root())
                     .with_context(|| format!("create iceoryx publisher for {}", venue_slug))?,
@@ -523,6 +588,8 @@ impl SpreadPbsApp {
                 .seed_symbols(&initial_symbols)
                 .with_context(|| format!("seed BBO payload prefixes for {}", venue_slug))?;
             Some(publisher)
+        } else {
+            None
         };
         let trade_publisher = if direct_trade_enabled {
             let publisher = Rc::new(
@@ -593,15 +660,15 @@ impl SpreadPbsApp {
         } else {
             None
         };
-        let latency_publisher = if is_binance_futures_market_role {
-            None
-        } else {
+        let latency_publisher = if bbo_enabled {
             Some(Rc::new(
                 SpreadLatencyPublisher::new_with_root(venue_slug, publish_roots.spread_root())
                     .with_context(|| {
                         format!("create iceoryx latency publisher for {}", venue_slug)
                     })?,
             ))
+        } else {
+            None
         };
         let ipc_label = format!("{}-ipc", venue_slug);
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
@@ -714,7 +781,18 @@ impl SpreadPbsApp {
         // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
         let mut primary = if is_binance_futures_market_role {
             None
+        } else if is_bybit_market_role {
+            Some(spawn_replacement_leg_on_main_ws(
+                "primary",
+                primary_local_ip,
+                primary_url,
+                initial_subs.clone(),
+                &ctx,
+            ))
         } else {
+            let publisher = publisher
+                .clone()
+                .expect("BBO publisher must exist for non-market spread_pbs role");
             Some(spawn_leg(
                 "primary",
                 primary_local_ip,
@@ -722,11 +800,23 @@ impl SpreadPbsApp {
                 primary_source,
                 initial_subs.clone(),
                 &ctx,
+                publisher,
             ))
         };
         let mut secondary = if is_binance_futures_market_role {
             None
+        } else if is_bybit_market_role {
+            Some(spawn_replacement_leg_on_main_ws(
+                "secondary",
+                secondary_local_ip,
+                secondary_url,
+                initial_subs,
+                &ctx,
+            ))
         } else {
+            let publisher = publisher
+                .clone()
+                .expect("BBO publisher must exist for non-market spread_pbs role");
             Some(spawn_leg(
                 "secondary",
                 secondary_local_ip,
@@ -734,6 +824,7 @@ impl SpreadPbsApp {
                 secondary_source,
                 initial_subs,
                 &ctx,
+                publisher,
             ))
         };
 
@@ -984,10 +1075,8 @@ fn spawn_leg(
     source: MarketSource,
     subs: Vec<serde_json::Value>,
     ctx: &LegCtx,
+    publisher: Rc<SpreadPublisher>,
 ) -> WsLeg {
-    let Some(publisher) = ctx.publisher.as_ref().cloned() else {
-        panic!("spawn_leg requires a BBO publisher");
-    };
     let (tx, rx) = watch::channel(false);
     let handler = make_handler(
         label,
@@ -1019,6 +1108,47 @@ fn spawn_leg(
         local_ip,
         url,
         source,
+        shutdown_tx: tx,
+        handle,
+    }
+}
+
+fn spawn_replacement_leg_on_main_ws(
+    label: &'static str,
+    local_ip: String,
+    url: String,
+    subs: Vec<serde_json::Value>,
+    ctx: &LegCtx,
+) -> WsLeg {
+    let (tx, rx) = watch::channel(false);
+    let handler = make_replacement_handler(
+        label,
+        ctx.adapter.clone(),
+        ctx.trade_publisher.clone(),
+        ctx.incremental_publisher.clone(),
+        ctx.derivatives_publisher.clone(),
+        ctx.incremental_max_levels,
+        ctx.state.clone(),
+    );
+    let handle = tokio::task::spawn_local(run_public_ws(
+        WsLoopParams {
+            label,
+            url: url.clone(),
+            local_ip: local_ip.clone(),
+            remote_ip: None,
+            headers: ctx.adapter.ws_headers(),
+            subscribe_msgs: subs,
+            keepalive: ctx.adapter.keepalive(),
+            parse_okex_notices: ctx.parse_okex_notices,
+        },
+        handler,
+        rx,
+    ));
+    WsLeg {
+        label,
+        local_ip,
+        url,
+        source: MarketSource::Other,
         shutdown_tx: tx,
         handle,
     }
@@ -1583,6 +1713,7 @@ async fn restart_leg(
     let new_subs = build_market_subscribe(
         &ctx.adapter,
         &new_symbols,
+        ctx.publisher.is_some(),
         ctx.trade_publisher.is_some(),
         ctx.incremental_publisher.is_some(),
         ctx.derivatives_publisher.is_some(),
@@ -1648,14 +1779,25 @@ async fn restart_leg(
     let _ = leg.shutdown_tx.send(true);
     let _ = (&mut leg.handle).await;
 
-    let new_leg = spawn_leg(
-        leg.label,
-        leg.local_ip.clone(),
-        leg.url.clone(),
-        leg.source,
-        new_subs,
-        ctx,
-    );
+    let new_leg = if let Some(publisher) = ctx.publisher.as_ref().cloned() {
+        spawn_leg(
+            leg.label,
+            leg.local_ip.clone(),
+            leg.url.clone(),
+            leg.source,
+            new_subs,
+            ctx,
+            publisher,
+        )
+    } else {
+        spawn_replacement_leg_on_main_ws(
+            leg.label,
+            leg.local_ip.clone(),
+            leg.url.clone(),
+            new_subs,
+            ctx,
+        )
+    };
     leg.shutdown_tx = new_leg.shutdown_tx;
     leg.handle = new_leg.handle;
 
