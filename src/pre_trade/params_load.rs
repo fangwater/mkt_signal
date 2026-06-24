@@ -24,6 +24,10 @@ const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 type MaxPosUOverrideTable = FastHashMap<String, f64>;
 type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
 
+fn is_mm_pre_trade_mode(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
+    open_venue == hedge_venue
+}
+
 /// 从 Redis 加载的 Pre-Trade 风控参数（内部数据结构）
 #[derive(Debug, Clone)]
 struct PreTradeParamsData {
@@ -308,7 +312,11 @@ impl PreTradeParamsLoader {
             }
         }
 
-        self.apply_loaded_params(hash_map, max_pos_u_overrides);
+        self.apply_loaded_params(
+            hash_map,
+            max_pos_u_overrides,
+            is_mm_pre_trade_mode(open_venue, hedge_venue),
+        );
         Ok(())
     }
 
@@ -378,7 +386,11 @@ impl PreTradeParamsLoader {
             }
         }
 
-        self.apply_loaded_params(hash_map, max_pos_u_overrides);
+        self.apply_loaded_params(
+            hash_map,
+            max_pos_u_overrides,
+            is_mm_pre_trade_mode(open_venue, hedge_venue),
+        );
         Ok(())
     }
 
@@ -386,6 +398,7 @@ impl PreTradeParamsLoader {
         &self,
         hash_map: HashMap<String, String>,
         max_pos_u_overrides: MaxPosUOverrides,
+        mm_pre_trade_mode: bool,
     ) {
         let parse_f64 =
             |k: &str| -> Option<f64> { hash_map.get(k).and_then(|v| v.parse::<f64>().ok()) };
@@ -493,25 +506,21 @@ impl PreTradeParamsLoader {
                 data.arb_max_pending_limit_sell_orders = v.max(0) as i32;
             }
 
-            data.arb_close_max_pending_limit_buy_orders = parse_i64(
-                "arb_close_max_pending_limit_buy_orders",
-            )
-            .unwrap_or_else(|| {
+            if let Some(v) = parse_i64("arb_close_max_pending_limit_buy_orders") {
+                data.arb_close_max_pending_limit_buy_orders = v.max(0) as i32;
+            } else if !mm_pre_trade_mode {
                 panic!(
                     "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_buy_orders"
-                )
-            })
-            .max(0) as i32;
+                );
+            }
 
-            data.arb_close_max_pending_limit_sell_orders = parse_i64(
-                "arb_close_max_pending_limit_sell_orders",
-            )
-            .unwrap_or_else(|| {
+            if let Some(v) = parse_i64("arb_close_max_pending_limit_sell_orders") {
+                data.arb_close_max_pending_limit_sell_orders = v.max(0) as i32;
+            } else if !mm_pre_trade_mode {
                 panic!(
                     "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_sell_orders"
-                )
-            })
-            .max(0) as i32;
+                );
+            }
 
             if let Some(v) = parse_i64("arb_open_order_rate_limit_per_min") {
                 data.arb_open_order_rate_limit_per_min = v.max(0) as i32;
@@ -1070,6 +1079,28 @@ mod tests {
 
         assert_eq!(binance_val, 2500.0);
         assert_eq!(okex_val, 1500.0);
+    }
+
+    #[test]
+    fn mm_mode_allows_missing_arb_close_limits() {
+        let loader = PreTradeParamsLoader::instance();
+        let mut params = HashMap::new();
+        params.insert("max_pos_u".to_string(), "1234".to_string());
+
+        loader.apply_loaded_params(params, fast_hash_map(), true);
+
+        assert_eq!(loader.max_pos_u(), 1234.0);
+        assert_eq!(loader.arb_close_max_pending_limit_buy_orders(), 3);
+        assert_eq!(loader.arb_close_max_pending_limit_sell_orders(), 3);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "pre_trade_risk_params missing or invalid required field: arb_close_max_pending_limit_buy_orders"
+    )]
+    fn non_mm_mode_requires_arb_close_limits() {
+        let loader = PreTradeParamsLoader::instance();
+        loader.apply_loaded_params(HashMap::new(), fast_hash_map(), false);
     }
 
     #[test]
