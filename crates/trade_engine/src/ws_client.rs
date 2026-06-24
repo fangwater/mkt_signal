@@ -35,8 +35,11 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use iceoryx2::port::publisher::Publisher;
+use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
+use order_common::{BinanceUmNewAckTraceMsg, BINANCE_UM_NEW_ACK_TRACE_PAYLOAD_LEN};
 use rolling_common::latency_kll::LatencyKll;
 use rolling_common::latency_snapshot::{
     LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
@@ -71,6 +74,11 @@ use tokio_tungstenite::{
 };
 use tokio_util::sync::CancellationToken;
 use url::Url;
+
+const BINANCE_UM_NEW_ACK_ROUTE_EVAL_MAX_SAMPLES: usize = 64;
+
+type BinanceUmNewAckTracePublisher =
+    Rc<Publisher<ipc::Service, [u8; BINANCE_UM_NEW_ACK_TRACE_PAYLOAD_LEN], ()>>;
 
 fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(payload).ok()?;
@@ -501,7 +509,7 @@ fn classify_ws_action(rt: TradeRequestType) -> WsAction {
 pub(crate) struct WsEndpointState {
     cooldown_until: Option<std::time::Instant>,
     health_pause_until: Option<std::time::Instant>,
-    recent_binance_um_new_ack_rtts_us: VecDeque<i64>,
+    recent_binance_um_new_ack_rtts_us: VecDeque<BinanceUmNewAckRttSample>,
     recent_binance_um_cancel_rtts_us: VecDeque<i64>,
     binance_um_new_inflight: VecDeque<BinanceUmNewInflightState>,
     binance_um_cancel_inflight: VecDeque<BinanceUmCancelInflightState>,
@@ -510,6 +518,12 @@ pub(crate) struct WsEndpointState {
     last_binance_um_new_sent_at: Option<std::time::Instant>,
     binance_um_request_weight_1m: Option<BinanceWsRateLimitWindow>,
     binance_um_orders_1m: Option<BinanceWsRateLimitWindow>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BinanceUmNewAckRttSample {
+    rtt_us: i64,
+    ts_us: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -564,11 +578,13 @@ pub(crate) struct BinanceUmWsLatencySummary {
     pub max_us: i64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct BinanceUmWsEndpointRouteEvalStats {
     pub sample_n: usize,
-    pub mean_us: i64,
+    pub score_us: i64,
+    pub effective_n: f64,
     pub latest_us: Option<i64>,
+    pub last_sample_age_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -989,35 +1005,49 @@ impl WsEndpointHandle {
             .iter()
             .rev()
             .take(n)
-            .copied()
+            .map(|sample| sample.rtt_us)
             .sum();
         (sum, count)
     }
 
     pub(crate) fn binance_um_new_ack_route_eval_stats(
         &self,
-        select_recent: usize,
+        now_us: i64,
+        half_life_ms: u64,
+        window_ms: u64,
     ) -> BinanceUmWsEndpointRouteEvalStats {
         let state = self.state.borrow();
-        let sample_n = state
-            .recent_binance_um_new_ack_rtts_us
-            .len()
-            .min(select_recent);
-        let sum = state
-            .recent_binance_um_new_ack_rtts_us
-            .iter()
-            .rev()
-            .take(select_recent)
-            .copied()
-            .sum::<i64>();
+        let cutoff_us = now_us.saturating_sub((window_ms as i64).saturating_mul(1_000));
+        let half_life_us = ((half_life_ms.max(1)) as f64) * 1_000.0;
+        let mut weighted_sum = 0.0;
+        let mut weight_sum = 0.0;
+        let mut sample_n = 0usize;
+        for sample in state.recent_binance_um_new_ack_rtts_us.iter().rev() {
+            if sample.ts_us < cutoff_us {
+                break;
+            }
+            let age_us = now_us.saturating_sub(sample.ts_us).max(0) as f64;
+            let weight = 2.0_f64.powf(-age_us / half_life_us);
+            weighted_sum += (sample.rtt_us as f64) * weight;
+            weight_sum += weight;
+            sample_n = sample_n.saturating_add(1);
+        }
+        let latest = state.recent_binance_um_new_ack_rtts_us.back().copied();
         BinanceUmWsEndpointRouteEvalStats {
             sample_n,
-            mean_us: if sample_n > 0 {
-                sum / sample_n as i64
+            score_us: if weight_sum > 0.0 {
+                (weighted_sum / weight_sum).round() as i64
             } else {
                 0
             },
-            latest_us: state.recent_binance_um_new_ack_rtts_us.back().copied(),
+            effective_n: weight_sum,
+            latest_us: latest.map(|sample| sample.rtt_us),
+            last_sample_age_ms: latest.map(|sample| {
+                now_us
+                    .saturating_sub(sample.ts_us)
+                    .max(0)
+                    .saturating_div(1_000)
+            }),
         }
     }
 
@@ -1032,8 +1062,15 @@ impl WsEndpointHandle {
     ) -> BinanceUmWsHealthAction {
         let action = health.record_new(rtt_us);
         let mut state = self.state.borrow_mut();
-        state.recent_binance_um_new_ack_rtts_us.push_back(rtt_us);
-        while state.recent_binance_um_new_ack_rtts_us.len() > health.select_recent() {
+        state
+            .recent_binance_um_new_ack_rtts_us
+            .push_back(BinanceUmNewAckRttSample {
+                rtt_us,
+                ts_us: get_timestamp_us(),
+            });
+        while state.recent_binance_um_new_ack_rtts_us.len()
+            > BINANCE_UM_NEW_ACK_ROUTE_EVAL_MAX_SAMPLES.max(health.select_recent())
+        {
             state.recent_binance_um_new_ack_rtts_us.pop_front();
         }
         if let BinanceUmWsHealthAction::Pause {
@@ -1188,7 +1225,7 @@ impl WsEndpointHandle {
             .iter()
             .rev()
             .take(select_recent)
-            .copied()
+            .map(|sample| sample.rtt_us)
             .sum::<i64>();
         let mean_us = if recent_count > 0 {
             sum / recent_count as i64
@@ -1217,8 +1254,11 @@ struct InflightRequestFlags {
 struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
+    order_create_time_us: i64,
     ws_open_update_enabled: bool,
     taker_trace: Option<TakerTraceMeta>,
+    /// 墙钟 epoch μs，`ws.send` 调用前打点；用于逐单 send 调用耗时分析。
+    ws_send_start_time_us: i64,
     /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于本地 RTT。
     sent_at: std::time::Instant,
     /// 墙钟 epoch μs，与 `sent_at` 同时打点；用于跨时钟差值（uplink / downlink）。
@@ -1301,6 +1341,8 @@ pub struct TradeWsClient {
     last_gate_login_req_id: Option<String>,
     lat_buckets: WsLatencyBuckets,
     binance_um_ws_health: Option<BinanceUmWsHealthRuntime>,
+    binance_um_new_ack_trace_publisher: Option<BinanceUmNewAckTracePublisher>,
+    binance_um_route_group_id: Option<u32>,
     binance_um_cancel_probe_enabled: bool,
     binance_um_cancel_probe_symbol: String,
 }
@@ -1471,6 +1513,8 @@ impl TradeWsClient {
             last_gate_login_req_id: None,
             lat_buckets,
             binance_um_ws_health: None,
+            binance_um_new_ack_trace_publisher: None,
+            binance_um_route_group_id: None,
             binance_um_cancel_probe_enabled: false,
             binance_um_cancel_probe_symbol: DEFAULT_BINANCE_UM_CANCEL_PROBE_SYMBOL.to_string(),
         }
@@ -1483,6 +1527,19 @@ impl TradeWsClient {
 
     pub(crate) fn with_binance_um_ws_health(mut self, health: BinanceUmWsHealthRuntime) -> Self {
         self.binance_um_ws_health = Some(health);
+        self
+    }
+
+    pub(crate) fn with_binance_um_new_ack_trace_publisher(
+        mut self,
+        publisher: BinanceUmNewAckTracePublisher,
+    ) -> Self {
+        self.binance_um_new_ack_trace_publisher = Some(publisher);
+        self
+    }
+
+    pub(crate) fn with_binance_um_route_group_id(mut self, route_group_id: u32) -> Self {
+        self.binance_um_route_group_id = Some(route_group_id);
         self
     }
 
@@ -2190,6 +2247,7 @@ impl TradeWsClient {
                 payload.len()
             );
         }
+        let ws_send_start_time_us = get_timestamp_us();
         ws.send(Message::Text(payload)).await?;
         let sent_at = std::time::Instant::now();
         let sent_at_us = get_timestamp_us();
@@ -2206,6 +2264,7 @@ impl TradeWsClient {
         self.track_inflight(
             msg,
             transport_id,
+            ws_send_start_time_us,
             sent_at,
             sent_at_us,
             ipc_recv_to_ws_send_done_us,
@@ -2692,6 +2751,7 @@ impl TradeWsClient {
         &mut self,
         msg: &TradeRequestMsg,
         transport_id: i64,
+        ws_send_start_time_us: i64,
         sent_at: std::time::Instant,
         sent_at_us: i64,
         ipc_recv_to_ws_send_done_us: Option<i64>,
@@ -2702,8 +2762,10 @@ impl TradeWsClient {
             TradeInflightMeta {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
+                order_create_time_us: msg.create_time,
                 ws_open_update_enabled: flags.ws_open_update_enabled,
                 taker_trace: flags.taker_trace,
+                ws_send_start_time_us,
                 sent_at,
                 sent_at_us,
             },
@@ -2984,6 +3046,37 @@ impl TradeWsClient {
             "trade ws client id={} exchange={:?} dropping uncorrelated non-utf8 payload: {} bytes",
             self.id, self.exchange, len
         );
+    }
+
+    fn publish_binance_um_new_ack_trace(
+        &self,
+        meta: &TradeInflightMeta,
+        transport_id: i64,
+        ack_recv_time_us: i64,
+        rtt_us: i64,
+    ) {
+        let Some(publisher) = self.binance_um_new_ack_trace_publisher.as_ref() else {
+            return;
+        };
+        let msg = BinanceUmNewAckTraceMsg::new(
+            self.id as u32,
+            self.binance_um_route_group_id.unwrap_or(u32::MAX),
+            meta.client_order_id,
+            transport_id,
+            meta.order_create_time_us,
+            meta.ws_send_start_time_us,
+            meta.sent_at_us,
+            ack_recv_time_us,
+            rtt_us,
+            self.local_ip,
+            self.current_remote_addr.map(|addr| addr.ip()),
+        );
+        if let Err(err) = publisher.send_copy(msg.into_bytes()) {
+            warn!(
+                "BinanceUmNewAckTrace: publish failed endpoint_id={} client_order_id={} transport_id={} err={}",
+                self.id, meta.client_order_id, transport_id, err
+            );
+        }
     }
 
     fn notify_rejected(&self, msg: &TradeRequestMsg, reason: &str) {
@@ -3864,10 +3957,13 @@ impl TradeWsClient {
         if meta.req_type == TradeRequestType::BinanceWsNewUMOrder {
             handle.clear_binance_um_new_inflight(meta.client_order_id, id);
             if let Some(health) = self.binance_um_ws_health.as_ref() {
-                let rtt_us = meta.sent_at.elapsed().as_micros() as i64;
+                let ack_recv_time_us = get_timestamp_us();
+                let trace_rtt_us = ack_recv_time_us.saturating_sub(meta.sent_at_us);
+                let health_rtt_us = meta.sent_at.elapsed().as_micros() as i64;
+                self.publish_binance_um_new_ack_trace(&meta, id, ack_recv_time_us, trace_rtt_us);
                 log_taker_trace = matches!(
                     handle.mark_binance_um_new_ack_rtt(
-                        rtt_us,
+                        health_rtt_us,
                         health,
                         self.id,
                         self.local_ip,
@@ -4519,9 +4615,9 @@ impl TradeWsClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_bitget_pong_response, parse_bitget_control_event, BinanceUmWsHealthConfig,
-        BinanceUmWsHealthRuntime, QueryInflightMeta, TradeWsClient, WsCommandQueue,
-        WsEndpointHandle, WsEndpointState,
+        is_bitget_pong_response, parse_bitget_control_event, BinanceUmNewAckRttSample,
+        BinanceUmWsHealthConfig, BinanceUmWsHealthRuntime, QueryInflightMeta, TradeWsClient,
+        WsCommandQueue, WsEndpointHandle, WsEndpointState,
     };
     use crate::binance_ws;
     use crate::query_request::QueryRequestType;
@@ -4839,6 +4935,33 @@ mod tests {
         assert_eq!(mean_us, 2_000);
         assert_eq!(recent_count, 3);
         assert_eq!(pause_ms_left, 0);
+    }
+
+    #[test]
+    fn binance_um_route_eval_score_time_decays_old_samples() {
+        let now_us = runtime_common::time_util::get_timestamp_us();
+        let state = Rc::new(RefCell::new(WsEndpointState::default()));
+        state
+            .borrow_mut()
+            .recent_binance_um_new_ack_rtts_us
+            .extend([
+                BinanceUmNewAckRttSample {
+                    rtt_us: 10_000,
+                    ts_us: now_us - 4_000_000,
+                },
+                BinanceUmNewAckRttSample {
+                    rtt_us: 1_000,
+                    ts_us: now_us,
+                },
+            ]);
+        let handle = WsEndpointHandle::new(WsCommandQueue::new(), state);
+
+        let stats = handle.binance_um_new_ack_route_eval_stats(now_us, 800, 5_000);
+
+        assert_eq!(stats.sample_n, 2);
+        assert!(stats.score_us < 2_000, "score_us={}", stats.score_us);
+        assert_eq!(stats.latest_us, Some(1_000));
+        assert_eq!(stats.last_sample_age_ms, Some(0));
     }
 
     #[test]

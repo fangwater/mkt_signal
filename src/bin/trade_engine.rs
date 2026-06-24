@@ -123,7 +123,7 @@ struct TradeEngineLocalIpRuntimeConfig {
     binance_um_whitelist_ip_value: Option<String>,
     binance_um_ws_direct_ip_values: Vec<String>,
     binance_um_ws_health: BinanceUmWsHealthConfig,
-    binance_um_ws_route_eval: runtime_common::mkt_cfg::BinanceUmWsRouteEvalConfig,
+    binance_um_ws_route: runtime_common::mkt_cfg::BinanceUmWsRouteConfig,
     source: String,
 }
 
@@ -179,7 +179,7 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
             binance_um_whitelist_ip_value,
             binance_um_ws_direct_ip_values: cfg.binance_um_ws_direct_ips,
             binance_um_ws_health: cfg.binance_um_ws_health,
-            binance_um_ws_route_eval: cfg.binance_um_ws_route_eval,
+            binance_um_ws_route: cfg.binance_um_ws_route,
             source: path.display().to_string(),
         });
     }
@@ -198,7 +198,7 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
         binance_um_whitelist_ip_value: None,
         binance_um_ws_direct_ip_values: Vec::new(),
         binance_um_ws_health: BinanceUmWsHealthConfig::default(),
-        binance_um_ws_route_eval: runtime_common::mkt_cfg::BinanceUmWsRouteEvalConfig::default(),
+        binance_um_ws_route: runtime_common::mkt_cfg::BinanceUmWsRouteConfig::default(),
         source: format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     })
 }
@@ -462,14 +462,18 @@ async fn main() -> Result<()> {
             cfg.select_recent,
             cfg.cancel_probe_rate_limit_guard_pct
         );
-        let eval_cfg = &local_ip_cfg.binance_um_ws_route_eval;
+        let route_cfg = &local_ip_cfg.binance_um_ws_route;
         info!(
-            "configured Binance UM WS route eval: enabled={} redis_key_suffix={} write_interval_ms={} route_family={} min_samples={}",
-            eval_cfg.enabled,
-            eval_cfg.redis_key_suffix,
-            eval_cfg.write_interval_ms,
-            eval_cfg.route_family,
-            eval_cfg.min_samples
+            "configured Binance UM WS route: route={} redis_env={:?} redis_key_suffix={} write_interval_ms={} read_interval_ms={} score_half_life_ms={} score_window_ms={} route_family={} min_samples={}",
+            route_cfg.route.as_str(),
+            route_cfg.redis_env,
+            route_cfg.redis_key_suffix,
+            route_cfg.write_interval_ms,
+            route_cfg.read_interval_ms,
+            route_cfg.score_half_life_ms,
+            route_cfg.score_window_ms,
+            route_cfg.route_family,
+            route_cfg.min_samples
         );
     }
 
@@ -580,7 +584,7 @@ async fn main() -> Result<()> {
         binance_um_whitelist_ip,
         binance_um_ws_direct_ips,
         local_ip_cfg.binance_um_ws_health,
-        local_ip_cfg.binance_um_ws_route_eval,
+        local_ip_cfg.binance_um_ws_route,
     );
 
     let local = tokio::task::LocalSet::new();
