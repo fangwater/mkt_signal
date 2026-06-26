@@ -29,6 +29,10 @@ explicit per-process bindings.
   - OKEx runs one `okex-both` depth publisher on CPU13 for model input.
   - Bitget and Gate depth publishers are not running in the current `jp2`
     layout.
+- Model-input auxiliary processes also run on housekeeping/general cores:
+  - OKEx margin/futures rolling metrics: `rm_ok_mg_ok_fu`.
+  - OKEx margin trade-flow feature publisher: `tff_ok_mg`.
+  - OKEx futures trade-flow feature publisher: `tff_ok_fu`.
 
 ## Core Map
 
@@ -46,6 +50,26 @@ Treat the table as authoritative for `ssh jp2` unless the user explicitly
 updates the topology. Do not assume CPU13 is Bitget depth on this host; it is
 currently OKEx `depth_pub`.
 
+## Model Input Auxiliaries
+
+OKEx model-input support is deployed under:
+
+| pmdaemon name | Binary | Venue dir | Key config |
+| --- | --- | --- | --- |
+| `rm_ok_mg_ok_fu` | `rolling_metrics` | `~/rolling_metrics/okex-margin-okex-futures` | Redis params key `rolling_metrics_params_okex-margin_okex-futures`; output key `rolling_metrics_thresholds_okex-margin_okex-futures` |
+| `tff_ok_mg` | `trade_flow_feature_pub` | `~/trade_flow_feature/okex-margin` | `config/trade_flow_feature_pub.yaml` uses `depth_channel: "none"` |
+| `tff_ok_fu` | `trade_flow_feature_pub` | `~/trade_flow_feature/okex-futures` | `config/trade_flow_feature_pub.yaml` uses `depth_channel: "depth25"` and subscribes `depth_pubs/okex-futures/depth25` |
+
+The OKEx rolling Redis params were copied from
+`rolling_metrics_params_bitget-margin_bitget-futures`, but the output hash key
+must remain OKEx-specific. Do not copy Bitget's `output_hash_key` verbatim.
+
+The OKEx futures trade-flow feature publisher requires
+`okex-futures:amount-thresholds`. On 2026-06-26 this key was initialized from
+the OKEx rolling symbol set with 211 fields and the same default futures
+threshold shape used by Bitget/Gate futures:
+`medium_notional_threshold=1.0`, `large_notional_threshold=1000.0`.
+
 ## Deployment Notes
 
 Check worktree state before changing repo scripts:
@@ -60,11 +84,13 @@ Deploy the selected venues from the repo checkout:
 ```bash
 ssh jp2 'cd ~/spread_pbs/<venue> && ./scripts/start_spread_pbs.sh'
 ssh jp2 'cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh'
+ssh jp2 'cd ~/trade_flow_feature/okex-futures && ./scripts/start_trade_flow_feature_pub.sh'
 ```
 
 The live `jp2` host may not have a repo checkout at
 `~/crypto_mkt/mkt_signal`; it uses deployed runtime directories under
-`~/spread_pbs` and `~/depth_pub`. The start scripts read per-venue `env.sh`
+`~/spread_pbs`, `~/depth_pub`, `~/rolling_metrics`, and
+`~/trade_flow_feature`. The spread/depth start scripts read per-venue `env.sh`
 files:
 
 - `~/spread_pbs/<venue>/env.sh` with `export SPREAD_PBS_CORE='<cpu>'`
@@ -88,6 +114,9 @@ ssh jp2 'cd ~/spread_pbs/bitget-both && ./scripts/start_spread_pbs.sh'
 ssh jp2 'cd ~/spread_pbs/okex-both && ./scripts/start_spread_pbs.sh'
 ssh jp2 'cd ~/depth_pub/okex-both && ./scripts/start_depth_pub.sh'
 ssh jp2 'cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh'
+ssh jp2 'pmdaemon delete rm_ok_mg_ok_fu >/dev/null 2>&1 || true; cd ~/rolling_metrics/okex-margin-okex-futures && source ./env.sh && pmdaemon start -n rm_ok_mg_ok_fu --cwd ~/rolling_metrics/okex-margin-okex-futures -e RUST_LOG=info,rolling_metrics=info,mkt_signal=info ~/rolling_metrics/okex-margin-okex-futures/rolling_metrics -- --open-venue okex-margin --hedge-venue okex-futures'
+ssh jp2 'cd ~/trade_flow_feature/okex-margin && source ./env.sh && ./scripts/start_trade_flow_feature_pub.sh'
+ssh jp2 'cd ~/trade_flow_feature/okex-futures && source ./env.sh && ./scripts/start_trade_flow_feature_pub.sh'
 ```
 
 Before starting a `*-both` `spread_pbs`, stop conflicting single-side processes for the same exchange. The start script checks for conflicts, but do not rely on it as the only guard when operating live deployments.
@@ -100,6 +129,8 @@ expected live cores:
 ```bash
 ssh jp2 'pmdaemon list | grep -E "spp_|dp_"'
 ssh jp2 'ps -eo pid,psr,comm,args | grep -E "spread_pbs|depth_pub" | grep -v grep'
+ssh jp2 'pmdaemon list | grep -E "rm_ok_mg_ok_fu|tff_ok_mg|tff_ok_fu"'
+ssh jp2 'ps -eo pid,psr,comm,args | grep -E "rolling_metrics|trade_flow_feature_pub" | grep -E "okex|ok_" | grep -v grep'
 ```
 
 Expected process names:
@@ -111,5 +142,13 @@ Expected process names:
 - `spp_ok_bo`
 - `dp_ok_both`
 - `dp_bn_both`
+- `rm_ok_mg_ok_fu`
+- `tff_ok_mg`
+- `tff_ok_fu`
 
 If a process is missing or on a different CPU, inspect that venue's `env.sh` first, then restart only that venue.
+
+For OKEx futures trade-flow feature, the startup log must include both:
+
+- `Subscribed to trade channel: dat_pbs/okex-futures/trade`
+- `Subscribed to depth channel: depth_pubs/okex-futures/depth25`
