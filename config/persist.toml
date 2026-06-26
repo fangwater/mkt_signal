@@ -20,8 +20,16 @@ id = "okex-intra-arb01"
 url = "http://47.238.128.48:6354"
 
 [[sources]]
+id = "bitget_fr_arb02"
+url = "http://127.0.0.1:6341"
+
+[[sources]]
 id = "binance-intra-arb01"
 url = "http://127.0.0.1:6342"
+
+[[sources]]
+id = "gate-intra-arb01"
+url = "http://127.0.0.1:6343"
 
 [[sources]]
 id = "bitget-intra-arb01"

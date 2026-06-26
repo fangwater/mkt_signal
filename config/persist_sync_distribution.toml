@@ -33,27 +33,6 @@ base_url = "http://47.238.128.48"
 host = "47.131.162.78"
 base_url = "http://47.131.162.78"
 
-# Requested FR sources on JP.
-[[allocations]]
-port = 6340
-region = "jp"
-strategy = "fr"
-env = "gate_fr_arb01"
-source_id = "gate_fr_arb01"
-public_url = "http://54.64.147.69:6340"
-bind = "127.0.0.1:50040"
-status = "planned"
-
-[[allocations]]
-port = 6341
-region = "jp"
-strategy = "fr"
-env = "bitget_fr_arb02"
-source_id = "bitget_fr_arb02"
-public_url = "http://54.64.147.69:6341"
-bind = "127.0.0.1:50041"
-status = "planned"
-
 # Local intra/cross arb01 sources on this machine.
 [[allocations]]
 port = 6342

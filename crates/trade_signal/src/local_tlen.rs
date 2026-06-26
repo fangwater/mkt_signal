@@ -241,10 +241,6 @@ thread_local! {
 }
 
 pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
-    if force_remote {
-        return TlenQueryMode::Remote;
-    }
-
     if let Ok(raw) = std::env::var(LOCAL_TLEN_MODE_ENV) {
         match raw.trim().to_ascii_lowercase().as_str() {
             "local" => return TlenQueryMode::Local,
@@ -257,6 +253,10 @@ pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
                 return TlenQueryMode::Remote;
             }
         }
+    }
+
+    if force_remote {
+        return TlenQueryMode::Remote;
     }
 
     TlenQueryMode::Remote
@@ -681,8 +681,15 @@ mod tests {
             assert_eq!(startup_mode_from_env(false), TlenQueryMode::Remote);
         }
 
+        std::env::remove_var(LOCAL_TLEN_MODE_ENV);
+    }
+
+    #[test]
+    fn startup_mode_explicit_local_overrides_force_remote() {
+        let _guard = env_test_lock();
+
         std::env::set_var(LOCAL_TLEN_MODE_ENV, "local");
-        assert_eq!(startup_mode_from_env(true), TlenQueryMode::Remote);
+        assert_eq!(startup_mode_from_env(true), TlenQueryMode::Local);
 
         std::env::remove_var(LOCAL_TLEN_MODE_ENV);
     }
