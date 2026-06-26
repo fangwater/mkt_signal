@@ -24,10 +24,11 @@ explicit per-process bindings.
 - 5 `spread_pbs` processes:
   - Binance split into 2 processes: `binance-margin` and `binance-futures`.
   - Gate, OKEx, and Bitget each run as one `*-both` process.
-- 1 `depth_pub` process:
+- 2 `depth_pub` processes:
   - Binance runs one `binance-both` depth publisher on CPU14.
-  - Bitget, Gate, and OKEx depth publishers are not running in the current
-    `jp2` layout.
+  - OKEx runs one `okex-both` depth publisher on CPU13 for model input.
+  - Bitget and Gate depth publishers are not running in the current `jp2`
+    layout.
 
 ## Core Map
 
@@ -38,11 +39,12 @@ explicit per-process bindings.
 | 10 | `spread_pbs` | `~/spread_pbs/gate-both` | `SPREAD_PBS_CORE=10` | `spp_gt_bo` |
 | 11 | `spread_pbs` | `~/spread_pbs/bitget-both` | `SPREAD_PBS_CORE=11` | `spp_bg_bo` |
 | 12 | `spread_pbs` | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=12` plus OKX env sourced from `~/okex-intra-arb01/env.sh` | `spp_ok_bo` |
+| 13 | `depth_pub` | `~/depth_pub/okex-both` | `DEPTH_PUB_CORE=13` | `dp_ok_both` |
 | 14 | `depth_pub` | `~/depth_pub/binance-both` | `DEPTH_PUB_CORE=14` | `dp_bn_both` |
 
 Treat the table as authoritative for `ssh jp2` unless the user explicitly
 updates the topology. Do not assume CPU13 is Bitget depth on this host; it is
-currently unassigned in the market-data layout.
+currently OKEx `depth_pub`.
 
 ## Deployment Notes
 
@@ -84,6 +86,7 @@ ssh jp2 'cd ~/spread_pbs/binance-futures && ./scripts/start_spread_pbs.sh'
 ssh jp2 'cd ~/spread_pbs/gate-both && ./scripts/start_spread_pbs.sh'
 ssh jp2 'cd ~/spread_pbs/bitget-both && ./scripts/start_spread_pbs.sh'
 ssh jp2 'cd ~/spread_pbs/okex-both && ./scripts/start_spread_pbs.sh'
+ssh jp2 'cd ~/depth_pub/okex-both && ./scripts/start_depth_pub.sh'
 ssh jp2 'cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh'
 ```
 
@@ -106,6 +109,7 @@ Expected process names:
 - `spp_gt_bo`
 - `spp_bg_bo`
 - `spp_ok_bo`
+- `dp_ok_both`
 - `dp_bn_both`
 
 If a process is missing or on a different CPU, inspect that venue's `env.sh` first, then restart only that venue.
