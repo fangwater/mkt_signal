@@ -248,9 +248,9 @@ fn resolve_mm_open_offset_lower(
 }
 
 fn validate_hedge_price_offset_limits(lower: f64, upper: f64) {
-    if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
+    if !(lower.is_finite() && upper.is_finite() && lower >= 0.0 && upper >= lower) {
         panic!(
-            "MmDecision: hedge price offset limits must satisfy 0<lower<=upper, got lower={} upper={}",
+            "MmDecision: hedge price offset limits must satisfy 0<=lower<=upper, got lower={} upper={}",
             lower, upper
         );
     }
@@ -740,9 +740,9 @@ impl MmDecisionState {
             if symbol.trim().is_empty() {
                 panic!("MmDecision: hedge price offset override symbol cannot be empty");
             }
-            if !(lower.is_finite() && *lower > 0.0) {
+            if !(lower.is_finite() && *lower >= 0.0) {
                 panic!(
-                    "MmDecision: hedge_price_offset_limit_lower override must be finite and > 0, symbol={} value={}",
+                    "MmDecision: hedge_price_offset_limit_lower override must be finite and >= 0, symbol={} value={}",
                     symbol, lower
                 );
             }
@@ -1435,6 +1435,21 @@ mod tests {
             "btc-usdt",
         );
         assert_eq!(limits, (0.0003, 0.004));
+    }
+
+    #[test]
+    fn test_resolve_mm_hedge_price_offset_limits_allows_zero_lower() {
+        let lower_overrides = HashMap::from([(String::from("BTCUSDT"), 0.0)]);
+        let upper_overrides = HashMap::from([(String::from("BTCUSDT"), 0.0001)]);
+        let limits = resolve_mm_hedge_price_offset_limits(
+            0.0003,
+            0.004,
+            &lower_overrides,
+            &upper_overrides,
+            TradingVenue::BinanceMargin,
+            "btc-usdt",
+        );
+        assert_eq!(limits, (0.0, 0.0001));
     }
 
     #[test]

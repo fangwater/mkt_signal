@@ -339,6 +339,34 @@ fn parse_mm_positive_f64_overrides(
     normalized
 }
 
+fn parse_mm_nonnegative_f64_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+    field_name: &str,
+) -> HashMap<String, f64> {
+    let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
+        panic!(
+            "Redis string '{}' 不是合法 JSON(symbol->{}): {} ({})",
+            redis_key, field_name, raw, err
+        )
+    });
+
+    let mut normalized = HashMap::new();
+    for (symbol, value) in parsed {
+        let symbol_trimmed = symbol.trim();
+        if !(value.is_finite() && value >= 0.0) {
+            panic!(
+                "Redis string '{}' symbol={} {} 非法: {}",
+                redis_key, symbol_trimmed, field_name, value
+            );
+        }
+        let symbol_key = normalize_mm_override_symbol(symbol_trimmed, open_venue, redis_key);
+        normalized.insert(symbol_key, value);
+    }
+    normalized
+}
+
 fn parse_mm_amount_u_overrides(
     raw: &str,
     open_venue: TradingVenue,
@@ -430,9 +458,9 @@ fn parse_mm_hedge_price_offset_limit_overrides(
         let symbol_trimmed = symbol.trim();
         let lower = limits.hedge_price_offset_limit_lower;
         let upper = limits.hedge_price_offset_limit_upper;
-        if !(lower.is_finite() && upper.is_finite() && lower > 0.0 && upper >= lower) {
+        if !(lower.is_finite() && upper.is_finite() && lower >= 0.0 && upper >= lower) {
             panic!(
-                "Redis string '{}' symbol={} hedge_price_offset_limit 非法: lower={} upper={} (need 0<lower<=upper)",
+                "Redis string '{}' symbol={} hedge_price_offset_limit 非法: lower={} upper={} (need 0<=lower<=upper)",
                 redis_key, symbol_trimmed, lower, upper
             );
         }
@@ -968,7 +996,7 @@ impl StrategyParams {
                     );
                     let lower_overrides = match client.get_string(&lower_key).await? {
                         Some(raw) => {
-                            let parsed = parse_mm_positive_f64_overrides(
+                            let parsed = parse_mm_nonnegative_f64_overrides(
                                 &raw,
                                 open_venue,
                                 &lower_key,
@@ -2145,6 +2173,27 @@ mod tests {
         assert_eq!(upper_overrides.get("BTCUSDT"), Some(&0.005));
         assert_eq!(lower_overrides.get("ETHUSDT"), Some(&0.0004));
         assert_eq!(upper_overrides.get("ETHUSDT"), Some(&0.004));
+    }
+
+    #[test]
+    fn test_parse_mm_hedge_price_offset_limit_overrides_allows_zero_lower() {
+        let (lower_overrides, upper_overrides) = parse_mm_hedge_price_offset_limit_overrides(
+            r#"{"BTCUSDT":{"hedge_price_offset_limit_lower":0.0,"hedge_price_offset_limit_upper":0.0001}}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:hedge_price_offset_limits",
+        );
+        assert_eq!(lower_overrides.get("BTCUSDT"), Some(&0.0));
+        assert_eq!(upper_overrides.get("BTCUSDT"), Some(&0.0001));
+    }
+
+    #[test]
+    #[should_panic(expected = "hedge_price_offset_limit 非法")]
+    fn test_parse_mm_hedge_price_offset_limit_overrides_rejects_negative_lower() {
+        let _ = parse_mm_hedge_price_offset_limit_overrides(
+            r#"{"BTCUSDT":{"hedge_price_offset_limit_lower":-0.0001,"hedge_price_offset_limit_upper":0.0001}}"#,
+            TradingVenue::BinanceMargin,
+            "binance_mm_beta:binance-futures:mm:hedge_price_offset_limits",
+        );
     }
 
     #[test]

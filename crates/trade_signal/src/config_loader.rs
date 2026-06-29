@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use order_common::TradingVenue;
@@ -59,6 +60,16 @@ fn normalize_namespace(namespace: &str) -> String {
     }
 }
 
+fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 /// 配置加载间隔（秒）
 const RELOAD_INTERVAL_SECS: u64 = 60;
 
@@ -103,11 +114,23 @@ pub fn spawn_config_loader_with_namespace(
         loop {
             interval.tick().await;
 
-            // 重载所有配置
-            if let Err(err) =
-                reload_all_configs(&redis, &ns, &symbol_key_suffix, open_venue, hedge_venue).await
-            {
-                warn!("配置重载失败: {:?}", err);
+            let redis_for_reload = redis.clone();
+            let ns_for_reload = ns.clone();
+            let suffix_for_reload = symbol_key_suffix.clone();
+            let reload_task = tokio::task::spawn_local(async move {
+                reload_all_configs(
+                    &redis_for_reload,
+                    &ns_for_reload,
+                    &suffix_for_reload,
+                    open_venue,
+                    hedge_venue,
+                )
+                .await
+            });
+            match reload_task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => warn!("配置重载失败: {:?}", err),
+                Err(err) => warn!("配置重载任务失败(panic/cancelled): {:?}", err),
             }
         }
     });
@@ -177,10 +200,13 @@ async fn reload_strategy_params(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     match StrategyParams::load_from_redis(redis, namespace, open_venue, hedge_venue).await {
-        Ok(params) => {
-            params.apply();
-            info!("策略参数重载成功");
-        }
+        Ok(params) => match catch_unwind(AssertUnwindSafe(|| params.apply())) {
+            Ok(()) => info!("策略参数重载成功"),
+            Err(payload) => warn!(
+                "策略参数应用失败(panic): {}",
+                panic_payload_to_string(payload.as_ref())
+            ),
+        },
         Err(err) => {
             warn!("策略参数重载失败: {:?}", err);
         }
