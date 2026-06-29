@@ -338,11 +338,10 @@ fn expand_intra_fixed_close_thresholds(
         else {
             continue;
         };
+        funding_map.remove(fixed_key);
         for period in PERIODS {
             funding_map.insert(format!("{}_{}", period.as_str(), fixed_key), value.clone());
         }
-        funding_map.remove(fixed_key);
-        funding_map.remove(legacy_key);
     }
     funding_map
 }

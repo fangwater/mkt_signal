@@ -364,11 +364,10 @@ fn expand_intra_fixed_close_thresholds(raw: &HashMap<String, String>) -> HashMap
         else {
             continue;
         };
+        parsed.remove(fixed_key);
         for period in ["1h", "2h", "4h", "6h", "8h"] {
             parsed.insert(format!("{period}_{fixed_key}"), value);
         }
-        parsed.remove(fixed_key);
-        parsed.remove(legacy_key);
     }
 
     parsed
