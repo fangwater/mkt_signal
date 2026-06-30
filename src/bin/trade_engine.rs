@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
+use trade_engine::binance_fix::BINANCE_SPOT_FIX_ENABLED_ENV;
 use trade_engine::binance_ws::BINANCE_ED25519_PRIVATE_KEY_PATH_ENV;
 use trade_engine::config::RestConstants;
 use trade_engine::exec_backend::ExecBackend;
@@ -516,10 +517,11 @@ async fn main() -> Result<()> {
         info!("Required env vars: {}", required_env.join(", "));
         let optional_env = if exchange_name == "binance" {
             format!(
-                "{}, {} (for HMAC REST/WS fallback), {} (Ed25519 WS; wins when both signers are set), {} (on/off, default=off)",
+                "{}, {} (for HMAC REST/WS fallback), {} (Ed25519 WS/FIX key), {} (on/off, default=off), {} (on/off, default=off)",
                 api_name_var,
                 api_secret_var,
                 BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
+                BINANCE_SPOT_FIX_ENABLED_ENV,
                 BINANCE_UM_IP_WHITELIST_MODE_ENV
             )
         } else {

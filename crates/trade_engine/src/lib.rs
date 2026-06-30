@@ -1,3 +1,4 @@
+pub mod binance_fix;
 pub mod binance_ws;
 pub mod bitget_precheck;
 pub mod bitget_query;

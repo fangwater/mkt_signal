@@ -1,3 +1,7 @@
+use crate::binance_fix::{
+    is_binance_spot_fix_trade_request, spot_fix_enabled_from_env, BinanceSpotFixConfig,
+    BinanceSpotFixHandle, BINANCE_SPOT_FIX_ENABLED_ENV,
+};
 use crate::bitget_query_rate_limiter::BitgetQueryRateLimiter;
 use crate::config::WsConstants;
 use crate::dispatcher::Dispatcher;
@@ -2328,6 +2332,21 @@ impl TradeEngine {
         if exchange == Exchange::Binance && !use_ltp_backend && !binance_ws_enabled {
             info!("binance ws disabled (BINANCE_ACCOUNT_MODE!=STANDARD)");
         }
+        let binance_spot_fix_enabled = exchange == Exchange::Binance
+            && !use_ltp_backend
+            && binance_account_mode() == BinanceAccountMode::Standard
+            && spot_fix_enabled_from_env()?;
+        if exchange == Exchange::Binance && !use_ltp_backend {
+            info!(
+                "Binance Spot FIX mode: {}={} (default off)",
+                BINANCE_SPOT_FIX_ENABLED_ENV,
+                if binance_spot_fix_enabled {
+                    "on"
+                } else {
+                    "off"
+                }
+            );
+        }
         let mut worker_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
 
         let trade_resp_sink = TradeResponseSink::new(order_resp_publisher);
@@ -2415,6 +2434,32 @@ impl TradeEngine {
             );
         }
 
+        let mut binance_spot_fix_handle: Option<BinanceSpotFixHandle> = None;
+        if binance_spot_fix_enabled {
+            let creds = self
+                .accounts
+                .first()
+                .ok_or_else(|| anyhow!("Binance Spot FIX requires Binance API key"))?;
+            let cfg = BinanceSpotFixConfig::from_env(
+                creds.key.trim().to_string(),
+                self.local_ips.first().copied(),
+            )?;
+            info!(
+                "spawning Binance Spot FIX client url={} sender_comp_id={} source_ip={}",
+                cfg.url(),
+                cfg.sender_comp_id(),
+                cfg.source_ip()
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "system-default".to_string())
+            );
+            let (handle, task) = crate::binance_fix::spawn_binance_spot_fix_client(
+                cfg,
+                trade_resp_sink.clone(),
+                shutdown.clone(),
+            );
+            worker_handles.push(("binance_spot_fix_client", task));
+            binance_spot_fix_handle = Some(handle);
+        }
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_um_ws_endpoint_groups: Option<Vec<WsEndpointGroup>> = None;
@@ -3051,6 +3096,7 @@ impl TradeEngine {
 
         // Spawn unified request router
         let ws_endpoints_for_req_worker = ws_endpoints.clone();
+        let binance_spot_fix_handle_for_req_worker = binance_spot_fix_handle.clone();
         let gate_futures_ws_endpoints_for_req_worker = gate_futures_ws_endpoints.clone();
         let binance_spot_ws_endpoints_for_req_worker = binance_spot_ws_endpoints.clone();
         let binance_um_ws_endpoint_groups_for_req_worker = binance_um_ws_endpoint_groups.clone();
@@ -3069,6 +3115,7 @@ impl TradeEngine {
         let router_idle_spin_iters_for_req_worker = router_idle_spin_iters;
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
+            let binance_spot_fix_handle = binance_spot_fix_handle_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
             let mut binance_spot_ws_endpoints = binance_spot_ws_endpoints_for_req_worker;
             let mut binance_um_ws_endpoint_groups = binance_um_ws_endpoint_groups_for_req_worker;
@@ -3140,6 +3187,74 @@ impl TradeEngine {
                             ));
                         continue;
                     }
+                }
+
+                if exchange_for_req_worker == Exchange::Binance
+                    && is_binance_spot_fix_trade_request(msg.req_type)
+                    && binance_spot_fix_handle.is_some()
+                {
+                    let handle = binance_spot_fix_handle.as_ref().expect("checked is_some");
+                    if handle.is_available() {
+                        let client_order_id = msg.client_order_id;
+                        match handle.enqueue(msg) {
+                            Ok(()) => {
+                                debug!(
+                                    "routed Binance spot order to FIX client_order_id={}",
+                                    client_order_id
+                                );
+                            }
+                            Err(msg) => {
+                                let body = serde_json::json!({
+                                    "transport": "fix",
+                                    "state": "error",
+                                    "reason": "Binance Spot FIX command queue closed",
+                                    "clientOrderId": msg.client_order_id,
+                                })
+                                .to_string();
+                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_order_id: msg.client_order_id,
+                                    status: 503,
+                                    body,
+                                    exchange: exchange_for_req_worker,
+                                    order_id: 0,
+                                    order_status_u8: 0,
+                                    order_update_time: 0,
+                                    executed_qty: 0.0,
+                                    response_price: 0.0,
+                                });
+                            }
+                        }
+                    } else {
+                        let last_error = handle
+                            .last_error()
+                            .unwrap_or_else(|| "not logged on".to_string());
+                        warn!(
+                            "Binance Spot FIX unavailable for client_order_id={} last_error={}",
+                            msg.client_order_id, last_error
+                        );
+                        let body = serde_json::json!({
+                            "transport": "fix",
+                            "state": "error",
+                            "reason": "Binance Spot FIX unavailable",
+                            "lastError": last_error,
+                            "clientOrderId": msg.client_order_id,
+                        })
+                        .to_string();
+                        let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                            req_type: msg.req_type,
+                            client_order_id: msg.client_order_id,
+                            status: 503,
+                            body,
+                            exchange: exchange_for_req_worker,
+                            order_id: 0,
+                            order_status_u8: 0,
+                            order_update_time: 0,
+                            executed_qty: 0.0,
+                            response_price: 0.0,
+                        });
+                    }
+                    continue;
                 }
 
                 // 根据 mapping 判断是否走 WebSocket；LTP 后端统一从 WS 执行。
