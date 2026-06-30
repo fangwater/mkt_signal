@@ -1,4 +1,4 @@
-use crate::binance_ws;
+use crate::binance_ws::{self, BinanceWsSigner};
 use crate::bitget_ws;
 use crate::bybit;
 use crate::bybit::BybitWsOrderResponse;
@@ -1307,6 +1307,9 @@ pub struct TradeWsClient {
     max_inflight: usize,
     login_payload: Option<String>,
     binance_creds: Option<ApiKey>,
+    binance_ws_signer: Option<BinanceWsSigner>,
+    binance_session_logon_transport_id: Option<i64>,
+    binance_waiting_session_logon: bool,
     bitget_creds: Option<BitgetCredentials>,
     bybit_creds: Option<BybitCredentials>,
     okex_creds: Option<OkexCredentials>,
@@ -1458,12 +1461,38 @@ impl TradeWsClient {
                 }
             };
 
-        if exchange == Exchange::Binance && !use_ltp_backend && binance_creds.is_none() {
-            warn!(
-                "trade ws client id={} missing Binance credentials; ws requests will fail",
-                id
-            );
-        }
+        let binance_ws_signer = if exchange == Exchange::Binance && !use_ltp_backend {
+            match binance_creds.as_ref() {
+                Some(creds) => {
+                    let signer = BinanceWsSigner::from_env_or_secret(creds.secret.clone())
+                        .unwrap_or_else(|e| panic!("build Binance WS signer failed: {}", e));
+                    if let Some(source) = signer.ed25519_source() {
+                        info!(
+                            "Binance WS signer loaded for client id={} algorithm={} source={}",
+                            id,
+                            signer.algorithm(),
+                            source
+                        );
+                    } else {
+                        info!(
+                            "Binance WS signer loaded for client id={} algorithm={}",
+                            id,
+                            signer.algorithm()
+                        );
+                    }
+                    Some(signer)
+                }
+                None => {
+                    warn!(
+                        "trade ws client id={} missing Binance credentials; ws requests will fail",
+                        id
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         Self {
             id,
@@ -1479,6 +1508,9 @@ impl TradeWsClient {
             max_inflight,
             login_payload,
             binance_creds,
+            binance_ws_signer,
+            binance_session_logon_transport_id: None,
+            binance_waiting_session_logon: false,
             bitget_creds,
             bybit_creds,
             okex_creds,
@@ -1553,6 +1585,45 @@ impl TradeWsClient {
 
     pub fn local_ip(&self) -> IpAddr {
         self.local_ip
+    }
+
+    fn waiting_for_binance_session_logon(&self) -> bool {
+        self.exchange == Exchange::Binance && self.binance_waiting_session_logon
+    }
+
+    fn reset_binance_session_logon(&mut self) {
+        self.binance_session_logon_transport_id = None;
+        self.binance_waiting_session_logon = false;
+    }
+
+    fn build_binance_session_logon_payload(&mut self) -> Result<Option<String>> {
+        if self.exchange != Exchange::Binance || self.use_ltp_backend {
+            return Ok(None);
+        }
+        self.reset_binance_session_logon();
+        let Some(true) = self
+            .binance_ws_signer
+            .as_ref()
+            .map(|signer| signer.uses_session_logon())
+        else {
+            return Ok(None);
+        };
+        let api_key = self
+            .binance_creds
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing binance ws credentials"))?
+            .key
+            .trim()
+            .to_string();
+        let transport_id = self.next_transport_id();
+        let signer = self
+            .binance_ws_signer
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing binance ws signer"))?;
+        let payload = binance_ws::build_session_logon_payload(transport_id, &api_key, signer)?;
+        self.binance_session_logon_transport_id = Some(transport_id);
+        self.binance_waiting_session_logon = true;
+        Ok(Some(payload))
     }
 
     fn binance_rate_limit_payload(
@@ -1776,6 +1847,9 @@ impl TradeWsClient {
                                     self.last_gate_login_req_id = Some(req_id);
                                     payload
                                 })
+                            } else if self.exchange == Exchange::Binance {
+                                self.build_binance_session_logon_payload()
+                                    .unwrap_or_else(|e| panic!("build Binance session.logon payload failed: {}", e))
                             } else {
                                 self.login_payload.clone()
                             };
@@ -1842,6 +1916,7 @@ impl TradeWsClient {
                                         "trade ws client id={} send login payload failed: {}",
                                         self.id, err
                                     );
+                                    self.reset_binance_session_logon();
                                     let _ = ws.close(None).await;
                                     self.current_remote_addr = None;
                                     continue;
@@ -1858,6 +1933,7 @@ impl TradeWsClient {
                                     format_error_chain(&err)
                                 );
                             }
+                            self.reset_binance_session_logon();
                             self.current_remote_addr = None;
                         }
                         Err(err) => {
@@ -1933,6 +2009,7 @@ impl TradeWsClient {
                     match message {
                         Some(Ok(msg)) => {
                             self.handle_incoming(ws, msg).await?;
+                            self.flush_pending(ws).await?;
                         }
                         Some(Err(err)) => {
                             return Err(anyhow!("websocket errored: {}", format_ws_error(&err)));
@@ -2164,6 +2241,9 @@ impl TradeWsClient {
         &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
+        if self.waiting_for_binance_session_logon() {
+            return Ok(());
+        }
         while let Some(msg) = self.pending.pop_front() {
             if self.try_internal_terminate_order(&msg, "ws_flush_pending") {
                 continue;
@@ -2309,6 +2389,9 @@ impl TradeWsClient {
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) -> Result<()> {
         if self.exchange != Exchange::Binance || self.use_ltp_backend {
+            return Ok(());
+        }
+        if self.waiting_for_binance_session_logon() {
             return Ok(());
         }
         let symbol = symbol.trim().to_ascii_uppercase();
@@ -2726,7 +2809,11 @@ impl TradeWsClient {
             .binance_creds
             .as_ref()
             .ok_or_else(|| anyhow!("missing binance ws credentials"))?;
-        binance_ws::build_order_payload(msg, transport_id, creds)
+        let signer = self
+            .binance_ws_signer
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing binance ws signer"))?;
+        binance_ws::build_order_payload(msg, transport_id, creds.key.trim(), signer)
     }
 
     fn build_binance_query_payload(
@@ -2738,7 +2825,11 @@ impl TradeWsClient {
             .binance_creds
             .as_ref()
             .ok_or_else(|| anyhow!("missing binance ws credentials"))?;
-        binance_ws::build_query_payload(msg, transport_id, creds)
+        let signer = self
+            .binance_ws_signer
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing binance ws signer"))?;
+        binance_ws::build_query_payload(msg, transport_id, creds.key.trim(), signer)
     }
 
     fn next_transport_id(&mut self) -> i64 {
@@ -3893,6 +3984,34 @@ impl TradeWsClient {
         }
         let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
         handle.update_binance_ws_rate_limits(&resp.rate_limits);
+
+        if self.binance_session_logon_transport_id == Some(id) {
+            self.binance_session_logon_transport_id = None;
+            let status = Self::binance_status(&resp);
+            let success =
+                (200..300).contains(&(status as u32)) && resp.error_code.unwrap_or(0) == 0;
+            if success {
+                self.binance_waiting_session_logon = false;
+                info!(
+                    "trade ws client id={} exchange=binance session.logon successful transport_id={} status={} rate_limits={}",
+                    self.id,
+                    id,
+                    status,
+                    resp.rate_limits.len()
+                );
+            } else {
+                warn!(
+                    "trade ws client id={} exchange=binance session.logon failed transport_id={} status={} code={} msg={}",
+                    self.id,
+                    id,
+                    status,
+                    resp.error_code.unwrap_or(0),
+                    resp.error_msg.as_deref().unwrap_or("")
+                );
+                self.should_reconnect = true;
+            }
+            return true;
+        }
 
         if let Some(meta) = self.binance_um_cancel_probe_inflight.remove(&id) {
             debug_assert!(is_binance_um_ws_cancel_probe_client_order_id(

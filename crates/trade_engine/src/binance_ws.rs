@@ -3,18 +3,26 @@ use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_request::{
     BinanceCancelOrderParamsRef, BinanceNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
-use account_common::ApiKey;
 use anyhow::{anyhow, Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
+use openssl::pkey::{Id as PKeyId, PKey, Private};
+use openssl::sign::Signer;
 use serde_json::Value;
 use sha2::Sha256;
 use signal_common::tick_math::QuantizedDecimal;
 
 type HmacSha256 = Hmac<Sha256>;
 
+pub const BINANCE_ED25519_PRIVATE_KEY_PATH_ENV: &str = "BINANCE_ED25519_PRIVATE_KEY_PATH";
+pub const BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE_ENV: &str =
+    "BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE";
+
 const METHOD_ORDER_PLACE: &str = "order.place";
 const METHOD_ORDER_CANCEL: &str = "order.cancel";
 const METHOD_ORDER_STATUS: &str = "order.status";
+const METHOD_SESSION_LOGON: &str = "session.logon";
 const BINANCE_RECV_WINDOW_MS: &str = "5000";
 
 fn parse_i64_value(v: &Value) -> Option<i64> {
@@ -78,21 +86,162 @@ fn parse_f64_value(v: &Value) -> Option<f64> {
     None
 }
 
-fn sign_ordered_params_fast(params: &[(&str, &str)], secret: &str) -> Result<[u8; 64]> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|_| anyhow!("invalid binance secret"))?;
+fn feed_ordered_payload(params: &[(&str, &str)], mut feed: impl FnMut(&[u8])) {
     for (idx, (key, value)) in params.iter().enumerate() {
         if idx > 0 {
-            mac.update(b"&");
+            feed(b"&");
         }
-        mac.update(key.as_bytes());
-        mac.update(b"=");
-        mac.update(value.as_bytes());
+        feed(key.as_bytes());
+        feed(b"=");
+        feed(value.as_bytes());
     }
+}
+
+fn ordered_payload_len(params: &[(&str, &str)]) -> usize {
+    params
+        .iter()
+        .map(|(key, value)| key.len() + value.len() + 1)
+        .sum::<usize>()
+        + params.len().saturating_sub(1)
+}
+
+fn write_ordered_payload_to_slice(out: &mut [u8], params: &[(&str, &str)]) -> usize {
+    let mut offset = 0usize;
+    feed_ordered_payload(params, |chunk| {
+        let end = offset + chunk.len();
+        out[offset..end].copy_from_slice(chunk);
+        offset = end;
+    });
+    offset
+}
+
+fn push_ordered_payload(out: &mut Vec<u8>, params: &[(&str, &str)]) {
+    out.reserve(ordered_payload_len(params));
+    feed_ordered_payload(params, |chunk| out.extend_from_slice(chunk));
+}
+
+fn sign_ordered_params_hmac_fast(params: &[(&str, &str)], secret: &str) -> Result<[u8; 64]> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|_| anyhow!("invalid binance secret"))?;
+    feed_ordered_payload(params, |chunk| mac.update(chunk));
     let digest = mac.finalize().into_bytes();
     let mut out = [0u8; 64];
     hex::encode_to_slice(digest, &mut out).expect("sha256 hmac hex output is exactly 64 bytes");
     Ok(out)
+}
+
+#[derive(Debug)]
+pub enum BinanceWsSigner {
+    Ed25519 { key: PKey<Private>, source: String },
+    HmacSha256 { secret: String },
+}
+
+impl BinanceWsSigner {
+    pub fn from_env_or_secret(secret: String) -> Result<Self> {
+        let ed25519_path = std::env::var(BINANCE_ED25519_PRIVATE_KEY_PATH_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
+        if let Some(path) = ed25519_path {
+            return Self::from_ed25519_pem_path(&path);
+        }
+
+        if secret.trim().is_empty() {
+            return Err(anyhow!(
+                "Binance WS signing requires either BINANCE_API_SECRET or {}",
+                BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+            ));
+        }
+        Ok(Self::HmacSha256 { secret })
+    }
+
+    pub fn from_ed25519_pem_path(path: &str) -> Result<Self> {
+        let passphrase = std::env::var(BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE_ENV)
+            .ok()
+            .unwrap_or_default();
+        let pem = std::fs::read(path)
+            .with_context(|| format!("read {}={}", BINANCE_ED25519_PRIVATE_KEY_PATH_ENV, path))?;
+        let key = if passphrase.is_empty() {
+            PKey::private_key_from_pem(&pem).with_context(|| {
+                format!(
+                    "parse Ed25519 private key PEM from {}",
+                    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+                )
+            })?
+        } else {
+            PKey::private_key_from_pem_passphrase(&pem, passphrase.as_bytes()).with_context(
+                || {
+                    format!(
+                        "parse encrypted Ed25519 private key PEM from {}",
+                        BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+                    )
+                },
+            )?
+        };
+        if key.id() != PKeyId::ED25519 {
+            return Err(anyhow!(
+                "{}={} is not an Ed25519 private key",
+                BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
+                path
+            ));
+        }
+        Ok(Self::Ed25519 {
+            key,
+            source: path.to_string(),
+        })
+    }
+
+    pub fn algorithm(&self) -> &'static str {
+        match self {
+            Self::Ed25519 { .. } => "ed25519",
+            Self::HmacSha256 { .. } => "hmac_sha256",
+        }
+    }
+
+    pub fn ed25519_source(&self) -> Option<&str> {
+        match self {
+            Self::Ed25519 { source, .. } => Some(source.as_str()),
+            Self::HmacSha256 { .. } => None,
+        }
+    }
+
+    pub fn uses_session_logon(&self) -> bool {
+        matches!(self, Self::Ed25519 { .. })
+    }
+
+    fn sign_ordered_params(&self, params: &[(&str, &str)]) -> Result<String> {
+        match self {
+            Self::HmacSha256 { secret } => {
+                let signature = sign_ordered_params_hmac_fast(params, secret.trim())?;
+                Ok(std::str::from_utf8(&signature)
+                    .expect("hex signature is valid utf8")
+                    .to_string())
+            }
+            Self::Ed25519 { key, .. } => {
+                let payload_len = ordered_payload_len(params);
+                let mut signer = Signer::new_without_digest(key)
+                    .with_context(|| "create Binance WS Ed25519 signer")?;
+                let mut signature = [0u8; 64];
+                let len = if payload_len <= 1024 {
+                    let mut payload = [0u8; 1024];
+                    let written =
+                        write_ordered_payload_to_slice(&mut payload[..payload_len], params);
+                    debug_assert_eq!(written, payload_len);
+                    signer
+                        .sign_oneshot(&mut signature, &payload[..payload_len])
+                        .with_context(|| "sign Binance WS payload with Ed25519")?
+                } else {
+                    let mut payload = Vec::with_capacity(payload_len);
+                    push_ordered_payload(&mut payload, params);
+                    signer
+                        .sign_oneshot(&mut signature, &payload)
+                        .with_context(|| "sign Binance WS payload with Ed25519")?
+                };
+                Ok(BASE64_STANDARD.encode(&signature[..len]))
+            }
+        }
+    }
 }
 
 fn push_json_string(out: &mut String, value: &str) {
@@ -131,18 +280,19 @@ fn push_json_param(out: &mut String, first: &mut bool, key: &str, value: &str) {
     push_json_string(out, value);
 }
 
-fn build_signed_payload_json(
+fn build_payload_json(
     transport_id: i64,
     method: &str,
     params: &[(&str, &str)],
-    creds: &ApiKey,
-) -> Result<String> {
-    let signature = sign_ordered_params_fast(params, creds.secret.trim())?;
-    let signature = std::str::from_utf8(&signature).expect("hex signature is valid utf8");
+    signature: Option<&str>,
+) -> String {
     let id = transport_id.to_string();
     let params_bytes: usize = params.iter().map(|(k, v)| k.len() + v.len() + 6).sum();
+    let signature_bytes = signature
+        .map(|sig| "signature".len() + sig.len() + 6)
+        .unwrap_or(0);
     let mut out =
-        String::with_capacity(32 + id.len() + method.len() + params_bytes + "signature".len() + 64);
+        String::with_capacity(32 + id.len() + method.len() + params_bytes + signature_bytes);
     out.push_str("{\"id\":");
     out.push_str(&id);
     out.push_str(",\"method\":");
@@ -153,9 +303,55 @@ fn build_signed_payload_json(
     for (key, value) in params.iter() {
         push_json_param(&mut out, &mut first, key, value);
     }
-    push_json_param(&mut out, &mut first, "signature", &signature);
+    if let Some(signature) = signature {
+        push_json_param(&mut out, &mut first, "signature", signature);
+    }
     out.push_str("}}");
-    Ok(out)
+    out
+}
+
+fn build_signed_payload_json(
+    transport_id: i64,
+    method: &str,
+    params: &[(&str, &str)],
+    signer: &BinanceWsSigner,
+) -> Result<String> {
+    let signature = signer.sign_ordered_params(params)?;
+    Ok(build_payload_json(
+        transport_id,
+        method,
+        params,
+        Some(signature.as_str()),
+    ))
+}
+
+fn build_authorized_payload_json(
+    transport_id: i64,
+    method: &str,
+    params: &[(&str, &str)],
+    signer: &BinanceWsSigner,
+) -> Result<String> {
+    if signer.uses_session_logon() {
+        return Ok(build_payload_json(transport_id, method, params, None));
+    }
+    build_signed_payload_json(transport_id, method, params, signer)
+}
+
+pub fn build_session_logon_payload(
+    transport_id: i64,
+    api_key: &str,
+    signer: &BinanceWsSigner,
+) -> Result<String> {
+    if !signer.uses_session_logon() {
+        return Err(anyhow!("Binance session.logon requires an Ed25519 signer"));
+    }
+    let timestamp = current_timestamp_ms_string();
+    let ordered = [
+        ("apiKey", api_key),
+        ("recvWindow", BINANCE_RECV_WINDOW_MS),
+        ("timestamp", timestamp.as_str()),
+    ];
+    build_signed_payload_json(transport_id, METHOD_SESSION_LOGON, &ordered, signer)
 }
 
 fn current_timestamp_ms_string() -> String {
@@ -167,7 +363,8 @@ fn build_new_order_payload_fast(
     req_type: TradeRequestType,
     client_order_id: i64,
     transport_id: i64,
-    creds: &ApiKey,
+    api_key: &str,
+    signer: &BinanceWsSigner,
 ) -> Result<String> {
     let is_margin = matches!(
         req_type,
@@ -182,7 +379,6 @@ fn build_new_order_payload_fast(
         params.order_type.as_str()
     };
 
-    let api_key = creds.key.trim();
     let client_order_id = client_order_id.to_string();
     let quantity = QuantizedDecimal::try_from_value(params.quantity_qv)
         .ok_or_else(|| anyhow!("binance order quantity decimal exceeds inline buffer"))?;
@@ -220,8 +416,10 @@ fn build_new_order_payload_fast(
 
     let mut ordered = [("", ""); 13];
     let mut len = 0usize;
-    ordered[len] = ("apiKey", api_key);
-    len += 1;
+    if !signer.uses_session_logon() {
+        ordered[len] = ("apiKey", api_key);
+        len += 1;
+    }
     ordered[len] = ("newClientOrderId", client_order_id.as_str());
     len += 1;
     if let Some(value) = new_order_resp_type {
@@ -257,31 +455,39 @@ fn build_new_order_payload_fast(
     ordered[len] = ("type", order_type);
     len += 1;
 
-    build_signed_payload_json(transport_id, METHOD_ORDER_PLACE, &ordered[..len], creds)
+    build_authorized_payload_json(transport_id, METHOD_ORDER_PLACE, &ordered[..len], signer)
 }
 
 fn build_cancel_order_payload_fast(
     params: &BinanceCancelOrderParamsRef<'_>,
     transport_id: i64,
-    creds: &ApiKey,
+    api_key: &str,
+    signer: &BinanceWsSigner,
 ) -> Result<String> {
-    let api_key = creds.key.trim();
     let orig_client_order_id = params.orig_client_order_id.to_string();
     let timestamp = current_timestamp_ms_string();
-    let ordered = [
-        ("apiKey", api_key),
-        ("origClientOrderId", orig_client_order_id.as_str()),
-        ("recvWindow", BINANCE_RECV_WINDOW_MS),
-        ("symbol", params.symbol),
-        ("timestamp", timestamp.as_str()),
-    ];
-    build_signed_payload_json(transport_id, METHOD_ORDER_CANCEL, &ordered, creds)
+    let mut ordered = [("", ""); 5];
+    let mut len = 0usize;
+    if !signer.uses_session_logon() {
+        ordered[len] = ("apiKey", api_key);
+        len += 1;
+    }
+    ordered[len] = ("origClientOrderId", orig_client_order_id.as_str());
+    len += 1;
+    ordered[len] = ("recvWindow", BINANCE_RECV_WINDOW_MS);
+    len += 1;
+    ordered[len] = ("symbol", params.symbol);
+    len += 1;
+    ordered[len] = ("timestamp", timestamp.as_str());
+    len += 1;
+    build_authorized_payload_json(transport_id, METHOD_ORDER_CANCEL, &ordered[..len], signer)
 }
 
 fn build_typed_order_payload_fast(
     msg: &TradeRequestMsg,
     transport_id: i64,
-    creds: &ApiKey,
+    api_key: &str,
+    signer: &BinanceWsSigner,
 ) -> Result<String> {
     match msg.req_type {
         TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
@@ -296,7 +502,8 @@ fn build_typed_order_payload_fast(
                 msg.req_type,
                 msg.client_order_id,
                 transport_id,
-                creds,
+                api_key,
+                signer,
             )
         }
         TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
@@ -306,7 +513,7 @@ fn build_typed_order_payload_fast(
                     msg.req_type
                 )
             })?;
-            build_cancel_order_payload_fast(&params, transport_id, creds)
+            build_cancel_order_payload_fast(&params, transport_id, api_key, signer)
         }
         _ => Err(anyhow!(
             "unsupported binance ws request type: {:?}",
@@ -357,10 +564,10 @@ fn parse_order_status_params(raw: &[u8]) -> Result<OrderStatusParams> {
 fn build_order_status_payload_fast(
     raw: &[u8],
     transport_id: i64,
-    creds: &ApiKey,
+    api_key: &str,
+    signer: &BinanceWsSigner,
 ) -> Result<String> {
     let params = parse_order_status_params(raw)?;
-    let api_key = creds.key.trim();
     let recv_window = params
         .recv_window
         .unwrap_or_else(|| RestConstants::RECV_WINDOW_MS.to_string());
@@ -368,7 +575,9 @@ fn build_order_status_payload_fast(
     let symbol = params.symbol.expect("validated symbol");
 
     let mut ordered = Vec::with_capacity(6);
-    ordered.push(("apiKey", api_key));
+    if !signer.uses_session_logon() {
+        ordered.push(("apiKey", api_key));
+    }
     if let Some(order_id) = params.order_id.as_deref() {
         ordered.push(("orderId", order_id));
     }
@@ -379,20 +588,21 @@ fn build_order_status_payload_fast(
     ordered.push(("symbol", symbol.as_str()));
     ordered.push(("timestamp", timestamp.as_str()));
 
-    build_signed_payload_json(transport_id, METHOD_ORDER_STATUS, &ordered, creds)
+    build_authorized_payload_json(transport_id, METHOD_ORDER_STATUS, &ordered, signer)
 }
 
 pub fn build_order_payload(
     msg: &TradeRequestMsg,
     transport_id: i64,
-    creds: &ApiKey,
+    api_key: &str,
+    signer: &BinanceWsSigner,
 ) -> Result<String> {
     match msg.req_type {
         TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceWsNewMarginOrder => {
-            build_typed_order_payload_fast(msg, transport_id, creds)
+            build_typed_order_payload_fast(msg, transport_id, api_key, signer)
         }
         TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
-            build_typed_order_payload_fast(msg, transport_id, creds)
+            build_typed_order_payload_fast(msg, transport_id, api_key, signer)
         }
         _ => Err(anyhow!(
             "unsupported binance ws request type: {:?}",
@@ -404,7 +614,8 @@ pub fn build_order_payload(
 pub fn build_query_payload(
     msg: &QueryRequestMsg,
     transport_id: i64,
-    creds: &ApiKey,
+    api_key: &str,
+    signer: &BinanceWsSigner,
 ) -> Result<String> {
     if msg.req_type != QueryRequestType::BinanceWsUMQuery
         && msg.req_type != QueryRequestType::BinanceWsMarginQuery
@@ -415,7 +626,7 @@ pub fn build_query_payload(
         ));
     }
 
-    build_order_status_payload_fast(&msg.params, transport_id, creds)
+    build_order_status_payload_fast(&msg.params, transport_id, api_key, signer)
 }
 
 #[derive(Debug, Clone)]
@@ -520,23 +731,24 @@ pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_order_payload, build_query_payload, parse_ws_response, sign_ordered_params_fast,
+        build_order_payload, build_query_payload, build_session_logon_payload, parse_ws_response,
+        sign_ordered_params_hmac_fast, BinanceWsSigner,
     };
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
     use crate::trade_request::{
         BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
     };
-    use account_common::ApiKey;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine;
     use bytes::Bytes;
+    use openssl::pkey::PKey;
     use order_common::{OrderType, Side};
     use serde_json::Value;
     use signal_common::tick_math::QuantizedValue;
     use std::collections::BTreeMap;
 
-    fn creds() -> ApiKey {
-        ApiKey {
-            name: "test".to_string(),
-            key: "api-key".to_string(),
+    fn signer() -> BinanceWsSigner {
+        BinanceWsSigner::HmacSha256 {
             secret: "secret".to_string(),
         }
     }
@@ -565,13 +777,79 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
-        let expected =
-            sign_ordered_params_fast(&ordered, creds().secret.trim()).expect("signature");
+        let expected = sign_ordered_params_hmac_fast(&ordered, "secret").expect("signature");
         let expected = std::str::from_utf8(&expected).expect("hex signature utf8");
         assert_eq!(
             value["params"]["signature"].as_str().expect("signature"),
             expected
         );
+    }
+
+    #[test]
+    fn ed25519_signer_emits_base64_signature() {
+        let key = PKey::generate_ed25519().expect("ed25519 key");
+        let signer = BinanceWsSigner::Ed25519 {
+            key,
+            source: "generated-test-key".to_string(),
+        };
+        let signature = signer
+            .sign_ordered_params(&[("apiKey", "api-key"), ("timestamp", "123")])
+            .expect("ed25519 signature");
+        let decoded = BASE64_STANDARD.decode(signature).expect("base64 signature");
+        assert_eq!(decoded.len(), 64);
+    }
+
+    #[test]
+    fn builds_ed25519_session_logon_payload() {
+        let key = PKey::generate_ed25519().expect("ed25519 key");
+        let signer = BinanceWsSigner::Ed25519 {
+            key,
+            source: "generated-test-key".to_string(),
+        };
+
+        let payload = build_session_logon_payload(77, "api-key", &signer).expect("payload");
+        let value: Value = serde_json::from_str(&payload).expect("json");
+
+        assert_eq!(value["id"], 77);
+        assert_eq!(value["method"], "session.logon");
+        assert_eq!(value["params"]["apiKey"], "api-key");
+        assert_eq!(value["params"]["recvWindow"], "5000");
+        assert!(value["params"]["timestamp"].as_str().is_some());
+        let signature = value["params"]["signature"].as_str().expect("signature");
+        assert_eq!(BASE64_STANDARD.decode(signature).expect("base64").len(), 64);
+    }
+
+    #[test]
+    fn ed25519_session_requests_omit_api_key_and_signature() {
+        let key = PKey::generate_ed25519().expect("ed25519 key");
+        let signer = BinanceWsSigner::Ed25519 {
+            key,
+            source: "generated-test-key".to_string(),
+        };
+        let params = BinanceNewOrderParams {
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Sell,
+            order_type: OrderType::Limit,
+            quantity_qv: QuantizedValue::from_parts(1, -3, 300),
+            price_qv: QuantizedValue::from_parts(1, -2, 12345),
+            reduce_only: true,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: true,
+            ws_margin_limit_maker: false,
+        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::BinanceWsNewUMOrder, 42, &params);
+
+        let payload = build_order_payload(&msg, 99, "api-key", &signer).expect("payload");
+        let value: Value = serde_json::from_str(&payload).expect("json");
+        let params = value["params"].as_object().expect("params");
+
+        assert_eq!(value["method"], "order.place");
+        assert!(!params.contains_key("apiKey"));
+        assert!(!params.contains_key("signature"));
+        assert_eq!(value["params"]["symbol"], "BTCUSDT");
+        assert_eq!(value["params"]["newClientOrderId"], "42");
     }
 
     #[test]
@@ -591,7 +869,7 @@ mod tests {
         let params = params.to_bytes().expect("typed params");
         let msg = trade_msg(TradeRequestType::BinanceWsNewUMOrder, 42, &params);
 
-        let payload = build_order_payload(&msg, 99, &creds()).expect("payload");
+        let payload = build_order_payload(&msg, 99, "api-key", &signer()).expect("payload");
         let value: Value = serde_json::from_str(&payload).expect("json");
 
         assert_eq!(value["id"], 99);
@@ -621,7 +899,7 @@ mod tests {
         let params = params.to_bytes().expect("typed params");
         let msg = trade_msg(TradeRequestType::BinanceWsCancelUMOrder, 43, &params);
 
-        let payload = build_order_payload(&msg, 101, &creds()).expect("payload");
+        let payload = build_order_payload(&msg, 101, "api-key", &signer()).expect("payload");
         let value: Value = serde_json::from_str(&payload).expect("json");
 
         assert_eq!(value["id"], 101);
@@ -645,7 +923,7 @@ mod tests {
             params: Bytes::from_static(b"symbol=BTCUSDT&origClientOrderId=42"),
         };
 
-        let payload = build_query_payload(&msg, 100, &creds()).expect("payload");
+        let payload = build_query_payload(&msg, 100, "api-key", &signer()).expect("payload");
         let value: Value = serde_json::from_str(&payload).expect("json");
 
         assert_eq!(value["id"], 100);
@@ -705,7 +983,8 @@ mod tests {
             b"symbol=BTCUSDT&side=BUY",
         );
 
-        let err = build_order_payload(&msg, 99, &creds()).expect_err("should reject raw params");
+        let err = build_order_payload(&msg, 99, "api-key", &signer())
+            .expect_err("should reject raw params");
         assert!(err
             .to_string()
             .contains("invalid typed binance ws new order params"));
@@ -720,7 +999,8 @@ mod tests {
             params: Bytes::from_static(b"symbol=BTCUSDT&origClientOrderId=42&foo=bar"),
         };
 
-        let err = build_query_payload(&msg, 100, &creds()).expect_err("should reject raw params");
+        let err = build_query_payload(&msg, 100, "api-key", &signer())
+            .expect_err("should reject raw params");
         assert!(err
             .to_string()
             .contains("unsupported binance ws order.status param"));

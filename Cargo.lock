@@ -4822,6 +4822,7 @@ dependencies = [
  "log",
  "mkt_parsers",
  "native-tls",
+ "openssl",
  "order_common",
  "reqwest",
  "rolling_common",

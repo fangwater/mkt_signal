@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
+use trade_engine::binance_ws::BINANCE_ED25519_PRIVATE_KEY_PATH_ENV;
 use trade_engine::config::RestConstants;
 use trade_engine::exec_backend::ExecBackend;
 use trade_engine::TradeEngine;
@@ -496,15 +497,30 @@ async fn main() -> Result<()> {
         let api_secret_var = format!("{}_API_SECRET", env_prefix);
         let api_name_var = format!("{}_API_NAME", env_prefix);
 
-        let mut required_env = vec![api_key_var.clone(), api_secret_var.clone()];
+        let binance_standard_mode = exchange_name == "binance"
+            && matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
+        let mut required_env = vec![api_key_var.clone()];
         if exchange_name == "binance" {
             required_env.push("BINANCE_ACCOUNT_MODE".to_string());
+            if binance_standard_mode {
+                required_env.push(format!(
+                    "{} or {}",
+                    api_secret_var, BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+                ));
+            } else {
+                required_env.push(api_secret_var.clone());
+            }
+        } else {
+            required_env.push(api_secret_var.clone());
         }
         info!("Required env vars: {}", required_env.join(", "));
         let optional_env = if exchange_name == "binance" {
             format!(
-                "{}, {} (on/off, default=off)",
-                api_name_var, BINANCE_UM_IP_WHITELIST_MODE_ENV
+                "{}, {} (for HMAC REST/WS fallback), {} (Ed25519 WS; wins when both signers are set), {} (on/off, default=off)",
+                api_name_var,
+                api_secret_var,
+                BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
+                BINANCE_UM_IP_WHITELIST_MODE_ENV
             )
         } else {
             format!("{} (default=\"default\")", api_name_var)
@@ -523,23 +539,57 @@ async fn main() -> Result<()> {
         })?;
         let api_key = api_key_raw.trim().to_string();
 
-        let api_secret_raw = std::env::var(&api_secret_var).map_err(|_| {
-            anyhow::anyhow!(
-                "{} not set. Export it before running trade_engine",
-                api_secret_var
-            )
-        })?;
-        let api_secret = api_secret_raw.trim().to_string();
+        let api_secret = if binance_standard_mode {
+            std::env::var(&api_secret_var)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default()
+        } else {
+            let api_secret_raw = std::env::var(&api_secret_var).map_err(|_| {
+                anyhow::anyhow!(
+                    "{} not set. Export it before running trade_engine",
+                    api_secret_var
+                )
+            })?;
+            api_secret_raw.trim().to_string()
+        };
+
+        if binance_standard_mode {
+            let ed25519_path = std::env::var(BINANCE_ED25519_PRIVATE_KEY_PATH_ENV)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            if api_secret.is_empty() && ed25519_path.is_none() {
+                return Err(anyhow::anyhow!(
+                    "Binance STANDARD trade_engine requires either {} or {}",
+                    api_secret_var,
+                    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+                ));
+            }
+            if let Some(path) = ed25519_path.as_ref() {
+                info!(
+                    "Binance WS signer source: {}={} (preferred over {} when both are set)",
+                    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV, path, api_secret_var
+                );
+            } else {
+                info!("Binance WS signer source: {}", api_secret_var);
+            }
+        }
 
         let api_name = std::env::var(&api_name_var).unwrap_or_else(|_| "default".to_string());
 
         info!("trade_engine account name: {}", api_name);
         log_credential_preview(&api_key_var, &api_key);
-        log_credential_preview(&api_secret_var, &api_secret);
+        if !api_secret.is_empty() {
+            log_credential_preview(&api_secret_var, &api_secret);
+        } else {
+            info!(
+                "{} not set; Binance WS must use Ed25519 signing",
+                api_secret_var
+            );
+        }
 
-        if exchange_name == "binance"
-            && matches!(binance_account_mode, Some(BinanceAccountMode::Standard))
-        {
+        if binance_standard_mode && !api_secret.is_empty() {
             let default_fapi_base_url = if binance_um_ip_whitelist_mode {
                 RestConstants::BINANCE_FAPI_MM_BASE_URL
             } else {
@@ -567,6 +617,8 @@ async fn main() -> Result<()> {
                 panic!("binance feeBurn check failed: {err}");
             }
             info!("binance feeBurn enabled");
+        } else if binance_standard_mode {
+            info!("skip binance feeBurn check: {} not set", api_secret_var);
         }
 
         vec![ApiKey {
