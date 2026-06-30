@@ -507,6 +507,7 @@ fn classify_ws_action(rt: TradeRequestType) -> WsAction {
 
 #[derive(Debug, Default)]
 pub(crate) struct WsEndpointState {
+    connected: bool,
     cooldown_until: Option<std::time::Instant>,
     health_pause_until: Option<std::time::Instant>,
     recent_binance_um_new_ack_rtts_us: VecDeque<BinanceUmNewAckRttSample>,
@@ -518,6 +519,19 @@ pub(crate) struct WsEndpointState {
     last_binance_um_new_sent_at: Option<std::time::Instant>,
     binance_um_request_weight_1m: Option<BinanceWsRateLimitWindow>,
     binance_um_orders_1m: Option<BinanceWsRateLimitWindow>,
+}
+
+impl WsEndpointState {
+    fn mark_connected(&mut self) {
+        self.connected = true;
+    }
+
+    fn mark_disconnected(&mut self) {
+        self.connected = false;
+        self.binance_um_new_inflight.clear();
+        self.binance_um_cancel_inflight.clear();
+        self.last_binance_um_new_sent_at = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -816,6 +830,9 @@ impl WsEndpointHandle {
         binance_um_new_inflight_pause_ms: u64,
     ) -> bool {
         let mut state = self.state.borrow_mut();
+        if !state.connected {
+            return false;
+        }
         if let Some(until) = state.cooldown_until {
             if now < until {
                 return false;
@@ -918,6 +935,16 @@ impl WsEndpointHandle {
             }
         }
         true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_connected(&self) {
+        self.state.borrow_mut().mark_connected();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_disconnected(&self) {
+        self.state.borrow_mut().mark_disconnected();
     }
 
     pub(crate) fn mark_binance_um_new_inflight(
@@ -1801,6 +1828,7 @@ impl TradeWsClient {
                 res = Self::establish_connection_with(local_ip, &url, remote_ip_override, connect_timeout_ms, &ws_headers) => {
                     match res {
                         Ok((mut ws, remote_addr)) => {
+                            self.endpoint_state.borrow_mut().mark_connected();
                             self.current_remote_addr = Some(remote_addr);
                             info!(
                                 "trade ws client id={} established connection to {} via {} remote_addr={}",
@@ -1918,6 +1946,7 @@ impl TradeWsClient {
                                     );
                                     self.reset_binance_session_logon();
                                     let _ = ws.close(None).await;
+                                    self.endpoint_state.borrow_mut().mark_disconnected();
                                     self.current_remote_addr = None;
                                     continue;
                                 }
@@ -1934,9 +1963,11 @@ impl TradeWsClient {
                                 );
                             }
                             self.reset_binance_session_logon();
+                            self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
                         }
                         Err(err) => {
+                            self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
                             let err_text = format_error_chain(&err);
                             self.trigger_engine_shutdown_on_binance_rate_limit(
@@ -4766,6 +4797,15 @@ mod tests {
         }
     }
 
+    fn connected_endpoint_handle() -> WsEndpointHandle {
+        let handle = WsEndpointHandle::new(
+            WsCommandQueue::new(),
+            Rc::new(RefCell::new(WsEndpointState::default())),
+        );
+        handle.mark_connected();
+        handle
+    }
+
     #[test]
     fn parses_bitget_login_failure_control_event() {
         let payload = r#"{"event":"login","code":"30005","msg":"Login failure"}"#;
@@ -4826,11 +4866,32 @@ mod tests {
     }
 
     #[test]
-    fn binance_um_new_inflight_blocks_then_recovers() {
+    fn endpoint_unavailable_until_connected_and_disconnect_clears_um_inflight() {
         let handle = WsEndpointHandle::new(
             WsCommandQueue::new(),
             Rc::new(RefCell::new(WsEndpointState::default())),
         );
+        assert!(!handle.is_available());
+        assert!(!handle.is_available_for_new_binance_um(None, None, 0));
+
+        handle.mark_connected();
+        assert!(handle.is_available());
+
+        let now_us = runtime_common::time_util::get_timestamp_us();
+        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
+        assert!(handle.has_recent_binance_um_new_sent(std::time::Duration::from_secs(1)));
+
+        handle.mark_disconnected();
+        assert!(!handle.is_available());
+        assert!(!handle.has_recent_binance_um_new_sent(std::time::Duration::from_secs(1)));
+
+        handle.mark_connected();
+        assert!(handle.is_available_for_new_binance_um(Some(100_000), None, 0));
+    }
+
+    #[test]
+    fn binance_um_new_inflight_blocks_then_recovers() {
+        let handle = connected_endpoint_handle();
         let now_us = runtime_common::time_util::get_timestamp_us();
         handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
 
@@ -4842,10 +4903,7 @@ mod tests {
 
     #[test]
     fn binance_um_new_inflight_block_clears_actual_new_route_samples() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
+        let handle = connected_endpoint_handle();
         let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(10, 10));
         let _ = handle.mark_binance_um_new_ack_rtt(
             5_000,
@@ -4867,10 +4925,7 @@ mod tests {
 
     #[test]
     fn binance_um_new_inflight_clear_prevents_block() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
+        let handle = connected_endpoint_handle();
         let now_us = runtime_common::time_util::get_timestamp_us();
         handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
         handle.clear_binance_um_new_inflight(42, 281474976710657);
