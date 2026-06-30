@@ -341,7 +341,7 @@ impl VenueAdapter for BinanceAdapter {
             if !active_is_empty && slot_index.is_none() {
                 return Some(());
             }
-            match publish_raw_derivative(publisher, slot_index, derivative) {
+            match publish_raw_derivative(publisher, derivative) {
                 Ok(count) => published += count,
                 Err(e) => log::warn!("spread_pbs derivatives publish failed: {:#}", e),
             }
@@ -598,7 +598,6 @@ fn raw_derivative_symbol<'a>(derivative: &'a binance_codec::RawDerivative<'a>) -
 
 fn publish_raw_derivative(
     publisher: &Rc<SpreadDerivativesPublisher>,
-    slot_index: Option<usize>,
     derivative: binance_codec::RawDerivative<'_>,
 ) -> Result<usize> {
     match derivative {
@@ -612,18 +611,6 @@ fn publish_raw_derivative(
         } => {
             let mark_price = mark_price.filter(|price| *price > 0.0);
             let index_price = index_price.filter(|price| *price > 0.0);
-            if let Some(slot_index) = slot_index {
-                return publisher.publish_mark_price_bundle_for_slot(
-                    slot_index,
-                    symbol,
-                    mark_price,
-                    index_price,
-                    funding_rate,
-                    next_funding_time_us,
-                    timestamp_us,
-                );
-            }
-
             let mut count = 0usize;
             if let Some(price) = mark_price {
                 publisher.publish_mark_price(symbol, price, timestamp_us)?;
@@ -646,18 +633,7 @@ fn publish_raw_derivative(
             price,
             timestamp_us,
         } => {
-            if let Some(slot_index) = slot_index {
-                publisher.publish_liquidation_for_slot(
-                    slot_index,
-                    symbol,
-                    side,
-                    amount,
-                    price,
-                    timestamp_us,
-                )?;
-            } else {
-                publisher.publish_liquidation(symbol, side, amount, price, timestamp_us)?;
-            }
+            publisher.publish_liquidation(symbol, side, amount, price, timestamp_us)?;
             Ok(1)
         }
     }
