@@ -196,7 +196,8 @@ mod route_selection_tests {
     use super::{
         binance_um_route_eval_redis_key_for_env, build_binance_um_route_eval_snapshot,
         select_binance_um_ws_route, select_binance_um_ws_route_with_fallback,
-        BinanceUmWsRouteCandidate, BinanceUmWsRouteMode, WsEndpointGroup,
+        select_binance_um_ws_rr_route, BinanceUmWsRouteCandidate, BinanceUmWsRouteMode,
+        WsEndpointGroup,
     };
     use crate::ws_client::{
         BinanceUmWsHealthConfig, BinanceUmWsHealthRuntime, WsCommandQueue, WsEndpointHandle,
@@ -285,6 +286,38 @@ mod route_selection_tests {
     }
 
     #[test]
+    fn binance_um_eval_route_uses_base_available_when_all_um_health_blocked() {
+        let candidates = [BinanceUmWsRouteCandidate {
+            base_available: true,
+            um_available: false,
+            new_ack_rtt_sum_us: 3_432,
+            new_ack_rtt_count: 3,
+        }];
+
+        let selected = select_binance_um_ws_route(&candidates, 0, 3);
+
+        assert_eq!(selected.idx, Some(0));
+        assert_eq!(selected.mode, BinanceUmWsRouteMode::Base);
+        assert!(selected.has_blocked_endpoint);
+    }
+
+    #[test]
+    fn binance_um_rr_route_uses_base_available_when_um_health_blocked() {
+        let candidates = [BinanceUmWsRouteCandidate {
+            base_available: true,
+            um_available: false,
+            new_ack_rtt_sum_us: 3_432,
+            new_ack_rtt_count: 3,
+        }];
+
+        let selected = select_binance_um_ws_rr_route(&candidates, 0);
+
+        assert_eq!(selected.idx, Some(0));
+        assert_eq!(selected.mode, BinanceUmWsRouteMode::Rr);
+        assert!(selected.has_blocked_endpoint);
+    }
+
+    #[test]
     fn binance_um_route_uses_fallback_only_when_direct_unavailable() {
         let candidates = [
             candidate(true, 1_000, 3),
@@ -325,7 +358,7 @@ mod route_selection_tests {
     }
 
     #[test]
-    fn binance_um_route_reports_blocked_when_all_direct_bootstrap_endpoints_blocked() {
+    fn binance_um_route_falls_back_to_direct_base_when_all_direct_health_blocked() {
         let candidates = [
             candidate(true, 1_000, 3),
             BinanceUmWsRouteCandidate {
@@ -339,8 +372,8 @@ mod route_selection_tests {
 
         let selected = select_binance_um_ws_route_with_fallback(&candidates, &fallback, 1, 3);
 
-        assert_eq!(selected.idx, None);
-        assert_eq!(selected.mode, BinanceUmWsRouteMode::Health);
+        assert_eq!(selected.idx, Some(1));
+        assert_eq!(selected.mode, BinanceUmWsRouteMode::Base);
         assert!(selected.has_blocked_endpoint);
     }
 
@@ -443,6 +476,8 @@ mod route_selection_tests {
 enum BinanceUmWsRouteMode {
     Health,
     Bootstrap,
+    Base,
+    Rr,
     Fallback,
 }
 
@@ -451,6 +486,8 @@ impl BinanceUmWsRouteMode {
         match self {
             Self::Health => "health",
             Self::Bootstrap => "bootstrap",
+            Self::Base => "base",
+            Self::Rr => "rr",
             Self::Fallback => "fallback",
         }
     }
@@ -766,6 +803,10 @@ fn binance_um_route_reason(route: BinanceUmWsRouteSelection) -> &'static str {
         BinanceUmWsRouteMode::Health => "no_eligible_actual_new_ack_rtt",
         BinanceUmWsRouteMode::Bootstrap if route.idx.is_some() => "bootstrap_actual_new_ack_rtt",
         BinanceUmWsRouteMode::Bootstrap => "no_available_bootstrap_endpoint",
+        BinanceUmWsRouteMode::Base if route.idx.is_some() => "base_available_health_fallback",
+        BinanceUmWsRouteMode::Base => "no_base_available_endpoint",
+        BinanceUmWsRouteMode::Rr if route.idx.is_some() => "round_robin_base_available",
+        BinanceUmWsRouteMode::Rr => "no_available_endpoint",
         BinanceUmWsRouteMode::Fallback if route.idx.is_some() => "direct_unavailable_fallback",
         BinanceUmWsRouteMode::Fallback => "no_available_endpoint",
     }
@@ -813,21 +854,45 @@ fn select_binance_um_ws_route_with_fallback(
     }
 
     if direct_base_available {
-        return BinanceUmWsRouteSelection {
-            idx: None,
-            mode: BinanceUmWsRouteMode::Health,
-            has_blocked_endpoint: true,
-        };
+        for offset in 0..candidates.len() {
+            let idx = (start + offset) % candidates.len();
+            if !fallback[idx] && candidates[idx].base_available {
+                return BinanceUmWsRouteSelection {
+                    idx: Some(idx),
+                    mode: BinanceUmWsRouteMode::Base,
+                    has_blocked_endpoint: true,
+                };
+            }
+        }
     }
 
-    let fallback_idx = candidates.iter().zip(fallback.iter()).enumerate().find_map(
-        |(idx, (candidate, is_fallback))| (*is_fallback && candidate.um_available).then_some(idx),
-    );
+    for offset in 0..candidates.len() {
+        let idx = (start + offset) % candidates.len();
+        if fallback[idx] && candidates[idx].um_available {
+            return BinanceUmWsRouteSelection {
+                idx: Some(idx),
+                mode: BinanceUmWsRouteMode::Fallback,
+                has_blocked_endpoint: true,
+            };
+        }
+    }
+    for offset in 0..candidates.len() {
+        let idx = (start + offset) % candidates.len();
+        if fallback[idx] && candidates[idx].base_available {
+            return BinanceUmWsRouteSelection {
+                idx: Some(idx),
+                mode: BinanceUmWsRouteMode::Base,
+                has_blocked_endpoint: true,
+            };
+        }
+    }
 
     BinanceUmWsRouteSelection {
-        idx: fallback_idx,
+        idx: None,
         mode: BinanceUmWsRouteMode::Fallback,
-        has_blocked_endpoint: true,
+        has_blocked_endpoint: candidates
+            .iter()
+            .any(|candidate| candidate.base_available && !candidate.um_available),
     }
 }
 
@@ -891,6 +956,16 @@ fn select_binance_um_ws_route(
             };
         }
     }
+    for offset in 0..len {
+        let idx = (start + offset) % len;
+        if candidates[idx].base_available {
+            return BinanceUmWsRouteSelection {
+                idx: Some(idx),
+                mode: BinanceUmWsRouteMode::Base,
+                has_blocked_endpoint,
+            };
+        }
+    }
     BinanceUmWsRouteSelection {
         idx: None,
         mode: BinanceUmWsRouteMode::Fallback,
@@ -905,7 +980,7 @@ fn select_binance_um_ws_rr_route(
     if candidates.is_empty() {
         return BinanceUmWsRouteSelection {
             idx: None,
-            mode: BinanceUmWsRouteMode::Fallback,
+            mode: BinanceUmWsRouteMode::Rr,
             has_blocked_endpoint: false,
         };
     }
@@ -916,17 +991,17 @@ fn select_binance_um_ws_rr_route(
         if candidate.base_available && !candidate.um_available {
             has_blocked_endpoint = true;
         }
-        if candidate.um_available {
+        if candidate.base_available {
             return BinanceUmWsRouteSelection {
                 idx: Some(idx),
-                mode: BinanceUmWsRouteMode::Bootstrap,
+                mode: BinanceUmWsRouteMode::Rr,
                 has_blocked_endpoint,
             };
         }
     }
     BinanceUmWsRouteSelection {
         idx: None,
-        mode: BinanceUmWsRouteMode::Fallback,
+        mode: BinanceUmWsRouteMode::Rr,
         has_blocked_endpoint,
     }
 }
@@ -992,19 +1067,41 @@ fn select_binance_um_ws_follow_group_route(
     }
     if direct_base_available {
         has_blocked_endpoint = true;
-        return BinanceUmWsRouteSelection {
-            idx: None,
-            mode: BinanceUmWsRouteMode::Health,
-            has_blocked_endpoint,
-        };
+        for offset in 0..candidates.len() {
+            let idx = (start + offset) % candidates.len();
+            if !fallback[idx] && candidates[idx].base_available {
+                return BinanceUmWsRouteSelection {
+                    idx: Some(idx),
+                    mode: BinanceUmWsRouteMode::Base,
+                    has_blocked_endpoint,
+                };
+            }
+        }
     }
-    let fallback_idx = candidates.iter().zip(fallback.iter()).enumerate().find_map(
-        |(idx, (candidate, is_fallback))| (*is_fallback && candidate.um_available).then_some(idx),
-    );
+    for offset in 0..candidates.len() {
+        let idx = (start + offset) % candidates.len();
+        if fallback[idx] && candidates[idx].um_available {
+            return BinanceUmWsRouteSelection {
+                idx: Some(idx),
+                mode: BinanceUmWsRouteMode::Fallback,
+                has_blocked_endpoint: true,
+            };
+        }
+    }
+    for offset in 0..candidates.len() {
+        let idx = (start + offset) % candidates.len();
+        if fallback[idx] && candidates[idx].base_available {
+            return BinanceUmWsRouteSelection {
+                idx: Some(idx),
+                mode: BinanceUmWsRouteMode::Base,
+                has_blocked_endpoint: true,
+            };
+        }
+    }
     BinanceUmWsRouteSelection {
-        idx: fallback_idx,
+        idx: None,
         mode: BinanceUmWsRouteMode::Fallback,
-        has_blocked_endpoint: true,
+        has_blocked_endpoint,
     }
 }
 
@@ -3289,11 +3386,18 @@ impl TradeEngine {
                                 .iter()
                                 .map(|group| {
                                     let base_available = group.is_available();
-                                    let um_available = group.is_available_for_new_binance_um(
-                                        inflight_block_threshold_us,
-                                        cancel_inflight_block_threshold_us,
-                                        inflight_block_pause_ms,
-                                    );
+                                    let um_available = if matches!(
+                                        binance_um_ws_route.route,
+                                        BinanceUmWsRouteKind::Rr | BinanceUmWsRouteKind::Follow
+                                    ) {
+                                        base_available
+                                    } else {
+                                        group.is_available_for_new_binance_um(
+                                            inflight_block_threshold_us,
+                                            cancel_inflight_block_threshold_us,
+                                            inflight_block_pause_ms,
+                                        )
+                                    };
                                     let (new_ack_rtt_sum_us, new_ack_rtt_count) = group
                                         .recent_binance_um_new_ack_rtt_sum_count(select_recent);
                                     BinanceUmWsRouteCandidate {
@@ -3310,12 +3414,7 @@ impl TradeEngine {
                                 binance_um_ws_route_follow_state.borrow().snapshot.clone();
                             let route = match binance_um_ws_route.route {
                                 BinanceUmWsRouteKind::Rr => {
-                                    select_binance_um_ws_follow_group_route(
-                                        &candidates,
-                                        &fallback,
-                                        start,
-                                        None,
-                                    )
+                                    select_binance_um_ws_rr_route(&candidates, start)
                                 }
                                 BinanceUmWsRouteKind::Eval => {
                                     select_binance_um_ws_route_with_fallback(
@@ -3461,6 +3560,14 @@ impl TradeEngine {
                                         binance_um_bootstrap_routes =
                                             binance_um_bootstrap_routes.saturating_add(1);
                                     }
+                                    BinanceUmWsRouteMode::Base => {
+                                        binance_um_fallback_routes =
+                                            binance_um_fallback_routes.saturating_add(1);
+                                    }
+                                    BinanceUmWsRouteMode::Rr => {
+                                        binance_um_fallback_routes =
+                                            binance_um_fallback_routes.saturating_add(1);
+                                    }
                                     BinanceUmWsRouteMode::Fallback => {
                                         binance_um_fallback_routes =
                                             binance_um_fallback_routes.saturating_add(1);
@@ -3565,11 +3672,18 @@ impl TradeEngine {
                                 .iter()
                                 .map(|endpoint| {
                                     let base_available = endpoint.is_available();
-                                    let um_available = endpoint.is_available_for_new_binance_um(
-                                        inflight_block_threshold_us,
-                                        cancel_inflight_block_threshold_us,
-                                        inflight_block_pause_ms,
-                                    );
+                                    let um_available = if matches!(
+                                        binance_um_ws_route.route,
+                                        BinanceUmWsRouteKind::Rr | BinanceUmWsRouteKind::Follow
+                                    ) {
+                                        base_available
+                                    } else {
+                                        endpoint.is_available_for_new_binance_um(
+                                            inflight_block_threshold_us,
+                                            cancel_inflight_block_threshold_us,
+                                            inflight_block_pause_ms,
+                                        )
+                                    };
                                     let (new_ack_rtt_sum_us, new_ack_rtt_count) = endpoint
                                         .recent_binance_um_new_ack_rtt_sum_count(select_recent);
                                     BinanceUmWsRouteCandidate {
@@ -3717,6 +3831,14 @@ impl TradeEngine {
                                     BinanceUmWsRouteMode::Bootstrap => {
                                         binance_um_bootstrap_routes =
                                             binance_um_bootstrap_routes.saturating_add(1);
+                                    }
+                                    BinanceUmWsRouteMode::Base => {
+                                        binance_um_fallback_routes =
+                                            binance_um_fallback_routes.saturating_add(1);
+                                    }
+                                    BinanceUmWsRouteMode::Rr => {
+                                        binance_um_fallback_routes =
+                                            binance_um_fallback_routes.saturating_add(1);
                                     }
                                     BinanceUmWsRouteMode::Fallback => {
                                         binance_um_fallback_routes =
