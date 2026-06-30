@@ -1,4 +1,5 @@
 use crate::pre_trade::account_open_block::check_account_open_block;
+use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -879,6 +880,19 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 &hedging_symbol,
                 hedging_venue,
             ) {
+                return;
+            }
+
+            if GateFrRiskLimitGuard::should_block_arb_open(
+                &symbol,
+                opening_venue,
+                &hedging_symbol,
+                hedging_venue,
+            ) {
+                debug!(
+                    "ArbOpen: blocked by Gate FR risk-limit snapshot guard, symbol={} hedge_symbol={} open_venue={:?} hedge_venue={:?}",
+                    symbol, hedging_symbol, opening_venue, hedging_venue
+                );
                 return;
             }
 

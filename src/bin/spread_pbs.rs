@@ -385,10 +385,13 @@ mod tests {
     #[test]
     fn validates_binance_futures_split_roles() {
         let selection = parse_venue_selection("binance-futures").unwrap();
-        validate_role_selection(&selection, BinanceFuturesRole::Market).unwrap();
-        validate_role_selection(&selection, BinanceFuturesRole::BookTicker).unwrap();
+        validate_role_selection(&selection, BinanceFuturesRole::Market, BybitRole::Full).unwrap();
+        validate_role_selection(&selection, BinanceFuturesRole::BookTicker, BybitRole::Full)
+            .unwrap();
 
         let both = parse_venue_selection("binance-both").unwrap();
-        assert!(validate_role_selection(&both, BinanceFuturesRole::Market).is_err());
+        assert!(
+            validate_role_selection(&both, BinanceFuturesRole::Market, BybitRole::Full).is_err()
+        );
     }
 }

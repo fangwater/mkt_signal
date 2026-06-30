@@ -20,9 +20,11 @@ const EXCHANGE_WARNING_MODE_UPPER_UNIMMR: f64 = 1.5;
 const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
 const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
+const DEFAULT_ARB_ORDER_AMOUNT_U: f64 = 100.0;
 
 type MaxPosUOverrideTable = FastHashMap<String, f64>;
 type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
+type AmountUOverrideTable = FastHashMap<String, f64>;
 
 fn is_mm_pre_trade_mode(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
     open_venue == hedge_venue
@@ -33,6 +35,8 @@ fn is_mm_pre_trade_mode(open_venue: TradingVenue, hedge_venue: TradingVenue) -> 
 struct PreTradeParamsData {
     max_pos_u: f64,
     max_pos_u_overrides: MaxPosUOverrides,
+    arb_order_amount_u: f64,
+    arb_amount_u_overrides: AmountUOverrideTable,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
@@ -64,6 +68,8 @@ impl Default for PreTradeParamsData {
         Self {
             max_pos_u: 1000.0,
             max_pos_u_overrides: fast_hash_map(),
+            arb_order_amount_u: DEFAULT_ARB_ORDER_AMOUNT_U,
+            arb_amount_u_overrides: fast_hash_map(),
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
@@ -153,6 +159,27 @@ fn arb_max_pos_u_override_key(
     ))
 }
 
+fn arb_strategy_params_key(open_venue: TradingVenue, hedge_venue: TradingVenue) -> String {
+    format!(
+        "fr_strategy_params_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
+}
+
+fn arb_amount_u_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:amount_u_overrides",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
 fn is_internal_symbol_key(symbol: &str) -> bool {
     !symbol.is_empty()
         && !symbol.ends_with("SWAP")
@@ -176,6 +203,45 @@ fn max_pos_u_override_count(overrides: &MaxPosUOverrides) -> usize {
 fn merge_max_pos_u_overrides(dst: &mut MaxPosUOverrides, src: MaxPosUOverrides) {
     for (venue, table) in src {
         dst.entry(venue).or_insert_with(fast_hash_map).extend(table);
+    }
+}
+
+fn parse_amount_u_overrides(raw: &str, redis_key: &str) -> AmountUOverrideTable {
+    let parsed: HashMap<String, f64> = serde_json::from_str(raw).unwrap_or_else(|err| {
+        panic!(
+            "Redis string '{}' 不是合法 JSON(symbol->amount_u): {} ({})",
+            redis_key, raw, err
+        )
+    });
+
+    let mut overrides = fast_hash_map_with_capacity(parsed.len());
+    for (symbol, amount_u) in parsed {
+        let symbol_trimmed = symbol.trim();
+        if symbol_trimmed.is_empty() {
+            panic!("Redis string '{}' 包含空 symbol", redis_key);
+        }
+        if !(amount_u.is_finite() && amount_u > 0.0) {
+            panic!(
+                "Redis string '{}' symbol={} amount_u 非法: {}",
+                redis_key, symbol_trimmed, amount_u
+            );
+        }
+        overrides.insert(normalize_symbol_for_internal(symbol_trimmed), amount_u);
+    }
+    overrides
+}
+
+fn parse_arb_order_amount_u(hash_map: &HashMap<String, String>, redis_key: &str) -> Option<f64> {
+    let raw = hash_map.get("order_amount")?;
+    match raw.parse::<f64>() {
+        Ok(value) if value.is_finite() && value > 0.0 => Some(value),
+        _ => {
+            warn!(
+                "strategy params key='{}' order_amount={} 无效，继续使用上一轮或默认 amount_u",
+                redis_key, raw
+            );
+            None
+        }
     }
 }
 
@@ -225,6 +291,18 @@ fn resolve_max_pos_u_for_symbol(
         .get(symbol_key.as_ref())
         .copied()
         .unwrap_or(default_max_pos_u)
+}
+
+fn resolve_amount_u_for_symbol(
+    default_amount_u: f64,
+    overrides: &AmountUOverrideTable,
+    symbol: &str,
+) -> f64 {
+    let symbol_key = max_pos_u_symbol_key(symbol);
+    overrides
+        .get(symbol_key.as_ref())
+        .copied()
+        .unwrap_or(default_amount_u)
 }
 
 fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Option<(f64, f64)> {
@@ -312,9 +390,26 @@ impl PreTradeParamsLoader {
             }
         }
 
+        let strategy_key = arb_strategy_params_key(open_venue, hedge_venue);
+        let strategy_params = client.hgetall_map(&strategy_key).await?;
+        let arb_order_amount_u = parse_arb_order_amount_u(&strategy_params, &strategy_key);
+        let mut amount_u_overrides = fast_hash_map();
+        if let Some(override_key) = arb_amount_u_override_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&override_key).await? {
+                amount_u_overrides = parse_amount_u_overrides(&raw, &override_key);
+                debug!(
+                    "arb amount_u overrides loaded key='{}' symbols={}",
+                    override_key,
+                    amount_u_overrides.len()
+                );
+            }
+        }
+
         self.apply_loaded_params(
             hash_map,
             max_pos_u_overrides,
+            arb_order_amount_u,
+            amount_u_overrides,
             is_mm_pre_trade_mode(open_venue, hedge_venue),
         );
         Ok(())
@@ -386,18 +481,37 @@ impl PreTradeParamsLoader {
             }
         }
 
+        let strategy_key = arb_strategy_params_key(open_venue, hedge_venue);
+        let strategy_params = client.hgetall_map(&strategy_key)?;
+        let arb_order_amount_u = parse_arb_order_amount_u(&strategy_params, &strategy_key);
+        let mut amount_u_overrides = fast_hash_map();
+        if let Some(override_key) = arb_amount_u_override_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&override_key)? {
+                amount_u_overrides = parse_amount_u_overrides(&raw, &override_key);
+                debug!(
+                    "arb amount_u overrides loaded key='{}' symbols={}",
+                    override_key,
+                    amount_u_overrides.len()
+                );
+            }
+        }
+
         self.apply_loaded_params(
             hash_map,
             max_pos_u_overrides,
+            arb_order_amount_u,
+            amount_u_overrides,
             is_mm_pre_trade_mode(open_venue, hedge_venue),
         );
         Ok(())
     }
 
-    fn apply_loaded_params(
+    pub(crate) fn apply_loaded_params(
         &self,
         hash_map: HashMap<String, String>,
         max_pos_u_overrides: MaxPosUOverrides,
+        arb_order_amount_u: Option<f64>,
+        arb_amount_u_overrides: AmountUOverrideTable,
         mm_pre_trade_mode: bool,
     ) {
         let parse_f64 =
@@ -412,6 +526,10 @@ impl PreTradeParamsLoader {
                 data.max_pos_u = v;
             }
             data.max_pos_u_overrides = max_pos_u_overrides.clone();
+            if let Some(v) = arb_order_amount_u {
+                data.arb_order_amount_u = v;
+            }
+            data.arb_amount_u_overrides = arb_amount_u_overrides.clone();
 
             if let Some(v) = parse_f64("max_symbol_exposure_ratio") {
                 data.max_symbol_exposure_ratio = v;
@@ -547,9 +665,11 @@ impl PreTradeParamsLoader {
             }
 
             debug!(
-                "风控参数已加载: max_pos_u={:.2} overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} min_non_trading_position_usdt={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_close_max_pending_buy={} arb_close_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
+                "风控参数已加载: max_pos_u={:.2} overrides={} arb_order_amount_u={:.2} amount_u_overrides={} sym_ratio={:.4} total_ratio={:.4} max_leverage={:.2} min_non_trading_position_usdt={:.2} exec_position_imbalance_ratio={:.4} unimmr_trigger={:.2} unimmr_recover={:.2} max_pending={} max_pending_buy={} max_pending_sell={} open_rate_1m={} open_rate_10s={} hedge_rate_1m={} hedge_rate_10s={} arb_max_pending_buy={} arb_max_pending_sell={} arb_close_max_pending_buy={} arb_close_max_pending_sell={} arb_open_rate_1m={} arb_open_rate_10s={} arb_hedge_rate_1m={} arb_hedge_rate_10s={} exec_rate_1m={} exec_rate_10s={}",
                 data.max_pos_u,
                 max_pos_u_override_count(&data.max_pos_u_overrides),
+                data.arb_order_amount_u,
+                data.arb_amount_u_overrides.len(),
                 data.max_symbol_exposure_ratio,
                 data.max_total_exposure_ratio,
                 data.max_leverage,
@@ -620,6 +740,15 @@ impl PreTradeParamsLoader {
         println!("{:<40} {:>18}", "Parameter", "Value");
         println!("{}", mid_separator);
         println!("{:<40} {:>18.2}", "max_pos_u", data.max_pos_u);
+        println!(
+            "{:<40} {:>18.2}",
+            "arb_order_amount_u", data.arb_order_amount_u
+        );
+        println!(
+            "{:<40} {:>18}",
+            "arb_amount_u_overrides",
+            data.arb_amount_u_overrides.len()
+        );
         println!(
             "{:<40} {:>18.4}",
             "max_symbol_exposure_ratio", data.max_symbol_exposure_ratio
@@ -728,6 +857,21 @@ impl PreTradeParamsLoader {
                 data.max_pos_u,
                 &data.max_pos_u_overrides,
                 open_venue,
+                symbol,
+            )
+        })
+    }
+
+    pub fn arb_order_amount_u(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().arb_order_amount_u)
+    }
+
+    pub fn arb_amount_u_for_symbol(&self, symbol: &str) -> f64 {
+        PARAMS_DATA.with(|data| {
+            let data = data.borrow();
+            resolve_amount_u_for_symbol(
+                data.arb_order_amount_u,
+                &data.arb_amount_u_overrides,
                 symbol,
             )
         })
@@ -972,6 +1116,11 @@ mod tests {
     fn test_default_params() {
         let loader = PreTradeParamsLoader::instance();
         assert_eq!(loader.max_pos_u(), 1000.0);
+        assert_eq!(loader.arb_order_amount_u(), DEFAULT_ARB_ORDER_AMOUNT_U);
+        assert_eq!(
+            loader.arb_amount_u_for_symbol("BTCUSDT"),
+            DEFAULT_ARB_ORDER_AMOUNT_U
+        );
         assert_eq!(loader.max_symbol_exposure_ratio(), 0.8);
         assert_eq!(loader.max_total_exposure_ratio(), 1.0);
         assert_eq!(loader.max_leverage(), 3.0);
@@ -1032,6 +1181,23 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_amount_u_for_symbol_uses_override() {
+        let overrides = parse_amount_u_overrides(r#"{"BTC_USDT":250, "ETHUSDT":125}"#, "amount");
+        assert_eq!(
+            resolve_amount_u_for_symbol(100.0, &overrides, "BTCUSDT"),
+            250.0
+        );
+        assert_eq!(
+            resolve_amount_u_for_symbol(100.0, &overrides, "eth-usdt"),
+            125.0
+        );
+        assert_eq!(
+            resolve_amount_u_for_symbol(100.0, &overrides, "SOLUSDT"),
+            100.0
+        );
+    }
+
+    #[test]
     fn test_resolve_max_pos_u_for_symbol_uses_override() {
         let mut overrides = fast_hash_map();
         let mut binance = fast_hash_map();
@@ -1087,7 +1253,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("max_pos_u".to_string(), "1234".to_string());
 
-        loader.apply_loaded_params(params, fast_hash_map(), true);
+        loader.apply_loaded_params(params, fast_hash_map(), None, fast_hash_map(), true);
 
         assert_eq!(loader.max_pos_u(), 1234.0);
         assert_eq!(loader.arb_close_max_pending_limit_buy_orders(), 3);
@@ -1100,7 +1266,13 @@ mod tests {
     )]
     fn non_mm_mode_requires_arb_close_limits() {
         let loader = PreTradeParamsLoader::instance();
-        loader.apply_loaded_params(HashMap::new(), fast_hash_map(), false);
+        loader.apply_loaded_params(
+            HashMap::new(),
+            fast_hash_map(),
+            None,
+            fast_hash_map(),
+            false,
+        );
     }
 
     #[test]

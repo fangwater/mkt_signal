@@ -8,6 +8,7 @@ pub mod basic_um_manager;
 mod channel;
 pub mod close_inventory;
 pub mod event;
+pub mod gate_fr_risk_limit_guard;
 pub mod intra_bwd_symbol_list;
 pub mod leverage_guard;
 pub mod log_throttle;

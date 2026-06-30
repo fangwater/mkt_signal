@@ -7,6 +7,7 @@ use log::{info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
+use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
@@ -478,6 +479,17 @@ async fn main() -> Result<()> {
             )
             .await?;
             info!("ArbOpen leverage guard initialized");
+
+            info!("Initializing Gate FR risk-limit guard...");
+            GateFrRiskLimitGuard::initialize(
+                &leverage_guard_redis,
+                dir_prefix.clone(),
+                arb_mode,
+                open_venue,
+                hedge_venue,
+            )
+            .await?;
+            info!("Gate FR risk-limit guard initialized");
 
             // 5. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");

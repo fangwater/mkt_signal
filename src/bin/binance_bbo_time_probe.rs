@@ -171,6 +171,7 @@ async fn run(args: Args) -> Result<()> {
             label: "binance-bbo-time-probe",
             url: BINANCE_FUTURES_WS_URL.to_string(),
             local_ip: cfg.primary_local_ip.clone(),
+            remote_ip: None,
             headers: Vec::new(),
             subscribe_msgs,
             keepalive: None,
