@@ -1326,7 +1326,10 @@ pub trait OpenStrategyCommon {
             }
 
             if is_arb_open
-                && monitor.arb_mode() == trade_signal::ArbMode::FundingArb
+                && matches!(
+                    monitor.arb_mode(),
+                    trade_signal::ArbMode::FundingArb | trade_signal::ArbMode::IntraArb
+                )
                 && venue == TradingVenue::GateMargin
                 && monitor.hedge_venue() == TradingVenue::GateFutures
             {
@@ -1343,7 +1346,7 @@ pub trait OpenStrategyCommon {
                     qty_multiplier,
                 ) {
                     self.log_open_deleveraging_risk_reject(
-                        "Gate FR限仓风控",
+                        "Gate限仓风控",
                         &e,
                         &symbol,
                         TradingVenue::GateFutures,
@@ -1352,12 +1355,12 @@ pub trait OpenStrategyCommon {
                         input.qty,
                     );
                     error!(
-                        "{}: strategy_id={} Gate FR限仓检查失败: {}，标记策略为不活跃",
+                        "{}: strategy_id={} Gate限仓检查失败: {}，标记策略为不活跃",
                         self.strategy_name(),
                         self.strategy_id(),
                         e
                     );
-                    self.mark_open_strategy_inactive(format!("gate fr risk_limit failed: {}", e));
+                    self.mark_open_strategy_inactive(format!("gate risk_limit failed: {}", e));
                     return None;
                 }
             }

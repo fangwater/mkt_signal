@@ -96,7 +96,7 @@ impl BlockStats {
         }
         let omitted = self.by_symbol.len().saturating_sub(parts.len());
         warn!(
-            "Gate FR risk-limit guard blocked ArbOpen summary: total={} details=[{}] omitted={}",
+            "Gate risk-limit guard blocked ArbOpen summary: total={} details=[{}] omitted={}",
             self.total,
             parts.join("; "),
             omitted
@@ -147,6 +147,7 @@ impl GateFrRiskLimitState {
 #[derive(Debug, Clone)]
 struct GateFrRiskLimitConfig {
     env_name: Option<String>,
+    arb_mode: ArbMode,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     settle: String,
@@ -178,7 +179,7 @@ impl GateFrRiskLimitGuard {
         if !is_gate_fr_path(arb_mode, open_venue, hedge_venue) {
             install_guard_state(GateFrRiskLimitState::disabled());
             info!(
-                "Gate FR risk-limit guard disabled: mode={} open={:?} hedge={:?}",
+                "Gate risk-limit guard disabled: mode={} open={:?} hedge={:?}",
                 arb_mode.as_str(),
                 open_venue,
                 hedge_venue
@@ -190,6 +191,7 @@ impl GateFrRiskLimitGuard {
             env_name: env_name
                 .map(|value| value.trim().to_ascii_lowercase())
                 .filter(|value| !value.is_empty()),
+            arb_mode,
             open_venue,
             hedge_venue,
             settle: gate_settle(),
@@ -205,7 +207,7 @@ impl GateFrRiskLimitGuard {
             refresh_ctx,
         ));
         info!(
-            "Gate FR risk-limit guard startup: env={:?} settle={} positions={} online_symbols={} missing_online={}",
+            "Gate risk-limit guard startup: env={:?} settle={} positions={} online_symbols={} missing_online={}",
             config.env_name,
             config.settle,
             current_position_count(),
@@ -214,7 +216,7 @@ impl GateFrRiskLimitGuard {
         );
         if missing_count > 0 {
             warn!(
-                "Gate FR risk-limit guard online symbols missing from Gate positions snapshot: count={} samples=[{}]",
+                "Gate risk-limit guard online symbols missing from Gate positions snapshot: count={} samples=[{}]",
                 missing_count,
                 refresh_result.missing_online.iter().take(20).cloned().collect::<Vec<_>>().join(",")
             );
@@ -234,7 +236,7 @@ impl GateFrRiskLimitGuard {
             }
         });
         info!(
-            "Gate FR risk-limit guard background refresh task started (interval: {}s)",
+            "Gate risk-limit guard background refresh task started (interval: {}s)",
             interval_secs
         );
     }
@@ -247,7 +249,7 @@ impl GateFrRiskLimitGuard {
             match refresh_gate_fr_risk_limits(&refresh_ctx).await {
                 Ok(result) => Self::apply_refresh_result(source, result),
                 Err(err) => warn!(
-                    "Gate FR risk-limit guard refresh failed source={}: {err:#}",
+                    "Gate risk-limit guard refresh failed source={}: {err:#}",
                     source
                 ),
             }
@@ -287,7 +289,7 @@ impl GateFrRiskLimitGuard {
             state.last_refresh_us = get_timestamp_us();
         });
         info!(
-            "Gate FR risk-limit guard refresh applied: source={} positions={} online_symbols={} missing_online={}",
+            "Gate risk-limit guard refresh applied: source={} positions={} online_symbols={} missing_online={}",
             source,
             count,
             result.online_symbols,
@@ -295,7 +297,7 @@ impl GateFrRiskLimitGuard {
         );
         if missing_count > 0 {
             warn!(
-                "Gate FR risk-limit guard refresh missing online symbols: count={} samples=[{}]",
+                "Gate risk-limit guard refresh missing online symbols: count={} samples=[{}]",
                 missing_count,
                 result
                     .missing_online
@@ -321,7 +323,7 @@ impl GateFrRiskLimitGuard {
             .or_else(|| normalize_guard_symbol(opening_symbol))
             .unwrap_or_default();
         if symbol.is_empty() {
-            warn!("Gate FR risk-limit guard blocks ArbOpen: empty symbol");
+            warn!("Gate risk-limit guard blocks ArbOpen: empty symbol");
             return true;
         }
 
@@ -329,7 +331,7 @@ impl GateFrRiskLimitGuard {
             let mut guard_ref = guard.borrow_mut();
             let Some(state) = guard_ref.as_mut() else {
                 warn!(
-                    "Gate FR risk-limit guard blocks ArbOpen: guard not initialized symbol={}",
+                    "Gate risk-limit guard blocks ArbOpen: guard not initialized symbol={}",
                     symbol
                 );
                 return true;
@@ -351,17 +353,17 @@ impl GateFrRiskLimitGuard {
 
     pub fn cap_for_symbol(symbol: &str, side: Side) -> Result<GateFrRiskLimitCap, String> {
         let symbol = normalize_guard_symbol(symbol)
-            .ok_or_else(|| format!("Gate FR risk_limit symbol invalid: {symbol}"))?;
+            .ok_or_else(|| format!("Gate risk_limit symbol invalid: {symbol}"))?;
         GATE_FR_RISK_LIMIT_GUARD.with(|guard| {
             let mut guard_ref = guard.borrow_mut();
             let Some(state) = guard_ref.as_mut() else {
                 return Err(format!(
-                    "Gate FR risk_limit guard not initialized, reject symbol={}",
+                    "Gate risk_limit guard not initialized, reject symbol={}",
                     symbol
                 ));
             };
             if !state.enabled {
-                return Err("Gate FR risk_limit guard disabled".to_string());
+                return Err("Gate risk_limit guard disabled".to_string());
             }
             let Some(record) = state.positions.get(&symbol) else {
                 let now_us = get_timestamp_us();
@@ -370,7 +372,7 @@ impl GateFrRiskLimitGuard {
                     .record(symbol.clone(), "missing_gate_position_snapshot".to_string());
                 state.stats.maybe_log(now_us);
                 return Err(format!(
-                    "Gate FR risk_limit snapshot missing symbol={}, fail closed",
+                    "Gate risk_limit snapshot missing symbol={}, fail closed",
                     symbol
                 ));
             };
@@ -390,7 +392,7 @@ impl GateFrRiskLimitGuard {
     ) -> Result<(), String> {
         if !(price.is_finite() && price > 0.0) {
             return Err(format!(
-                "Gate FR risk_limit check missing price symbol={} price={}",
+                "Gate risk_limit check missing price symbol={} price={}",
                 symbol, price
             ));
         }
@@ -405,7 +407,7 @@ impl GateFrRiskLimitGuard {
         }
         if next_usdt > cap.cap + eps {
             info!(
-                "Gate FR risk_limit reject detail: symbol={} contract={} side={} price={:.8} current_futures_qty={:.8} add_futures_qty={:.8} next_qty={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} risk_limit={:.4} buffer={:.4} cap={:.4} pending_limit_orders={} amount_u={:.4} gate_value={:.4} cross_leverage_limit={:?} raw_open_qty={:.8} open_qty_multiplier={:.8}",
+                "Gate risk_limit reject detail: symbol={} contract={} side={} price={:.8} current_futures_qty={:.8} add_futures_qty={:.8} next_qty={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} risk_limit={:.4} buffer={:.4} cap={:.4} pending_limit_orders={} amount_u={:.4} gate_value={:.4} cross_leverage_limit={:?} raw_open_qty={:.8} open_qty_multiplier={:.8}",
                 cap.symbol,
                 cap.contract,
                 side.as_str(),
@@ -427,7 +429,7 @@ impl GateFrRiskLimitGuard {
                 open_qty_multiplier
             );
             return Err(format!(
-                "Gate FR risk_limit cap exceeded symbol={} next={:.4}USDT cap={:.4}USDT risk_limit={:.4} buffer={:.4}",
+                "Gate risk_limit cap exceeded symbol={} next={:.4}USDT cap={:.4}USDT risk_limit={:.4} buffer={:.4}",
                 cap.symbol, next_usdt, cap.cap, cap.risk_limit, cap.buffer
             ));
         }
@@ -452,7 +454,8 @@ fn current_position_count() -> usize {
 }
 
 fn is_gate_fr_path(arb_mode: ArbMode, open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
-    arb_mode == ArbMode::FundingArb && is_gate_fr_venues(open_venue, hedge_venue)
+    matches!(arb_mode, ArbMode::FundingArb | ArbMode::IntraArb)
+        && is_gate_fr_venues(open_venue, hedge_venue)
 }
 
 fn is_gate_fr_venues(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
@@ -473,7 +476,7 @@ fn calculate_cap_for_record(
     let amount_u = params.arb_amount_u_for_symbol(symbol);
     if !(amount_u.is_finite() && amount_u > 0.0) {
         return Err(format!(
-            "Gate FR risk_limit amount_u invalid symbol={} amount_u={}",
+            "Gate risk_limit amount_u invalid symbol={} amount_u={}",
             symbol, amount_u
         ));
     }
@@ -481,7 +484,7 @@ fn calculate_cap_for_record(
     let cap = record.risk_limit - buffer;
     if !(cap.is_finite() && cap > 0.0) {
         return Err(format!(
-            "Gate FR risk_limit cap invalid symbol={} risk_limit={:.4} buffer={:.4} pending_limit_orders={} amount_u={:.4}",
+            "Gate risk_limit cap invalid symbol={} risk_limit={:.4} buffer={:.4} pending_limit_orders={} amount_u={:.4}",
             symbol, record.risk_limit, buffer, pending_limit_orders, amount_u
         ));
     }
@@ -504,12 +507,12 @@ async fn refresh_gate_fr_risk_limits(
     let client = Client::builder()
         .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
         .build()
-        .context("build Gate FR risk-limit http client")?;
+        .context("build Gate risk-limit http client")?;
     let positions = fetch_gate_positions(&client, &refresh_ctx.config).await?;
     let online_symbols = match load_online_symbols(&refresh_ctx.redis, &refresh_ctx.config).await {
         Ok(symbols) => symbols,
         Err(err) => {
-            warn!("Gate FR risk-limit guard failed to load Redis online symbols: {err:#}");
+            warn!("Gate risk-limit guard failed to load Redis online symbols: {err:#}");
             BTreeSet::new()
         }
     };
@@ -563,12 +566,12 @@ async fn fetch_gate_positions(
     }
     if skipped > 0 {
         warn!(
-            "Gate FR risk-limit guard skipped positions with missing/invalid contract or risk_limit: skipped={}",
+            "Gate risk-limit guard skipped positions with missing/invalid contract or risk_limit: skipped={}",
             skipped
         );
     }
     debug!(
-        "Gate FR risk-limit guard fetched positions: count={} skipped={}",
+        "Gate risk-limit guard fetched positions: count={} skipped={}",
         positions.len(),
         skipped
     );
@@ -615,12 +618,12 @@ async fn load_online_symbols(
     let mut symbols = BTreeSet::new();
     for key in keys {
         let Some(raw) = client.get_string(&key).await? else {
-            info!("Gate FR risk-limit guard Redis key missing: {}", key);
+            info!("Gate risk-limit guard Redis key missing: {}", key);
             continue;
         };
         let values = decode_redis_list(&raw, &key)?;
         info!(
-            "Gate FR risk-limit guard Redis key loaded: {} count={}",
+            "Gate risk-limit guard Redis key loaded: {} count={}",
             key,
             values.len()
         );
@@ -634,24 +637,46 @@ async fn load_online_symbols(
 }
 
 fn online_symbol_keys(config: &GateFrRiskLimitConfig) -> Vec<String> {
-    let Some(env_name) = config.env_name.as_deref() else {
-        return Vec::new();
-    };
     let venue_suffix = format!(
         "{}_{}",
         config.open_venue.data_pub_slug(),
         config.hedge_venue.data_pub_slug()
     );
-    [
-        "dump_symbols",
-        "trade_symbols",
-        "fwd_trade_symbols",
-        "bwd_trade_symbols",
-        "unimmr_close_symbols",
-    ]
-    .into_iter()
-    .map(|name| format!("{}:fr_{}:{}", env_name, name, venue_suffix))
-    .collect()
+    match config.arb_mode {
+        ArbMode::FundingArb => {
+            let Some(env_name) = config.env_name.as_deref() else {
+                return Vec::new();
+            };
+            [
+                "dump_symbols",
+                "trade_symbols",
+                "fwd_trade_symbols",
+                "bwd_trade_symbols",
+                "unimmr_close_symbols",
+            ]
+            .into_iter()
+            .map(|name| format!("{}:fr_{}:{}", env_name, name, venue_suffix))
+            .collect()
+        }
+        ArbMode::IntraArb => {
+            let exchange_suffix = config.open_venue.trade_engine_exchange();
+            let mut keys = vec![
+                format!("intra_dump_symbols:{exchange_suffix}"),
+                format!("intra_trade_symbols:{exchange_suffix}"),
+                format!("intra_fwd_trade_symbols:{exchange_suffix}"),
+                format!("intra_bwd_trade_symbols:{exchange_suffix}"),
+                format!("intra_unimmr_close_symbols:{exchange_suffix}"),
+            ];
+            if let Some(env_name) = config.env_name.as_deref() {
+                keys.push(format!(
+                    "{}:intra_unimmr_close_symbols:{}",
+                    env_name, venue_suffix
+                ));
+            }
+            keys
+        }
+        ArbMode::CrossArb => Vec::new(),
+    }
 }
 
 fn decode_redis_list(raw: &str, key: &str) -> Result<Vec<String>> {
@@ -750,7 +775,8 @@ fn gate_settle() -> String {
 }
 
 fn refresh_interval_secs() -> u64 {
-    std::env::var("PRE_TRADE_GATE_FR_RISK_LIMIT_REFRESH_SECS")
+    std::env::var("PRE_TRADE_GATE_RISK_LIMIT_REFRESH_SECS")
+        .or_else(|_| std::env::var("PRE_TRADE_GATE_FR_RISK_LIMIT_REFRESH_SECS"))
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -835,6 +861,86 @@ mod tests {
             value: 0.0,
             cross_leverage_limit: Some(5.0),
         }
+    }
+
+    fn config(
+        env_name: Option<&str>,
+        arb_mode: ArbMode,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> GateFrRiskLimitConfig {
+        GateFrRiskLimitConfig {
+            env_name: env_name.map(str::to_string),
+            arb_mode,
+            open_venue,
+            hedge_venue,
+            settle: "usdt".to_string(),
+        }
+    }
+
+    #[test]
+    fn gate_risk_limit_path_covers_fr_and_intra_gate() {
+        assert!(is_gate_fr_path(
+            ArbMode::FundingArb,
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures
+        ));
+        assert!(is_gate_fr_path(
+            ArbMode::IntraArb,
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures
+        ));
+        assert!(!is_gate_fr_path(
+            ArbMode::CrossArb,
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures
+        ));
+        assert!(!is_gate_fr_path(
+            ArbMode::IntraArb,
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures
+        ));
+    }
+
+    #[test]
+    fn builds_fr_online_symbol_keys() {
+        let keys = online_symbol_keys(&config(
+            Some("gate_fr_arb01"),
+            ArbMode::FundingArb,
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+        ));
+        assert_eq!(
+            keys,
+            vec![
+                "gate_fr_arb01:fr_dump_symbols:gate-margin_gate-futures",
+                "gate_fr_arb01:fr_trade_symbols:gate-margin_gate-futures",
+                "gate_fr_arb01:fr_fwd_trade_symbols:gate-margin_gate-futures",
+                "gate_fr_arb01:fr_bwd_trade_symbols:gate-margin_gate-futures",
+                "gate_fr_arb01:fr_unimmr_close_symbols:gate-margin_gate-futures",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_intra_online_symbol_keys() {
+        let keys = online_symbol_keys(&config(
+            Some("gate-intra-arb01"),
+            ArbMode::IntraArb,
+            TradingVenue::GateMargin,
+            TradingVenue::GateFutures,
+        ));
+        assert_eq!(
+            keys,
+            vec![
+                "intra_dump_symbols:gate",
+                "intra_trade_symbols:gate",
+                "intra_fwd_trade_symbols:gate",
+                "intra_bwd_trade_symbols:gate",
+                "intra_unimmr_close_symbols:gate",
+                "gate-intra-arb01:intra_unimmr_close_symbols:gate-margin_gate-futures",
+            ]
+        );
     }
 
     #[test]

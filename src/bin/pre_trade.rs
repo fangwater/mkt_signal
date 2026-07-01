@@ -480,7 +480,7 @@ async fn main() -> Result<()> {
             .await?;
             info!("ArbOpen leverage guard initialized");
 
-            info!("Initializing Gate FR risk-limit guard...");
+            info!("Initializing Gate risk-limit guard...");
             GateFrRiskLimitGuard::initialize(
                 &leverage_guard_redis,
                 dir_prefix.clone(),
@@ -489,7 +489,7 @@ async fn main() -> Result<()> {
                 hedge_venue,
             )
             .await?;
-            info!("Gate FR risk-limit guard initialized");
+            info!("Gate risk-limit guard initialized");
 
             // 5. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");

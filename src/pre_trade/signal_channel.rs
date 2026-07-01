@@ -890,7 +890,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 hedging_venue,
             ) {
                 debug!(
-                    "ArbOpen: blocked by Gate FR risk-limit snapshot guard, symbol={} hedge_symbol={} open_venue={:?} hedge_venue={:?}",
+                    "ArbOpen: blocked by Gate risk-limit snapshot guard, symbol={} hedge_symbol={} open_venue={:?} hedge_venue={:?}",
                     symbol, hedging_symbol, opening_venue, hedging_venue
                 );
                 return;
