@@ -8,11 +8,13 @@ use log::{info, warn};
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::{ArbDecision, VolGateCompare};
 use super::mm_decision::MmDecision;
+use super::spread_factor::{FrOpenSpreadLimitOverride, SpreadFactor};
 use order_common::TradingVenue;
 
 /// Redis Key 配置
@@ -77,6 +79,22 @@ fn parse_percentile_exclusive(redis_key: &str, field: &str, raw: &str) -> f64 {
     if !(value.is_finite() && value > 0.0 && value < 99.0) {
         panic!(
             "Redis hash '{}' {} 无效(需在(0,99)内): {}",
+            redis_key, field, value
+        );
+    }
+    value
+}
+
+fn parse_finite_f64_param(redis_key: &str, field: &str, raw: &str) -> f64 {
+    let value = raw.trim().parse::<f64>().unwrap_or_else(|_| {
+        panic!(
+            "Redis hash '{}' {} 无法解析为数字: {}",
+            redis_key, field, raw
+        )
+    });
+    if !value.is_finite() {
+        panic!(
+            "Redis hash '{}' {} 无效(需为有限数字): {}",
             redis_key, field, value
         );
     }
@@ -214,6 +232,21 @@ pub fn arb_open_offset_lower_override_key(
     let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
     Some(format!(
         "{env_name}:{}:{}:open_offset_lower_overrides",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    ))
+}
+
+/// FR 专用 per-symbol open spread 固定阈值覆盖键。
+/// JSON {symbol: {fr_fwd_open_spread, fr_bwd_open_spread}}。
+pub fn fr_open_spread_limit_override_key(
+    env_name: Option<&str>,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<String> {
+    let env_name = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!(
+        "{env_name}:{}:{}:fr_open_spread_limit_overrides",
         open_venue.data_pub_slug(),
         hedge_venue.data_pub_slug()
     ))
@@ -432,6 +465,51 @@ fn parse_arb_open_offset_lower_overrides(
 }
 
 #[derive(Debug, Deserialize)]
+struct FrOpenSpreadLimitOverrideRaw {
+    #[serde(alias = "fwd", alias = "forward", alias = "fwd_open_spread")]
+    fr_fwd_open_spread: f64,
+    #[serde(alias = "bwd", alias = "backward", alias = "bwd_open_spread")]
+    fr_bwd_open_spread: f64,
+}
+
+fn parse_fr_open_spread_limit_overrides(
+    raw: &str,
+    open_venue: TradingVenue,
+    redis_key: &str,
+) -> HashMap<String, FrOpenSpreadLimitOverride> {
+    let parsed: HashMap<String, FrOpenSpreadLimitOverrideRaw> = serde_json::from_str(raw)
+        .unwrap_or_else(|err| {
+            panic!(
+                "Redis string '{}' 不是合法 JSON(symbol->fr_open_spread_limit): {} ({})",
+                redis_key, raw, err
+            )
+        });
+
+    let mut normalized = HashMap::new();
+    for (symbol, limits) in parsed {
+        let symbol_trimmed = symbol.trim();
+        let fwd = limits.fr_fwd_open_spread;
+        let bwd = limits.fr_bwd_open_spread;
+        if !(fwd.is_finite() && bwd.is_finite()) {
+            panic!(
+                "Redis string '{}' symbol={} fr_open_spread_limit 非法: fwd={} bwd={} (need finite numbers)",
+                redis_key, symbol_trimmed, fwd, bwd
+            );
+        }
+        let symbol_key = normalize_mm_override_symbol(symbol_trimmed, open_venue, redis_key);
+        let symbol_key = normalize_symbol_for_whitelist(&symbol_key, TradingVenue::OkexFutures);
+        normalized.insert(
+            symbol_key,
+            FrOpenSpreadLimitOverride {
+                fwd_open_spread: fwd,
+                bwd_open_spread: bwd,
+            },
+        );
+    }
+    normalized
+}
+
+#[derive(Debug, Deserialize)]
 struct MmHedgePriceOffsetLimitOverride {
     #[serde(alias = "lower")]
     hedge_price_offset_limit_lower: f64,
@@ -547,6 +625,11 @@ pub struct StrategyParams {
     #[serde(default)]
     pub arb_open_offset_lower_overrides: HashMap<String, f64>,
 
+    /// FR 按 symbol 覆盖 open 固定 spread_rate 阈值。
+    /// Redis STRING key: <env>:<open>:<hedge>:fr_open_spread_limit_overrides
+    #[serde(default, skip_deserializing)]
+    pub fr_open_spread_limit_overrides: HashMap<String, FrOpenSpreadLimitOverride>,
+
     /// arb 开仓 plan 波动带缩放倍率 [low, high]（JSON 数组字符串，实际偏移区间=vol*[low,high]）
     #[serde(default = "default_vol_band_scale")]
     pub vol_band_scale: String,
@@ -658,6 +741,18 @@ pub struct StrategyParams {
     /// 波动率限制分位数（由下游波动率阈值逻辑使用）
     #[serde(default = "default_open_volatility_limit")]
     pub open_volatility_limit: f64,
+
+    /// 是否启用 FR open 固定 spread_rate 限制；启用后还需满足方向固定阈值。
+    #[serde(default = "default_enable_fr_open_spread_limit")]
+    pub enable_fr_open_spread_limit: bool,
+
+    /// Forward open 固定 spread_rate 上限，满足 spread_rate < fr_fwd_open_spread。
+    #[serde(default = "default_fr_fwd_open_spread")]
+    pub fr_fwd_open_spread: f64,
+
+    /// Backward open 固定 spread_rate 下限，满足 spread_rate > fr_bwd_open_spread。
+    #[serde(default = "default_fr_bwd_open_spread")]
+    pub fr_bwd_open_spread: f64,
 
     /// Intra vol gate symbol 的放行比较方向：gt 表示 vol > threshold，lt 表示 vol < threshold。
     #[serde(default = "default_vol_gate_compare")]
@@ -785,6 +880,15 @@ fn default_enable_volatility_limit() -> bool {
 fn default_open_volatility_limit() -> f64 {
     70.0
 }
+fn default_enable_fr_open_spread_limit() -> bool {
+    false
+}
+fn default_fr_fwd_open_spread() -> f64 {
+    0.05
+}
+fn default_fr_bwd_open_spread() -> f64 {
+    -0.05
+}
 fn default_vol_gate_compare() -> String {
     "lt".to_string()
 }
@@ -818,6 +922,7 @@ impl Default for StrategyParams {
             arb_hedge_price_offset_limit_upper_overrides: HashMap::new(),
             arb_hedge_price_offset_limit_lower_overrides: HashMap::new(),
             arb_open_offset_lower_overrides: HashMap::new(),
+            fr_open_spread_limit_overrides: HashMap::new(),
             vol_band_scale: default_vol_band_scale(),
             open_buy_vol_scale: default_open_buy_vol_scale(),
             open_sell_vol_scale: default_open_sell_vol_scale(),
@@ -848,6 +953,9 @@ impl Default for StrategyParams {
             enable_environment_model: default_enable_environment_model(),
             enable_volatility_limit: default_enable_volatility_limit(),
             open_volatility_limit: default_open_volatility_limit(),
+            enable_fr_open_spread_limit: default_enable_fr_open_spread_limit(),
+            fr_fwd_open_spread: default_fr_fwd_open_spread(),
+            fr_bwd_open_spread: default_fr_bwd_open_spread(),
             vol_gate_compare: default_vol_gate_compare(),
             enable_tradecount_limit: default_enable_tradecount_limit(),
             open_tradecount_limit: default_open_tradecount_limit(),
@@ -1092,6 +1200,42 @@ impl StrategyParams {
                     info!(
                         "Arb open_offset_lower override skipped ns={} (env_name unavailable); lower=0",
                         ns
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        let fr_open_spread_limit_overrides = if ns == "fr" {
+            let arb_env_name = infer_arb_env_name_from_runtime();
+            match fr_open_spread_limit_override_key(
+                arb_env_name.as_deref(),
+                open_venue,
+                hedge_venue,
+            ) {
+                Some(override_key) => match client.get_string(&override_key).await? {
+                    Some(raw) => {
+                        let parsed =
+                            parse_fr_open_spread_limit_overrides(&raw, open_venue, &override_key);
+                        info!(
+                            "FR open_spread_limit overrides loaded key='{}' symbols={}",
+                            override_key,
+                            parsed.len()
+                        );
+                        parsed
+                    }
+                    None => {
+                        info!(
+                            "FR open_spread_limit override missing key='{}'; use global fwd/bwd",
+                            override_key
+                        );
+                        HashMap::new()
+                    }
+                },
+                None => {
+                    info!(
+                        "FR open_spread_limit override skipped (env_name unavailable); use global fwd/bwd"
                     );
                     HashMap::new()
                 }
@@ -1498,6 +1642,18 @@ impl StrategyParams {
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 100.0)
             .unwrap_or_else(default_open_volatility_limit);
+        let enable_fr_open_spread_limit = hash_map
+            .get("enable_fr_open_spread_limit")
+            .map(|raw| parse_bool_param(&redis_key, "enable_fr_open_spread_limit", raw))
+            .unwrap_or_else(default_enable_fr_open_spread_limit);
+        let fr_fwd_open_spread = hash_map
+            .get("fr_fwd_open_spread")
+            .map(|raw| parse_finite_f64_param(&redis_key, "fr_fwd_open_spread", raw))
+            .unwrap_or_else(default_fr_fwd_open_spread);
+        let fr_bwd_open_spread = hash_map
+            .get("fr_bwd_open_spread")
+            .map(|raw| parse_finite_f64_param(&redis_key, "fr_bwd_open_spread", raw))
+            .unwrap_or_else(default_fr_bwd_open_spread);
         let vol_gate_compare = hash_map
             .get("vol_gate_compare")
             .map(|raw| {
@@ -1652,6 +1808,7 @@ impl StrategyParams {
             arb_hedge_price_offset_limit_upper_overrides,
             arb_hedge_price_offset_limit_lower_overrides,
             arb_open_offset_lower_overrides,
+            fr_open_spread_limit_overrides,
             vol_band_scale,
             open_buy_vol_scale,
             open_sell_vol_scale,
@@ -1682,6 +1839,9 @@ impl StrategyParams {
             enable_environment_model,
             enable_volatility_limit,
             open_volatility_limit,
+            enable_fr_open_spread_limit,
+            fr_fwd_open_spread,
+            fr_bwd_open_spread,
             vol_gate_compare,
             enable_tradecount_limit,
             open_tradecount_limit,
@@ -1855,15 +2015,23 @@ impl StrategyParams {
         })
         .is_some();
 
+        SpreadFactor::instance().update_fr_open_spread_limit(
+            self.enable_fr_open_spread_limit,
+            self.fr_fwd_open_spread,
+            self.fr_bwd_open_spread,
+            self.fr_open_spread_limit_overrides.clone(),
+        );
+
         if !arb_state_applied && !mm_applied {
             warn!("策略参数已加载，但 decision 尚未初始化");
         }
 
         info!(
-            "✅ overrides applied: arb_amount_u_symbols={} arb_hedge_offset_lower_symbols={} arb_hedge_offset_upper_symbols={} mm_amount_u_symbols={} mm_open_offset_lower_symbols={} mm_hedge_offset_lower_symbols={} mm_hedge_offset_upper_symbols={}",
+            "✅ overrides applied: arb_amount_u_symbols={} arb_hedge_offset_lower_symbols={} arb_hedge_offset_upper_symbols={} fr_open_spread_limit_symbols={} mm_amount_u_symbols={} mm_open_offset_lower_symbols={} mm_hedge_offset_lower_symbols={} mm_hedge_offset_upper_symbols={}",
             self.arb_amount_u_overrides.len(),
             self.arb_hedge_price_offset_limit_lower_overrides.len(),
             self.arb_hedge_price_offset_limit_upper_overrides.len(),
+            self.fr_open_spread_limit_overrides.len(),
             self.mm_amount_u_overrides.len(),
             self.mm_open_offset_lower_overrides.len(),
             self.mm_hedge_price_offset_limit_lower_overrides.len(),
@@ -1871,7 +2039,7 @@ impl StrategyParams {
         );
 
         info!(
-            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, vol_gate_compare={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_fr_open_spread_limit={}, fr_fwd_open_spread={}, fr_bwd_open_spread={}, vol_gate_compare={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.order_amount,
             self.vol_band_scale,
             self.open_buy_vol_scale,
@@ -1893,6 +2061,9 @@ impl StrategyParams {
             self.enable_environment_model,
             self.enable_volatility_limit,
             self.open_volatility_limit,
+            self.enable_fr_open_spread_limit,
+            self.fr_fwd_open_spread,
+            self.fr_bwd_open_spread,
             self.vol_gate_compare,
             self.enable_tradecount_limit,
             self.open_tradecount_limit,
@@ -1955,6 +2126,37 @@ mod tests {
     fn test_open_volatility_limit_default_is_70() {
         let params = StrategyParams::default();
         assert!((params.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_fr_open_spread_limit_defaults_are_disabled() {
+        let params = StrategyParams::default();
+        assert!(!params.enable_fr_open_spread_limit);
+        assert!((params.fr_fwd_open_spread - 0.05).abs() < 1e-12);
+        assert!((params.fr_bwd_open_spread + 0.05).abs() < 1e-12);
+        assert!(params.fr_open_spread_limit_overrides.is_empty());
+    }
+
+    #[test]
+    fn test_parse_fr_open_spread_limit_overrides_normalizes_symbols() {
+        let parsed = parse_fr_open_spread_limit_overrides(
+            r#"{"btc-usdt-swap":{"fr_fwd_open_spread":0.04,"fr_bwd_open_spread":-0.03}}"#,
+            TradingVenue::OkexFutures,
+            "test:key",
+        );
+        let value = parsed.get("BTCUSDT").expect("normalized symbol missing");
+        assert!((value.fwd_open_spread - 0.04).abs() < 1e-12);
+        assert!((value.bwd_open_spread + 0.03).abs() < 1e-12);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_parse_fr_open_spread_limit_overrides_rejects_non_finite() {
+        let _ = parse_fr_open_spread_limit_overrides(
+            r#"{"BTCUSDT":{"fr_fwd_open_spread":null,"fr_bwd_open_spread":-0.03}}"#,
+            TradingVenue::BinanceMargin,
+            "test:key",
+        );
     }
 
     #[test]

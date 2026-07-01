@@ -7,6 +7,7 @@
 - amount_u                : `<env>:<open>:<hedge>:amount_u_overrides`
 - max_pos_u               : `<env>:<open>:<hedge>:max_pos_u_overrides`
 - taker_decsion_model      : `<env>:<open>:<hedge>:taker_decsion_model_overrides`
+- fr_open_spread_limit     : `<env>:<open>:<hedge>:fr_open_spread_limit_overrides`
 - hedge_price_offset_limits : 合并 STRING `<env>:<open>:<hedge>:hedge_price_offset_limits`
                               JSON {symbol: {hedge_price_offset_limit_lower,
                                              hedge_price_offset_limit_upper}}
@@ -36,6 +37,10 @@ def make_max_pos_u_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
 
 def make_taker_decision_model_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
     return f"{env_name}:{open_venue}:{hedge_venue}:taker_decsion_model_overrides"
+
+
+def make_fr_open_spread_limit_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    return f"{env_name}:{open_venue}:{hedge_venue}:fr_open_spread_limit_overrides"
 
 
 def make_hedge_offset_limits_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
@@ -130,6 +135,47 @@ def normalize_open_offset_lower_mapping(values: Any) -> Dict[str, float]:
 
 def dumps_open_offset_lower_mapping(values: Dict[str, float]) -> str:
     ordered = {symbol: float(f"{values[symbol]:.12g}") for symbol in sorted(values.keys())}
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
+
+
+def normalize_fr_open_spread_limit_mapping(values: Any) -> Dict[str, Dict[str, float]]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError("fr_open_spread_limit values must be an object")
+    normalized: Dict[str, Dict[str, float]] = {}
+    for raw_symbol, raw_cfg in values.items():
+        symbol = normalize_amount_u_symbol(raw_symbol)
+        if not isinstance(raw_cfg, dict):
+            raise ValueError(f"fr_open_spread_limit config for {symbol} must be an object")
+        fwd_raw = raw_cfg.get("fr_fwd_open_spread", raw_cfg.get("fwd_open_spread", raw_cfg.get("fwd")))
+        bwd_raw = raw_cfg.get("fr_bwd_open_spread", raw_cfg.get("bwd_open_spread", raw_cfg.get("bwd")))
+        if fwd_raw is None or bwd_raw is None:
+            raise ValueError(
+                f"fr_open_spread_limit for {symbol} must include fr_fwd_open_spread and fr_bwd_open_spread"
+            )
+        try:
+            fwd = float(fwd_raw)
+            bwd = float(bwd_raw)
+        except Exception as exc:
+            raise ValueError(f"invalid fr_open_spread_limit for {symbol}: {raw_cfg}") from exc
+        if not (math.isfinite(fwd) and math.isfinite(bwd)):
+            raise ValueError(f"fr_open_spread_limit must be finite for {symbol}: {raw_cfg}")
+        normalized[symbol] = {
+            "fr_fwd_open_spread": fwd,
+            "fr_bwd_open_spread": bwd,
+        }
+    return dict(sorted(normalized.items()))
+
+
+def dumps_fr_open_spread_limit_mapping(values: Dict[str, Dict[str, float]]) -> str:
+    ordered: Dict[str, Dict[str, float]] = {}
+    for symbol in sorted(values.keys()):
+        cfg = values[symbol]
+        ordered[symbol] = {
+            "fr_fwd_open_spread": float(f"{float(cfg['fr_fwd_open_spread']):.12g}"),
+            "fr_bwd_open_spread": float(f"{float(cfg['fr_bwd_open_spread']):.12g}"),
+        }
     return json.dumps(ordered, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -456,6 +502,31 @@ def write_open_offset_lower(
     key = make_open_offset_lower_key(env_name, open_venue, hedge_venue)
     normalized = normalize_open_offset_lower_mapping(values)
     rds.set(key, dumps_open_offset_lower_mapping(normalized))
+    return {"key": key, "values": normalized, "count": len(normalized)}
+
+
+def read_fr_open_spread_limit(
+    rds, env_name: str, open_venue: str, hedge_venue: str
+) -> Dict[str, Any]:
+    key = make_fr_open_spread_limit_key(env_name, open_venue, hedge_venue)
+    raw = rds.get(key)
+    if raw is None:
+        values: Dict[str, Dict[str, float]] = {}
+    else:
+        try:
+            decoded = json.loads(_decode_redis_str(raw))
+        except Exception as exc:
+            raise ValueError(f"invalid JSON in {key}: {exc}") from exc
+        values = normalize_fr_open_spread_limit_mapping(decoded)
+    return {"key": key, "values": values, "count": len(values)}
+
+
+def write_fr_open_spread_limit(
+    rds, env_name: str, open_venue: str, hedge_venue: str, values: Any
+) -> Dict[str, Any]:
+    key = make_fr_open_spread_limit_key(env_name, open_venue, hedge_venue)
+    normalized = normalize_fr_open_spread_limit_mapping(values)
+    rds.set(key, dumps_fr_open_spread_limit_mapping(normalized))
     return {"key": key, "values": normalized, "count": len(normalized)}
 
 

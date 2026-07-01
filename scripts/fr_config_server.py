@@ -345,7 +345,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 使用 trade_signal 进程内 inline volatility 采样，不再依赖 rolling_metrics 配置。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 使用 trade_signal 进程内 inline volatility 采样；`enable_fr_open_spread_limit` 启用后，FR open 还需满足 `fr_fwd_open_spread` / `fr_bwd_open_spread` 固定 spread_rate 约束。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -544,7 +544,7 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['enable_tlen_cancel', 'enable_volatility_limit'].includes(key) &&
+          ['enable_tlen_cancel', 'enable_volatility_limit', 'enable_fr_open_spread_limit'].includes(key) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {
@@ -1224,6 +1224,17 @@ def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
     return text
 
 
+def normalize_finite_float_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    try:
+        value = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a finite number: {text}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be finite: {text}")
+    return f"{value:.12g}"
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     if "tlen_cancel_freq_ms" in normalized:
@@ -1238,6 +1249,11 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["open_volatility_limit"] = normalize_percentile_param_text(
             normalized["open_volatility_limit"], "open_volatility_limit"
         )
+    for field_name in ("fr_fwd_open_spread", "fr_bwd_open_spread"):
+        if field_name in normalized:
+            normalized[field_name] = normalize_finite_float_text(
+                normalized[field_name], field_name
+            )
     return normalized
 
 
@@ -1484,6 +1500,94 @@ def sync_spread_thresholds(
     }
 
 
+FR_OPEN_SPREAD_LIMIT_EXAMPLE = {
+    "BTCUSDT": {"fr_fwd_open_spread": 0.04, "fr_bwd_open_spread": -0.04},
+    "ETHUSDT": {"fr_fwd_open_spread": 0.03, "fr_bwd_open_spread": -0.03},
+}
+
+
+def render_fr_open_spread_limit_panel_html() -> str:
+    return """
+    <section class="panel">
+      <div class="section-header">
+        <h2>Per-Symbol FR Open Spread Limit Overrides</h2>
+        <div class="actions">
+          <button id="load-fr-open-spread-limit" class="secondary">读取</button>
+          <button id="reset-fr-open-spread-limit" class="ghost">示例</button>
+          <button id="save-fr-open-spread-limit">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构 <code>{"SYMBOL":{"fr_fwd_open_spread":0.04,"fr_bwd_open_spread":-0.04}}</code>。
+        Redis String <code>&lt;env_name&gt;:&lt;open_venue&gt;:&lt;hedge_venue&gt;:fr_open_spread_limit_overrides</code>。
+        仅在 <code>enable_fr_open_spread_limit=true</code> 时生效；命中 symbol 即覆盖全局 fwd/bwd 固定 spread_rate 阈值。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="fr-open-spread-limit-example" class="mono"></pre>
+      <textarea id="fr-open-spread-limit-text" class="mono" spellcheck="false"></textarea>
+      <div id="fr-open-spread-limit-status" class="status"></div>
+    </section>
+"""
+
+
+def render_fr_open_spread_limit_panel_js() -> str:
+    example_json = json.dumps(FR_OPEN_SPREAD_LIMIT_EXAMPLE, ensure_ascii=False)
+    return f"""
+    const FR_OPEN_SPREAD_LIMIT_PANEL_EXAMPLE = {example_json};
+
+    async function loadFrOpenSpreadLimit() {{
+      _psSetStatus('fr-open-spread-limit-status', '读取中...');
+      try {{
+        const data = await _psFetch('fr-open-spread-limit');
+        document.getElementById('fr-open-spread-limit-text').value =
+          JSON.stringify(data.values || {{}}, null, 2);
+        _psSetStatus('fr-open-spread-limit-status',
+          '已读取 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      }} catch (err) {{
+        _psSetStatus('fr-open-spread-limit-status', '读取失败: ' + _psFormatError(err), 'err');
+      }}
+    }}
+
+    async function saveFrOpenSpreadLimit() {{
+      _psSetStatus('fr-open-spread-limit-status', '保存中...');
+      let values;
+      try {{ values = JSON.parse(document.getElementById('fr-open-spread-limit-text').value || '{{}}'); }}
+      catch (err) {{ _psSetStatus('fr-open-spread-limit-status', 'JSON 解析失败: ' + err.message, 'err'); return; }}
+      try {{
+        const data = await _psFetch('fr-open-spread-limit', {{method: 'POST', body: _psBody(values)}});
+        document.getElementById('fr-open-spread-limit-text').value =
+          JSON.stringify(data.values || {{}}, null, 2);
+        _psSetStatus('fr-open-spread-limit-status',
+          '已保存 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      }} catch (err) {{
+        _psSetStatus('fr-open-spread-limit-status', '保存失败: ' + _psFormatError(err), 'err');
+      }}
+    }}
+
+    function resetFrOpenSpreadLimit() {{
+      document.getElementById('fr-open-spread-limit-text').value =
+        JSON.stringify(FR_OPEN_SPREAD_LIMIT_PANEL_EXAMPLE, null, 2);
+      _psSetStatus('fr-open-spread-limit-status', '已填入示例，尚未写入 Redis', 'warn');
+    }}
+
+    const _psBaseBindPerSymbolPanelsForFrOpenSpreadLimit = bindPerSymbolPanels;
+    bindPerSymbolPanels = function() {{
+      _psBaseBindPerSymbolPanelsForFrOpenSpreadLimit();
+      const map = [
+        ['load-fr-open-spread-limit', loadFrOpenSpreadLimit],
+        ['save-fr-open-spread-limit', saveFrOpenSpreadLimit],
+        ['reset-fr-open-spread-limit', resetFrOpenSpreadLimit],
+      ];
+      for (const [id, fn] of map) {{
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', fn);
+      }}
+      const ex = document.getElementById('fr-open-spread-limit-example');
+      if (ex) ex.textContent = JSON.stringify(FR_OPEN_SPREAD_LIMIT_PANEL_EXAMPLE, null, 2);
+    }};
+"""
+
+
 def render_index_html(default_exchange: str) -> str:
     bootstrap = {
         "exchanges": SUPPORTED_EXCHANGES,
@@ -1511,8 +1615,14 @@ def render_index_html(default_exchange: str) -> str:
     }
 
     html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
-    html = html.replace("__PER_SYMBOL_PANELS_HTML__", ps_overrides.render_per_symbol_panels_html())
-    html = html.replace("__PER_SYMBOL_PANELS_JS__", ps_overrides.render_per_symbol_panels_js())
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_HTML__",
+        ps_overrides.render_per_symbol_panels_html() + render_fr_open_spread_limit_panel_html(),
+    )
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_JS__",
+        ps_overrides.render_per_symbol_panels_js() + render_fr_open_spread_limit_panel_js(),
+    )
     return html
 
 
@@ -1750,6 +1860,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/fr-open-spread-limit",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -1770,8 +1881,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = ps_overrides.read_hedge_offset_limits(
                         rds, env_name, open_venue, hedge_venue
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     data = ps_overrides.read_open_offset_lower(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+                else:
+                    data = ps_overrides.read_fr_open_spread_limit(
                         rds, env_name, open_venue, hedge_venue
                     )
             except ValueError as exc:
@@ -2062,6 +2177,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/fr-open-spread-limit",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2083,8 +2199,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     result = ps_overrides.write_hedge_offset_limits(
                         rds, env_name, open_v, hedge_v, values
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     result = ps_overrides.write_open_offset_lower(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+                else:
+                    result = ps_overrides.write_fr_open_spread_limit(
                         rds, env_name, open_v, hedge_v, values
                     )
             except ValueError as exc:

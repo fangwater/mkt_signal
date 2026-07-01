@@ -13,7 +13,14 @@ use std::collections::HashMap;
 
 type SpreadThresholdEntryKey = (ThresholdKey, ArbDirection, OperationType);
 
-const GATE_FR_MAX_ABS_OPEN_SPREAD_RATE: f64 = 0.05;
+const DEFAULT_FR_FWD_OPEN_SPREAD_LIMIT: f64 = 0.05;
+const DEFAULT_FR_BWD_OPEN_SPREAD_LIMIT: f64 = -0.05;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrOpenSpreadLimitOverride {
+    pub fwd_open_spread: f64,
+    pub bwd_open_spread: f64,
+}
 
 /// 价差类型 (bidask、askbid或者基于mid price 计算的spread rate)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,6 +105,12 @@ pub struct SpreadFactor {
     mt_thresholds: RefCell<HashMap<SpreadThresholdEntryKey, SpreadThresholdConfig>>,
     /// 模式: MM 或 MT， mm采用mm的阈值，mt模式就用mt的阈值配置
     mode: RefCell<FactorMode>,
+
+    /// FR open 固定 spread_rate 限制；启用后 open 还必须满足方向固定阈值。
+    fr_open_spread_limit_enabled: RefCell<bool>,
+    fr_fwd_open_spread_limit: RefCell<f64>,
+    fr_bwd_open_spread_limit: RefCell<f64>,
+    fr_open_spread_limit_overrides: RefCell<HashMap<String, FrOpenSpreadLimitOverride>>,
 }
 
 impl SpreadFactor {
@@ -110,6 +123,10 @@ impl SpreadFactor {
             mm_thresholds: RefCell::new(HashMap::new()),
             mt_thresholds: RefCell::new(HashMap::new()),
             mode: RefCell::new(FactorMode::default()),
+            fr_open_spread_limit_enabled: RefCell::new(false),
+            fr_fwd_open_spread_limit: RefCell::new(DEFAULT_FR_FWD_OPEN_SPREAD_LIMIT),
+            fr_bwd_open_spread_limit: RefCell::new(DEFAULT_FR_BWD_OPEN_SPREAD_LIMIT),
+            fr_open_spread_limit_overrides: RefCell::new(HashMap::new()),
         }
     }
 
@@ -345,25 +362,84 @@ impl SpreadFactor {
         )
     }
 
-    #[inline]
-    fn should_apply_gate_fr_open_spread_guard(venue1: TradingVenue, venue2: TradingVenue) -> bool {
-        venue1 == TradingVenue::GateMargin && venue2 == TradingVenue::GateFutures
+    pub fn update_fr_open_spread_limit(
+        &self,
+        enabled: bool,
+        fwd_open_spread: f64,
+        bwd_open_spread: f64,
+        overrides: HashMap<String, FrOpenSpreadLimitOverride>,
+    ) {
+        if !fwd_open_spread.is_finite() || !bwd_open_spread.is_finite() {
+            log::warn!(
+                "FR open spread limit ignored: non-finite fwd={} bwd={}",
+                fwd_open_spread,
+                bwd_open_spread
+            );
+            return;
+        }
+        for (symbol, value) in &overrides {
+            if !value.fwd_open_spread.is_finite() || !value.bwd_open_spread.is_finite() {
+                log::warn!(
+                    "FR open spread limit override ignored: non-finite symbol={} fwd={} bwd={}",
+                    symbol,
+                    value.fwd_open_spread,
+                    value.bwd_open_spread
+                );
+                return;
+            }
+        }
+
+        let override_count = overrides.len();
+        *self.fr_open_spread_limit_enabled.borrow_mut() = enabled;
+        *self.fr_fwd_open_spread_limit.borrow_mut() = fwd_open_spread;
+        *self.fr_bwd_open_spread_limit.borrow_mut() = bwd_open_spread;
+        *self.fr_open_spread_limit_overrides.borrow_mut() = overrides;
+        log::info!(
+            "FR open spread limit updated: enabled={} fwd_open_spread={} bwd_open_spread={} override_symbols={}",
+            enabled,
+            fwd_open_spread,
+            bwd_open_spread,
+            override_count
+        );
     }
 
-    fn gate_fr_open_spread_guard_allows(
+    pub fn update_fr_open_spread_limit_global(
         &self,
+        enabled: bool,
+        fwd_open_spread: f64,
+        bwd_open_spread: f64,
+    ) {
+        self.update_fr_open_spread_limit(enabled, fwd_open_spread, bwd_open_spread, HashMap::new());
+    }
+
+    fn resolve_fr_open_spread_limit(&self, symbol1: &str) -> FrOpenSpreadLimitOverride {
+        let symbol_key = Self::normalize_symbol_key(symbol1);
+        self.fr_open_spread_limit_overrides
+            .borrow()
+            .get(&symbol_key)
+            .copied()
+            .unwrap_or(FrOpenSpreadLimitOverride {
+                fwd_open_spread: *self.fr_fwd_open_spread_limit.borrow(),
+                bwd_open_spread: *self.fr_bwd_open_spread_limit.borrow(),
+            })
+    }
+
+    fn fr_open_spread_limit_allows(
+        &self,
+        direction: ArbDirection,
         venue1: TradingVenue,
         symbol1: &str,
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        if !Self::should_apply_gate_fr_open_spread_guard(venue1, venue2) {
+        if !*self.fr_open_spread_limit_enabled.borrow() {
             return true;
         }
 
         let Some(spread_rate) = self.get_spread_rate(venue1, symbol1, venue2, symbol2) else {
             log::debug!(
-                "Gate FR open blocked: missing spread_rate for {} {:?} -> {} {:?}",
+                "FR open spread limit blocked: missing spread_rate direction={:?} for {} {:?} -> {} {:?}",
+                direction,
                 symbol1,
                 venue1,
                 symbol2,
@@ -374,8 +450,9 @@ impl SpreadFactor {
 
         if !spread_rate.is_finite() {
             log::debug!(
-                "Gate FR open blocked: non-finite spread_rate={} for {} {:?} -> {} {:?}",
+                "FR open spread limit blocked: non-finite spread_rate={} direction={:?} for {} {:?} -> {} {:?}",
                 spread_rate,
+                direction,
                 symbol1,
                 venue1,
                 symbol2,
@@ -384,20 +461,42 @@ impl SpreadFactor {
             return false;
         }
 
-        if spread_rate.abs() > GATE_FR_MAX_ABS_OPEN_SPREAD_RATE {
-            log::debug!(
-                "Gate FR open blocked: abs(spread_rate)={:.6} exceeds max {:.6} for {} {:?} -> {} {:?}",
-                spread_rate.abs(),
-                GATE_FR_MAX_ABS_OPEN_SPREAD_RATE,
-                symbol1,
-                venue1,
-                symbol2,
-                venue2
-            );
-            return false;
+        match direction {
+            ArbDirection::Forward => {
+                let limit = self.resolve_fr_open_spread_limit(symbol1).fwd_open_spread;
+                if spread_rate < limit {
+                    true
+                } else {
+                    log::debug!(
+                        "FR forward open blocked: spread_rate={:.6} >= fwd_open_spread={:.6} for {} {:?} -> {} {:?}",
+                        spread_rate,
+                        limit,
+                        symbol1,
+                        venue1,
+                        symbol2,
+                        venue2
+                    );
+                    false
+                }
+            }
+            ArbDirection::Backward => {
+                let limit = self.resolve_fr_open_spread_limit(symbol1).bwd_open_spread;
+                if spread_rate > limit {
+                    true
+                } else {
+                    log::debug!(
+                        "FR backward open blocked: spread_rate={:.6} <= bwd_open_spread={:.6} for {} {:?} -> {} {:?}",
+                        spread_rate,
+                        limit,
+                        symbol1,
+                        venue1,
+                        symbol2,
+                        venue2
+                    );
+                    false
+                }
+            }
         }
-
-        true
     }
 
     // ===== 4 个 set 函数，简化，因为对价差而言只有正开、反开 =====
@@ -608,7 +707,13 @@ impl SpreadFactor {
         apply_open_guard: bool,
     ) -> bool {
         if apply_open_guard
-            && !self.gate_fr_open_spread_guard_allows(venue1, symbol1, venue2, symbol2)
+            && !self.fr_open_spread_limit_allows(
+                ArbDirection::Forward,
+                venue1,
+                symbol1,
+                venue2,
+                symbol2,
+            )
         {
             return false;
         }
@@ -725,7 +830,13 @@ impl SpreadFactor {
         apply_open_guard: bool,
     ) -> bool {
         if apply_open_guard
-            && !self.gate_fr_open_spread_guard_allows(venue1, symbol1, venue2, symbol2)
+            && !self.fr_open_spread_limit_allows(
+                ArbDirection::Backward,
+                venue1,
+                symbol1,
+                venue2,
+                symbol2,
+            )
         {
             return false;
         }
@@ -1041,31 +1152,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gate_fr_open_spread_guard_blocks_large_price_mismatch() {
+    fn fr_open_spread_limit_is_disabled_by_default() {
         let spread_factor = SpreadFactor::new();
         spread_factor.set_mode(FactorMode::MM);
 
         spread_factor.set_forward_open_threshold(
-            TradingVenue::GateMargin,
+            TradingVenue::BinanceMargin,
             "SIRENUSDT",
-            TradingVenue::GateFutures,
+            TradingVenue::BinanceFutures,
             "SIRENUSDT",
             1.0,
             0.0,
         );
         spread_factor.set_backward_open_threshold(
-            TradingVenue::GateMargin,
+            TradingVenue::BinanceMargin,
             "SIRENUSDT",
-            TradingVenue::GateFutures,
+            TradingVenue::BinanceFutures,
             "SIRENUSDT",
             -1.0,
             0.0,
         );
 
         let _ = spread_factor.update(
-            TradingVenue::GateMargin,
+            TradingVenue::BinanceMargin,
             "SIRENUSDT",
-            TradingVenue::GateFutures,
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            0.085,
+            0.086,
+            0.035,
+            0.036,
+        );
+
+        assert!(spread_factor.satisfy_forward_open(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+        ));
+        assert!(spread_factor.satisfy_backward_open(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+        ));
+    }
+
+    #[test]
+    fn fr_open_spread_limit_blocks_forward_and_backward_open() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.set_mode(FactorMode::MM);
+        spread_factor.update_fr_open_spread_limit_global(true, 0.05, -0.05);
+
+        spread_factor.set_forward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            1.0,
+            0.0,
+        );
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            -1.0,
+            0.0,
+        );
+
+        let _ = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
             "SIRENUSDT",
             0.085,
             0.086,
@@ -1074,23 +1233,132 @@ mod tests {
         );
 
         assert!(!spread_factor.satisfy_forward_open(
-            TradingVenue::GateMargin,
+            TradingVenue::BinanceMargin,
             "SIRENUSDT",
-            TradingVenue::GateFutures,
+            TradingVenue::BinanceFutures,
             "SIRENUSDT",
         ));
-        assert!(!spread_factor.satisfy_backward_open(
-            TradingVenue::GateMargin,
+
+        let _ = spread_factor.update(
+            TradingVenue::BinanceMargin,
             "SIRENUSDT",
-            TradingVenue::GateFutures,
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            100.0,
+            100.2,
+            106.0,
+            106.2,
+        );
+
+        assert!(!spread_factor.satisfy_backward_open(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
             "SIRENUSDT",
         ));
     }
 
     #[test]
-    fn gate_fr_open_spread_guard_allows_normal_price_match() {
+    fn fr_open_spread_limit_symbol_override_replaces_global_limits() {
         let spread_factor = SpreadFactor::new();
         spread_factor.set_mode(FactorMode::MM);
+        spread_factor.update_fr_open_spread_limit(
+            true,
+            0.05,
+            -0.05,
+            HashMap::from([(
+                "SIRENUSDT".to_string(),
+                FrOpenSpreadLimitOverride {
+                    fwd_open_spread: 1.0,
+                    bwd_open_spread: -0.10,
+                },
+            )]),
+        );
+
+        spread_factor.set_forward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            1.0,
+            0.0,
+        );
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            -1.0,
+            0.0,
+        );
+
+        let _ = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            0.085,
+            0.086,
+            0.035,
+            0.036,
+        );
+
+        assert!(spread_factor.satisfy_forward_open(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+        ));
+
+        let _ = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+            100.0,
+            100.2,
+            106.0,
+            106.2,
+        );
+
+        assert!(spread_factor.satisfy_backward_open(
+            TradingVenue::BinanceMargin,
+            "SIRENUSDT",
+            TradingVenue::BinanceFutures,
+            "SIRENUSDT",
+        ));
+
+        spread_factor.set_forward_open_threshold(
+            TradingVenue::BinanceMargin,
+            "HNTUSDT",
+            TradingVenue::BinanceFutures,
+            "HNTUSDT",
+            1.0,
+            0.0,
+        );
+        let _ = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "HNTUSDT",
+            TradingVenue::BinanceFutures,
+            "HNTUSDT",
+            0.085,
+            0.086,
+            0.035,
+            0.036,
+        );
+        assert!(!spread_factor.satisfy_forward_open(
+            TradingVenue::BinanceMargin,
+            "HNTUSDT",
+            TradingVenue::BinanceFutures,
+            "HNTUSDT",
+        ));
+    }
+
+    #[test]
+    fn fr_open_spread_limit_allows_normal_price_match() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.set_mode(FactorMode::MM);
+        spread_factor.update_fr_open_spread_limit_global(true, 0.05, -0.05);
 
         spread_factor.set_forward_open_threshold(
             TradingVenue::GateMargin,
@@ -1127,6 +1395,46 @@ mod tests {
             "HNTUSDT",
         ));
         assert!(spread_factor.satisfy_backward_open(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+        ));
+    }
+
+    #[test]
+    fn fr_open_spread_limit_does_not_apply_to_close() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.set_mode(FactorMode::MM);
+        spread_factor.update_fr_open_spread_limit_global(true, 0.05, -0.05);
+
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+            -1.0,
+            0.0,
+        );
+
+        let _ = spread_factor.update(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+            100.0,
+            100.2,
+            106.0,
+            106.2,
+        );
+
+        assert!(!spread_factor.satisfy_backward_open(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+        ));
+        assert!(spread_factor.satisfy_forward_close(
             TradingVenue::GateMargin,
             "HNTUSDT",
             TradingVenue::GateFutures,
