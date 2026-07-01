@@ -1573,6 +1573,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         hedge_venue = (params.get("hedge_venue") or [None])[0]
         return resolve_venues(exchange, open_venue, hedge_venue)
 
+    def _resolve_payload_context(self, payload: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        exchange = normalize_exchange(
+            str(payload.get("exchange") or self.server.context.default_exchange)
+        )
+        open_venue = payload.get("open_venue")
+        hedge_venue = payload.get("hedge_venue")
+        return resolve_venues(
+            exchange,
+            str(open_venue) if open_venue is not None else None,
+            str(hedge_venue) if hedge_venue is not None else None,
+        )
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/":

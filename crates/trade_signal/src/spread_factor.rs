@@ -13,6 +13,8 @@ use std::collections::HashMap;
 
 type SpreadThresholdEntryKey = (ThresholdKey, ArbDirection, OperationType);
 
+const GATE_FR_MAX_ABS_OPEN_SPREAD_RATE: f64 = 0.05;
+
 /// 价差类型 (bidask、askbid或者基于mid price 计算的spread rate)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpreadType {
@@ -343,6 +345,61 @@ impl SpreadFactor {
         )
     }
 
+    #[inline]
+    fn should_apply_gate_fr_open_spread_guard(venue1: TradingVenue, venue2: TradingVenue) -> bool {
+        venue1 == TradingVenue::GateMargin && venue2 == TradingVenue::GateFutures
+    }
+
+    fn gate_fr_open_spread_guard_allows(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+    ) -> bool {
+        if !Self::should_apply_gate_fr_open_spread_guard(venue1, venue2) {
+            return true;
+        }
+
+        let Some(spread_rate) = self.get_spread_rate(venue1, symbol1, venue2, symbol2) else {
+            log::debug!(
+                "Gate FR open blocked: missing spread_rate for {} {:?} -> {} {:?}",
+                symbol1,
+                venue1,
+                symbol2,
+                venue2
+            );
+            return false;
+        };
+
+        if !spread_rate.is_finite() {
+            log::debug!(
+                "Gate FR open blocked: non-finite spread_rate={} for {} {:?} -> {} {:?}",
+                spread_rate,
+                symbol1,
+                venue1,
+                symbol2,
+                venue2
+            );
+            return false;
+        }
+
+        if spread_rate.abs() > GATE_FR_MAX_ABS_OPEN_SPREAD_RATE {
+            log::debug!(
+                "Gate FR open blocked: abs(spread_rate)={:.6} exceeds max {:.6} for {} {:?} -> {} {:?}",
+                spread_rate.abs(),
+                GATE_FR_MAX_ABS_OPEN_SPREAD_RATE,
+                symbol1,
+                venue1,
+                symbol2,
+                venue2
+            );
+            return false;
+        }
+
+        true
+    }
+
     // ===== 4 个 set 函数，简化，因为对价差而言只有正开、反开 =====
     // ===== 因此只需要正反开的开仓阈值和撤单阈值
 
@@ -539,6 +596,23 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
+        self.satisfy_forward_open_inner(venue1, symbol1, venue2, symbol2, true)
+    }
+
+    fn satisfy_forward_open_inner(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        apply_open_guard: bool,
+    ) -> bool {
+        if apply_open_guard
+            && !self.gate_fr_open_spread_guard_allows(venue1, symbol1, venue2, symbol2)
+        {
+            return false;
+        }
+
         // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
         let query_venue1 = venue1;
 
@@ -627,7 +701,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        self.satisfy_backward_open(venue1, symbol1, venue2, symbol2)
+        self.satisfy_backward_open_inner(venue1, symbol1, venue2, symbol2, false)
     }
 
     /// 检查是否满足反套开仓条件
@@ -639,6 +713,23 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
+        self.satisfy_backward_open_inner(venue1, symbol1, venue2, symbol2, true)
+    }
+
+    fn satisfy_backward_open_inner(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        apply_open_guard: bool,
+    ) -> bool {
+        if apply_open_guard
+            && !self.gate_fr_open_spread_guard_allows(venue1, symbol1, venue2, symbol2)
+        {
+            return false;
+        }
+
         let query_venue1 = Self::map_venue(venue1);
         let key = (
             (
@@ -725,7 +816,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        self.satisfy_forward_open(venue1, symbol1, venue2, symbol2)
+        self.satisfy_forward_open_inner(venue1, symbol1, venue2, symbol2, false)
     }
 
     /// 获取价差检查详情（用于调试日志）
@@ -948,6 +1039,100 @@ impl SpreadFactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_fr_open_spread_guard_blocks_large_price_mismatch() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.set_mode(FactorMode::MM);
+
+        spread_factor.set_forward_open_threshold(
+            TradingVenue::GateMargin,
+            "SIRENUSDT",
+            TradingVenue::GateFutures,
+            "SIRENUSDT",
+            1.0,
+            0.0,
+        );
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::GateMargin,
+            "SIRENUSDT",
+            TradingVenue::GateFutures,
+            "SIRENUSDT",
+            -1.0,
+            0.0,
+        );
+
+        let _ = spread_factor.update(
+            TradingVenue::GateMargin,
+            "SIRENUSDT",
+            TradingVenue::GateFutures,
+            "SIRENUSDT",
+            0.085,
+            0.086,
+            0.035,
+            0.036,
+        );
+
+        assert!(!spread_factor.satisfy_forward_open(
+            TradingVenue::GateMargin,
+            "SIRENUSDT",
+            TradingVenue::GateFutures,
+            "SIRENUSDT",
+        ));
+        assert!(!spread_factor.satisfy_backward_open(
+            TradingVenue::GateMargin,
+            "SIRENUSDT",
+            TradingVenue::GateFutures,
+            "SIRENUSDT",
+        ));
+    }
+
+    #[test]
+    fn gate_fr_open_spread_guard_allows_normal_price_match() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.set_mode(FactorMode::MM);
+
+        spread_factor.set_forward_open_threshold(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+            0.03,
+            0.0,
+        );
+        spread_factor.set_backward_open_threshold(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+            0.01,
+            0.0,
+        );
+
+        let _ = spread_factor.update(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+            100.0,
+            100.2,
+            98.0,
+            98.2,
+        );
+
+        assert!(spread_factor.satisfy_forward_open(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+        ));
+        assert!(spread_factor.satisfy_backward_open(
+            TradingVenue::GateMargin,
+            "HNTUSDT",
+            TradingVenue::GateFutures,
+            "HNTUSDT",
+        ));
+    }
 
     #[test]
     fn forward_and_backward_open_thresholds_do_not_overwrite_each_other() {
