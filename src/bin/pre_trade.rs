@@ -7,6 +7,7 @@ use log::{info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
+use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
@@ -479,6 +480,18 @@ async fn main() -> Result<()> {
             )
             .await?;
             info!("ArbOpen leverage guard initialized");
+
+            info!("Initializing Binance FR position-limit guard...");
+            BinanceFrPositionLimitGuard::initialize(
+                &leverage_guard_redis,
+                dir_prefix.clone(),
+                arb_mode,
+                open_venue,
+                hedge_venue,
+                binance_account_mode,
+            )
+            .await?;
+            info!("Binance FR position-limit guard initialized");
 
             info!("Initializing Gate risk-limit guard...");
             GateFrRiskLimitGuard::initialize(

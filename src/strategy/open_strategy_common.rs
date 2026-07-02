@@ -1,6 +1,7 @@
 use crate::pre_trade::account_open_block::{
     register_bybit_internal_system_open_block, BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
+use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::log_throttle::log_pending_limit_summary;
@@ -1361,6 +1362,47 @@ pub trait OpenStrategyCommon {
                         e
                     );
                     self.mark_open_strategy_inactive(format!("gate risk_limit failed: {}", e));
+                    return None;
+                }
+            }
+
+            if is_arb_open
+                && monitor.arb_mode() == trade_signal::ArbMode::FundingArb
+                && venue == TradingVenue::BinanceMargin
+                && !binance_is_standard
+                && monitor.hedge_venue() == TradingVenue::BinanceFutures
+            {
+                let current_futures_base_qty =
+                    monitor.get_position_qty(&symbol, TradingVenue::BinanceFutures);
+                let add_futures_base_qty = -add_base_qty;
+                if let Err(e) = BinanceFrPositionLimitGuard::ensure_projected_notional(
+                    &symbol,
+                    side,
+                    current_futures_base_qty,
+                    add_futures_base_qty,
+                    order_price,
+                    signed_qty,
+                    qty_multiplier,
+                ) {
+                    self.log_open_deleveraging_risk_reject(
+                        "Binance限仓风控",
+                        &e,
+                        &symbol,
+                        TradingVenue::BinanceFutures,
+                        side,
+                        current_futures_base_qty,
+                        input.qty,
+                    );
+                    error!(
+                        "{}: strategy_id={} Binance限仓检查失败: {}，标记策略为不活跃",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        e
+                    );
+                    self.mark_open_strategy_inactive(format!(
+                        "binance position-limit failed: {}",
+                        e
+                    ));
                     return None;
                 }
             }

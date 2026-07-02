@@ -5,6 +5,7 @@ pub mod auto_repay_service;
 pub mod basic_balance_manager;
 pub mod basic_exposure_manager;
 pub mod basic_um_manager;
+pub mod binance_fr_position_limit_guard;
 mod channel;
 pub mod close_inventory;
 pub mod event;
