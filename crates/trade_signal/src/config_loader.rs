@@ -294,10 +294,10 @@ async fn reload_fr_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    let load_for_intra = ns == "intra"
+    let intra_regular_close_enabled = ns == "intra"
         && ArbDecision::with_state_mut(|arb| arb.enable_intra_funding_close_signal)
             .unwrap_or(false);
-    if ns != "fr" && !load_for_intra {
+    if ns != "fr" && ns != "intra" {
         return Ok(());
     }
 
@@ -316,6 +316,13 @@ async fn reload_fr_thresholds(
                 }
             };
             if funding_map.is_empty() {
+                if ns == "intra" && !intra_regular_close_enabled {
+                    warn!(
+                        "Redis hash '{}' 为空或不存在，跳过 intra 资金费率阈值加载 (env_dir={})",
+                        redis_key, env_dir
+                    );
+                    return Ok(());
+                }
                 panic!(
                     "Redis hash '{}' 为空或不存在，无法加载资金费率阈值 (ns={}, env_dir={})",
                     redis_key, ns, env_dir
@@ -356,6 +363,8 @@ fn expand_intra_fixed_close_thresholds(
     for (fixed_key, legacy_key) in [
         ("forward_close", "4h_forward_close"),
         ("backward_close", "4h_backward_close"),
+        ("forward_extreme_close", "4h_forward_extreme_close"),
+        ("backward_extreme_close", "4h_backward_extreme_close"),
     ] {
         let Some(value) = funding_map
             .get(fixed_key)

@@ -158,8 +158,10 @@ pub struct ArbFundingSignalFlags {
     pub period: FundingRatePeriod,
     pub forward_open: bool,
     pub forward_close: bool,
+    pub forward_extreme_close: bool,
     pub backward_open: bool,
     pub backward_close: bool,
+    pub backward_extreme_close: bool,
 }
 
 pub fn evaluate_funding_signal_flags(
@@ -173,8 +175,18 @@ pub fn evaluate_funding_signal_flags(
         period,
         forward_open: fr_factor.satisfy_forward_open(hedge_symbol, period, hedge_venue),
         forward_close: fr_factor.satisfy_forward_close(hedge_symbol, period, hedge_venue),
+        forward_extreme_close: fr_factor.satisfy_forward_extreme_close(
+            hedge_symbol,
+            period,
+            hedge_venue,
+        ),
         backward_open: fr_factor.satisfy_backward_open(hedge_symbol, period, hedge_venue),
         backward_close: fr_factor.satisfy_backward_close(hedge_symbol, period, hedge_venue),
+        backward_extreme_close: fr_factor.satisfy_backward_extreme_close(
+            hedge_symbol,
+            period,
+            hedge_venue,
+        ),
     }
 }
 
@@ -1685,11 +1697,72 @@ fn drive_spread_arb_decision(
         }
     }
 
-    let enable_intra_funding_close = ArbDecision::with_state_mut(|arb| {
-        arb.enable_intra_funding_close_signal
-            && matches!(ArbDecision::mode(), Some(ArbMode::IntraArb))
-    })
-    .unwrap_or(false);
+    let is_intra_arb = matches!(ArbDecision::mode(), Some(ArbMode::IntraArb));
+    if !in_dump && is_intra_arb {
+        let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
+        let extreme_close_candidates = [
+            (
+                ArbSignalKind::ForwardClose,
+                flags.forward_extreme_close,
+                Side::Sell,
+                "intra_fr_fwd_extreme_close_hit",
+            ),
+            (
+                ArbSignalKind::BackwardClose,
+                flags.backward_extreme_close,
+                Side::Buy,
+                "intra_fr_bwd_extreme_close_hit",
+            ),
+        ];
+        for (fr_signal, extreme_close_hit, side, hit_summary) in extreme_close_candidates {
+            if !extreme_close_hit {
+                continue;
+            }
+            let close_key = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary(hit_summary);
+                let key = ArbDecisionState::build_threshold_key(
+                    open_symbol_key.as_str(),
+                    hedge_symbol_key.as_str(),
+                    open_venue,
+                    hedge_venue,
+                );
+                if arb.is_close_cooldown_hit(&key, side, now) {
+                    arb.record_intercept_summary("intra_fr_extreme_close_cooldown");
+                    None
+                } else {
+                    arb.record_intercept_summary(match fr_signal {
+                        ArbSignalKind::ForwardClose => "intra_fr_fwd_extreme_close_pass",
+                        ArbSignalKind::BackwardClose => "intra_fr_bwd_extreme_close_pass",
+                        _ => "intra_fr_extreme_close_pass",
+                    });
+                    Some(key)
+                }
+            })
+            .unwrap_or(None);
+            let Some(close_key) = close_key else {
+                continue;
+            };
+            let emit_allowed = emit_spread_arb_close_signals(
+                decision,
+                open_symbol_key.as_str(),
+                hedge_symbol_key.as_str(),
+                open_venue,
+                hedge_venue,
+                side,
+            )?;
+            if !emit_allowed {
+                return Ok(None);
+            }
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.mark_close_triggered(close_key, side, now);
+            });
+            return Ok(Some(SignalType::ArbClose));
+        }
+    }
+
+    let enable_intra_funding_close =
+        ArbDecision::with_state_mut(|arb| arb.enable_intra_funding_close_signal && is_intra_arb)
+            .unwrap_or(false);
     if !in_dump && enable_intra_funding_close {
         let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
         let close_candidates = [

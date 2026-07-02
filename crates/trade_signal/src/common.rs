@@ -261,6 +261,8 @@ pub enum OperationType {
     Cancel,
     /// 平仓
     Close,
+    /// 极端资金费率平仓
+    ExtremeClose,
 }
 
 /// 交易所对 key: (venue1, venue2)

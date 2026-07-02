@@ -236,11 +236,15 @@ INTRA_FACTOR_CHAIN: List[Dict[str, Any]] = [
 INTRA_STATIC_FUNDING_CLOSE_DEFAULTS: Dict[str, str] = {
     "forward_close": "-0.0004",
     "backward_close": "0.0004",
+    "forward_extreme_close": "-0.001",
+    "backward_extreme_close": "0.001",
 }
 
 INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS: Dict[str, str] = {
     "forward_close": "4h_forward_close",
     "backward_close": "4h_backward_close",
+    "forward_extreme_close": "4h_forward_extreme_close",
+    "backward_extreme_close": "4h_backward_extreme_close",
 }
 
 
@@ -281,8 +285,10 @@ def default_funding_threshold_comments() -> Dict[str, str]:
         out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
         out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
         out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
-    out["forward_close"] = "固定正套强平阈值：current_fr_ma < threshold 后，再过 forward close spread gate"
-    out["backward_close"] = "固定反套强平阈值：current_fr_ma + current_loan_rate > threshold 后，再过 backward close spread gate"
+    out["forward_close"] = "固定正套平仓阈值：current_fr_ma < threshold 后，再过 forward close spread gate"
+    out["backward_close"] = "固定反套平仓阈值：current_fr_ma + current_loan_rate > threshold 后，再过 backward close spread gate"
+    out["forward_extreme_close"] = "固定正套极端平仓阈值：current_fr_ma < threshold 后，无视 spread close gate 直接发 close"
+    out["backward_extreme_close"] = "固定反套极端平仓阈值：current_fr_ma + current_loan_rate > threshold 后，无视 spread close gate 直接发 close"
     return out
 
 
@@ -809,7 +815,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="funding-default" class="ghost">默认</button>
         </div>
       </div>
-      <div class="hint" style="margin-bottom: 10px;">前半段配置 hedge_premium_rate open filter 的 enable 与 forward/backward 分位数；`forward_close` / `backward_close` 是 intra funding close 固定止损阈值，trade_signal 不按 symbol funding period 折算。</div>
+      <div class="hint" style="margin-bottom: 10px;">前半段配置 hedge_premium_rate open filter 的 enable 与 forward/backward 分位数；`forward_close` / `backward_close` 是普通 funding close 固定阈值，命中后仍需通过 spread close gate；`forward_extreme_close` / `backward_extreme_close` 是极端 close 固定阈值，命中后无视 spread gate 直接发 close。trade_signal 不按 symbol funding period 折算。</div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
     </section>

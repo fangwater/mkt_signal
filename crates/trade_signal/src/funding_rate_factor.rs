@@ -222,6 +222,60 @@ impl FundingRateFactor {
         self.thresholds.borrow_mut().insert(key, config);
     }
 
+    /// 更新正套极端平仓阈值
+    ///
+    /// 判断条件：current_fr_ma < threshold；命中后可绕过 spread close gate。
+    pub fn update_forward_extreme_close_threshold(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        threshold: f64,
+    ) {
+        let key = (
+            period,
+            mode,
+            OperationType::ExtremeClose,
+            ArbDirection::Forward,
+        );
+        let config = FrThresholdConfig {
+            compare_op: CompareOp::LessThan,
+            arb_direction: ArbDirection::Forward,
+            operation: OperationType::ExtremeClose,
+            period,
+            mode,
+            threshold,
+        };
+
+        self.thresholds.borrow_mut().insert(key, config);
+    }
+
+    /// 更新反套极端平仓阈值
+    ///
+    /// 判断条件：(current_fr_ma + current_loan_rate) > threshold；命中后可绕过 spread close gate。
+    pub fn update_backward_extreme_close_threshold(
+        &self,
+        period: FundingRatePeriod,
+        mode: FactorMode,
+        threshold: f64,
+    ) {
+        let key = (
+            period,
+            mode,
+            OperationType::ExtremeClose,
+            ArbDirection::Backward,
+        );
+        let config = FrThresholdConfig {
+            compare_op: CompareOp::GreaterThan,
+            arb_direction: ArbDirection::Backward,
+            operation: OperationType::ExtremeClose,
+            period,
+            mode,
+            threshold,
+        };
+
+        self.thresholds.borrow_mut().insert(key, config);
+    }
+
     // ===== 辅助方法：获取因子数据 =====
 
     /// 获取预测资金费率 (predict_fr)
@@ -514,6 +568,126 @@ impl FundingRateFactor {
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
                 "FRFactor backward_close symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} current_fr_ma={:?} current_loan={:?} factor={:?} ok={} reason={}",
+                symbol,
+                venue,
+                period,
+                current_mode,
+                has_config,
+                compare_op,
+                threshold,
+                current_fr_ma,
+                current_loan,
+                factor,
+                ok,
+                reason
+            );
+        }
+
+        ok
+    }
+
+    /// 检查是否满足正套极端平仓条件
+    ///
+    /// 判断：current_fr_ma < threshold（根据 symbol 的周期和当前模式）。
+    pub fn satisfy_forward_extreme_close(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> bool {
+        let current_mode = self.get_mode();
+        let config = self.resolve_threshold_config(
+            period,
+            current_mode,
+            OperationType::ExtremeClose,
+            ArbDirection::Forward,
+        );
+        let has_config = config.is_some();
+        let mut ok = false;
+        let mut reason = "missing_threshold";
+        let mut compare_op = None;
+        let mut threshold = None;
+        let mut current_fr_ma = None;
+
+        if let Some(cfg) = config {
+            compare_op = Some(cfg.compare_op);
+            threshold = Some(cfg.threshold);
+            current_fr_ma = self.get_current_fr_ma(symbol, venue);
+            if let Some(value) = current_fr_ma {
+                ok = cfg.compare_op.check(value, cfg.threshold);
+                reason = if ok { "hit" } else { "not_hit_threshold" };
+            } else {
+                RateFetcher::mark_missing(venue, symbol, "missing_current_fr_ma");
+                reason = "missing_current_fr_ma";
+            }
+        }
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FRFactor forward_extreme_close symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} current_fr_ma={:?} ok={} reason={}",
+                symbol,
+                venue,
+                period,
+                current_mode,
+                has_config,
+                compare_op,
+                threshold,
+                current_fr_ma,
+                ok,
+                reason
+            );
+        }
+
+        ok
+    }
+
+    /// 检查是否满足反套极端平仓条件
+    ///
+    /// 判断：(current_fr_ma + current_loan_rate) > threshold（根据 symbol 的周期和当前模式）。
+    pub fn satisfy_backward_extreme_close(
+        &self,
+        symbol: &str,
+        period: FundingRatePeriod,
+        venue: TradingVenue,
+    ) -> bool {
+        let current_mode = self.get_mode();
+        let config = self.resolve_threshold_config(
+            period,
+            current_mode,
+            OperationType::ExtremeClose,
+            ArbDirection::Backward,
+        );
+        let has_config = config.is_some();
+        let mut ok = false;
+        let mut reason = "missing_threshold";
+        let mut compare_op = None;
+        let mut threshold = None;
+        let mut current_fr_ma = None;
+        let mut current_loan = None;
+        let mut factor = None;
+
+        if let Some(cfg) = config {
+            compare_op = Some(cfg.compare_op);
+            threshold = Some(cfg.threshold);
+            current_fr_ma = self.get_current_fr_ma(symbol, venue);
+            current_loan = self.get_current_loan_rate(symbol, period, venue);
+            if let (Some(fr_ma), Some(loan)) = (current_fr_ma, current_loan) {
+                let value = fr_ma + loan;
+                factor = Some(value);
+                ok = cfg.compare_op.check(value, cfg.threshold);
+                reason = if ok { "hit" } else { "not_hit_threshold" };
+            } else if current_fr_ma.is_none() {
+                RateFetcher::mark_missing(venue, symbol, "missing_current_fr_ma");
+                reason = "missing_current_fr_ma";
+            } else {
+                RateFetcher::mark_missing(venue, symbol, "missing_current_loan");
+                reason = "missing_current_loan";
+            }
+        }
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "FRFactor backward_extreme_close symbol={} venue={:?} period={:?} mode={:?} cfg={} op={:?} threshold={:?} current_fr_ma={:?} current_loan={:?} factor={:?} ok={} reason={}",
                 symbol,
                 venue,
                 period,

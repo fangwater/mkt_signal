@@ -8,6 +8,8 @@
 //!   - `{period}_forward_close`: 正套平仓阈值
 //!   - `{period}_backward_open`: 反套开仓阈值
 //!   - `{period}_backward_close`: 反套平仓阈值
+//!   - `{period}_forward_extreme_close`: 正套极端平仓阈值（intra 可绕过 spread gate）
+//!   - `{period}_backward_extreme_close`: 反套极端平仓阈值（intra 可绕过 spread gate）
 //! - `period` 支持 `1h`/`2h`/`4h`/`6h`/`8h`；未显式配置的周期按 4h 阈值线性折算。
 
 use anyhow::Result;
@@ -31,19 +33,19 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
 
     // 遍历所有字段并解析
     for (key, value) in hash_map.iter() {
-        // 解析 key: "{period}_{direction}_{operation}"
+        // 解析 key: "{period}_{direction}_{operation}" 或 "{period}_{direction}_extreme_close"
         let parts: Vec<&str> = key.split('_').collect();
-        if parts.len() != 3 {
-            warn!(
-                "跳过无效的资金费率阈值 key: {} (格式应为 period_direction_operation)",
-                key
-            );
-            continue;
-        }
-
-        let period_str = parts[0]; // "8h" or "4h"
-        let direction_str = parts[1]; // "forward" or "backward"
-        let operation_str = parts[2]; // "open" or "close"
+        let (period_str, direction_str, operation_str) = match parts.as_slice() {
+            [period, direction, operation] => (*period, *direction, *operation),
+            [period, direction, "extreme", "close"] => (*period, *direction, "extreme_close"),
+            _ => {
+                warn!(
+                    "跳过无效的资金费率阈值 key: {} (格式应为 period_direction_operation 或 period_direction_extreme_close)",
+                    key
+                );
+                continue;
+            }
+        };
 
         // 解析周期
         let period = match period_str {
@@ -89,6 +91,32 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
                 funding_factor.update_backward_close_threshold(period, FactorMode::MT, threshold);
                 loaded_count += 1;
             }
+            ("forward", "extreme_close") => {
+                funding_factor.update_forward_extreme_close_threshold(
+                    period,
+                    FactorMode::MM,
+                    threshold,
+                );
+                funding_factor.update_forward_extreme_close_threshold(
+                    period,
+                    FactorMode::MT,
+                    threshold,
+                );
+                loaded_count += 1;
+            }
+            ("backward", "extreme_close") => {
+                funding_factor.update_backward_extreme_close_threshold(
+                    period,
+                    FactorMode::MM,
+                    threshold,
+                );
+                funding_factor.update_backward_extreme_close_threshold(
+                    period,
+                    FactorMode::MT,
+                    threshold,
+                );
+                loaded_count += 1;
+            }
             _ => {
                 warn!(
                     "未知的方向/操作组合: {}_{} (key: {})",
@@ -104,6 +132,7 @@ pub fn load_from_redis(hash_map: HashMap<String, String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::common::{ArbDirection, OperationType};
     use super::*;
 
     #[test]
@@ -117,6 +146,34 @@ mod tests {
 
         let result = load_from_redis(hash_map);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_load_extreme_close_thresholds() {
+        let mut hash_map = HashMap::new();
+        hash_map.insert("4h_forward_extreme_close".to_string(), "-0.001".to_string());
+        hash_map.insert("4h_backward_extreme_close".to_string(), "0.001".to_string());
+
+        let result = load_from_redis(hash_map);
+        assert!(result.is_ok());
+
+        let factor = FundingRateFactor::instance();
+        let fwd = factor
+            .get_threshold_config(
+                FundingRatePeriod::Hours4,
+                ArbDirection::Forward,
+                OperationType::ExtremeClose,
+            )
+            .expect("forward extreme close threshold should be loaded");
+        let bwd = factor
+            .get_threshold_config(
+                FundingRatePeriod::Hours4,
+                ArbDirection::Backward,
+                OperationType::ExtremeClose,
+            )
+            .expect("backward extreme close threshold should be loaded");
+        assert!((fwd.threshold - -0.001).abs() < 1e-12);
+        assert!((bwd.threshold - 0.001).abs() < 1e-12);
     }
 
     #[test]
