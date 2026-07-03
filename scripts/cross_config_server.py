@@ -232,6 +232,31 @@ def parse_bool_text(raw: Any, default: bool = True) -> bool:
     return default
 
 
+def normalize_bool_param_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return "true"
+    if text in ("0", "false", "no", "off", ""):
+        return "false"
+    raise ValueError(f"{field_name} must be boolean: {raw}")
+
+
+def env_flag_enabled(*names: str) -> bool:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value in ("1", "true", "TRUE", "True", "on", "ON", "yes", "YES", "Yes"):
+            return True
+    return False
+
+
+def arb_hedge_force_taker_env_enabled() -> bool:
+    return env_flag_enabled("ARB_HEDGE_FORCE_TAKER")
+
+
+def arb_hedge_lazy_taker_env_enabled() -> bool:
+    return env_flag_enabled("ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER")
+
+
 def read_funding_threshold_config(
     rds, open_venue: str, hedge_venue: str
 ) -> Dict[str, str]:
@@ -834,7 +859,7 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key)) ||
+            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit', 'enable_taker_decsion_model'].includes(key)) ||
            (containerId === 'funding-table' && ['enabled'].includes(key))) &&
           isBooleanParamValue(rawValue);
         let input;
@@ -1262,6 +1287,7 @@ __PER_SYMBOL_PANELS_JS__
     loadAmountU();
     loadMaxPosU();
     loadHedgeOffsetLimits();
+    loadTakerDecisionModel();
 
     reloadAll();
   </script>
@@ -1477,8 +1503,24 @@ def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
+    value, text = normalize_percentile_text(raw)
+    if not (0.0 <= value <= 100.0):
+        raise ValueError(f"{field_name} must be in [0,100]: {raw}")
+    return text
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
+    for key in (
+        "enable_tlen_cancel",
+        "enable_environment_model",
+        "enable_volatility_limit",
+        "enable_taker_decsion_model",
+    ):
+        if key in normalized:
+            normalized[key] = normalize_bool_param_text(normalized[key], key)
+
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
@@ -1488,9 +1530,81 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
         )
     if "open_volatility_limit" in normalized:
-        _, normalized["open_volatility_limit"] = normalize_percentile_text(
-            normalized["open_volatility_limit"]
+        normalized["open_volatility_limit"] = normalize_percentile_param_text(
+            normalized["open_volatility_limit"], "open_volatility_limit"
         )
+
+    force_taker = arb_hedge_force_taker_env_enabled()
+    lazy_taker = arb_hedge_lazy_taker_env_enabled()
+    if force_taker and lazy_taker:
+        raise ValueError(
+            "ARB_HEDGE_FORCE_TAKER and ARB_HEDGE_LAZY_TAKER/ARB_HEDGE_lazy_TAKER "
+            "are mutually exclusive"
+        )
+
+    enable_key = "enable_taker_decsion_model"
+    if enable_key in normalized:
+        enabled = parse_bool_text(normalized[enable_key], False)
+        normalized[enable_key] = "true" if enabled else "false"
+        if enabled and force_taker:
+            raise ValueError(
+                "enable_taker_decsion_model=true conflicts with ARB_HEDGE_FORCE_TAKER=on"
+            )
+        if enabled and not lazy_taker:
+            raise ValueError(
+                "enable_taker_decsion_model=true requires ARB_HEDGE_LAZY_TAKER=on "
+                "or ARB_HEDGE_lazy_TAKER=on"
+            )
+
+    service_key = "taker_decsion_model_service"
+    if (
+        parse_bool_text(normalized.get(enable_key), False)
+        and str(normalized.get(service_key, "")).strip() in ("", "-")
+    ):
+        raise ValueError("enable_taker_decsion_model=true requires taker_decsion_model_service")
+
+    score_rolling_mean_window_key = "taker_decsion_model_score_rolling_mean_window"
+    if score_rolling_mean_window_key in normalized:
+        normalized[score_rolling_mean_window_key] = normalize_positive_int_text(
+            normalized[score_rolling_mean_window_key], score_rolling_mean_window_key
+        )
+
+    keep_long_key = "taker_decsion_model_keep_long_percentile"
+    keep_short_key = "taker_decsion_model_keep_short_percentile"
+    open_cancel_long_key = "taker_decsion_model_open_cancel_long_percentile"
+    open_cancel_short_key = "taker_decsion_model_open_cancel_short_percentile"
+    if keep_long_key in normalized:
+        normalized[keep_long_key] = normalize_percentile_param_text(
+            normalized[keep_long_key], keep_long_key
+        )
+    if keep_short_key in normalized:
+        normalized[keep_short_key] = normalize_percentile_param_text(
+            normalized[keep_short_key], keep_short_key
+        )
+    if open_cancel_long_key in normalized:
+        normalized[open_cancel_long_key] = normalize_percentile_param_text(
+            normalized[open_cancel_long_key], open_cancel_long_key
+        )
+    if open_cancel_short_key in normalized:
+        normalized[open_cancel_short_key] = normalize_percentile_param_text(
+            normalized[open_cancel_short_key], open_cancel_short_key
+        )
+    if keep_long_key in normalized and keep_short_key in normalized:
+        keep_long = float(normalized[keep_long_key])
+        keep_short = float(normalized[keep_short_key])
+        if keep_short > keep_long:
+            raise ValueError(
+                "taker_decsion_model_keep_short_percentile must be <= "
+                "taker_decsion_model_keep_long_percentile"
+            )
+    if open_cancel_long_key in normalized and open_cancel_short_key in normalized:
+        open_cancel_long = float(normalized[open_cancel_long_key])
+        open_cancel_short = float(normalized[open_cancel_short_key])
+        if open_cancel_short > open_cancel_long:
+            raise ValueError(
+                "taker_decsion_model_open_cancel_short_percentile must be <= "
+                "taker_decsion_model_open_cancel_long_percentile"
+            )
     return normalized
 
 
@@ -1991,8 +2105,16 @@ def render_index_html(
     }
 
     html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
-    html = html.replace("__PER_SYMBOL_PANELS_HTML__", ps_overrides.render_per_symbol_panels_html())
-    html = html.replace("__PER_SYMBOL_PANELS_JS__", ps_overrides.render_per_symbol_panels_js())
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_HTML__",
+        ps_overrides.render_per_symbol_panels_html()
+        + ps_overrides.render_taker_decision_model_panel_html(),
+    )
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_JS__",
+        ps_overrides.render_per_symbol_panels_js()
+        + ps_overrides.render_taker_decision_model_panel_js(),
+    )
     return html
 
 
@@ -2261,6 +2383,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/taker-decision-model",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -2281,8 +2404,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = ps_overrides.read_hedge_offset_limits(
                         rds, env_name, open_venue, hedge_venue
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     data = ps_overrides.read_open_offset_lower(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+                else:
+                    data = ps_overrides.read_taker_decision_model(
                         rds, env_name, open_venue, hedge_venue
                     )
             except ValueError as exc:
@@ -2542,6 +2669,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/taker-decision-model",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2563,8 +2691,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     result = ps_overrides.write_hedge_offset_limits(
                         rds, env_name, open_v, hedge_v, values
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     result = ps_overrides.write_open_offset_lower(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+                else:
+                    result = ps_overrides.write_taker_decision_model(
                         rds, env_name, open_v, hedge_v, values
                     )
             except ValueError as exc:

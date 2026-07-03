@@ -302,12 +302,13 @@ async fn main() -> Result<()> {
                     );
                 }
                 if fast_poll {
-                    intra_bwd_refresh =
-                        Some(IntraBwdRefreshConfig::new(bwd_redis, bwd_key_suffix));
+                    intra_bwd_refresh = Some(IntraBwdRefreshConfig::new(bwd_redis, bwd_key_suffix));
                 } else {
                     IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
                 }
+            }
 
+            if matches!(arb_mode, ArbMode::IntraArb | ArbMode::CrossArb) {
                 let strategy_redis = RedisSettings::default();
                 match PreTradeTakerDecisionModel::load_config_from_redis(
                     &strategy_redis,
