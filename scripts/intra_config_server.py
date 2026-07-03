@@ -1695,6 +1695,12 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     ):
         raise ValueError("enable_taker_decsion_model=true requires taker_decsion_model_service")
 
+    score_rolling_mean_window_key = "taker_decsion_model_score_rolling_mean_window"
+    if score_rolling_mean_window_key in normalized:
+        normalized[score_rolling_mean_window_key] = normalize_positive_int_text(
+            normalized[score_rolling_mean_window_key], score_rolling_mean_window_key
+        )
+
     keep_long_key = "taker_decsion_model_keep_long_percentile"
     keep_short_key = "taker_decsion_model_keep_short_percentile"
     open_cancel_long_key = "taker_decsion_model_open_cancel_long_percentile"

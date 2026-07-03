@@ -5,7 +5,7 @@ use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use serde::Deserialize;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::pre_trade::order_manager::Side;
@@ -21,6 +21,9 @@ const MODEL_OUTPUT_POLL_MAX_PER_LOOP: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
 const MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS: u64 = 60;
 const MODEL_SCORE_THRESHOLD_KEY_PREFIX: &str = "model_score_rolling_thresholds_";
+const DEFAULT_SCORE_ROLLING_MEAN_WINDOW: usize = 3;
+const TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY: &str =
+    "taker_decsion_model_score_rolling_mean_window";
 
 thread_local! {
     static TAKER_DECISION_MODEL: RefCell<Option<PreTradeTakerDecisionModel>> = const { RefCell::new(None) };
@@ -30,6 +33,7 @@ thread_local! {
 pub struct TakerDecisionConfig {
     pub enabled: bool,
     pub service: String,
+    pub score_rolling_mean_window: usize,
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
     pub open_cancel_long_percentile: f64,
@@ -174,6 +178,8 @@ struct ModelScoreThresholdPointsLoad {
 
 struct SymbolScoreState {
     latest_score: Option<f64>,
+    score_window: VecDeque<f64>,
+    score_sum: f64,
     latest_percentile: Option<f64>,
     latest_score_ready: bool,
     update_count: usize,
@@ -183,6 +189,8 @@ impl SymbolScoreState {
     fn new() -> Self {
         Self {
             latest_score: None,
+            score_window: VecDeque::new(),
+            score_sum: 0.0,
             latest_percentile: None,
             latest_score_ready: false,
             update_count: 0,
@@ -194,8 +202,17 @@ impl SymbolScoreState {
         score: f64,
         score_quantile: Option<f64>,
         score_ready: bool,
+        rolling_mean_window: usize,
     ) -> Option<f64> {
-        self.latest_score = Some(score);
+        let window_len = rolling_mean_window.max(1);
+        self.score_window.push_back(score);
+        self.score_sum += score;
+        while self.score_window.len() > window_len {
+            if let Some(old_score) = self.score_window.pop_front() {
+                self.score_sum -= old_score;
+            }
+        }
+        self.latest_score = Some(self.score_sum / self.score_window.len() as f64);
         self.latest_percentile = score_quantile.map(|value| value * 100.0);
         self.latest_score_ready = score_ready;
         self.update_count = self.update_count.saturating_add(1);
@@ -243,6 +260,12 @@ impl PreTradeTakerDecisionModel {
             .get("taker_decsion_model_service")
             .map(|raw| raw.trim().to_string())
             .unwrap_or_else(|| "-".to_string());
+        let score_rolling_mean_window = map
+            .get(TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY)
+            .map(|raw| {
+                parse_positive_usize(&key, TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY, raw)
+            })
+            .unwrap_or(DEFAULT_SCORE_ROLLING_MEAN_WINDOW);
         let keep_long_percentile = map
             .get("taker_decsion_model_keep_long_percentile")
             .map(|raw| parse_percentile(&key, "taker_decsion_model_keep_long_percentile", raw))
@@ -325,6 +348,7 @@ impl PreTradeTakerDecisionModel {
         Ok(TakerDecisionConfig {
             enabled,
             service,
+            score_rolling_mean_window,
             keep_long_percentile,
             keep_short_percentile,
             open_cancel_long_percentile,
@@ -384,6 +408,7 @@ impl PreTradeTakerDecisionModel {
             parse_err_count: 0,
             last_log: Instant::now(),
         };
+        let score_rolling_mean_window = model.cfg.score_rolling_mean_window;
         let keep_long = model.cfg.keep_long_percentile;
         let keep_short = model.cfg.keep_short_percentile;
         let open_cancel_long = model.cfg.open_cancel_long_percentile;
@@ -393,9 +418,10 @@ impl PreTradeTakerDecisionModel {
             *cell.borrow_mut() = Some(model);
         });
         info!(
-            "pre_trade taker decision model enabled service={} threshold_key={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
+            "pre_trade taker decision model enabled service={} threshold_key={} score_rolling_mean_window={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
             service_name,
             threshold_output_key,
+            score_rolling_mean_window,
             keep_long,
             keep_short,
             open_cancel_long,
@@ -554,11 +580,17 @@ impl PreTradeTakerDecisionModel {
                         .states
                         .entry(symbol.clone())
                         .or_insert_with(SymbolScoreState::new);
-                    let percentile = state.observe(msg.score, msg.score_quantile, msg.score_ready);
+                    let percentile = state.observe(
+                        msg.score,
+                        msg.score_quantile,
+                        msg.score_ready,
+                        self.cfg.score_rolling_mean_window,
+                    );
+                    let smoothed_score = state.latest_score.unwrap_or(msg.score);
                     self.recv_count = self.recv_count.saturating_add(1);
                     events.push(ModelUpdateEvent {
                         symbol,
-                        score: msg.score,
+                        score: smoothed_score,
                         percentile,
                         score_ready: msg.score_ready,
                         update_count: state.update_count(),
@@ -1121,6 +1153,19 @@ fn parse_percentile(redis_key: &str, field: &str, raw: &str) -> f64 {
     value
 }
 
+fn parse_positive_usize(redis_key: &str, field: &str, raw: &str) -> usize {
+    let value = raw.trim().parse::<usize>().unwrap_or_else(|_| {
+        panic!(
+            "Redis hash {} {} invalid positive integer: {}",
+            redis_key, field, raw
+        )
+    });
+    if value == 0 {
+        panic!("Redis hash {} {} must be > 0: {}", redis_key, field, value);
+    }
+    value
+}
+
 fn env_flag_enabled(names: &[&str]) -> bool {
     names.iter().any(|name| {
         std::env::var(name)
@@ -1189,7 +1234,8 @@ fn sanitize_node_suffix(raw: &str) -> String {
 mod tests {
     use super::{
         decide_arb_open_cancel, parse_model_score_thresholds_hash, parse_symbol_configs,
-        select_score_threshold, TakerDecisionOpenCancel, TakerDecisionSymbolScoreThresholds,
+        select_score_threshold, SymbolScoreState, TakerDecisionOpenCancel,
+        TakerDecisionSymbolScoreThresholds,
     };
     use crate::pre_trade::order_manager::Side;
     use std::collections::HashMap;
@@ -1282,5 +1328,29 @@ mod tests {
         assert_eq!(select_score_threshold(points, 80.0), Some(0.8));
         assert_eq!(select_score_threshold(points, 20.0), Some(0.2));
         assert_eq!(select_score_threshold(points, 75.0), None);
+    }
+
+    #[test]
+    fn symbol_score_state_keeps_rolling_mean_per_instance() {
+        let mut btc = SymbolScoreState::new();
+        assert_eq!(btc.observe(1.0, Some(0.1), true, 3), Some(10.0));
+        assert_eq!(btc.latest_score, Some(1.0));
+
+        btc.observe(2.0, Some(0.2), true, 3);
+        assert_eq!(btc.latest_score, Some(1.5));
+
+        btc.observe(4.0, Some(0.4), true, 3);
+        assert_eq!(btc.latest_score, Some(7.0 / 3.0));
+
+        btc.observe(10.0, Some(0.9), true, 3);
+        assert_eq!(btc.latest_score, Some(16.0 / 3.0));
+
+        let mut eth = SymbolScoreState::new();
+        eth.observe(9.0, None, true, 3);
+        assert_eq!(eth.latest_score, Some(9.0));
+        assert_eq!(btc.latest_score, Some(16.0 / 3.0));
+
+        btc.observe(20.0, None, true, 1);
+        assert_eq!(btc.latest_score, Some(20.0));
     }
 }
