@@ -26,7 +26,6 @@ JSON 格式:
 说明:
   - 收到 model value msg 的 symbol 会使用 pre_trade lazy taker decision model。
   - 该 JSON 只覆盖对应 symbol 的阈值；未配置 symbol 使用 strategy params 全局默认值。
-  - rolling 由 model_pub 维护，本脚本不再接受 rolling_n / rolling_window / window。
   - 未收到 model msg 的 symbol 继续走正常 MT。
   - 每个字段可省略；Rust 侧会使用 strategy params 里的全局默认值。
   - symbol 自动规范化为 alphanumeric uppercase。
@@ -123,7 +122,6 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
         "open_cancel_short_percentile",
         "open_cancel_short",
     }
-    disallowed_rolling_fields = {"rolling_n", "rolling_window", "window"}
     normalized: Dict[str, Dict[str, Any]] = {}
     for raw_symbol, raw_cfg in payload.items():
         symbol = normalize_symbol(str(raw_symbol))
@@ -131,12 +129,6 @@ def normalize_mapping(raw_json: str) -> Dict[str, Dict[str, Any]]:
             raw_cfg = {}
         if not isinstance(raw_cfg, dict):
             raise ValueError(f"config for {symbol} must be an object")
-        rolling_fields = sorted(str(field) for field in raw_cfg.keys() if str(field) in disallowed_rolling_fields)
-        if rolling_fields:
-            raise ValueError(
-                f"config for {symbol} no longer accepts rolling fields: "
-                f"{', '.join(rolling_fields)}; configure model_pub score rolling instead"
-            )
         unknown = sorted(str(field) for field in raw_cfg.keys() if str(field) not in allowed_fields)
         if unknown:
             raise ValueError(f"config for {symbol} has unknown fields: {', '.join(unknown)}")

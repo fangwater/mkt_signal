@@ -209,7 +209,6 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
     if not isinstance(values, dict):
         raise ValueError("taker_decision_model values must be an object")
     normalized: Dict[str, Dict[str, Any]] = {}
-    disallowed_rolling_fields = {"rolling_n", "rolling_window", "window"}
     allowed_fields = {
         "keep_long_percentile",
         "keep_long",
@@ -226,12 +225,6 @@ def normalize_taker_decision_model_mapping(values: Any) -> Dict[str, Dict[str, A
             raw_cfg = {}
         if not isinstance(raw_cfg, dict):
             raise ValueError(f"taker_decision_model config for {symbol} must be an object")
-        rolling_fields = sorted(str(field) for field in raw_cfg.keys() if str(field) in disallowed_rolling_fields)
-        if rolling_fields:
-            raise ValueError(
-                f"taker_decision_model config for {symbol} no longer accepts rolling fields: "
-                f"{', '.join(rolling_fields)}; configure model_pub score_rolling instead"
-            )
         unknown = sorted(str(field) for field in raw_cfg.keys() if str(field) not in allowed_fields)
         if unknown:
             raise ValueError(f"taker_decision_model config for {symbol} has unknown fields: {', '.join(unknown)}")
@@ -990,7 +983,7 @@ def render_taker_decision_model_panel_html() -> str:
         收到 model value msg 的 symbol 会使用 lazy taker decision model；这个 JSON 只覆盖对应 symbol 的阈值。
         <code>open_cancel_long_percentile</code> 表示模型分位 &lt; 阈值时撤掉开仓多单；
         <code>open_cancel_short_percentile</code> 表示模型分位 &gt; 阈值时撤掉开仓空单。
-        rolling/score_quantile 由 model_pub score_rolling 维护。未覆盖字段使用 strategy params 里的全局默认值。未收到 model msg 的 symbol 继续走正常 MT。
+        未覆盖字段使用 strategy params 里的全局默认值。未收到 model msg 的 symbol 继续走正常 MT。
       </div>
       <div class="hint">示例：</div>
       <pre id="taker-decision-model-example" class="mono"></pre>
