@@ -384,6 +384,8 @@ impl GateFrRiskLimitGuard {
     pub fn ensure_projected_notional(
         symbol: &str,
         side: Side,
+        current_open_base_qty: f64,
+        add_open_base_qty: f64,
         current_futures_base_qty: f64,
         add_futures_base_qty: f64,
         price: f64,
@@ -397,27 +399,35 @@ impl GateFrRiskLimitGuard {
             ));
         }
         let cap = Self::cap_for_symbol(symbol, side)?;
-        let next_qty = current_futures_base_qty + add_futures_base_qty;
-        let current_usdt = current_futures_base_qty.abs() * price;
-        let order_usdt = add_futures_base_qty.abs() * price;
-        let next_usdt = next_qty.abs() * price;
-        let eps = 1e-6_f64;
-        if next_usdt <= current_usdt + eps {
-            return Ok(());
-        }
-        if next_usdt > cap.cap + eps {
+        let open_leg =
+            projected_leg_notional(current_open_base_qty, add_open_base_qty, price, cap.cap);
+        let futures_leg = projected_leg_notional(
+            current_futures_base_qty,
+            add_futures_base_qty,
+            price,
+            cap.cap,
+        );
+        if open_leg.exceeds || futures_leg.exceeds {
             info!(
-                "Gate risk_limit reject detail: symbol={} contract={} side={} price={:.8} current_futures_qty={:.8} add_futures_qty={:.8} next_qty={:.8} current_usdt={:.4} order_usdt={:.4} next_usdt={:.4} risk_limit={:.4} buffer={:.4} cap={:.4} pending_limit_orders={} amount_u={:.4} gate_value={:.4} cross_leverage_limit={:?} raw_open_qty={:.8} open_qty_multiplier={:.8}",
+                "Gate risk_limit reject detail: symbol={} contract={} side={} price={:.8} current_open_qty={:.8} add_open_qty={:.8} next_open_qty={:.8} open_current_usdt={:.4} open_order_usdt={:.4} open_next_usdt={:.4} current_futures_qty={:.8} add_futures_qty={:.8} next_futures_qty={:.8} futures_current_usdt={:.4} futures_order_usdt={:.4} futures_next_usdt={:.4} exceeded_open={} exceeded_futures={} risk_limit={:.4} buffer={:.4} cap={:.4} pending_limit_orders={} amount_u={:.4} gate_value={:.4} cross_leverage_limit={:?} raw_open_qty={:.8} open_qty_multiplier={:.8}",
                 cap.symbol,
                 cap.contract,
                 side.as_str(),
                 price,
+                current_open_base_qty,
+                add_open_base_qty,
+                open_leg.next_qty,
+                open_leg.current_usdt,
+                open_leg.order_usdt,
+                open_leg.next_usdt,
                 current_futures_base_qty,
                 add_futures_base_qty,
-                next_qty,
-                current_usdt,
-                order_usdt,
-                next_usdt,
+                futures_leg.next_qty,
+                futures_leg.current_usdt,
+                futures_leg.order_usdt,
+                futures_leg.next_usdt,
+                open_leg.exceeds,
+                futures_leg.exceeds,
                 cap.risk_limit,
                 cap.buffer,
                 cap.cap,
@@ -429,11 +439,41 @@ impl GateFrRiskLimitGuard {
                 open_qty_multiplier
             );
             return Err(format!(
-                "Gate risk_limit cap exceeded symbol={} next={:.4}USDT cap={:.4}USDT risk_limit={:.4} buffer={:.4}",
-                cap.symbol, next_usdt, cap.cap, cap.risk_limit, cap.buffer
+                "Gate risk_limit cap exceeded symbol={} open_next={:.4}USDT futures_next={:.4}USDT cap={:.4}USDT risk_limit={:.4} buffer={:.4}",
+                cap.symbol, open_leg.next_usdt, futures_leg.next_usdt, cap.cap, cap.risk_limit, cap.buffer
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProjectedLegNotional {
+    next_qty: f64,
+    current_usdt: f64,
+    order_usdt: f64,
+    next_usdt: f64,
+    exceeds: bool,
+}
+
+fn projected_leg_notional(
+    current_base_qty: f64,
+    add_base_qty: f64,
+    price: f64,
+    cap_usdt: f64,
+) -> ProjectedLegNotional {
+    let next_qty = current_base_qty + add_base_qty;
+    let current_usdt = current_base_qty.abs() * price;
+    let order_usdt = add_base_qty.abs() * price;
+    let next_usdt = next_qty.abs() * price;
+    let eps = 1e-6_f64;
+    let increases = next_usdt > current_usdt + eps;
+    ProjectedLegNotional {
+        next_qty,
+        current_usdt,
+        order_usdt,
+        next_usdt,
+        exceeds: increases && next_usdt > cap_usdt + eps,
     }
 }
 
@@ -992,5 +1032,16 @@ mod tests {
         let sell_cap = calculate_cap_for_record("BTCUSDT", Side::Sell, &record(50_000.0)).unwrap();
         assert_eq!(sell_cap.buffer, 500.0);
         assert_eq!(sell_cap.cap, 49_500.0);
+    }
+
+    #[test]
+    fn projected_leg_cap_blocks_only_expansion() {
+        let expanding = projected_leg_notional(6.0, 1.0, 1000.0, 5_000.0);
+        assert!(expanding.exceeds);
+        assert_eq!(expanding.next_usdt, 7_000.0);
+
+        let reducing = projected_leg_notional(6.0, -2.0, 1000.0, 5_000.0);
+        assert!(!reducing.exceeds);
+        assert_eq!(reducing.next_usdt, 4_000.0);
     }
 }

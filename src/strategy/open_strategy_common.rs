@@ -1341,6 +1341,8 @@ pub trait OpenStrategyCommon {
                 if let Err(e) = GateFrRiskLimitGuard::ensure_projected_notional(
                     &symbol,
                     side,
+                    current_open_base_qty,
+                    add_base_qty,
                     current_futures_base_qty,
                     add_futures_base_qty,
                     order_price,
@@ -1379,6 +1381,8 @@ pub trait OpenStrategyCommon {
                 if let Err(e) = BinanceFrPositionLimitGuard::ensure_projected_notional(
                     &symbol,
                     side,
+                    current_open_base_qty,
+                    add_base_qty,
                     current_futures_base_qty,
                     add_futures_base_qty,
                     order_price,
