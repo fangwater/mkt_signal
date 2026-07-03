@@ -62,7 +62,7 @@ exchange_default_port() {
   case "$1" in
     binance) echo "18131" ;;
     okex)    echo "18132" ;;
-    bybit)   echo "18133" ;;
+    bybit)   echo "19191" ;;
     bitget)  echo "18134" ;;
     gate)    echo "18135" ;;
     *)       echo "18130" ;;

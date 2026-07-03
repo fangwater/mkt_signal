@@ -2,7 +2,7 @@ use crate::pre_trade::account_open_block::check_account_open_block;
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::leverage_guard::LeverageGuard;
-use crate::pre_trade::log_throttle::log_pending_limit_summary;
+use crate::pre_trade::log_throttle::{log_pending_limit_summary, log_strategy_inactive_summary};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::signal_throttle::{check_account_signal_throttle, check_signal_throttle};
@@ -1061,10 +1061,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                     .open_strategy_inactive_reason()
                     .unwrap_or("unknown");
                 if !should_suppress_arb_open_inactive_warning(reason) {
-                    warn!(
-                        "⚠️ ArbOpen: strategy_id={} {} 未激活 reason={}",
-                        strategy_id, log_symbol, reason
-                    );
+                    log_strategy_inactive_summary("ArbOpen", Some(strategy_id), log_symbol, reason);
                 }
             }
         }

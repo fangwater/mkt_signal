@@ -4,7 +4,7 @@ use crate::pre_trade::account_open_block::{
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
-use crate::pre_trade::log_throttle::log_pending_limit_summary;
+use crate::pre_trade::log_throttle::{log_open_risk_reject_summary, log_pending_limit_summary};
 use crate::pre_trade::monitor_channel::{MonitorChannel, OpenExposureRiskError};
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
 use crate::pre_trade::order_manager::{PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt};
@@ -1287,11 +1287,12 @@ pub trait OpenStrategyCommon {
                     current_open_base_qty,
                     input.qty,
                 );
-                error!(
-                    "{}: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
+                log_open_risk_reject_summary(
                     self.strategy_name(),
-                    self.strategy_id(),
-                    e
+                    Some(self.strategy_id()),
+                    &symbol,
+                    "杠杆风控",
+                    &e,
                 );
                 self.mark_open_strategy_inactive(format!("leverage risk failed: {}", e));
                 return None;

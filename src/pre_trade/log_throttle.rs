@@ -1,12 +1,14 @@
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::Side;
-use log::{info, warn};
+use log::{error, info, warn};
 use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 const PRE_TRADE_LIMIT_LOG_INTERVAL_US: i64 = 20_000_000;
+const OPEN_RISK_REJECT_LOG_INTERVAL_US: i64 = 20_000_000;
+const STRATEGY_INACTIVE_LOG_INTERVAL_US: i64 = 20_000_000;
 const CLOSE_BELOW_MIN_LOG_INTERVAL_US: i64 = 60_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -60,12 +62,46 @@ struct CloseBelowMinLogState {
     last_reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OpenRiskRejectLogKey {
+    source: &'static str,
+    symbol: String,
+    risk_name: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct OpenRiskRejectLogState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_strategy_id: Option<i32>,
+    last_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StrategyInactiveLogKey {
+    source: &'static str,
+    symbol: String,
+    reason_class: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct StrategyInactiveLogState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_strategy_id: Option<i32>,
+    last_reason: String,
+}
+
 thread_local! {
     static ORDER_RATE_LIMIT_LOGS: RefCell<HashMap<OrderRateLimitLogKey, OrderRateLimitLogState>> =
         RefCell::new(HashMap::new());
     static PENDING_LIMIT_LOGS: RefCell<HashMap<PendingLimitLogKey, PendingLimitLogState>> =
         RefCell::new(HashMap::new());
     static CLOSE_BELOW_MIN_LOGS: RefCell<HashMap<CloseBelowMinLogKey, CloseBelowMinLogState>> =
+        RefCell::new(HashMap::new());
+    static OPEN_RISK_REJECT_LOGS: RefCell<HashMap<OpenRiskRejectLogKey, OpenRiskRejectLogState>> =
+        RefCell::new(HashMap::new());
+    static STRATEGY_INACTIVE_LOGS: RefCell<HashMap<StrategyInactiveLogKey, StrategyInactiveLogState>> =
         RefCell::new(HashMap::new());
 }
 
@@ -86,6 +122,22 @@ fn classify_pending_limit_scope(reason: &str) -> &'static str {
         "total"
     } else {
         "unknown"
+    }
+}
+
+fn classify_strategy_inactive_reason(reason: &str) -> &'static str {
+    if reason.starts_with("leverage risk failed:") {
+        "leverage"
+    } else if reason.starts_with("max position risk failed:") {
+        "max_position"
+    } else if reason.starts_with("open order rate limit triggered:") {
+        "order_rate"
+    } else if reason.starts_with("pending limit order risk failed:") {
+        "pending_limit"
+    } else if reason.contains("余额不足") {
+        "balance"
+    } else {
+        "other"
     }
 }
 
@@ -169,6 +221,92 @@ pub fn log_pending_limit_summary(
                 side.as_str(),
                 state.suppressed,
                 state.last_strategy_id,
+                state.last_reason
+            );
+            state.last_log_ts_us = now_us;
+            state.suppressed = 0;
+        }
+    });
+}
+
+pub fn log_open_risk_reject_summary(
+    source: &'static str,
+    strategy_id: Option<i32>,
+    symbol: &str,
+    risk_name: &'static str,
+    reason: &str,
+) {
+    let now_us = get_timestamp_us();
+    let key = OpenRiskRejectLogKey {
+        source,
+        symbol: symbol.to_string(),
+        risk_name,
+    };
+    OPEN_RISK_REJECT_LOGS.with(|logs| {
+        let mut logs = logs.borrow_mut();
+        let state = logs.entry(key).or_insert_with(|| OpenRiskRejectLogState {
+            last_log_ts_us: 0,
+            suppressed: 0,
+            last_strategy_id: strategy_id,
+            last_reason: reason.to_string(),
+        });
+        state.suppressed += 1;
+        state.last_strategy_id = strategy_id;
+        state.last_reason.clear();
+        state.last_reason.push_str(reason);
+        if state.last_log_ts_us == 0
+            || now_us.saturating_sub(state.last_log_ts_us) >= OPEN_RISK_REJECT_LOG_INTERVAL_US
+        {
+            error!(
+                "{}: symbol={} {}检查失败 summary: suppressed={} last_strategy_id={:?} reason={}",
+                source,
+                symbol,
+                risk_name,
+                state.suppressed,
+                state.last_strategy_id,
+                state.last_reason
+            );
+            state.last_log_ts_us = now_us;
+            state.suppressed = 0;
+        }
+    });
+}
+
+pub fn log_strategy_inactive_summary(
+    source: &'static str,
+    strategy_id: Option<i32>,
+    symbol: &str,
+    reason: &str,
+) {
+    let now_us = get_timestamp_us();
+    let reason_class = classify_strategy_inactive_reason(reason);
+    let key = StrategyInactiveLogKey {
+        source,
+        symbol: symbol.to_string(),
+        reason_class,
+    };
+    STRATEGY_INACTIVE_LOGS.with(|logs| {
+        let mut logs = logs.borrow_mut();
+        let state = logs.entry(key).or_insert_with(|| StrategyInactiveLogState {
+            last_log_ts_us: 0,
+            suppressed: 0,
+            last_strategy_id: strategy_id,
+            last_reason: reason.to_string(),
+        });
+        state.suppressed += 1;
+        state.last_strategy_id = strategy_id;
+        state.last_reason.clear();
+        state.last_reason.push_str(reason);
+        if state.last_log_ts_us == 0
+            || now_us.saturating_sub(state.last_log_ts_us) >= STRATEGY_INACTIVE_LOG_INTERVAL_US
+        {
+            warn!(
+                "{}: symbol={} 未激活 summary: suppressed={} last_strategy_id={:?} reason_class={} reason={}",
+                source,
+                symbol,
+                state.suppressed,
+                state.last_strategy_id,
+                reason_class,
                 state.last_reason
             );
             state.last_log_ts_us = now_us;
