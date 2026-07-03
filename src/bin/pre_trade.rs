@@ -25,6 +25,7 @@ use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::pre_trade::{
     IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade, SnapshotQueryConfig,
+    TakerDecisionThresholdRefreshConfig,
 };
 use mkt_signal::strategy::StrategyManager;
 use order_common::TradingVenue;
@@ -288,6 +289,7 @@ async fn main() -> Result<()> {
             // 之后由后台任务按 60s 周期 reload。
             // 与 trade_signal 共用同一份 Redis key（无 prefix）以保证两侧视图一致。
             let mut intra_bwd_refresh = None;
+            let mut taker_decision_threshold_refresh = None;
             if arb_mode == ArbMode::IntraArb {
                 let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
                 let bwd_redis = RedisSettings::default();
@@ -316,8 +318,35 @@ async fn main() -> Result<()> {
                 .await
                 {
                     Ok(cfg) => {
-                        if let Err(err) = PreTradeTakerDecisionModel::initialize(cfg) {
+                        let enabled = PreTradeTakerDecisionModel::initialize(cfg).unwrap_or_else(|err| {
                             panic!("Failed to initialize pre_trade taker decision model: {err:#}");
+                        });
+                        if enabled {
+                            match PreTradeTakerDecisionModel::reload_thresholds_global(&strategy_redis)
+                                .await
+                            {
+                                Ok(Some(stats)) => info!(
+                                    "pre_trade taker decision score thresholds initial load key={} fields={} ready_symbols={} cached_symbols={} invalid_payloads={}",
+                                    stats.output_hash_key,
+                                    stats.fields,
+                                    stats.ready_symbols,
+                                    stats.cached_symbols,
+                                    stats.invalid_payloads
+                                ),
+                                Ok(None) => {}
+                                Err(err) => warn!(
+                                    "pre_trade taker decision score thresholds initial load failed: {:#}",
+                                    err
+                                ),
+                            }
+                            if fast_poll {
+                                taker_decision_threshold_refresh =
+                                    Some(TakerDecisionThresholdRefreshConfig::new(strategy_redis));
+                            } else {
+                                PreTradeTakerDecisionModel::start_threshold_background_refresh(
+                                    strategy_redis,
+                                );
+                            }
                         }
                     }
                     Err(err) => {
@@ -601,6 +630,9 @@ async fn main() -> Result<()> {
                 .with_snapshot_query(snapshot_query);
             if let Some(config) = intra_bwd_refresh {
                 pre_trade = pre_trade.with_intra_bwd_refresh(config);
+            }
+            if let Some(config) = taker_decision_threshold_refresh {
+                pre_trade = pre_trade.with_taker_decision_threshold_refresh(config);
             }
             if let Some(service) = auto_repay_service {
                 pre_trade = pre_trade.with_auto_repay(service);

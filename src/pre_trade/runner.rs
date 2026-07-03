@@ -92,6 +92,17 @@ impl IntraBwdRefreshConfig {
 }
 
 #[derive(Clone)]
+pub struct TakerDecisionThresholdRefreshConfig {
+    redis: RedisSettings,
+}
+
+impl TakerDecisionThresholdRefreshConfig {
+    pub fn new(redis: RedisSettings) -> Self {
+        Self { redis }
+    }
+}
+
+#[derive(Clone)]
 pub struct SnapshotQueryConfig {
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
@@ -115,6 +126,7 @@ impl SnapshotQueryConfig {
 pub struct PreTrade {
     param_refresh: Option<ParamRefreshConfig>,
     intra_bwd_refresh: Option<IntraBwdRefreshConfig>,
+    taker_decision_threshold_refresh: Option<TakerDecisionThresholdRefreshConfig>,
     snapshot_query: Option<SnapshotQueryConfig>,
     auto_repay: Option<AutoRepayService>,
     auto_collection: Option<AutoCollectionService>,
@@ -358,6 +370,7 @@ impl PreTrade {
         Self {
             param_refresh: None,
             intra_bwd_refresh: None,
+            taker_decision_threshold_refresh: None,
             snapshot_query: None,
             auto_repay: None,
             auto_collection: None,
@@ -371,6 +384,14 @@ impl PreTrade {
 
     pub fn with_intra_bwd_refresh(mut self, config: IntraBwdRefreshConfig) -> Self {
         self.intra_bwd_refresh = Some(config);
+        self
+    }
+
+    pub fn with_taker_decision_threshold_refresh(
+        mut self,
+        config: TakerDecisionThresholdRefreshConfig,
+    ) -> Self {
+        self.taker_decision_threshold_refresh = Some(config);
         self
     }
 
@@ -393,6 +414,7 @@ impl PreTrade {
         info!("pre_trade main loop starting");
         let param_refresh = self.param_refresh;
         let intra_bwd_refresh = self.intra_bwd_refresh;
+        let taker_decision_threshold_refresh = self.taker_decision_threshold_refresh;
         let snapshot_query = self.snapshot_query;
         let mut auto_repay = self.auto_repay;
         let mut auto_collection = self.auto_collection;
@@ -433,6 +455,11 @@ impl PreTrade {
                 refresh_cfg.key_suffix.clone(),
             );
         }
+        if let Some(refresh_cfg) = taker_decision_threshold_refresh.as_ref() {
+            PreTradeTakerDecisionModel::start_threshold_background_refresh(
+                refresh_cfg.redis.clone(),
+            );
+        }
         if let Some(auto_repay) = auto_repay.take() {
             auto_repay.start();
         }
@@ -448,9 +475,10 @@ impl PreTrade {
         );
         info!("pre_trade MM open order rate cleanup started (interval=10s window=60s)");
         info!(
-            "pre_trade param refresh configured (enable_ipc_fast_poll={} async_background_refresh={} interval_s={})",
+            "pre_trade param refresh configured (enable_ipc_fast_poll={} async_background_refresh={} taker_threshold_refresh={} interval_s={})",
             fast_poll,
             param_refresh.is_some(),
+            taker_decision_threshold_refresh.is_some(),
             PARAM_REFRESH_INTERVAL.as_secs()
         );
 

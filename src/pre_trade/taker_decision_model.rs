@@ -2,11 +2,11 @@ use anyhow::{Context, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::pre_trade::order_manager::Side;
 use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
@@ -19,6 +19,8 @@ const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
 const MODEL_OUTPUT_POLL_MAX_PER_LOOP: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
+const MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS: u64 = 60;
+const MODEL_SCORE_THRESHOLD_KEY_PREFIX: &str = "model_score_rolling_thresholds_";
 
 thread_local! {
     static TAKER_DECISION_MODEL: RefCell<Option<PreTradeTakerDecisionModel>> = const { RefCell::new(None) };
@@ -124,6 +126,52 @@ pub struct TakerDecisionOpenCancelSnapshot {
     pub note: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TakerDecisionThresholdReloadStats {
+    pub output_hash_key: String,
+    pub fields: usize,
+    pub ready_symbols: usize,
+    pub cached_symbols: usize,
+    pub invalid_payloads: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TakerDecisionSymbolScoreThresholds {
+    keep_long_score_threshold: Option<f64>,
+    keep_short_score_threshold: Option<f64>,
+    open_cancel_long_score_threshold: Option<f64>,
+    open_cancel_short_score_threshold: Option<f64>,
+}
+
+impl TakerDecisionSymbolScoreThresholds {
+    fn has_any(&self) -> bool {
+        self.keep_long_score_threshold.is_some()
+            || self.keep_short_score_threshold.is_some()
+            || self.open_cancel_long_score_threshold.is_some()
+            || self.open_cancel_short_score_threshold.is_some()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawModelScoreThresholdPayload {
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    ready: bool,
+    #[serde(default)]
+    quantiles: Vec<f64>,
+    #[serde(default)]
+    thresholds: Vec<f64>,
+}
+
+struct ModelScoreThresholdPointsLoad {
+    output_hash_key: String,
+    fields: usize,
+    ready_symbols: usize,
+    invalid_payloads: usize,
+    by_symbol: HashMap<String, HashMap<u16, f64>>,
+}
+
 struct SymbolScoreState {
     latest_score: Option<f64>,
     latest_percentile: Option<f64>,
@@ -166,9 +214,11 @@ impl SymbolScoreState {
 pub struct PreTradeTakerDecisionModel {
     cfg: TakerDecisionConfig,
     service_name: String,
+    threshold_output_key: String,
     _node: Node<ipc::Service>,
     subscriber: Subscriber<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
     states: HashMap<String, SymbolScoreState>,
+    score_thresholds: HashMap<String, TakerDecisionSymbolScoreThresholds>,
     recv_count: u64,
     parse_err_count: u64,
     last_log: Instant,
@@ -293,6 +343,12 @@ impl PreTradeTakerDecisionModel {
         }
         let service_name = normalize_service_name(&cfg.service)
             .ok_or_else(|| anyhow::anyhow!("taker_decsion_model_service is disabled"))?;
+        let model_name = model_name_from_service_name(&service_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot infer model name from taker_decsion_model_service={service_name}"
+            )
+        })?;
+        let threshold_output_key = model_score_threshold_output_key(&model_name);
         let node_name = format!(
             "pre_trade_taker_decision_{}",
             sanitize_node_suffix(&service_name)
@@ -319,9 +375,11 @@ impl PreTradeTakerDecisionModel {
         let model = Self {
             cfg,
             service_name: service_name.clone(),
+            threshold_output_key: threshold_output_key.clone(),
             _node: node,
             subscriber,
             states: HashMap::new(),
+            score_thresholds: HashMap::new(),
             recv_count: 0,
             parse_err_count: 0,
             last_log: Instant::now(),
@@ -335,8 +393,9 @@ impl PreTradeTakerDecisionModel {
             *cell.borrow_mut() = Some(model);
         });
         info!(
-            "pre_trade taker decision model enabled service={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
+            "pre_trade taker decision model enabled service={} threshold_key={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
             service_name,
+            threshold_output_key,
             keep_long,
             keep_short,
             open_cancel_long,
@@ -344,6 +403,54 @@ impl PreTradeTakerDecisionModel {
             symbol_config_count
         );
         Ok(true)
+    }
+
+    pub async fn reload_thresholds_global(
+        redis: &RedisSettings,
+    ) -> Result<Option<TakerDecisionThresholdReloadStats>> {
+        let Some(output_hash_key) = Self::threshold_output_key_global() else {
+            return Ok(None);
+        };
+        let mut client = RedisClient::connect(redis.clone()).await?;
+        let raw = client.hgetall_map(&output_hash_key).await?;
+        let load = parse_model_score_thresholds_hash(&output_hash_key, &raw);
+        let stats = Self::apply_score_thresholds_global(load);
+        Ok(Some(stats))
+    }
+
+    pub fn start_threshold_background_refresh(redis: RedisSettings) {
+        tokio::task::spawn_local(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(
+                MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS,
+            ));
+            interval.tick().await; // startup path already performs the first load
+            loop {
+                interval.tick().await;
+                match Self::reload_thresholds_global(&redis).await {
+                    Ok(Some(stats)) => {
+                        debug!(
+                            "pre_trade taker decision score thresholds refreshed key={} fields={} ready_symbols={} cached_symbols={} invalid_payloads={}",
+                            stats.output_hash_key,
+                            stats.fields,
+                            stats.ready_symbols,
+                            stats.cached_symbols,
+                            stats.invalid_payloads
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        warn!(
+                            "pre_trade taker decision score threshold refresh failed: {:#}",
+                            err
+                        );
+                    }
+                }
+            }
+        });
+        info!(
+            "pre_trade taker decision score threshold refresh started (interval: {}s)",
+            MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS
+        );
     }
 
     pub fn poll_updates_global() -> Vec<ModelUpdateEvent> {
@@ -384,6 +491,33 @@ impl PreTradeTakerDecisionModel {
             let guard = cell.borrow();
             let model = guard.as_ref()?;
             model.arb_open_cancel(symbol, open_side)
+        })
+    }
+
+    fn threshold_output_key_global() -> Option<String> {
+        TAKER_DECISION_MODEL.with(|cell| {
+            let guard = cell.borrow();
+            guard
+                .as_ref()
+                .map(|model| model.threshold_output_key.clone())
+        })
+    }
+
+    fn apply_score_thresholds_global(
+        load: ModelScoreThresholdPointsLoad,
+    ) -> TakerDecisionThresholdReloadStats {
+        TAKER_DECISION_MODEL.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let Some(model) = guard.as_mut() else {
+                return TakerDecisionThresholdReloadStats {
+                    output_hash_key: load.output_hash_key,
+                    fields: load.fields,
+                    ready_symbols: load.ready_symbols,
+                    cached_symbols: 0,
+                    invalid_payloads: load.invalid_payloads,
+                };
+            };
+            model.apply_score_thresholds(load)
         })
     }
 
@@ -472,14 +606,18 @@ impl PreTradeTakerDecisionModel {
                 note: "score_not_ready".to_string(),
             });
         }
-        if percentile.filter(|value| value.is_finite()).is_none() {
+        if self
+            .score_thresholds
+            .get(&symbol_key)
+            .map_or(true, |thresholds| !thresholds.has_any())
+        {
             return Some(TakerDecisionOpenGateSnapshot {
                 allowed: false,
                 symbol: symbol_key,
                 score,
                 percentile,
                 update_count,
-                note: "missing_percentile".to_string(),
+                note: "missing_score_thresholds".to_string(),
             });
         }
         Some(TakerDecisionOpenGateSnapshot {
@@ -494,7 +632,6 @@ impl PreTradeTakerDecisionModel {
 
     fn evaluate(&self, symbol: &str, due_hedge_qty: f64) -> Option<LazyHedgeDecisionSnapshot> {
         let symbol_key = normalize_symbol_for_internal(symbol);
-        let symbol_cfg = self.cfg.symbol_config(&symbol_key);
         let state = self.states.get(&symbol_key)?;
         let score = state.latest_score;
         let percentile = state.latest_percentile;
@@ -510,7 +647,7 @@ impl PreTradeTakerDecisionModel {
                 note: "score_not_ready".to_string(),
             });
         }
-        let Some(q) = percentile.filter(|value| value.is_finite()) else {
+        let Some(score_value) = score.filter(|value| value.is_finite()) else {
             return Some(LazyHedgeDecisionSnapshot {
                 decision: LazyHedgeDecision::Hedge,
                 ready: false,
@@ -518,13 +655,54 @@ impl PreTradeTakerDecisionModel {
                 score,
                 percentile,
                 update_count,
-                note: "missing_percentile".to_string(),
+                note: "missing_score".to_string(),
             });
         };
-        let decision = if due_hedge_qty > 0.0 && q > symbol_cfg.keep_long_percentile {
-            LazyHedgeDecision::KeepLong
-        } else if due_hedge_qty < 0.0 && q < symbol_cfg.keep_short_percentile {
-            LazyHedgeDecision::KeepShort
+        let Some(score_thresholds) = self.score_thresholds.get(&symbol_key) else {
+            return Some(LazyHedgeDecisionSnapshot {
+                decision: LazyHedgeDecision::Hedge,
+                ready: false,
+                symbol: symbol_key,
+                score,
+                percentile,
+                update_count,
+                note: "missing_score_thresholds".to_string(),
+            });
+        };
+        let decision = if due_hedge_qty > 0.0 {
+            let Some(threshold) = score_thresholds.keep_long_score_threshold else {
+                return Some(LazyHedgeDecisionSnapshot {
+                    decision: LazyHedgeDecision::Hedge,
+                    ready: false,
+                    symbol: symbol_key,
+                    score,
+                    percentile,
+                    update_count,
+                    note: "missing_keep_long_score_threshold".to_string(),
+                });
+            };
+            if score_value > threshold {
+                LazyHedgeDecision::KeepLong
+            } else {
+                LazyHedgeDecision::Hedge
+            }
+        } else if due_hedge_qty < 0.0 {
+            let Some(threshold) = score_thresholds.keep_short_score_threshold else {
+                return Some(LazyHedgeDecisionSnapshot {
+                    decision: LazyHedgeDecision::Hedge,
+                    ready: false,
+                    symbol: symbol_key,
+                    score,
+                    percentile,
+                    update_count,
+                    note: "missing_keep_short_score_threshold".to_string(),
+                });
+            };
+            if score_value < threshold {
+                LazyHedgeDecision::KeepShort
+            } else {
+                LazyHedgeDecision::Hedge
+            }
         } else {
             LazyHedgeDecision::Hedge
         };
@@ -550,7 +728,6 @@ impl PreTradeTakerDecisionModel {
         open_side: Side,
     ) -> Option<TakerDecisionOpenCancelSnapshot> {
         let symbol_key = normalize_symbol_for_internal(symbol);
-        let symbol_cfg = self.cfg.symbol_config(&symbol_key);
         let state = self.states.get(&symbol_key)?;
         let score = state.latest_score;
         let percentile = state.latest_percentile;
@@ -566,7 +743,7 @@ impl PreTradeTakerDecisionModel {
                 note: "score_not_ready".to_string(),
             });
         }
-        let Some(q) = percentile.filter(|value| value.is_finite()) else {
+        let Some(score_value) = score.filter(|value| value.is_finite()) else {
             return Some(TakerDecisionOpenCancelSnapshot {
                 decision: TakerDecisionOpenCancel::KeepOpen,
                 ready: false,
@@ -574,10 +751,21 @@ impl PreTradeTakerDecisionModel {
                 score,
                 percentile,
                 update_count,
-                note: "missing_percentile".to_string(),
+                note: "missing_score".to_string(),
             });
         };
-        let decision = decide_arb_open_cancel(open_side, q, &symbol_cfg);
+        let Some(score_thresholds) = self.score_thresholds.get(&symbol_key) else {
+            return Some(TakerDecisionOpenCancelSnapshot {
+                decision: TakerDecisionOpenCancel::KeepOpen,
+                ready: false,
+                symbol: symbol_key,
+                score,
+                percentile,
+                update_count,
+                note: "missing_score_thresholds".to_string(),
+            });
+        };
+        let decision = decide_arb_open_cancel(open_side, score_value, score_thresholds);
         let note = match decision {
             TakerDecisionOpenCancel::CancelLong => "cancel_open_long".to_string(),
             TakerDecisionOpenCancel::CancelShort => "cancel_open_short".to_string(),
@@ -592,6 +780,46 @@ impl PreTradeTakerDecisionModel {
             update_count,
             note,
         })
+    }
+
+    fn apply_score_thresholds(
+        &mut self,
+        load: ModelScoreThresholdPointsLoad,
+    ) -> TakerDecisionThresholdReloadStats {
+        let mut next = HashMap::with_capacity(load.by_symbol.len());
+        for (symbol, points) in load.by_symbol {
+            let symbol_cfg = self.cfg.symbol_config(&symbol);
+            let thresholds = TakerDecisionSymbolScoreThresholds {
+                keep_long_score_threshold: select_score_threshold(
+                    &points,
+                    symbol_cfg.keep_long_percentile,
+                ),
+                keep_short_score_threshold: select_score_threshold(
+                    &points,
+                    symbol_cfg.keep_short_percentile,
+                ),
+                open_cancel_long_score_threshold: select_score_threshold(
+                    &points,
+                    symbol_cfg.open_cancel_long_percentile,
+                ),
+                open_cancel_short_score_threshold: select_score_threshold(
+                    &points,
+                    symbol_cfg.open_cancel_short_percentile,
+                ),
+            };
+            if thresholds.has_any() {
+                next.insert(symbol, thresholds);
+            }
+        }
+        let cached_symbols = next.len();
+        self.score_thresholds = next;
+        TakerDecisionThresholdReloadStats {
+            output_hash_key: load.output_hash_key,
+            fields: load.fields,
+            ready_symbols: load.ready_symbols,
+            cached_symbols,
+            invalid_payloads: load.invalid_payloads,
+        }
     }
 }
 
@@ -710,16 +938,106 @@ fn validate_percentile_value(redis_key: &str, symbol: &str, field: &str, value: 
     Ok(())
 }
 
+fn parse_model_score_thresholds_hash(
+    output_hash_key: &str,
+    raw: &HashMap<String, String>,
+) -> ModelScoreThresholdPointsLoad {
+    let mut by_symbol = HashMap::with_capacity(raw.len());
+    let mut ready_symbols = 0usize;
+    let mut invalid_payloads = 0usize;
+
+    for (field_symbol, text) in raw {
+        let payload = match serde_json::from_str::<RawModelScoreThresholdPayload>(text) {
+            Ok(payload) => payload,
+            Err(_) => {
+                invalid_payloads = invalid_payloads.saturating_add(1);
+                continue;
+            }
+        };
+        if !payload.ready {
+            continue;
+        }
+        if payload.quantiles.is_empty() || payload.quantiles.len() != payload.thresholds.len() {
+            invalid_payloads = invalid_payloads.saturating_add(1);
+            continue;
+        }
+
+        let raw_symbol = payload.symbol.as_deref().unwrap_or(field_symbol.as_str());
+        let symbol = normalize_symbol_for_internal(raw_symbol);
+        if symbol.is_empty() {
+            invalid_payloads = invalid_payloads.saturating_add(1);
+            continue;
+        }
+
+        let mut points = HashMap::with_capacity(payload.quantiles.len());
+        for (quantile, threshold) in payload.quantiles.iter().zip(payload.thresholds.iter()) {
+            let Some(key) = percentile_key_from_quantile(*quantile) else {
+                continue;
+            };
+            if threshold.is_finite() {
+                points.insert(key, *threshold);
+            }
+        }
+        if points.is_empty() {
+            invalid_payloads = invalid_payloads.saturating_add(1);
+            continue;
+        }
+        ready_symbols = ready_symbols.saturating_add(1);
+        by_symbol.insert(symbol, points);
+    }
+
+    ModelScoreThresholdPointsLoad {
+        output_hash_key: output_hash_key.to_string(),
+        fields: raw.len(),
+        ready_symbols,
+        invalid_payloads,
+        by_symbol,
+    }
+}
+
+fn percentile_key_from_quantile(raw: f64) -> Option<u16> {
+    let percentile = if raw.is_finite() && raw <= 1.0 {
+        raw * 100.0
+    } else {
+        raw
+    };
+    percentile_key_from_percentile(percentile)
+}
+
+fn percentile_key_from_percentile(percentile: f64) -> Option<u16> {
+    if !(percentile.is_finite() && (0.0..=100.0).contains(&percentile)) {
+        return None;
+    }
+    let key = (percentile * 100.0).round();
+    if !(0.0..=10000.0).contains(&key) {
+        return None;
+    }
+    Some(key as u16)
+}
+
+fn select_score_threshold(points: &HashMap<u16, f64>, percentile: f64) -> Option<f64> {
+    let key = percentile_key_from_percentile(percentile)?;
+    points.get(&key).copied()
+}
+
 fn decide_arb_open_cancel(
     open_side: Side,
-    percentile: f64,
-    symbol_cfg: &TakerDecisionSymbolConfig,
+    score: f64,
+    thresholds: &TakerDecisionSymbolScoreThresholds,
 ) -> TakerDecisionOpenCancel {
     match open_side {
-        Side::Buy if percentile < symbol_cfg.open_cancel_long_percentile => {
+        Side::Buy
+            if thresholds
+                .open_cancel_long_score_threshold
+                .is_some_and(|v| score < v) =>
+        {
             TakerDecisionOpenCancel::CancelLong
         }
-        Side::Sell if percentile > symbol_cfg.open_cancel_short_percentile => {
+        Side::Sell
+            if thresholds
+                .open_cancel_short_score_threshold
+                .is_some_and(|v| score > v) =>
+        {
             TakerDecisionOpenCancel::CancelShort
         }
         _ => TakerDecisionOpenCancel::KeepOpen,
@@ -835,6 +1153,18 @@ fn normalize_service_name(service_name: &str) -> Option<String> {
     }
 }
 
+fn model_name_from_service_name(service_name: &str) -> Option<String> {
+    service_name
+        .trim()
+        .rsplit('/')
+        .find(|part| !part.trim().is_empty())
+        .map(|part| part.trim().to_string())
+}
+
+fn model_score_threshold_output_key(model_name: &str) -> String {
+    format!("{MODEL_SCORE_THRESHOLD_KEY_PREFIX}{}", model_name.trim())
+}
+
 fn sanitize_node_suffix(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -858,10 +1188,11 @@ fn sanitize_node_suffix(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        decide_arb_open_cancel, parse_symbol_configs, TakerDecisionOpenCancel,
-        TakerDecisionSymbolConfig,
+        decide_arb_open_cancel, parse_model_score_thresholds_hash, parse_symbol_configs,
+        select_score_threshold, TakerDecisionOpenCancel, TakerDecisionSymbolScoreThresholds,
     };
     use crate::pre_trade::order_manager::Side;
+    use std::collections::HashMap;
 
     #[test]
     fn parse_symbol_configs_supports_open_cancel_threshold_overrides() {
@@ -909,28 +1240,47 @@ mod tests {
 
     #[test]
     fn decide_arb_open_cancel_is_side_specific() {
-        let cfg = TakerDecisionSymbolConfig {
-            keep_long_percentile: 80.0,
-            keep_short_percentile: 20.0,
-            open_cancel_long_percentile: 80.0,
-            open_cancel_short_percentile: 20.0,
+        let thresholds = TakerDecisionSymbolScoreThresholds {
+            open_cancel_long_score_threshold: Some(0.8),
+            open_cancel_short_score_threshold: Some(0.2),
+            ..Default::default()
         };
 
         assert_eq!(
-            decide_arb_open_cancel(Side::Buy, 50.0, &cfg),
+            decide_arb_open_cancel(Side::Buy, 0.5, &thresholds),
             TakerDecisionOpenCancel::CancelLong
         );
         assert_eq!(
-            decide_arb_open_cancel(Side::Sell, 50.0, &cfg),
+            decide_arb_open_cancel(Side::Sell, 0.5, &thresholds),
             TakerDecisionOpenCancel::CancelShort
         );
         assert_eq!(
-            decide_arb_open_cancel(Side::Sell, 10.0, &cfg),
+            decide_arb_open_cancel(Side::Sell, 0.1, &thresholds),
             TakerDecisionOpenCancel::KeepOpen
         );
         assert_eq!(
-            decide_arb_open_cancel(Side::Buy, 90.0, &cfg),
+            decide_arb_open_cancel(Side::Buy, 0.9, &thresholds),
             TakerDecisionOpenCancel::KeepOpen
         );
+    }
+
+    #[test]
+    fn parse_model_score_thresholds_selects_configured_quantiles() {
+        let raw = HashMap::from([(
+            "BTCUSDT".to_string(),
+            r#"{
+                "symbol":"BTCUSDT",
+                "ready":true,
+                "quantiles":[0.9,0.8,0.2,0.1],
+                "thresholds":[0.9,0.8,0.2,0.1]
+            }"#
+            .to_string(),
+        )]);
+        let load = parse_model_score_thresholds_hash("model_score_rolling_thresholds_test", &raw);
+        let points = load.by_symbol.get("BTCUSDT").expect("btc points");
+
+        assert_eq!(select_score_threshold(points, 80.0), Some(0.8));
+        assert_eq!(select_score_threshold(points, 20.0), Some(0.2));
+        assert_eq!(select_score_threshold(points, 75.0), None);
     }
 }
