@@ -16,9 +16,8 @@ usage() {
       hedge=bitget-futures
   - 环境目录固定: $HOME/bitget-intra-<suffix>
   - 仅部署，不启动任何进程
-  - 支持 suffix: trade、arb01、arb02、arb03
+  - 支持 suffix: arb01、arb02、arb03
   - 固定端口（bitget intra）:
-      trade -> 18134
       arb01 -> 19211
       arb02 -> 19212
       arb03 -> 19213
@@ -51,18 +50,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（trade|arb01|arb02|arb03）" >&2
+  echo "[ERROR] 需要传入 env suffix（arb01|arb02|arb03）" >&2
   usage; exit 1
 fi
 
 ENV_SUFFIX="$(echo "$ENV_SUFFIX" | tr 'A-Z' 'a-z')"
 case "$ENV_SUFFIX" in
-  trade) CONFIG_PORT="18134" ;;
   arb01) CONFIG_PORT="19211" ;;
   arb02) CONFIG_PORT="19212" ;;
   arb03) CONFIG_PORT="19213" ;;
   *)
-    echo "[ERROR] 仅支持 suffix: trade|arb01|arb02|arb03（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] 仅支持 suffix: arb01|arb02|arb03（收到: ${ENV_SUFFIX}）" >&2
     exit 1 ;;
 esac
 

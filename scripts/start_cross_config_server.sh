@@ -46,25 +46,40 @@ exchange_rank() {
   esac
 }
 
+cross_env_suffix() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]cross[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  fi
+}
+
 default_port_for_pair() {
   local open_ex="$1"
   local hedge_ex="$2"
-  if [[ "$open_ex" == "binance" && "$hedge_ex" == "binance" ]]; then
-    echo "18151"
-    return
-  fi
-  local open_rank hedge_rank
+  local suffix="${3:-trade}"
+  local open_rank hedge_rank pair_offset
   open_rank="$(exchange_rank "$open_ex")"
   hedge_rank="$(exchange_rank "$hedge_ex")"
   if [[ "$open_rank" == "0" || "$hedge_rank" == "0" ]]; then
-    echo "18111"
-    return
+    pair_offset=11
+  else
+    pair_offset=$((open_rank * 10 + hedge_rank))
   fi
-  echo $((18100 + open_rank * 10 + hedge_rank))
+  case "$suffix" in
+    trade|"") echo $((18200 + pair_offset)) ;;
+    arb01)    echo $((19200 + pair_offset)) ;;
+    arb02)    echo $((19201 + pair_offset)) ;;
+    arb03)    echo $((19202 + pair_offset)) ;;
+    *)
+      echo "[ERROR] unsupported cross suffix for config server: ${suffix}" >&2
+      exit 1
+      ;;
+  esac
 }
 
 dir_name="$(basename "$BASE_DIR")"
 dir_tag="$(echo "${dir_name,,}" | sed 's/[^a-z0-9_-]/_/g')"
+ENV_SUFFIX="$(cross_env_suffix "$dir_name")"
 
 if [[ -z "${DEFAULT_OPEN_VENUE:-}" || -z "${DEFAULT_HEDGE_VENUE:-}" ]]; then
   if inferred="$(infer_pair_from_name "$dir_name")" && [[ -n "$inferred" ]]; then
@@ -94,7 +109,7 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
   fi
 fi
 
-PORT="${PORT:-$(default_port_for_pair "$open_exchange" "$hedge_exchange")}"
+PORT="${PORT:-$(default_port_for_pair "$open_exchange" "$hedge_exchange" "$ENV_SUFFIX")}"
 
 port_in_use() {
   local port="$1"

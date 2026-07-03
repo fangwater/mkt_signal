@@ -17,9 +17,8 @@ usage() {
       hedge=bybit-futures
   - 环境目录固定: $HOME/bybit-intra-<suffix>
   - 仅部署，不启动任何进程
-  - 支持 suffix: trade、arb01、arb02、arb03
+  - 支持 suffix: arb01、arb02、arb03
   - 固定端口（bybit intra）:
-      trade -> 18133
       arb01 -> 19191
       arb02 -> 19192
       arb03 -> 19193
@@ -49,18 +48,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（trade|arb01|arb02|arb03）" >&2
+  echo "[ERROR] 需要传入 env suffix（arb01|arb02|arb03）" >&2
   usage; exit 1
 fi
 
 ENV_SUFFIX="$(echo "$ENV_SUFFIX" | tr 'A-Z' 'a-z')"
 case "$ENV_SUFFIX" in
-  trade) CONFIG_PORT="18133" ;;
   arb01) CONFIG_PORT="19191" ;;
   arb02) CONFIG_PORT="19192" ;;
   arb03) CONFIG_PORT="19193" ;;
   *)
-    echo "[ERROR] 仅支持 suffix: trade|arb01|arb02|arb03（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] 仅支持 suffix: arb01|arb02|arb03（收到: ${ENV_SUFFIX}）" >&2
     exit 1 ;;
 esac
 

@@ -16,13 +16,13 @@ usage() {
 
 说明:
   - 同所期现：部署 intra_config_server 到 $HOME/<env-name>/（或 --target）
-  - env-name 必须匹配 <exchange>-intra-<suffix>
+  - env-name 必须匹配 <exchange>-intra-<suffix>，suffix 支持 arb01/arb02/arb03
   - exchange 可省略，会从 env-name 推断
-  - 默认端口按 exchange 映射
+  - 默认端口按 exchange + suffix 映射
 
 示例:
-  scripts/deploy_intra_config_server.sh --env-name binance-intra-trade
-  scripts/deploy_intra_config_server.sh --env-name binance-intra-trade --apply-nginx
+  scripts/deploy_intra_config_server.sh --env-name binance-intra-arb01
+  scripts/deploy_intra_config_server.sh --env-name binance-intra-arb01 --apply-nginx
 EOF
 }
 
@@ -58,14 +58,51 @@ require_intra_env_name() {
   fi
 }
 
+intra_env_suffix() {
+  local name="$1"
+  if [[ "$name" =~ ^[a-z0-9]+[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  fi
+}
+
 exchange_default_port() {
-  case "$1" in
-    binance) echo "18131" ;;
-    okex)    echo "18132" ;;
-    bybit)   echo "19191" ;;
-    bitget)  echo "18134" ;;
-    gate)    echo "18135" ;;
-    *)       echo "18130" ;;
+  local exchange="$1"
+  local suffix="${2:-arb01}"
+  case "$suffix" in
+    arb01)
+      case "$exchange" in
+        binance) echo "19171" ;;
+        okex)    echo "19181" ;;
+        bybit)   echo "19191" ;;
+        gate)    echo "19201" ;;
+        bitget)  echo "19211" ;;
+        *)       echo "19170" ;;
+      esac
+      ;;
+    arb02)
+      case "$exchange" in
+        binance) echo "19172" ;;
+        okex)    echo "19182" ;;
+        bybit)   echo "19192" ;;
+        gate)    echo "19202" ;;
+        bitget)  echo "19212" ;;
+        *)       echo "19172" ;;
+      esac
+      ;;
+    arb03)
+      case "$exchange" in
+        binance) echo "19173" ;;
+        okex)    echo "19183" ;;
+        bybit)   echo "19193" ;;
+        gate)    echo "19203" ;;
+        bitget)  echo "19213" ;;
+        *)       echo "19173" ;;
+      esac
+      ;;
+    *)
+      echo "[ERROR] unsupported intra suffix for config server: ${suffix}" >&2
+      exit 1
+      ;;
   esac
 }
 
@@ -158,6 +195,18 @@ fi
 
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 require_intra_env_name "$ENV_NAME"
+ENV_SUFFIX="$(intra_env_suffix "$ENV_NAME")"
+case "$ENV_SUFFIX" in
+  arb01|arb02|arb03) ;;
+  trade)
+    echo "[ERROR] intra suffix 'trade' is no longer supported; use arb01/arb02/arb03" >&2
+    exit 1
+    ;;
+  *)
+    echo "[ERROR] unsupported intra suffix: ${ENV_SUFFIX}; use arb01/arb02/arb03" >&2
+    exit 1
+    ;;
+esac
 
 if [[ -z "$EXCHANGE" ]]; then
   if [[ "$ENV_NAME" =~ ^([a-z0-9]+)-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
@@ -177,7 +226,7 @@ if [[ "$target_base" != "$ENV_NAME" ]]; then
 fi
 
 if [[ -z "$PORT" ]]; then
-  PORT="$(exchange_default_port "$EXCHANGE")"
+  PORT="$(exchange_default_port "$EXCHANGE" "$ENV_SUFFIX")"
 fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then
