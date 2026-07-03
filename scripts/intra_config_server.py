@@ -32,7 +32,6 @@ from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INTRA_SCRIPT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "intra_scripts"))
 INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
 
 # Per-symbol overrides 面板（amount_u / max_pos_u / hedge_offset_limits）：
@@ -76,9 +75,7 @@ ROLLING_METRICS_SCRIPT_DIR = os.path.join(
     "rolling_metrics",
 )
 if os.path.isdir(ROLLING_METRICS_SCRIPT_DIR):
-    sys.path.insert(0, ROLLING_METRICS_SCRIPT_DIR)
-if os.path.isdir(INTRA_SCRIPT_DIR):
-    sys.path.insert(0, INTRA_SCRIPT_DIR)
+    sys.path.append(ROLLING_METRICS_SCRIPT_DIR)
 
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:

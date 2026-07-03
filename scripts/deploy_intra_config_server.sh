@@ -260,7 +260,27 @@ for file in "${FILES[@]}"; do
   rsync -a "$src" "$DEST_SCRIPT_DIR/"
 done
 
-for path in "$DEST_SCRIPT_DIR"/*.sh "$DEST_SCRIPT_DIR"/*.py; do
+# Keep the legacy intra_scripts helper copies fresh for operators who inspect or run them directly.
+LEGACY_INTRA_SCRIPT_DIR="$TARGET_DIR/intra_scripts"
+LEGACY_INTRA_HELPER_FILES=(
+  "intra_scripts/sync_intra_risk_params.py"
+  "intra_scripts/sync_intra_symbol_lists.py"
+  "intra_scripts/sync_intra_strategy_params.py"
+  "intra_scripts/print_intra_strategy_params.py"
+  "intra_scripts/sync_intra_funding_thresholds.py"
+  "intra_scripts/sync_intra_spread_thresholds.py"
+)
+mkdir -p "$LEGACY_INTRA_SCRIPT_DIR"
+for file in "${LEGACY_INTRA_HELPER_FILES[@]}"; do
+  src="$ROOT_DIR/$file"
+  if [[ ! -f "$src" ]]; then
+    echo "[WARN] 跳过缺失文件: $src"
+    continue
+  fi
+  rsync -a "$src" "$LEGACY_INTRA_SCRIPT_DIR/"
+done
+
+for path in "$DEST_SCRIPT_DIR"/*.sh "$DEST_SCRIPT_DIR"/*.py "$LEGACY_INTRA_SCRIPT_DIR"/*.py; do
   [[ -f "$path" ]] && chmod +x "$path" 2>/dev/null || true
 done
 
