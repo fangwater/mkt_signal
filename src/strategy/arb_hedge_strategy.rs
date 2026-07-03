@@ -38,7 +38,7 @@ use order_common::TradeUpdate;
 use order_common::{
     Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side,
 };
-use order_common::{OrderStatus, TradingVenue};
+use order_common::{OrderStatus, TradeRequestType, TradingVenue};
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
@@ -229,6 +229,31 @@ struct ArbHedgeOrderMeta {
 }
 
 impl ArbHedgeStrategy {
+    fn is_gate_futures_open_ack_unknown(response: &dyn TradeEngineResponse) -> bool {
+        response.status() == 504
+            && response.req_type() == TradeRequestType::GateFuturesNewOrder as u32
+    }
+
+    fn handle_gate_futures_open_ack_unknown(&mut self, response: &dyn TradeEngineResponse) -> bool {
+        if !Self::is_gate_futures_open_ack_unknown(response) {
+            return false;
+        }
+        let client_order_id = response.client_order_id();
+        if !self.hedge_order_meta.contains_key(&client_order_id) {
+            return false;
+        }
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} GateFutures hedge open ack unknown: req_type={} status={} code={} client_order_id={} keep borrowed pending and wait for order/trade update or query reconcile {}",
+            self.strategy_id,
+            response.req_type(),
+            response.status(),
+            response.error_code(),
+            client_order_id,
+            self.hedge_order_trace_snapshot(client_order_id)
+        );
+        true
+    }
+
     pub fn new(
         strategy_id: i32,
         symbol: impl Into<String>,
@@ -2325,6 +2350,9 @@ impl Strategy for ArbHedgeStrategy {
     }
 
     fn apply_trade_engine_response(&mut self, response: &dyn TradeEngineResponse) {
+        if self.handle_gate_futures_open_ack_unknown(response) {
+            return;
+        }
         self.apply_hedge_trade_engine_response_common(response);
     }
 
@@ -2557,11 +2585,51 @@ mod tests {
     };
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
-    use order_common::Side;
     use order_common::TradingVenue;
+    use order_common::{Side, TradeEngineResponseMessage, TradeRequestType};
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
+
+    #[test]
+    fn gate_futures_504_open_ack_is_unknown_for_arb_hedge() {
+        let response = TradeEngineResponseMessage::new(
+            504,
+            TradeRequestType::GateFuturesNewOrder as u32,
+            1,
+            123,
+            0,
+        );
+
+        assert!(ArbHedgeStrategy::is_gate_futures_open_ack_unknown(
+            &response
+        ));
+    }
+
+    #[test]
+    fn only_gate_futures_504_open_ack_is_unknown_for_arb_hedge() {
+        let gate_margin_504 = TradeEngineResponseMessage::new(
+            504,
+            TradeRequestType::GateUnifiedNewOrder as u32,
+            1,
+            123,
+            0,
+        );
+        let gate_futures_400 = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::GateFuturesNewOrder as u32,
+            1,
+            123,
+            0,
+        );
+
+        assert!(!ArbHedgeStrategy::is_gate_futures_open_ack_unknown(
+            &gate_margin_504
+        ));
+        assert!(!ArbHedgeStrategy::is_gate_futures_open_ack_unknown(
+            &gate_futures_400
+        ));
+    }
 
     #[test]
     fn direct_taker_from_key_carries_lazy_ret_qtl_in_zero_one_units() {
