@@ -1244,7 +1244,7 @@ pub trait OpenStrategyCommon {
             }
         }
         if intra_borrow_bypass {
-            info!(
+            debug!(
                 "{}: strategy_id={} 命中 intra_bwd 借贷白名单，跳过 INTRA_NO_BORROW 余额预检 symbol={} side={:?}",
                 self.strategy_name(),
                 self.strategy_id(),
