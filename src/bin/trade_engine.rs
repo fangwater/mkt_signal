@@ -18,7 +18,7 @@ use std::net::IpAddr;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use trade_engine::binance_fix::BINANCE_SPOT_FIX_ENABLED_ENV;
-use trade_engine::binance_ws::BINANCE_ED25519_PRIVATE_KEY_PATH_ENV;
+use trade_engine::binance_ws::{BINANCE_ED25519_API_KEY_ENV, BINANCE_ED25519_PRIVATE_KEY_PATH_ENV};
 use trade_engine::config::RestConstants;
 use trade_engine::exec_backend::ExecBackend;
 use trade_engine::TradeEngine;
@@ -504,9 +504,10 @@ async fn main() -> Result<()> {
         if exchange_name == "binance" {
             required_env.push("BINANCE_ACCOUNT_MODE".to_string());
             if binance_standard_mode {
+                required_env.push(api_secret_var.clone());
                 required_env.push(format!(
-                    "{} or {}",
-                    api_secret_var, BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+                    "{} with {}",
+                    BINANCE_ED25519_API_KEY_ENV, BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
                 ));
             } else {
                 required_env.push(api_secret_var.clone());
@@ -517,9 +518,9 @@ async fn main() -> Result<()> {
         info!("Required env vars: {}", required_env.join(", "));
         let optional_env = if exchange_name == "binance" {
             format!(
-                "{}, {} (for HMAC REST/WS fallback), {} (Ed25519 WS/FIX key), {} (on/off, default=off), {} (on/off, default=off)",
+                "{}, {} + {} (Ed25519 WS/FIX key pair), {} (on/off, default=off), {} (on/off, default=off)",
                 api_name_var,
-                api_secret_var,
+                BINANCE_ED25519_API_KEY_ENV,
                 BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
                 BINANCE_SPOT_FIX_ENABLED_ENV,
                 BINANCE_UM_IP_WHITELIST_MODE_ENV
@@ -561,18 +562,29 @@ async fn main() -> Result<()> {
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty());
-            if api_secret.is_empty() && ed25519_path.is_none() {
+            if api_secret.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "Binance STANDARD trade_engine requires either {} or {}",
-                    api_secret_var,
-                    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV
+                    "Binance STANDARD trade_engine requires {} for REST/SAPI HMAC",
+                    api_secret_var
                 ));
             }
             if let Some(path) = ed25519_path.as_ref() {
+                let ed25519_api_key = std::env::var(BINANCE_ED25519_API_KEY_ENV)
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{} requires {}",
+                            BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
+                            BINANCE_ED25519_API_KEY_ENV
+                        )
+                    })?;
                 info!(
-                    "Binance WS signer source: {}={} (preferred over {} when both are set)",
-                    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV, path, api_secret_var
+                    "Binance WS/FIX signer source: {}={} api_key_env={}",
+                    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV, path, BINANCE_ED25519_API_KEY_ENV
                 );
+                log_credential_preview(BINANCE_ED25519_API_KEY_ENV, &ed25519_api_key);
             } else {
                 info!("Binance WS signer source: {}", api_secret_var);
             }
@@ -584,11 +596,6 @@ async fn main() -> Result<()> {
         log_credential_preview(&api_key_var, &api_key);
         if !api_secret.is_empty() {
             log_credential_preview(&api_secret_var, &api_secret);
-        } else {
-            info!(
-                "{} not set; Binance WS must use Ed25519 signing",
-                api_secret_var
-            );
         }
 
         if binance_standard_mode && !api_secret.is_empty() {

@@ -1,4 +1,4 @@
-use crate::binance_ws::{self, BinanceWsSigner};
+use crate::binance_ws::{self, BinanceWsSigner, BINANCE_ED25519_API_KEY_ENV};
 use crate::bitget_ws;
 use crate::bybit;
 use crate::bybit::BybitWsOrderResponse;
@@ -118,6 +118,19 @@ fn parse_bybit_auth_response(payload: &str) -> Option<bool> {
 
 fn is_bitget_pong_response(payload: &str) -> bool {
     payload.trim().eq_ignore_ascii_case("pong")
+}
+
+fn binance_ed25519_api_key_from_env() -> Result<String> {
+    std::env::var(BINANCE_ED25519_API_KEY_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "Binance Ed25519 session.logon requires {}",
+                BINANCE_ED25519_API_KEY_ENV
+            )
+        })
 }
 
 fn bitget_ws_code_is_success(v: Option<&Value>) -> bool {
@@ -1635,13 +1648,7 @@ impl TradeWsClient {
         else {
             return Ok(None);
         };
-        let api_key = self
-            .binance_creds
-            .as_ref()
-            .ok_or_else(|| anyhow!("missing binance ws credentials"))?
-            .key
-            .trim()
-            .to_string();
+        let api_key = binance_ed25519_api_key_from_env()?;
         let transport_id = self.next_transport_id();
         let signer = self
             .binance_ws_signer
@@ -4765,11 +4772,12 @@ impl TradeWsClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_bitget_pong_response, parse_bitget_control_event, BinanceUmNewAckRttSample,
-        BinanceUmWsHealthConfig, BinanceUmWsHealthRuntime, QueryInflightMeta, TradeWsClient,
-        WsCommandQueue, WsEndpointHandle, WsEndpointState,
+        binance_ed25519_api_key_from_env, is_bitget_pong_response, parse_bitget_control_event,
+        BinanceUmNewAckRttSample, BinanceUmWsHealthConfig, BinanceUmWsHealthRuntime,
+        QueryInflightMeta, TradeWsClient, WsCommandQueue, WsEndpointHandle, WsEndpointState,
     };
     use crate::binance_ws;
+    use crate::binance_ws::BINANCE_ED25519_API_KEY_ENV;
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
         BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
@@ -4780,6 +4788,7 @@ mod tests {
     use signal_common::tick_math::QuantizedValue;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::{Mutex, OnceLock};
 
     fn test_binance_um_ws_health_config(
         new_min_period: usize,
@@ -4806,6 +4815,11 @@ mod tests {
         handle
     }
 
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
     #[test]
     fn parses_bitget_login_failure_control_event() {
         let payload = r#"{"event":"login","code":"30005","msg":"Login failure"}"#;
@@ -4827,6 +4841,20 @@ mod tests {
         assert!(is_bitget_pong_response("pong"));
         assert!(is_bitget_pong_response(" pong "));
         assert!(!is_bitget_pong_response(r#"{"event":"pong"}"#));
+    }
+
+    #[test]
+    fn binance_ed25519_api_key_has_no_hmac_fallback() {
+        let _guard = env_test_lock();
+        std::env::remove_var(BINANCE_ED25519_API_KEY_ENV);
+        std::env::set_var("BINANCE_API_KEY", "hmac-key");
+        let err = binance_ed25519_api_key_from_env().expect_err("ed25519 key must be required");
+        assert!(err.to_string().contains(BINANCE_ED25519_API_KEY_ENV));
+
+        std::env::set_var(BINANCE_ED25519_API_KEY_ENV, " ed-key ");
+        assert_eq!(binance_ed25519_api_key_from_env().unwrap(), "ed-key");
+        std::env::remove_var(BINANCE_ED25519_API_KEY_ENV);
+        std::env::remove_var("BINANCE_API_KEY");
     }
 
     #[test]

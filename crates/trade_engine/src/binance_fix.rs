@@ -1,5 +1,6 @@
 use crate::binance_ws::{
-    BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE_ENV, BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
+    BINANCE_ED25519_API_KEY_ENV, BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE_ENV,
+    BINANCE_ED25519_PRIVATE_KEY_PATH_ENV,
 };
 use crate::response_sink::TradeResponseSink;
 use crate::trade_request::{
@@ -158,7 +159,18 @@ pub(crate) fn spawn_binance_spot_fix_client(
 }
 
 impl BinanceSpotFixConfig {
-    pub fn from_env(api_key: String, default_source_ip: Option<IpAddr>) -> Result<Self> {
+    pub fn from_env(_api_key: String, default_source_ip: Option<IpAddr>) -> Result<Self> {
+        let api_key = std::env::var(BINANCE_ED25519_API_KEY_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}=on requires {}",
+                    BINANCE_SPOT_FIX_ENABLED_ENV,
+                    BINANCE_ED25519_API_KEY_ENV
+                )
+            })?;
         let private_key_path = std::env::var(BINANCE_ED25519_PRIVATE_KEY_PATH_ENV)
             .ok()
             .map(|v| v.trim().to_string())
