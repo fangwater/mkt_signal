@@ -15,6 +15,7 @@ use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::publish_snapshot_queries;
+use mkt_signal::pre_trade::rebalance_usdt::{RebalanceUsdtConfig, RebalanceUsdtService};
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::runtime_flags::enable_ipc_fast_poll;
 use mkt_signal::pre_trade::signal_channel::{
@@ -589,6 +590,27 @@ async fn main() -> Result<()> {
                 info!(
                     "QueryEngHub initialized for exchanges: {}",
                     trade_eng_list.join(", ")
+                );
+            }
+
+            let enable_binance_std_usdt_rebalance = arb_mode == ArbMode::IntraArb
+                && open_venue == TradingVenue::BinanceMargin
+                && hedge_venue == TradingVenue::BinanceFutures
+                && matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
+            if enable_binance_std_usdt_rebalance {
+                if let Err(err) = RebalanceUsdtService::initialize(RebalanceUsdtConfig::from_env())
+                {
+                    warn!("Binance std USDT rebalance disabled: {err:#}");
+                }
+            } else if open_venue == TradingVenue::BinanceMargin
+                || hedge_venue == TradingVenue::BinanceFutures
+            {
+                info!(
+                    "Binance std USDT rebalance disabled: arb_mode={} open={:?} hedge={:?} account_mode={:?}",
+                    arb_mode.as_str(),
+                    open_venue,
+                    hedge_venue,
+                    binance_account_mode
                 );
             }
 

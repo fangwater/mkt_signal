@@ -21,6 +21,8 @@ pub enum BasicAccountEventType {
     TradeUpdateLite = 4006,
     /// 账户级风险快照（保证金率、权益、维持/初始保证金）
     AccountRisk = 4007,
+    /// Binance standard UM wallet snapshot from USD-M Futures WS API `v2/account.balance`
+    BinanceStdUmWalletSnapshot = 4008,
     /// 错误
     Error = 4999,
 }
@@ -1120,6 +1122,122 @@ pub struct BasicBorrowInterestMsg {
     pub interest: f64,
 }
 
+/// Binance standard USD-M futures wallet snapshot.
+///
+/// Source: USD-M Futures WebSocket API `v2/account.balance`.
+/// This is a futures/UM wallet snapshot only; it does not include Spot MAIN wallet balances.
+#[derive(Debug, Clone)]
+pub struct BinanceStdUmWalletSnapshotMsg {
+    pub msg_type: BasicAccountEventType,
+    /// Local poll timestamp in milliseconds.
+    pub timestamp: i64,
+    /// Binance asset row updateTime in milliseconds.
+    pub update_time: i64,
+    pub asset_length: u32,
+    pub margin_available: u8,
+    pub padding: [u8; 3],
+    pub asset: String,
+    pub balance: f64,
+    pub cross_wallet_balance: f64,
+    pub cross_un_pnl: f64,
+    pub available_balance: f64,
+    pub max_withdraw_amount: f64,
+}
+
+impl BinanceStdUmWalletSnapshotMsg {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        timestamp: i64,
+        update_time: i64,
+        asset: String,
+        margin_available: bool,
+        balance: f64,
+        cross_wallet_balance: f64,
+        cross_un_pnl: f64,
+        available_balance: f64,
+        max_withdraw_amount: f64,
+    ) -> Self {
+        Self {
+            msg_type: BasicAccountEventType::BinanceStdUmWalletSnapshot,
+            timestamp,
+            update_time,
+            asset_length: asset.len() as u32,
+            margin_available: if margin_available { 1 } else { 0 },
+            padding: [0u8; 3],
+            asset,
+            balance,
+            cross_wallet_balance,
+            cross_un_pnl,
+            available_balance,
+            max_withdraw_amount,
+        }
+    }
+
+    pub fn cross_equity(&self) -> f64 {
+        self.cross_wallet_balance + self.cross_un_pnl
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + 1 + 3 + self.asset_length as usize + 8 * 5;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.timestamp);
+        buf.put_i64_le(self.update_time);
+        buf.put_u32_le(self.asset_length);
+        buf.put_u8(self.margin_available);
+        buf.put(&self.padding[..]);
+        buf.put(self.asset.as_bytes());
+        buf.put_f64_le(self.balance);
+        buf.put_f64_le(self.cross_wallet_balance);
+        buf.put_f64_le(self.cross_un_pnl);
+        buf.put_f64_le(self.available_balance);
+        buf.put_f64_le(self.max_withdraw_amount);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        const MIN_SIZE: usize = 4 + 8 + 8 + 4 + 1 + 3 + 8 * 5;
+        if data.len() < MIN_SIZE {
+            anyhow::bail!(
+                "binance std UM wallet snapshot msg too short: {}",
+                data.len()
+            );
+        }
+        let mut cursor = Bytes::copy_from_slice(data);
+        let msg_type = cursor.get_u32_le();
+        if msg_type != BasicAccountEventType::BinanceStdUmWalletSnapshot as u32 {
+            anyhow::bail!(
+                "invalid binance std UM wallet snapshot msg type: {}",
+                msg_type
+            );
+        }
+        let timestamp = cursor.get_i64_le();
+        let update_time = cursor.get_i64_le();
+        let asset_length = cursor.get_u32_le();
+        let margin_available = cursor.get_u8();
+        let mut padding = [0u8; 3];
+        cursor.copy_to_slice(&mut padding);
+        if cursor.remaining() < asset_length as usize + 8 * 5 {
+            anyhow::bail!("binance std UM wallet snapshot msg truncated");
+        }
+        let asset = String::from_utf8(cursor.copy_to_bytes(asset_length as usize).to_vec())?;
+        Ok(Self {
+            msg_type: BasicAccountEventType::BinanceStdUmWalletSnapshot,
+            timestamp,
+            update_time,
+            asset_length,
+            margin_available,
+            padding,
+            asset,
+            balance: cursor.get_f64_le(),
+            cross_wallet_balance: cursor.get_f64_le(),
+            cross_un_pnl: cursor.get_f64_le(),
+            available_balance: cursor.get_f64_le(),
+            max_withdraw_amount: cursor.get_f64_le(),
+        })
+    }
+}
+
 impl BasicPositionMsg {
     pub fn create(
         timestamp: i64,
@@ -1510,6 +1628,7 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4005 => BasicAccountEventType::UnrealizedPnlUpdate,
         4006 => BasicAccountEventType::TradeUpdateLite,
         4007 => BasicAccountEventType::AccountRisk,
+        4008 => BasicAccountEventType::BinanceStdUmWalletSnapshot,
         _ => BasicAccountEventType::Error,
     }
 }
@@ -1543,6 +1662,50 @@ mod tests {
         assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
         assert_eq!(scope, BasicAccountScope::BinanceStdSpot);
         assert_eq!(body, payload.as_ref());
+    }
+
+    #[test]
+    fn binance_std_um_wallet_snapshot_round_trip() {
+        let msg = BinanceStdUmWalletSnapshotMsg::create(
+            1_783_159_362_652,
+            1_783_159_362_000,
+            "USDT".to_string(),
+            true,
+            16_637.07463620,
+            16_637.07463620,
+            -2_964.37541783,
+            6_643.36581402,
+            6_643.36581402,
+        );
+        let payload = msg.to_bytes();
+        let decoded = BinanceStdUmWalletSnapshotMsg::from_bytes(&payload).expect("decode wallet");
+        assert_eq!(
+            decoded.msg_type,
+            BasicAccountEventType::BinanceStdUmWalletSnapshot
+        );
+        assert_eq!(decoded.timestamp, 1_783_159_362_652);
+        assert_eq!(decoded.update_time, 1_783_159_362_000);
+        assert_eq!(decoded.asset, "USDT");
+        assert_eq!(decoded.margin_available, 1);
+        assert!((decoded.balance - 16_637.07463620).abs() < 1e-9);
+        assert!((decoded.cross_un_pnl + 2_964.37541783).abs() < 1e-9);
+        assert!((decoded.cross_equity() - 13_672.69921837).abs() < 1e-9);
+
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::BinanceStdUmWalletSnapshot,
+            BasicAccountScope::BinanceStdUm,
+            payload,
+        )
+        .to_bytes();
+        let (event_type, scope, body) =
+            split_basic_account_event(&event).expect("should parse wallet event");
+        assert_eq!(
+            event_type,
+            BasicAccountEventType::BinanceStdUmWalletSnapshot
+        );
+        assert_eq!(scope, BasicAccountScope::BinanceStdUm);
+        let wrapped = BinanceStdUmWalletSnapshotMsg::from_bytes(body).expect("decode wrapped");
+        assert_eq!(wrapped.asset, "USDT");
     }
 
     #[test]

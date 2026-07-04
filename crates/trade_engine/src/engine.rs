@@ -1334,6 +1334,43 @@ fn parse_urlencoded_rest_pairs(raw: &[u8], context: &str) -> Result<RestParamPai
     Ok(sorted_rest_pairs(pairs))
 }
 
+fn binance_std_transfer_direction(req_type: TradeRequestType) -> Option<&'static str> {
+    match req_type {
+        TradeRequestType::BinanceStdMainToUmTransfer => Some("MAIN_UMFUTURE"),
+        TradeRequestType::BinanceStdUmToMainTransfer => Some("UMFUTURE_MAIN"),
+        _ => None,
+    }
+}
+
+fn binance_std_usdt_transfer_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let direction = binance_std_transfer_direction(msg.req_type).ok_or_else(|| {
+        anyhow!(
+            "unsupported Binance standard transfer req_type={:?}",
+            msg.req_type
+        )
+    })?;
+    let pairs = parse_urlencoded_rest_pairs(&msg.params, "Binance standard USDT transfer request")?;
+    let amount = pairs
+        .iter()
+        .find(|(key, _)| key == "amount")
+        .map(|(_, value)| value.as_str())
+        .ok_or_else(|| anyhow!("Binance standard USDT transfer requires amount"))?;
+    let parsed_amount = amount.parse::<f64>().with_context(|| {
+        format!("Binance standard USDT transfer amount must be numeric: {amount}")
+    })?;
+    if !parsed_amount.is_finite() || parsed_amount <= 0.0 {
+        return Err(anyhow!(
+            "Binance standard USDT transfer amount must be positive: {amount}"
+        ));
+    }
+
+    Ok(sorted_rest_pairs(vec![
+        ("amount".to_string(), amount.to_string()),
+        ("asset".to_string(), "USDT".to_string()),
+        ("type".to_string(), direction.to_string()),
+    ]))
+}
+
 fn binance_new_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
     let params = BinanceNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
         anyhow!(
@@ -1397,6 +1434,8 @@ fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
         TradeRequestType::BinanceCancelUMOrder | TradeRequestType::BinanceCancelMarginOrder => {
             binance_cancel_order_rest_pairs(msg)
         }
+        TradeRequestType::BinanceStdMainToUmTransfer
+        | TradeRequestType::BinanceStdUmToMainTransfer => binance_std_usdt_transfer_rest_pairs(msg),
         _ => parse_urlencoded_rest_pairs(&msg.params, "Binance REST trade request"),
     }
 }
@@ -5276,14 +5315,35 @@ impl TradeEngine {
 #[cfg(test)]
 mod tests {
     use super::{
-        enable_ipc_fast_poll, parse_bool_env, router_idle_spin_iters,
-        DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        binance_std_usdt_transfer_rest_pairs, enable_ipc_fast_poll, parse_bool_env,
+        router_idle_spin_iters, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
     use std::sync::{Mutex, OnceLock};
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn binance_std_transfer_forces_direction_and_usdt_asset() {
+        let msg = crate::trade_request::TradeRequestMsg::create(
+            crate::trade_request::TradeRequestType::BinanceStdUmToMainTransfer,
+            1,
+            -1,
+            b"amount=123.45&type=MAIN_UMFUTURE&asset=BTC",
+        )
+        .expect("trade msg");
+
+        let pairs = binance_std_usdt_transfer_rest_pairs(&msg).expect("pairs");
+        assert_eq!(
+            pairs,
+            vec![
+                ("amount".to_string(), "123.45".to_string()),
+                ("asset".to_string(), "USDT".to_string()),
+                ("type".to_string(), "UMFUTURE_MAIN".to_string()),
+            ]
+        );
     }
 
     #[test]

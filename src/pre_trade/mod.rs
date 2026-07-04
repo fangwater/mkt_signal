@@ -22,6 +22,7 @@ pub mod persist_channel;
 pub mod price_table;
 pub mod query_eng_channel;
 pub mod reactor_latency;
+pub mod rebalance_usdt;
 pub mod resample_channel;
 pub mod response_reconcile;
 mod runner;

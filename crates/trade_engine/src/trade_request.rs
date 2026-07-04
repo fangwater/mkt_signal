@@ -970,18 +970,29 @@ impl BinanceWsNewMarginOrderRequest {
     }
 }
 
-// 币安万向划转请求
-#[repr(C, align(8))]
-#[derive(Debug, Clone)]
-pub struct BinanceUniversalTransferRequest {
-    pub header: TradeRequestHeader,
-    pub params: Bytes, // 包含 type=...&asset=...&amount=... （其余由引擎补齐并签名）
+fn binance_std_transfer_request_bytes(header: &TradeRequestHeader, params: &Bytes) -> Bytes {
+    let total_size = 4 + 4 + 8 + 8 + params.len();
+    let mut buf = BytesMut::with_capacity(total_size);
+    buf.put_u32_le(header.msg_type);
+    buf.put_u32_le(header.params_length);
+    buf.put_i64_le(header.create_time);
+    buf.put_i64_le(header.client_order_id);
+    buf.put(params.clone());
+    buf.freeze()
 }
 
-impl BinanceUniversalTransferRequest {
+// 币安标准账户现货转UM合约请求。方向由 req_type 固定，params 只允许包含 asset/amount。
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceStdMainToUmTransferRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl BinanceStdMainToUmTransferRequest {
     pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
         let header = TradeRequestHeader {
-            msg_type: TradeRequestType::BinanceUniversalTransfer as u32,
+            msg_type: TradeRequestType::BinanceStdMainToUmTransfer as u32,
             params_length: params.len() as u32,
             create_time,
             client_order_id,
@@ -991,14 +1002,32 @@ impl BinanceUniversalTransferRequest {
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 4 + 8 + 8 + self.params.len();
-        let mut buf = BytesMut::with_capacity(total_size);
-        buf.put_u32_le(self.header.msg_type);
-        buf.put_u32_le(self.header.params_length);
-        buf.put_i64_le(self.header.create_time);
-        buf.put_i64_le(self.header.client_order_id);
-        buf.put(self.params.clone());
-        buf.freeze()
+        binance_std_transfer_request_bytes(&self.header, &self.params)
+    }
+}
+
+// 币安标准账户UM合约转现货请求。方向由 req_type 固定，params 只允许包含 asset/amount。
+#[repr(C, align(8))]
+#[derive(Debug, Clone)]
+pub struct BinanceStdUmToMainTransferRequest {
+    pub header: TradeRequestHeader,
+    pub params: Bytes,
+}
+
+impl BinanceStdUmToMainTransferRequest {
+    pub fn create(create_time: i64, client_order_id: i64, params: Bytes) -> Self {
+        let header = TradeRequestHeader {
+            msg_type: TradeRequestType::BinanceStdUmToMainTransfer as u32,
+            params_length: params.len() as u32,
+            create_time,
+            client_order_id,
+        };
+
+        Self { header, params }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        binance_std_transfer_request_bytes(&self.header, &self.params)
     }
 }
 

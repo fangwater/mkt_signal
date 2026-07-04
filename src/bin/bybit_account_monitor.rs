@@ -700,6 +700,7 @@ impl AccountEventDeduper {
             BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_trade_lite(&msg)),
+            BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,
             BasicAccountEventType::Error => return true,
         };
 

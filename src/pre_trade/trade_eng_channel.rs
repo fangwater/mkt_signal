@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
+use crate::pre_trade::rebalance_usdt::RebalanceUsdtService;
 use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
 use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
 use crate::pre_trade::signal_latency::record_signal_submit_latency;
@@ -921,6 +922,10 @@ fn sanitize_node_suffix(exchange: &str) -> String {
 }
 
 fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
+    if RebalanceUsdtService::handle_trade_engine_response(response) {
+        return;
+    }
+
     let Some(strategy_mgr) = MonitorChannel::try_strategy_mgr() else {
         return;
     };

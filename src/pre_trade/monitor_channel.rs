@@ -15,6 +15,7 @@ use crate::pre_trade::close_inventory::{CloseInventoryLedger, CloseReservationGr
 use crate::pre_trade::net_position::NetPosition;
 use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::price_table::PriceTable;
+use crate::pre_trade::rebalance_usdt::RebalanceUsdtService;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
@@ -23,7 +24,8 @@ use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_
 use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
-    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, GateBasicOrderMsg, OkexOrderMsg,
+    BasicUmUnrealizedMsg, BinanceBasicOrderMsg, BinanceStdUmWalletSnapshotMsg, GateBasicOrderMsg,
+    OkexOrderMsg,
 };
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
@@ -565,6 +567,11 @@ impl BasicAccountListener {
                         }
                     }
                     MonitorChannel::mark_basic_state_dirty();
+                    if msg.symbol.eq_ignore_ascii_case("USDT")
+                        && account_scope == BasicAccountScope::BinanceStdSpot
+                    {
+                        RebalanceUsdtService::drive_from_account_update("spot_usdt_balance");
+                    }
                 }
                 weight
             }
@@ -752,6 +759,19 @@ impl BasicAccountListener {
                     MONITOR_FAST_POLL_LOW_WEIGHT
                 }
             },
+            BasicAccountEventType::BinanceStdUmWalletSnapshot => {
+                match BinanceStdUmWalletSnapshotMsg::from_bytes(data) {
+                    Ok(msg) => {
+                        MonitorChannel::instance().apply_binance_std_um_wallet_snapshot(msg);
+                        MonitorChannel::mark_basic_state_dirty();
+                        RebalanceUsdtService::drive_from_account_update("um_wallet_snapshot");
+                    }
+                    Err(err) => {
+                        warn!("Binance std UM wallet snapshot decode failed: {err:#}");
+                    }
+                }
+                MONITOR_FAST_POLL_LOW_WEIGHT
+            }
             BasicAccountEventType::Error => MONITOR_FAST_POLL_LOW_WEIGHT,
         }
     }
@@ -995,6 +1015,8 @@ struct MonitorChannelInner {
     trade_update_seq: u64,
     /// 各账户 scope 最新一份风险快照，由 account_monitor 端 AccountRisk 消息驱动。
     latest_account_risk: HashMap<BasicAccountScope, BasicAccountRiskMsg>,
+    /// Binance 标准账户 UM 钱包快照，由 account_monitor WS API balance poll 驱动。
+    latest_binance_std_um_wallet: Option<BinanceStdUmWalletSnapshotMsg>,
     arb_startup_net_gate: ArbStartupNetGate,
 }
 
@@ -2264,6 +2286,16 @@ impl MonitorChannel {
         Self::with_inner(|inner| inner.latest_account_risk.get(&scope).cloned())
     }
 
+    pub fn apply_binance_std_um_wallet_snapshot(&self, msg: BinanceStdUmWalletSnapshotMsg) {
+        Self::with_inner_mut(|inner| {
+            inner.latest_binance_std_um_wallet = Some(msg);
+        });
+    }
+
+    pub fn binance_std_um_wallet_snapshot(&self) -> Option<BinanceStdUmWalletSnapshotMsg> {
+        Self::with_inner(|inner| inner.latest_binance_std_um_wallet.clone())
+    }
+
     fn exec_position_imbalance_ratio(long_usdt: f64, short_usdt: f64) -> f64 {
         let total_usdt = long_usdt + short_usdt;
         if total_usdt <= f64::EPSILON {
@@ -2699,6 +2731,7 @@ impl MonitorChannel {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(open_venue != hedge_venue),
         };
 
@@ -4809,6 +4842,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -4862,6 +4896,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -4915,6 +4950,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -4963,6 +4999,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5043,6 +5080,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5101,6 +5139,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5188,6 +5227,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(startup_gate_enabled),
         };
 
@@ -5256,6 +5296,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5311,6 +5352,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5361,6 +5403,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5419,6 +5462,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5476,6 +5520,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk,
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5532,6 +5577,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk,
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5588,6 +5634,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk,
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -5644,6 +5691,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk,
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -6043,6 +6091,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -6312,6 +6361,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 
@@ -6368,6 +6418,7 @@ mod tests {
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
             latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
 

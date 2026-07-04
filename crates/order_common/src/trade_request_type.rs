@@ -18,7 +18,8 @@ pub enum TradeRequestType {
     BinanceWsCancelUMOrder = 4014,              // 币安UM WebSocket 撤单请求
     BinanceWsNewMarginOrder = 4015,             // 币安现货(标准账户) WebSocket 下单请求
     BinanceWsCancelMarginOrder = 4016,          // 币安现货(标准账户) WebSocket 撤单请求
-    BinanceUniversalTransfer = 4017,            // 币安万向划转请求
+    BinanceStdMainToUmTransfer = 4017,          // 币安标准账户现货转UM合约
+    BinanceStdUmToMainTransfer = 4018,          // 币安标准账户UM合约转现货
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -55,7 +56,8 @@ impl TryFrom<u32> for TradeRequestType {
             4014 => Ok(TradeRequestType::BinanceWsCancelUMOrder),
             4015 => Ok(TradeRequestType::BinanceWsNewMarginOrder),
             4016 => Ok(TradeRequestType::BinanceWsCancelMarginOrder),
-            4017 => Ok(TradeRequestType::BinanceUniversalTransfer),
+            4017 => Ok(TradeRequestType::BinanceStdMainToUmTransfer),
+            4018 => Ok(TradeRequestType::BinanceStdUmToMainTransfer),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),

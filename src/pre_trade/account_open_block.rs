@@ -32,6 +32,7 @@ pub enum AccountOpenBlockReason {
     OkexUnifiedInsufficientMargin,
     GateUnifiedInsufficientMargin,
     BitgetUnifiedInsufficientMargin,
+    BinanceStdUsdtRebalance,
     BybitInternalSystemError,
 }
 
@@ -42,6 +43,7 @@ impl AccountOpenBlockReason {
             Self::OkexUnifiedInsufficientMargin => "okex_unified_insufficient_margin",
             Self::GateUnifiedInsufficientMargin => "gate_unified_insufficient_margin",
             Self::BitgetUnifiedInsufficientMargin => "bitget_unified_insufficient_margin",
+            Self::BinanceStdUsdtRebalance => "binance_std_usdt_rebalance",
             Self::BybitInternalSystemError => "bybit_internal_system_error",
         }
     }
@@ -68,6 +70,7 @@ impl AccountOpenBlockHit {
         !matches!(
             self.reason,
             AccountOpenBlockReason::BybitInternalSystemError
+                | AccountOpenBlockReason::BinanceStdUsdtRebalance
         )
     }
 }
@@ -1076,6 +1079,14 @@ mod tests {
             last_error_code: 10016,
         };
         assert!(!hit.allows_reducing_open());
+
+        let rebalance_hit = AccountOpenBlockHit {
+            reason: AccountOpenBlockReason::BinanceStdUsdtRebalance,
+            first_seen_us: 1,
+            updated_at_us: 2,
+            last_error_code: 0,
+        };
+        assert!(!rebalance_hit.allows_reducing_open());
 
         let margin_hit = AccountOpenBlockHit {
             reason: AccountOpenBlockReason::BinancePmInsufficientMargin,
