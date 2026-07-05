@@ -37,7 +37,7 @@ const TRADE_RESP_HEADER_LEN: usize = 22;
 const TRADE_RESP_TAIL_LEN: usize = 33;
 const TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 const TRADE_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
-const OPEN_ORDER_SLOW_TRACE_US: i64 = 500;
+const OPEN_ORDER_SLOW_TRACE_US: i64 = 100;
 
 fn trade_request_create_time_us(bytes: &Bytes) -> Option<i64> {
     if bytes.len() < 16 {

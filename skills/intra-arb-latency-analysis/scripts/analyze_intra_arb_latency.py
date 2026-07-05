@@ -24,8 +24,8 @@ TIMESTAMP_COLS = [
 METRICS = [
     ("signal_minus_mkt_ms", "signal_ts", "mkt_ts"),
     ("create_minus_signal_ms", "create_ts", "signal_ts"),
-    ("update_minus_submit_ms", "update_ts", "submit_ts"),
-    ("local_minus_submit_ms", "local_ts", "submit_ts"),
+    ("update_minus_create_ms", "update_ts", "create_ts"),
+    ("local_minus_create_ms", "local_ts", "create_ts"),
 ]
 
 HEDGE_REASON = "arb_hedge_force_taker_direct"
@@ -80,7 +80,7 @@ def load_orders(path: Path) -> pd.DataFrame:
 
 
 def select_new_orders(orders: pd.DataFrame, venue: str) -> pd.DataFrame:
-    required = ["status", "signal_ts", "mkt_ts", "create_ts", "submit_ts", "client_order_id"]
+    required = ["status", "signal_ts", "mkt_ts", "create_ts", "client_order_id"]
     missing = [col for col in required if col not in orders.columns]
     if missing:
         raise ValueError(f"missing required columns: {missing}")
@@ -90,7 +90,6 @@ def select_new_orders(orders: pd.DataFrame, venue: str) -> pd.DataFrame:
         & (orders["signal_ts"] > 0)
         & (orders["mkt_ts"] > 0)
         & (orders["create_ts"] > 0)
-        & (orders["submit_ts"] > 0)
     )
     if venue.lower() != "any":
         if "trading_venue" not in orders.columns:
@@ -419,8 +418,8 @@ def print_text(result: dict[str, Any]) -> None:
     metric_labels = {
         "signal_minus_mkt_ms": "signal_ts - mkt_ts",
         "create_minus_signal_ms": "create_ts - signal_ts",
-        "update_minus_submit_ms": "update_ts - submit_ts",
-        "local_minus_submit_ms": "local_ts - submit_ts",
+        "update_minus_create_ms": "update_ts - create_ts",
+        "local_minus_create_ms": "local_ts - create_ts",
     }
     for subset_name, subset in result["subsets"].items():
         print(f"Subset: {subset_name}")
@@ -429,8 +428,8 @@ def print_text(result: dict[str, Any]) -> None:
         for metric_name in (
             "signal_minus_mkt_ms",
             "create_minus_signal_ms",
-            "update_minus_submit_ms",
-            "local_minus_submit_ms",
+            "update_minus_create_ms",
+            "local_minus_create_ms",
         ):
             stats = subset["metrics"][metric_name]
             print(f"  {metric_labels[metric_name]}")

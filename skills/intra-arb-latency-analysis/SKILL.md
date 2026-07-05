@@ -1,6 +1,6 @@
 ---
 name: intra-arb-latency-analysis
-description: Analyze intra spot/futures arbitrage order latency from local uniform_orders parquet snapshots. Use when the user asks for mkt_ts to signal_ts, create_ts to signal_ts, update_ts to submit_ts, local_ts to submit_ts, or NEW rows that later filled latency for environments such as bybit-intra-arb01, okex-intra-arb01, gate-intra-arb01, bitget-intra-arb01, or binance-intra-arb01, especially from order_export or data/intra_order_export_backfill snapshots.
+description: Analyze intra spot/futures arbitrage order latency from local uniform_orders parquet snapshots. Use when the user asks for mkt_ts to signal_ts, create_ts to signal_ts, update_ts to create_ts, local_ts to create_ts, or NEW rows that later filled latency for environments such as bybit-intra-arb01, okex-intra-arb01, gate-intra-arb01, bitget-intra-arb01, or binance-intra-arb01, especially from order_export or data/intra_order_export_backfill snapshots.
 ---
 
 # Intra Arb Latency Analysis
@@ -17,8 +17,8 @@ Use repo-local parquet snapshots instead of re-reading remote persist services w
 6. For spot/open-leg rows, report:
    - `signal_ts - mkt_ts`
    - `create_ts - signal_ts`
-   - `update_ts - submit_ts` on the `NEW` row
-   - `local_ts - submit_ts`
+   - `update_ts - create_ts` on the `NEW` row
+   - `local_ts - create_ts`
 7. For futures hedge rows, report:
    - `futures.create_ts - margin.local_ts`
    - `futures.create_ts - margin.update_ts`
@@ -87,7 +87,7 @@ python3 skills/intra-arb-latency-analysis/scripts/analyze_intra_arb_latency.py \
 The helper matches the notebook-style latency workflow used in this repo:
 
 - Start from `status == NEW`.
-- Require `signal_ts > 0`, `mkt_ts > 0`, and `submit_ts > 0`.
+- Require `signal_ts > 0`, `mkt_ts > 0`, and `create_ts > 0`.
 - Default venue filter is `BybitMargin`. Pass `--venue any` to disable it.
 - Compute stats on the normal-path subset: non-negative values and `<= --normal-max-ms` for each metric.
 - Report counts and `p50/p90/p95/p99/max`, plus `>5ms` and `>10ms` ratios.
@@ -131,8 +131,8 @@ Secondary reference metrics:
 
 - `signal_ts - mkt_ts`: 行情延迟.
 - `create_ts - signal_ts`: 内部延迟.
-- `update_ts - submit_ts`: 挂单延迟; for spot/open-leg analysis this is measured on the `NEW` row.
-- `local_ts - submit_ts`: 完整回报延迟.
+- `update_ts - create_ts`: 挂单延迟; for spot/open-leg analysis this is measured on the `NEW` row.
+- `local_ts - create_ts`: 完整回报延迟.
 - `futures.create_ts - margin.local_ts`: taker触发内部延迟.
 - `futures.create_ts - margin.update_ts`: 合约挂到距离现货撤单/成交延迟.
 - `futures.update_ts - futures.create_ts`: 合约挂单延迟.
