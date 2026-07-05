@@ -90,15 +90,8 @@ fn arb_hedge_force_taker() -> bool {
 }
 
 fn arb_hedge_lazy_taker() -> bool {
-    *ARB_HEDGE_LAZY_TAKER.get_or_init(|| {
-        let lazy_taker = env_flag_enabled(&["ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER"]);
-        if lazy_taker {
-            info!(
-                "ARB_HEDGE_LAZY_TAKER=on: pre_trade ArbHedge will bypass backward query; ready model can temporarily keep exposure"
-            );
-        }
-        lazy_taker
-    })
+    *ARB_HEDGE_LAZY_TAKER
+        .get_or_init(|| env_flag_enabled(&["ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER"]))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
