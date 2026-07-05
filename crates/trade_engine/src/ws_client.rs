@@ -53,7 +53,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use symbol_utils::internal_client_order_id::{
     binance_um_ws_cancel_probe_client_order_id, is_binance_um_ws_cancel_probe_client_order_id,
@@ -1377,6 +1377,8 @@ pub struct TradeWsClient {
     rate_limit_cooldown_until: Option<std::time::Instant>,
     shutdown: bool,
     should_reconnect: bool, // 标记是否需要重连（用于 notice 触发的重连）
+    planned_reconnect_period_ms: Option<u64>,
+    planned_reconnect_offset_ms: u64,
     bitget_waiting_pong: bool,
     bybit_waiting_auth: bool,
     bybit_waiting_pong: bool,
@@ -1578,6 +1580,8 @@ impl TradeWsClient {
             rate_limit_cooldown_until: None,
             shutdown: false,
             should_reconnect: false,
+            planned_reconnect_period_ms: None,
+            planned_reconnect_offset_ms: 0,
             bitget_waiting_pong: false,
             bybit_waiting_auth: false,
             bybit_waiting_pong: false,
@@ -1594,6 +1598,14 @@ impl TradeWsClient {
 
     pub(crate) fn with_remote_ip_override(mut self, remote_ip: IpAddr) -> Self {
         self.remote_ip_override = Some(remote_ip);
+        self
+    }
+
+    pub(crate) fn with_planned_reconnect(mut self, period_ms: u64, offset_ms: u64) -> Self {
+        if period_ms > 0 {
+            self.planned_reconnect_period_ms = Some(period_ms);
+            self.planned_reconnect_offset_ms = offset_ms % period_ms;
+        }
         self
     }
 
@@ -1634,6 +1646,36 @@ impl TradeWsClient {
     fn reset_binance_session_logon(&mut self) {
         self.binance_session_logon_transport_id = None;
         self.binance_waiting_session_logon = false;
+    }
+
+    fn next_planned_reconnect_deadline(&self) -> Option<time::Instant> {
+        let period_ms = self.planned_reconnect_period_ms?;
+        if period_ms == 0 {
+            return None;
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let period_ms = period_ms as u128;
+        let offset_ms = (self.planned_reconnect_offset_ms as u128) % period_ms;
+        let current_slot_ms = now_ms % period_ms;
+        let delay_ms = if current_slot_ms < offset_ms {
+            offset_ms - current_slot_ms
+        } else {
+            period_ms - (current_slot_ms - offset_ms)
+        };
+        let delay_ms = delay_ms.max(1).min(u64::MAX as u128) as u64;
+        Some(time::Instant::now() + Duration::from_millis(delay_ms))
+    }
+
+    fn can_planned_reconnect_now(&self) -> bool {
+        self.pending.is_empty()
+            && self.pending_query.is_empty()
+            && self.inflight.is_empty()
+            && self.query_inflight.is_empty()
+            && self.binance_um_cancel_probe_inflight.is_empty()
+            && !self.waiting_for_binance_session_logon()
     }
 
     fn build_binance_session_logon_payload(&mut self) -> Result<Option<String>> {
@@ -2027,8 +2069,11 @@ impl TradeWsClient {
             time::interval(Duration::from_millis(BINANCE_UM_CANCEL_PROBE_INTERVAL_MS));
         binance_um_probe_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         binance_um_probe_interval.tick().await;
+        let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
+            let planned_reconnect_sleep_until = planned_reconnect_deadline
+                .unwrap_or_else(|| time::Instant::now() + Duration::from_secs(365 * 24 * 60 * 60));
             tokio::select! {
                 biased;
                 _ = self.engine_shutdown.cancelled() => {
@@ -2070,6 +2115,34 @@ impl TradeWsClient {
                 }
                 _ = binance_um_probe_interval.tick(), if self.binance_um_cancel_probe_enabled => {
                     self.maybe_send_binance_um_cancel_probe(ws).await?;
+                }
+                _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
+                    if self.can_planned_reconnect_now() {
+                        info!(
+                            "trade ws client id={} exchange={} planned reconnect url={} local_ip={} remote_addr={:?} period_ms={} offset_ms={}",
+                            self.id,
+                            self.exchange,
+                            self.url,
+                            self.local_ip,
+                            self.current_remote_addr,
+                            self.planned_reconnect_period_ms.unwrap_or(0),
+                            self.planned_reconnect_offset_ms
+                        );
+                        let _ = ws.close(None).await;
+                        return Ok(());
+                    }
+                    debug!(
+                        "trade ws client id={} exchange={} planned reconnect deferred pending={} pending_query={} inflight={} query_inflight={} cancel_probe_inflight={} waiting_logon={}",
+                        self.id,
+                        self.exchange,
+                        self.pending.len(),
+                        self.pending_query.len(),
+                        self.inflight.len(),
+                        self.query_inflight.len(),
+                        self.binance_um_cancel_probe_inflight.len(),
+                        self.waiting_for_binance_session_logon()
+                    );
+                    planned_reconnect_deadline = Some(time::Instant::now() + Duration::from_millis(1_000));
                 }
             }
 
