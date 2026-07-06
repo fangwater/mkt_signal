@@ -460,6 +460,43 @@ impl ArbHedgeStrategy {
         )
     }
 
+    fn binance_futures_qty_below_min(
+        due_hedge_qty: f64,
+        min_qty: Option<f64>,
+        step_size: Option<f64>,
+    ) -> Option<(f64, f64, f64)> {
+        if !(due_hedge_qty.is_finite() && due_hedge_qty.abs() > ARB_HEDGE_QTY_EPS) {
+            return None;
+        }
+        let min_qty = min_qty?;
+        if !(min_qty.is_finite() && min_qty > 0.0) {
+            return None;
+        }
+        let raw_qty = due_hedge_qty.abs();
+        let aligned_qty = match step_size {
+            Some(step) if step.is_finite() && step > 0.0 => align_price_floor(raw_qty, step),
+            _ => raw_qty,
+        };
+        if aligned_qty + 1e-12 < min_qty {
+            Some((raw_qty, aligned_qty, min_qty))
+        } else {
+            None
+        }
+    }
+
+    fn binance_futures_due_qty_below_min(&self, due_hedge_qty: f64) -> Option<(f64, f64, f64)> {
+        if self.hedge_venue != TradingVenue::BinanceFutures {
+            return None;
+        }
+        let symbol_key = min_qty_symbol_key(self.hedge_venue, &self.symbol);
+        let table = MonitorChannel::instance().try_venue_min_qty_table(self.hedge_venue)?;
+        Self::binance_futures_qty_below_min(
+            due_hedge_qty,
+            table.min_qty(&symbol_key),
+            table.step_size(&symbol_key),
+        )
+    }
+
     fn hedge_leg_reference_price(price: f64, leg: TradingLeg) -> Option<f64> {
         if price.is_finite() && price > 0.0 {
             return Some(price);
@@ -666,6 +703,23 @@ impl ArbHedgeStrategy {
             return false;
         }
         let raw_base_qty = due_hedge_qty.abs();
+        if let Some((raw_qty, aligned_qty, min_qty)) =
+            self.binance_futures_due_qty_below_min(due_hedge_qty)
+        {
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because BinanceFutures qty below min due_hedge_qty={:.8} raw_qty={:.8} aligned_qty={:.8} min_qty={:.8}",
+                    self.strategy_id,
+                    self.symbol,
+                    source,
+                    due_hedge_qty,
+                    raw_qty,
+                    aligned_qty,
+                    min_qty
+                );
+            }
+            return false;
+        }
         let (qty, _) = match MonitorChannel::instance().align_order_by_venue(
             self.hedge_venue,
             &self.symbol,
@@ -1074,6 +1128,27 @@ impl ArbHedgeStrategy {
                 false
             }
             DueHedgeRoute::Query => {
+                if let Some((raw_qty, aligned_qty, min_qty)) =
+                    self.binance_futures_due_qty_below_min(due_hedge_qty)
+                {
+                    if throttle_on_skip {
+                        self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+                    }
+                    if !suppress_pre_submit_hot_path_logs() {
+                        info!(
+                            "ArbHedgeStrategy: strategy_id={} symbol={} skip {} hedge query because BinanceFutures qty below min due_hedge_qty={:.8} raw_qty={:.8} aligned_qty={:.8} min_qty={:.8} next_query_ts_us={}",
+                            self.strategy_id,
+                            self.symbol,
+                            reason,
+                            due_hedge_qty,
+                            raw_qty,
+                            aligned_qty,
+                            min_qty,
+                            self.next_query_ts_us
+                        );
+                    }
+                    return false;
+                }
                 if let Some((raw_contracts, aligned_contracts, min_qty_contracts)) =
                     self.gate_futures_query_due_qty_below_min(due_hedge_qty)
                 {
@@ -2891,6 +2966,21 @@ mod tests {
             Some(100.0),
         );
 
+        assert!(allowed.is_none());
+    }
+
+    #[test]
+    fn binance_futures_qty_rejects_below_min_qty() {
+        let rejected =
+            ArbHedgeStrategy::binance_futures_qty_below_min(0.00096, Some(0.001), Some(0.001))
+                .expect("0.00096 BTC is below Binance BTCUSDT min qty");
+
+        assert!((rejected.0 - 0.00096).abs() < 1e-12);
+        assert_eq!(rejected.1, 0.0);
+        assert_eq!(rejected.2, 0.001);
+
+        let allowed =
+            ArbHedgeStrategy::binance_futures_qty_below_min(0.001, Some(0.001), Some(0.001));
         assert!(allowed.is_none());
     }
 
