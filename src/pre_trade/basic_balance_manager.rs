@@ -13,6 +13,8 @@ pub struct BasicBalance {
     pub wallet: f64,
     pub borrowed: f64,
     pub cumulative_interest: f64,
+    pub wallet_timestamp: i64,
+    pub liability_timestamp: i64,
     pub last_timestamp: i64,
 }
 
@@ -57,11 +59,17 @@ impl BasicBalanceManager {
                 wallet: 0.0,
                 borrowed: 0.0,
                 cumulative_interest: 0.0,
+                wallet_timestamp: msg.timestamp,
+                liability_timestamp: 0,
                 last_timestamp: msg.timestamp,
             });
+        if msg.timestamp < entry.wallet_timestamp {
+            return;
+        }
         entry.symbol = symbol.clone();
         entry.wallet = msg.wallet;
-        entry.last_timestamp = msg.timestamp;
+        entry.wallet_timestamp = msg.timestamp;
+        entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
     }
 
     /// 应用借贷利息消息：覆盖本金/利息，保留钱包余额不变。
@@ -81,15 +89,18 @@ impl BasicBalanceManager {
                 wallet: 0.0,
                 borrowed: 0.0,
                 cumulative_interest: 0.0,
+                wallet_timestamp: 0,
+                liability_timestamp: msg.timestamp,
                 last_timestamp: msg.timestamp,
             });
-        if msg.timestamp < entry.last_timestamp {
+        if msg.timestamp < entry.liability_timestamp {
             return;
         }
         entry.borrowed = msg.borrowed;
         // interest 字段为“当前应计利息总额”，按最新值覆盖即可。
         entry.cumulative_interest = msg.interest;
-        entry.last_timestamp = msg.timestamp;
+        entry.liability_timestamp = msg.timestamp;
+        entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
     }
 
     /// 获取某个 symbol 的余额视图。
@@ -175,6 +186,26 @@ mod tests {
             0.0000002152637497,
         ));
         assert!((mgr.balance_position_of("BTC") + 0.2728088547403847).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_balance_does_not_override_newer_wallet_state() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(20, "XTZ".to_string(), 10.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            25,
+            "XTZ".to_string(),
+            1.0,
+            0.1,
+        ));
+        mgr.apply_balance(&BasicBalanceMsg::create(10, "XTZ".to_string(), 99.0));
+
+        let balance = mgr.get("XTZ").expect("balance");
+        assert_eq!(balance.wallet, 10.0);
+        assert_eq!(balance.wallet_timestamp, 20);
+        assert_eq!(balance.liability_timestamp, 25);
+        assert_eq!(balance.last_timestamp, 25);
+        assert!((mgr.balance_position_of("XTZ") - 8.9).abs() < 1e-12);
     }
 
     #[test]

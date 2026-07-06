@@ -17,10 +17,10 @@
 
 use account_common::okex_auth::{
     build_account_subscribe_message, build_balance_and_position_subscribe_message,
-    build_fills_subscribe_message, build_orders_subscribe_message, OkexCredentials,
-    OkexPrivateWsUrls,
+    build_fills_subscribe_message, build_orders_subscribe_message,
+    build_positions_subscribe_message, OkexCredentials, OkexPrivateWsUrls,
 };
-use account_monitor_common::okex_rest::fetch_borrow_interest;
+use account_monitor_common::okex_rest::{fetch_borrow_interest, okex_rest_get};
 use account_monitor_common::okex_user_stream::OkexUserDataConnection;
 use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::Result;
@@ -30,9 +30,9 @@ use log::{debug, error, info, warn};
 use mkt_parsers::account_event::okex_account_event_parser::OkexAccountEventParser;
 use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
 use mkt_parsers::msg::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg,
-    OkexOrderMsg,
+    get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
+    BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
 use reqwest::Client;
 use runtime_common::affinity::maybe_pin_current_thread;
@@ -45,6 +45,7 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::watch;
+use trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -80,6 +81,8 @@ struct Args {
     #[arg(long)]
     core: Option<usize>,
 }
+
+const OKEX_POSITIONS_SNAPSHOT_PATH: &str = "/api/v5/account/positions?instType=SWAP";
 
 struct DirectAccountForwarder {
     forwarder: PmForwarder,
@@ -138,6 +141,17 @@ fn forward_account_event(msg: Bytes) -> bool {
     DirectAccountEventSink.emit(msg)
 }
 
+fn send_wrapped_payload(payload: Bytes, context: &str) -> bool {
+    let event_type = get_basic_event_type(payload.as_ref());
+    let event = BasicAccountEventMsg::create(event_type, BasicAccountScope::OkexUnified, payload);
+    if !forward_account_event(event.to_bytes()) {
+        warn!("failed to forward {}", context);
+        false
+    } else {
+        true
+    }
+}
+
 fn log_forwarder_stats() {
     DIRECT_FORWARDER.with(|cell| {
         if let Some(state) = cell.borrow_mut().as_mut() {
@@ -179,6 +193,7 @@ async fn main() -> Result<()> {
         build_orders_subscribe_message("SWAP"),
         build_account_subscribe_message(),
         build_balance_and_position_subscribe_message(),
+        build_positions_subscribe_message("SWAP"),
     ];
     // fills 频道需要 VIP4+；收到 64003 后永久关闭，避免无效重连循环。
     let (fills_disabled_tx, fills_disabled_rx) = watch::channel(false);
@@ -187,6 +202,7 @@ async fn main() -> Result<()> {
     init_direct_forwarder("okex")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
     let mut interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
+    let mut positions_poll = spawn_positions_poll(credentials.clone(), shutdown_rx.clone());
 
     // 启动主备双路连接
     let mut primary = spawn_okex_stream_path(
@@ -227,6 +243,15 @@ async fn main() -> Result<()> {
                 }
                 if !*shutdown_rx.borrow() {
                     interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
+                }
+            }
+            res = &mut positions_poll => {
+                match res {
+                    Ok(()) => warn!("positions poll task exited; restarting"),
+                    Err(e) => warn!("positions poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    positions_poll = spawn_positions_poll(credentials.clone(), shutdown_rx.clone());
                 }
             }
             res = &mut primary => {
@@ -319,6 +344,84 @@ fn spawn_borrow_interest_poll(
             }
         }
         info!("borrow interest poller exiting");
+    })
+}
+
+fn spawn_positions_poll(
+    credentials: OkexCredentials,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_positions: HashSet<(String, char)> = HashSet::new();
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match okex_rest_get(&client, &credentials, OKEX_POSITIONS_SNAPSHOT_PATH).await {
+                        Ok((200, body)) => {
+                            if let Some(msgs) = parse_okex_positions_snapshot(&body) {
+                                let mut current_positions: HashSet<(String, char)> = HashSet::new();
+                                let mut explicit_positions: HashSet<(String, char)> = HashSet::new();
+                                for payload in msgs {
+                                    if matches!(
+                                        get_basic_event_type(payload.as_ref()),
+                                        BasicAccountEventType::PositionUpdate
+                                    ) {
+                                        if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
+                                            let key = (msg.inst_id().to_string(), msg.position_side());
+                                            explicit_positions.insert(key.clone());
+                                            if msg.position_amount != 0.0 {
+                                                current_positions.insert(key);
+                                            }
+                                        }
+                                    }
+                                    send_wrapped_payload(payload, "OKX REST position msg");
+                                }
+
+                                let mut stale_positions: Vec<(String, char)> = previous_positions
+                                    .difference(&current_positions)
+                                    .filter(|key| !explicit_positions.contains(*key))
+                                    .cloned()
+                                    .collect();
+                                stale_positions.sort();
+                                for (inst_id, side) in stale_positions {
+                                    let ts = chrono::Utc::now().timestamp_millis();
+                                    info!(
+                                        "OKX REST position snapshot missing previously-seen position; emitting zero cleanup: inst_id={} side={}",
+                                        inst_id, side
+                                    );
+                                    send_wrapped_payload(
+                                        BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
+                                            .to_bytes(),
+                                        "OKX REST zero position cleanup",
+                                    );
+                                    send_wrapped_payload(
+                                        BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
+                                            .to_bytes(),
+                                        "OKX REST zero pnl cleanup",
+                                    );
+                                }
+                                previous_positions = current_positions;
+                            } else {
+                                warn!("OKX position poll parse failed; body_len={}", body.len());
+                            }
+                        }
+                        Ok((status, body)) => {
+                            warn!("OKX position poll http {} body={}", status, body);
+                        }
+                        Err(err) => {
+                            warn!("OKX position poll failed: {:?}", err);
+                        }
+                    }
+                }
+            }
+        }
+        info!("OKX position poller exiting");
     })
 }
 

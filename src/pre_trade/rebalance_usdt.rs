@@ -118,16 +118,16 @@ impl RebalanceUsdtDirection {
 pub struct RebalanceUsdtPlan {
     pub direction: RebalanceUsdtDirection,
     pub amount: f64,
-    pub spot_usdt: f64,
-    pub um_cross_equity: f64,
+    pub spot_available_usdt: f64,
+    pub um_available_usdt: f64,
     pub um_max_withdraw: f64,
     pub threshold_usdt: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RebalanceUsdtInputs {
-    spot_usdt: f64,
-    um_cross_equity: f64,
+    spot_available_usdt: f64,
+    um_available_usdt: f64,
     um_max_withdraw: f64,
     spot_age_us: i64,
     um_age_us: i64,
@@ -135,7 +135,7 @@ struct RebalanceUsdtInputs {
 
 impl RebalanceUsdtInputs {
     fn imbalance(self) -> f64 {
-        self.spot_usdt - self.um_cross_equity
+        self.spot_available_usdt - self.um_available_usdt
     }
 }
 
@@ -260,8 +260,8 @@ impl RebalanceUsdtService {
             }
         };
         let plan = compute_rebalance_plan(
-            inputs.spot_usdt,
-            inputs.um_cross_equity,
+            inputs.spot_available_usdt,
+            inputs.um_available_usdt,
             inputs.um_max_withdraw,
             self.config.threshold_usdt,
             self.config.min_transfer_usdt,
@@ -290,7 +290,7 @@ impl RebalanceUsdtService {
 
         let spot = monitor
             .usdt_snapshot_for_venue(TradingVenue::BinanceMargin)
-            .ok_or("missing_spot_usdt")?;
+            .ok_or("missing_spot_available_usdt")?;
         let um = monitor
             .binance_std_um_wallet_snapshot()
             .ok_or("missing_um_wallet_snapshot")?;
@@ -307,8 +307,8 @@ impl RebalanceUsdtService {
         }
 
         Ok(RebalanceUsdtInputs {
-            spot_usdt: spot.wallet,
-            um_cross_equity: um.cross_equity(),
+            spot_available_usdt: spot.wallet,
+            um_available_usdt: um.available_balance,
             um_max_withdraw: um.max_withdraw_amount,
             spot_age_us,
             um_age_us,
@@ -354,13 +354,13 @@ impl RebalanceUsdtService {
                     &self.config,
                 );
                 warn!(
-                    "Binance std USDT rebalance transfer requested trigger={} request_id={} direction={} amount={} spot_usdt={:.8} um_cross_equity={:.8} um_max_withdraw={:.8} threshold={:.8}",
+                    "Binance std USDT rebalance transfer requested trigger={} request_id={} direction={} amount={} spot_available_usdt={:.8} um_available_usdt={:.8} um_max_withdraw={:.8} threshold={:.8}",
                     trigger,
                     request_id,
                     plan.direction.as_str(),
                     amount_text,
-                    plan.spot_usdt,
-                    plan.um_cross_equity,
+                    plan.spot_available_usdt,
+                    plan.um_available_usdt,
                     plan.um_max_withdraw,
                     plan.threshold_usdt
                 );
@@ -503,7 +503,7 @@ fn log_decision_table(
 \
 | {} | {} | {} | {} | {} |
 \
-| spot_usdt | um_cross_equity | imbalance | threshold | max_withdraw |
+| spot_available_usdt | um_available_usdt | imbalance | threshold | max_withdraw |
 \
 | {:.8} | {:.8} | {:.8} | {:.8} | {:.8} |
 \
@@ -515,8 +515,8 @@ fn log_decision_table(
         reason,
         direction,
         amount,
-        inputs.spot_usdt,
-        inputs.um_cross_equity,
+        inputs.spot_available_usdt,
+        inputs.um_available_usdt,
         inputs.imbalance(),
         config.threshold_usdt,
         inputs.um_max_withdraw,
@@ -582,14 +582,14 @@ fn log_unlock_table(
 }
 
 pub fn compute_rebalance_plan(
-    spot_usdt: f64,
-    um_cross_equity: f64,
+    spot_available_usdt: f64,
+    um_available_usdt: f64,
     um_max_withdraw: f64,
     threshold_usdt: f64,
     min_transfer_usdt: f64,
 ) -> Option<RebalanceUsdtPlan> {
-    if !spot_usdt.is_finite()
-        || !um_cross_equity.is_finite()
+    if !spot_available_usdt.is_finite()
+        || !um_available_usdt.is_finite()
         || !um_max_withdraw.is_finite()
         || !threshold_usdt.is_finite()
         || !min_transfer_usdt.is_finite()
@@ -600,7 +600,7 @@ pub fn compute_rebalance_plan(
         return None;
     }
 
-    let imbalance = spot_usdt - um_cross_equity;
+    let imbalance = spot_available_usdt - um_available_usdt;
     if imbalance.abs() <= threshold_usdt {
         return None;
     }
@@ -621,8 +621,8 @@ pub fn compute_rebalance_plan(
     Some(RebalanceUsdtPlan {
         direction,
         amount,
-        spot_usdt,
-        um_cross_equity,
+        spot_available_usdt,
+        um_available_usdt,
         um_max_withdraw,
         threshold_usdt,
     })
@@ -688,6 +688,13 @@ mod tests {
     #[test]
     fn skips_when_capped_amount_is_below_min_transfer() {
         assert!(compute_rebalance_plan(8_000.0, 12_000.0, 0.5, 1_000.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn plans_main_to_um_when_um_available_is_depleted() {
+        let plan = compute_rebalance_plan(6461.11019522, 0.0, 0.0, 1_000.0, 1.0).expect("plan");
+        assert_eq!(plan.direction, RebalanceUsdtDirection::MainToUm);
+        assert!((plan.amount - 3230.55509761).abs() < 1e-9);
     }
 
     #[test]

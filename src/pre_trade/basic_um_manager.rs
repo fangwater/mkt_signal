@@ -12,7 +12,8 @@ pub struct BasicUmPosition {
     pub inst_id: String,
     pub side: char, // 'L' / 'S' / 'N'
     pub amount: f32,
-    pub timestamp: i64, // uTime
+    pub timestamp: i64, // position uTime
+    pub pnl_timestamp: i64,
     /// 合约未实现盈亏（USDT 计价），当前未填充时为 0
     pub unrealized_pnl_usdt: f64,
 }
@@ -21,6 +22,8 @@ pub struct BasicUmPosition {
 pub struct BasicUmManager {
     exchange: Exchange,
     positions: HashMap<String, BasicUmPosition>, // key: inst_id|side
+    position_timestamps: HashMap<String, i64>,
+    pnl_timestamps: HashMap<String, i64>,
     net_contracts_by_symbol: HashMap<String, f32>,
 }
 
@@ -29,6 +32,8 @@ impl BasicUmManager {
         Self {
             exchange,
             positions: HashMap::new(),
+            position_timestamps: HashMap::new(),
+            pnl_timestamps: HashMap::new(),
             net_contracts_by_symbol: HashMap::new(),
         }
     }
@@ -38,11 +43,22 @@ impl BasicUmManager {
         let inst = msg.inst_id().to_string();
         let side = msg.position_side();
         let key = format!("{}|{}", inst, side);
+        let msg_ts = msg.timestamp();
+
+        if self
+            .position_timestamps
+            .get(&key)
+            .map(|last_ts| msg_ts < *last_ts)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.position_timestamps.insert(key.clone(), msg_ts);
 
         if msg.position_amount == 0.0 {
             let mut should_remove = false;
             if let Some(entry) = self.positions.get_mut(&key) {
-                entry.timestamp = msg.timestamp();
+                entry.timestamp = msg_ts;
                 if entry.unrealized_pnl_usdt == 0.0 {
                     should_remove = true;
                 } else {
@@ -64,7 +80,8 @@ impl BasicUmManager {
                 inst_id: inst.clone(),
                 side,
                 amount: 0.0,
-                timestamp: msg.timestamp(),
+                timestamp: msg_ts,
+                pnl_timestamp: 0,
                 unrealized_pnl_usdt: 0.0,
             });
 
@@ -72,7 +89,7 @@ impl BasicUmManager {
         entry.inst_id = inst.clone();
         entry.side = side;
         entry.amount = msg.position_amount;
-        entry.timestamp = msg.timestamp();
+        entry.timestamp = msg_ts;
         self.refresh_net_contracts_for_inst(&inst);
     }
 
@@ -81,11 +98,22 @@ impl BasicUmManager {
         let inst = msg.inst_id.clone();
         let side = msg.position_side;
         let key = format!("{}|{}", inst, side);
+        let msg_ts = msg.timestamp;
+
+        if self
+            .pnl_timestamps
+            .get(&key)
+            .map(|last_ts| msg_ts < *last_ts)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.pnl_timestamps.insert(key.clone(), msg_ts);
 
         if msg.unrealized_pnl == 0.0 {
             let mut should_remove = false;
             if let Some(entry) = self.positions.get_mut(&key) {
-                entry.timestamp = msg.timestamp;
+                entry.pnl_timestamp = msg_ts;
                 if entry.amount == 0.0 {
                     should_remove = true;
                 } else {
@@ -106,14 +134,15 @@ impl BasicUmManager {
                 inst_id: inst.clone(),
                 side,
                 amount: 0.0,
-                timestamp: msg.timestamp,
+                timestamp: 0,
+                pnl_timestamp: msg_ts,
                 unrealized_pnl_usdt: 0.0,
             });
 
         entry.exchange = self.exchange;
         entry.inst_id = inst;
         entry.side = side;
-        entry.timestamp = msg.timestamp;
+        entry.pnl_timestamp = msg_ts;
         entry.unrealized_pnl_usdt = msg.unrealized_pnl;
     }
 
@@ -143,6 +172,8 @@ impl BasicUmManager {
     /// 清空当前维护的全部 UM 持仓状态。
     pub fn clear(&mut self) {
         self.positions.clear();
+        self.position_timestamps.clear();
+        self.pnl_timestamps.clear();
         self.net_contracts_by_symbol.clear();
     }
 
@@ -299,6 +330,65 @@ mod tests {
             0.0,
         ));
         assert!(mgr.snapshot().is_empty());
+    }
+
+    #[test]
+    fn stale_position_does_not_recreate_after_zero_cleanup() {
+        let mut mgr = BasicUmManager::new(Exchange::Okex);
+        mgr.apply_position(&BasicPositionMsg::create(
+            20,
+            "XTZ-USDT-SWAP".to_string(),
+            'N',
+            -320.0,
+        ));
+        mgr.apply_position(&BasicPositionMsg::create(
+            30,
+            "XTZ-USDT-SWAP".to_string(),
+            'N',
+            0.0,
+        ));
+        assert!(mgr.get("XTZ-USDT-SWAP", 'N').is_none());
+
+        mgr.apply_position(&BasicPositionMsg::create(
+            10,
+            "XTZ-USDT-SWAP".to_string(),
+            'N',
+            -320.0,
+        ));
+        assert!(mgr.get("XTZ-USDT-SWAP", 'N').is_none());
+    }
+
+    #[test]
+    fn stale_unrealized_pnl_does_not_override_newer_zero() {
+        let mut mgr = BasicUmManager::new(Exchange::Okex);
+        mgr.apply_position(&BasicPositionMsg::create(
+            20,
+            "BTC-USDT-SWAP".to_string(),
+            'N',
+            2.0,
+        ));
+        mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
+            20,
+            "BTC-USDT-SWAP".to_string(),
+            'N',
+            -12.0,
+        ));
+        mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
+            30,
+            "BTC-USDT-SWAP".to_string(),
+            'N',
+            0.0,
+        ));
+        mgr.apply_unrealized_pnl(&BasicUmUnrealizedMsg::create(
+            10,
+            "BTC-USDT-SWAP".to_string(),
+            'N',
+            -12.0,
+        ));
+        assert_eq!(
+            mgr.get("BTC-USDT-SWAP", 'N').unwrap().unrealized_pnl_usdt,
+            0.0
+        );
     }
 
     #[test]

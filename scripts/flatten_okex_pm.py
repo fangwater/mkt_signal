@@ -52,6 +52,12 @@ OKX_BORROW_REPAY_PATH = "/api/v5/account/borrow-repay"
 OKX_ORDER_PATH = "/api/v5/trade/order"
 OKX_INSTRUMENTS_PUBLIC = "/api/v5/public/instruments"
 
+DEFAULT_HTTP_HEADERS = {
+    "Accept": "application/json",
+    # OKX Cloudflare rejects Python urllib default UA with HTTP 403 / error code 1010.
+    "User-Agent": "curl/8.5.0",
+}
+
 ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 ZERO = Decimal("0")
@@ -156,7 +162,9 @@ def http_request(
     timeout: int = 15,
 ) -> Tuple[int, str]:
     req = urllib.request.Request(url, data=data, method=method.upper())
-    for key, value in (headers or {}).items():
+    merged_headers = dict(DEFAULT_HTTP_HEADERS)
+    merged_headers.update(headers or {})
+    for key, value in merged_headers.items():
         req.add_header(key, value)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

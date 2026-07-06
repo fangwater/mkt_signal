@@ -46,16 +46,16 @@ fn build_okex_sign(timestamp: &str, method: &str, path: &str, body: &str, secret
     BASE64.encode(result.into_bytes())
 }
 
-/// 拉取 OKX 借贷利息，返回基础事件列表（不写出）
-pub async fn fetch_borrow_interest(
+pub async fn okex_rest_get(
     client: &Client,
     credentials: &OkexCredentials,
-) -> Result<Vec<BasicBorrowInterestMsg>> {
+    path_with_query: &str,
+) -> Result<(u16, String)> {
     let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let sign = build_okex_sign(
         &timestamp,
         "GET",
-        OKEX_INTEREST_PATH,
+        path_with_query,
         "",
         &credentials.secret_key,
     );
@@ -67,12 +67,21 @@ pub async fn fetch_borrow_interest(
     headers.insert("OK-ACCESS-PASSPHRASE", credentials.passphrase.parse()?);
     headers.insert(reqwest::header::CONTENT_TYPE, "application/json".parse()?);
 
-    let url = format!("{}{}", OKEX_REST_BASE, OKEX_INTEREST_PATH);
+    let url = format!("{}{}", OKEX_REST_BASE, path_with_query);
     let resp = client.get(&url).headers(headers).send().await?;
-    let status = resp.status();
-    let body = resp.text().await?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    Ok((status, body))
+}
 
-    if !status.is_success() {
+/// 拉取 OKX 借贷利息，返回基础事件列表（不写出）
+pub async fn fetch_borrow_interest(
+    client: &Client,
+    credentials: &OkexCredentials,
+) -> Result<Vec<BasicBorrowInterestMsg>> {
+    let (status, body) = okex_rest_get(client, credentials, OKEX_INTEREST_PATH).await?;
+
+    if !(200..300).contains(&status) {
         anyhow::bail!("okx interest-accrued http {} body={}", status, body);
     }
 
