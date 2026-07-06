@@ -25,6 +25,30 @@ pub fn append_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
     format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
 }
 
+/// Hot-path builder that is byte-for-byte identical to
+/// `append_tlen_to_from_key(base_from_key, level_tlen).into_bytes()` but writes
+/// straight into a single freshly-sized `Vec<u8>`, skipping the intermediate
+/// `format_tlen_value` / `format!` `String` allocations. One allocation per
+/// level (the owned output) instead of two, with no format-driven regrowth and
+/// no re-formatting of the shared base (it is memcpy'd in as bytes).
+pub fn build_tlen_from_key_bytes(base_from_key: &str, level_tlen: f64) -> Vec<u8> {
+    use std::io::Write;
+    let base = base_from_key.as_bytes();
+    // ":tlen=" (6 bytes) + a formatted `{:.8}` value (or "nan"). 32 bytes of
+    // headroom covers realistic tlen magnitudes without a reallocation.
+    let mut out = Vec::with_capacity(base.len() + 32);
+    out.extend_from_slice(base);
+    out.extend_from_slice(b":tlen=");
+    if level_tlen.is_finite() {
+        // `write!` into a `Vec<u8>` (io::Write) drives the same float formatter
+        // as `format!("{:.8}")`, so the emitted bytes are identical.
+        let _ = write!(out, "{level_tlen:.8}");
+    } else {
+        out.extend_from_slice(b"nan");
+    }
+    out
+}
+
 pub fn query_batch_tlens_or_zero(
     source: &str,
     depth_query_client: &DepthQueryClient,
@@ -127,7 +151,7 @@ pub fn apply_open_tlen_gate_and_build_from_keys(
                     return None;
                 }
             }
-            Some(append_tlen_to_from_key(base_from_key, level_tlen).into_bytes())
+            Some(build_tlen_from_key_bytes(base_from_key, level_tlen))
         })
         .collect();
     (out, filtered)
@@ -554,6 +578,41 @@ mod tests {
     use super::*;
     use order_common::TradingVenue;
     use signal_common::venue_min_qty_table::VenueMinQtyTable;
+
+    #[test]
+    fn build_tlen_from_key_bytes_matches_legacy_string_path() {
+        let bases = [
+            "",
+            "1783331226376757:ret_qtl=0.00000000:vol=0.12345678:env_score=0",
+            "173:ret_qtl=0.99999999:ret_thr=0:vol=0:env_score=0:env_thr=0:vol_band_scale=1.0000,2.0000:open_bid=100:open_ask=100.5:hedge_bid=99.9:hedge_ask=100.1:spread_fr=0.000123",
+        ];
+        let values = [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            0.000_000_01,
+            12_345.678_9,
+            -9_999.999_999_99,
+            f64::MIN_POSITIVE,
+            1e12,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        for base in bases {
+            for v in values {
+                let legacy = append_tlen_to_from_key(base, v).into_bytes();
+                let optimized = build_tlen_from_key_bytes(base, v);
+                assert_eq!(
+                    optimized, legacy,
+                    "byte mismatch base={base:?} value={v:?}: {} vs {}",
+                    String::from_utf8_lossy(&optimized),
+                    String::from_utf8_lossy(&legacy),
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_approx_equal() {

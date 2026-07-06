@@ -3476,9 +3476,9 @@ fn emit_spread_arb_close_signals(
             &tick_indices,
         );
         for (ctx, level_tlen) in contexts.iter_mut().zip(tlens.into_iter()) {
-            ctx.set_from_key(
-                super::common::append_tlen_to_from_key(&from_key, level_tlen).into_bytes(),
-            );
+            ctx.set_from_key(super::common::build_tlen_from_key_bytes(
+                &from_key, level_tlen,
+            ));
         }
     }
     contexts.retain(arb_close_notional_meets_min);
