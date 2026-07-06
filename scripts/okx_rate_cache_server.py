@@ -75,6 +75,11 @@ class PlainFloatJSONEncoder(json.JSONEncoder):
         return _iterencode(o, 0)
 
 API = "https://www.okx.com/api/v5/public/interest-rate-loan-quota"
+DEFAULT_HTTP_HEADERS = {
+    "Accept": "application/json",
+    # OKX Cloudflare rejects Python urllib default UA with HTTP 403.
+    "User-Agent": "curl/8.5.0",
+}
 
 
 def fetch_data(ccy: Optional[str]) -> dict:
@@ -84,7 +89,7 @@ def fetch_data(ccy: Optional[str]) -> dict:
     url = API
     if params:
         url = f"{API}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, method="GET")
+    req = urllib.request.Request(url, headers=DEFAULT_HTTP_HEADERS, method="GET")
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8", "replace"))
 
