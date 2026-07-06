@@ -50,6 +50,7 @@ use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastH
 use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
@@ -4326,7 +4327,7 @@ impl TradeWsClient {
             status: u16,
             code: i32,
             msg: &'a str,
-            result: Option<&'a Value>,
+            result: Option<&'a RawValue>,
             #[serde(rename = "endpointId")]
             endpoint_id: usize,
             #[serde(rename = "localIp")]
@@ -4338,7 +4339,7 @@ impl TradeWsClient {
             status: resp.status.unwrap_or(0),
             code: resp.error_code.unwrap_or(0),
             msg: resp.error_msg.as_deref().unwrap_or(""),
-            result: resp.result.as_ref(),
+            result: resp.result.as_deref(),
             endpoint_id: self.id,
             local_ip: self.local_ip.to_string(),
         };
@@ -4396,23 +4397,18 @@ impl TradeWsClient {
             return;
         }
 
-        let Some(result) = resp.result.as_ref() else {
+        let Some(result) = resp.result.as_deref() else {
             self.publish_query_error(req_type, client_query_id);
             return;
         };
-        let result_json = match serde_json::to_string(result) {
-            Ok(s) => s,
-            Err(_) => {
-                self.publish_query_error(req_type, client_query_id);
-                return;
-            }
-        };
+        // `result` 已是原始 JSON 分片，直接把切片喂给解析器，省掉 Value→String 往返。
+        let result_json = result.get();
 
         let parsed = match req_type {
             QueryRequestType::BinanceWsMarginQuery => {
-                parse_binance_margin_order_query_json(&result_json)
+                parse_binance_margin_order_query_json(result_json)
             }
-            _ => parse_binance_um_order_query_json(&result_json),
+            _ => parse_binance_um_order_query_json(result_json),
         };
 
         if let Some(parsed) = parsed {

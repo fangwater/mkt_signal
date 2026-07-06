@@ -9,6 +9,8 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use openssl::pkey::{Id as PKeyId, PKey, Private};
 use openssl::sign::Signer;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::Value;
 use sha2::Sha256;
 use signal_common::tick_math::QuantizedDecimal;
@@ -645,50 +647,102 @@ pub struct BinanceWsResponse {
     pub status: Option<u16>,
     pub error_code: Option<i32>,
     pub error_msg: Option<String>,
-    pub result: Option<Value>,
+    /// 原始 `result` 子对象，保留为未解析的 JSON 分片（`RawValue`）。
+    /// 避免把整份响应（尤其 `result` 子树）解析成 `serde_json::Value`——
+    /// 这是单线程事件循环上入站解析的主要成本来源；按需再解析。
+    pub result: Option<Box<RawValue>>,
     pub rate_limits: Vec<BinanceWsRateLimit>,
 }
 
-fn parse_rate_limits(val: &Value) -> Vec<BinanceWsRateLimit> {
-    let Some(items) = val.get("rateLimits").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
+/// WS 响应外层信封：只把标量与 `rateLimits` 结构化，`result` 保留为原始
+/// 分片。相比 `serde_json::from_str::<Value>` 整树解析，跳过了 `result`
+/// 子对象所有键/值节点的分配，也免去下游把 `result` 再序列化回字符串。
+#[derive(Deserialize)]
+struct RawEnvelope {
+    #[serde(default)]
+    id: Option<Box<RawValue>>,
+    #[serde(default)]
+    status: Option<Box<RawValue>>,
+    #[serde(default)]
+    error: Option<RawError>,
+    #[serde(default)]
+    result: Option<Box<RawValue>>,
+    #[serde(default, rename = "rateLimits")]
+    rate_limits: Option<Vec<RawRateLimit>>,
+}
+
+#[derive(Deserialize)]
+struct RawError {
+    #[serde(default)]
+    code: Option<Box<RawValue>>,
+    #[serde(default)]
+    msg: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawRateLimit {
+    #[serde(default, rename = "rateLimitType")]
+    rate_limit_type: Option<String>,
+    #[serde(default)]
+    interval: Option<String>,
+    #[serde(default, rename = "intervalNum")]
+    interval_num: Option<Box<RawValue>>,
+    #[serde(default)]
+    limit: Option<Box<RawValue>>,
+    #[serde(default)]
+    count: Option<Box<RawValue>>,
+}
+
+/// 把单个标量分片解析成 `Value`（分片极小，成本可忽略），以复用已有的
+/// 数字或字符串容错解析逻辑，保持与旧实现完全一致的宽松行为。
+fn raw_scalar_to_value(raw: &RawValue) -> Value {
+    serde_json::from_str(raw.get()).unwrap_or(Value::Null)
+}
+
+fn raw_i64(raw: Option<&RawValue>) -> Option<i64> {
+    parse_i64_value(&raw_scalar_to_value(raw?))
+}
+
+fn raw_u16(raw: Option<&RawValue>) -> Option<u16> {
+    parse_u16_value(&raw_scalar_to_value(raw?))
+}
+
+fn raw_u32(raw: Option<&RawValue>) -> Option<u32> {
+    parse_u32_value(&raw_scalar_to_value(raw?))
+}
+
+fn raw_f64(raw: Option<&RawValue>) -> Option<f64> {
+    parse_f64_value(&raw_scalar_to_value(raw?))
+}
+
+fn convert_rate_limits(items: Vec<RawRateLimit>) -> Vec<BinanceWsRateLimit> {
     items
-        .iter()
+        .into_iter()
         .filter_map(|item| {
             Some(BinanceWsRateLimit {
-                rate_limit_type: item.get("rateLimitType")?.as_str()?.to_string(),
-                interval: item.get("interval")?.as_str()?.to_string(),
-                interval_num: item.get("intervalNum").and_then(parse_u32_value)?,
-                limit: item.get("limit").and_then(parse_u32_value)?,
-                count: item.get("count").and_then(parse_u32_value)?,
+                rate_limit_type: item.rate_limit_type?,
+                interval: item.interval?,
+                interval_num: raw_u32(item.interval_num.as_deref())?,
+                limit: raw_u32(item.limit.as_deref())?,
+                count: raw_u32(item.count.as_deref())?,
             })
         })
         .collect()
 }
 
 pub fn parse_ws_response(payload: &str) -> Option<BinanceWsResponse> {
-    let val: Value = serde_json::from_str(payload).ok()?;
-    let id = val.get("id").and_then(parse_i64_value);
-    let status = val.get("status").and_then(parse_u16_value);
-    let (error_code, error_msg) = if let Some(err) = val.get("error") {
-        let code = err.get("code").and_then(parse_i64_value).map(|v| v as i32);
-        let msg = err
-            .get("msg")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        (code, msg)
-    } else {
-        (None, None)
+    let env: RawEnvelope = serde_json::from_str(payload).ok()?;
+    let (error_code, error_msg) = match env.error {
+        Some(err) => (raw_i64(err.code.as_deref()).map(|v| v as i32), err.msg),
+        None => (None, None),
     };
-    let result = val.get("result").cloned();
     Some(BinanceWsResponse {
-        id,
-        status,
+        id: raw_i64(env.id.as_deref()),
+        status: raw_u16(env.status.as_deref()),
         error_code,
         error_msg,
-        result,
-        rate_limits: parse_rate_limits(&val),
+        result: env.result,
+        rate_limits: env.rate_limits.map(convert_rate_limits).unwrap_or_default(),
     })
 }
 
@@ -704,36 +758,56 @@ fn parse_order_status_u8(s: &str) -> Option<u8> {
     }
 }
 
+/// `result` 子对象中下单相关的标量字段。用类型化 struct（而非
+/// `serde_json::Value`）反序列化：serde 会跳过其余字段而不建节点，且
+/// 各字段仍保留为 `RawValue` 分片以复用旧的数字/字符串容错解析。
+#[derive(Deserialize)]
+struct OrderResultScalars {
+    #[serde(default, rename = "orderId")]
+    order_id: Option<Box<RawValue>>,
+    #[serde(default)]
+    status: Option<Box<RawValue>>,
+    #[serde(default, rename = "updateTime")]
+    update_time: Option<Box<RawValue>>,
+    #[serde(default, rename = "transactTime")]
+    transact_time: Option<Box<RawValue>>,
+    #[serde(default, rename = "executedQty")]
+    executed_qty: Option<Box<RawValue>>,
+    #[serde(default)]
+    price: Option<Box<RawValue>>,
+}
+
 /// Extract compact order info from Binance WS response result.
 /// Returns (order_id, order_status_u8, update_time, executed_qty, price). Missing fields are returned as 0.
 pub fn extract_order_info(resp: &BinanceWsResponse) -> (i64, u8, i64, f64, f64) {
-    let Some(result) = resp.result.as_ref() else {
+    let Some(result) = resp.result.as_deref() else {
         return (0, 0, 0, 0.0, 0.0);
     };
-    let order_id = result.get("orderId").and_then(parse_i64_value).unwrap_or(0);
-    let status_u8 = result
-        .get("status")
-        .and_then(|v| v.as_str())
+    let Ok(parsed) = serde_json::from_str::<OrderResultScalars>(result.get()) else {
+        return (0, 0, 0, 0.0, 0.0);
+    };
+    let order_id = raw_i64(parsed.order_id.as_deref()).unwrap_or(0);
+    let status_u8 = parsed
+        .status
+        .as_deref()
+        .map(raw_scalar_to_value)
+        .as_ref()
+        .and_then(Value::as_str)
         .and_then(parse_order_status_u8)
         .unwrap_or(0);
-    let update_time = result
-        .get("updateTime")
-        .and_then(parse_i64_value)
-        .or_else(|| result.get("transactTime").and_then(parse_i64_value))
+    let update_time = raw_i64(parsed.update_time.as_deref())
+        .or_else(|| raw_i64(parsed.transact_time.as_deref()))
         .unwrap_or(0);
-    let executed_qty = result
-        .get("executedQty")
-        .and_then(parse_f64_value)
-        .unwrap_or(0.0);
-    let price = result.get("price").and_then(parse_f64_value).unwrap_or(0.0);
+    let executed_qty = raw_f64(parsed.executed_qty.as_deref()).unwrap_or(0.0);
+    let price = raw_f64(parsed.price.as_deref()).unwrap_or(0.0);
     (order_id, status_u8, update_time, executed_qty, price)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_order_payload, build_query_payload, build_session_logon_payload, parse_ws_response,
-        sign_ordered_params_hmac_fast, BinanceWsSigner,
+        build_order_payload, build_query_payload, build_session_logon_payload, extract_order_info,
+        parse_order_status_u8, parse_ws_response, sign_ordered_params_hmac_fast, BinanceWsSigner,
     };
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
     use crate::trade_request::{
@@ -974,6 +1048,48 @@ mod tests {
         assert_eq!(resp.rate_limits[0].count, 17);
         assert_eq!(resp.rate_limits[1].rate_limit_type, "ORDERS");
         assert_eq!(resp.rate_limits[1].count, 3);
+    }
+
+    #[test]
+    fn extracts_order_info_from_raw_result() {
+        let payload = r#"{
+            "id": 5,
+            "status": 200,
+            "result": {
+                "orderId": 283194212,
+                "status": "FILLED",
+                "updateTime": 1769068022495,
+                "executedQty": "0.500",
+                "price": "123.45",
+                "extraIgnored": {"nested": [1,2,3]}
+            }
+        }"#;
+        let resp = parse_ws_response(payload).expect("binance ws response");
+        assert_eq!(resp.status, Some(200));
+        let (order_id, status_u8, update_time, executed_qty, price) = extract_order_info(&resp);
+        assert_eq!(order_id, 283194212);
+        assert_eq!(status_u8, parse_order_status_u8("FILLED").unwrap());
+        assert_eq!(update_time, 1769068022495);
+        assert!((executed_qty - 0.5).abs() < 1e-12);
+        assert!((price - 123.45).abs() < 1e-12);
+    }
+
+    #[test]
+    fn extract_order_info_falls_back_to_transact_time() {
+        let payload =
+            r#"{"id":6,"status":200,"result":{"orderId":7,"transactTime":1700000000000}}"#;
+        let resp = parse_ws_response(payload).expect("binance ws response");
+        let (order_id, _, update_time, _, _) = extract_order_info(&resp);
+        assert_eq!(order_id, 7);
+        assert_eq!(update_time, 1700000000000);
+    }
+
+    #[test]
+    fn parse_ws_response_without_result_has_no_order_info() {
+        let payload = r#"{"id":9,"status":200}"#;
+        let resp = parse_ws_response(payload).expect("binance ws response");
+        assert!(resp.result.is_none());
+        assert_eq!(extract_order_info(&resp), (0, 0, 0, 0.0, 0.0));
     }
 
     #[test]
