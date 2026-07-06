@@ -3076,7 +3076,20 @@ impl TradeEngine {
             }
 
             let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
-            let ping_interval_ms = WsConstants::PING_INTERVAL_MS;
+            // ping 频率仅作用于 trade_engine 的 Binance WS，UM(合约)与 spot 分开可调，
+            // 避免探测/保活过频被 Binance 拒绝。未设时回退默认。
+            let um_ping_interval_ms = env_u64_or(
+                "TRADE_ENGINE_BINANCE_UM_PING_INTERVAL_MS",
+                WsConstants::PING_INTERVAL_MS,
+            );
+            let spot_ping_interval_ms = env_u64_or(
+                "TRADE_ENGINE_BINANCE_SPOT_PING_INTERVAL_MS",
+                WsConstants::PING_INTERVAL_MS,
+            );
+            info!(
+                "binance trade ws ping intervals: um_ping_interval_ms={} spot_ping_interval_ms={}",
+                um_ping_interval_ms, spot_ping_interval_ms
+            );
             let max_inflight = WsConstants::MAX_INFLIGHT;
             let binance_creds = self.accounts.first().cloned();
             let binance_um_ws_url = if binance_um_ip_whitelist_mode {
@@ -3192,7 +3205,7 @@ impl TradeEngine {
                         ip,
                         binance_um_ws_url.to_string(),
                         connect_timeout_ms,
-                        ping_interval_ms,
+                        um_ping_interval_ms,
                         max_inflight,
                         None,
                         binance_creds.clone(),
@@ -3329,7 +3342,7 @@ impl TradeEngine {
                     ip,
                     WsConstants::BINANCE_SPOT_WS_URL.to_string(),
                     connect_timeout_ms,
-                    ping_interval_ms,
+                    spot_ping_interval_ms,
                     max_inflight,
                     None,
                     binance_creds.clone(),
