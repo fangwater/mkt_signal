@@ -27,6 +27,13 @@ enum ConnectionState {
     Running,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OkexWsError {
+    code: String,
+    msg: String,
+    channel: Option<String>,
+}
+
 /// OKX 用户数据流连接处理器
 pub struct OkexUserDataConnection {
     base_connection: MktConnection,
@@ -81,8 +88,8 @@ impl OkexUserDataConnection {
         None
     }
 
-    /// 检查是否为错误消息
-    fn is_error_message(text: &str) -> Option<String> {
+    /// 解析 OKX WS 错误消息
+    fn parse_error_message(text: &str) -> Option<OkexWsError> {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
             if json.get("event").and_then(|v| v.as_str()) == Some("error") {
                 let code = json
@@ -93,10 +100,39 @@ impl OkexUserDataConnection {
                     .get("msg")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                return Some(format!("code={}, msg={}", code, msg));
+                let channel = json
+                    .get("arg")
+                    .and_then(|arg| arg.get("channel"))
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned);
+                return Some(OkexWsError {
+                    code: code.to_owned(),
+                    msg: msg.to_owned(),
+                    channel,
+                });
             }
         }
         None
+    }
+
+    fn is_optional_fills_permission_error(err: &OkexWsError) -> bool {
+        err.code == "64003" && matches!(err.channel.as_deref(), None | Some("fills"))
+    }
+
+    fn mark_subscription_complete(
+        pending_subscriptions: &mut usize,
+        state: &mut ConnectionState,
+        ping_timer: &mut Instant,
+        success_log: &str,
+    ) {
+        *pending_subscriptions = pending_subscriptions.saturating_sub(1);
+        info!("OKX: {}, remaining: {}", success_log, pending_subscriptions);
+
+        if *pending_subscriptions == 0 {
+            info!("OKX: All subscriptions complete, entering running state");
+            *state = ConnectionState::Running;
+            *ping_timer = Instant::now() + Duration::from_secs(25);
+        }
     }
 }
 
@@ -184,12 +220,33 @@ impl MktConnectionRunner for OkexUserDataConnection {
                                     }
 
                                     // 检查错误
-                                    if let Some(err_msg) = Self::is_error_message(&text) {
-                                        error!("OKX: Received error: {}", err_msg);
+                                    if let Some(err) = Self::parse_error_message(&text) {
+                                        error!(
+                                            "OKX: Received error: code={}, msg={}, channel={}",
+                                            err.code,
+                                            err.msg,
+                                            err.channel.as_deref().unwrap_or("-")
+                                        );
                                         // 根据状态决定是否断开
                                         if state == ConnectionState::LoggingIn {
                                             error!("OKX: Login failed, will retry...");
                                             break;
+                                        }
+                                        if state == ConnectionState::Subscribing
+                                            && Self::is_optional_fills_permission_error(&err)
+                                        {
+                                            if let Some(handler) = self.raw_handler.as_mut() {
+                                                handler(Bytes::copy_from_slice(text.as_bytes()));
+                                            }
+                                            warn!(
+                                                "OKX: Optional fills subscription denied by permission; continuing without fills"
+                                            );
+                                            Self::mark_subscription_complete(
+                                                &mut pending_subscriptions,
+                                                &mut state,
+                                                &mut ping_timer,
+                                                "Optional fills subscription skipped",
+                                            );
                                         }
                                         continue;
                                     }
@@ -220,14 +277,12 @@ impl MktConnectionRunner for OkexUserDataConnection {
                                             // 等待订阅响应
                                             if let Some(success) = Self::is_subscribe_response(&text) {
                                                 if success {
-                                                    pending_subscriptions = pending_subscriptions.saturating_sub(1);
-                                                    info!("OKX: Subscribe successful, remaining: {}", pending_subscriptions);
-
-                                                    if pending_subscriptions == 0 {
-                                                        info!("OKX: All subscriptions complete, entering running state");
-                                                        state = ConnectionState::Running;
-                                                        ping_timer = Instant::now() + Duration::from_secs(25);
-                                                    }
+                                                    Self::mark_subscription_complete(
+                                                        &mut pending_subscriptions,
+                                                        &mut state,
+                                                        &mut ping_timer,
+                                                        "Subscribe successful",
+                                                    );
                                                 } else {
                                                     warn!("OKX: Subscribe failed: {}", text);
                                                 }
@@ -296,6 +351,63 @@ impl MktConnectionRunner for OkexUserDataConnection {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_error_message_extracts_channel() {
+        let err = OkexUserDataConnection::parse_error_message(
+            r#"{"event":"error","code":"64003","msg":"You do not have access to this channel.","arg":{"channel":"fills"}}"#,
+        )
+        .expect("expected OKX error");
+
+        assert_eq!(err.code, "64003");
+        assert_eq!(err.msg, "You do not have access to this channel.");
+        assert_eq!(err.channel.as_deref(), Some("fills"));
+    }
+
+    #[test]
+    fn fills_permission_error_is_optional() {
+        let err = OkexWsError {
+            code: "64003".to_owned(),
+            msg: "You do not have access to this channel.".to_owned(),
+            channel: Some("fills".to_owned()),
+        };
+
+        assert!(OkexUserDataConnection::is_optional_fills_permission_error(
+            &err
+        ));
+    }
+
+    #[test]
+    fn fills_permission_error_without_channel_is_optional() {
+        let err = OkexWsError {
+            code: "64003".to_owned(),
+            msg: "Your trading fee tier doesn't meet the requirement to access this channel."
+                .to_owned(),
+            channel: None,
+        };
+
+        assert!(OkexUserDataConnection::is_optional_fills_permission_error(
+            &err
+        ));
+    }
+
+    #[test]
+    fn non_fills_error_is_not_optional() {
+        let err = OkexWsError {
+            code: "64003".to_owned(),
+            msg: "You do not have access to this channel.".to_owned(),
+            channel: Some("orders".to_owned()),
+        };
+
+        assert!(!OkexUserDataConnection::is_optional_fills_permission_error(
+            &err
+        ));
     }
 }
 

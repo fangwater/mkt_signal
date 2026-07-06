@@ -94,22 +94,28 @@ thread_local! {
 }
 
 #[derive(Clone, Copy)]
-struct DirectAccountEventSink;
+struct SourceAccountEventSink {
+    source: &'static str,
+}
 
-impl AccountEventSink for DirectAccountEventSink {
+impl AccountEventSink for SourceAccountEventSink {
     fn emit(&self, msg: Bytes) -> bool {
-        emit_direct_account_event(msg, None)
+        emit_direct_account_event(msg, None, self.source)
     }
 
     fn emit_with_dedup_key(&self, msg: Bytes, dedup_key: u64) -> bool {
-        emit_direct_account_event(msg, Some(dedup_key))
+        emit_direct_account_event(msg, Some(dedup_key), self.source)
     }
 }
 
-fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
+fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>, source: &str) -> bool {
     DIRECT_FORWARDER.with(|cell| {
         let mut state = cell.borrow_mut();
         let Some(state) = state.as_mut() else {
+            warn!(
+                "failed to forward OKX account event: source={} forwarder_uninitialized",
+                source
+            );
             return false;
         };
         let should_forward = match dedup_key {
@@ -118,7 +124,7 @@ fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
         };
         if should_forward {
             let sent = state.forwarder.send_raw(&msg);
-            log_parsed_event(&msg);
+            log_parsed_event(&msg, source);
             sent
         } else {
             true
@@ -137,15 +143,11 @@ fn init_direct_forwarder(exchange: &str) -> Result<()> {
     Ok(())
 }
 
-fn forward_account_event(msg: Bytes) -> bool {
-    DirectAccountEventSink.emit(msg)
-}
-
-fn send_wrapped_payload(payload: Bytes, context: &str) -> bool {
+fn send_wrapped_payload(payload: Bytes, source: &'static str) -> bool {
     let event_type = get_basic_event_type(payload.as_ref());
     let event = BasicAccountEventMsg::create(event_type, BasicAccountScope::OkexUnified, payload);
-    if !forward_account_event(event.to_bytes()) {
-        warn!("failed to forward {}", context);
+    if !emit_direct_account_event(event.to_bytes(), None, source) {
+        warn!("failed to forward {}", source);
         false
     } else {
         true
@@ -331,7 +333,11 @@ fn spawn_borrow_interest_poll(
                                     mkt_parsers::msg::basic_account_msg::BasicAccountScope::OkexUnified,
                                     payload,
                                 );
-                                if !forward_account_event(event.to_bytes()) {
+                                if !emit_direct_account_event(
+                                    event.to_bytes(),
+                                    None,
+                                    "rest_interest_poll",
+                                ) {
                                     warn!("failed to forward borrow interest msg");
                                 }
                             }
@@ -380,7 +386,7 @@ fn spawn_positions_poll(
                                             }
                                         }
                                     }
-                                    send_wrapped_payload(payload, "OKX REST position msg");
+                                    send_wrapped_payload(payload, "rest_positions_poll");
                                 }
 
                                 let mut stale_positions: Vec<(String, char)> = previous_positions
@@ -398,12 +404,12 @@ fn spawn_positions_poll(
                                     send_wrapped_payload(
                                         BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
                                             .to_bytes(),
-                                        "OKX REST zero position cleanup",
+                                        "rest_positions_zero_cleanup",
                                     );
                                     send_wrapped_payload(
                                         BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
                                             .to_bytes(),
-                                        "OKX REST zero pnl cleanup",
+                                        "rest_positions_zero_pnl_cleanup",
                                     );
                                 }
                                 previous_positions = current_positions;
@@ -491,7 +497,18 @@ fn spawn_okex_stream_path(
                         b.len()
                     );
                 }
-                let _ = parser.parse(b, &DirectAccountEventSink);
+                let source = if handler_name == "primary" {
+                    "ws_primary"
+                } else {
+                    "ws_secondary"
+                };
+                let parsed = parser.parse(b, &SourceAccountEventSink { source });
+                if parsed > 0 {
+                    info!(
+                        "OKX ws account event parsed: source={} parsed_count={}",
+                        source, parsed
+                    );
+                }
             }));
 
             if let Err(e) = runner.start_ws().await {
@@ -530,7 +547,7 @@ fn is_fills_vip_error(s: &str) -> bool {
 }
 
 /// 打印解析后的账户事件
-fn log_parsed_event(msg: &Bytes) {
+fn log_parsed_event(msg: &Bytes, source: &str) {
     let Some((okex_event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
     else {
         return;
@@ -545,7 +562,8 @@ fn log_parsed_event(msg: &Bytes) {
             if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
                 let order_status = m.state;
                 info!(
-                    "OKEx basic OrderUpdate: scope={} inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
+                    "OKEx basic OrderUpdate: source={} scope={} inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
+                    source,
                     account_scope.as_str(),
                     m.inst_id,
                     m.side,
@@ -562,7 +580,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic BalanceUpdate: scope={} ts={} symbol={} wallet={}",
+                    "OKEx basic BalanceUpdate: source={} scope={} ts={} symbol={} wallet={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.symbol,
@@ -573,7 +592,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic PositionUpdate: scope={} ts={} inst={} side={} amt={}",
+                    "OKEx basic PositionUpdate: source={} scope={} ts={} inst={} side={} amt={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.inst_id,
@@ -585,7 +605,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
+                    "OKEx basic BorrowInterest: source={} scope={} ts={} symbol={} borrowed={} interest={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.symbol,
@@ -597,7 +618,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
+                    "OKEx basic UnrealizedPnl: source={} scope={} ts={} inst={} side={} pnl={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.inst_id,
@@ -609,7 +631,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::AccountRisk => {
             if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    "OKEx basic AccountRisk: source={} scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.adj_equity_usd,
@@ -639,7 +662,8 @@ fn log_parsed_event(msg: &Bytes) {
         }
         _ => {
             info!(
-                "OKEx basic msg: scope={} type={:?}",
+                "OKEx basic msg: source={} scope={} type={:?}",
+                source,
                 account_scope.as_str(),
                 okex_event_type
             );
