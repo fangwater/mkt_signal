@@ -350,29 +350,30 @@ pub fn build_decision_from_key_base(
     env_score: Option<f64>,
     env_threshold: Option<f64>,
 ) -> String {
-    let return_qtl_text = return_qtl
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "0".to_string());
-    let return_threshold_text = return_threshold
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "0".to_string());
-    let volatility_text = volatility
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "0".to_string());
-    let env_score_text = env_score
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "0".to_string());
-    let env_threshold_text = env_threshold
-        .filter(|v| v.is_finite())
-        .map(|v| format!("{v:.8}"))
-        .unwrap_or_else(|| "0".to_string());
-    format!(
-        "{now_us}:ret_qtl={return_qtl_text}:ret_thr={return_threshold_text}:vol={volatility_text}:env_score={env_score_text}:env_thr={env_threshold_text}"
-    )
+    use std::fmt::Write;
+    // now_us (~19 chars) + 5 labeled `{:.8}` fields ≈ 130 bytes; one buffer,
+    // no per-field intermediate `String`, no trailing `format!`.
+    let mut out = String::with_capacity(160);
+    // `write!` into a `String` (fmt::Write) is infallible and byte-identical to
+    // the previous `format!` layout.
+    let _ = write!(out, "{now_us}");
+    let push_field = |out: &mut String, label: &str, value: Option<f64>| {
+        out.push(':');
+        out.push_str(label);
+        out.push('=');
+        match value.filter(|v| v.is_finite()) {
+            Some(v) => {
+                let _ = write!(out, "{v:.8}");
+            }
+            None => out.push('0'),
+        }
+    };
+    push_field(&mut out, "ret_qtl", return_qtl);
+    push_field(&mut out, "ret_thr", return_threshold);
+    push_field(&mut out, "vol", volatility);
+    push_field(&mut out, "env_score", env_score);
+    push_field(&mut out, "env_thr", env_threshold);
+    out
 }
 
 pub fn format_from_key_optional_value(value: Option<f64>, precision: usize) -> String {
@@ -578,6 +579,54 @@ mod tests {
     use super::*;
     use order_common::TradingVenue;
     use signal_common::venue_min_qty_table::VenueMinQtyTable;
+
+    #[test]
+    fn build_decision_from_key_base_matches_legacy_format() {
+        fn legacy(
+            now_us: i64,
+            return_qtl: Option<f64>,
+            return_threshold: Option<f64>,
+            volatility: Option<f64>,
+            env_score: Option<f64>,
+            env_threshold: Option<f64>,
+        ) -> String {
+            let f = |v: Option<f64>| {
+                v.filter(|v| v.is_finite())
+                    .map(|v| format!("{v:.8}"))
+                    .unwrap_or_else(|| "0".to_string())
+            };
+            format!(
+                "{now_us}:ret_qtl={}:ret_thr={}:vol={}:env_score={}:env_thr={}",
+                f(return_qtl),
+                f(return_threshold),
+                f(volatility),
+                f(env_score),
+                f(env_threshold),
+            )
+        }
+        let vals = [
+            None,
+            Some(0.0),
+            Some(-0.0),
+            Some(1.0),
+            Some(-1.234_567_89),
+            Some(0.000_000_01),
+            Some(1e12),
+            Some(f64::INFINITY),
+            Some(f64::NAN),
+        ];
+        for now in [0i64, 1, 1_783_331_226_376_757, -5] {
+            for a in vals {
+                for b in [None, Some(0.5), Some(f64::NEG_INFINITY)] {
+                    assert_eq!(
+                        build_decision_from_key_base(now, a, b, a, b, a),
+                        legacy(now, a, b, a, b, a),
+                        "mismatch now={now} a={a:?} b={b:?}",
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn build_tlen_from_key_bytes_matches_legacy_string_path() {
