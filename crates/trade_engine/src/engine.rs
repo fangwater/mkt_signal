@@ -50,7 +50,7 @@ use crate::trade_type_mapping::TradeTypeMapping;
 use crate::ws_client::{
     BinanceUmWsEndpointRouteEvalStats, BinanceUmWsHealthConfig as WsBinanceUmWsHealthConfig,
     BinanceUmWsHealthRuntime, RespLatencyBuckets, TradeWsClient, WsCommand, WsCommandQueue,
-    WsEndpointHandle, WsLatencyBuckets, DEFAULT_BINANCE_UM_CANCEL_PROBE_SYMBOL,
+    WsEndpointHandle, WsLatencyBuckets,
 };
 use account_common::ApiKey;
 use account_common::{binance_account_mode, BinanceAccountMode};
@@ -505,7 +505,6 @@ mod route_selection_tests {
             percentile: 85,
             pause_ms: 1,
             select_recent: 3,
-            cancel_probe_rate_limit_guard_pct: 70,
         });
         for rtt_us in [3_000, 2_000, 1_000] {
             let _ = handle.mark_binance_um_new_ack_rtt(
@@ -3160,9 +3159,6 @@ impl TradeEngine {
                 percentile: self.binance_um_ws_health.percentile,
                 pause_ms: self.binance_um_ws_health.pause_ms,
                 select_recent: self.binance_um_ws_health.select_recent,
-                cancel_probe_rate_limit_guard_pct: self
-                    .binance_um_ws_health
-                    .cancel_probe_rate_limit_guard_pct,
             });
             binance_um_ws_health_runtime = Some(binance_um_ws_health.clone());
             let mut um_client_id = 0usize;
@@ -3221,10 +3217,6 @@ impl TradeEngine {
                         um_client =
                             um_client.with_binance_um_new_ack_trace_publisher(publisher.clone());
                     }
-                    um_client = um_client.with_binance_um_cancel_probe(
-                        is_direct,
-                        DEFAULT_BINANCE_UM_CANCEL_PROBE_SYMBOL.to_string(),
-                    );
                     if let Some(remote_ip) = remote_ip_override {
                         um_client = um_client.with_remote_ip_override(remote_ip);
                     }

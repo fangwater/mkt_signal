@@ -18,7 +18,6 @@ use sonic_rs::{JsonValueTrait, LazyValue};
 use std::collections::HashMap;
 
 use crate::msg::order_codes;
-use symbol_utils::internal_client_order_id::is_binance_um_ws_cancel_probe_client_order_id;
 use symbol_utils::TradingVenue;
 
 #[derive(Clone)]
@@ -54,13 +53,6 @@ impl BinanceBasicAccountEventParser {
             warn!(
                 "parser: skip executionReport with non-i64 clientOrderId c={:?} C={:?} sym={}",
                 client_order_id_raw, orig_client_order_id_raw, symbol
-            );
-            return 0;
-        }
-        if is_binance_um_ws_cancel_probe_client_order_id(client_order_id) {
-            debug!(
-                "parser: skip internal binance UM WS cancel probe executionReport client_order_id={} sym={}",
-                client_order_id, symbol
             );
             return 0;
         }
@@ -167,13 +159,6 @@ impl BinanceBasicAccountEventParser {
             );
             return 0;
         }
-        if is_binance_um_ws_cancel_probe_client_order_id(client_order_id) {
-            debug!(
-                "parser: skip internal binance UM WS cancel probe orderTradeUpdate client_order_id={} sym={}",
-                client_order_id, symbol
-            );
-            return 0;
-        }
 
         let side_str = lazy_string(&o, "S");
         let side = order_codes::side_to_u8_default_buy(&side_str);
@@ -261,13 +246,6 @@ impl BinanceBasicAccountEventParser {
             warn!(
                 "parser: skip tradeLite with missing fields sym={} c={}",
                 symbol, client_order_id_raw
-            );
-            return 0;
-        }
-        if is_binance_um_ws_cancel_probe_client_order_id(client_order_id) {
-            debug!(
-                "parser: skip internal binance UM WS cancel probe tradeLite client_order_id={} sym={}",
-                client_order_id, symbol
             );
             return 0;
         }
@@ -644,48 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn order_trade_update_drops_internal_cancel_probe_id() {
-        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
-        let sink = TestAccountEventSink::new();
-        let probe_id =
-            symbol_utils::internal_client_order_id::binance_um_ws_cancel_probe_client_order_id(
-                7, 42,
-            );
-        let json = Bytes::from(format!(
-            r#"{{
-                "e":"ORDER_TRADE_UPDATE",
-                "E":1700000000000,
-                "T":1700000000123,
-                "o":{{
-                    "s":"BTCUSDT",
-                    "c":"{}",
-                    "S":"BUY",
-                    "o":"LIMIT",
-                    "f":"GTC",
-                    "x":"CANCELED",
-                    "X":"CANCELED",
-                    "i":998877,
-                    "t":0,
-                    "m":false,
-                    "p":"64000.0",
-                    "q":"0.010",
-                    "ap":"0",
-                    "l":"0",
-                    "z":"0",
-                    "L":"0",
-                    "n":"0",
-                    "rp":"0",
-                    "N":"USDT"
-                }}
-            }}"#,
-            probe_id
-        ));
-
-        assert_eq!(parser.parse(json, &sink), 0);
-        assert!(sink.recv().is_none());
-    }
-
-    #[test]
     fn execution_report_uses_orig_client_order_id_fallback() {
         let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdSpot);
         let sink = TestAccountEventSink::new();
@@ -737,46 +673,6 @@ mod tests {
     }
 
     #[test]
-    fn execution_report_drops_internal_cancel_probe_orig_id() {
-        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdSpot);
-        let sink = TestAccountEventSink::new();
-        let probe_id =
-            symbol_utils::internal_client_order_id::binance_um_ws_cancel_probe_client_order_id(
-                1, 2,
-            );
-        let json = Bytes::from(format!(
-            r#"{{
-                "e":"executionReport",
-                "E":1700000000000,
-                "T":1700000000123,
-                "s":"ETHUSDT",
-                "c":"autoclose-1",
-                "C":"{}",
-                "S":"SELL",
-                "o":"MARKET",
-                "f":"IOC",
-                "x":"CANCELED",
-                "X":"CANCELED",
-                "i":112233,
-                "t":0,
-                "m":true,
-                "p":"0",
-                "q":"0.5",
-                "l":"0",
-                "z":"0",
-                "L":"0",
-                "Z":"0",
-                "n":"0",
-                "N":""
-            }}"#,
-            probe_id
-        ));
-
-        assert_eq!(parser.parse(json, &sink), 0);
-        assert!(sink.recv().is_none());
-    }
-
-    #[test]
     fn trade_lite_emits_trade_update_lite_event() {
         let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
         let sink = TestAccountEventSink::new();
@@ -814,36 +710,5 @@ mod tests {
         assert_eq!(msg.trade_id_str(), "556677");
         assert!((msg.last_executed_price - 64000.5).abs() < 1e-9);
         assert!((msg.last_executed_quantity - 0.002).abs() < 1e-9);
-    }
-
-    #[test]
-    fn trade_lite_drops_internal_cancel_probe_id() {
-        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
-        let sink = TestAccountEventSink::new();
-        let probe_id =
-            symbol_utils::internal_client_order_id::binance_um_ws_cancel_probe_client_order_id(
-                2, 3,
-            );
-        let json = Bytes::from(format!(
-            r#"{{
-                "e":"TRADE_LITE",
-                "E":1700000000000,
-                "T":1700000000123,
-                "s":"BTCUSDT",
-                "q":"0.010",
-                "p":"0",
-                "m":false,
-                "c":"{}",
-                "S":"BUY",
-                "L":"64000.5",
-                "l":"0.002",
-                "t":556677,
-                "i":998877
-            }}"#,
-            probe_id
-        ));
-
-        assert_eq!(parser.parse(json, &sink), 0);
-        assert!(sink.recv().is_none());
     }
 }

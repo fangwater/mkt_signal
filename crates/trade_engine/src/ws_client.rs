@@ -21,8 +21,8 @@ use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParamsRef, BitgetNewOrderParamsRef,
-    GateNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
+    BinanceNewOrderParamsRef, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
+    TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use account_common::bitget_auth::BitgetCredentials;
@@ -56,9 +56,6 @@ use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
-use symbol_utils::internal_client_order_id::{
-    binance_um_ws_cancel_probe_client_order_id, is_binance_um_ws_cancel_probe_client_order_id,
-};
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::Notify;
 use tokio::time;
@@ -235,8 +232,6 @@ fn format_ws_error(err: &WsError) -> String {
 }
 
 const DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS: u32 = 30_000;
-const BINANCE_UM_CANCEL_PROBE_INTERVAL_MS: u64 = 1_000;
-pub(crate) const DEFAULT_BINANCE_UM_CANCEL_PROBE_SYMBOL: &str = "BTCUSDT";
 
 fn trade_engine_tcp_tuning() -> TcpSocketTuning {
     TcpSocketTuning {
@@ -264,7 +259,6 @@ fn format_close_frame(frame: Option<&CloseFrame<'_>>) -> String {
 pub enum WsCommand {
     Send(TradeRequestMsg),
     SendQuery(QueryRequestMsg),
-    ProbeBinanceUmCancel { symbol: String },
     Shutdown,
 }
 
@@ -530,9 +524,6 @@ pub(crate) struct WsEndpointState {
     binance_um_cancel_inflight: VecDeque<BinanceUmCancelInflightState>,
     last_binance_um_new_inflight_block_log: Option<std::time::Instant>,
     last_binance_um_cancel_inflight_block_log: Option<std::time::Instant>,
-    last_binance_um_new_sent_at: Option<std::time::Instant>,
-    binance_um_request_weight_1m: Option<BinanceWsRateLimitWindow>,
-    binance_um_orders_1m: Option<BinanceWsRateLimitWindow>,
 }
 
 impl WsEndpointState {
@@ -544,7 +535,6 @@ impl WsEndpointState {
         self.connected = false;
         self.binance_um_new_inflight.clear();
         self.binance_um_cancel_inflight.clear();
-        self.last_binance_um_new_sent_at = None;
     }
 }
 
@@ -570,13 +560,6 @@ struct BinanceUmCancelInflightState {
     sent_at_us: i64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BinanceWsRateLimitWindow {
-    count: u32,
-    limit: u32,
-    observed_at: std::time::Instant,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct BinanceUmWsHealthConfig {
     pub new_rolling_window: usize,
@@ -586,7 +569,6 @@ pub(crate) struct BinanceUmWsHealthConfig {
     pub percentile: u8,
     pub pause_ms: u64,
     pub select_recent: usize,
-    pub cancel_probe_rate_limit_guard_pct: u32,
 }
 
 #[derive(Debug)]
@@ -657,10 +639,6 @@ impl BinanceUmWsHealthRuntime {
 
     pub(crate) fn pause_ms(&self) -> u64 {
         self.cfg.pause_ms
-    }
-
-    pub(crate) fn cancel_probe_rate_limit_guard_pct(&self) -> u32 {
-        self.cfg.cancel_probe_rate_limit_guard_pct
     }
 
     pub(crate) fn inflight_create_block_threshold_us(&self) -> Option<i64> {
@@ -969,7 +947,6 @@ impl WsEndpointHandle {
         sent_at_us: i64,
     ) {
         let mut state = self.state.borrow_mut();
-        state.last_binance_um_new_sent_at = Some(std::time::Instant::now());
         state
             .binance_um_new_inflight
             .push_back(BinanceUmNewInflightState {
@@ -1183,69 +1160,6 @@ impl WsEndpointHandle {
         action
     }
 
-    pub(crate) fn mark_binance_um_probe_rtt(
-        &self,
-        rtt_us: i64,
-        health: &BinanceUmWsHealthRuntime,
-        endpoint_id: usize,
-        local_ip: IpAddr,
-        remote_addr: Option<SocketAddr>,
-        url: &str,
-    ) -> BinanceUmWsHealthAction {
-        self.mark_binance_um_cancel_rtt(rtt_us, health, endpoint_id, local_ip, remote_addr, url)
-    }
-
-    pub(crate) fn has_recent_binance_um_new_sent(&self, interval: Duration) -> bool {
-        let state = self.state.borrow();
-        state
-            .last_binance_um_new_sent_at
-            .map(|last| last.elapsed() < interval)
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn update_binance_ws_rate_limits(
-        &self,
-        rate_limits: &[binance_ws::BinanceWsRateLimit],
-    ) {
-        if rate_limits.is_empty() {
-            return;
-        }
-        let now = std::time::Instant::now();
-        let mut state = self.state.borrow_mut();
-        for limit in rate_limits {
-            if limit.interval != "MINUTE" || limit.interval_num != 1 || limit.limit == 0 {
-                continue;
-            }
-            let window = BinanceWsRateLimitWindow {
-                count: limit.count,
-                limit: limit.limit,
-                observed_at: now,
-            };
-            match limit.rate_limit_type.as_str() {
-                "REQUEST_WEIGHT" => state.binance_um_request_weight_1m = Some(window),
-                "ORDERS" => state.binance_um_orders_1m = Some(window),
-                _ => {}
-            }
-        }
-    }
-
-    pub(crate) fn binance_um_probe_rate_limit_allows(&self, guard_pct: u32) -> bool {
-        fn below_guard(window: Option<BinanceWsRateLimitWindow>, guard_pct: u32) -> bool {
-            let Some(window) = window else {
-                return true;
-            };
-            if window.observed_at.elapsed() >= Duration::from_secs(65) {
-                return true;
-            }
-            (window.count as u64).saturating_mul(100)
-                < (window.limit as u64).saturating_mul(guard_pct as u64)
-        }
-
-        let state = self.state.borrow();
-        below_guard(state.binance_um_request_weight_1m, guard_pct)
-            && below_guard(state.binance_um_orders_1m, guard_pct)
-    }
-
     pub(crate) fn binance_um_health_stats(&self, select_recent: usize) -> (i64, usize, i64) {
         let now = std::time::Instant::now();
         let mut state = self.state.borrow_mut();
@@ -1306,13 +1220,6 @@ struct TradeInflightMeta {
     sent_at_us: i64,
 }
 
-#[derive(Clone, Debug)]
-struct BinanceUmCancelProbeInflightMeta {
-    client_order_id: i64,
-    symbol: String,
-    sent_at: std::time::Instant,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct QueryInflightMeta {
     req_type: QueryRequestType,
@@ -1369,9 +1276,7 @@ pub struct TradeWsClient {
     pending_query: VecDeque<QueryRequestMsg>,
     inflight: FastHashMap<i64, TradeInflightMeta>,
     query_inflight: FastHashMap<i64, QueryInflightMeta>,
-    binance_um_cancel_probe_inflight: FastHashMap<i64, BinanceUmCancelProbeInflightMeta>,
     next_binance_transport_id: i64,
-    next_binance_um_cancel_probe_seq: i64,
     engine_shutdown: CancellationToken,
     endpoint_state: Rc<RefCell<WsEndpointState>>,
     shutdown_on_rate_limit: bool,
@@ -1389,8 +1294,6 @@ pub struct TradeWsClient {
     binance_um_ws_health: Option<BinanceUmWsHealthRuntime>,
     binance_um_new_ack_trace_publisher: Option<BinanceUmNewAckTracePublisher>,
     binance_um_route_group_id: Option<u32>,
-    binance_um_cancel_probe_enabled: bool,
-    binance_um_cancel_probe_symbol: String,
 }
 
 impl TradeWsClient {
@@ -1572,9 +1475,7 @@ impl TradeWsClient {
             pending_query: VecDeque::new(),
             inflight: fast_hash_map(),
             query_inflight: fast_hash_map(),
-            binance_um_cancel_probe_inflight: fast_hash_map(),
             next_binance_transport_id: ((id as i64) << 48) + 1,
-            next_binance_um_cancel_probe_seq: 0,
             engine_shutdown,
             endpoint_state,
             shutdown_on_rate_limit,
@@ -1592,8 +1493,6 @@ impl TradeWsClient {
             binance_um_ws_health: None,
             binance_um_new_ack_trace_publisher: None,
             binance_um_route_group_id: None,
-            binance_um_cancel_probe_enabled: false,
-            binance_um_cancel_probe_symbol: DEFAULT_BINANCE_UM_CANCEL_PROBE_SYMBOL.to_string(),
         }
     }
 
@@ -1625,14 +1524,6 @@ impl TradeWsClient {
 
     pub(crate) fn with_binance_um_route_group_id(mut self, route_group_id: u32) -> Self {
         self.binance_um_route_group_id = Some(route_group_id);
-        self
-    }
-
-    pub(crate) fn with_binance_um_cancel_probe(mut self, enabled: bool, symbol: String) -> Self {
-        self.binance_um_cancel_probe_enabled = enabled;
-        if !symbol.trim().is_empty() {
-            self.binance_um_cancel_probe_symbol = symbol.trim().to_ascii_uppercase();
-        }
         self
     }
 
@@ -1675,7 +1566,6 @@ impl TradeWsClient {
             && self.pending_query.is_empty()
             && self.inflight.is_empty()
             && self.query_inflight.is_empty()
-            && self.binance_um_cancel_probe_inflight.is_empty()
             && !self.waiting_for_binance_session_logon()
     }
 
@@ -1808,12 +1698,6 @@ impl TradeWsClient {
                     self.id, context, msg.client_query_id
                 );
                 self.pending_query.push_back(msg);
-            }
-            WsCommand::ProbeBinanceUmCancel { symbol } => {
-                debug!(
-                    "trade ws client id={} dropped binance UM cancel probe {} symbol={}",
-                    self.id, context, symbol
-                );
             }
             WsCommand::Shutdown => {
                 info!(
@@ -2066,10 +1950,6 @@ impl TradeWsClient {
     ) -> Result<()> {
         let mut ping_interval = time::interval(Duration::from_millis(self.ping_interval_ms));
         ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        let mut binance_um_probe_interval =
-            time::interval(Duration::from_millis(BINANCE_UM_CANCEL_PROBE_INTERVAL_MS));
-        binance_um_probe_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        binance_um_probe_interval.tick().await;
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
@@ -2114,9 +1994,6 @@ impl TradeWsClient {
                     }
                     self.send_ping(ws).await?;
                 }
-                _ = binance_um_probe_interval.tick(), if self.binance_um_cancel_probe_enabled => {
-                    self.maybe_send_binance_um_cancel_probe(ws).await?;
-                }
                 _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
                     if self.can_planned_reconnect_now() {
                         info!(
@@ -2133,14 +2010,13 @@ impl TradeWsClient {
                         return Ok(());
                     }
                     debug!(
-                        "trade ws client id={} exchange={} planned reconnect deferred pending={} pending_query={} inflight={} query_inflight={} cancel_probe_inflight={} waiting_logon={}",
+                        "trade ws client id={} exchange={} planned reconnect deferred pending={} pending_query={} inflight={} query_inflight={} waiting_logon={}",
                         self.id,
                         self.exchange,
                         self.pending.len(),
                         self.pending_query.len(),
                         self.inflight.len(),
                         self.query_inflight.len(),
-                        self.binance_um_cancel_probe_inflight.len(),
                         self.waiting_for_binance_session_logon()
                     );
                     planned_reconnect_deadline = Some(time::Instant::now() + Duration::from_millis(1_000));
@@ -2180,9 +2056,6 @@ impl TradeWsClient {
                     self.id, msg.client_query_id
                 );
                 self.handle_send_query(msg, ws).await?;
-            }
-            WsCommand::ProbeBinanceUmCancel { symbol } => {
-                self.handle_probe_binance_um_cancel(symbol, ws).await?;
             }
             WsCommand::Shutdown => {
                 info!("trade ws client id={} received shutdown signal", self.id);
@@ -2493,130 +2366,6 @@ impl TradeWsClient {
         ws.send(Message::Text(payload)).await?;
         self.track_inflight_query(msg, transport_id);
         Ok(())
-    }
-
-    async fn handle_probe_binance_um_cancel(
-        &mut self,
-        symbol: String,
-        ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    ) -> Result<()> {
-        if self.exchange != Exchange::Binance || self.use_ltp_backend {
-            return Ok(());
-        }
-        if self.waiting_for_binance_session_logon() {
-            return Ok(());
-        }
-        let symbol = symbol.trim().to_ascii_uppercase();
-        if symbol.is_empty() {
-            return Ok(());
-        }
-        if !self.binance_um_cancel_probe_inflight.is_empty() {
-            debug!(
-                "trade ws client id={} skip binance UM cancel probe symbol={} reason=probe_inflight",
-                self.id, symbol
-            );
-            return Ok(());
-        }
-        if self.inflight.len() >= self.max_inflight {
-            debug!(
-                "trade ws client id={} skip binance UM cancel probe symbol={} reason=trade_inflight_limit inflight={} limit={}",
-                self.id,
-                symbol,
-                self.inflight.len(),
-                self.max_inflight
-            );
-            return Ok(());
-        }
-
-        self.next_binance_um_cancel_probe_seq =
-            self.next_binance_um_cancel_probe_seq.saturating_add(1);
-        let create_time = get_timestamp_us();
-        let (msg, probe_client_order_id) = Self::build_binance_um_cancel_probe_msg(
-            self.id,
-            self.next_binance_um_cancel_probe_seq,
-            create_time,
-            &symbol,
-        )?;
-        let transport_id = self.next_transport_id();
-        let payload = self.build_binance_payload(&msg, transport_id)?;
-        ws.send(Message::Text(payload)).await?;
-        let sent_at_us = get_timestamp_us();
-        self.binance_um_cancel_probe_inflight.insert(
-            transport_id,
-            BinanceUmCancelProbeInflightMeta {
-                client_order_id: probe_client_order_id,
-                symbol: symbol.clone(),
-                sent_at: std::time::Instant::now(),
-            },
-        );
-        let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
-        handle.mark_binance_um_cancel_inflight(
-            probe_client_order_id,
-            transport_id,
-            create_time,
-            sent_at_us,
-        );
-        debug!(
-            "BinanceUmWsCancelProbeSent: endpoint_id={} transport_id={} probe_client_order_id={} symbol={}",
-            self.id, transport_id, probe_client_order_id, symbol
-        );
-        Ok(())
-    }
-
-    async fn maybe_send_binance_um_cancel_probe(
-        &mut self,
-        ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
-    ) -> Result<()> {
-        let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
-        let interval = Duration::from_millis(BINANCE_UM_CANCEL_PROBE_INTERVAL_MS);
-        if handle.has_recent_binance_um_new_sent(interval) {
-            debug!(
-                "trade ws client id={} skip binance UM cancel probe reason=recent_new_sent",
-                self.id
-            );
-            return Ok(());
-        }
-        let guard_pct = self
-            .binance_um_ws_health
-            .as_ref()
-            .map(|health| health.cancel_probe_rate_limit_guard_pct())
-            .unwrap_or(70);
-        if !handle.binance_um_probe_rate_limit_allows(guard_pct) {
-            debug!(
-                "trade ws client id={} skip binance UM cancel probe reason=rate_limit_guard guard_pct={}",
-                self.id,
-                guard_pct
-            );
-            return Ok(());
-        }
-        self.handle_probe_binance_um_cancel(self.binance_um_cancel_probe_symbol.clone(), ws)
-            .await
-    }
-
-    fn build_binance_um_cancel_probe_msg(
-        endpoint_id: usize,
-        seq: i64,
-        create_time: i64,
-        symbol: &str,
-    ) -> Result<(TradeRequestMsg, i64)> {
-        let probe_client_order_id = binance_um_ws_cancel_probe_client_order_id(endpoint_id, seq);
-        debug_assert!(is_binance_um_ws_cancel_probe_client_order_id(
-            probe_client_order_id
-        ));
-        let params = BinanceCancelOrderParams {
-            symbol: symbol.to_string(),
-            orig_client_order_id: probe_client_order_id,
-        }
-        .to_bytes()
-        .ok_or_else(|| anyhow!("build binance UM cancel probe params failed"))?;
-        let msg = TradeRequestMsg::create(
-            TradeRequestType::BinanceWsCancelUMOrder,
-            create_time,
-            probe_client_order_id,
-            &params,
-        )
-        .ok_or_else(|| anyhow!("build binance UM cancel probe request failed"))?;
-        Ok((msg, probe_client_order_id))
     }
 
     fn binance_trade_action(req_type: TradeRequestType) -> &'static str {
@@ -4095,7 +3844,6 @@ impl TradeWsClient {
             return false;
         }
         let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
-        handle.update_binance_ws_rate_limits(&resp.rate_limits);
 
         if self.binance_session_logon_transport_id == Some(id) {
             self.binance_session_logon_transport_id = None;
@@ -4122,36 +3870,6 @@ impl TradeWsClient {
                 );
                 self.should_reconnect = true;
             }
-            return true;
-        }
-
-        if let Some(meta) = self.binance_um_cancel_probe_inflight.remove(&id) {
-            debug_assert!(is_binance_um_ws_cancel_probe_client_order_id(
-                meta.client_order_id
-            ));
-            handle.clear_binance_um_cancel_inflight(meta.client_order_id, id);
-            let rtt_us = meta.sent_at.elapsed().as_micros() as i64;
-            if let Some(health) = self.binance_um_ws_health.as_ref() {
-                let _ = handle.mark_binance_um_probe_rtt(
-                    rtt_us,
-                    health,
-                    self.id,
-                    self.local_ip,
-                    self.current_remote_addr,
-                    &self.url,
-                );
-            }
-            debug!(
-                "BinanceUmWsCancelProbeResp: endpoint_id={} transport_id={} probe_client_order_id={} symbol={} status={:?} code={:?} rtt_us={} rate_limits={}",
-                self.id,
-                id,
-                meta.client_order_id,
-                meta.symbol,
-                resp.status,
-                resp.error_code,
-                rtt_us,
-                resp.rate_limits.len()
-            );
             return true;
         }
 
@@ -4871,7 +4589,6 @@ mod tests {
             percentile: 85,
             pause_ms: 1,
             select_recent: 3,
-            cancel_probe_rate_limit_guard_pct: 70,
         }
     }
 
@@ -4976,11 +4693,9 @@ mod tests {
 
         let now_us = runtime_common::time_util::get_timestamp_us();
         handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
-        assert!(handle.has_recent_binance_um_new_sent(std::time::Duration::from_secs(1)));
 
         handle.mark_disconnected();
         assert!(!handle.is_available());
-        assert!(!handle.has_recent_binance_um_new_sent(std::time::Duration::from_secs(1)));
 
         handle.mark_connected();
         assert!(handle.is_available_for_new_binance_um(Some(100_000), None, 0));
@@ -5028,21 +4743,6 @@ mod tests {
         handle.clear_binance_um_new_inflight(42, 281474976710657);
 
         assert!(handle.is_available_for_new_binance_um(Some(100_000), None, 1));
-    }
-
-    #[test]
-    fn binance_um_new_sent_controls_cancel_probe_interval() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        let now_us = runtime_common::time_util::get_timestamp_us();
-
-        assert!(!handle.has_recent_binance_um_new_sent(std::time::Duration::from_millis(1)));
-        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us, now_us);
-        assert!(handle.has_recent_binance_um_new_sent(std::time::Duration::from_secs(1)));
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert!(!handle.has_recent_binance_um_new_sent(std::time::Duration::from_millis(1)));
     }
 
     #[test]
@@ -5233,60 +4933,6 @@ mod tests {
         assert!(stats.score_us < 2_000, "score_us={}", stats.score_us);
         assert_eq!(stats.latest_us, Some(1_000));
         assert_eq!(stats.last_sample_age_ms, Some(0));
-    }
-
-    #[test]
-    fn binance_um_probe_builds_special_negative_cancel_id() {
-        let (msg, probe_id) =
-            TradeWsClient::build_binance_um_cancel_probe_msg(3, 17, 1_000, "btcusdt")
-                .expect("probe msg");
-        let params =
-            BinanceCancelOrderParams::from_bytes(msg.params.as_slice()).expect("cancel params");
-
-        assert_eq!(msg.req_type, TradeRequestType::BinanceWsCancelUMOrder);
-        assert_eq!(msg.client_order_id, probe_id);
-        assert!(
-            symbol_utils::internal_client_order_id::is_binance_um_ws_cancel_probe_client_order_id(
-                probe_id
-            )
-        );
-        assert!(probe_id < 0);
-        assert_eq!(params.symbol, "btcusdt");
-        assert_eq!(params.orig_client_order_id, probe_id);
-    }
-
-    #[test]
-    fn binance_um_probe_rate_limit_guard_blocks_at_70_percent() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        handle.update_binance_ws_rate_limits(&[
-            binance_ws::BinanceWsRateLimit {
-                rate_limit_type: "REQUEST_WEIGHT".to_string(),
-                interval: "MINUTE".to_string(),
-                interval_num: 1,
-                limit: 2400,
-                count: 1679,
-            },
-            binance_ws::BinanceWsRateLimit {
-                rate_limit_type: "ORDERS".to_string(),
-                interval: "MINUTE".to_string(),
-                interval_num: 1,
-                limit: 1200,
-                count: 100,
-            },
-        ]);
-        assert!(handle.binance_um_probe_rate_limit_allows(70));
-
-        handle.update_binance_ws_rate_limits(&[binance_ws::BinanceWsRateLimit {
-            rate_limit_type: "REQUEST_WEIGHT".to_string(),
-            interval: "MINUTE".to_string(),
-            interval_num: 1,
-            limit: 2400,
-            count: 1680,
-        }]);
-        assert!(!handle.binance_um_probe_rate_limit_allows(70));
     }
 
     #[test]

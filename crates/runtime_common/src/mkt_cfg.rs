@@ -43,7 +43,6 @@ pub struct BinanceUmWsHealthConfig {
     pub percentile: u8,
     pub pause_ms: u64,
     pub select_recent: usize,
-    pub cancel_probe_rate_limit_guard_pct: u32,
 }
 
 impl Default for BinanceUmWsHealthConfig {
@@ -56,7 +55,6 @@ impl Default for BinanceUmWsHealthConfig {
             percentile: 85,
             pause_ms: 3_000,
             select_recent: 3,
-            cancel_probe_rate_limit_guard_pct: 70,
         }
     }
 }
@@ -128,7 +126,6 @@ struct BinanceUmWsHealthTomlConfig {
     percentile: Option<u8>,
     pause_ms: Option<u64>,
     select_recent: Option<usize>,
-    cancel_probe_rate_limit_guard_pct: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -422,9 +419,6 @@ fn parse_binance_um_ws_health_config(
         percentile: raw.percentile.unwrap_or(defaults.percentile),
         pause_ms: raw.pause_ms.unwrap_or(defaults.pause_ms),
         select_recent: raw.select_recent.unwrap_or(defaults.select_recent),
-        cancel_probe_rate_limit_guard_pct: raw
-            .cancel_probe_rate_limit_guard_pct
-            .unwrap_or(defaults.cancel_probe_rate_limit_guard_pct),
     };
     if cfg.new_rolling_window == 0 {
         return Err(anyhow!(
@@ -459,12 +453,6 @@ fn parse_binance_um_ws_health_config(
     if cfg.select_recent == 0 {
         return Err(anyhow!(
             "binance_um_ws_health.select_recent must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.cancel_probe_rate_limit_guard_pct == 0 || cfg.cancel_probe_rate_limit_guard_pct > 100 {
-        return Err(anyhow!(
-            "binance_um_ws_health.cancel_probe_rate_limit_guard_pct must be in 1..=100 in {}",
             path.display()
         ));
     }
@@ -712,7 +700,6 @@ mod tests {
                 percentile = 85
                 pause_ms = 3000
                 select_recent = 3
-                cancel_probe_rate_limit_guard_pct = 70
                 [binance_um_ws_route]
                 route = "eval"
                 redis_key_suffix = "binance_um_ws_route_eval"
@@ -741,7 +728,6 @@ mod tests {
                 percentile: 85,
                 pause_ms: 3_000,
                 select_recent: 3,
-                cancel_probe_rate_limit_guard_pct: 70,
             }
         );
         assert_eq!(
