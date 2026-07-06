@@ -647,7 +647,12 @@
         const isNum = (x) => typeof x === "number" && Number.isFinite(x);
         const fmt = (x, f) => (isNum(x) ? f.format(x) : "--");
         const cls = (x) => (!isNum(x) ? "muted" : x > 0 ? "positive" : x < 0 ? "negative" : "");
-        const baseOf = (sym) => (sym || "").replace(/USDT$/i, "").replace(/_PERP$/i, "").toUpperCase();
+        const baseOf = (sym) => String(sym || "")
+          .toUpperCase()
+          .replace(new RegExp("[-_]?USDT[-_]?SWAP$", "i"), "")
+          .replace(new RegExp("[-_]?USDT[-_]?PERP$", "i"), "")
+          .replace(new RegExp("[-_]?PERP$", "i"), "")
+          .replace(new RegExp("[-_]?USDT$", "i"), "");
         const fmtTimeUtc8 = (ts) => isNum(ts) ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(ts)) : "--";
 
         // ---- DOM 引用 ----
