@@ -1,20 +1,20 @@
 use order_common::TradingVenue;
 use order_common::{OrderType, Side};
 use quote_plan::quote_plan_levels::QuotePlanLevel;
-use runtime_common::symbol_util::normalize_symbol_for_venue;
 use signal_common::common::TradingLeg;
 use signal_common::open_signal::ArbOpenCtx;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 use super::arb_qty_align::{
     convert_aligned_base_qty_to_open_venue_qty, convert_order_amount_to_aligned_base_qty,
-    min_qty_symbol_key,
 };
 use super::common::{compute_spread_rate, FactorMode, Quote};
 
 pub struct ArbOpenContextInput<'a> {
-    pub open_symbol: &'a str,
-    pub hedge_symbol: &'a str,
+    /// Venue-normalized open/hedge trade symbols. Batch-invariant, so callers
+    /// compute them once per batch instead of once per price level.
+    pub open_trade_symbol: &'a str,
+    pub hedge_trade_symbol: &'a str,
     pub open_venue: TradingVenue,
     pub hedge_venue: TradingVenue,
     pub open_quote: &'a Quote,
@@ -25,7 +25,8 @@ pub struct ArbOpenContextInput<'a> {
     pub open_order_ttl_us: i64,
     pub hedge_timeout_mm_us: i64,
     pub factor_mode: FactorMode,
-    pub open_symbol_key: String,
+    /// Min-qty table key, batch-invariant (derived from open_trade_symbol).
+    pub open_symbol_key: &'a str,
     pub table: &'a VenueMinQtyTable,
     pub convert_order_amount_to_aligned_base_qty:
         &'a dyn Fn(TradingVenue, &str, TradingVenue, &str, &Quote, &Quote, f64, Side) -> f64,
@@ -33,8 +34,11 @@ pub struct ArbOpenContextInput<'a> {
 }
 
 pub struct ArbOpenContextTablesInput<'a> {
-    pub open_symbol: &'a str,
-    pub hedge_symbol: &'a str,
+    /// Venue-normalized open/hedge trade symbols and the min-qty table key.
+    /// All batch-invariant, computed once per batch by the caller.
+    pub open_trade_symbol: &'a str,
+    pub hedge_trade_symbol: &'a str,
+    pub open_symbol_key: &'a str,
     pub open_venue: TradingVenue,
     pub hedge_venue: TradingVenue,
     pub open_quote: &'a Quote,
@@ -52,8 +56,8 @@ pub struct ArbOpenContextTablesInput<'a> {
 
 pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbOpenCtx {
     let mut ctx = ArbOpenCtx::new();
-    let open_trade_symbol = normalize_symbol_for_venue(input.open_symbol, input.open_venue);
-    let hedge_trade_symbol = normalize_symbol_for_venue(input.hedge_symbol, input.hedge_venue);
+    let open_trade_symbol = input.open_trade_symbol;
+    let hedge_trade_symbol = input.hedge_trade_symbol;
 
     ctx.opening_leg = TradingLeg::new(
         input.open_venue,
@@ -61,7 +65,7 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
         input.open_quote.ask,
         input.open_quote.ts,
     );
-    ctx.set_opening_symbol(&open_trade_symbol);
+    ctx.set_opening_symbol(open_trade_symbol);
 
     ctx.hedging_leg = TradingLeg::new(
         input.hedge_venue,
@@ -69,7 +73,7 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
         input.hedge_quote.ask,
         input.hedge_quote.ts,
     );
-    ctx.set_hedging_symbol(&hedge_trade_symbol);
+    ctx.set_hedging_symbol(hedge_trade_symbol);
 
     ctx.set_side(input.level.side);
     ctx.set_order_type(OrderType::Limit);
@@ -77,9 +81,9 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
 
     let base_qty = (input.convert_order_amount_to_aligned_base_qty)(
         input.open_venue,
-        &open_trade_symbol,
+        open_trade_symbol,
         input.hedge_venue,
-        &hedge_trade_symbol,
+        hedge_trade_symbol,
         input.open_quote,
         input.hedge_quote,
         aligned_open_price,
@@ -87,18 +91,15 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
     );
     let aligned_open_qty = (input.convert_aligned_base_qty_to_open_venue_qty)(
         input.open_venue,
-        &open_trade_symbol,
+        open_trade_symbol,
         aligned_open_price,
         base_qty,
     );
 
-    let raw_price_tick = input
-        .table
-        .price_tick(&input.open_symbol_key)
-        .unwrap_or(0.0);
+    let raw_price_tick = input.table.price_tick(input.open_symbol_key).unwrap_or(0.0);
     let _ = ctx.set_price_with_tick_floor(aligned_open_price, raw_price_tick);
 
-    let raw_amount_tick = input.table.step_size(&input.open_symbol_key).unwrap_or(0.0);
+    let raw_amount_tick = input.table.step_size(input.open_symbol_key).unwrap_or(0.0);
     let _ = ctx.set_amount_with_tick_floor(aligned_open_qty, raw_amount_tick);
 
     ctx.exp_time = input.now + input.open_order_ttl_us;
@@ -119,11 +120,9 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
 pub fn build_arb_open_context_from_level_with_tables(
     input: ArbOpenContextTablesInput<'_>,
 ) -> ArbOpenCtx {
-    let open_trade_symbol = normalize_symbol_for_venue(input.open_symbol, input.open_venue);
-    let symbol_key = min_qty_symbol_key(input.open_venue, &open_trade_symbol);
     build_arb_open_context_from_level(ArbOpenContextInput {
-        open_symbol: input.open_symbol,
-        hedge_symbol: input.hedge_symbol,
+        open_trade_symbol: input.open_trade_symbol,
+        hedge_trade_symbol: input.hedge_trade_symbol,
         open_venue: input.open_venue,
         hedge_venue: input.hedge_venue,
         open_quote: input.open_quote,
@@ -134,7 +133,7 @@ pub fn build_arb_open_context_from_level_with_tables(
         open_order_ttl_us: input.open_order_ttl_us,
         hedge_timeout_mm_us: input.hedge_timeout_mm_us,
         factor_mode: input.factor_mode,
-        open_symbol_key: symbol_key,
+        open_symbol_key: input.open_symbol_key,
         table: input.open_table,
         convert_order_amount_to_aligned_base_qty:
             &|open_venue,

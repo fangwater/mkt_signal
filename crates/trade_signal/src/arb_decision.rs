@@ -3175,11 +3175,17 @@ fn emit_spread_arb_open_signals(
         }
     };
 
+    // Venue-normalized symbols + min-qty key are batch-invariant: compute once
+    // here instead of re-allocating them inside build_ctx for every price level.
+    let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
+    let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+    let open_symbol_key = min_qty_symbol_key(open_venue, &open_trade_symbol);
     let build_ctx = |level: &quote_plan::quote_plan_levels::QuotePlanLevel| {
         super::arb_open_context::build_arb_open_context_from_level_with_tables(
             super::arb_open_context::ArbOpenContextTablesInput {
-                open_symbol,
-                hedge_symbol,
+                open_trade_symbol: open_trade_symbol.as_str(),
+                hedge_trade_symbol: hedge_trade_symbol.as_str(),
+                open_symbol_key: open_symbol_key.as_str(),
                 open_venue,
                 hedge_venue,
                 open_quote: &open_quote,
@@ -3427,11 +3433,17 @@ fn emit_spread_arb_close_signals(
         }
     };
 
+    // Batch-invariant venue-normalized symbols + min-qty key, hoisted out of the
+    // per-level map to avoid re-allocating them for every close price level.
+    let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
+    let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+    let open_symbol_key = min_qty_symbol_key(open_venue, &open_trade_symbol);
     let contexts = plan.levels.iter().map(|level| {
         super::arb_open_context::build_arb_open_context_from_level_with_tables(
             super::arb_open_context::ArbOpenContextTablesInput {
-                open_symbol,
-                hedge_symbol,
+                open_trade_symbol: open_trade_symbol.as_str(),
+                hedge_trade_symbol: hedge_trade_symbol.as_str(),
+                open_symbol_key: open_symbol_key.as_str(),
                 open_venue,
                 hedge_venue,
                 open_quote: &open_quote,
@@ -3714,11 +3726,17 @@ fn emit_funding_open_close_signals(
         }
     };
 
+    // Batch-invariant venue-normalized symbols + min-qty key, hoisted out of the
+    // per-level map to avoid re-allocating them for every price level.
+    let open_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
+    let hedge_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
+    let open_symbol_key = min_qty_symbol_key(spot_venue, &open_trade_symbol);
     let contexts = plan.levels.iter().map(|level| {
         super::arb_open_context::build_arb_open_context_from_level_with_tables(
             super::arb_open_context::ArbOpenContextTablesInput {
-                open_symbol: spot_symbol,
-                hedge_symbol: futures_symbol,
+                open_trade_symbol: open_trade_symbol.as_str(),
+                hedge_trade_symbol: hedge_trade_symbol.as_str(),
+                open_symbol_key: open_symbol_key.as_str(),
                 open_venue: spot_venue,
                 hedge_venue: futures_venue,
                 open_quote: &spot_quote,
