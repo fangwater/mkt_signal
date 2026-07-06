@@ -47,7 +47,10 @@ use rolling_common::latency_snapshot::{
 };
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
-use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
+use runtime_common::socket_tuning::{
+    read_tcp_retrans_snapshot, tune_tcp_stream, TcpRetransSnapshot, TcpSocketTuning,
+    DEFAULT_WS_BUSY_POLL_US,
+};
 use runtime_common::time_util::get_timestamp_us;
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -1250,6 +1253,9 @@ pub struct TradeWsClient {
     url: String,
     remote_ip_override: Option<IpAddr>,
     current_remote_addr: Option<SocketAddr>,
+    // 当前连接底层 TCP fd + 上一次 TCP_INFO 快照，用于观测 retrans 率（仅 Linux）。
+    current_tcp_fd: Option<std::os::fd::RawFd>,
+    tcp_health_last: Option<TcpRetransSnapshot>,
     connect_timeout_ms: u64,
     ping_interval_ms: u64,
     max_inflight: usize,
@@ -1449,6 +1455,8 @@ impl TradeWsClient {
             url,
             remote_ip_override: None,
             current_remote_addr: None,
+            current_tcp_fd: None,
+            tcp_health_last: None,
             connect_timeout_ms,
             ping_interval_ms,
             max_inflight,
@@ -1761,9 +1769,11 @@ impl TradeWsClient {
                 }
                 res = Self::establish_connection_with(local_ip, &url, remote_ip_override, connect_timeout_ms, &ws_headers) => {
                     match res {
-                        Ok((mut ws, remote_addr)) => {
+                        Ok((mut ws, remote_addr, raw_fd)) => {
                             self.endpoint_state.borrow_mut().mark_connected();
                             self.current_remote_addr = Some(remote_addr);
+                            self.current_tcp_fd = Some(raw_fd);
+                            self.tcp_health_last = None;
                             info!(
                                 "trade ws client id={} established connection to {} via {} remote_addr={}",
                                 self.id, self.url, self.local_ip, remote_addr
@@ -1882,6 +1892,7 @@ impl TradeWsClient {
                                     let _ = ws.close(None).await;
                                     self.endpoint_state.borrow_mut().mark_disconnected();
                                     self.current_remote_addr = None;
+                                    self.current_tcp_fd = None;
                                     continue;
                                 }
                             }
@@ -1899,10 +1910,12 @@ impl TradeWsClient {
                             self.reset_binance_session_logon();
                             self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
+                            self.current_tcp_fd = None;
                         }
                         Err(err) => {
                             self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
+                            self.current_tcp_fd = None;
                             let err_text = format_error_chain(&err);
                             self.trigger_engine_shutdown_on_binance_rate_limit(
                                 None,
@@ -1950,6 +1963,16 @@ impl TradeWsClient {
     ) -> Result<()> {
         let mut ping_interval = time::interval(Duration::from_millis(self.ping_interval_ms));
         ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        // TCP_INFO 健康观测（仅打日志、不触发重连）。0 或未设 = 关闭。
+        let tcp_health_log_interval_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(10_000);
+        let tcp_health_enabled = tcp_health_log_interval_ms > 0;
+        let mut tcp_health_interval =
+            time::interval(Duration::from_millis(tcp_health_log_interval_ms.max(1)));
+        tcp_health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        tcp_health_interval.tick().await;
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
@@ -1993,6 +2016,9 @@ impl TradeWsClient {
                         return Err(anyhow!("bitget ping timeout"));
                     }
                     self.send_ping(ws).await?;
+                }
+                _ = tcp_health_interval.tick(), if tcp_health_enabled => {
+                    self.log_tcp_health();
                 }
                 _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
                     if self.can_planned_reconnect_now() {
@@ -2082,7 +2108,11 @@ impl TradeWsClient {
         remote_ip_override: Option<IpAddr>,
         connect_timeout_ms: u64,
         headers: &[(String, String)],
-    ) -> Result<(WebSocketStream<MaybeTlsStream<TcpStream>>, SocketAddr)> {
+    ) -> Result<(
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+        SocketAddr,
+        std::os::fd::RawFd,
+    )> {
         let url = Url::parse(url_str).with_context(|| "invalid websocket url")?;
         let host = url
             .host_str()
@@ -2141,6 +2171,12 @@ impl TradeWsClient {
             .map_err(|_| anyhow!("connect timeout {}", url_str))?
             .with_context(|| format!("connect {}", target))?;
         tune_tcp_stream(&stream, "trade_engine ws", trade_engine_tcp_tuning());
+        // 在 TLS/WS 包装前捕获底层 TCP fd，供 TCP_INFO 健康观测使用。
+        // 该 fd 在连接存活期间有效；重连时旧连接关闭、新连接会重新捕获。
+        let raw_fd = {
+            use std::os::fd::AsRawFd;
+            stream.as_raw_fd()
+        };
 
         let mut request = url.clone().into_client_request()?;
         for (name, value) in headers {
@@ -2169,7 +2205,7 @@ impl TradeWsClient {
                 .map_err(|err| anyhow!("websocket handshake (ws): {}", format_ws_error(&err)))?
         };
 
-        Ok((ws_stream, target))
+        Ok((ws_stream, target, raw_fd))
     }
 
     async fn handle_send(
@@ -4527,6 +4563,41 @@ impl TradeWsClient {
             executed_qty: 0.0,
             response_price: 0.0,
         });
+    }
+
+    /// 观测当前连接的 TCP_INFO：与上次快照比较，打印本窗口 data-seg 发送量、
+    /// 重传增量、重传率(bp=万分比)与 RTT。纯观测，不触发重连。用于和 `ss` 对准。
+    fn log_tcp_health(&mut self) {
+        let Some(fd) = self.current_tcp_fd else {
+            return;
+        };
+        let Some(snap) = read_tcp_retrans_snapshot(fd) else {
+            return;
+        };
+        if let Some(prev) = self.tcp_health_last {
+            let d_retrans = snap.total_retrans.wrapping_sub(prev.total_retrans);
+            let d_data_segs = snap.data_segs_out.wrapping_sub(prev.data_segs_out);
+            let retrans_bp = if d_data_segs > 0 {
+                (d_retrans as u64).saturating_mul(10_000) / d_data_segs as u64
+            } else {
+                0
+            };
+            info!(
+                "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} retrans_bp={} total_retrans={} rtt_us={} rttvar_us={}",
+                self.id,
+                self.exchange,
+                self.url,
+                self.local_ip,
+                self.current_remote_addr,
+                d_data_segs,
+                d_retrans,
+                retrans_bp,
+                snap.total_retrans,
+                snap.rtt_us,
+                snap.rttvar_us
+            );
+        }
+        self.tcp_health_last = Some(snap);
     }
 
     async fn send_ping(
