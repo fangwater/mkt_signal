@@ -10,6 +10,7 @@ members = [
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
     "crates/order_common",
+    "crates/period_pbs",
     "crates/persist_manager",
     "crates/persist_common",
     "crates/quote_plan",
@@ -232,6 +233,10 @@ path = "src/bin/intra_funding_trace.rs"
 [[bin]]
 name = "binance_ws_ping_flood_test"
 path = "src/bin/binance_ws_ping_flood_test.rs"
+
+[[bin]]
+name = "remote_ip_diag"
+path = "src/bin/remote_ip_diag.rs"
 
 [dependencies]
 account_common = { path = "crates/account_common" }

@@ -26,6 +26,7 @@ pub mod query_parsers;
 pub mod query_request;
 pub mod query_response_handle;
 pub mod query_type_mapping;
+pub mod remote_ip_pool;
 pub(crate) mod response_sink;
 pub mod trade_request;
 pub mod trade_response_handle;
