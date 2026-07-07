@@ -9,13 +9,13 @@
 //!   WS_URL     覆盖端点（默认 wss://ws-fapi.binance.com/ws-fapi/v1；
 //!              现货用 wss://ws-api.binance.com:443/ws-api/v3）
 //!
-//! 实测结论（UM ws-fapi，2026-07-06）：Binance 有 ping/pong 洪泛保护，行为像
-//! 令牌桶（容量约 5–6 帧、补充速率约 4/s）：
-//!   - 250ms(4/s)  → 存活 90s
-//!   - 200ms(5/s)  → 第 6 个 ping、~1s 即 Policy close 'too many ping/pong frames'
-//!   - 150/100ms   → 同样第 6 个 ping 秒断
-//! 即安全上限 ≈ 4/s；留余量建议 3/s(333ms)。故高频 WS ping 不可作丢包探针，
-//! 低频(≤4/s)只够识别明显坏路径。
+//! 实测结论（2026-07-06，现货 ws-api 与合约 ws-fapi 一致）：Binance 有 ping/pong
+//! 洪泛保护，行为像令牌桶（容量约 5–8 帧、补充速率约 4/s），close 原因统一为
+//! Policy 'too many ping/pong frames'：
+//!   UM  ws-fapi：250ms(4/s) 存活 90s；200/150/100ms 均第 6 个 ping ~1s 秒断
+//!   Spot ws-api：250ms(4/s) 存活 40s；200ms 第 8 帧断；100ms 第 6 帧断
+//! 即两条线安全上限均 ≈ 4/s；留余量建议 3/s(333ms)。故高频 WS ping 不可作丢包
+//! 探针，低频(≤4/s)只够识别明显坏路径。详见 docs/binance_ws_ping_flood.md。
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
