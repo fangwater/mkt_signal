@@ -1,15 +1,17 @@
 //! 独立进程：remote IP 池诊断与维护 → 定时刷新写入 Redis。
 //!
-//! 给 config 的 url 池 + 对应 ip 池（seed），对每个 target：DNS 发现 IP + 合并 ips →
-//! 周期 TCP:443 建连探针评估（成功率 + 建连 RTT）→ 打分排名 + 淘汰/复活。
-//! 定时把每个 target 的健康快照（含 Live IP 排名）写入 Redis，供消费方读取。
+//! 给 config 的 url 池 + 对应 ip 池（seed）+ 出站 IP 池（source_ips），
+//! 对每个 target 的「每个出站 IP × 每个候选 remote」都做 TCP:443 建连探针
+//! （成功率 + 建连 RTT）→ 打分排名 + 淘汰/复活。定时把每 target 的
+//! **最优 (出站IP → remote) 组合排名** + 各出站明细写入 Redis。
 //!
-//! 定位：这套 TCP 探针打分不追求完善，只求给出「哪些 ip→url 质量不错」的信号。
-//! 独立进程运行（不进 trade_engine），默认由 OS 调度落在管家核，不占订单核。
+//! 定位：TCP 探针打分是粗信号——能筛掉「某出站/某 remote 路径系统性偏烂」，
+//! 但分辨不了逐连接的端口级 ECMP 抖动。独立进程运行，不占订单核；本期只诊断+发布。
 //!
 //! 用法：`remote_ip_diag --config config/remote_ip_diag.toml`
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::time::Duration;
@@ -38,7 +40,11 @@ struct Args {
 
 #[derive(Debug, Deserialize)]
 struct DiagConfig {
-    /// 探针绑定的本地源 IP；缺省不 bind。
+    /// 出站 IP 池：对每个候选 remote 从每个出站 IP 都探一遍，打分单元 = (出站, remote)。
+    /// 留空则回落到 probe_source_ip（单出站）或不 bind。
+    #[serde(default)]
+    source_ips: Vec<String>,
+    /// 单出站兜底（source_ips 为空时用）。
     probe_source_ip: Option<String>,
     window: Option<usize>,
     min_samples: Option<usize>,
@@ -52,9 +58,7 @@ struct DiagConfig {
     snapshot_log_ms: Option<u64>,
     /// Redis 连接（[redis] 表）；缺省用 127.0.0.1:6379。
     redis: Option<RedisSettings>,
-    /// Redis key 前缀，最终 key = `<prefix><target.name>`。
     redis_key_prefix: Option<String>,
-    /// 写 Redis 刷新周期；缺省取 snapshot_log_ms（或 1000ms）。
     redis_refresh_ms: Option<u64>,
     targets: Vec<TargetConfig>,
 }
@@ -104,12 +108,18 @@ impl DiagConfig {
     }
 }
 
-/// 发布目标：一个 target 的元信息 + 状态句柄。
+/// 一个出站视角的池句柄。
+struct SourcePool {
+    src: Option<IpAddr>,
+    state: Rc<RefCell<PoolState>>,
+}
+
+/// 一个 target（url）：元信息 + 多个出站视角。
 struct PublishTarget {
     name: String,
     host: String,
     port: u16,
-    state: Rc<RefCell<PoolState>>,
+    sources: Vec<SourcePool>,
 }
 
 /// 写入 Redis 的每 target 快照。
@@ -119,34 +129,90 @@ struct RedisSnapshot<'a> {
     host: &'a str,
     port: u16,
     updated_unix_ms: i64,
+    /// 最优 (出站 → remote) 组合，按建连 RTT 从优到劣。消费方直接取前几名。
+    best_pairs: Vec<BestPair>,
+    /// 每个出站的明细。
+    by_source: BTreeMap<String, SourceView>,
+}
+
+#[derive(Serialize)]
+struct BestPair {
+    src: String,
+    remote: IpAddr,
+    success_pct: u32,
+    rtt_p50_us: i64,
+    rtt_p95_us: i64,
+}
+
+#[derive(Serialize)]
+struct SourceView {
     total: usize,
     live: usize,
     evicted: usize,
     probation: usize,
-    /// Live IP 按建连 RTT 从优到劣排名（消费方直接取前几名即可）。
-    live_ips: Vec<IpAddr>,
-    /// 全量明细（状态/成功率/RTT）。
+    /// 该出站下健康的 remote，按 RTT 排名。
+    live_remotes: Vec<IpAddr>,
     ips: Vec<IpSnapshot>,
 }
 
+fn src_label(src: Option<IpAddr>) -> String {
+    src.map(|ip| ip.to_string())
+        .unwrap_or_else(|| "default".to_string())
+}
+
 fn build_snapshot<'a>(t: &'a PublishTarget, now_ms: i64) -> RedisSnapshot<'a> {
-    let st = t.state.borrow();
-    let ips = st.snapshot();
-    let live_ips: Vec<IpAddr> = st.live_ranked().into_iter().map(|(ip, _)| ip).collect();
-    let live = ips.iter().filter(|s| s.state == IpState::Live).count();
-    let evicted = ips.iter().filter(|s| s.state == IpState::Evicted).count();
-    let total = ips.len();
+    let mut best_pairs: Vec<BestPair> = Vec::new();
+    let mut by_source: BTreeMap<String, SourceView> = BTreeMap::new();
+    for sp in &t.sources {
+        let (snapshot, ranked) = {
+            let st = sp.state.borrow();
+            (st.snapshot(), st.live_ranked())
+        };
+        let live = snapshot.iter().filter(|s| s.state == IpState::Live).count();
+        let evicted = snapshot
+            .iter()
+            .filter(|s| s.state == IpState::Evicted)
+            .count();
+        let total = snapshot.len();
+        let label = src_label(sp.src);
+        for s in &snapshot {
+            if s.state == IpState::Live {
+                best_pairs.push(BestPair {
+                    src: label.clone(),
+                    remote: s.ip,
+                    success_pct: s.success_pct,
+                    rtt_p50_us: s.rtt_p50_us,
+                    rtt_p95_us: s.rtt_p95_us,
+                });
+            }
+        }
+        let live_remotes: Vec<IpAddr> = ranked.into_iter().map(|(ip, _)| ip).collect();
+        by_source.insert(
+            label,
+            SourceView {
+                total,
+                live,
+                evicted,
+                probation: total - live - evicted,
+                live_remotes,
+                ips: snapshot,
+            },
+        );
+    }
+    // 最优组合：RTT p50 升序，再成功率降序，再 remote 稳定序。
+    best_pairs.sort_by(|a, b| {
+        a.rtt_p50_us
+            .cmp(&b.rtt_p50_us)
+            .then(b.success_pct.cmp(&a.success_pct))
+            .then(a.remote.cmp(&b.remote))
+    });
     RedisSnapshot {
         name: &t.name,
         host: &t.host,
         port: t.port,
         updated_unix_ms: now_ms,
-        total,
-        live,
-        evicted,
-        probation: total - live - evicted,
-        live_ips,
-        ips,
+        best_pairs,
+        by_source,
     }
 }
 
@@ -166,7 +232,6 @@ async fn run_redis_publisher(
             biased;
             _ = shutdown.cancelled() => return,
             _ = interval.tick() => {
-                // 先同步构建所有 payload（短暂借状态，不跨 await）。
                 let now_ms = runtime_common::time_util::get_timestamp_us() / 1_000;
                 let payloads: Vec<(String, String)> = targets
                     .iter()
@@ -195,7 +260,7 @@ async fn run_redis_publisher(
                 for (key, json) in &payloads {
                     if let Err(err) = c.set_string(key, json).await {
                         eprintln!("remote_ip_diag: redis set {} failed: {}", key, err);
-                        client = None; // 下轮重连
+                        client = None;
                         break;
                     }
                 }
@@ -208,6 +273,24 @@ fn parse_ip(s: &str, what: &str) -> Result<IpAddr> {
     s.trim()
         .parse::<IpAddr>()
         .with_context(|| format!("invalid {} `{}`", what, s))
+}
+
+/// 解析出站 IP 列表：source_ips 优先；否则 probe_source_ip 单出站；再否则不 bind。
+fn resolve_sources(cfg: &DiagConfig) -> Result<Vec<Option<IpAddr>>> {
+    let mut sources: Vec<Option<IpAddr>> = Vec::new();
+    for s in &cfg.source_ips {
+        if s.trim().is_empty() {
+            continue;
+        }
+        sources.push(Some(parse_ip(s, "source_ip")?));
+    }
+    if sources.is_empty() {
+        match cfg.probe_source_ip.as_deref() {
+            Some(s) if !s.trim().is_empty() => sources.push(Some(parse_ip(s, "probe_source_ip")?)),
+            _ => sources.push(None),
+        }
+    }
+    Ok(sources)
 }
 
 fn main() -> Result<()> {
@@ -232,10 +315,7 @@ fn main() -> Result<()> {
         bail!("config has no targets");
     }
 
-    let probe_source: Option<IpAddr> = match cfg.probe_source_ip.as_deref() {
-        Some(s) if !s.trim().is_empty() => Some(parse_ip(s, "probe_source_ip")?),
-        _ => None,
-    };
+    let sources = resolve_sources(&cfg)?;
     let pool_cfg = cfg.pool_config();
     let redis_settings = cfg.redis.clone().unwrap_or_default();
     let redis_key_prefix = cfg
@@ -248,7 +328,7 @@ fn main() -> Result<()> {
         .map(Duration::from_millis)
         .unwrap_or_else(|| Duration::from_millis(1_000));
 
-    // 预构建各 target 的池 + 发布目标。
+    // 每 target × 每出站 一个池。
     let mut pools: Vec<RemoteIpPool> = Vec::new();
     let mut publish_targets: Vec<PublishTarget> = Vec::new();
     for t in &cfg.targets {
@@ -262,37 +342,47 @@ fn main() -> Result<()> {
             seeds.push(parse_ip(s, "ip")?);
         }
         eprintln!(
-            "remote_ip_diag: target {} url={} host={}:{} ips={}",
+            "remote_ip_diag: target {} url={} host={}:{} ips={} sources={}",
             t.name,
             t.url,
             host,
             port,
-            seeds.len()
+            seeds.len(),
+            sources.len()
         );
-        let pool = RemoteIpPool::new(
-            t.name.clone(),
-            host.clone(),
-            port,
-            probe_source,
-            seeds,
-            pool_cfg.clone(),
-        );
+        let mut source_pools = Vec::new();
+        for &src in &sources {
+            let label = format!("{}@{}", t.name, src_label(src));
+            let pool = RemoteIpPool::new(
+                label,
+                host.clone(),
+                port,
+                src,
+                seeds.clone(),
+                pool_cfg.clone(),
+            );
+            source_pools.push(SourcePool {
+                src,
+                state: pool.state_handle(),
+            });
+            pools.push(pool);
+        }
         publish_targets.push(PublishTarget {
             name: t.name.clone(),
             host,
             port,
-            state: pool.state_handle(),
+            sources: source_pools,
         });
-        pools.push(pool);
     }
 
     eprintln!(
-        "remote_ip_diag: redis {}:{} db={} prefix={} refresh_ms={}",
+        "remote_ip_diag: redis {}:{} db={} prefix={} refresh_ms={} pools={}",
         redis_settings.host,
         redis_settings.port,
         redis_settings.db,
         redis_key_prefix,
-        redis_refresh.as_millis()
+        redis_refresh.as_millis(),
+        pools.len()
     );
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -309,7 +399,6 @@ fn main() -> Result<()> {
             shutdown_ctrlc.cancel();
         });
 
-        // Redis 发布 ticker。
         let publisher = tokio::task::spawn_local(run_redis_publisher(
             redis_settings,
             redis_key_prefix,
@@ -318,7 +407,6 @@ fn main() -> Result<()> {
             shutdown.clone(),
         ));
 
-        // 各 target 的维护（发现 + 探针 + 日志）。
         let mut handles = Vec::new();
         for pool in pools {
             let sd = shutdown.clone();
