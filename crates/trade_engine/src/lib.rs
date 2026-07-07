@@ -28,6 +28,7 @@ pub mod query_response_handle;
 pub mod query_type_mapping;
 pub mod remote_ip_pool;
 pub(crate) mod response_sink;
+pub mod tcp_loss_health;
 pub mod trade_request;
 pub mod trade_response_handle;
 pub mod trade_type_mapping;

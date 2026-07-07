@@ -20,9 +20,8 @@ struct TradeEngineTomlConfig {
     binance_um_whitelist_ip: Option<String>,
     #[serde(default, alias = "binance_um_ws_direct_ip")]
     binance_um_ws_direct_ips: Vec<String>,
-    binance_um_ws_health: Option<BinanceUmWsHealthTomlConfig>,
-    #[serde(alias = "binance_um_ws_route_eval")]
-    binance_um_ws_route: Option<BinanceUmWsRouteTomlConfig>,
+    // 统一的 WS 下单路由（不再绑定 Binance-UM）。
+    ws_route: Option<WsRouteTomlConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,118 +29,47 @@ pub struct TradeEngineLocalIpConfig {
     pub local_ips: Vec<String>,
     pub binance_um_whitelist_ip: Option<String>,
     pub binance_um_ws_direct_ips: Vec<String>,
-    pub binance_um_ws_health: BinanceUmWsHealthConfig,
-    pub binance_um_ws_route: BinanceUmWsRouteConfig,
+    pub ws_route: WsRouteConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinanceUmWsHealthConfig {
-    pub new_rolling_window: usize,
-    pub new_min_period: usize,
-    pub cancel_rolling_window: usize,
-    pub cancel_min_period: usize,
-    pub percentile: u8,
-    pub pause_ms: u64,
-    pub select_recent: usize,
-}
-
-impl Default for BinanceUmWsHealthConfig {
-    fn default() -> Self {
-        Self {
-            new_rolling_window: 200,
-            new_min_period: 10,
-            cancel_rolling_window: 200,
-            cancel_min_period: 10,
-            percentile: 85,
-            pause_ms: 3_000,
-            select_recent: 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// WS 下单端点的路由方式。
+/// - `Rr`：最基础的 round-robin（只看 `is_available()`），不受 TCP 丢包健康度影响。
+/// - `Dispatch`：在 RR 基础上叠加 TCP 丢包健康度——绕开被判定为丢包暂停的端点，
+///   并在持续丢包且无 inflight 时触发换连接（换源端口=换 ECMP 路径）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BinanceUmWsRouteKind {
+pub enum WsRouteKind {
+    #[default]
     Rr,
-    Eval,
-    Follow,
+    Dispatch,
 }
 
-impl BinanceUmWsRouteKind {
+impl WsRouteKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Rr => "rr",
-            Self::Eval => "eval",
-            Self::Follow => "follow",
+            Self::Dispatch => "dispatch",
         }
-    }
-
-    pub fn uses_eval_redis(self) -> bool {
-        matches!(self, Self::Eval | Self::Follow)
-    }
-}
-
-impl Default for BinanceUmWsRouteKind {
-    fn default() -> Self {
-        Self::Rr
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinanceUmWsRouteConfig {
-    pub route: BinanceUmWsRouteKind,
-    pub redis_env: Option<String>,
-    pub redis_key_suffix: String,
-    pub write_interval_ms: u64,
-    pub read_interval_ms: u64,
-    pub score_half_life_ms: u64,
-    pub score_window_ms: u64,
-    pub route_family: String,
-    pub min_samples: usize,
+pub struct WsRouteConfig {
+    pub route: WsRouteKind,
 }
 
-impl Default for BinanceUmWsRouteConfig {
+impl Default for WsRouteConfig {
     fn default() -> Self {
         Self {
-            route: BinanceUmWsRouteKind::Rr,
-            redis_env: None,
-            redis_key_suffix: "binance_um_ws_route_eval".to_string(),
-            write_interval_ms: 1_000,
-            read_interval_ms: 1_000,
-            score_half_life_ms: 800,
-            score_window_ms: 5_000,
-            route_family: "default".to_string(),
-            min_samples: 3,
+            route: WsRouteKind::Rr,
         }
     }
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BinanceUmWsHealthTomlConfig {
-    new_rolling_window: Option<usize>,
-    new_min_period: Option<usize>,
-    cancel_rolling_window: Option<usize>,
-    cancel_min_period: Option<usize>,
-    percentile: Option<u8>,
-    pause_ms: Option<u64>,
-    select_recent: Option<usize>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BinanceUmWsRouteTomlConfig {
+struct WsRouteTomlConfig {
     route: Option<String>,
-    #[serde(default)]
-    enabled: Option<bool>,
-    redis_env: Option<String>,
-    redis_key_suffix: Option<String>,
-    write_interval_ms: Option<u64>,
-    read_interval_ms: Option<u64>,
-    score_half_life_ms: Option<u64>,
-    score_window_ms: Option<u64>,
-    route_family: Option<String>,
-    min_samples: Option<usize>,
 }
 
 pub fn home_mkt_cfg_path() -> Result<PathBuf> {
@@ -207,8 +135,7 @@ pub async fn load_trade_engine_local_ip_config_preferring_trade_engine(
             local_ips: vec![primary_ip, secondary_ip],
             binance_um_whitelist_ip: None,
             binance_um_ws_direct_ips: Vec::new(),
-            binance_um_ws_health: BinanceUmWsHealthConfig::default(),
-            binance_um_ws_route: BinanceUmWsRouteConfig::default(),
+            ws_route: WsRouteConfig::default(),
         },
         format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     ))
@@ -382,195 +309,28 @@ fn parse_trimmed_ip_list(
     Ok(out)
 }
 
-fn parse_binance_um_ws_health_config(
-    raw: Option<BinanceUmWsHealthTomlConfig>,
-    path: &Path,
-) -> Result<BinanceUmWsHealthConfig> {
-    let defaults = BinanceUmWsHealthConfig::default();
+fn parse_ws_route_kind(raw: Option<String>, path: &Path) -> Result<WsRouteKind> {
     let Some(raw) = raw else {
-        return Ok(defaults);
-    };
-
-    let cfg = BinanceUmWsHealthConfig {
-        new_rolling_window: raw.new_rolling_window.ok_or_else(|| {
-            anyhow!(
-                "binance_um_ws_health.new_rolling_window is required in {}",
-                path.display()
-            )
-        })?,
-        new_min_period: raw.new_min_period.ok_or_else(|| {
-            anyhow!(
-                "binance_um_ws_health.new_min_period is required in {}",
-                path.display()
-            )
-        })?,
-        cancel_rolling_window: raw.cancel_rolling_window.ok_or_else(|| {
-            anyhow!(
-                "binance_um_ws_health.cancel_rolling_window is required in {}",
-                path.display()
-            )
-        })?,
-        cancel_min_period: raw.cancel_min_period.ok_or_else(|| {
-            anyhow!(
-                "binance_um_ws_health.cancel_min_period is required in {}",
-                path.display()
-            )
-        })?,
-        percentile: raw.percentile.unwrap_or(defaults.percentile),
-        pause_ms: raw.pause_ms.unwrap_or(defaults.pause_ms),
-        select_recent: raw.select_recent.unwrap_or(defaults.select_recent),
-    };
-    if cfg.new_rolling_window == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_health.new_rolling_window must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.cancel_rolling_window == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_health.cancel_rolling_window must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.new_min_period == 0 || cfg.new_min_period > cfg.new_rolling_window {
-        return Err(anyhow!(
-            "binance_um_ws_health.new_min_period must be in 1..=new_rolling_window in {}",
-            path.display()
-        ));
-    }
-    if cfg.cancel_min_period == 0 || cfg.cancel_min_period > cfg.cancel_rolling_window {
-        return Err(anyhow!(
-            "binance_um_ws_health.cancel_min_period must be in 1..=cancel_rolling_window in {}",
-            path.display()
-        ));
-    }
-    if cfg.percentile > 100 {
-        return Err(anyhow!(
-            "binance_um_ws_health.percentile must be <= 100 in {}",
-            path.display()
-        ));
-    }
-    if cfg.select_recent == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_health.select_recent must be > 0 in {}",
-            path.display()
-        ));
-    }
-    Ok(cfg)
-}
-
-fn parse_binance_um_ws_route_kind(
-    raw: Option<String>,
-    path: &Path,
-) -> Result<BinanceUmWsRouteKind> {
-    let Some(raw) = raw else {
-        return Ok(BinanceUmWsRouteKind::Rr);
+        return Ok(WsRouteKind::Rr);
     };
     match raw.trim().to_ascii_lowercase().as_str() {
-        "rr" | "round_robin" | "round-robin" => Ok(BinanceUmWsRouteKind::Rr),
-        "eval" => Ok(BinanceUmWsRouteKind::Eval),
-        "follow" => Ok(BinanceUmWsRouteKind::Follow),
+        "rr" | "round_robin" | "round-robin" => Ok(WsRouteKind::Rr),
+        "dispatch" => Ok(WsRouteKind::Dispatch),
         other => Err(anyhow!(
-            "binance_um_ws_route.route must be one of rr/eval/follow in {}: {}",
+            "ws_route.route must be one of rr/dispatch in {}: {}",
             path.display(),
             other
         )),
     }
 }
 
-fn parse_binance_um_ws_route_config(
-    raw: Option<BinanceUmWsRouteTomlConfig>,
-    path: &Path,
-) -> Result<BinanceUmWsRouteConfig> {
-    let defaults = BinanceUmWsRouteConfig::default();
+fn parse_ws_route_config(raw: Option<WsRouteTomlConfig>, path: &Path) -> Result<WsRouteConfig> {
+    let defaults = WsRouteConfig::default();
     let Some(raw) = raw else {
         return Ok(defaults);
     };
-    let route = match (raw.route, raw.enabled) {
-        (Some(route), enabled) => {
-            if enabled.is_some() {
-                return Err(anyhow!(
-                    "binance_um_ws_route.enabled is deprecated and cannot be combined with route in {}",
-                    path.display()
-                ));
-            }
-            parse_binance_um_ws_route_kind(Some(route), path)?
-        }
-        (None, Some(true)) => BinanceUmWsRouteKind::Eval,
-        (None, Some(false)) => BinanceUmWsRouteKind::Rr,
-        (None, None) => defaults.route,
-    };
-
-    let redis_env = raw
-        .redis_env
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty());
-    let redis_key_suffix = raw
-        .redis_key_suffix
-        .unwrap_or(defaults.redis_key_suffix)
-        .trim()
-        .to_string();
-    if redis_key_suffix.is_empty() {
-        return Err(anyhow!(
-            "binance_um_ws_route.redis_key_suffix must not be empty in {}",
-            path.display()
-        ));
-    }
-    let route_family = raw
-        .route_family
-        .unwrap_or(defaults.route_family)
-        .trim()
-        .to_string();
-    if route_family.is_empty() {
-        return Err(anyhow!(
-            "binance_um_ws_route.route_family must not be empty in {}",
-            path.display()
-        ));
-    }
-    let cfg = BinanceUmWsRouteConfig {
-        route,
-        redis_env,
-        redis_key_suffix,
-        write_interval_ms: raw.write_interval_ms.unwrap_or(defaults.write_interval_ms),
-        read_interval_ms: raw.read_interval_ms.unwrap_or(defaults.read_interval_ms),
-        score_half_life_ms: raw
-            .score_half_life_ms
-            .unwrap_or(defaults.score_half_life_ms),
-        score_window_ms: raw.score_window_ms.unwrap_or(defaults.score_window_ms),
-        route_family,
-        min_samples: raw.min_samples.unwrap_or(defaults.min_samples),
-    };
-    if cfg.write_interval_ms == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_route.write_interval_ms must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.read_interval_ms == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_route.read_interval_ms must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.score_half_life_ms == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_route.score_half_life_ms must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.score_window_ms == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_route.score_window_ms must be > 0 in {}",
-            path.display()
-        ));
-    }
-    if cfg.min_samples == 0 {
-        return Err(anyhow!(
-            "binance_um_ws_route.min_samples must be > 0 in {}",
-            path.display()
-        ));
-    }
-    Ok(cfg)
+    let route = parse_ws_route_kind(raw.route, path)?;
+    Ok(WsRouteConfig { route })
 }
 
 fn parse_trade_engine_local_ip_config_toml(
@@ -607,8 +367,7 @@ fn parse_trade_engine_local_ip_config_toml(
             path.display()
         ));
     }
-    let binance_um_ws_health = parse_binance_um_ws_health_config(cfg.binance_um_ws_health, path)?;
-    let binance_um_ws_route = parse_binance_um_ws_route_config(cfg.binance_um_ws_route, path)?;
+    let ws_route = parse_ws_route_config(cfg.ws_route, path)?;
     Ok(TradeEngineLocalIpConfig {
         local_ips,
         binance_um_whitelist_ip: trim_optional_empty_ok(cfg.binance_um_whitelist_ip),
@@ -617,8 +376,7 @@ fn parse_trade_engine_local_ip_config_toml(
             "binance_um_ws_direct_ips",
             path,
         )?,
-        binance_um_ws_health,
-        binance_um_ws_route,
+        ws_route,
     })
 }
 
@@ -692,23 +450,8 @@ mod tests {
                 local_ips = ["172.31.33.133", "172.31.46.90"]
                 binance_um_whitelist_ip = "172.31.46.90"
                 binance_um_ws_direct_ips = [" 13.112.240.202 ", "13.158.151.48"]
-                [binance_um_ws_health]
-                new_rolling_window = 200
-                new_min_period = 10
-                cancel_rolling_window = 200
-                cancel_min_period = 10
-                percentile = 85
-                pause_ms = 3000
-                select_recent = 3
-                [binance_um_ws_route]
-                route = "eval"
-                redis_key_suffix = "binance_um_ws_route_eval"
-                write_interval_ms = 500
-                read_interval_ms = 700
-                score_half_life_ms = 2000
-                score_window_ms = 20000
-                route_family = "jp-binance-um-v1"
-                min_samples = 3
+                [ws_route]
+                route = "dispatch"
             "#,
             Path::new("trade_engine.toml"),
         )
@@ -719,73 +462,24 @@ mod tests {
             vec!["13.112.240.202".to_string(), "13.158.151.48".to_string()]
         );
         assert_eq!(
-            parsed.binance_um_ws_health,
-            BinanceUmWsHealthConfig {
-                new_rolling_window: 200,
-                new_min_period: 10,
-                cancel_rolling_window: 200,
-                cancel_min_period: 10,
-                percentile: 85,
-                pause_ms: 3_000,
-                select_recent: 3,
-            }
-        );
-        assert_eq!(
-            parsed.binance_um_ws_route,
-            BinanceUmWsRouteConfig {
-                route: BinanceUmWsRouteKind::Eval,
-                redis_env: None,
-                redis_key_suffix: "binance_um_ws_route_eval".to_string(),
-                write_interval_ms: 500,
-                read_interval_ms: 700,
-                score_half_life_ms: 2_000,
-                score_window_ms: 20_000,
-                route_family: "jp-binance-um-v1".to_string(),
-                min_samples: 3,
+            parsed.ws_route,
+            WsRouteConfig {
+                route: WsRouteKind::Dispatch,
             }
         );
     }
 
     #[test]
-    fn parse_trade_engine_toml_accepts_legacy_route_eval_enabled() {
+    fn parse_trade_engine_toml_defaults_ws_route_to_rr() {
         let parsed = parse_trade_engine_local_ip_config_toml(
             r#"
                 local_ips = ["172.31.33.133"]
-                [binance_um_ws_route_eval]
-                enabled = true
-                redis_key_suffix = "binance_um_ws_route_eval"
             "#,
             Path::new("trade_engine.toml"),
         )
         .unwrap();
 
-        assert_eq!(parsed.binance_um_ws_route.route, BinanceUmWsRouteKind::Eval);
-    }
-
-    #[test]
-    fn parse_trade_engine_toml_accepts_route_follow() {
-        let parsed = parse_trade_engine_local_ip_config_toml(
-            r#"
-                local_ips = ["172.31.33.133"]
-                [binance_um_ws_route]
-                route = "follow"
-                redis_env = "binance_mm_alpha"
-                read_interval_ms = 250
-                min_samples = 3
-            "#,
-            Path::new("trade_engine.toml"),
-        )
-        .unwrap();
-
-        assert_eq!(
-            parsed.binance_um_ws_route.route,
-            BinanceUmWsRouteKind::Follow
-        );
-        assert_eq!(
-            parsed.binance_um_ws_route.redis_env.as_deref(),
-            Some("binance_mm_alpha")
-        );
-        assert_eq!(parsed.binance_um_ws_route.read_interval_ms, 250);
+        assert_eq!(parsed.ws_route.route, WsRouteKind::Rr);
     }
 
     #[test]
@@ -793,44 +487,13 @@ mod tests {
         let err = parse_trade_engine_local_ip_config_toml(
             r#"
                 local_ips = ["172.31.33.133"]
-                [binance_um_ws_route]
+                [ws_route]
                 route = "latency"
             "#,
             Path::new("trade_engine.toml"),
         )
         .unwrap_err();
 
-        assert!(format!("{err:#}").contains("rr/eval/follow"));
-    }
-
-    #[test]
-    fn parse_trade_engine_toml_rejects_empty_route_eval_key() {
-        let err = parse_trade_engine_local_ip_config_toml(
-            r#"
-                local_ips = ["172.31.33.133"]
-                [binance_um_ws_route]
-                route = "eval"
-                redis_key_suffix = " "
-            "#,
-            Path::new("trade_engine.toml"),
-        )
-        .unwrap_err();
-
-        assert!(format!("{err:#}").contains("redis_key_suffix"));
-    }
-
-    #[test]
-    fn parse_trade_engine_toml_rejects_legacy_binance_um_ws_health_window() {
-        let err = parse_trade_engine_local_ip_config_toml(
-            r#"
-                local_ips = ["172.31.33.133"]
-                [binance_um_ws_health]
-                rolling_window = 111
-            "#,
-            Path::new("trade_engine.toml"),
-        )
-        .unwrap_err();
-
-        assert!(format!("{err:#}").contains("rolling_window"));
+        assert!(format!("{err:#}").contains("rr/dispatch"));
     }
 }

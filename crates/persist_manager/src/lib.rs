@@ -1,5 +1,4 @@
 mod bbo_spread;
-mod binance_um_ack_trace;
 pub mod exporter;
 mod iceoryx;
 mod order_update;
@@ -20,7 +19,6 @@ use anyhow::Result;
 use log::info;
 
 use bbo_spread::BboSpreadRuntime;
-use binance_um_ack_trace::BinanceUmNewAckTracePersistor;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use polling::PollStats;
 use sync::{serve_sync_source, PersistSyncConfig};
@@ -42,7 +40,6 @@ pub fn required_column_families() -> Vec<&'static str> {
     cf_names.extend_from_slice(trade_update::required_column_families());
     cf_names.extend_from_slice(order_update::required_column_families());
     cf_names.extend_from_slice(uniform_order_persist::required_column_families());
-    cf_names.extend_from_slice(binance_um_ack_trace::required_column_families());
     cf_names
 }
 
@@ -124,8 +121,6 @@ impl PersistManager {
             UniformOrderPersistor::new(store.clone(), sync_enabled)?
         };
 
-        info!("starting binance UM new ack trace persistor");
-        let binance_um_new_ack_trace = BinanceUmNewAckTracePersistor::new(store.clone())?;
         tokio::task::spawn_local(async move {
             run_persistors(
                 trade_update,
@@ -133,7 +128,6 @@ impl PersistManager {
                 order_update,
                 order_update_unmatched,
                 uniform_order,
-                binance_um_new_ack_trace,
             )
             .await;
         });
@@ -153,7 +147,6 @@ async fn run_persistors(
     order_update: OrderUpdatePersistor,
     order_update_unmatched: OrderUpdateUnmatchedPersistor,
     uniform_order: UniformOrderPersistor,
-    binance_um_new_ack_trace: BinanceUmNewAckTracePersistor,
 ) {
     info!(
         "persistors polling unified: max_drain_per_channel={} idle_sleep_ms={}",
@@ -169,7 +162,6 @@ async fn run_persistors(
         stats.merge(order_update.poll_available());
         stats.merge(order_update_unmatched.poll_available());
         stats.merge(uniform_order.poll_available(&mut uniform_pending));
-        stats.merge(binance_um_new_ack_trace.poll_available());
 
         if stats.receive_error {
             tokio::time::sleep(polling::receive_error_sleep()).await;

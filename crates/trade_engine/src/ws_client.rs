@@ -20,6 +20,7 @@ use crate::query_parsers::gate_order_status::{
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
+use crate::tcp_loss_health::{TcpHealthMode, TcpLossHealth, TcpLossHealthConfig, Verdict};
 use crate::trade_request::{
     BinanceNewOrderParamsRef, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
     TradeRequestType,
@@ -35,11 +36,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use iceoryx2::port::publisher::Publisher;
-use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
-use order_common::{BinanceUmNewAckTraceMsg, BINANCE_UM_NEW_ACK_TRACE_PAYLOAD_LEN};
 use rolling_common::latency_kll::LatencyKll;
 use rolling_common::latency_snapshot::{
     LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
@@ -75,11 +73,6 @@ use tokio_tungstenite::{
 };
 use tokio_util::sync::CancellationToken;
 use url::Url;
-
-const BINANCE_UM_NEW_ACK_ROUTE_EVAL_MAX_SAMPLES: usize = 64;
-
-type BinanceUmNewAckTracePublisher =
-    Rc<Publisher<ipc::Service, [u8; BINANCE_UM_NEW_ACK_TRACE_PAYLOAD_LEN], ()>>;
 
 fn extract_okex_login_timestamp(payload: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(payload).ok()?;
@@ -520,13 +513,9 @@ fn classify_ws_action(rt: TradeRequestType) -> WsAction {
 pub(crate) struct WsEndpointState {
     connected: bool,
     cooldown_until: Option<std::time::Instant>,
-    health_pause_until: Option<std::time::Instant>,
-    recent_binance_um_new_ack_rtts_us: VecDeque<BinanceUmNewAckRttSample>,
-    recent_binance_um_cancel_rtts_us: VecDeque<i64>,
-    binance_um_new_inflight: VecDeque<BinanceUmNewInflightState>,
-    binance_um_cancel_inflight: VecDeque<BinanceUmCancelInflightState>,
-    last_binance_um_new_inflight_block_log: Option<std::time::Instant>,
-    last_binance_um_cancel_inflight_block_log: Option<std::time::Instant>,
+    // 通用 TCP 丢包健康度（dispatch 路由）软暂停：到期前该端点被路由绕开。
+    // 仅在 dispatch+act 模式下由 eval_tcp_health 设置；RR 模式永远为 None。
+    tcp_loss_pause_until: Option<std::time::Instant>,
 }
 
 impl WsEndpointState {
@@ -536,241 +525,6 @@ impl WsEndpointState {
 
     fn mark_disconnected(&mut self) {
         self.connected = false;
-        self.binance_um_new_inflight.clear();
-        self.binance_um_cancel_inflight.clear();
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct BinanceUmNewAckRttSample {
-    rtt_us: i64,
-    ts_us: i64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct BinanceUmNewInflightState {
-    client_order_id: i64,
-    transport_id: i64,
-    create_time_us: i64,
-    sent_at_us: i64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct BinanceUmCancelInflightState {
-    client_order_id: i64,
-    transport_id: i64,
-    create_time_us: i64,
-    sent_at_us: i64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct BinanceUmWsHealthConfig {
-    pub new_rolling_window: usize,
-    pub new_min_period: usize,
-    pub cancel_rolling_window: usize,
-    pub cancel_min_period: usize,
-    pub percentile: u8,
-    pub pause_ms: u64,
-    pub select_recent: usize,
-}
-
-#[derive(Debug)]
-struct BinanceUmWsHealthState {
-    new_samples_us: VecDeque<i64>,
-    cancel_samples_us: VecDeque<i64>,
-    new_summary: BinanceUmWsLatencySummary,
-    cancel_summary: BinanceUmWsLatencySummary,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BinanceUmWsLatencySummary {
-    pub n: usize,
-    pub p50_us: i64,
-    pub p90_us: i64,
-    pub p99_us: i64,
-    pub max_us: i64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct BinanceUmWsEndpointRouteEvalStats {
-    pub sample_n: usize,
-    pub score_us: i64,
-    pub effective_n: f64,
-    pub latest_us: Option<i64>,
-    pub last_sample_age_ms: Option<i64>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct BinanceUmWsHealthSnapshot {
-    pub latest_new_us: Option<i64>,
-    pub new_threshold_us: Option<i64>,
-    pub new_summary: BinanceUmWsLatencySummary,
-    pub latest_cancel_us: Option<i64>,
-    pub cancel_threshold_us: Option<i64>,
-    pub cancel_summary: BinanceUmWsLatencySummary,
-    pub percentile: u8,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct BinanceUmWsHealthRuntime {
-    cfg: BinanceUmWsHealthConfig,
-    state: Rc<RefCell<BinanceUmWsHealthState>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum BinanceUmWsHealthAction {
-    Healthy,
-    Pause { threshold_us: i64, pause_ms: u64 },
-}
-
-impl BinanceUmWsHealthRuntime {
-    pub(crate) fn new(cfg: BinanceUmWsHealthConfig) -> Self {
-        Self {
-            cfg,
-            state: Rc::new(RefCell::new(BinanceUmWsHealthState {
-                new_samples_us: VecDeque::with_capacity(256),
-                cancel_samples_us: VecDeque::with_capacity(256),
-                new_summary: BinanceUmWsLatencySummary::default(),
-                cancel_summary: BinanceUmWsLatencySummary::default(),
-            })),
-        }
-    }
-
-    pub(crate) fn select_recent(&self) -> usize {
-        self.cfg.select_recent
-    }
-
-    pub(crate) fn pause_ms(&self) -> u64 {
-        self.cfg.pause_ms
-    }
-
-    pub(crate) fn inflight_create_block_threshold_us(&self) -> Option<i64> {
-        let state = self.state.borrow();
-        if state.new_samples_us.len() < self.cfg.new_min_period {
-            return None;
-        }
-        let mut sorted: Vec<i64> = state.new_samples_us.iter().copied().collect();
-        sorted.sort_unstable();
-        Some(Self::percentile(&sorted, self.cfg.percentile))
-    }
-
-    pub(crate) fn cancel_inflight_block_threshold_us(&self) -> Option<i64> {
-        let state = self.state.borrow();
-        if state.cancel_samples_us.len() < self.cfg.cancel_min_period {
-            return None;
-        }
-        let mut sorted: Vec<i64> = state.cancel_samples_us.iter().copied().collect();
-        sorted.sort_unstable();
-        Some(Self::percentile(&sorted, self.cfg.percentile))
-    }
-
-    fn percentile(sorted: &[i64], percentile: u8) -> i64 {
-        if sorted.is_empty() {
-            return 0;
-        }
-        let idx = ((sorted.len() - 1) * percentile as usize).div_ceil(100);
-        sorted[idx.min(sorted.len() - 1)]
-    }
-
-    fn summary(samples_us: &VecDeque<i64>) -> BinanceUmWsLatencySummary {
-        if samples_us.is_empty() {
-            return BinanceUmWsLatencySummary::default();
-        }
-        let mut sorted: Vec<i64> = samples_us.iter().copied().collect();
-        sorted.sort_unstable();
-        BinanceUmWsLatencySummary {
-            n: sorted.len(),
-            p50_us: Self::percentile(&sorted, 50),
-            p90_us: Self::percentile(&sorted, 90),
-            p99_us: Self::percentile(&sorted, 99),
-            max_us: sorted.last().copied().unwrap_or(0),
-        }
-    }
-
-    fn threshold(samples_us: &VecDeque<i64>, min_period: usize, percentile: u8) -> Option<i64> {
-        if samples_us.len() < min_period {
-            return None;
-        }
-        let mut sorted: Vec<i64> = samples_us.iter().copied().collect();
-        sorted.sort_unstable();
-        Some(Self::percentile(&sorted, percentile))
-    }
-
-    fn record_sample(
-        samples_us: &mut VecDeque<i64>,
-        rtt_us: i64,
-        rolling_window: usize,
-        min_period: usize,
-        percentile: u8,
-        pause_ms: u64,
-    ) -> BinanceUmWsHealthAction {
-        let threshold_us = Self::threshold(samples_us, min_period, percentile);
-        let action = if let Some(threshold_us) = threshold_us {
-            if rtt_us > threshold_us {
-                BinanceUmWsHealthAction::Pause {
-                    threshold_us,
-                    pause_ms,
-                }
-            } else {
-                BinanceUmWsHealthAction::Healthy
-            }
-        } else {
-            BinanceUmWsHealthAction::Healthy
-        };
-        samples_us.push_back(rtt_us);
-        while samples_us.len() > rolling_window {
-            samples_us.pop_front();
-        }
-        action
-    }
-
-    pub(crate) fn record_new(&self, rtt_us: i64) -> BinanceUmWsHealthAction {
-        let mut state = self.state.borrow_mut();
-        let action = Self::record_sample(
-            &mut state.new_samples_us,
-            rtt_us,
-            self.cfg.new_rolling_window,
-            self.cfg.new_min_period,
-            self.cfg.percentile,
-            self.cfg.pause_ms,
-        );
-        state.new_summary = Self::summary(&state.new_samples_us);
-        action
-    }
-
-    pub(crate) fn record_cancel(&self, rtt_us: i64) -> BinanceUmWsHealthAction {
-        let mut state = self.state.borrow_mut();
-        let action = Self::record_sample(
-            &mut state.cancel_samples_us,
-            rtt_us,
-            self.cfg.cancel_rolling_window,
-            self.cfg.cancel_min_period,
-            self.cfg.percentile,
-            self.cfg.pause_ms,
-        );
-        state.cancel_summary = Self::summary(&state.cancel_samples_us);
-        action
-    }
-
-    pub(crate) fn snapshot(&self) -> BinanceUmWsHealthSnapshot {
-        let state = self.state.borrow();
-        BinanceUmWsHealthSnapshot {
-            latest_new_us: state.new_samples_us.back().copied(),
-            new_threshold_us: Self::threshold(
-                &state.new_samples_us,
-                self.cfg.new_min_period,
-                self.cfg.percentile,
-            ),
-            new_summary: state.new_summary,
-            latest_cancel_us: state.cancel_samples_us.back().copied(),
-            cancel_threshold_us: Self::threshold(
-                &state.cancel_samples_us,
-                self.cfg.cancel_min_period,
-                self.cfg.percentile,
-            ),
-            cancel_summary: state.cancel_summary,
-            percentile: self.cfg.percentile,
-        }
     }
 }
 
@@ -798,32 +552,10 @@ impl WsEndpointHandle {
     }
 
     pub(crate) fn is_available(&self) -> bool {
-        self.is_available_at(std::time::Instant::now(), true, None, None, 0)
+        self.is_available_at(std::time::Instant::now())
     }
 
-    pub(crate) fn is_available_for_new_binance_um(
-        &self,
-        new_block_threshold_us: Option<i64>,
-        cancel_block_threshold_us: Option<i64>,
-        pause_ms: u64,
-    ) -> bool {
-        self.is_available_at(
-            std::time::Instant::now(),
-            false,
-            new_block_threshold_us,
-            cancel_block_threshold_us,
-            pause_ms,
-        )
-    }
-
-    fn is_available_at(
-        &self,
-        now: std::time::Instant,
-        ignore_health_pause: bool,
-        binance_um_new_inflight_block_threshold_us: Option<i64>,
-        binance_um_cancel_inflight_block_threshold_us: Option<i64>,
-        binance_um_new_inflight_pause_ms: u64,
-    ) -> bool {
+    fn is_available_at(&self, now: std::time::Instant) -> bool {
         let mut state = self.state.borrow_mut();
         if !state.connected {
             return false;
@@ -834,100 +566,13 @@ impl WsEndpointHandle {
             }
             state.cooldown_until = None;
         }
-        if !ignore_health_pause {
-            if let Some(until) = state.health_pause_until {
-                if now < until {
-                    return false;
-                }
-                state.health_pause_until = None;
+        // TCP 丢包软暂停对所有路由都无条件生效（与 cooldown 同级）；RR 模式下从不被设置，
+        // 因此不影响 RR。dispatch+act 模式下 eval_tcp_health 置位后，本端点被路由绕开。
+        if let Some(until) = state.tcp_loss_pause_until {
+            if now < until {
+                return false;
             }
-        }
-        if let Some(block_threshold_us) =
-            binance_um_new_inflight_block_threshold_us.filter(|threshold| *threshold > 0)
-        {
-            if let Some(inflight) = state.binance_um_new_inflight.front().copied() {
-                let now_us = get_timestamp_us();
-                let anchor_us = if inflight.create_time_us > 0 {
-                    inflight.create_time_us
-                } else {
-                    inflight.sent_at_us
-                };
-                if anchor_us > 0 {
-                    let age_us = now_us.saturating_sub(anchor_us);
-                    if age_us >= block_threshold_us {
-                        let _ = state.binance_um_new_inflight.pop_front();
-                        state.recent_binance_um_new_ack_rtts_us.clear();
-                        state.recent_binance_um_cancel_rtts_us.clear();
-                        if binance_um_new_inflight_pause_ms > 0 {
-                            let until =
-                                now + Duration::from_millis(binance_um_new_inflight_pause_ms);
-                            state.health_pause_until = Some(match state.health_pause_until {
-                                Some(existing) if existing > until => existing,
-                                _ => until,
-                            });
-                        }
-                        let should_log = state
-                            .last_binance_um_new_inflight_block_log
-                            .map(|last| now.duration_since(last) >= Duration::from_secs(1))
-                            .unwrap_or(true);
-                        if should_log {
-                            state.last_binance_um_new_inflight_block_log = Some(now);
-                            warn!(
-                                "binance UM WS endpoint blocked by stale NEW inflight client_order_id={} transport_id={} age_us={} threshold_us={} pause_ms={}",
-                                inflight.client_order_id,
-                                inflight.transport_id,
-                                age_us,
-                                block_threshold_us,
-                                binance_um_new_inflight_pause_ms
-                            );
-                        }
-                        return false;
-                    }
-                }
-            }
-        }
-        if let Some(block_threshold_us) =
-            binance_um_cancel_inflight_block_threshold_us.filter(|threshold| *threshold > 0)
-        {
-            if let Some(inflight) = state.binance_um_cancel_inflight.front().copied() {
-                let now_us = get_timestamp_us();
-                let anchor_us = if inflight.create_time_us > 0 {
-                    inflight.create_time_us
-                } else {
-                    inflight.sent_at_us
-                };
-                if anchor_us > 0 {
-                    let age_us = now_us.saturating_sub(anchor_us);
-                    if age_us >= block_threshold_us {
-                        let _ = state.binance_um_cancel_inflight.pop_front();
-                        state.recent_binance_um_cancel_rtts_us.clear();
-                        if binance_um_new_inflight_pause_ms > 0 {
-                            let until =
-                                now + Duration::from_millis(binance_um_new_inflight_pause_ms);
-                            state.health_pause_until = Some(match state.health_pause_until {
-                                Some(existing) if existing > until => existing,
-                                _ => until,
-                            });
-                        }
-                        let should_log = state
-                            .last_binance_um_cancel_inflight_block_log
-                            .map(|last| now.duration_since(last) >= Duration::from_secs(1))
-                            .unwrap_or(true);
-                        if should_log {
-                            state.last_binance_um_cancel_inflight_block_log = Some(now);
-                            warn!(
-                                "binance UM WS endpoint blocked by stale CANCEL inflight client_order_id={} transport_id={} age_us={} threshold_us={} pause_ms={}",
-                                inflight.client_order_id,
-                                inflight.transport_id,
-                                age_us,
-                                block_threshold_us,
-                                binance_um_new_inflight_pause_ms
-                            );
-                        }
-                        return false;
-                    }
-                }
-            }
+            state.tcp_loss_pause_until = None;
         }
         true
     }
@@ -936,287 +581,18 @@ impl WsEndpointHandle {
     pub(crate) fn mark_connected(&self) {
         self.state.borrow_mut().mark_connected();
     }
-
-    #[cfg(test)]
-    pub(crate) fn mark_disconnected(&self) {
-        self.state.borrow_mut().mark_disconnected();
-    }
-
-    pub(crate) fn mark_binance_um_new_inflight(
-        &self,
-        client_order_id: i64,
-        transport_id: i64,
-        create_time_us: i64,
-        sent_at_us: i64,
-    ) {
-        let mut state = self.state.borrow_mut();
-        state
-            .binance_um_new_inflight
-            .push_back(BinanceUmNewInflightState {
-                client_order_id,
-                transport_id,
-                create_time_us,
-                sent_at_us,
-            });
-    }
-
-    pub(crate) fn clear_binance_um_new_inflight(&self, client_order_id: i64, transport_id: i64) {
-        let mut state = self.state.borrow_mut();
-        let Some(pos) = state.binance_um_new_inflight.iter().position(|inflight| {
-            (transport_id > 0 && inflight.transport_id == transport_id)
-                || (client_order_id > 0 && inflight.client_order_id == client_order_id)
-        }) else {
-            return;
-        };
-        let _ = state.binance_um_new_inflight.remove(pos);
-    }
-
-    pub(crate) fn mark_binance_um_cancel_inflight(
-        &self,
-        client_order_id: i64,
-        transport_id: i64,
-        create_time_us: i64,
-        sent_at_us: i64,
-    ) {
-        self.state
-            .borrow_mut()
-            .binance_um_cancel_inflight
-            .push_back(BinanceUmCancelInflightState {
-                client_order_id,
-                transport_id,
-                create_time_us,
-                sent_at_us,
-            });
-    }
-
-    pub(crate) fn clear_binance_um_cancel_inflight(&self, client_order_id: i64, transport_id: i64) {
-        let mut state = self.state.borrow_mut();
-        let Some(pos) = state
-            .binance_um_cancel_inflight
-            .iter()
-            .position(|inflight| {
-                (transport_id > 0 && inflight.transport_id == transport_id)
-                    || (client_order_id > 0 && inflight.client_order_id == client_order_id)
-            })
-        else {
-            return;
-        };
-        let _ = state.binance_um_cancel_inflight.remove(pos);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn recent_binance_um_cancel_rtt_sum_count(&self, n: usize) -> (i64, usize) {
-        let state = self.state.borrow();
-        let count = state.recent_binance_um_cancel_rtts_us.len().min(n);
-        let sum = state
-            .recent_binance_um_cancel_rtts_us
-            .iter()
-            .rev()
-            .take(n)
-            .copied()
-            .sum();
-        (sum, count)
-    }
-
-    pub(crate) fn recent_binance_um_new_ack_rtt_sum_count(&self, n: usize) -> (i64, usize) {
-        let state = self.state.borrow();
-        let count = state.recent_binance_um_new_ack_rtts_us.len().min(n);
-        let sum = state
-            .recent_binance_um_new_ack_rtts_us
-            .iter()
-            .rev()
-            .take(n)
-            .map(|sample| sample.rtt_us)
-            .sum();
-        (sum, count)
-    }
-
-    pub(crate) fn binance_um_new_ack_route_eval_stats(
-        &self,
-        now_us: i64,
-        half_life_ms: u64,
-        window_ms: u64,
-    ) -> BinanceUmWsEndpointRouteEvalStats {
-        let state = self.state.borrow();
-        let cutoff_us = now_us.saturating_sub((window_ms as i64).saturating_mul(1_000));
-        let half_life_us = ((half_life_ms.max(1)) as f64) * 1_000.0;
-        let mut weighted_sum = 0.0;
-        let mut weight_sum = 0.0;
-        let mut sample_n = 0usize;
-        for sample in state.recent_binance_um_new_ack_rtts_us.iter().rev() {
-            if sample.ts_us < cutoff_us {
-                break;
-            }
-            let age_us = now_us.saturating_sub(sample.ts_us).max(0) as f64;
-            let weight = 2.0_f64.powf(-age_us / half_life_us);
-            weighted_sum += (sample.rtt_us as f64) * weight;
-            weight_sum += weight;
-            sample_n = sample_n.saturating_add(1);
-        }
-        let latest = state.recent_binance_um_new_ack_rtts_us.back().copied();
-        BinanceUmWsEndpointRouteEvalStats {
-            sample_n,
-            score_us: if weight_sum > 0.0 {
-                (weighted_sum / weight_sum).round() as i64
-            } else {
-                0
-            },
-            effective_n: weight_sum,
-            latest_us: latest.map(|sample| sample.rtt_us),
-            last_sample_age_ms: latest.map(|sample| {
-                now_us
-                    .saturating_sub(sample.ts_us)
-                    .max(0)
-                    .saturating_div(1_000)
-            }),
-        }
-    }
-
-    pub(crate) fn mark_binance_um_new_ack_rtt(
-        &self,
-        rtt_us: i64,
-        health: &BinanceUmWsHealthRuntime,
-        endpoint_id: usize,
-        local_ip: IpAddr,
-        remote_addr: Option<SocketAddr>,
-        url: &str,
-    ) -> BinanceUmWsHealthAction {
-        let action = health.record_new(rtt_us);
-        let mut state = self.state.borrow_mut();
-        state
-            .recent_binance_um_new_ack_rtts_us
-            .push_back(BinanceUmNewAckRttSample {
-                rtt_us,
-                ts_us: get_timestamp_us(),
-            });
-        while state.recent_binance_um_new_ack_rtts_us.len()
-            > BINANCE_UM_NEW_ACK_ROUTE_EVAL_MAX_SAMPLES.max(health.select_recent())
-        {
-            state.recent_binance_um_new_ack_rtts_us.pop_front();
-        }
-        if let BinanceUmWsHealthAction::Pause {
-            threshold_us,
-            pause_ms,
-        } = action
-        {
-            state.recent_binance_um_cancel_rtts_us.clear();
-            let until = std::time::Instant::now() + Duration::from_millis(pause_ms);
-            state.health_pause_until = Some(match state.health_pause_until {
-                Some(existing) if existing > until => existing,
-                _ => until,
-            });
-            debug!(
-                "binance UM WS endpoint NEW health pause endpoint_id={} local_ip={} remote_addr={} ws_url={} rtt_us={} threshold_us={} pause_ms={}",
-                endpoint_id,
-                local_ip,
-                remote_addr
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|| "unknown".to_string()),
-                url,
-                rtt_us,
-                threshold_us,
-                pause_ms
-            );
-        }
-        action
-    }
-
-    pub(crate) fn mark_binance_um_cancel_rtt(
-        &self,
-        rtt_us: i64,
-        health: &BinanceUmWsHealthRuntime,
-        endpoint_id: usize,
-        local_ip: IpAddr,
-        remote_addr: Option<SocketAddr>,
-        url: &str,
-    ) -> BinanceUmWsHealthAction {
-        let action = health.record_cancel(rtt_us);
-        let mut state = self.state.borrow_mut();
-        state.recent_binance_um_cancel_rtts_us.push_back(rtt_us);
-        while state.recent_binance_um_cancel_rtts_us.len() > health.select_recent() {
-            state.recent_binance_um_cancel_rtts_us.pop_front();
-        }
-        if let BinanceUmWsHealthAction::Pause {
-            threshold_us,
-            pause_ms,
-        } = action
-        {
-            state.recent_binance_um_cancel_rtts_us.clear();
-            let until = std::time::Instant::now() + Duration::from_millis(pause_ms);
-            state.health_pause_until = Some(match state.health_pause_until {
-                Some(existing) if existing > until => existing,
-                _ => until,
-            });
-            debug!(
-                "binance UM WS endpoint CANCEL health pause endpoint_id={} local_ip={} remote_addr={} ws_url={} rtt_us={} threshold_us={} pause_ms={}",
-                endpoint_id,
-                local_ip,
-                remote_addr
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|| "unknown".to_string()),
-                url,
-                rtt_us,
-                threshold_us,
-                pause_ms
-            );
-        }
-        action
-    }
-
-    pub(crate) fn binance_um_health_stats(&self, select_recent: usize) -> (i64, usize, i64) {
-        let now = std::time::Instant::now();
-        let mut state = self.state.borrow_mut();
-        let pause_ms_left = match state.health_pause_until {
-            Some(until) if now < until => until.duration_since(now).as_millis() as i64,
-            Some(_) => {
-                state.health_pause_until = None;
-                0
-            }
-            None => 0,
-        };
-        let recent_count = state
-            .recent_binance_um_new_ack_rtts_us
-            .len()
-            .min(select_recent);
-        let sum = state
-            .recent_binance_um_new_ack_rtts_us
-            .iter()
-            .rev()
-            .take(select_recent)
-            .map(|sample| sample.rtt_us)
-            .sum::<i64>();
-        let mean_us = if recent_count > 0 {
-            sum / recent_count as i64
-        } else {
-            0
-        };
-        (mean_us, recent_count, pause_ms_left)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TakerTraceMeta {
-    create_time_us: i64,
-    create_to_ipc_recv_us: Option<i64>,
-    ipc_recv_to_ws_send_done_us: Option<i64>,
-    create_to_ws_send_done_us: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct InflightRequestFlags {
     ws_open_update_enabled: bool,
-    taker_trace: Option<TakerTraceMeta>,
 }
 
 #[derive(Clone, Debug)]
 struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
-    order_create_time_us: i64,
     ws_open_update_enabled: bool,
-    taker_trace: Option<TakerTraceMeta>,
-    /// 墙钟 epoch μs，`ws.send` 调用前打点；用于逐单 send 调用耗时分析。
-    ws_send_start_time_us: i64,
     /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于本地 RTT。
     sent_at: std::time::Instant,
     /// 墙钟 epoch μs，与 `sent_at` 同时打点；用于跨时钟差值（uplink / downlink）。
@@ -1297,9 +673,10 @@ pub struct TradeWsClient {
     last_okex_login_ts: Option<String>,
     last_gate_login_req_id: Option<String>,
     lat_buckets: WsLatencyBuckets,
-    binance_um_ws_health: Option<BinanceUmWsHealthRuntime>,
-    binance_um_new_ack_trace_publisher: Option<BinanceUmNewAckTracePublisher>,
     binance_um_route_group_id: Option<u32>,
+    // dispatch 路由：允许 TCP 丢包健康度真正驱动 软暂停(route-away)+硬重连。
+    // 仅当 ws_route=dispatch 时为 true；RR 恒为 false（只观测、只打日志）。
+    tcp_loss_act: bool,
 }
 
 impl TradeWsClient {
@@ -1498,9 +875,8 @@ impl TradeWsClient {
             last_okex_login_ts: None,
             last_gate_login_req_id: None,
             lat_buckets,
-            binance_um_ws_health: None,
-            binance_um_new_ack_trace_publisher: None,
             binance_um_route_group_id: None,
+            tcp_loss_act: false,
         }
     }
 
@@ -1517,21 +893,14 @@ impl TradeWsClient {
         self
     }
 
-    pub(crate) fn with_binance_um_ws_health(mut self, health: BinanceUmWsHealthRuntime) -> Self {
-        self.binance_um_ws_health = Some(health);
-        self
-    }
-
-    pub(crate) fn with_binance_um_new_ack_trace_publisher(
-        mut self,
-        publisher: BinanceUmNewAckTracePublisher,
-    ) -> Self {
-        self.binance_um_new_ack_trace_publisher = Some(publisher);
-        self
-    }
-
     pub(crate) fn with_binance_um_route_group_id(mut self, route_group_id: u32) -> Self {
         self.binance_um_route_group_id = Some(route_group_id);
+        self
+    }
+
+    /// dispatch 路由：开启后 TCP 丢包健康度可真正驱动软暂停+硬重连（配合 act 模式）。
+    pub(crate) fn with_tcp_loss_act(mut self, enabled: bool) -> Self {
+        self.tcp_loss_act = enabled;
         self
     }
 
@@ -1963,14 +1332,25 @@ impl TradeWsClient {
     ) -> Result<()> {
         let mut ping_interval = time::interval(Duration::from_millis(self.ping_interval_ms));
         ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        // TCP_INFO 健康观测（仅打日志、不触发重连）。0 或未设 = 关闭。
-        let tcp_health_log_interval_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
+        // TCP 丢包健康度：observe 只算+日志；act 才驱动动作（动作在 Dispatch 路由下生效）。
+        // 间隔沿用 TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS（0=关）；MODE=off 亦关。
+        let tcp_health_interval_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(10_000);
-        let tcp_health_enabled = tcp_health_log_interval_ms > 0;
+        // RR 路由永不 act：即便 env=act 也降级为 observe（只观测、只打日志），保证 RR 行为不变。
+        // 仅 dispatch 路由(self.tcp_loss_act)才允许 act 真正驱动 pause/reconnect。
+        let env_tcp_health_mode = TcpHealthMode::from_env(TcpHealthMode::Observe);
+        let tcp_health_mode = match env_tcp_health_mode {
+            TcpHealthMode::Off => TcpHealthMode::Off,
+            TcpHealthMode::Act if self.tcp_loss_act => TcpHealthMode::Act,
+            _ => TcpHealthMode::Observe,
+        };
+        let tcp_health_enabled =
+            tcp_health_interval_ms > 0 && tcp_health_mode != TcpHealthMode::Off;
+        let mut tcp_loss_health = TcpLossHealth::new(TcpLossHealthConfig::from_env());
         let mut tcp_health_interval =
-            time::interval(Duration::from_millis(tcp_health_log_interval_ms.max(1)));
+            time::interval(Duration::from_millis(tcp_health_interval_ms.max(1)));
         tcp_health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         tcp_health_interval.tick().await;
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
@@ -2018,7 +1398,7 @@ impl TradeWsClient {
                     self.send_ping(ws).await?;
                 }
                 _ = tcp_health_interval.tick(), if tcp_health_enabled => {
-                    self.log_tcp_health();
+                    self.eval_tcp_health(&mut tcp_loss_health, tcp_health_mode);
                 }
                 _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
                     if self.can_planned_reconnect_now() {
@@ -2370,8 +1750,6 @@ impl TradeWsClient {
             sent_at_us,
             ipc_recv_to_ws_send_done_us,
         );
-        self.mark_binance_um_new_inflight_sent(msg, transport_id, sent_at_us);
-        self.mark_binance_um_cancel_inflight_sent(msg, transport_id, sent_at_us);
         Ok(())
     }
 
@@ -2739,68 +2117,25 @@ impl TradeWsClient {
         &mut self,
         msg: &TradeRequestMsg,
         transport_id: i64,
-        ws_send_start_time_us: i64,
+        _ws_send_start_time_us: i64,
         sent_at: std::time::Instant,
         sent_at_us: i64,
-        ipc_recv_to_ws_send_done_us: Option<i64>,
+        _ipc_recv_to_ws_send_done_us: Option<i64>,
     ) {
-        let flags = Self::inflight_request_flags(msg, sent_at_us, ipc_recv_to_ws_send_done_us);
+        let flags = Self::inflight_request_flags(msg);
         self.inflight.insert(
             transport_id,
             TradeInflightMeta {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
-                order_create_time_us: msg.create_time,
                 ws_open_update_enabled: flags.ws_open_update_enabled,
-                taker_trace: flags.taker_trace,
-                ws_send_start_time_us,
                 sent_at,
                 sent_at_us,
             },
         );
     }
 
-    fn mark_binance_um_new_inflight_sent(
-        &self,
-        msg: &TradeRequestMsg,
-        transport_id: i64,
-        sent_at_us: i64,
-    ) {
-        if msg.req_type != TradeRequestType::BinanceWsNewUMOrder {
-            return;
-        }
-        let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
-        handle.mark_binance_um_new_inflight(
-            msg.client_order_id,
-            transport_id,
-            msg.create_time,
-            sent_at_us,
-        );
-    }
-
-    fn mark_binance_um_cancel_inflight_sent(
-        &self,
-        msg: &TradeRequestMsg,
-        transport_id: i64,
-        sent_at_us: i64,
-    ) {
-        if msg.req_type != TradeRequestType::BinanceWsCancelUMOrder {
-            return;
-        }
-        let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
-        handle.mark_binance_um_cancel_inflight(
-            msg.client_order_id,
-            transport_id,
-            msg.create_time,
-            sent_at_us,
-        );
-    }
-
-    fn inflight_request_flags(
-        msg: &TradeRequestMsg,
-        sent_at_us: i64,
-        ipc_recv_to_ws_send_done_us: Option<i64>,
-    ) -> InflightRequestFlags {
+    fn inflight_request_flags(msg: &TradeRequestMsg) -> InflightRequestFlags {
         match msg.req_type {
             TradeRequestType::BinanceWsNewUMOrder => {
                 let Some(params) = BinanceNewOrderParamsRef::from_bytes(&msg.params) else {
@@ -2808,12 +2143,6 @@ impl TradeWsClient {
                 };
                 InflightRequestFlags {
                     ws_open_update_enabled: params.order_type.is_limit(),
-                    taker_trace: Self::binance_um_taker_trace_from_params(
-                        msg,
-                        params,
-                        sent_at_us,
-                        ipc_recv_to_ws_send_done_us,
-                    ),
                 }
             }
             TradeRequestType::BinanceWsNewMarginOrder => InflightRequestFlags {
@@ -2825,58 +2154,10 @@ impl TradeWsClient {
                             .map(|raw| raw.contains("price=") && !raw.contains("timeInForce="))
                     })
                     .unwrap_or(false),
-                taker_trace: None,
             },
             _ => InflightRequestFlags {
                 ws_open_update_enabled: Self::ws_open_update_enabled_for_request(msg),
-                taker_trace: None,
             },
-        }
-    }
-
-    #[cfg(test)]
-    fn build_binance_um_taker_trace(
-        msg: &TradeRequestMsg,
-        sent_at_us: i64,
-        ipc_recv_to_ws_send_done_us: Option<i64>,
-    ) -> Option<TakerTraceMeta> {
-        if msg.req_type != TradeRequestType::BinanceWsNewUMOrder {
-            return None;
-        }
-        let params = BinanceNewOrderParamsRef::from_bytes(&msg.params)?;
-        Self::binance_um_taker_trace_from_params(
-            msg,
-            params,
-            sent_at_us,
-            ipc_recv_to_ws_send_done_us,
-        )
-    }
-
-    fn binance_um_taker_trace_from_params(
-        msg: &TradeRequestMsg,
-        params: BinanceNewOrderParamsRef<'_>,
-        sent_at_us: i64,
-        ipc_recv_to_ws_send_done_us: Option<i64>,
-    ) -> Option<TakerTraceMeta> {
-        if !params.order_type.is_market() {
-            return None;
-        }
-        let create_to_ws_send_done_us = Self::wall_diff_us(sent_at_us, msg.create_time);
-        let create_to_ipc_recv_us = ipc_recv_to_ws_send_done_us
-            .and_then(|delta| Self::wall_diff_us(sent_at_us - delta, msg.create_time));
-        Some(TakerTraceMeta {
-            create_time_us: msg.create_time,
-            create_to_ipc_recv_us,
-            ipc_recv_to_ws_send_done_us,
-            create_to_ws_send_done_us,
-        })
-    }
-
-    fn wall_diff_us(later_us: i64, earlier_us: i64) -> Option<i64> {
-        if later_us > 0 && earlier_us > 0 {
-            Some(later_us - earlier_us)
-        } else {
-            None
         }
     }
 
@@ -3034,37 +2315,6 @@ impl TradeWsClient {
             "trade ws client id={} exchange={:?} dropping uncorrelated non-utf8 payload: {} bytes",
             self.id, self.exchange, len
         );
-    }
-
-    fn publish_binance_um_new_ack_trace(
-        &self,
-        meta: &TradeInflightMeta,
-        transport_id: i64,
-        ack_recv_time_us: i64,
-        rtt_us: i64,
-    ) {
-        let Some(publisher) = self.binance_um_new_ack_trace_publisher.as_ref() else {
-            return;
-        };
-        let msg = BinanceUmNewAckTraceMsg::new(
-            self.id as u32,
-            self.binance_um_route_group_id.unwrap_or(u32::MAX),
-            meta.client_order_id,
-            transport_id,
-            meta.order_create_time_us,
-            meta.ws_send_start_time_us,
-            meta.sent_at_us,
-            ack_recv_time_us,
-            rtt_us,
-            self.local_ip,
-            self.current_remote_addr.map(|addr| addr.ip()),
-        );
-        if let Err(err) = publisher.send_copy(msg.into_bytes()) {
-            warn!(
-                "BinanceUmNewAckTrace: publish failed endpoint_id={} client_order_id={} transport_id={} err={}",
-                self.id, meta.client_order_id, transport_id, err
-            );
-        }
     }
 
     fn notify_rejected(&self, msg: &TradeRequestMsg, reason: &str) {
@@ -3879,7 +3129,6 @@ impl TradeWsClient {
         if id <= 0 {
             return false;
         }
-        let handle = WsEndpointHandle::new(self.cmd_queue.clone(), self.endpoint_state.clone());
 
         if self.binance_session_logon_transport_id == Some(id) {
             self.binance_session_logon_transport_id = None;
@@ -3938,43 +3187,6 @@ impl TradeWsClient {
                 );
             }
         }
-        let mut log_taker_trace = false;
-        if meta.req_type == TradeRequestType::BinanceWsNewUMOrder {
-            handle.clear_binance_um_new_inflight(meta.client_order_id, id);
-            if let Some(health) = self.binance_um_ws_health.as_ref() {
-                let ack_recv_time_us = get_timestamp_us();
-                let trace_rtt_us = ack_recv_time_us.saturating_sub(meta.sent_at_us);
-                let health_rtt_us = meta.sent_at.elapsed().as_micros() as i64;
-                self.publish_binance_um_new_ack_trace(&meta, id, ack_recv_time_us, trace_rtt_us);
-                log_taker_trace = matches!(
-                    handle.mark_binance_um_new_ack_rtt(
-                        health_rtt_us,
-                        health,
-                        self.id,
-                        self.local_ip,
-                        self.current_remote_addr,
-                        &self.url,
-                    ),
-                    BinanceUmWsHealthAction::Pause { .. }
-                );
-            }
-        } else if meta.req_type == TradeRequestType::BinanceWsCancelUMOrder {
-            handle.clear_binance_um_cancel_inflight(meta.client_order_id, id);
-            if let Some(health) = self.binance_um_ws_health.as_ref() {
-                let rtt_us = meta.sent_at.elapsed().as_micros() as i64;
-                let _ = handle.mark_binance_um_cancel_rtt(
-                    rtt_us,
-                    health,
-                    self.id,
-                    self.local_ip,
-                    self.current_remote_addr,
-                    &self.url,
-                );
-            }
-        }
-        if log_taker_trace {
-            self.log_binance_taker_trace(&meta, update_time_ms);
-        }
         self.publish_binance_ws_response(
             meta.client_order_id,
             meta.req_type,
@@ -3982,31 +3194,6 @@ impl TradeWsClient {
             &resp,
         );
         true
-    }
-
-    fn log_binance_taker_trace(&self, meta: &TradeInflightMeta, update_time_ms: i64) {
-        let Some(trace) = meta.taker_trace.as_ref() else {
-            return;
-        };
-        let local_recv_us = get_timestamp_us();
-        let ws_rtt_us = meta.sent_at.elapsed().as_micros() as i64;
-        let exchange_update_us = (update_time_ms > 0).then(|| update_time_ms.saturating_mul(1000));
-        let ws_send_done_to_exchange_update_us =
-            exchange_update_us.and_then(|ts| Self::wall_diff_us(ts, meta.sent_at_us));
-        let exchange_update_to_local_recv_us =
-            exchange_update_us.and_then(|ts| Self::wall_diff_us(local_recv_us, ts));
-        let create_to_local_recv_us = Self::wall_diff_us(local_recv_us, trace.create_time_us);
-        info!(
-            "TakerOrderTrace: reason=rtt_pause client_order_id={} create_to_ipc_recv_us={:?} ipc_recv_to_ws_send_done_us={:?} create_to_ws_send_done_us={:?} ws_send_done_to_exchange_update_us={:?} exchange_update_to_local_recv_us={:?} ws_rtt_us={} create_to_local_recv_us={:?}",
-            meta.client_order_id,
-            trace.create_to_ipc_recv_us,
-            trace.ipc_recv_to_ws_send_done_us,
-            trace.create_to_ws_send_done_us,
-            ws_send_done_to_exchange_update_us,
-            exchange_update_to_local_recv_us,
-            ws_rtt_us,
-            create_to_local_recv_us
-        );
     }
 
     fn binance_status(resp: &binance_ws::BinanceWsResponse) -> u16 {
@@ -4565,39 +3752,65 @@ impl TradeWsClient {
         });
     }
 
-    /// 观测当前连接的 TCP_INFO：与上次快照比较，打印本窗口 data-seg 发送量、
-    /// 重传增量、重传率(bp=万分比)与 RTT。纯观测，不触发重连。用于和 `ss` 对准。
-    fn log_tcp_health(&mut self) {
+    /// 评估当前连接的 TCP 丢包健康度：与上次 TCP_INFO 快照比较算本窗口 retrans 率，
+    /// 喂入滚动窗口给出判定并日志（对齐 `ss`）。observe 只观测；act 的动作（软暂停
+    /// 绕开 / 无 inflight 硬重连）在 Dispatch 路由模式下生效——见任务 #10。
+    fn eval_tcp_health(&mut self, health: &mut TcpLossHealth, mode: TcpHealthMode) {
         let Some(fd) = self.current_tcp_fd else {
             return;
         };
         let Some(snap) = read_tcp_retrans_snapshot(fd) else {
             return;
         };
-        if let Some(prev) = self.tcp_health_last {
-            let d_retrans = snap.total_retrans.wrapping_sub(prev.total_retrans);
-            let d_data_segs = snap.data_segs_out.wrapping_sub(prev.data_segs_out);
-            let retrans_bp = if d_data_segs > 0 {
-                (d_retrans as u64).saturating_mul(10_000) / d_data_segs as u64
-            } else {
-                0
-            };
-            info!(
-                "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} retrans_bp={} total_retrans={} rtt_us={} rttvar_us={}",
-                self.id,
-                self.exchange,
-                self.url,
-                self.local_ip,
-                self.current_remote_addr,
-                d_data_segs,
-                d_retrans,
-                retrans_bp,
-                snap.total_retrans,
-                snap.rtt_us,
-                snap.rttvar_us
-            );
-        }
+        let Some(prev) = self.tcp_health_last else {
+            // 重连后第一次没有基线，只记快照。
+            self.tcp_health_last = Some(snap);
+            return;
+        };
+        let d_retrans = snap.total_retrans.wrapping_sub(prev.total_retrans) as u64;
+        let d_data_segs = snap.data_segs_out.wrapping_sub(prev.data_segs_out) as u64;
         self.tcp_health_last = Some(snap);
+
+        let can_reconnect_now = self.can_planned_reconnect_now();
+        let now = std::time::Instant::now();
+        let verdict = health.record(d_retrans, d_data_segs, can_reconnect_now, now);
+        // act 动作：仅 mode==Act（已被 event_loop 收敛为「dispatch 路由才可能为 Act」）时施加。
+        // Pause → 置 tcp_loss_pause_until（is_available 无条件绕开；坏则每 tick 续期）。
+        // Reconnect → 同时置 pause 并触发 should_reconnect（event_loop 拆连重建=换源端口=换 ECMP 路径）。
+        let mut acted = "none";
+        if mode == TcpHealthMode::Act {
+            match verdict {
+                Verdict::Reconnect => {
+                    let until = now + health.pause_duration();
+                    self.endpoint_state.borrow_mut().tcp_loss_pause_until = Some(until);
+                    self.should_reconnect = true;
+                    acted = "reconnect";
+                }
+                Verdict::Pause => {
+                    let until = now + health.pause_duration();
+                    self.endpoint_state.borrow_mut().tcp_loss_pause_until = Some(until);
+                    acted = "pause";
+                }
+                Verdict::Healthy => {}
+            }
+        }
+        info!(
+            "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_bp={:?} total_retrans={} rtt_us={} rttvar_us={} mode={:?} verdict={:?} acted={}",
+            self.id,
+            self.exchange,
+            self.url,
+            self.local_ip,
+            self.current_remote_addr,
+            d_data_segs,
+            d_retrans,
+            health.window_bp(),
+            snap.total_retrans,
+            snap.rtt_us,
+            snap.rttvar_us,
+            mode,
+            verdict,
+            acted,
+        );
     }
 
     async fn send_ping(
@@ -4631,46 +3844,18 @@ impl TradeWsClient {
 mod tests {
     use super::{
         binance_ed25519_api_key_from_env, is_bitget_pong_response, parse_bitget_control_event,
-        BinanceUmNewAckRttSample, BinanceUmWsHealthConfig, BinanceUmWsHealthRuntime,
-        QueryInflightMeta, TradeWsClient, WsCommandQueue, WsEndpointHandle, WsEndpointState,
+        QueryInflightMeta, TradeWsClient,
     };
-    use crate::binance_ws;
     use crate::binance_ws::BINANCE_ED25519_API_KEY_ENV;
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
-        BinanceCancelOrderParams, BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams,
-        TradeRequestMsg, TradeRequestType,
+        BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg,
+        TradeRequestType,
     };
     use order_common::{OrderType, Side};
     use runtime_common::fast_hash::fast_hash_map;
     use signal_common::tick_math::QuantizedValue;
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::sync::{Mutex, OnceLock};
-
-    fn test_binance_um_ws_health_config(
-        new_min_period: usize,
-        cancel_min_period: usize,
-    ) -> BinanceUmWsHealthConfig {
-        BinanceUmWsHealthConfig {
-            new_rolling_window: 4,
-            new_min_period,
-            cancel_rolling_window: 4,
-            cancel_min_period,
-            percentile: 85,
-            pause_ms: 1,
-            select_recent: 3,
-        }
-    }
-
-    fn connected_endpoint_handle() -> WsEndpointHandle {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        handle.mark_connected();
-        handle
-    }
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -4748,262 +3933,6 @@ mod tests {
 
         assert_eq!(req_type, QueryRequestType::GateFuturesOrderQuery);
         assert_eq!(client_query_id, 281474976710779);
-    }
-
-    #[test]
-    fn endpoint_unavailable_until_connected_and_disconnect_clears_um_inflight() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        assert!(!handle.is_available());
-        assert!(!handle.is_available_for_new_binance_um(None, None, 0));
-
-        handle.mark_connected();
-        assert!(handle.is_available());
-
-        let now_us = runtime_common::time_util::get_timestamp_us();
-        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
-
-        handle.mark_disconnected();
-        assert!(!handle.is_available());
-
-        handle.mark_connected();
-        assert!(handle.is_available_for_new_binance_um(Some(100_000), None, 0));
-    }
-
-    #[test]
-    fn binance_um_new_inflight_blocks_then_recovers() {
-        let handle = connected_endpoint_handle();
-        let now_us = runtime_common::time_util::get_timestamp_us();
-        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
-
-        assert!(!handle.is_available_for_new_binance_um(Some(100_000), None, 1));
-        assert!(!handle.is_available_for_new_binance_um(Some(100_000), None, 1));
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert!(handle.is_available_for_new_binance_um(Some(100_000), None, 1));
-    }
-
-    #[test]
-    fn binance_um_new_inflight_block_clears_actual_new_route_samples() {
-        let handle = connected_endpoint_handle();
-        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(10, 10));
-        let _ = handle.mark_binance_um_new_ack_rtt(
-            5_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-        let now_us = runtime_common::time_util::get_timestamp_us();
-        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
-
-        assert!(!handle.is_available_for_new_binance_um(Some(100_000), None, 1));
-
-        let (sum, count) = handle.recent_binance_um_new_ack_rtt_sum_count(3);
-        assert_eq!(sum, 0);
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn binance_um_new_inflight_clear_prevents_block() {
-        let handle = connected_endpoint_handle();
-        let now_us = runtime_common::time_util::get_timestamp_us();
-        handle.mark_binance_um_new_inflight(42, 281474976710657, now_us - 200_000, now_us);
-        handle.clear_binance_um_new_inflight(42, 281474976710657);
-
-        assert!(handle.is_available_for_new_binance_um(Some(100_000), None, 1));
-    }
-
-    #[test]
-    fn binance_um_inflight_block_threshold_uses_rolling_percentile() {
-        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(4, 4));
-        assert_eq!(health.inflight_create_block_threshold_us(), None);
-
-        let _ = health.record_new(5_000);
-        let _ = health.record_new(10_000);
-        let _ = health.record_new(20_000);
-        let _ = health.record_new(30_000);
-
-        assert_eq!(health.inflight_create_block_threshold_us(), Some(30_000));
-    }
-
-    #[test]
-    fn binance_um_cancel_block_threshold_respects_min_period() {
-        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(1, 3));
-        assert_eq!(health.cancel_inflight_block_threshold_us(), None);
-
-        let _ = health.record_cancel(1_000);
-        let _ = health.record_cancel(2_000);
-        assert_eq!(health.cancel_inflight_block_threshold_us(), None);
-
-        let _ = health.record_cancel(3_000);
-        assert_eq!(health.cancel_inflight_block_threshold_us(), Some(3_000));
-    }
-
-    #[test]
-    fn binance_um_health_snapshot_exposes_rolling_latency_summary() {
-        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(1, 1));
-
-        for rtt_us in [1_000, 2_000, 3_000, 4_000, 10_000] {
-            let _ = health.record_new(rtt_us);
-        }
-        for rtt_us in [5_000, 6_000, 7_000, 8_000] {
-            let _ = health.record_cancel(rtt_us);
-        }
-
-        let snap = health.snapshot();
-        assert_eq!(snap.new_summary.n, 4);
-        assert_eq!(snap.new_summary.p50_us, 4_000);
-        assert_eq!(snap.new_summary.p90_us, 10_000);
-        assert_eq!(snap.new_summary.p99_us, 10_000);
-        assert_eq!(snap.new_summary.max_us, 10_000);
-        assert_eq!(snap.cancel_summary.n, 4);
-        assert_eq!(snap.cancel_summary.p50_us, 7_000);
-        assert_eq!(snap.cancel_summary.p90_us, 8_000);
-        assert_eq!(snap.cancel_summary.p99_us, 8_000);
-        assert_eq!(snap.cancel_summary.max_us, 8_000);
-    }
-
-    #[test]
-    fn binance_um_cancel_health_pause_clears_recent_cancel_rtt_samples() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        let mut cfg = test_binance_um_ws_health_config(4, 1);
-        cfg.percentile = 50;
-        let health = BinanceUmWsHealthRuntime::new(cfg);
-
-        let _ = handle.mark_binance_um_cancel_rtt(
-            1_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-        let _ = handle.mark_binance_um_cancel_rtt(
-            10_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-
-        let (sum, count) = handle.recent_binance_um_cancel_rtt_sum_count(3);
-        assert_eq!(sum, 0);
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn binance_um_new_health_pause_clears_cancel_route_samples() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        let mut cfg = test_binance_um_ws_health_config(1, 1);
-        cfg.percentile = 50;
-        let health = BinanceUmWsHealthRuntime::new(cfg);
-
-        let _ = handle.mark_binance_um_cancel_rtt(
-            1_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-        let (sum, count) = handle.recent_binance_um_cancel_rtt_sum_count(3);
-        assert_eq!(sum, 1_000);
-        assert_eq!(count, 1);
-
-        let _ = handle.mark_binance_um_new_ack_rtt(
-            1_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-        let _ = handle.mark_binance_um_new_ack_rtt(
-            10_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-
-        let (sum, count) = handle.recent_binance_um_cancel_rtt_sum_count(3);
-        assert_eq!(sum, 0);
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn binance_um_new_ack_samples_drive_endpoint_health_stats() {
-        let handle = WsEndpointHandle::new(
-            WsCommandQueue::new(),
-            Rc::new(RefCell::new(WsEndpointState::default())),
-        );
-        let health = BinanceUmWsHealthRuntime::new(test_binance_um_ws_health_config(10, 10));
-
-        for rtt_us in [3_000, 2_000, 1_000] {
-            let _ = handle.mark_binance_um_new_ack_rtt(
-                rtt_us,
-                &health,
-                0,
-                "0.0.0.0".parse().unwrap(),
-                None,
-                "wss://example.invalid",
-            );
-        }
-        let _ = handle.mark_binance_um_cancel_rtt(
-            100_000,
-            &health,
-            0,
-            "0.0.0.0".parse().unwrap(),
-            None,
-            "wss://example.invalid",
-        );
-
-        let (sum, count) = handle.recent_binance_um_new_ack_rtt_sum_count(3);
-        assert_eq!(sum, 6_000);
-        assert_eq!(count, 3);
-
-        let (mean_us, recent_count, pause_ms_left) = handle.binance_um_health_stats(3);
-        assert_eq!(mean_us, 2_000);
-        assert_eq!(recent_count, 3);
-        assert_eq!(pause_ms_left, 0);
-    }
-
-    #[test]
-    fn binance_um_route_eval_score_time_decays_old_samples() {
-        let now_us = runtime_common::time_util::get_timestamp_us();
-        let state = Rc::new(RefCell::new(WsEndpointState::default()));
-        state
-            .borrow_mut()
-            .recent_binance_um_new_ack_rtts_us
-            .extend([
-                BinanceUmNewAckRttSample {
-                    rtt_us: 10_000,
-                    ts_us: now_us - 4_000_000,
-                },
-                BinanceUmNewAckRttSample {
-                    rtt_us: 1_000,
-                    ts_us: now_us,
-                },
-            ]);
-        let handle = WsEndpointHandle::new(WsCommandQueue::new(), state);
-
-        let stats = handle.binance_um_new_ack_route_eval_stats(now_us, 800, 5_000);
-
-        assert_eq!(stats.sample_n, 2);
-        assert!(stats.score_us < 2_000, "score_us={}", stats.score_us);
-        assert_eq!(stats.latest_us, Some(1_000));
-        assert_eq!(stats.last_sample_age_ms, Some(0));
     }
 
     #[test]
@@ -5097,33 +4026,6 @@ mod tests {
     }
 
     #[test]
-    fn binance_um_taker_trace_records_latency_segments() {
-        let request = BinanceNewOrderParams::request_bytes_from_parts(
-            TradeRequestType::BinanceWsNewUMOrder,
-            1_000,
-            42,
-            "BTCUSDT",
-            Side::Buy,
-            OrderType::Market,
-            QuantizedValue::from_parts(1, -3, 250),
-            QuantizedValue::zero(),
-            false,
-            false,
-            false,
-            true,
-            false,
-        )
-        .expect("typed binance request");
-        let msg = TradeRequestMsg::parse(&request).expect("binance typed msg");
-        let trace = TradeWsClient::build_binance_um_taker_trace(&msg, 1_100, Some(30))
-            .expect("taker trace");
-
-        assert_eq!(trace.create_to_ws_send_done_us, Some(100));
-        assert_eq!(trace.create_to_ipc_recv_us, Some(70));
-        assert_eq!(trace.ipc_recv_to_ws_send_done_us, Some(30));
-    }
-
-    #[test]
     fn binance_inflight_flags_use_single_typed_params_pass() {
         let limit_request = BinanceNewOrderParams::request_bytes_from_parts(
             TradeRequestType::BinanceWsNewUMOrder,
@@ -5142,9 +4044,8 @@ mod tests {
         )
         .expect("typed binance limit request");
         let limit_msg = TradeRequestMsg::parse(&limit_request).expect("binance typed msg");
-        let flags = TradeWsClient::inflight_request_flags(&limit_msg, 1_100, Some(30));
+        let flags = TradeWsClient::inflight_request_flags(&limit_msg);
         assert!(flags.ws_open_update_enabled);
-        assert!(flags.taker_trace.is_none());
 
         let market_request = BinanceNewOrderParams::request_bytes_from_parts(
             TradeRequestType::BinanceWsNewUMOrder,
@@ -5163,11 +4064,7 @@ mod tests {
         )
         .expect("typed binance market request");
         let market_msg = TradeRequestMsg::parse(&market_request).expect("binance typed msg");
-        let flags = TradeWsClient::inflight_request_flags(&market_msg, 2_150, Some(50));
+        let flags = TradeWsClient::inflight_request_flags(&market_msg);
         assert!(!flags.ws_open_update_enabled);
-        let trace = flags.taker_trace.expect("market taker trace");
-        assert_eq!(trace.create_to_ws_send_done_us, Some(150));
-        assert_eq!(trace.create_to_ipc_recv_us, Some(100));
-        assert_eq!(trace.ipc_recv_to_ws_send_done_us, Some(50));
     }
 }

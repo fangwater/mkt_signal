@@ -9,8 +9,7 @@ use runtime_common::exchange::Exchange;
 use runtime_common::mkt_cfg::{
     binance_um_ip_whitelist_mode_enabled, find_trade_engine_local_cfg_path, home_mkt_cfg_path,
     load_local_ips_from_path, load_trade_engine_local_ip_config_from_toml_path,
-    validate_binance_um_whitelist_ip_config, BinanceUmWsHealthConfig,
-    BINANCE_UM_IP_WHITELIST_MODE_ENV,
+    validate_binance_um_whitelist_ip_config, WsRouteConfig, BINANCE_UM_IP_WHITELIST_MODE_ENV,
 };
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -124,8 +123,7 @@ struct TradeEngineLocalIpRuntimeConfig {
     local_ip_values: Vec<String>,
     binance_um_whitelist_ip_value: Option<String>,
     binance_um_ws_direct_ip_values: Vec<String>,
-    binance_um_ws_health: BinanceUmWsHealthConfig,
-    binance_um_ws_route: runtime_common::mkt_cfg::BinanceUmWsRouteConfig,
+    ws_route: WsRouteConfig,
     source: String,
 }
 
@@ -180,8 +178,7 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
             local_ip_values,
             binance_um_whitelist_ip_value,
             binance_um_ws_direct_ip_values: cfg.binance_um_ws_direct_ips,
-            binance_um_ws_health: cfg.binance_um_ws_health,
-            binance_um_ws_route: cfg.binance_um_ws_route,
+            ws_route: cfg.ws_route,
             source: path.display().to_string(),
         });
     }
@@ -199,8 +196,7 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
         local_ip_values: vec![primary_ip_raw, secondary_ip_raw],
         binance_um_whitelist_ip_value: None,
         binance_um_ws_direct_ip_values: Vec::new(),
-        binance_um_ws_health: BinanceUmWsHealthConfig::default(),
-        binance_um_ws_route: runtime_common::mkt_cfg::BinanceUmWsRouteConfig::default(),
+        ws_route: WsRouteConfig::default(),
         source: format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     })
 }
@@ -452,29 +448,9 @@ async fn main() -> Result<()> {
         );
     }
     if exchange_name == "binance" {
-        let cfg = &local_ip_cfg.binance_um_ws_health;
         info!(
-            "configured Binance UM WS health: new_rolling_window={} new_min_period={} cancel_rolling_window={} cancel_min_period={} percentile={} pause_ms={} select_recent={} inflight_block_threshold=rolling_percentile",
-            cfg.new_rolling_window,
-            cfg.new_min_period,
-            cfg.cancel_rolling_window,
-            cfg.cancel_min_period,
-            cfg.percentile,
-            cfg.pause_ms,
-            cfg.select_recent,
-        );
-        let route_cfg = &local_ip_cfg.binance_um_ws_route;
-        info!(
-            "configured Binance UM WS route: route={} redis_env={:?} redis_key_suffix={} write_interval_ms={} read_interval_ms={} score_half_life_ms={} score_window_ms={} route_family={} min_samples={}",
-            route_cfg.route.as_str(),
-            route_cfg.redis_env,
-            route_cfg.redis_key_suffix,
-            route_cfg.write_interval_ms,
-            route_cfg.read_interval_ms,
-            route_cfg.score_half_life_ms,
-            route_cfg.score_window_ms,
-            route_cfg.route_family,
-            route_cfg.min_samples
+            "configured WS route: route={}",
+            local_ip_cfg.ws_route.route.as_str()
         );
     }
 
@@ -643,8 +619,7 @@ async fn main() -> Result<()> {
         ipc_core,
         binance_um_whitelist_ip,
         binance_um_ws_direct_ips,
-        local_ip_cfg.binance_um_ws_health,
-        local_ip_cfg.binance_um_ws_route,
+        local_ip_cfg.ws_route,
     );
 
     let local = tokio::task::LocalSet::new();

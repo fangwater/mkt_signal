@@ -8,7 +8,6 @@ use symbol_utils::time_util::get_timestamp_us;
 pub use symbol_utils::TradingVenue;
 
 pub mod binance_basic_impl;
-pub mod binance_um_ack_trace;
 pub mod bitget_basic_impl;
 pub mod bybit_basic_impl;
 pub mod gate_basic_impl;
@@ -22,9 +21,6 @@ pub mod trade_request_type;
 pub mod trade_update;
 pub mod trade_update_lite;
 
-pub use binance_um_ack_trace::{
-    BinanceUmNewAckTraceMsg, BINANCE_UM_NEW_ACK_TRACE_PAYLOAD_LEN, BINANCE_UM_NEW_ACK_TRACE_SERVICE,
-};
 pub use order_update::OrderUpdate;
 pub use query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
 pub use query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
