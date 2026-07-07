@@ -229,6 +229,10 @@ path = "src/bin/inspect_model_input.rs"
 name = "intra_funding_trace"
 path = "src/bin/intra_funding_trace.rs"
 
+[[bin]]
+name = "binance_ws_ping_flood_test"
+path = "src/bin/binance_ws_ping_flood_test.rs"
+
 [dependencies]
 account_common = { path = "crates/account_common" }
 account_monitor_common = { path = "crates/account_monitor_common" }
