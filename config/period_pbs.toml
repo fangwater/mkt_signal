@@ -3,6 +3,10 @@
 # - service_root = "dat_pbs"
 # - period_ms = 3000
 
+# Optional process CPU affinity. Set before subscribing/publishing so worker
+# threads inherit the same affinity.
+core = 21
+
 # Canonical symbols used inside emitted PeriodMessage payloads.
 # Per-venue source symbols are mapped back to these names before collection.
 online_symbols = [

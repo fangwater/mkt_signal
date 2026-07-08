@@ -2668,6 +2668,7 @@ dependencies = [
  "log",
  "prost",
  "rdkafka",
+ "runtime_common",
  "serde",
  "snap",
  "toml 0.8.23",

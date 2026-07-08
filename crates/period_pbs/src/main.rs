@@ -14,6 +14,7 @@ use period_pbs::decode::{
     MarketMsgKind,
 };
 use period_pbs::publisher::PeriodPublisher;
+use runtime_common::affinity::pin_to_core;
 
 #[derive(Debug, Parser)]
 #[command(name = "period_pbs")]
@@ -30,6 +31,11 @@ fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     let config = PeriodPbsConfig::load_from_file(&args.config)?;
+    if let Some(core) = config.core {
+        pin_to_core(core).with_context(|| format!("pin period_pbs to cpu core {core}"))?;
+    } else {
+        log::info!("period_pbs cpu pinning skipped: core not configured");
+    }
     let runtime_configs = config.runtime_venues()?;
 
     let node_name = format!("period_pbs_{}", std::process::id());
@@ -41,10 +47,13 @@ fn main() -> Result<()> {
         runtime_configs.into_iter().map(VenueRuntime::new).collect();
 
     log::info!(
-        "period_pbs started config={} service_root={} period_ms={} bind={} venues={} online_symbols={} stats_log_secs={}",
+        "period_pbs started config={} service_root={} period_ms={} core={} bind={} venues={} online_symbols={} stats_log_secs={}",
         args.config.display(),
         SERVICE_ROOT,
         PERIOD_MS,
+        config
+            .core
+            .map_or_else(|| "none".to_string(), |core| core.to_string()),
         config.zmq.bind.trim(),
         venues.len(),
         config.online_symbols.len(),

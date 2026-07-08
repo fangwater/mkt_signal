@@ -17,6 +17,7 @@ pub const STATS_LOG_SECS: u64 = 30;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct PeriodPbsConfig {
+    pub core: Option<usize>,
     pub online_symbols: Vec<String>,
     pub zmq: ZmqConfig,
     pub venues: Vec<VenueConfig>,
@@ -62,6 +63,7 @@ pub struct VenueSymbolMap {
 impl Default for PeriodPbsConfig {
     fn default() -> Self {
         Self {
+            core: None,
             online_symbols: Vec::new(),
             zmq: ZmqConfig::default(),
             venues: Vec::new(),
