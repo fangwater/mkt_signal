@@ -11,6 +11,7 @@ members = [
     "crates/mkt_parsers",
     "crates/order_common",
     "crates/period_pbs",
+    "crates/spread_pbs_btc_inc_raw",
     "crates/persist_manager",
     "crates/persist_common",
     "crates/quote_plan",

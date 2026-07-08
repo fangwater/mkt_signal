@@ -1,0 +1,49 @@
+# Local sender: forward Binance model outputs to SG public bridge.
+#
+# Deploy target on this host:
+#   /home/ubuntu/bridge_sg_model_sender/config/ipc_bridge.yaml
+#
+# SG receiver listens on tcp://0.0.0.0:6360 in /home/ubuntu/bridge_sg_public.
+
+routes:
+  - id: public_binance_futures_mid_chg_30s_model_output_sg
+    from:
+      type: ipc
+      endpoint: "model_output/binance-futures-mid-chg-30s"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
+    to:
+      type: zmq
+      endpoint: "tcp://47.131.162.78:6360"
+      size: 2048
+
+  - id: public_binance_futures_mid_chg_1m_model_output_sg
+    from:
+      type: ipc
+      endpoint: "model_output/binance-futures-mid-chg-1m"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
+    to:
+      type: zmq
+      endpoint: "tcp://47.131.162.78:6360"
+      size: 2048
+
+  - id: public_binance_futures_mid_chg_5m_model_output_sg
+    from:
+      type: ipc
+      endpoint: "model_output/binance-futures-mid-chg-5m"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
+    to:
+      type: zmq
+      endpoint: "tcp://47.131.162.78:6360"
+      size: 2048

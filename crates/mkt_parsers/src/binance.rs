@@ -410,7 +410,6 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut ask_amount = None;
     let mut seen = 0u8;
     const BBO_BOOK_TICKER_REQUIRED: u8 = 0b0111_1111;
-    const BBO_DEPTH_REQUIRED: u8 = 0b0010_0111;
 
     while let Some((key, value)) = payload.next_field() {
         match key {
@@ -433,7 +432,7 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
                 timestamp_us = Some(ms_to_us(value.i64()?));
                 seen |= 1 << 2;
             }
-            b"T" if timestamp_us.is_none() => {
+            b"T" => {
                 timestamp_us = Some(ms_to_us(value.i64()?));
                 seen |= 1 << 2;
             }
@@ -455,10 +454,8 @@ pub fn parse_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
             }
             _ => {}
         }
-        match event_kind {
-            Some(RawBboKind::BookTicker) if seen == BBO_BOOK_TICKER_REQUIRED => break,
-            Some(RawBboKind::Depth) if (seen & BBO_DEPTH_REQUIRED) == BBO_DEPTH_REQUIRED => break,
-            _ => {}
+        if matches!(event_kind, Some(RawBboKind::BookTicker)) && seen == BBO_BOOK_TICKER_REQUIRED {
+            break;
         }
     }
 
@@ -533,9 +530,6 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
     let mut seq_id = None;
     let mut bid = None;
     let mut ask = None;
-    let mut seen = 0u8;
-    const DEPTH_BBO_REQUIRED: u8 = 0b0001_1111;
-
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
@@ -546,32 +540,23 @@ pub fn parse_depth_bbo_raw_borrowed(raw: &[u8]) -> Option<RawBbo<'_>> {
             }
             b"s" => {
                 symbol = Some(value.string_str()?);
-                seen |= 1 << 0;
             }
             b"E" => {
                 timestamp_us = Some(ms_to_us(value.i64()?));
-                seen |= 1 << 1;
             }
-            b"T" if timestamp_us.is_none() => {
+            b"T" => {
                 timestamp_us = Some(ms_to_us(value.i64()?));
-                seen |= 1 << 1;
             }
             b"u" | b"lastUpdateId" => {
                 seq_id = Some(value.i64()?);
-                seen |= 1 << 2;
             }
             b"b" | b"bids" => {
                 bid = Some(parse_raw_top_level(value.array_bytes()?)?);
-                seen |= 1 << 3;
             }
             b"a" | b"asks" => {
                 ask = Some(parse_raw_top_level(value.array_bytes()?)?);
-                seen |= 1 << 4;
             }
             _ => {}
-        }
-        if seen_event && seen == DEPTH_BBO_REQUIRED {
-            break;
         }
     }
 
@@ -831,30 +816,7 @@ fn parse_depth_bbo_payload_fast<'a>(raw: &'a [u8], pos: &mut usize) -> Option<Ra
         return None;
     }
 
-    let timestamp_us = if consume_raw_literal_if(raw, pos, br#""E""#) {
-        expect_raw_byte(raw, pos, b':')?;
-        let event_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
-        if !consume_raw_field_separator(raw, pos)? {
-            return None;
-        }
-        if consume_raw_literal_if(raw, pos, br#""T""#) {
-            expect_raw_byte(raw, pos, b':')?;
-            parse_raw_i64_value(raw, pos)?;
-            if !consume_raw_field_separator(raw, pos)? {
-                return None;
-            }
-        }
-        event_time_us
-    } else if consume_raw_literal_if(raw, pos, br#""T""#) {
-        expect_raw_byte(raw, pos, b':')?;
-        let trade_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
-        if !consume_raw_field_separator(raw, pos)? {
-            return None;
-        }
-        trade_time_us
-    } else {
-        return None;
-    };
+    let timestamp_us = parse_depth_update_timestamp_us_fast(raw, pos)?;
 
     consume_raw_literal(raw, pos, br#""s""#)?;
     expect_raw_byte(raw, pos, b':')?;
@@ -948,6 +910,34 @@ fn parse_depth_update_fields_object_fast(raw: &[u8]) -> Option<RawBookFields<'_>
     Some(fields)
 }
 
+fn parse_depth_update_timestamp_us_fast(raw: &[u8], pos: &mut usize) -> Option<i64> {
+    if consume_raw_literal_if(raw, pos, br#""E""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let event_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        if consume_raw_literal_if(raw, pos, br#""T""#) {
+            expect_raw_byte(raw, pos, b':')?;
+            let transaction_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+            if !consume_raw_field_separator(raw, pos)? {
+                return None;
+            }
+            return Some(transaction_time_us);
+        }
+        Some(event_time_us)
+    } else if consume_raw_literal_if(raw, pos, br#""T""#) {
+        expect_raw_byte(raw, pos, b':')?;
+        let transaction_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
+        if !consume_raw_field_separator(raw, pos)? {
+            return None;
+        }
+        Some(transaction_time_us)
+    } else {
+        None
+    }
+}
+
 fn parse_depth_update_payload_fields_fast<'a>(
     raw: &'a [u8],
     pos: &mut usize,
@@ -960,30 +950,7 @@ fn parse_depth_update_payload_fields_fast<'a>(
         return None;
     }
 
-    let timestamp_us = if consume_raw_literal_if(raw, pos, br#""E""#) {
-        expect_raw_byte(raw, pos, b':')?;
-        let event_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
-        if !consume_raw_field_separator(raw, pos)? {
-            return None;
-        }
-        if consume_raw_literal_if(raw, pos, br#""T""#) {
-            expect_raw_byte(raw, pos, b':')?;
-            parse_raw_i64_value(raw, pos)?;
-            if !consume_raw_field_separator(raw, pos)? {
-                return None;
-            }
-        }
-        event_time_us
-    } else if consume_raw_literal_if(raw, pos, br#""T""#) {
-        expect_raw_byte(raw, pos, b':')?;
-        let trade_time_us = ms_to_us(parse_raw_i64_value(raw, pos)?);
-        if !consume_raw_field_separator(raw, pos)? {
-            return None;
-        }
-        trade_time_us
-    } else {
-        return None;
-    };
+    let timestamp_us = parse_depth_update_timestamp_us_fast(raw, pos)?;
 
     consume_raw_literal(raw, pos, br#""s""#)?;
     expect_raw_byte(raw, pos, b':')?;
@@ -1678,13 +1645,6 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
     const RAW_BOOK_ASKS: u8 = 1 << 6;
     const RAW_BOOK_SNAPSHOT_REQUIRED: u8 =
         RAW_BOOK_SYMBOL | RAW_BOOK_LAST_ID | RAW_BOOK_BIDS | RAW_BOOK_ASKS;
-    const RAW_BOOK_UPDATE_REQUIRED: u8 = RAW_BOOK_SYMBOL
-        | RAW_BOOK_TIMESTAMP
-        | RAW_BOOK_FIRST_ID
-        | RAW_BOOK_FINAL_ID
-        | RAW_BOOK_BIDS
-        | RAW_BOOK_ASKS;
-
     while let Some((key, value)) = payload.next_field() {
         match key {
             b"e" => {
@@ -1701,7 +1661,7 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
                 timestamp_us = Some(ms_to_us(value.i64()?));
                 seen |= RAW_BOOK_TIMESTAMP;
             }
-            b"T" if timestamp_us.is_none() => {
+            b"T" => {
                 timestamp_us = Some(ms_to_us(value.i64()?));
                 seen |= RAW_BOOK_TIMESTAMP;
             }
@@ -1728,9 +1688,6 @@ fn parse_incremental_raw_fields(raw: &[u8]) -> Option<RawBookFields<'_>> {
             _ => {}
         }
         if (seen & RAW_BOOK_SNAPSHOT_REQUIRED) == RAW_BOOK_SNAPSHOT_REQUIRED {
-            break;
-        }
-        if seen_event && (seen & RAW_BOOK_UPDATE_REQUIRED) == RAW_BOOK_UPDATE_REQUIRED {
             break;
         }
     }
@@ -2067,7 +2024,7 @@ fn parse_depth_update_json(payload: &Value, symbol_override: Option<&str>) -> Op
         .or_else(|| symbol_override.map(|s| s.to_ascii_uppercase()))?;
     let first_update_id = parse_i64(payload.get("U")?)?;
     let final_update_id = parse_i64(payload.get("u")?)?;
-    let timestamp_us = event_time_us(payload).unwrap_or(0);
+    let timestamp_us = depth_update_time_us(payload).unwrap_or(0);
     let bids = payload
         .get("b")
         .and_then(|v| v.as_array())
@@ -3007,6 +2964,14 @@ fn event_time_us(payload: &Value) -> Option<i64> {
         .map(ms_to_us)
 }
 
+fn depth_update_time_us(payload: &Value) -> Option<i64> {
+    payload
+        .get("T")
+        .and_then(parse_i64)
+        .or_else(|| payload.get("E").and_then(parse_i64))
+        .map(ms_to_us)
+}
+
 fn ms_to_us(ts: i64) -> i64 {
     ts.saturating_mul(1000)
 }
@@ -3567,7 +3532,7 @@ mod tests {
         let book = parse_incremental_raw_borrowed(raw).expect("depth update");
 
         assert_eq!(book.symbol, "BTCUSDT");
-        assert_eq!(book.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(book.timestamp_us, 1_700_000_000_000_000);
         assert_eq!(book.seq_id, 103);
         assert_eq!(book.prev_seq_id, 100);
         assert_eq!(book.first_update_id, 101);
@@ -3594,7 +3559,7 @@ mod tests {
             super::parse_combined_depth_update_fields_fast(raw).expect("fast depth update");
 
         assert_eq!(fields.symbol, "BTCUSDT");
-        assert_eq!(fields.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(fields.timestamp_us, 1_700_000_000_000_000);
         assert_eq!(fields.seq_id, 103);
         assert_eq!(fields.prev_seq_id, 100);
         assert_eq!(fields.first_update_id, 101);
@@ -3611,7 +3576,7 @@ mod tests {
             super::parse_combined_depth_update_fields_fast(raw).expect("fast depth update");
 
         assert_eq!(fields.symbol, "BTCUSDT");
-        assert_eq!(fields.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(fields.timestamp_us, 1_700_000_000_000_000);
         assert_eq!(fields.seq_id, 103);
         assert_eq!(raw_level_at(fields.bids_raw, 0).unwrap().amount, 100.0);
         assert_eq!(raw_level_at(fields.asks_raw, 0).unwrap().price, 25.1);
@@ -3623,7 +3588,7 @@ mod tests {
         let fields = super::parse_depth_update_fields_object_fast(raw).expect("fast depth update");
 
         assert_eq!(fields.symbol, "BTCUSDT");
-        assert_eq!(fields.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(fields.timestamp_us, 1_700_000_000_000_000);
         assert_eq!(fields.seq_id, 103);
         assert_eq!(fields.prev_seq_id, 100);
         assert_eq!(raw_level_at(fields.bids_raw, 1).unwrap().amount, 0.0);

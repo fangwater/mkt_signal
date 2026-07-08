@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use ahash::{AHashMap, AHashSet};
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 
@@ -55,7 +56,7 @@ pub struct RuntimeVenueConfig {
 
 #[derive(Debug, Clone)]
 pub struct VenueSymbolMap {
-    source_to_canonical: HashMap<String, String>,
+    source_to_canonical: AHashMap<String, String>,
 }
 
 impl Default for PeriodPbsConfig {
@@ -118,10 +119,10 @@ impl PeriodPbsConfig {
         ensure!(!self.venues.is_empty(), "venues must not be empty");
 
         let online_symbols = normalize_online_symbols(&self.online_symbols)?;
-        let online_set: HashSet<&str> = online_symbols.iter().map(String::as_str).collect();
+        let online_set: AHashSet<&str> = online_symbols.iter().map(String::as_str).collect();
 
-        let mut venue_names = HashSet::new();
-        let mut topics = HashSet::new();
+        let mut venue_names = AHashSet::new();
+        let mut topics = AHashSet::new();
         for venue in &self.venues {
             let name = venue.name.trim();
             ensure!(!name.is_empty(), "venue.name cannot be empty");
@@ -213,16 +214,17 @@ impl VenueSymbolMap {
 }
 
 fn normalize_online_symbols(raw_symbols: &[String]) -> Result<Vec<String>> {
-    let mut seen = HashSet::new();
+    let mut seen = AHashSet::new();
     let mut symbols = Vec::with_capacity(raw_symbols.len());
     for raw in raw_symbols {
         let symbol = raw.trim();
         ensure!(!symbol.is_empty(), "online_symbols contains empty symbol");
+        let symbol = symbol.to_ascii_uppercase();
         ensure!(
-            seen.insert(symbol.to_string()),
+            seen.insert(symbol.clone()),
             "duplicate online symbol configured: {symbol}"
         );
-        symbols.push(symbol.to_string());
+        symbols.push(symbol);
     }
     Ok(symbols)
 }
@@ -230,11 +232,11 @@ fn normalize_online_symbols(raw_symbols: &[String]) -> Result<Vec<String>> {
 fn validate_symbol_map(
     venue_name: &str,
     symbol_map: &HashMap<String, String>,
-    online_symbols: &HashSet<&str>,
+    online_symbols: &AHashSet<&str>,
 ) -> Result<()> {
     for (canonical, source) in symbol_map {
-        let canonical = canonical.trim();
-        let source = source.trim();
+        let canonical = canonical.trim().to_ascii_uppercase();
+        let source = source.trim().to_ascii_uppercase();
         ensure!(
             !canonical.is_empty(),
             "venue {venue_name} symbol_map contains empty canonical symbol"
@@ -244,7 +246,7 @@ fn validate_symbol_map(
             "venue {venue_name} symbol_map for {canonical} has empty source symbol"
         );
         ensure!(
-            online_symbols.contains(canonical),
+            online_symbols.contains(canonical.as_str()),
             "venue {venue_name} symbol_map key {canonical} is not in online_symbols"
         );
     }
@@ -256,9 +258,18 @@ fn build_venue_symbol_map(
     online_symbols: &[String],
     symbol_map: &HashMap<String, String>,
 ) -> Result<VenueSymbolMap> {
-    let mut source_to_canonical = HashMap::with_capacity(online_symbols.len());
+    let normalized_symbol_map: AHashMap<String, String> = symbol_map
+        .iter()
+        .map(|(canonical, source)| {
+            (
+                canonical.trim().to_ascii_uppercase(),
+                source.trim().to_ascii_uppercase(),
+            )
+        })
+        .collect();
+    let mut source_to_canonical = AHashMap::with_capacity(online_symbols.len());
     for canonical in online_symbols {
-        let source = symbol_map
+        let source = normalized_symbol_map
             .get(canonical)
             .map(String::as_str)
             .unwrap_or(canonical)

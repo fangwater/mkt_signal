@@ -654,7 +654,8 @@ mod tests {
                 let legacy = append_tlen_to_from_key(base, v).into_bytes();
                 let optimized = build_tlen_from_key_bytes(base, v);
                 assert_eq!(
-                    optimized, legacy,
+                    optimized,
+                    legacy,
                     "byte mismatch base={base:?} value={v:?}: {} vs {}",
                     String::from_utf8_lossy(&optimized),
                     String::from_utf8_lossy(&legacy),

@@ -1,0 +1,36 @@
+# Kafka helper for PeriodMessage protobuf payloads.
+# Kafka record-batch compression is handled by the Kafka client.
+# payload_compression controls the compression applied to the message value before protobuf decode.
+
+topics = ["binance-futures", "binance-spot"]
+brokers = "156.231.137.189:1501"
+group_id = "period_pbs_feature_bucket_probe"
+client_id = "period_pbs_feature_bucket_probe"
+offset_reset = "latest"
+payload_compression = "zlib" # auto | zlib | snappy | none
+
+poll_timeout_ms = 3000
+max_messages = 1
+print_symbols = false
+
+enable_auto_commit = false
+enable_partition_eof = false
+security_protocol = "none"
+sasl_mechanisms = "PLAIN"
+sasl_username = "eladmin"
+sasl_password = "eladmin"
+
+max_partition_fetch_bytes = 10485760
+fetch_max_bytes = 10485760
+fetch_wait_max_ms = 100
+socket_receive_buffer_bytes = 52428800
+receive_message_max_bytes = 10486272
+session_timeout_ms = 60000
+heartbeat_interval_ms = 3000
+max_poll_interval_ms = 300000
+
+# Force metadata-advertised broker hosts to client-reachable hosts.
+# The Kafka broker currently advertises 10.140.140.55:1501, which is not reachable here.
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]

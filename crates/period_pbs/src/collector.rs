@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ahash::AHashMap;
 use anyhow::Result;
 
 use crate::decode::{IncRecord, LevelRecord, TradeRecord};
@@ -40,9 +41,10 @@ pub struct CompletedPeriod {
 pub struct PeriodCollector {
     config: CollectorConfig,
     buckets: BTreeMap<i64, PeriodBucket>,
-    pending_chunks: HashMap<ChunkKey, PendingInc>,
+    pending_chunks: AHashMap<ChunkKey, PendingInc>,
     max_trade_ts_ms: Option<i64>,
     max_inc_ts_ms: Option<i64>,
+    last_completed_period: Option<i64>,
 }
 
 #[derive(Default)]
@@ -85,15 +87,19 @@ impl PeriodCollector {
         Self {
             config,
             buckets: BTreeMap::new(),
-            pending_chunks: HashMap::new(),
+            pending_chunks: AHashMap::new(),
             max_trade_ts_ms: None,
             max_inc_ts_ms: None,
+            last_completed_period: None,
         }
     }
 
     pub fn push_trade(&mut self, trade: TradeRecord) -> Result<Vec<CompletedPeriod>> {
         self.observe_trade_ts(trade.timestamp_ms);
         let period = period_for_timestamp_ms(trade.timestamp_ms, self.config.period_ms);
+        if self.is_completed_period(period) {
+            return self.drain_ready();
+        }
         let symbol = trade.symbol.clone();
         let bucket = self.buckets.entry(period).or_default();
         bucket.symbols.entry(symbol).or_default().trades.push(trade);
@@ -103,10 +109,14 @@ impl PeriodCollector {
 
     pub fn push_incremental(&mut self, inc: IncRecord) -> Result<Vec<CompletedPeriod>> {
         self.observe_inc_ts(inc.timestamp_ms);
+        let period = period_for_timestamp_ms(inc.timestamp_ms, self.config.period_ms);
+        if self.is_completed_period(period) {
+            self.discard_pending_incremental(&inc);
+            return self.drain_ready();
+        }
         let Some(inc) = self.accept_incremental_chunk(inc) else {
             return self.drain_ready();
         };
-        let period = period_for_timestamp_ms(inc.timestamp_ms, self.config.period_ms);
         let symbol = inc.symbol.clone();
         let bucket = self.buckets.entry(period).or_default();
         bucket.symbols.entry(symbol).or_default().incs.push(inc);
@@ -132,8 +142,13 @@ impl PeriodCollector {
         for period in ready_periods {
             if let Some(bucket) = self.buckets.remove(&period) {
                 completed.push(self.encode_bucket(period, bucket));
+                self.last_completed_period = Some(
+                    self.last_completed_period
+                        .map_or(period, |last| last.max(period)),
+                );
             }
         }
+        self.prune_completed_pending_chunks();
         Ok(completed)
     }
 
@@ -213,6 +228,35 @@ impl PeriodCollector {
             });
         }
         None
+    }
+
+    fn is_completed_period(&self, period: i64) -> bool {
+        self.last_completed_period
+            .is_some_and(|last_period| period <= last_period)
+    }
+
+    fn discard_pending_incremental(&mut self, inc: &IncRecord) {
+        if inc.chunk_index == 0 && inc.is_last {
+            return;
+        }
+        let key = ChunkKey {
+            symbol: inc.symbol.clone(),
+            first_update_id: inc.first_update_id,
+            final_update_id: inc.final_update_id,
+            timestamp: inc.timestamp,
+            is_snapshot: inc.is_snapshot,
+        };
+        self.pending_chunks.remove(&key);
+    }
+
+    fn prune_completed_pending_chunks(&mut self) {
+        let Some(last_completed_period) = self.last_completed_period else {
+            return;
+        };
+        let period_ms = self.config.period_ms;
+        self.pending_chunks.retain(|_, pending| {
+            period_for_timestamp_ms(pending.timestamp_ms, period_ms) > last_completed_period
+        });
     }
 
     fn encode_bucket(&self, period: i64, bucket: PeriodBucket) -> CompletedPeriod {
@@ -308,6 +352,32 @@ mod tests {
             period_ms: DEFAULT_PERIOD_MS,
             delay_ms: 5,
             poster_id: "test-host".to_string(),
+        }
+    }
+
+    fn trade_record(timestamp_ms: i64, side: char) -> TradeRecord {
+        TradeRecord {
+            symbol: "BTCUSDT".to_string(),
+            timestamp: timestamp_ms * 1_000,
+            timestamp_ms,
+            side,
+            price: 100.0,
+            amount: 1.0,
+        }
+    }
+
+    fn inc_record(timestamp_ms: i64, update_id: i64) -> IncRecord {
+        IncRecord {
+            symbol: "BTCUSDT".to_string(),
+            first_update_id: update_id,
+            final_update_id: update_id,
+            timestamp: timestamp_ms * 1_000,
+            timestamp_ms,
+            is_snapshot: false,
+            is_last: true,
+            chunk_index: 0,
+            bids: Vec::new(),
+            asks: Vec::new(),
         }
     }
 
@@ -422,6 +492,108 @@ mod tests {
         assert_eq!(info.incs.len(), 1);
         assert_eq!(info.incs[0].bids.len(), 1);
         assert_eq!(info.incs[0].asks.len(), 1);
+    }
+
+    #[test]
+    fn drops_late_records_after_period_completed() {
+        let mut collector = PeriodCollector::new(cfg());
+
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + 10, 'B'))
+            .expect("period0 trade")
+            .is_empty());
+        assert!(collector
+            .push_incremental(inc_record(INIT_TP_MS + 20, 1))
+            .expect("period0 inc")
+            .is_empty());
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 'S'))
+            .expect("period1 trade watermark")
+            .is_empty());
+
+        let out = collector
+            .push_incremental(inc_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 2))
+            .expect("period1 inc watermark");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].period, 0);
+
+        assert!(collector
+            .push_incremental(inc_record(INIT_TP_MS + 100, 3))
+            .expect("late period0 inc")
+            .is_empty());
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + 200, 'B'))
+            .expect("late period0 trade")
+            .is_empty());
+
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + 2 * DEFAULT_PERIOD_MS + 5, 'B'))
+            .expect("period2 trade watermark")
+            .is_empty());
+        let out = collector
+            .push_incremental(inc_record(INIT_TP_MS + 2 * DEFAULT_PERIOD_MS + 5, 4))
+            .expect("period2 inc watermark");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].period, 1);
+        assert_eq!(out[0].trade_count, 1);
+        assert_eq!(out[0].inc_count, 1);
+    }
+
+    #[test]
+    fn prunes_pending_chunks_for_completed_period() {
+        let mut collector = PeriodCollector::new(cfg());
+        let first_chunk = IncRecord {
+            symbol: "BTCUSDT".to_string(),
+            first_update_id: 10,
+            final_update_id: 11,
+            timestamp: (INIT_TP_MS + 10) * 1_000,
+            timestamp_ms: INIT_TP_MS + 10,
+            is_snapshot: false,
+            is_last: false,
+            chunk_index: 0,
+            bids: vec![LevelRecord {
+                price: 99.0,
+                amount: 1.0,
+            }],
+            asks: Vec::new(),
+        };
+        let second_chunk = IncRecord {
+            is_last: true,
+            chunk_index: 1,
+            bids: Vec::new(),
+            asks: vec![LevelRecord {
+                price: 101.0,
+                amount: 2.0,
+            }],
+            ..first_chunk.clone()
+        };
+
+        assert!(collector
+            .push_incremental(first_chunk)
+            .expect("first period0 chunk")
+            .is_empty());
+        assert_eq!(collector.pending_chunks.len(), 1);
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + 20, 'B'))
+            .expect("period0 trade")
+            .is_empty());
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 'S'))
+            .expect("period1 trade watermark")
+            .is_empty());
+
+        let out = collector
+            .push_incremental(inc_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 12))
+            .expect("period1 inc watermark");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].period, 0);
+        assert_eq!(collector.pending_chunks.len(), 0);
+
+        assert!(collector
+            .push_incremental(second_chunk)
+            .expect("late final period0 chunk")
+            .is_empty());
+        assert_eq!(collector.pending_chunks.len(), 0);
     }
 
     #[test]

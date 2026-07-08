@@ -281,10 +281,20 @@ routes:
             .expect("load public hk bridge config");
         let sg = BridgeConfig::load_from_file(root.join("config/ipc_bridge_public_sg.yaml"))
             .expect("load public sg bridge config");
+        let model_sender = BridgeConfig::load_from_file(
+            root.join("config/ipc_bridge_local_to_sg_binance_models.yaml"),
+        )
+        .expect("load local-to-sg model sender bridge config");
+        let model_receiver = BridgeConfig::load_from_file(
+            root.join("config/ipc_bridge_sg_public_binance_models.yaml"),
+        )
+        .expect("load sg model receiver bridge config");
 
         assert!(!jp.routes.is_empty());
         assert!(!hk.routes.is_empty());
         assert!(!sg.routes.is_empty());
+        assert!(!model_sender.routes.is_empty());
+        assert!(!model_receiver.routes.is_empty());
     }
 
     #[test]
@@ -341,5 +351,35 @@ routes:
             .collect();
 
         assert_eq!(hk_to_sg, sg_incoming);
+    }
+
+    #[test]
+    fn local_to_sg_model_route_ids_match() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let sender = BridgeConfig::load_from_file(
+            root.join("config/ipc_bridge_local_to_sg_binance_models.yaml"),
+        )
+        .expect("load local-to-sg model sender bridge config");
+        let receiver = BridgeConfig::load_from_file(
+            root.join("config/ipc_bridge_sg_public_binance_models.yaml"),
+        )
+        .expect("load sg model receiver bridge config");
+
+        let outgoing: HashSet<String> = sender
+            .routes
+            .iter()
+            .filter(|r| r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq)
+            .map(|r| r.id.clone())
+            .collect();
+        let incoming: HashSet<String> = receiver
+            .routes
+            .iter()
+            .filter(|r| r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc)
+            .filter(|r| r.to.endpoint.contains("binance-futures-mid-chg"))
+            .map(|r| r.id.clone())
+            .collect();
+
+        assert_eq!(outgoing, incoming);
+        assert_eq!(outgoing.len(), 3);
     }
 }

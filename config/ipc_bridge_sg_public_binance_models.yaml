@@ -1,0 +1,101 @@
+# Standalone public bridge config (SG side).
+#
+# This mirrors the current /home/ubuntu/bridge_sg_public runtime config and
+# appends three Binance model-output ingest routes from this host.
+
+routes:
+  # -----------------------------
+  # Local Bybit market-data fan-out
+  # -----------------------------
+  - id: public_local_bybit_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/bybit-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/bybit-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # -----------------------------
+  # Local Binance-futures market-data fan-out (for bybit-binance cross)
+  # -----------------------------
+  - id: public_local_binance_futures_derivatives
+    from:
+      type: ipc
+      endpoint: "dat_pbs/binance-futures/derivatives"
+      size: 128
+    to:
+      type: ipc
+      endpoint: "bridge/binance-futures/derivatives"
+      size: 128
+      max_publishers: 1
+      max_subscribers: 64
+      history_size: 50
+      subscriber_max_buffer_size: 8192
+
+  # ----------------------------------------
+  # HK -> SG legacy model output ingest
+  # ----------------------------------------
+  - id: public_binance_futures_direction_model_output_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "model_output/binance_futures_direction_model"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
+
+  # ----------------------------------------
+  # This host -> SG Binance model output ingest
+  # ----------------------------------------
+  - id: public_binance_futures_mid_chg_30s_model_output_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "model_output/binance-futures-mid-chg-30s"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
+
+  - id: public_binance_futures_mid_chg_1m_model_output_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "model_output/binance-futures-mid-chg-1m"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
+
+  - id: public_binance_futures_mid_chg_5m_model_output_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+      size: 2048
+    to:
+      type: ipc
+      endpoint: "model_output/binance-futures-mid-chg-5m"
+      size: 2048
+      max_publishers: 1
+      max_subscribers: 10
+      history_size: 128
+      subscriber_max_buffer_size: 256
