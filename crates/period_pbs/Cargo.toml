@@ -1,0 +1,19 @@
+[package]
+name = "period_pbs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.0", features = ["derive"] }
+env_logger = "0.10"
+flate2 = "1.0"
+libc = "0.2"
+ipc_common = { path = "../ipc_common" }
+log = "0.4"
+prost = "0.13"
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+serde = { version = "1.0", features = ["derive"] }
+snap = "1.1"
+toml = "0.8"
+zmq = "0.10"

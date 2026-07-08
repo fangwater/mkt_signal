@@ -1376,7 +1376,6 @@ pub struct TradeEngine {
     accounts: Vec<ApiKey>,
     ipc_core: Option<usize>,
     binance_um_whitelist_ip: Option<IpAddr>,
-    binance_um_ws_direct_ips: Vec<IpAddr>,
     ws_route: WsRouteConfig,
 }
 
@@ -1386,7 +1385,6 @@ impl TradeEngine {
         accounts: Vec<ApiKey>,
         ipc_core: Option<usize>,
         binance_um_whitelist_ip: Option<IpAddr>,
-        binance_um_ws_direct_ips: Vec<IpAddr>,
         ws_route: WsRouteConfig,
     ) -> Self {
         Self {
@@ -1394,7 +1392,6 @@ impl TradeEngine {
             accounts,
             ipc_core,
             binance_um_whitelist_ip,
-            binance_um_ws_direct_ips,
             ws_route,
         }
     }
@@ -2160,62 +2157,30 @@ impl TradeEngine {
                 (local_ips.clone(), local_ips.clone())
             };
 
-            let mut um_logical_endpoint_specs: Vec<(Option<IpAddr>, &'static str)> = Vec::new();
-            um_logical_endpoint_specs.push((None, "dns"));
-            for &remote_ip in &self.binance_um_ws_direct_ips {
-                um_logical_endpoint_specs.push((Some(remote_ip), "direct"));
-            }
-            let basic_um_local_ips = if self.binance_um_ws_direct_ips.is_empty() {
-                Some(binance_um_basic_ws_local_ips(&um_local_ips)?)
-            } else {
-                None
-            };
-            let planned_um_connection_count = basic_um_local_ips
-                .as_ref()
-                .map(|ips| ips.len())
-                .unwrap_or_else(|| um_logical_endpoint_specs.len() * um_local_ips.len());
-            if let Some(basic_ips) = basic_um_local_ips.as_ref() {
-                info!(
-                    "binance UM WS basic DNS mode enabled; spawning 1 logical endpoint group, {} connection(s), reconnect_period_ms={}, local_ips={}",
-                    basic_ips.len(),
-                    BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
-                    basic_ips
-                        .iter()
-                        .map(|ip| ip.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-            } else {
-                info!(
-                    "binance UM WS direct IP mode enabled; spawning {} logical endpoint group(s), {} connection(s): 1 DNS fallback group + {} direct group(s), local_ips={} reconnect_period_ms={}",
-                    um_logical_endpoint_specs.len(),
-                    planned_um_connection_count,
-                    self.binance_um_ws_direct_ips.len(),
-                    um_local_ips.len(),
-                    BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS
-                );
-            }
+            // 统一走 DNS 解析：单个逻辑端点组，每个 basic local_ip 一条连接。
+            let basic_um_local_ips = binance_um_basic_ws_local_ips(&um_local_ips)?;
+            let planned_um_connection_count = basic_um_local_ips.len();
+            info!(
+                "binance UM WS DNS mode; spawning 1 logical endpoint group, {} connection(s), reconnect_period_ms={}, local_ips={}",
+                basic_um_local_ips.len(),
+                BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
+                basic_um_local_ips
+                    .iter()
+                    .map(|ip| ip.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
 
-            let um_shutdown_on_rate_limit = um_logical_endpoint_specs.len() <= 1;
+            let um_shutdown_on_rate_limit = true;
             let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(planned_um_connection_count);
-            let mut um_endpoint_groups = Vec::with_capacity(um_logical_endpoint_specs.len());
+            let mut um_endpoint_groups = Vec::with_capacity(1);
             let mut spot_endpoints = Vec::with_capacity(spot_local_ips.len());
             let mut um_client_id = 0usize;
-            for (group_idx, (remote_ip_override, source)) in
-                um_logical_endpoint_specs.into_iter().enumerate()
             {
-                let is_direct = remote_ip_override.is_some();
-                let group_local_ips = if !is_direct {
-                    basic_um_local_ips
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(|| um_local_ips.clone())
-                } else {
-                    um_local_ips.clone()
-                };
-                let mut group_handles = Vec::with_capacity(group_local_ips.len());
-                for &ip in &group_local_ips {
+                let group_idx = 0usize;
+                let mut group_handles = Vec::with_capacity(basic_um_local_ips.len());
+                for &ip in &basic_um_local_ips {
                     let um_cmd_queue = WsCommandQueue::new();
                     let endpoint_state = StdRc::new(RefCell::new(Default::default()));
                     let reconnect_offset_ms = if planned_um_connection_count > 0 {
@@ -2253,18 +2218,11 @@ impl TradeEngine {
                         BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
                         reconnect_offset_ms,
                     );
-                    if let Some(remote_ip) = remote_ip_override {
-                        um_client = um_client.with_remote_ip_override(remote_ip);
-                    }
                     info!(
-                        "spawning binance um ws client id={} group_id={} ip={} source={} remote_ip={} max_inflight={} planned_reconnect_period_ms={} planned_reconnect_offset_ms={}",
+                        "spawning binance um ws client id={} group_id={} ip={} source=dns max_inflight={} planned_reconnect_period_ms={} planned_reconnect_offset_ms={}",
                         um_client_id,
                         group_idx,
                         um_client.local_ip(),
-                        source,
-                        remote_ip_override
-                            .map(|ip| ip.to_string())
-                            .unwrap_or_else(|| "dns".to_string()),
                         max_inflight,
                         BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
                         reconnect_offset_ms

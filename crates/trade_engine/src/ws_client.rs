@@ -627,7 +627,6 @@ pub struct TradeWsClient {
     use_ltp_backend: bool,
     local_ip: IpAddr,
     url: String,
-    remote_ip_override: Option<IpAddr>,
     current_remote_addr: Option<SocketAddr>,
     // 当前连接底层 TCP fd + 上一次 TCP_INFO 快照，用于观测 retrans 率（仅 Linux）。
     current_tcp_fd: Option<std::os::fd::RawFd>,
@@ -830,7 +829,6 @@ impl TradeWsClient {
             use_ltp_backend,
             local_ip,
             url,
-            remote_ip_override: None,
             current_remote_addr: None,
             current_tcp_fd: None,
             tcp_health_last: None,
@@ -878,11 +876,6 @@ impl TradeWsClient {
             binance_um_route_group_id: None,
             tcp_loss_act: false,
         }
-    }
-
-    pub(crate) fn with_remote_ip_override(mut self, remote_ip: IpAddr) -> Self {
-        self.remote_ip_override = Some(remote_ip);
-        self
     }
 
     pub(crate) fn with_planned_reconnect(mut self, period_ms: u64, offset_ms: u64) -> Self {
@@ -1119,7 +1112,6 @@ impl TradeWsClient {
 
             let local_ip = self.local_ip;
             let url = self.url.clone();
-            let remote_ip_override = self.remote_ip_override;
             let connect_timeout_ms = self.connect_timeout_ms;
             let ws_headers = self.ws_handshake_headers();
             tokio::select! {
@@ -1136,7 +1128,7 @@ impl TradeWsClient {
                     }
                     continue;
                 }
-                res = Self::establish_connection_with(local_ip, &url, remote_ip_override, connect_timeout_ms, &ws_headers) => {
+                res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms, &ws_headers) => {
                     match res {
                         Ok((mut ws, remote_addr, raw_fd)) => {
                             self.endpoint_state.borrow_mut().mark_connected();
@@ -1476,7 +1468,6 @@ impl TradeWsClient {
     async fn establish_connection_with(
         local_ip: IpAddr,
         url_str: &str,
-        remote_ip_override: Option<IpAddr>,
         connect_timeout_ms: u64,
         headers: &[(String, String)],
     ) -> Result<(
@@ -1492,20 +1483,7 @@ impl TradeWsClient {
             .port_or_known_default()
             .ok_or_else(|| anyhow!("websocket url missing port"))?;
 
-        let target = if let Some(remote_ip) = remote_ip_override {
-            match (remote_ip, local_ip) {
-                (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => {
-                    SocketAddr::new(remote_ip, port)
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "remote ip override {} is not compatible with local ip {}",
-                        remote_ip,
-                        local_ip
-                    ));
-                }
-            }
-        } else {
+        let target = {
             let mut candidates = lookup_host((host, port))
                 .await
                 .with_context(|| format!("resolve {}:{}", host, port))?;

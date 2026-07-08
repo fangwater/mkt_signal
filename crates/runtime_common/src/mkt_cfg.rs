@@ -11,6 +11,7 @@ struct LocalIpConfig {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TradeEngineTomlConfig {
     #[serde(default)]
     local_ips: Vec<String>,
@@ -18,8 +19,6 @@ struct TradeEngineTomlConfig {
     secondary_local_ip: Option<String>,
     #[serde(alias = "binance_um_ip_whitelist_ip")]
     binance_um_whitelist_ip: Option<String>,
-    #[serde(default, alias = "binance_um_ws_direct_ip")]
-    binance_um_ws_direct_ips: Vec<String>,
     // 统一的 WS 下单路由（不再绑定 Binance-UM）。
     ws_route: Option<WsRouteTomlConfig>,
 }
@@ -28,7 +27,6 @@ struct TradeEngineTomlConfig {
 pub struct TradeEngineLocalIpConfig {
     pub local_ips: Vec<String>,
     pub binance_um_whitelist_ip: Option<String>,
-    pub binance_um_ws_direct_ips: Vec<String>,
     pub ws_route: WsRouteConfig,
 }
 
@@ -134,7 +132,6 @@ pub async fn load_trade_engine_local_ip_config_preferring_trade_engine(
         TradeEngineLocalIpConfig {
             local_ips: vec![primary_ip, secondary_ip],
             binance_um_whitelist_ip: None,
-            binance_um_ws_direct_ips: Vec::new(),
             ws_route: WsRouteConfig::default(),
         },
         format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
@@ -288,27 +285,6 @@ fn trim_optional_empty_ok(value: Option<String>) -> Option<String> {
     })
 }
 
-fn parse_trimmed_ip_list(
-    values: Vec<String>,
-    field_name: &str,
-    path: &Path,
-) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for (idx, value) in values.into_iter().enumerate() {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(anyhow!(
-                "{}[{}] is empty in {}",
-                field_name,
-                idx,
-                path.display()
-            ));
-        }
-        out.push(trimmed.to_string());
-    }
-    Ok(out)
-}
-
 fn parse_ws_route_kind(raw: Option<String>, path: &Path) -> Result<WsRouteKind> {
     let Some(raw) = raw else {
         return Ok(WsRouteKind::Rr);
@@ -371,11 +347,6 @@ fn parse_trade_engine_local_ip_config_toml(
     Ok(TradeEngineLocalIpConfig {
         local_ips,
         binance_um_whitelist_ip: trim_optional_empty_ok(cfg.binance_um_whitelist_ip),
-        binance_um_ws_direct_ips: parse_trimmed_ip_list(
-            cfg.binance_um_ws_direct_ips,
-            "binance_um_ws_direct_ips",
-            path,
-        )?,
         ws_route,
     })
 }
@@ -444,12 +415,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_trade_engine_toml_accepts_binance_um_ws_direct_ips() {
+    fn parse_trade_engine_toml_accepts_whitelist_and_route() {
         let parsed = parse_trade_engine_local_ip_config_toml(
             r#"
                 local_ips = ["172.31.33.133", "172.31.46.90"]
                 binance_um_whitelist_ip = "172.31.46.90"
-                binance_um_ws_direct_ips = [" 13.112.240.202 ", "13.158.151.48"]
                 [ws_route]
                 route = "dispatch"
             "#,
@@ -458,8 +428,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            parsed.binance_um_ws_direct_ips,
-            vec!["13.112.240.202".to_string(), "13.158.151.48".to_string()]
+            parsed.binance_um_whitelist_ip.as_deref(),
+            Some("172.31.46.90")
         );
         assert_eq!(
             parsed.ws_route,
@@ -467,6 +437,20 @@ mod tests {
                 route: WsRouteKind::Dispatch,
             }
         );
+    }
+
+    #[test]
+    fn parse_trade_engine_toml_rejects_removed_direct_ips() {
+        let err = parse_trade_engine_local_ip_config_toml(
+            r#"
+                local_ips = ["172.31.33.133"]
+                binance_um_ws_direct_ips = ["13.112.240.202"]
+            "#,
+            Path::new("trade_engine.toml"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("binance_um_ws_direct_ips"));
     }
 
     #[test]

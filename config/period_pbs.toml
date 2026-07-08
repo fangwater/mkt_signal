@@ -1,0 +1,37 @@
+# period_pbs config.
+# Fixed in code:
+# - service_root = "dat_pbs"
+# - period_ms = 3000
+
+# Canonical symbols used inside emitted PeriodMessage payloads.
+# Per-venue source symbols are mapped back to these names before collection.
+online_symbols = [
+  "BTCUSDT",
+  "PUMPUSDT",
+]
+
+[zmq]
+# Supports both tcp:// and ipc:// PUB binds.
+bind = "tcp://0.0.0.0:6380"
+sndhwm = 10000
+linger_ms = 0
+send_dontwait = true
+
+[[venues]]
+name = "binance-margin"
+topic = "binance-spot"
+poll_batch = 65536
+idle_sleep_us = 0
+delay_ms = 5
+
+[[venues]]
+name = "binance-futures"
+topic = "binance-futures"
+poll_batch = 65536
+idle_sleep_us = 0
+delay_ms = 5
+
+# Canonical online symbol -> source symbol observed on this venue.
+# Incoming 1000PUMPUSDT from futures is emitted as PUMPUSDT in PeriodMessage.
+[venues.symbol_map]
+PUMPUSDT = "1000PUMPUSDT"

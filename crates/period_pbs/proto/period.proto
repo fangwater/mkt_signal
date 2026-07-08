@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package message_old;
+
+message PriceLevel {
+  double price = 1;
+  double amount = 2;
+}
+
+message IncrementOrderBookInfo {
+  int64 timestamp = 1;
+  bool is_snapshot = 2;
+  repeated PriceLevel bids = 3;
+  repeated PriceLevel asks = 4;
+}
+
+message TradeInfo {
+  int64 timestamp = 1;
+  string side = 2;
+  double price = 3;
+  double amount = 4;
+}
+
+message SymbolInfo {
+  string symbol = 1;
+  repeated TradeInfo trades = 2;
+  repeated IncrementOrderBookInfo incs = 3;
+}
+
+message PeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated SymbolInfo symbol_infos = 5;
+}

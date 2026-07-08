@@ -99,6 +99,18 @@ impl SubscriberEnum {
         }
     }
 
+    fn receive_msg_with<F>(&self, mut handler: F) -> Result<bool>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        match self {
+            SubscriberEnum::Size64(sub) => Self::receive_from_subscriber_with(sub, &mut handler),
+            SubscriberEnum::Size128(sub) => Self::receive_from_subscriber_with(sub, &mut handler),
+            SubscriberEnum::Size256(sub) => Self::receive_from_subscriber_with(sub, &mut handler),
+            SubscriberEnum::Size2048(sub) => Self::receive_from_subscriber_with(sub, &mut handler),
+        }
+    }
+
     fn receive_from_subscriber<const SIZE: usize>(
         subscriber: &Subscriber<ipc::Service, [u8; SIZE], ()>,
     ) -> Result<Option<Bytes>> {
@@ -111,6 +123,26 @@ impl SubscriberEnum {
                 Ok(Some(Bytes::copy_from_slice(payload)))
             }
             None => Ok(None),
+        }
+    }
+
+    fn receive_from_subscriber_with<const SIZE: usize, F>(
+        subscriber: &Subscriber<ipc::Service, [u8; SIZE], ()>,
+        handler: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        match subscriber.receive()? {
+            Some(sample) => {
+                let payload = sample.payload();
+                if payload.iter().all(|&b| b == 0) {
+                    return Ok(false);
+                }
+                handler(payload)?;
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 }
@@ -192,7 +224,11 @@ impl MultiChannelSubscriber {
                     builder = builder.subscriber_max_buffer_size(buffer);
                 }
                 let service = builder.open_or_create()?;
-                let subscriber = service.subscriber_builder().create()?;
+                let mut subscriber_builder = service.subscriber_builder();
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    subscriber_builder = subscriber_builder.buffer_size(buffer);
+                }
+                let subscriber = subscriber_builder.create()?;
                 SubscriberEnum::Size2048(subscriber)
             }
             ChannelType::Signal => {
@@ -207,7 +243,11 @@ impl MultiChannelSubscriber {
                     builder = builder.subscriber_max_buffer_size(buffer);
                 }
                 let service = builder.open_or_create()?;
-                let subscriber = service.subscriber_builder().create()?;
+                let mut subscriber_builder = service.subscriber_builder();
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    subscriber_builder = subscriber_builder.buffer_size(buffer);
+                }
+                let subscriber = subscriber_builder.create()?;
                 SubscriberEnum::Size64(subscriber)
             }
             ChannelType::RlReturnVolatility => {
@@ -227,7 +267,11 @@ impl MultiChannelSubscriber {
                         service_name
                     )
                 })?;
-                let subscriber = service.subscriber_builder().create()?;
+                let mut subscriber_builder = service.subscriber_builder();
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    subscriber_builder = subscriber_builder.buffer_size(buffer);
+                }
+                let subscriber = subscriber_builder.create()?;
                 SubscriberEnum::Size256(subscriber)
             }
             ChannelType::Trade
@@ -245,7 +289,11 @@ impl MultiChannelSubscriber {
                     builder = builder.subscriber_max_buffer_size(buffer);
                 }
                 let service = builder.open_or_create()?;
-                let subscriber = service.subscriber_builder().create()?;
+                let mut subscriber_builder = service.subscriber_builder();
+                if let Some(buffer) = subscriber_max_buffer_size {
+                    subscriber_builder = subscriber_builder.buffer_size(buffer);
+                }
+                let subscriber = subscriber_builder.create()?;
                 SubscriberEnum::Size128(subscriber)
             }
         };
@@ -353,6 +401,43 @@ impl MultiChannelSubscriber {
         }
 
         messages
+    }
+
+    /// 轮询指定服务根下单个频道，并在样本仍被借用时处理，避免无条件复制payload。
+    pub fn poll_channel_from_with<F>(
+        &mut self,
+        service_root: &str,
+        topic_prefix: &str,
+        channel: &ChannelType,
+        max_msgs: Option<usize>,
+        mut handler: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        let max_msgs = max_msgs.unwrap_or(16);
+        let key = subscription_key(service_root, topic_prefix, channel);
+        let mut count = 0;
+
+        if let Some(subscriber) = self.subscribers.get(&key) {
+            for _ in 0..max_msgs {
+                match subscriber.receive_msg_with(&mut handler) {
+                    Ok(true) => {
+                        count += 1;
+                        self.stats.messages_received += 1;
+                        *self
+                            .stats
+                            .messages_by_channel
+                            .entry(key.clone())
+                            .or_insert(0) += 1;
+                    }
+                    Ok(false) => break,
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
+        Ok(count)
     }
 
     /// 获取统计信息

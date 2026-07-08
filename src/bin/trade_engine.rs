@@ -122,7 +122,6 @@ struct TradeEngineLocalIpRuntimeConfig {
     local_ips: Vec<IpAddr>,
     local_ip_values: Vec<String>,
     binance_um_whitelist_ip_value: Option<String>,
-    binance_um_ws_direct_ip_values: Vec<String>,
     ws_route: WsRouteConfig,
     source: String,
 }
@@ -158,26 +157,10 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
                 })
             })
             .transpose()?;
-        let _binance_um_ws_direct_ips = cfg
-            .binance_um_ws_direct_ips
-            .iter()
-            .enumerate()
-            .map(|(idx, ip)| {
-                ip.parse::<IpAddr>().with_context(|| {
-                    format!(
-                        "invalid binance_um_ws_direct_ips[{}] in trade_engine config {}: {}",
-                        idx,
-                        path.display(),
-                        ip
-                    )
-                })
-            })
-            .collect::<Result<Vec<IpAddr>>>()?;
         return Ok(TradeEngineLocalIpRuntimeConfig {
             local_ips,
             local_ip_values,
             binance_um_whitelist_ip_value,
-            binance_um_ws_direct_ip_values: cfg.binance_um_ws_direct_ips,
             ws_route: cfg.ws_route,
             source: path.display().to_string(),
         });
@@ -195,7 +178,6 @@ async fn load_trade_engine_local_ip_config() -> Result<TradeEngineLocalIpRuntime
         local_ips: vec![primary_ip, secondary_ip],
         local_ip_values: vec![primary_ip_raw, secondary_ip_raw],
         binance_um_whitelist_ip_value: None,
-        binance_um_ws_direct_ip_values: Vec::new(),
         ws_route: WsRouteConfig::default(),
         source: format!("{} (fallback mkt_cfg.yaml)", cfg_path.display()),
     })
@@ -404,19 +386,6 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let binance_um_ws_direct_ips = local_ip_cfg
-        .binance_um_ws_direct_ip_values
-        .iter()
-        .enumerate()
-        .map(|(idx, ip)| {
-            ip.parse::<IpAddr>().with_context(|| {
-                format!(
-                    "parse binance_um_ws_direct_ips[{}] for trade_engine dispatch: {}",
-                    idx, ip
-                )
-            })
-        })
-        .collect::<Result<Vec<IpAddr>>>()?;
     info!(
         "using local IPs from {}: {}",
         local_ip_cfg.source,
@@ -431,16 +400,6 @@ async fn main() -> Result<()> {
         info!(
             "configured local IPs: {}",
             local_ips
-                .iter()
-                .map(|ip| ip.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    if exchange_name == "binance" && !binance_um_ws_direct_ips.is_empty() {
-        info!(
-            "configured Binance UM WS direct IPs (+1 DNS fallback): {}",
-            binance_um_ws_direct_ips
                 .iter()
                 .map(|ip| ip.to_string())
                 .collect::<Vec<_>>()
@@ -618,7 +577,6 @@ async fn main() -> Result<()> {
         accounts,
         ipc_core,
         binance_um_whitelist_ip,
-        binance_um_ws_direct_ips,
         local_ip_cfg.ws_route,
     );
 
