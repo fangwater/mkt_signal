@@ -20,7 +20,7 @@ use crate::query_parsers::gate_order_status::{
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::tcp_loss_health::{TcpHealthMode, TcpLossHealth, TcpLossHealthConfig, Verdict};
+use crate::tcp_loss_health::{TcpLossHealth, TcpLossHealthConfig, Verdict};
 use crate::trade_request::{
     BinanceNewOrderParamsRef, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
     TradeRequestType,
@@ -514,7 +514,7 @@ pub(crate) struct WsEndpointState {
     connected: bool,
     cooldown_until: Option<std::time::Instant>,
     // 通用 TCP 丢包健康度（dispatch 路由）软暂停：到期前该端点被路由绕开。
-    // 仅在 dispatch+act 模式下由 eval_tcp_health 设置；RR 模式永远为 None。
+    // 仅在 dispatch 路由下由 eval_tcp_health 设置；RR 路由永远为 None。
     tcp_loss_pause_until: Option<std::time::Instant>,
 }
 
@@ -566,8 +566,8 @@ impl WsEndpointHandle {
             }
             state.cooldown_until = None;
         }
-        // TCP 丢包软暂停对所有路由都无条件生效（与 cooldown 同级）；RR 模式下从不被设置，
-        // 因此不影响 RR。dispatch+act 模式下 eval_tcp_health 置位后，本端点被路由绕开。
+        // TCP 丢包软暂停对所有路由都无条件生效（与 cooldown 同级）；RR 路由下从不被设置，
+        // 因此不影响 RR。dispatch 路由下 eval_tcp_health 置位后，本端点被路由绕开。
         if let Some(until) = state.tcp_loss_pause_until {
             if now < until {
                 return false;
@@ -1332,22 +1332,13 @@ impl TradeWsClient {
     ) -> Result<()> {
         let mut ping_interval = time::interval(Duration::from_millis(self.ping_interval_ms));
         ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        // TCP 丢包健康度：observe 只算+日志；act 才驱动动作（动作在 Dispatch 路由下生效）。
-        // 间隔沿用 TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS（0=关）；MODE=off 亦关。
+        // TCP 丢包健康度：始终观测+打日志（间隔由 TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS 控制，0=关）。
+        // 是否真正 act（软暂停+硬重连）完全由路由决定：dispatch=act，rr=只观测。见 self.tcp_loss_act。
         let tcp_health_interval_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(10_000);
-        // RR 路由永不 act：即便 env=act 也降级为 observe（只观测、只打日志），保证 RR 行为不变。
-        // 仅 dispatch 路由(self.tcp_loss_act)才允许 act 真正驱动 pause/reconnect。
-        let env_tcp_health_mode = TcpHealthMode::from_env(TcpHealthMode::Observe);
-        let tcp_health_mode = match env_tcp_health_mode {
-            TcpHealthMode::Off => TcpHealthMode::Off,
-            TcpHealthMode::Act if self.tcp_loss_act => TcpHealthMode::Act,
-            _ => TcpHealthMode::Observe,
-        };
-        let tcp_health_enabled =
-            tcp_health_interval_ms > 0 && tcp_health_mode != TcpHealthMode::Off;
+        let tcp_health_enabled = tcp_health_interval_ms > 0;
         let mut tcp_loss_health = TcpLossHealth::new(TcpLossHealthConfig::from_env());
         let mut tcp_health_interval =
             time::interval(Duration::from_millis(tcp_health_interval_ms.max(1)));
@@ -1398,7 +1389,7 @@ impl TradeWsClient {
                     self.send_ping(ws).await?;
                 }
                 _ = tcp_health_interval.tick(), if tcp_health_enabled => {
-                    self.eval_tcp_health(&mut tcp_loss_health, tcp_health_mode);
+                    self.eval_tcp_health(&mut tcp_loss_health);
                 }
                 _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
                     if self.can_planned_reconnect_now() {
@@ -3753,9 +3744,9 @@ impl TradeWsClient {
     }
 
     /// 评估当前连接的 TCP 丢包健康度：与上次 TCP_INFO 快照比较算本窗口 retrans 率，
-    /// 喂入滚动窗口给出判定并日志（对齐 `ss`）。observe 只观测；act 的动作（软暂停
-    /// 绕开 / 无 inflight 硬重连）在 Dispatch 路由模式下生效——见任务 #10。
-    fn eval_tcp_health(&mut self, health: &mut TcpLossHealth, mode: TcpHealthMode) {
+    /// 喂入滚动窗口给出判定并日志（对齐 `ss`）。rr 只观测；dispatch 路由才施加动作
+    /// （软暂停绕开 / 无 inflight 硬重连），由 self.tcp_loss_act 控制。
+    fn eval_tcp_health(&mut self, health: &mut TcpLossHealth) {
         let Some(fd) = self.current_tcp_fd else {
             return;
         };
@@ -3774,11 +3765,11 @@ impl TradeWsClient {
         let can_reconnect_now = self.can_planned_reconnect_now();
         let now = std::time::Instant::now();
         let verdict = health.record(d_retrans, d_data_segs, can_reconnect_now, now);
-        // act 动作：仅 mode==Act（已被 event_loop 收敛为「dispatch 路由才可能为 Act」）时施加。
+        // act 动作：仅 dispatch 路由(self.tcp_loss_act)时施加；rr 只观测、只打日志。
         // Pause → 置 tcp_loss_pause_until（is_available 无条件绕开；坏则每 tick 续期）。
         // Reconnect → 同时置 pause 并触发 should_reconnect（event_loop 拆连重建=换源端口=换 ECMP 路径）。
         let mut acted = "none";
-        if mode == TcpHealthMode::Act {
+        if self.tcp_loss_act {
             match verdict {
                 Verdict::Reconnect => {
                     let until = now + health.pause_duration();
@@ -3795,7 +3786,7 @@ impl TradeWsClient {
             }
         }
         info!(
-            "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_bp={:?} total_retrans={} rtt_us={} rttvar_us={} mode={:?} verdict={:?} acted={}",
+            "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_bp={:?} total_retrans={} rtt_us={} rttvar_us={} route={} verdict={:?} acted={}",
             self.id,
             self.exchange,
             self.url,
@@ -3807,7 +3798,7 @@ impl TradeWsClient {
             snap.total_retrans,
             snap.rtt_us,
             snap.rttvar_us,
-            mode,
+            if self.tcp_loss_act { "dispatch" } else { "rr" },
             verdict,
             acted,
         );

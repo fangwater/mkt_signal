@@ -7,41 +7,10 @@
 //! - `Reconnect`：速率超硬阈且持续 `sustain_ticks`，且 `can_reconnect_now`（无 inflight）、
 //!   且距上次换连超过最小间隔 → 拆连重建换路。
 //!
-//! 本模块只算信号，不涉及网络/路由；动作由 ws_client 按运行模式(observe/act)施加。
+//! 本模块只算信号，不涉及网络/路由；动作由 ws_client 按路由(rr/dispatch)施加。
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-
-/// 运行模式：由 ws_client 从 env 解析，决定是否真正驱动动作。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TcpHealthMode {
-    /// 关闭：ticker 不 arm。
-    Off,
-    /// 只算 + 打日志，不驱动 pause/reconnect（默认）。
-    Observe,
-    /// 驱动 pause/reconnect（仅在 Dispatch 路由模式下 pause 才被选路消费）。
-    Act,
-}
-
-impl TcpHealthMode {
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "off" | "0" | "false" => Some(Self::Off),
-            "observe" | "log" => Some(Self::Observe),
-            "act" | "on" | "1" | "true" => Some(Self::Act),
-            _ => None,
-        }
-    }
-
-    /// 从 env `TRADE_ENGINE_TCP_HEALTH_MODE` 解析，缺省用 `default`。
-    pub fn from_env(default: Self) -> Self {
-        std::env::var("TRADE_ENGINE_TCP_HEALTH_MODE")
-            .ok()
-            .and_then(|v| Self::from_str(&v))
-            .unwrap_or(default)
-    }
-}
 
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
