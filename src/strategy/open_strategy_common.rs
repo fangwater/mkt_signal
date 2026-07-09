@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::{
     register_bybit_internal_system_open_block, BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::log_throttle::{log_open_risk_reject_summary, log_pending_limit_summary};
@@ -1408,6 +1409,59 @@ pub trait OpenStrategyCommon {
                         "binance position-limit failed: {}",
                         e
                     ));
+                    return None;
+                }
+            }
+
+            if is_arb_open
+                && (venue == TradingVenue::BitgetFutures
+                    || monitor.hedge_venue() == TradingVenue::BitgetFutures)
+            {
+                let hedge_venue = monitor.hedge_venue();
+                let (current_bitget_open_base_qty, add_bitget_open_base_qty) = if venue
+                    == TradingVenue::BitgetMargin
+                    || venue == TradingVenue::BitgetFutures
+                {
+                    (current_open_base_qty, add_base_qty)
+                } else {
+                    (0.0, 0.0)
+                };
+                let (current_bitget_futures_base_qty, add_bitget_futures_base_qty) =
+                    if hedge_venue == TradingVenue::BitgetFutures {
+                        (
+                            monitor.get_position_qty(&symbol, TradingVenue::BitgetFutures),
+                            -add_base_qty,
+                        )
+                    } else {
+                        (0.0, 0.0)
+                    };
+                if let Err(e) = BitgetPositionTierGuard::ensure_projected_notional(
+                    &symbol,
+                    side,
+                    current_bitget_open_base_qty,
+                    add_bitget_open_base_qty,
+                    current_bitget_futures_base_qty,
+                    add_bitget_futures_base_qty,
+                    order_price,
+                    signed_qty,
+                    qty_multiplier,
+                ) {
+                    self.log_open_deleveraging_risk_reject(
+                        "Bitget限仓风控",
+                        &e,
+                        &symbol,
+                        TradingVenue::BitgetFutures,
+                        side,
+                        current_bitget_futures_base_qty,
+                        input.qty,
+                    );
+                    error!(
+                        "{}: strategy_id={} Bitget限仓检查失败: {}，标记策略为不活跃",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        e
+                    );
+                    self.mark_open_strategy_inactive(format!("bitget position-tier failed: {}", e));
                     return None;
                 }
             }

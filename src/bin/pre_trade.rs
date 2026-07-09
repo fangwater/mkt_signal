@@ -8,6 +8,7 @@ use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
@@ -534,6 +535,17 @@ async fn main() -> Result<()> {
             )
             .await?;
             info!("Gate risk-limit guard initialized");
+
+            info!("Initializing Bitget position-tier guard...");
+            BitgetPositionTierGuard::initialize(
+                &leverage_guard_redis,
+                dir_prefix.clone(),
+                arb_mode,
+                open_venue,
+                hedge_venue,
+            )
+            .await?;
+            info!("Bitget position-tier guard initialized");
 
             // 5. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
