@@ -73,6 +73,39 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Sync mm strategy params to Redis (venue is inferred from current directory)"
     )
+    p.add_argument(
+        "--return-model-service",
+        default=None,
+        help="Return model service name, e.g. binance-futures-mid-chg-1m; '-' disables it",
+    )
+    p.add_argument(
+        "--environment-model-service",
+        default=None,
+        help="Environment model service name; '-' disables it",
+    )
+    p.add_argument(
+        "--enable-return-score-adjust-hedge",
+        choices=("true", "false"),
+        default=None,
+        help="Enable return-score hedge offset adjustment",
+    )
+    p.add_argument(
+        "--enable-environment-model",
+        choices=("true", "false"),
+        default=None,
+        help="Enable environment-model open gate",
+    )
+    p.add_argument(
+        "--enable-return-score-cancel",
+        choices=("true", "false"),
+        default=None,
+        help="Enable model-score based open order cancel",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and print params without writing Redis",
+    )
     return p.parse_args()
 
 
@@ -93,8 +126,8 @@ STRATEGY_PARAMS = {
     "hedge_offset_ratio": "1.3",
     "hedge_window_scale_low": "0.8",
     "hedge_window_scale_high": "1.3",
-    "enable_return_score_adjust_hegde": "true",
-    "enable_environment_model": "true",
+    "enable_return_score_adjust_hegde": "false",
+    "enable_environment_model": "false",
     "enable_volatility_limit": "true",
     "open_volatility_limit": "70",
     "enable_tradecount_limit": "false",
@@ -225,6 +258,21 @@ def validate_open_block_utc_time_range(raw: str) -> str:
     return text
 
 
+def apply_cli_overrides(params: Dict[str, str], args: argparse.Namespace) -> Dict[str, str]:
+    out = dict(params)
+    if args.return_model_service is not None:
+        out["return_model_service"] = args.return_model_service.strip() or "-"
+    if args.environment_model_service is not None:
+        out["environment_model_service"] = args.environment_model_service.strip() or "-"
+    if args.enable_return_score_adjust_hedge is not None:
+        out["enable_return_score_adjust_hegde"] = args.enable_return_score_adjust_hedge
+    if args.enable_environment_model is not None:
+        out["enable_environment_model"] = args.enable_environment_model
+    if args.enable_return_score_cancel is not None:
+        out["enable_return_score_cancel"] = args.enable_return_score_cancel
+    return out
+
+
 def validate_strategy_params(params: Dict[str, str]) -> None:
     if "open_block_utc_time_range" in params:
         validate_open_block_utc_time_range(params["open_block_utc_time_range"])
@@ -245,17 +293,33 @@ def validate_strategy_params(params: Dict[str, str]) -> None:
                 f"enable_clock_shift_ms={shift} order_interval_ms={order_interval_ms} "
                 f"next_query_delay_ms={next_query_delay_ms}"
             )
+    return_model_service = params.get("return_model_service", "-").strip()
+    if params.get("enable_return_score_adjust_hegde", "false").strip().lower() == "true":
+        if not return_model_service or return_model_service == "-":
+            raise ValueError(
+                "enable_return_score_adjust_hegde=true 时必须配置 return_model_service"
+            )
+    if params.get("enable_return_score_cancel", "false").strip().lower() == "true":
+        if not return_model_service or return_model_service == "-":
+            raise ValueError("enable_return_score_cancel=true 时必须配置 return_model_service")
+    env_model_service = params.get("environment_model_service", "-").strip()
+    if params.get("enable_environment_model", "false").strip().lower() == "true":
+        if not env_model_service or env_model_service == "-":
+            raise ValueError("enable_environment_model=true 时必须配置 environment_model_service")
 
 
-def sync_strategy_params(rds, key: str) -> int:
-    validate_strategy_params(STRATEGY_PARAMS)
-    rds.hset(key, mapping=STRATEGY_PARAMS)
+def sync_strategy_params(rds, key: str, params: Dict[str, str], dry_run: bool = False) -> int:
+    validate_strategy_params(params)
+    if dry_run:
+        print(f"🧪 dry-run: 不写入 Redis HASH '{key}'")
+        return len(params)
+    rds.hset(key, mapping=params)
     if REMOVED_KEYS:
         rds.hdel(key, *REMOVED_KEYS)
-    print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")
+    print(f"✅ 已写入 {len(params)} 个参数到 HASH '{key}'")
     if REMOVED_KEYS:
         print(f"🧹 已删除旧字段: {', '.join(REMOVED_KEYS)}")
-    return len(STRATEGY_PARAMS)
+    return len(params)
 
 
 def print_params(rds, key: str) -> None:
@@ -293,7 +357,7 @@ def print_params(rds, key: str) -> None:
 
 
 def main() -> int:
-    _args = parse_args()
+    args = parse_args()
     redis = try_import_redis()
     if redis is None:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
@@ -313,12 +377,23 @@ def main() -> int:
     print(f"🏷️ venue: {venue}")
     print("📍 Redis: 127.0.0.1:6379/0")
 
+    params = apply_cli_overrides(STRATEGY_PARAMS, args)
     try:
-        sync_strategy_params(rds, key)
+        sync_strategy_params(rds, key, params, dry_run=args.dry_run)
     except ValueError as exc:
         print(f"❌ mm 策略参数校验失败: {exc}", file=sys.stderr)
         return 1
-    print_params(rds, key)
+    if args.dry_run:
+        print("\n📊 dry-run mm 策略参数配置:")
+        for k in PARAM_PRINT_ORDER:
+            if k in params:
+                comment = PARAM_COMMENTS.get(k, "")
+                if comment:
+                    print(f"  {k:28} {params[k]:>12}  # {comment}")
+                else:
+                    print(f"  {k:28} {params[k]:>12}")
+    else:
+        print_params(rds, key)
     print()
     return 0
 

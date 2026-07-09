@@ -190,6 +190,7 @@ pub trait TradeEngineResponse {
                     | 110044
                     | 110045
                     | 170131
+                    | bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE
                     | bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH
             ),
             Some(Exchange::Bitget) => {
@@ -399,6 +400,21 @@ mod tests {
             symbol_utils::Exchange::Bybit as u32,
             123,
             bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bybit_liability_overflow_as_insufficient_margin() {
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BybitNewMarginOrder as u32,
+            symbol_utils::Exchange::Bybit as u32,
+            123,
+            bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE,
         );
 
         assert!(resp.is_open_request());

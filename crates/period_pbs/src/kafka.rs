@@ -1,6 +1,7 @@
 use std::ffi::{CStr, CString};
 use std::io::Read;
 use std::os::raw::{c_char, c_int, c_void};
+use std::ptr;
 use std::slice;
 
 use anyhow::{Context, Result};
@@ -72,6 +73,8 @@ pub struct KafkaConsumerConfig {
     pub session_timeout_ms: u64,
     pub heartbeat_interval_ms: u64,
     pub max_poll_interval_ms: u64,
+    pub metadata_timeout_ms: u64,
+    pub watermark_timeout_ms: u64,
     pub broker_addr_rewrites: Vec<BrokerAddrRewrite>,
 }
 
@@ -101,6 +104,8 @@ impl Default for KafkaConsumerConfig {
             session_timeout_ms: 60_000,
             heartbeat_interval_ms: 3_000,
             max_poll_interval_ms: 300_000,
+            metadata_timeout_ms: 5_000,
+            watermark_timeout_ms: 5_000,
             broker_addr_rewrites: Vec::new(),
         }
     }
@@ -350,6 +355,95 @@ impl RawKafkaConsumer {
         Some(result)
     }
 
+    pub fn query_topic_watermarks(
+        &self,
+        topics: &[String],
+        metadata_timeout_ms: u64,
+        watermark_timeout_ms: u64,
+    ) -> Result<Vec<KafkaPartitionWatermark>> {
+        let mut watermarks = Vec::new();
+        for topic in topics {
+            let partitions = self
+                .fetch_topic_partitions(topic, metadata_timeout_ms)
+                .with_context(|| format!("fetch metadata partitions for topic={topic}"))?;
+            for partition in partitions {
+                watermarks.push(
+                    self.query_partition_watermark(topic, partition, watermark_timeout_ms)
+                        .with_context(|| {
+                            format!("query watermark topic={topic} partition={partition}")
+                        })?,
+                );
+            }
+        }
+        watermarks.sort_by(|left, right| {
+            left.topic
+                .cmp(&right.topic)
+                .then(left.partition.cmp(&right.partition))
+        });
+        Ok(watermarks)
+    }
+
+    fn fetch_topic_partitions(&self, topic: &str, timeout_ms: u64) -> Result<Vec<i32>> {
+        let topic_c = CString::new(topic).with_context(|| format!("invalid topic {topic}"))?;
+        let rkt = unsafe { rdsys::rd_kafka_topic_new(self.rk, topic_c.as_ptr(), ptr::null_mut()) };
+        if rkt.is_null() {
+            anyhow::bail!("rd_kafka_topic_new returned null for topic={topic}");
+        }
+
+        let mut metadata_ptr: *const rdsys::rd_kafka_metadata = ptr::null();
+        let timeout_ms = timeout_ms.min(c_int::MAX as u64) as c_int;
+        let metadata_result =
+            unsafe { rdsys::rd_kafka_metadata(self.rk, 0, rkt, &mut metadata_ptr, timeout_ms) };
+        unsafe { rdsys::rd_kafka_topic_destroy(rkt) };
+
+        if metadata_result != rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            anyhow::bail!(
+                "rd_kafka_metadata failed for topic={}: {}",
+                topic,
+                kafka_error_string(metadata_result)
+            );
+        }
+        if metadata_ptr.is_null() {
+            anyhow::bail!("rd_kafka_metadata returned null for topic={topic}");
+        }
+
+        let result = unsafe { extract_topic_partitions(metadata_ptr, topic) };
+        unsafe { rdsys::rd_kafka_metadata_destroy(metadata_ptr) };
+        result
+    }
+
+    fn query_partition_watermark(
+        &self,
+        topic: &str,
+        partition: i32,
+        timeout_ms: u64,
+    ) -> Result<KafkaPartitionWatermark> {
+        let topic_c = CString::new(topic).with_context(|| format!("invalid topic {topic}"))?;
+        let mut low = -1i64;
+        let mut high = -1i64;
+        let timeout_ms = timeout_ms.min(c_int::MAX as u64) as c_int;
+        let err = unsafe {
+            rdsys::rd_kafka_query_watermark_offsets(
+                self.rk,
+                topic_c.as_ptr(),
+                partition,
+                &mut low,
+                &mut high,
+                timeout_ms,
+            )
+        };
+        if err != rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            anyhow::bail!("{}", kafka_error_string(err));
+        }
+
+        Ok(KafkaPartitionWatermark {
+            topic: topic.to_string(),
+            partition,
+            low,
+            high,
+        })
+    }
+
     unsafe fn message_to_result(
         &self,
         msg: *mut rdsys::rd_kafka_message_t,
@@ -399,6 +493,85 @@ pub struct RawKafkaMessage {
     pub partition: i32,
     pub offset: i64,
     pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KafkaPartitionWatermark {
+    pub topic: String,
+    pub partition: i32,
+    /// Earliest currently available offset for this partition.
+    pub low: i64,
+    /// Next offset after the partition's latest record.
+    pub high: i64,
+}
+
+unsafe fn extract_topic_partitions(
+    metadata_ptr: *const rdsys::rd_kafka_metadata,
+    requested_topic: &str,
+) -> Result<Vec<i32>> {
+    let metadata = unsafe { &*metadata_ptr };
+    if metadata.topic_cnt < 0 {
+        anyhow::bail!("metadata returned negative topic count");
+    }
+    if metadata.topic_cnt > 0 && metadata.topics.is_null() {
+        anyhow::bail!("metadata returned null topics count={}", metadata.topic_cnt);
+    }
+    let topic_count = metadata.topic_cnt as usize;
+    let topics = if topic_count == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(metadata.topics, topic_count) }
+    };
+    let Some(topic_meta) = topics.iter().find(|topic_meta| {
+        if topic_meta.topic.is_null() {
+            return false;
+        }
+        unsafe { CStr::from_ptr(topic_meta.topic) }.to_string_lossy() == requested_topic
+    }) else {
+        anyhow::bail!("metadata response did not include topic={requested_topic}");
+    };
+
+    if topic_meta.err != rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+        anyhow::bail!(
+            "metadata error for topic={}: {}",
+            requested_topic,
+            kafka_error_string(topic_meta.err)
+        );
+    }
+    if topic_meta.partition_cnt < 0 {
+        anyhow::bail!(
+            "metadata returned negative partition count for topic={}",
+            requested_topic
+        );
+    }
+    if topic_meta.partition_cnt > 0 && topic_meta.partitions.is_null() {
+        anyhow::bail!(
+            "metadata returned null partitions for topic={} count={}",
+            requested_topic,
+            topic_meta.partition_cnt
+        );
+    }
+
+    let partition_count = topic_meta.partition_cnt as usize;
+    let partitions = if partition_count == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(topic_meta.partitions, partition_count) }
+    };
+    let mut ids = Vec::with_capacity(partitions.len());
+    for partition in partitions {
+        if partition.err != rdsys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            anyhow::bail!(
+                "metadata error for topic={} partition={}: {}",
+                requested_topic,
+                partition.id,
+                kafka_error_string(partition.err)
+            );
+        }
+        ids.push(partition.id);
+    }
+    ids.sort_unstable();
+    Ok(ids)
 }
 
 fn subscribe_topics(rk: *mut rdsys::rd_kafka_t, topics: &[String]) -> Result<()> {

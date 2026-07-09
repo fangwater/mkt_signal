@@ -208,6 +208,10 @@ mod tests {
             Some("Contract is not live")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE),
+            Some("Liability overflow in spot leverage trade")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Bybit, bybit::COLLATERAL_NOT_ENABLED),
             Some("Collateral not enabled")
         );
@@ -218,6 +222,10 @@ mod tests {
         assert_eq!(
             describe_trade_error_code(Exchange::Bybit, bybit::ORDER_NOT_FOUND),
             Some("Order does not exist")
+        );
+        assert_eq!(
+            describe_trade_error_code(Exchange::Bybit, bybit::MARGIN_TRADING_UNSUPPORTED),
+            Some("Symbol is not supported on margin trading")
         );
         assert_eq!(
             describe_trade_error_code(Exchange::Okex, 1),
@@ -286,6 +294,13 @@ mod tests {
             Some("CONTRACT_NOT_LIVE/合约未上线或不可交易")
         );
         assert_eq!(
+            describe_non_retryable_order_error(
+                Exchange::Bybit,
+                bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE
+            ),
+            Some("LIABILITY_OVERFLOW_SPOT_LEVERAGE/现货杠杆负债溢出")
+        );
+        assert_eq!(
             describe_non_retryable_order_error(Exchange::Bybit, bybit::COLLATERAL_NOT_ENABLED),
             Some("COLLATERAL_NOT_ENABLED/抵押品未启用")
         );
@@ -295,6 +310,10 @@ mod tests {
                 bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH
             ),
             Some("PLATFORM_LOAN_AMOUNT_NOT_ENOUGH/平台可借数量不足")
+        );
+        assert_eq!(
+            describe_non_retryable_order_error(Exchange::Bybit, bybit::MARGIN_TRADING_UNSUPPORTED),
+            Some("MARGIN_TRADING_UNSUPPORTED/币对不支持杠杆交易")
         );
         assert_eq!(
             describe_non_retryable_order_error(Exchange::Okex, -4004),

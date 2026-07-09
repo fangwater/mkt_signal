@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use period_pbs::kafka::{
-    decode_period_payload, format_rewrites, KafkaConsumerConfig, PayloadCompressionMode,
-    RawKafkaConsumer,
+    decode_period_payload, format_rewrites, KafkaConsumerConfig, KafkaPartitionWatermark,
+    PayloadCompressionMode, RawKafkaConsumer,
 };
 use period_pbs::pb;
 
@@ -17,8 +17,8 @@ struct Args {
     #[arg(long, default_value = "config/period_kafka_consumer.toml")]
     config: PathBuf,
 
-    /// Override Kafka topics from TOML. Can be supplied more than once.
-    #[arg(long = "topic")]
+    /// Override Kafka topics from TOML. Can be supplied more than once or comma-separated.
+    #[arg(long = "topic", alias = "topics", value_delimiter = ',')]
     topics: Vec<String>,
 
     /// Override Kafka bootstrap servers from TOML.
@@ -36,6 +36,18 @@ struct Args {
     /// Force per-symbol inc/trade count table.
     #[arg(long, default_value_t = false)]
     print_symbols: bool,
+
+    /// Print earliest/latest offsets for configured topics and exit without consuming messages.
+    #[arg(long, default_value_t = false)]
+    print_offsets: bool,
+
+    /// Override metadata fetch timeout in milliseconds.
+    #[arg(long)]
+    metadata_timeout_ms: Option<u64>,
+
+    /// Override watermark query timeout in milliseconds.
+    #[arg(long)]
+    watermark_timeout_ms: Option<u64>,
 }
 
 fn main() -> Result<()> {
@@ -43,8 +55,19 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let mut config = load_config(&args.config)?;
     apply_overrides(&mut config, &args);
+    config.validate()?;
 
     let consumer = RawKafkaConsumer::new(&config)?;
+
+    if args.print_offsets {
+        let watermarks = consumer.query_topic_watermarks(
+            &config.topics,
+            config.metadata_timeout_ms,
+            config.watermark_timeout_ms,
+        )?;
+        print_topic_watermarks(&watermarks);
+        return Ok(());
+    }
 
     log::info!(
         "period_kafka_consumer subscribed config={} topics={} brokers={} group_id={} offset_reset={} payload_compression={:?} auto_commit={} rewrites={}",
@@ -123,7 +146,7 @@ fn load_config(path: &PathBuf) -> Result<KafkaConsumerConfig> {
 
 fn apply_overrides(config: &mut KafkaConsumerConfig, args: &Args) {
     if !args.topics.is_empty() {
-        config.topics = args.topics.clone();
+        config.topics = normalize_topics(&args.topics);
     }
     if let Some(brokers) = &args.brokers {
         config.brokers = brokers.clone();
@@ -136,6 +159,39 @@ fn apply_overrides(config: &mut KafkaConsumerConfig, args: &Args) {
     }
     if args.print_symbols {
         config.print_symbols = true;
+    }
+    if let Some(metadata_timeout_ms) = args.metadata_timeout_ms {
+        config.metadata_timeout_ms = metadata_timeout_ms;
+    }
+    if let Some(watermark_timeout_ms) = args.watermark_timeout_ms {
+        config.watermark_timeout_ms = watermark_timeout_ms;
+    }
+}
+
+fn normalize_topics(raw_topics: &[String]) -> Vec<String> {
+    raw_topics
+        .iter()
+        .flat_map(|topic| topic.split(','))
+        .map(str::trim)
+        .filter(|topic| !topic.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn print_topic_watermarks(watermarks: &[KafkaPartitionWatermark]) {
+    println!(
+        "Kafka watermarks: earliest_offset is the low watermark; high_offset is the next offset"
+    );
+    for watermark in watermarks {
+        let available_messages = if watermark.low >= 0 && watermark.high >= watermark.low {
+            watermark.high - watermark.low
+        } else {
+            -1
+        };
+        println!(
+            "topic={} partition={} earliest_offset={} high_offset={} available_messages={}",
+            watermark.topic, watermark.partition, watermark.low, watermark.high, available_messages
+        );
     }
 }
 

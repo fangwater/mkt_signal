@@ -19,7 +19,10 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT: i32 =
     bitget::POSITION_TIER_LIMIT_EXCEEDED;
-pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 = 170344;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_LIABILITY_OVERFLOW: i32 =
+    bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 =
+    bybit::MARGIN_TRADING_UNSUPPORTED;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED: i32 =
     bybit::COLLATERAL_NOT_ENABLED;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_CONTRACT_NOT_LIVE: i32 = bybit::CONTRACT_NOT_LIVE;
@@ -95,7 +98,8 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT => {
             matches!(exchange, Some(Exchange::Bitget))
         }
-        SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
+        SIGNAL_THROTTLE_ERROR_CODE_BYBIT_LIABILITY_OVERFLOW
+        | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_CONTRACT_NOT_LIVE
         | SIGNAL_THROTTLE_ERROR_CODE_BYBIT_PLATFORM_LOAN_NOT_ENOUGH
@@ -433,7 +437,14 @@ mod tests {
             Some(Exchange::Bitget),
             bitget::POSITION_TIER_LIMIT_EXCEEDED
         ));
-        assert!(is_throttle_error_code(Some(Exchange::Bybit), 170344));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Bybit),
+            bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE
+        ));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Bybit),
+            bybit::MARGIN_TRADING_UNSUPPORTED
+        ));
         assert!(is_throttle_error_code(Some(Exchange::Bybit), 170037));
         assert!(is_throttle_error_code(
             Some(Exchange::Bybit),
@@ -468,13 +479,27 @@ mod tests {
             gate::AUTO_BORROW_TOO_MUCH
         ));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 25116));
-        assert!(!is_throttle_error_code(Some(Exchange::Binance), 170344));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Binance),
+            bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE
+        ));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Binance),
+            bybit::MARGIN_TRADING_UNSUPPORTED
+        ));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 170037));
         assert!(!is_throttle_error_code(
             Some(Exchange::Binance),
             bybit::PLATFORM_LOAN_AMOUNT_NOT_ENOUGH
         ));
-        assert!(!is_throttle_error_code(Some(Exchange::Okex), 170344));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            bybit::LIABILITY_OVERFLOW_SPOT_LEVERAGE
+        ));
+        assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            bybit::MARGIN_TRADING_UNSUPPORTED
+        ));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 170037));
         assert!(!is_throttle_error_code(
             Some(Exchange::Okex),

@@ -28,6 +28,8 @@ receive_message_max_bytes = 10486272
 session_timeout_ms = 60000
 heartbeat_interval_ms = 3000
 max_poll_interval_ms = 300000
+metadata_timeout_ms = 5000
+watermark_timeout_ms = 5000
 
 # Force metadata-advertised broker hosts to client-reachable hosts.
 # The Kafka broker currently advertises 10.140.140.55:1501, which is not reachable here.
