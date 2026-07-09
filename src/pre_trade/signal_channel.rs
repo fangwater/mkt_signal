@@ -5,7 +5,10 @@ use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::{log_pending_limit_summary, log_strategy_inactive_summary};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
-use crate::pre_trade::signal_throttle::{check_account_signal_throttle, check_signal_throttle};
+use crate::pre_trade::signal_throttle::{
+    check_account_signal_throttle, check_signal_throttle,
+    SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT,
+};
 use crate::pre_trade::taker_decision_model::{
     PreTradeTakerDecisionModel, TakerDecisionOpenGateSnapshot,
 };
@@ -847,6 +850,19 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
             let symbol_throttle_hit = check_signal_throttle(&symbol, side);
             let account_throttle_hit = check_account_signal_throttle();
             let account_open_block_hit = check_account_open_block();
+            if let Some(hit) = symbol_throttle_hit.as_ref().filter(|hit| {
+                hit.last_error_code == SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT
+            }) {
+                debug!(
+                    "ArbOpen: blocked by Bitget position tier symbol-side lock, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
+                    symbol,
+                    side.as_str(),
+                    hit.remaining_us,
+                    hit.last_error_code,
+                    hit.until_us
+                );
+                return;
+            }
             if account_throttle_hit.is_none() && account_open_block_hit.is_none() {
                 if let Some(hit) = symbol_throttle_hit.as_ref() {
                     debug!(

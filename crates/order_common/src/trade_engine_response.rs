@@ -1,4 +1,4 @@
-use crate::trade_error_code::{bybit, gate};
+use crate::trade_error_code::{bitget, bybit, gate};
 use crate::TradeRequestType;
 /// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
 use symbol_utils::Exchange;
@@ -159,6 +159,12 @@ pub trait TradeEngineResponse {
         matches!(self.exchange_enum(), Some(Exchange::Bybit))
             && self.is_open_request()
             && self.error_code() == bybit::INTERNAL_SYSTEM_ERROR
+    }
+
+    fn is_bitget_position_tier_limit_exceeded(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Bitget))
+            && self.is_open_request()
+            && self.error_code() == bitget::POSITION_TIER_LIMIT_EXCEEDED
     }
 
     /// OKX: insufficient margin / loanable assets.
@@ -478,6 +484,33 @@ mod tests {
         assert!(lending_limit.is_open_request());
         assert!(lending_limit.is_open_rejected());
         assert!(lending_limit.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_bitget_position_tier_limit_as_open_reject_only() {
+        let bitget_ex = symbol_utils::Exchange::Bitget as u32;
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BitgetNewUMOrder as u32,
+            bitget_ex,
+            123,
+            bitget::POSITION_TIER_LIMIT_EXCEEDED,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_bitget_position_tier_limit_exceeded());
+        assert!(!resp.is_insufficient_margin());
+
+        let cancel_resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BitgetCancelUMOrder as u32,
+            bitget_ex,
+            123,
+            bitget::POSITION_TIER_LIMIT_EXCEEDED,
+        );
+        assert!(cancel_resp.is_cancel_request());
+        assert!(!cancel_resp.is_bitget_position_tier_limit_exceeded());
     }
 
     #[test]

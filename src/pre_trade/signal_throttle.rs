@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use log::{debug, info, warn};
-use order_common::trade_error_code::{bybit, gate};
+use order_common::trade_error_code::{bitget, bybit, gate};
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
@@ -17,6 +17,8 @@ pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT: i32 = 25116;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT: i32 =
+    bitget::POSITION_TIER_LIMIT_EXCEEDED;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED: i32 = 170344;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BYBIT_COLLATERAL_NOT_ENABLED: i32 =
     bybit::COLLATERAL_NOT_ENABLED;
@@ -88,6 +90,9 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
             matches!(exchange, Some(Exchange::Binance))
         }
         SIGNAL_THROTTLE_ERROR_CODE_BITGET_LENDING_LIMIT => {
+            matches!(exchange, Some(Exchange::Bitget))
+        }
+        SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT => {
             matches!(exchange, Some(Exchange::Bitget))
         }
         SIGNAL_THROTTLE_ERROR_CODE_BYBIT_MARGIN_UNSUPPORTED
@@ -424,6 +429,10 @@ mod tests {
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51061));
         assert!(is_throttle_error_code(Some(Exchange::Bitget), 25116));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Bitget),
+            bitget::POSITION_TIER_LIMIT_EXCEEDED
+        ));
         assert!(is_throttle_error_code(Some(Exchange::Bybit), 170344));
         assert!(is_throttle_error_code(Some(Exchange::Bybit), 170037));
         assert!(is_throttle_error_code(
@@ -481,6 +490,10 @@ mod tests {
         ));
         assert!(!is_throttle_error_code(Some(Exchange::Okex), 25116));
         assert!(!is_throttle_error_code(
+            Some(Exchange::Okex),
+            bitget::POSITION_TIER_LIMIT_EXCEEDED
+        ));
+        assert!(!is_throttle_error_code(
             Some(Exchange::Binance),
             gate::AUTO_BORROW_TOO_MUCH
         ));
@@ -512,6 +525,28 @@ mod tests {
             check_account_signal_throttle_at(now_us + 1).expect("account throttle must be hit");
         assert_eq!(account_hit.last_error_code, gate::INITIAL_MARGIN_TOO_LOW);
         assert!(check_account_signal_throttle_at(now_us + ttl_us).is_none());
+    }
+
+    #[test]
+    fn registers_single_side_throttle_for_bitget_position_tier_limit() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+
+        assert!(register_signal_throttle_for_mode(
+            "filusdt",
+            Side::Sell,
+            Some(Exchange::Bitget),
+            bitget::POSITION_TIER_LIMIT_EXCEEDED,
+            ArbMode::FundingArb,
+        ));
+
+        assert!(check_signal_throttle("FILUSDT", Side::Buy).is_none());
+        assert_eq!(
+            check_signal_throttle("FILUSDT", Side::Sell)
+                .expect("sell must be blocked")
+                .last_error_code,
+            bitget::POSITION_TIER_LIMIT_EXCEEDED
+        );
     }
 
     #[test]

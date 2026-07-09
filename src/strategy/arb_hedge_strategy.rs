@@ -201,6 +201,8 @@ pub struct ArbHedgeStrategy {
     last_insufficient_margin_action_ts: i64,
     bybit_oi_limit_block_until_us: i64,
     bybit_oi_limit_block_side: Option<Side>,
+    bitget_position_tier_limit_block_until_us: i64,
+    bitget_position_tier_limit_block_side: Option<Side>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +279,8 @@ impl ArbHedgeStrategy {
             last_insufficient_margin_action_ts: 0,
             bybit_oi_limit_block_until_us: 0,
             bybit_oi_limit_block_side: None,
+            bitget_position_tier_limit_block_until_us: 0,
+            bitget_position_tier_limit_block_side: None,
         }
     }
 
@@ -699,6 +703,18 @@ impl ArbHedgeStrategy {
                 source,
                 hedge_side.as_str(),
                 self.bybit_oi_limit_block_until_us
+            );
+            return false;
+        }
+        if self.is_bitget_position_tier_limit_blocked(hedge_side, now_ts) {
+            self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Bitget position-tier block is active hedge_side={} until_us={}",
+                self.strategy_id,
+                self.symbol,
+                source,
+                hedge_side.as_str(),
+                self.bitget_position_tier_limit_block_until_us
             );
             return false;
         }
@@ -1292,6 +1308,18 @@ impl ArbHedgeStrategy {
                 symbol,
                 side.as_str(),
                 self.bybit_oi_limit_block_until_us,
+                ctx.request_seq
+            );
+            return;
+        }
+        if self.is_bitget_position_tier_limit_blocked(side, now_ts) {
+            self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedge blocked by Bitget position-tier throttle symbol={} side={} until_us={} request_seq={}",
+                self.strategy_id,
+                symbol,
+                side.as_str(),
+                self.bitget_position_tier_limit_block_until_us,
                 ctx.request_seq
             );
             return;
@@ -2101,6 +2129,12 @@ impl ArbHedgeStrategy {
             && now_ts < self.bybit_oi_limit_block_until_us
     }
 
+    fn is_bitget_position_tier_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
+        self.hedge_venue == TradingVenue::BitgetFutures
+            && self.bitget_position_tier_limit_block_side == Some(hedge_side)
+            && now_ts < self.bitget_position_tier_limit_block_until_us
+    }
+
     fn register_bybit_open_interest_position_limit_throttle(
         &mut self,
         now_ts: i64,
@@ -2180,6 +2214,56 @@ impl ArbHedgeStrategy {
             error_code,
             open_registered,
             self.bybit_oi_limit_block_until_us,
+            ids.len()
+        );
+    }
+
+    fn register_bitget_position_tier_limit_throttle(
+        &mut self,
+        now_ts: i64,
+        hedge_side: Option<Side>,
+        error_code: i32,
+    ) {
+        let Some(hedge_side) = hedge_side else {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} Bitget position-tier throttle skipped: hedge_side unknown",
+                self.strategy_id, self.symbol
+            );
+            return;
+        };
+        let open_side = match hedge_side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+        self.bitget_position_tier_limit_block_side = Some(hedge_side);
+        self.bitget_position_tier_limit_block_until_us =
+            now_ts.saturating_add(SIGNAL_THROTTLE_TTL_US.max(ARB_HEDGE_QUERY_INTERVAL_US));
+        self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
+
+        let open_registered = register_signal_throttle_for_mode(
+            &self.symbol,
+            open_side,
+            Some(Exchange::Bitget),
+            error_code,
+            MonitorChannel::instance().arb_mode(),
+        );
+        let strategy_mgr_handle = MonitorChannel::instance().strategy_mgr();
+        let ids: Vec<i32> = strategy_mgr_handle
+            .borrow()
+            .arb_open_strategy_ids_by_symbol_and_side(&self.symbol, open_side);
+        for sid in &ids {
+            let mut mgr = strategy_mgr_handle.borrow_mut();
+            mgr.cancel_arb_open_by_id(*sid, open_side, "bitget_position_tier_limit", now_ts);
+        }
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} Bitget position-tier throttle registered hedge_side={:?} open_side={:?} code={} open_registered={} hedge_block_until_us={} cancel_open_count={}",
+            self.strategy_id,
+            self.symbol,
+            hedge_side,
+            open_side,
+            error_code,
+            open_registered,
+            self.bitget_position_tier_limit_block_until_us,
             ids.len()
         );
     }
@@ -2275,6 +2359,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             response.is_bybit_open_interest_position_limit();
         let is_bybit_collateral_not_enabled = response.is_bybit_collateral_not_enabled();
         let is_bybit_internal_system_error = response.is_bybit_internal_system_error();
+        let is_bitget_position_tier_limit = response.is_bitget_position_tier_limit_exceeded();
         if is_bybit_open_interest_position_limit {
             self.register_bybit_open_interest_position_limit_throttle(
                 now_ts,
@@ -2298,6 +2383,13 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 self.symbol,
                 response.error_code(),
                 BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US / 1_000_000
+            );
+        }
+        if is_bitget_position_tier_limit {
+            self.register_bitget_position_tier_limit_throttle(
+                now_ts,
+                order_snapshot.as_ref().map(|(side, _, _)| *side),
+                response.error_code(),
             );
         }
         if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
@@ -2332,6 +2424,10 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             } else if is_bybit_internal_system_error {
                 self.next_query_ts_us =
                     now_ts.saturating_add(BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US);
+            } else if is_bitget_position_tier_limit
+                && self.bitget_position_tier_limit_block_until_us > now_ts
+            {
+                self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
             } else {
                 self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");
             }
@@ -2360,6 +2456,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 " [BYBIT_COLLATERAL_NOT_ENABLED]"
             } else if is_bybit_internal_system_error {
                 " [BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK]"
+            } else if is_bitget_position_tier_limit {
+                " [BITGET_POSITION_TIER_LIMIT]"
             } else {
                 ""
             }
