@@ -228,6 +228,10 @@ name = "inspect_model_output"
 path = "src/bin/inspect_model_output.rs"
 
 [[bin]]
+name = "model_pub_probe"
+path = "src/bin/model_pub_probe.rs"
+
+[[bin]]
 name = "inspect_model_input"
 path = "src/bin/inspect_model_input.rs"
 
