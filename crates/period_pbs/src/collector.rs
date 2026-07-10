@@ -15,6 +15,9 @@ pub struct CollectorConfig {
     pub period_ms: i64,
     pub delay_ms: i64,
     pub poster_id: String,
+    /// Symbols that must be represented in every emitted period, including
+    /// periods without a trade or incremental update for that symbol.
+    pub slot_symbols: Vec<String>,
 }
 
 impl Default for CollectorConfig {
@@ -23,6 +26,7 @@ impl Default for CollectorConfig {
             period_ms: DEFAULT_PERIOD_MS,
             delay_ms: DEFAULT_DELAY_MS,
             poster_id: default_poster_id(),
+            slot_symbols: Vec::new(),
         }
     }
 }
@@ -261,8 +265,11 @@ impl PeriodCollector {
 
     fn encode_bucket(&self, period: i64, bucket: PeriodBucket) -> CompletedPeriod {
         let upper_bound_ms = period_upper_bound_ms(period, self.config.period_ms);
-        let symbol_infos = bucket
-            .symbols
+        let mut symbols = bucket.symbols;
+        for symbol in &self.config.slot_symbols {
+            symbols.entry(symbol.clone()).or_default();
+        }
+        let symbol_infos = symbols
             .into_iter()
             .map(|(symbol, bucket)| pb::SymbolInfo {
                 symbol,
@@ -352,6 +359,7 @@ mod tests {
             period_ms: DEFAULT_PERIOD_MS,
             delay_ms: 5,
             poster_id: "test-host".to_string(),
+            slot_symbols: vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
         }
     }
 
@@ -492,6 +500,37 @@ mod tests {
         assert_eq!(info.incs.len(), 1);
         assert_eq!(info.incs[0].bids.len(), 1);
         assert_eq!(info.incs[0].asks.len(), 1);
+    }
+
+    #[test]
+    fn emits_empty_slots_for_configured_symbols_without_updates() {
+        let mut collector = PeriodCollector::new(cfg());
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + 10, 'B'))
+            .expect("period0 trade")
+            .is_empty());
+        assert!(collector
+            .push_incremental(inc_record(INIT_TP_MS + 20, 1))
+            .expect("period0 incremental")
+            .is_empty());
+        assert!(collector
+            .push_trade(trade_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 'S'))
+            .expect("trade watermark")
+            .is_empty());
+
+        let completed = collector
+            .push_incremental(inc_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 2))
+            .expect("incremental watermark");
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].message.symbol_infos.len(), 2);
+        let eth = completed[0]
+            .message
+            .symbol_infos
+            .iter()
+            .find(|info| info.symbol == "ETHUSDT")
+            .expect("configured ETHUSDT slot");
+        assert!(eth.trades.is_empty());
+        assert!(eth.incs.is_empty());
     }
 
     #[test]

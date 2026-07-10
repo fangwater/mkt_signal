@@ -196,6 +196,7 @@ impl VenueRuntime {
             period_ms: PERIOD_MS,
             delay_ms: config.delay_ms,
             poster_id: config.poster_id.clone(),
+            slot_symbols: config.symbols.canonical_symbols(),
         });
         Self {
             config,

@@ -213,6 +213,12 @@ impl VenueSymbolMap {
     pub fn len(&self) -> usize {
         self.source_to_canonical.len()
     }
+
+    pub fn canonical_symbols(&self) -> Vec<String> {
+        let mut symbols: Vec<String> = self.source_to_canonical.values().cloned().collect();
+        symbols.sort();
+        symbols
+    }
 }
 
 fn normalize_online_symbols(raw_symbols: &[String]) -> Result<Vec<String>> {

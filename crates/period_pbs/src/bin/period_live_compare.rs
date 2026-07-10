@@ -176,6 +176,7 @@ fn main() -> Result<()> {
                     "period_live_compare_{}",
                     sanitize_node_component(&stream.venue)
                 ),
+                slot_symbols: Vec::new(),
             };
             (stream.venue.clone(), PeriodCollector::new(collector_config))
         })
