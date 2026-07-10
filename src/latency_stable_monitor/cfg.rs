@@ -148,11 +148,11 @@ pub fn default_spread_topic(venue: &str) -> String {
 }
 
 pub fn default_trade_engine_service(namespace: &str, exchange: &str) -> String {
-    format!("{}/te_pubs/{}/latency", namespace.trim(), exchange.trim())
+    format!("{}/te_pubs/{}/health", namespace.trim(), exchange.trim())
 }
 
 pub fn default_trade_engine_topic(namespace: &str) -> String {
-    format!("latency.private.te.{}", namespace.trim())
+    format!("health.private.te.{}", namespace.trim())
 }
 
 fn validate_override(field: &str, value: &Option<String>) -> Result<()> {

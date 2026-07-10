@@ -20,7 +20,7 @@ use crate::query_parsers::gate_order_status::{
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
-use crate::tcp_loss_health::{TcpLossHealth, TcpLossHealthConfig, Verdict};
+use crate::tcp_loss_health::{TcpLossHealth, TcpLossHealthConfig};
 use crate::trade_request::{
     BinanceNewOrderParamsRef, BitgetNewOrderParamsRef, GateNewOrderParamsRef, TradeRequestMsg,
     TradeRequestType,
@@ -38,10 +38,12 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
-use rolling_common::latency_kll::LatencyKll;
-use rolling_common::latency_snapshot::{
-    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_CANCEL, ACTION_ID_NEW, METRIC_ID_DOWNLINK,
-    METRIC_ID_IPC_TO_WS, METRIC_ID_RTT, METRIC_ID_SERVER, METRIC_ID_UPLINK,
+use rolling_common::health_snapshot::{
+    HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_FLAG_LAST_ROUTE_PROTECTED,
+    HEALTH_FLAG_RECONNECTING, HEALTH_FLAG_RECONNECT_PENDING, HEALTH_FLAG_ROUTE_PAUSED,
+    HEALTH_FLAG_TCP_LOSS_ACT, HEALTH_MARKET_FUTURES, HEALTH_MARKET_UNKNOWN,
+    HEALTH_STATE_DISCONNECTED, HEALTH_STATE_DRAINING, HEALTH_STATE_HEALTHY, HEALTH_STATE_PAUSED,
+    HEALTH_STATE_PROTECTED, HEALTH_STATE_RECONNECTING,
 };
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
@@ -291,231 +293,12 @@ impl WsCommandQueue {
     }
 }
 
-/// 跨 WS endpoint 共享的延迟分桶。
-///
-/// 时间点统一为 5 个：
-/// - **T0**：IPC parse 完成（`msg.ipc_recv`）
-/// - **T1**：`ws.send` 返回（`track_inflight` 时打点）
-/// - **T2**：服务端收到（Gate=`x_in_time`，OKEx=`inTime`，Bitget=`ts`，Binance=`updateTime`）
-/// - **T3**：服务端发出（Gate=`x_out_time`，OKEx=`outTime`，Bitget=T2，Binance=T2）
-/// - **T4**：本地解析响应（`get_timestamp_us()`）
-///
-/// `new`/`cancel`：T1−T0（IPC→WS 端到端，所有 venue 通用）。
-/// `resp`：仅当 venue 暴露服务端时间戳（Bitget/Gate/OKEx/Binance WS）时为 `Some`。
-///
-/// trade_engine 跑在 `current_thread` runtime + `LocalSet`，所有 ws task 同线程，
-/// 因此 `Rc<RefCell<..>>` 已经够用，无须 `Arc<Mutex<..>>`。
-#[derive(Clone)]
-pub(crate) struct WsLatencyBuckets {
-    pub new: Rc<RefCell<LatencyKll>>,
-    pub cancel: Rc<RefCell<LatencyKll>>,
-    pub resp: Option<RespLatencyBuckets>,
-}
-
-/// `WsLatencyBuckets::take_snapshot` 用：把单桶 KLL 快照写进消息槽位。
-fn snap_into(
-    buckets: &mut [LatencyBucketStat;
-             rolling_common::latency_snapshot::LATENCY_SNAPSHOT_MAX_BUCKETS],
-    idx: &mut usize,
-    kll: &Rc<RefCell<LatencyKll>>,
-    metric_id: u8,
-    action_id: u8,
-) {
-    if let Some(s) = kll.borrow_mut().snapshot_and_reset() {
-        if *idx < buckets.len() {
-            buckets[*idx] = LatencyBucketStat {
-                metric_id,
-                action_id,
-                _pad: [0; 6],
-                n: s.n,
-                p50_us: s.p50_us,
-                p90_us: s.p90_us,
-                p95_us: s.p95_us,
-                p99_us: s.p99_us,
-            };
-            *idx += 1;
-        }
-    }
-}
-
-/// 服务端响应的细粒度延迟分解（4 区间 × {new, cancel}）：
-/// - `uplink_*`     = T2 − T1（us → server）
-/// - `server_*`     = T3 − T2（服务端处理；Bitget/Binance 退化为 0）
-/// - `downlink_*`   = T4 − T3（server → us）
-/// - `rtt_*`        = T4 − T1（本地时钟下完整往返）
-#[derive(Clone)]
-pub(crate) struct RespLatencyBuckets {
-    pub uplink_new: Rc<RefCell<LatencyKll>>,
-    pub uplink_cancel: Rc<RefCell<LatencyKll>>,
-    pub server_new: Rc<RefCell<LatencyKll>>,
-    pub server_cancel: Rc<RefCell<LatencyKll>>,
-    pub downlink_new: Rc<RefCell<LatencyKll>>,
-    pub downlink_cancel: Rc<RefCell<LatencyKll>>,
-    pub rtt_new: Rc<RefCell<LatencyKll>>,
-    pub rtt_cancel: Rc<RefCell<LatencyKll>>,
-}
-
-impl WsLatencyBuckets {
-    /// 周期性 publisher 调用：取所有非空桶的 KLL 快照、清空 buffer，拼成定长
-    /// `LatencySnapshotMsg`。所有桶都为空时返回 `None`，调用方可以选择不发布。
-    pub(crate) fn take_snapshot(&self, venue_id: u32) -> Option<LatencySnapshotMsg> {
-        let mut msg = LatencySnapshotMsg::new(venue_id, get_timestamp_us());
-        let mut idx = 0usize;
-
-        snap_into(
-            &mut msg.buckets,
-            &mut idx,
-            &self.new,
-            METRIC_ID_IPC_TO_WS,
-            ACTION_ID_NEW,
-        );
-        snap_into(
-            &mut msg.buckets,
-            &mut idx,
-            &self.cancel,
-            METRIC_ID_IPC_TO_WS,
-            ACTION_ID_CANCEL,
-        );
-        if let Some(r) = self.resp.as_ref() {
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.uplink_new,
-                METRIC_ID_UPLINK,
-                ACTION_ID_NEW,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.uplink_cancel,
-                METRIC_ID_UPLINK,
-                ACTION_ID_CANCEL,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.server_new,
-                METRIC_ID_SERVER,
-                ACTION_ID_NEW,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.server_cancel,
-                METRIC_ID_SERVER,
-                ACTION_ID_CANCEL,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.downlink_new,
-                METRIC_ID_DOWNLINK,
-                ACTION_ID_NEW,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.downlink_cancel,
-                METRIC_ID_DOWNLINK,
-                ACTION_ID_CANCEL,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.rtt_new,
-                METRIC_ID_RTT,
-                ACTION_ID_NEW,
-            );
-            snap_into(
-                &mut msg.buckets,
-                &mut idx,
-                &r.rtt_cancel,
-                METRIC_ID_RTT,
-                ACTION_ID_CANCEL,
-            );
-        }
-
-        if idx == 0 {
-            None
-        } else {
-            msg.n_buckets = idx as u32;
-            Some(msg)
-        }
-    }
-
-    /// 从 venue 响应里取到 T2/T3 后调用，用 inflight 里记下的 T1 与本地 T4
-    /// 推 4 个分位桶。`rtt = T4 − T1` 用 `Instant` 单调时钟（免受墙钟跳动影响）。
-    fn record_resp(
-        &self,
-        action: WsAction,
-        sent_at: std::time::Instant,
-        sent_at_us: i64,
-        t2_us: i64,
-        t3_us: i64,
-    ) {
-        let Some(r) = self.resp.as_ref() else { return };
-        let (uplink, server, downlink, rtt) = match action {
-            WsAction::New => (&r.uplink_new, &r.server_new, &r.downlink_new, &r.rtt_new),
-            WsAction::Cancel => (
-                &r.uplink_cancel,
-                &r.server_cancel,
-                &r.downlink_cancel,
-                &r.rtt_cancel,
-            ),
-            WsAction::Other => return,
-        };
-        let t4_us = get_timestamp_us();
-        let rtt_us = sent_at.elapsed().as_micros() as i64;
-        uplink.borrow_mut().push((t2_us - sent_at_us) as f64);
-        server.borrow_mut().push((t3_us - t2_us) as f64);
-        downlink.borrow_mut().push((t4_us - t3_us) as f64);
-        rtt.borrow_mut().push(rtt_us as f64);
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WsAction {
-    New,
-    Cancel,
-    Other,
-}
-
-fn classify_ws_action(rt: TradeRequestType) -> WsAction {
-    use TradeRequestType::*;
-    match rt {
-        BinanceWsNewUMOrder
-        | BinanceWsNewMarginOrder
-        | OkexNewMarginOrder
-        | OkexNewUMOrder
-        | GateUnifiedNewOrder
-        | GateFuturesNewOrder
-        | BybitNewMarginOrder
-        | BybitNewUMOrder
-        | BitgetNewMarginOrder
-        | BitgetNewUMOrder => WsAction::New,
-
-        BinanceWsCancelUMOrder
-        | BinanceWsCancelMarginOrder
-        | OkexCancelMarginOrder
-        | OkexCancelUMOrder
-        | GateUnifiedCancelOrder
-        | GateFuturesCancelOrder
-        | BybitCancelMarginOrder
-        | BybitCancelUMOrder
-        | BitgetCancelMarginOrder
-        | BitgetCancelUMOrder => WsAction::Cancel,
-
-        _ => WsAction::Other,
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct WsEndpointState {
     connected: bool,
     cooldown_until: Option<std::time::Instant>,
-    // 通用 TCP 丢包健康度（dispatch 路由）软暂停：到期前该端点被路由绕开。
-    // 仅在 dispatch 路由下由 eval_tcp_health 设置；RR 路由永远为 None。
     tcp_loss_pause_until: Option<std::time::Instant>,
+    proactive_reconnecting: bool,
 }
 
 impl WsEndpointState {
@@ -525,6 +308,25 @@ impl WsEndpointState {
 
     fn mark_disconnected(&mut self) {
         self.connected = false;
+    }
+
+    fn is_available_at(&mut self, now: std::time::Instant) -> bool {
+        if !self.connected || self.proactive_reconnecting {
+            return false;
+        }
+        if let Some(until) = self.cooldown_until {
+            if now < until {
+                return false;
+            }
+            self.cooldown_until = None;
+        }
+        if let Some(until) = self.tcp_loss_pause_until {
+            if now < until {
+                return false;
+            }
+            self.tcp_loss_pause_until = None;
+        }
+        true
     }
 }
 
@@ -552,34 +354,218 @@ impl WsEndpointHandle {
     }
 
     pub(crate) fn is_available(&self) -> bool {
-        self.is_available_at(std::time::Instant::now())
-    }
-
-    fn is_available_at(&self, now: std::time::Instant) -> bool {
-        let mut state = self.state.borrow_mut();
-        if !state.connected {
-            return false;
-        }
-        if let Some(until) = state.cooldown_until {
-            if now < until {
-                return false;
-            }
-            state.cooldown_until = None;
-        }
-        // TCP 丢包软暂停对所有路由都无条件生效（与 cooldown 同级）；RR 路由下从不被设置，
-        // 因此不影响 RR。dispatch 路由下 eval_tcp_health 置位后，本端点被路由绕开。
-        if let Some(until) = state.tcp_loss_pause_until {
-            if now < until {
-                return false;
-            }
-            state.tcp_loss_pause_until = None;
-        }
-        true
+        self.state
+            .borrow_mut()
+            .is_available_at(std::time::Instant::now())
     }
 
     #[cfg(test)]
     pub(crate) fn mark_connected(&self) {
         self.state.borrow_mut().mark_connected();
+    }
+}
+
+#[derive(Debug)]
+struct WsHealthEntry {
+    endpoint_id: u32,
+    local_ip: IpAddr,
+    remote_addr: Option<SocketAddr>,
+    market_id: u8,
+    group_id: u32,
+    sample_interval_ms: u32,
+    window_ms: u32,
+    window_data_segs_out: u64,
+    window_retrans: u64,
+    total_retrans: u32,
+    rtt_us: u32,
+    rttvar_us: u32,
+    last_retrans_at: Option<std::time::Instant>,
+    pending: u32,
+    inflight: u32,
+    query_pending: u32,
+    query_inflight: u32,
+    reconnect_pending: bool,
+    last_route_protected: bool,
+    tcp_loss_act: bool,
+    endpoint_state: Rc<RefCell<WsEndpointState>>,
+}
+
+impl WsHealthEntry {
+    fn snapshot(&self, venue_id: u32, now: std::time::Instant) -> HealthSnapshotMsg {
+        let mut msg = HealthSnapshotMsg::new(venue_id, self.endpoint_id, get_timestamp_us());
+        msg.sample_interval_ms = self.sample_interval_ms;
+        msg.window_ms = self.window_ms;
+        msg.group_id = self.group_id;
+        msg.market_id = self.market_id;
+        msg.set_local_ip(self.local_ip);
+        msg.set_remote_addr(self.remote_addr);
+        msg.window_data_segs_out = self.window_data_segs_out;
+        msg.window_retrans = self.window_retrans;
+        msg.total_retrans = self.total_retrans;
+        msg.rtt_us = self.rtt_us;
+        msg.rttvar_us = self.rttvar_us;
+        msg.last_retrans_age_ms = self
+            .last_retrans_at
+            .map(|at| {
+                now.saturating_duration_since(at)
+                    .as_millis()
+                    .min(u32::MAX as u128) as u32
+            })
+            .unwrap_or(u32::MAX);
+        msg.pending = self.pending;
+        msg.inflight = self.inflight;
+        msg.query_pending = self.query_pending;
+        msg.query_inflight = self.query_inflight;
+
+        let state = self.endpoint_state.borrow();
+        let route_paused = state
+            .tcp_loss_pause_until
+            .map(|until| now < until)
+            .unwrap_or(false);
+        if state.connected {
+            msg.flags |= HEALTH_FLAG_CONNECTED;
+        }
+        if route_paused {
+            msg.flags |= HEALTH_FLAG_ROUTE_PAUSED;
+        }
+        if self.reconnect_pending {
+            msg.flags |= HEALTH_FLAG_RECONNECT_PENDING;
+        }
+        if state.proactive_reconnecting {
+            msg.flags |= HEALTH_FLAG_RECONNECTING;
+        }
+        if self.tcp_loss_act {
+            msg.flags |= HEALTH_FLAG_TCP_LOSS_ACT;
+        }
+        if self.last_route_protected {
+            msg.flags |= HEALTH_FLAG_LAST_ROUTE_PROTECTED;
+        }
+        msg.state = if !state.connected {
+            HEALTH_STATE_DISCONNECTED
+        } else if state.proactive_reconnecting {
+            HEALTH_STATE_RECONNECTING
+        } else if self.last_route_protected {
+            HEALTH_STATE_PROTECTED
+        } else if self.reconnect_pending
+            && (self.pending + self.inflight + self.query_pending + self.query_inflight > 0)
+        {
+            HEALTH_STATE_DRAINING
+        } else if route_paused || self.reconnect_pending {
+            HEALTH_STATE_PAUSED
+        } else {
+            HEALTH_STATE_HEALTHY
+        };
+        msg
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct WsHealthRegistry {
+    entries: Rc<RefCell<Vec<Rc<RefCell<WsHealthEntry>>>>>,
+}
+
+impl WsHealthRegistry {
+    fn register(
+        &self,
+        endpoint_id: usize,
+        local_ip: IpAddr,
+        endpoint_state: Rc<RefCell<WsEndpointState>>,
+    ) -> WsHealthHandle {
+        let entry = Rc::new(RefCell::new(WsHealthEntry {
+            endpoint_id: endpoint_id as u32,
+            local_ip,
+            remote_addr: None,
+            market_id: HEALTH_MARKET_UNKNOWN,
+            group_id: u32::MAX,
+            sample_interval_ms: 250,
+            window_ms: 1_000,
+            window_data_segs_out: 0,
+            window_retrans: 0,
+            total_retrans: 0,
+            rtt_us: 0,
+            rttvar_us: 0,
+            last_retrans_at: None,
+            pending: 0,
+            inflight: 0,
+            query_pending: 0,
+            query_inflight: 0,
+            reconnect_pending: false,
+            last_route_protected: false,
+            tcp_loss_act: false,
+            endpoint_state,
+        }));
+        self.entries.borrow_mut().push(entry.clone());
+        WsHealthHandle { entry }
+    }
+
+    pub(crate) fn snapshots(&self, venue_id: u32) -> Vec<HealthSnapshotMsg> {
+        let now = std::time::Instant::now();
+        self.entries
+            .borrow()
+            .iter()
+            .map(|entry| entry.borrow().snapshot(venue_id, now))
+            .collect()
+    }
+}
+
+#[derive(Clone)]
+struct WsHealthHandle {
+    entry: Rc<RefCell<WsHealthEntry>>,
+}
+
+#[derive(Debug)]
+struct WsReconnectGroupState {
+    endpoints: Vec<Rc<RefCell<WsEndpointState>>>,
+    active_reconnect: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WsReconnectGroup {
+    inner: Rc<RefCell<WsReconnectGroupState>>,
+}
+
+impl WsReconnectGroup {
+    pub(crate) fn new(endpoints: Vec<Rc<RefCell<WsEndpointState>>>) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(WsReconnectGroupState {
+                endpoints,
+                active_reconnect: None,
+            })),
+        }
+    }
+
+    fn has_other_available(&self, endpoint_idx: usize, now: std::time::Instant) -> bool {
+        let inner = self.inner.borrow();
+        inner
+            .endpoints
+            .iter()
+            .enumerate()
+            .any(|(idx, state)| idx != endpoint_idx && state.borrow_mut().is_available_at(now))
+    }
+
+    fn try_begin(&self, endpoint_idx: usize, now: std::time::Instant) -> bool {
+        if !self.has_other_available(endpoint_idx, now) {
+            return false;
+        }
+        let mut inner = self.inner.borrow_mut();
+        if inner.active_reconnect.is_some() {
+            return false;
+        }
+        inner.active_reconnect = Some(endpoint_idx);
+        if let Some(state) = inner.endpoints.get(endpoint_idx) {
+            state.borrow_mut().proactive_reconnecting = true;
+        }
+        true
+    }
+
+    fn finish(&self, endpoint_idx: usize) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.active_reconnect == Some(endpoint_idx) {
+            inner.active_reconnect = None;
+        }
+        if let Some(state) = inner.endpoints.get(endpoint_idx) {
+            state.borrow_mut().proactive_reconnecting = false;
+        }
     }
 }
 
@@ -593,10 +579,6 @@ struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
     ws_open_update_enabled: bool,
-    /// 单调时钟，`track_inflight`（即 `ws.send` 之后）时打点；用于本地 RTT。
-    sent_at: std::time::Instant,
-    /// 墙钟 epoch μs，与 `sent_at` 同时打点；用于跨时钟差值（uplink / downlink）。
-    sent_at_us: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -660,6 +642,10 @@ pub struct TradeWsClient {
     next_binance_transport_id: i64,
     engine_shutdown: CancellationToken,
     endpoint_state: Rc<RefCell<WsEndpointState>>,
+    health: WsHealthHandle,
+    reconnect_group: Option<WsReconnectGroup>,
+    reconnect_group_index: usize,
+    health_reconnect_pending: bool,
     shutdown_on_rate_limit: bool,
     rate_limit_cooldown_until: Option<std::time::Instant>,
     shutdown: bool,
@@ -671,7 +657,6 @@ pub struct TradeWsClient {
     bybit_waiting_pong: bool,
     last_okex_login_ts: Option<String>,
     last_gate_login_req_id: Option<String>,
-    lat_buckets: WsLatencyBuckets,
     binance_um_route_group_id: Option<u32>,
     // dispatch 路由：允许 TCP 丢包健康度真正驱动 软暂停(route-away)+硬重连。
     // 仅当 ws_route=dispatch 时为 true；RR 恒为 false（只观测、只打日志）。
@@ -701,7 +686,7 @@ impl TradeWsClient {
         engine_shutdown: CancellationToken,
         endpoint_state: Rc<RefCell<WsEndpointState>>,
         shutdown_on_rate_limit: bool,
-        lat_buckets: WsLatencyBuckets,
+        health_registry: WsHealthRegistry,
     ) -> Self {
         let (login_payload, bitget_creds, bybit_creds, okex_creds, gate_creds, ltp_creds) =
             if use_ltp_backend {
@@ -822,6 +807,8 @@ impl TradeWsClient {
             None
         };
 
+        let health = health_registry.register(id, local_ip, endpoint_state.clone());
+
         Self {
             id,
             exchange,
@@ -861,6 +848,10 @@ impl TradeWsClient {
             next_binance_transport_id: ((id as i64) << 48) + 1,
             engine_shutdown,
             endpoint_state,
+            health,
+            reconnect_group: None,
+            reconnect_group_index: 0,
+            health_reconnect_pending: false,
             shutdown_on_rate_limit,
             rate_limit_cooldown_until: None,
             shutdown: false,
@@ -872,7 +863,6 @@ impl TradeWsClient {
             bybit_waiting_pong: false,
             last_okex_login_ts: None,
             last_gate_login_req_id: None,
-            lat_buckets,
             binance_um_route_group_id: None,
             tcp_loss_act: false,
         }
@@ -888,12 +878,33 @@ impl TradeWsClient {
 
     pub(crate) fn with_binance_um_route_group_id(mut self, route_group_id: u32) -> Self {
         self.binance_um_route_group_id = Some(route_group_id);
+        {
+            let mut health = self.health.entry.borrow_mut();
+            health.market_id = HEALTH_MARKET_FUTURES;
+            health.group_id = route_group_id;
+        }
         self
     }
 
-    /// dispatch 路由：开启后 TCP 丢包健康度可真正驱动软暂停+硬重连（配合 act 模式）。
+    pub(crate) fn with_health_market(self, market_id: u8) -> Self {
+        self.health.entry.borrow_mut().market_id = market_id;
+        self
+    }
+
+    pub(crate) fn with_reconnect_group(
+        mut self,
+        group: WsReconnectGroup,
+        endpoint_idx: usize,
+    ) -> Self {
+        self.reconnect_group = Some(group);
+        self.reconnect_group_index = endpoint_idx;
+        self
+    }
+
+    /// Dispatch routing treats any kernel retransmission as an immediate anomaly.
     pub(crate) fn with_tcp_loss_act(mut self, enabled: bool) -> Self {
         self.tcp_loss_act = enabled;
+        self.health.entry.borrow_mut().tcp_loss_act = enabled;
         self
     }
 
@@ -937,6 +948,56 @@ impl TradeWsClient {
             && self.inflight.is_empty()
             && self.query_inflight.is_empty()
             && !self.waiting_for_binance_session_logon()
+    }
+
+    fn update_health_queue_depths(&self) {
+        let mut health = self.health.entry.borrow_mut();
+        health.pending = self.pending.len().min(u32::MAX as usize) as u32;
+        health.inflight = self.inflight.len().min(u32::MAX as usize) as u32;
+        health.query_pending = self.pending_query.len().min(u32::MAX as usize) as u32;
+        health.query_inflight = self.query_inflight.len().min(u32::MAX as usize) as u32;
+        health.reconnect_pending = self.health_reconnect_pending;
+    }
+
+    fn has_other_available_connection(&self, now: std::time::Instant) -> bool {
+        self.reconnect_group
+            .as_ref()
+            .map(|group| group.has_other_available(self.reconnect_group_index, now))
+            .unwrap_or(true)
+    }
+
+    fn try_begin_proactive_reconnect(&mut self, now: std::time::Instant) -> bool {
+        let allowed = self
+            .reconnect_group
+            .as_ref()
+            .map(|group| group.try_begin(self.reconnect_group_index, now))
+            .unwrap_or_else(|| {
+                self.endpoint_state.borrow_mut().proactive_reconnecting = true;
+                true
+            });
+        if allowed {
+            let mut health = self.health.entry.borrow_mut();
+            health.last_route_protected = false;
+            health.reconnect_pending = self.health_reconnect_pending;
+        }
+        allowed
+    }
+
+    fn finish_proactive_reconnect(&mut self, remote_addr: SocketAddr) {
+        if let Some(group) = self.reconnect_group.as_ref() {
+            group.finish(self.reconnect_group_index);
+        } else {
+            self.endpoint_state.borrow_mut().proactive_reconnecting = false;
+        }
+        self.health_reconnect_pending = false;
+        {
+            let mut state = self.endpoint_state.borrow_mut();
+            state.tcp_loss_pause_until = None;
+        }
+        let mut health = self.health.entry.borrow_mut();
+        health.remote_addr = Some(remote_addr);
+        health.reconnect_pending = false;
+        health.last_route_protected = false;
     }
 
     fn build_binance_session_logon_payload(&mut self) -> Result<Option<String>> {
@@ -1254,10 +1315,13 @@ impl TradeWsClient {
                                     self.endpoint_state.borrow_mut().mark_disconnected();
                                     self.current_remote_addr = None;
                                     self.current_tcp_fd = None;
+                            self.health.entry.borrow_mut().remote_addr = None;
                                     continue;
                                 }
                             }
 
+                            self.finish_proactive_reconnect(remote_addr);
+                            self.update_health_queue_depths();
                             backoff_ms = 500;
                             if let Err(err) = self.event_loop(&mut ws).await {
                                 warn!(
@@ -1272,11 +1336,15 @@ impl TradeWsClient {
                             self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
                             self.current_tcp_fd = None;
+                            self.health.entry.borrow_mut().remote_addr = None;
+                            self.update_health_queue_depths();
                         }
                         Err(err) => {
                             self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
                             self.current_tcp_fd = None;
+                            self.health.entry.borrow_mut().remote_addr = None;
+                            self.update_health_queue_depths();
                             let err_text = format_error_chain(&err);
                             self.trigger_engine_shutdown_on_binance_rate_limit(
                                 None,
@@ -1324,18 +1392,30 @@ impl TradeWsClient {
     ) -> Result<()> {
         let mut ping_interval = time::interval(Duration::from_millis(self.ping_interval_ms));
         ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        // TCP 丢包健康度：始终观测+打日志（间隔由 TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS 控制，0=关）。
-        // 是否真正 act（软暂停+硬重连）完全由路由决定：dispatch=act，rr=只观测。见 self.tcp_loss_act。
-        let tcp_health_interval_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
+        let tcp_health_sample_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_SAMPLE_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(250)
+            .max(1);
+        let tcp_health_log_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(10_000);
-        let tcp_health_enabled = tcp_health_interval_ms > 0;
         let mut tcp_loss_health = TcpLossHealth::new(TcpLossHealthConfig::from_env());
-        let mut tcp_health_interval =
-            time::interval(Duration::from_millis(tcp_health_interval_ms.max(1)));
+        {
+            let mut health = self.health.entry.borrow_mut();
+            health.sample_interval_ms = tcp_health_sample_ms.min(u32::MAX as u64) as u32;
+            health.window_ms = tcp_loss_health
+                .window_duration()
+                .as_millis()
+                .min(u32::MAX as u128) as u32;
+        }
+        let mut tcp_health_interval = time::interval(Duration::from_millis(tcp_health_sample_ms));
         tcp_health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         tcp_health_interval.tick().await;
+        let tcp_health_log_interval =
+            (tcp_health_log_ms > 0).then(|| Duration::from_millis(tcp_health_log_ms));
+        let mut last_tcp_health_log = std::time::Instant::now();
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
@@ -1380,11 +1460,17 @@ impl TradeWsClient {
                     }
                     self.send_ping(ws).await?;
                 }
-                _ = tcp_health_interval.tick(), if tcp_health_enabled => {
-                    self.eval_tcp_health(&mut tcp_loss_health);
+                _ = tcp_health_interval.tick() => {
+                    self.eval_tcp_health(
+                        &mut tcp_loss_health,
+                        &mut last_tcp_health_log,
+                        tcp_health_log_interval,
+                    );
                 }
                 _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
-                    if self.can_planned_reconnect_now() {
+                    if self.can_planned_reconnect_now()
+                        && self.try_begin_proactive_reconnect(std::time::Instant::now())
+                    {
                         info!(
                             "trade ws client id={} exchange={} planned reconnect url={} local_ip={} remote_addr={:?} period_ms={} offset_ms={}",
                             self.id,
@@ -1412,12 +1498,20 @@ impl TradeWsClient {
                 }
             }
 
-            // 检查是否需要重连（由 notice 触发）
             if self.should_reconnect {
-                warn!("trade ws client id={} reconnecting due to notice", self.id);
-                self.should_reconnect = false;
-                let _ = ws.close(None).await;
-                return Err(anyhow!("reconnecting due to notice"));
+                let already_guarded = self.endpoint_state.borrow().proactive_reconnecting;
+                let can_reconnect = self.can_planned_reconnect_now()
+                    && (already_guarded
+                        || self.try_begin_proactive_reconnect(std::time::Instant::now()));
+                if can_reconnect {
+                    warn!(
+                        "trade ws client id={} reconnecting after guarded trigger",
+                        self.id
+                    );
+                    self.should_reconnect = false;
+                    let _ = ws.close(None).await;
+                    return Err(anyhow!("reconnecting after guarded trigger"));
+                }
             }
 
             if self.shutdown {
@@ -1699,26 +1793,7 @@ impl TradeWsClient {
         }
         let ws_send_start_time_us = get_timestamp_us();
         ws.send(Message::Text(payload)).await?;
-        let sent_at = std::time::Instant::now();
-        let sent_at_us = get_timestamp_us();
-        let ipc_recv_to_ws_send_done_us = msg
-            .ipc_recv
-            .map(|t0| sent_at.saturating_duration_since(t0).as_micros() as i64);
-        if let Some(us) = ipc_recv_to_ws_send_done_us {
-            match classify_ws_action(msg.req_type) {
-                WsAction::New => self.lat_buckets.new.borrow_mut().push(us as f64),
-                WsAction::Cancel => self.lat_buckets.cancel.borrow_mut().push(us as f64),
-                WsAction::Other => {}
-            }
-        }
-        self.track_inflight(
-            msg,
-            transport_id,
-            ws_send_start_time_us,
-            sent_at,
-            sent_at_us,
-            ipc_recv_to_ws_send_done_us,
-        );
+        self.track_inflight(msg, transport_id, ws_send_start_time_us);
         Ok(())
     }
 
@@ -2087,9 +2162,6 @@ impl TradeWsClient {
         msg: &TradeRequestMsg,
         transport_id: i64,
         _ws_send_start_time_us: i64,
-        sent_at: std::time::Instant,
-        sent_at_us: i64,
-        _ipc_recv_to_ws_send_done_us: Option<i64>,
     ) {
         let flags = Self::inflight_request_flags(msg);
         self.inflight.insert(
@@ -2098,8 +2170,6 @@ impl TradeWsClient {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
                 ws_open_update_enabled: flags.ws_open_update_enabled,
-                sent_at,
-                sent_at_us,
             },
         );
     }
@@ -2378,17 +2448,6 @@ impl TradeWsClient {
                     return;
                 };
                 let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
-                // Bitget 仅暴露顶层 `ts`（ms），统一模型里 T2=T3=ts。仅成功响应采样。
-                if resp.is_success() && resp.ts_ms > 0 {
-                    let ts_us = resp.ts_ms.saturating_mul(1000);
-                    self.lat_buckets.record_resp(
-                        classify_ws_action(meta.req_type),
-                        meta.sent_at,
-                        meta.sent_at_us,
-                        ts_us,
-                        ts_us,
-                    );
-                }
                 if resp.is_cancel() {
                     // Bitget cancel-order success lacks sufficient order-state detail; rely on
                     // account stream for terminal state reconciliation and only keep error payloads.
@@ -2638,18 +2697,6 @@ impl TradeWsClient {
                         );
                     }
                 }
-                // Bybit 仅暴露一个服务端时间戳（顶层 `time` ms 或 header.Timenow ms），
-                // 退化为 T2=T3。仅 ret_code==0 时采样。
-                if resp.ret_code == 0 && resp.time_now_ms > 0 {
-                    let ts_us = resp.time_now_ms.saturating_mul(1000);
-                    self.lat_buckets.record_resp(
-                        classify_ws_action(meta.req_type),
-                        meta.sent_at,
-                        meta.sent_at_us,
-                        ts_us,
-                        ts_us,
-                    );
-                }
                 self.publish_bybit_ws_response(
                     client_order_id,
                     meta.req_type,
@@ -2668,16 +2715,6 @@ impl TradeWsClient {
                     return;
                 };
                 let client_order_id = resp.client_order_id().unwrap_or(meta.client_order_id);
-                // OKEx 顶层 `inTime` / `outTime` 直接是 μs；仅 `code==0` 时采样。
-                if resp.code == 0 && resp.in_time_us > 0 && resp.out_time_us > 0 {
-                    self.lat_buckets.record_resp(
-                        classify_ws_action(meta.req_type),
-                        meta.sent_at,
-                        meta.sent_at_us,
-                        resp.in_time_us,
-                        resp.out_time_us,
-                    );
-                }
                 self.publish_okex_ws_response(
                     client_order_id,
                     meta.req_type,
@@ -3023,31 +3060,6 @@ impl TradeWsClient {
         };
         let client_order_id =
             Self::extract_gate_client_order_id(&json_val).unwrap_or(meta.client_order_id);
-        // Gate header 给出 `x_in_time` / `x_out_time`（μs）；status==200 时采样。
-        let header_status_ok = json_val
-            .pointer("/header/status")
-            .and_then(Self::extract_status_code)
-            .map(|s| s == 200)
-            .unwrap_or(false);
-        if header_status_ok {
-            let t2 = json_val
-                .pointer("/header/x_in_time")
-                .and_then(Self::extract_i64_lossy);
-            let t3 = json_val
-                .pointer("/header/x_out_time")
-                .and_then(Self::extract_i64_lossy);
-            if let (Some(t2), Some(t3)) = (t2, t3) {
-                if t2 > 0 && t3 > 0 {
-                    self.lat_buckets.record_resp(
-                        classify_ws_action(meta.req_type),
-                        meta.sent_at,
-                        meta.sent_at_us,
-                        t2,
-                        t3,
-                    );
-                }
-            }
-        }
         self.publish_gate_ws_response(
             client_order_id,
             meta.req_type,
@@ -3056,32 +3068,6 @@ impl TradeWsClient {
             channel,
         );
         true
-    }
-
-    fn extract_status_code(v: &Value) -> Option<u16> {
-        if let Some(n) = v.as_u64() {
-            return u16::try_from(n).ok();
-        }
-        if let Some(n) = v.as_i64() {
-            return u16::try_from(n).ok();
-        }
-        if let Some(s) = v.as_str() {
-            return s.trim().parse::<u16>().ok();
-        }
-        None
-    }
-
-    fn extract_i64_lossy(v: &Value) -> Option<i64> {
-        if let Some(n) = v.as_i64() {
-            return Some(n);
-        }
-        if let Some(n) = v.as_u64() {
-            return i64::try_from(n).ok();
-        }
-        if let Some(s) = v.as_str() {
-            return s.trim().parse::<i64>().ok();
-        }
-        None
     }
 
     fn handle_binance_payload(&mut self, payload: &str) -> bool {
@@ -3136,26 +3122,6 @@ impl TradeWsClient {
             self.warn_uncorrelated_trade_payload(payload);
             return true;
         };
-        // Binance WS 仅暴露一个服务端时间戳 `result.updateTime`（ms），退化为 T2=T3。
-        // 仅 status==200 且非 Binance Margin（现货）时采样——Margin 路径暂不参与响应 RTT 测量。
-        let is_binance_margin = matches!(
-            meta.req_type,
-            TradeRequestType::BinanceWsNewMarginOrder
-                | TradeRequestType::BinanceWsCancelMarginOrder
-        );
-        let (_, _, update_time_ms, _, _) = binance_ws::extract_order_info(&resp);
-        if resp.status == Some(200) && !is_binance_margin {
-            if update_time_ms > 0 {
-                let ts_us = update_time_ms.saturating_mul(1000);
-                self.lat_buckets.record_resp(
-                    classify_ws_action(meta.req_type),
-                    meta.sent_at,
-                    meta.sent_at_us,
-                    ts_us,
-                    ts_us,
-                );
-            }
-        }
         self.publish_binance_ws_response(
             meta.client_order_id,
             meta.req_type,
@@ -3721,10 +3687,15 @@ impl TradeWsClient {
         });
     }
 
-    /// 评估当前连接的 TCP 丢包健康度：与上次 TCP_INFO 快照比较算本窗口 retrans 率，
-    /// 喂入滚动窗口给出判定并日志（对齐 `ss`）。rr 只观测；dispatch 路由才施加动作
-    /// （软暂停绕开 / 无 inflight 硬重连），由 self.tcp_loss_act 控制。
-    fn eval_tcp_health(&mut self, health: &mut TcpLossHealth) {
+    /// Sample kernel TCP_INFO, update the one-second health window, and apply
+    /// the hard anomaly rule: any retransmission immediately quarantines the
+    /// connection and schedules a guarded drain-and-reconnect.
+    fn eval_tcp_health(
+        &mut self,
+        health: &mut TcpLossHealth,
+        last_log: &mut std::time::Instant,
+        log_interval: Option<Duration>,
+    ) {
         let Some(fd) = self.current_tcp_fd else {
             return;
         };
@@ -3732,54 +3703,100 @@ impl TradeWsClient {
             return;
         };
         let Some(prev) = self.tcp_health_last else {
-            // 重连后第一次没有基线，只记快照。
             self.tcp_health_last = Some(snap);
+            let mut entry = self.health.entry.borrow_mut();
+            entry.total_retrans = snap.total_retrans;
+            entry.rtt_us = snap.rtt_us;
+            entry.rttvar_us = snap.rttvar_us;
+            drop(entry);
+            self.update_health_queue_depths();
             return;
         };
+
         let d_retrans = snap.total_retrans.wrapping_sub(prev.total_retrans) as u64;
         let d_data_segs = snap.data_segs_out.wrapping_sub(prev.data_segs_out) as u64;
         self.tcp_health_last = Some(snap);
 
-        let can_reconnect_now = self.can_planned_reconnect_now();
         let now = std::time::Instant::now();
-        let verdict = health.record(d_retrans, d_data_segs, can_reconnect_now, now);
-        // act 动作：仅 dispatch 路由(self.tcp_loss_act)时施加；rr 只观测、只打日志。
-        // Pause → 置 tcp_loss_pause_until（is_available 无条件绕开；坏则每 tick 续期）。
-        // Reconnect → 同时置 pause 并触发 should_reconnect（event_loop 拆连重建=换源端口=换 ECMP 路径）。
+        let verdict = health.record(d_retrans, d_data_segs, now);
+        let (window_retrans, window_data_segs) = health.window_counts();
         let mut acted = "none";
-        if self.tcp_loss_act {
-            match verdict {
-                Verdict::Reconnect => {
-                    let until = now + health.pause_duration();
-                    self.endpoint_state.borrow_mut().tcp_loss_pause_until = Some(until);
-                    self.should_reconnect = true;
-                    acted = "reconnect";
-                }
-                Verdict::Pause => {
-                    let until = now + health.pause_duration();
-                    self.endpoint_state.borrow_mut().tcp_loss_pause_until = Some(until);
-                    acted = "pause";
-                }
-                Verdict::Healthy => {}
+
+        if d_retrans > 0 && self.tcp_loss_act {
+            self.health_reconnect_pending = true;
+            if self.has_other_available_connection(now) {
+                self.endpoint_state.borrow_mut().tcp_loss_pause_until =
+                    Some(now + health.pause_duration());
+                let mut entry = self.health.entry.borrow_mut();
+                entry.last_route_protected = false;
+                acted = "pause";
+            } else {
+                self.endpoint_state.borrow_mut().tcp_loss_pause_until = None;
+                self.health.entry.borrow_mut().last_route_protected = true;
+                acted = "protect_last_route";
             }
         }
-        info!(
-            "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_bp={:?} total_retrans={} rtt_us={} rttvar_us={} route={} verdict={:?} acted={}",
-            self.id,
-            self.exchange,
-            self.url,
-            self.local_ip,
-            self.current_remote_addr,
-            d_data_segs,
-            d_retrans,
-            health.window_bp(),
-            snap.total_retrans,
-            snap.rtt_us,
-            snap.rttvar_us,
-            if self.tcp_loss_act { "dispatch" } else { "rr" },
-            verdict,
-            acted,
-        );
+
+        if self.health_reconnect_pending && self.tcp_loss_act {
+            if self.has_other_available_connection(now) {
+                self.health.entry.borrow_mut().last_route_protected = false;
+                if self.can_planned_reconnect_now() {
+                    if self.try_begin_proactive_reconnect(now) {
+                        self.should_reconnect = true;
+                        acted = "reconnect";
+                    }
+                } else {
+                    self.endpoint_state.borrow_mut().tcp_loss_pause_until =
+                        Some(now + health.pause_duration());
+                    acted = "draining";
+                }
+            } else {
+                self.endpoint_state.borrow_mut().tcp_loss_pause_until = None;
+                self.health.entry.borrow_mut().last_route_protected = true;
+                acted = "protect_last_route";
+            }
+        }
+
+        {
+            let mut entry = self.health.entry.borrow_mut();
+            entry.window_retrans = window_retrans;
+            entry.window_data_segs_out = window_data_segs;
+            entry.total_retrans = snap.total_retrans;
+            entry.rtt_us = snap.rtt_us;
+            entry.rttvar_us = snap.rttvar_us;
+            if d_retrans > 0 {
+                entry.last_retrans_at = Some(now);
+            }
+            entry.reconnect_pending = self.health_reconnect_pending;
+        }
+        self.update_health_queue_depths();
+
+        let should_log = d_retrans > 0
+            || log_interval
+                .map(|interval| last_log.elapsed() >= interval)
+                .unwrap_or(false);
+        if should_log {
+            info!(
+                "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_data_segs_out={} window_retrans={} window_bp={} total_retrans={} rtt_us={} rttvar_us={} route={} verdict={:?} acted={}",
+                self.id,
+                self.exchange,
+                self.url,
+                self.local_ip,
+                self.current_remote_addr,
+                d_data_segs,
+                d_retrans,
+                window_data_segs,
+                window_retrans,
+                health.window_bp(),
+                snap.total_retrans,
+                snap.rtt_us,
+                snap.rttvar_us,
+                if self.tcp_loss_act { "dispatch" } else { "rr" },
+                verdict,
+                acted,
+            );
+            *last_log = now;
+        }
     }
 
     async fn send_ping(
@@ -3813,7 +3830,7 @@ impl TradeWsClient {
 mod tests {
     use super::{
         binance_ed25519_api_key_from_env, is_bitget_pong_response, parse_bitget_control_event,
-        QueryInflightMeta, TradeWsClient,
+        QueryInflightMeta, TradeWsClient, WsEndpointState, WsReconnectGroup,
     };
     use crate::binance_ws::BINANCE_ED25519_API_KEY_ENV;
     use crate::query_request::QueryRequestType;
@@ -4035,5 +4052,54 @@ mod tests {
         let market_msg = TradeRequestMsg::parse(&market_request).expect("binance typed msg");
         let flags = TradeWsClient::inflight_request_flags(&market_msg);
         assert!(!flags.ws_open_update_enabled);
+    }
+    #[test]
+    fn reconnect_group_keeps_one_available_endpoint() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::Instant;
+
+        let states: Vec<_> = (0..3)
+            .map(|_| Rc::new(RefCell::new(WsEndpointState::default())))
+            .collect();
+        for state in &states {
+            state.borrow_mut().mark_connected();
+        }
+        let group = WsReconnectGroup::new(states.clone());
+        let now = Instant::now();
+
+        assert!(group.try_begin(0, now));
+        assert!(!group.try_begin(1, now));
+        assert!(states[0].borrow().proactive_reconnecting);
+
+        group.finish(0);
+        states[0].borrow_mut().mark_disconnected();
+        assert!(group.try_begin(1, now));
+        group.finish(1);
+        states[1].borrow_mut().mark_disconnected();
+
+        assert!(!group.try_begin(2, now));
+        assert!(!states[2].borrow().proactive_reconnecting);
+    }
+
+    #[test]
+    fn reconnect_group_serializes_proactive_reconnects() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::Instant;
+
+        let states: Vec<_> = (0..2)
+            .map(|_| Rc::new(RefCell::new(WsEndpointState::default())))
+            .collect();
+        for state in &states {
+            state.borrow_mut().mark_connected();
+        }
+        let group = WsReconnectGroup::new(states);
+        let now = Instant::now();
+
+        assert!(group.try_begin(0, now));
+        assert!(!group.try_begin(1, now));
+        group.finish(0);
+        assert!(group.try_begin(1, now));
     }
 }

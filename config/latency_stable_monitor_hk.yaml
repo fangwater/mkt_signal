@@ -1,8 +1,8 @@
 # HK latency stable monitor.
-# One process, one ZMQ PUB socket, multiple IPC latency snapshot subscriptions.
+# One process, one ZMQ PUB socket, public latency plus private health subscriptions.
 # ZMQ publishes multipart messages:
 #   frame 0: topic
-#   frame 1: raw 512B LatencySnapshotMsg payload, unchanged from IPC
+#   frame 1: raw 512B snapshot payload, unchanged from IPC
 
 zmq:
   bind: "tcp://0.0.0.0:6370"
@@ -29,6 +29,6 @@ private:
     - name: okex_intra_arb01_te
       namespace: okex_intra_arb01
       exchange: okex
-      # service default: okex_intra_arb01/te_pubs/okex/latency
+      # service default: okex_intra_arb01/te_pubs/okex/health
       # topic default intentionally only includes namespace:
-      #   latency.private.te.okex_intra_arb01
+      #   health.private.te.okex_intra_arb01

@@ -48,8 +48,8 @@ use crate::trade_request::{
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
 use crate::ws_client::{
-    RespLatencyBuckets, TradeWsClient, WsCommand, WsCommandQueue, WsEndpointHandle,
-    WsLatencyBuckets,
+    TradeWsClient, WsCommand, WsCommandQueue, WsEndpointHandle, WsEndpointState, WsHealthRegistry,
+    WsReconnectGroup,
 };
 use account_common::ApiKey;
 use account_common::{binance_account_mode, BinanceAccountMode};
@@ -59,8 +59,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use log::{debug, info, warn};
-use rolling_common::latency_kll::LatencyKll;
-use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
+use rolling_common::health_snapshot::{HEALTH_MARKET_SPOT, HEALTH_SNAPSHOT_PAYLOAD_LEN};
 use rtrb::{Consumer, PopError, Producer, PushError, RingBuffer};
 use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
@@ -1477,20 +1476,17 @@ impl TradeEngine {
         let query_resp_publisher: Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
             query_resp_service_obj.publisher_builder().create()?;
 
-        // Latency snapshot publisher（每 30s venue 级 IPC 推送，512B 定长载荷）。
-        // service name: `<IPC_NAMESPACE>/te_pubs/<venue>/latency`——
-        //   - `IPC_NAMESPACE` 由 `build_service_name` 自动加（多 te 实例的隔离）
-        //   - `te_pubs` 前缀表明发布方是 trade_engine，避免与 spread_pbs 等其他源混淆
-        let latency_service =
-            build_service_name(&format!("te_pubs/{}/latency", canonical_exchange));
-        let latency_service_obj = node
-            .service_builder(&ServiceName::new(&latency_service)?)
-            .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
-            .subscriber_max_buffer_size(8)
+        // Connection health snapshots replace the request-latency KLL stream.
+        // One 512-byte message is published per websocket endpoint every second.
+        let health_service = build_service_name(&format!("te_pubs/{}/health", canonical_exchange));
+        let health_service_obj = node
+            .service_builder(&ServiceName::new(&health_service)?)
+            .publish_subscribe::<[u8; HEALTH_SNAPSHOT_PAYLOAD_LEN]>()
+            .subscriber_max_buffer_size(64)
             .open_or_create()?;
-        let latency_publisher: Publisher<ipc::Service, [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN], ()> =
-            latency_service_obj.publisher_builder().create()?;
-        debug!("publisher created for service: {}", latency_service);
+        let health_publisher: Publisher<ipc::Service, [u8; HEALTH_SNAPSHOT_PAYLOAD_LEN], ()> =
+            health_service_obj.publisher_builder().create()?;
+        debug!("publisher created for service: {}", health_service);
         // 直接使用传入的 exchange 枚举
 
         // Async thread publishes responses directly to iceoryx; inbound requests still come from SPSC.
@@ -1556,40 +1552,7 @@ impl TradeEngine {
                 )
             };
 
-        // 跨 endpoint 共享的延迟分桶。capacity 10000。
-        // - new/cancel: T1−T0（IPC→WS 端到端），所有 venue 通用。
-        // - resp: 服务端响应 4 区间分解（uplink/server/downlink/rtt × new/cancel = 8 桶），
-        //   仅在 venue 暴露服务端时间戳时启用（Bitget/Gate/Binance/OKEx/Bybit 均支持）。
-        // current_thread runtime + LocalSet 下所有 ws task 同线程，`Rc<RefCell<..>>` 即可。
-        let mk_bucket = |label: String| {
-            Rc::new(RefCell::new(LatencyKll::with_capacity(
-                label,
-                LatencyKll::DEFAULT_CAPACITY,
-            )))
-        };
-        let venue = exchange.as_str();
-        let resp_enabled = matches!(
-            exchange,
-            Exchange::Bitget
-                | Exchange::Gate
-                | Exchange::Binance
-                | Exchange::Okex
-                | Exchange::Bybit
-        );
-        let lat_buckets = WsLatencyBuckets {
-            new: mk_bucket(format!("trade_engine:{}:ws:new", venue)),
-            cancel: mk_bucket(format!("trade_engine:{}:ws:cancel", venue)),
-            resp: resp_enabled.then(|| RespLatencyBuckets {
-                uplink_new: mk_bucket(format!("trade_engine:{}:ws:uplink:new", venue)),
-                uplink_cancel: mk_bucket(format!("trade_engine:{}:ws:uplink:cancel", venue)),
-                server_new: mk_bucket(format!("trade_engine:{}:ws:server:new", venue)),
-                server_cancel: mk_bucket(format!("trade_engine:{}:ws:server:cancel", venue)),
-                downlink_new: mk_bucket(format!("trade_engine:{}:ws:downlink:new", venue)),
-                downlink_cancel: mk_bucket(format!("trade_engine:{}:ws:downlink:cancel", venue)),
-                rtt_new: mk_bucket(format!("trade_engine:{}:ws:rtt:new", venue)),
-                rtt_cancel: mk_bucket(format!("trade_engine:{}:ws:rtt:cancel", venue)),
-            }),
-        };
+        let health_registry = WsHealthRegistry::default();
 
         // 初始化 REST dispatcher（用于 Binance）
         let binance_um_ip_whitelist_mode = exchange == Exchange::Binance
@@ -1638,36 +1601,41 @@ impl TradeEngine {
         let internal_open_terminate_summary: InternalOpenTerminateSummary =
             Rc::new(RefCell::new(fast_hash_map()));
 
-        // 周期 publisher：每 30s 把所有非空桶的 KLL 快照打包成 LatencySnapshotMsg
-        // 推到 IPC（service: <IPC_NAMESPACE>/te_pubs/<venue>/latency）。
-        // 空桶不入消息，没桶不发。
+        // Stable connection-health publisher. Each endpoint produces one
+        // snapshot per tick, including while disconnected.
         {
-            let lat_buckets_for_ticker = lat_buckets.clone();
+            let health_registry_for_ticker = health_registry.clone();
             let venue_id = exchange.to_u8() as u32;
             let shutdown_for_ticker = shutdown.clone();
+            let snapshot_interval_ms = std::env::var("TRADE_ENGINE_HEALTH_SNAPSHOT_INTERVAL_MS")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(1_000)
+                .max(1);
             let ticker = tokio::task::spawn_local(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                let mut interval =
+                    tokio::time::interval(Duration::from_millis(snapshot_interval_ms));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                interval.tick().await; // 跳过启动后立即触发的第一次
+                interval.tick().await;
                 loop {
                     tokio::select! {
                         biased;
                         _ = shutdown_for_ticker.cancelled() => break,
                         _ = interval.tick() => {
-                            if let Some(msg) = lat_buckets_for_ticker.take_snapshot(venue_id) {
-                                if let Err(e) = latency_publisher.send_copy(msg.into_bytes()) {
+                            for msg in health_registry_for_ticker.snapshots(venue_id) {
+                                if let Err(err) = health_publisher.send_copy(msg.into_bytes()) {
                                     warn!(
-                                        "trade_engine: latency snapshot publish failed: {}",
-                                        e
+                                        "trade_engine: health snapshot publish failed: {}",
+                                        err
                                     );
                                 }
                             }
                         }
                     }
                 }
-                info!("trade_engine: latency snapshot ticker stopped");
+                info!("trade_engine: health snapshot ticker stopped");
             });
-            worker_handles.push(("latency_snapshot_ticker", ticker));
+            worker_handles.push(("health_snapshot_ticker", ticker));
         }
 
         if internal_open_terminate_enabled {
@@ -1771,7 +1739,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
                 let client = client.with_tcp_loss_act(ws_route_dispatch);
                 info!(
@@ -1842,7 +1810,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
                 let client = client.with_tcp_loss_act(ws_route_dispatch);
                 info!(
@@ -1904,7 +1872,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
                 let client = client.with_tcp_loss_act(ws_route_dispatch);
                 info!(
@@ -1985,7 +1953,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     state.clone(),
                     false,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
                 let client = client.with_tcp_loss_act(ws_route_dispatch);
                 info!(
@@ -2046,9 +2014,11 @@ impl TradeEngine {
                     shutdown.clone(),
                     spot_state.clone(),
                     false,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
-                let spot_client = spot_client.with_tcp_loss_act(ws_route_dispatch);
+                let spot_client = spot_client
+                    .with_tcp_loss_act(ws_route_dispatch)
+                    .with_health_market(HEALTH_MARKET_SPOT);
                 info!(
                     "spawning gate spot ws client id={} ip={} max_inflight={}",
                     idx,
@@ -2084,7 +2054,7 @@ impl TradeEngine {
                     shutdown.clone(),
                     fut_state.clone(),
                     false,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
                 let fut_client = fut_client.with_tcp_loss_act(ws_route_dispatch);
                 info!(
@@ -2176,13 +2146,21 @@ impl TradeEngine {
             let mut um_endpoints = Vec::with_capacity(planned_um_connection_count);
             let mut um_endpoint_groups = Vec::with_capacity(1);
             let mut spot_endpoints = Vec::with_capacity(spot_local_ips.len());
+            let um_states: Vec<_> = (0..planned_um_connection_count)
+                .map(|_| StdRc::new(RefCell::new(WsEndpointState::default())))
+                .collect();
+            let um_reconnect_group = WsReconnectGroup::new(um_states.clone());
+            let spot_states: Vec<_> = (0..spot_local_ips.len())
+                .map(|_| StdRc::new(RefCell::new(WsEndpointState::default())))
+                .collect();
+            let spot_reconnect_group = WsReconnectGroup::new(spot_states.clone());
             let mut um_client_id = 0usize;
             {
                 let group_idx = 0usize;
                 let mut group_handles = Vec::with_capacity(basic_um_local_ips.len());
-                for &ip in &basic_um_local_ips {
+                for (um_idx, &ip) in basic_um_local_ips.iter().enumerate() {
                     let um_cmd_queue = WsCommandQueue::new();
-                    let endpoint_state = StdRc::new(RefCell::new(Default::default()));
+                    let endpoint_state = um_states[um_idx].clone();
                     let reconnect_offset_ms = if planned_um_connection_count > 0 {
                         BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS.saturating_mul(um_client_id as u64)
                             / planned_um_connection_count as u64
@@ -2210,10 +2188,11 @@ impl TradeEngine {
                         shutdown.clone(),
                         endpoint_state.clone(),
                         um_shutdown_on_rate_limit,
-                        lat_buckets.clone(),
+                        health_registry.clone(),
                     );
                     um_client = um_client.with_tcp_loss_act(ws_route_dispatch);
                     um_client = um_client.with_binance_um_route_group_id(group_idx as u32);
+                    um_client = um_client.with_reconnect_group(um_reconnect_group.clone(), um_idx);
                     um_client = um_client.with_planned_reconnect(
                         BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
                         reconnect_offset_ms,
@@ -2242,7 +2221,7 @@ impl TradeEngine {
 
             for (idx, ip) in spot_local_ips.into_iter().enumerate() {
                 let spot_cmd_queue = WsCommandQueue::new();
-                let spot_state = StdRc::new(RefCell::new(Default::default()));
+                let spot_state = spot_states[idx].clone();
                 let spot_client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -2264,9 +2243,12 @@ impl TradeEngine {
                     shutdown.clone(),
                     spot_state.clone(),
                     spot_shutdown_on_rate_limit,
-                    lat_buckets.clone(),
+                    health_registry.clone(),
                 );
-                let spot_client = spot_client.with_tcp_loss_act(ws_route_dispatch);
+                let spot_client = spot_client
+                    .with_tcp_loss_act(ws_route_dispatch)
+                    .with_health_market(HEALTH_MARKET_SPOT)
+                    .with_reconnect_group(spot_reconnect_group.clone(), idx);
                 info!(
                     "spawning binance spot ws client id={} ip={} max_inflight={}",
                     idx,

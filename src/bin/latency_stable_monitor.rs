@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Parser, Debug)]
 #[command(name = "latency_stable_monitor")]
 #[command(
-    about = "Monitor latency snapshot IPC services and publish JSON snapshots over one ZMQ PUB socket"
+    about = "Monitor latency and health snapshot IPC services and publish raw snapshots over one ZMQ PUB socket"
 )]
 struct Args {
     /// Path to latency stable monitor config yaml.

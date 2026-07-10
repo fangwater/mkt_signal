@@ -12,7 +12,7 @@ use crate::latency_stable_monitor::cfg::{
     default_trade_engine_topic, LatencyStableMonitorConfig, SpreadPbsSourceConfig,
     TradeEngineSourceConfig,
 };
-use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
+const SNAPSHOT_PAYLOAD_LEN: usize = 512;
 
 const SOURCE_PUBLIC: &str = "public";
 const SOURCE_PRIVATE: &str = "private";
@@ -50,7 +50,7 @@ impl LatencyStableMonitorApp {
             "latency_stable_monitor started: bind={} sources={} payload=raw_binary_{}B poll_ms={} reconnect_ms={} idle_log_secs={} stats_log_secs={}",
             self.cfg.zmq.bind.trim(),
             sources.len(),
-            LATENCY_SNAPSHOT_PAYLOAD_LEN,
+            SNAPSHOT_PAYLOAD_LEN,
             self.cfg.poll_ms,
             self.cfg.reconnect_ms,
             self.cfg.idle_log_secs,
@@ -121,7 +121,7 @@ impl LatencyStableMonitorApp {
 
 struct SourceRuntime {
     identity: SourceIdentity,
-    subscriber: Option<Subscriber<ipc::Service, [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN], ()>>,
+    subscriber: Option<Subscriber<ipc::Service, [u8; SNAPSHOT_PAYLOAD_LEN], ()>>,
     next_retry_at: Instant,
     received: u64,
     published: u64,
@@ -145,7 +145,7 @@ impl SourceRuntime {
             .service_builder(
                 &ServiceName::new(&self.identity.service).expect("validated service name"),
             )
-            .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
+            .publish_subscribe::<[u8; SNAPSHOT_PAYLOAD_LEN]>()
             .open();
 
         let service = match service_result {
