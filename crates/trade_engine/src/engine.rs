@@ -82,8 +82,8 @@ const IPC_THREAD_DRAIN_BUDGET: usize = 64;
 const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 1024;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
-const BINANCE_UM_BASIC_WS_CONNECTIONS: usize = 4;
-const BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS: u64 = 300_000;
+const BINANCE_BASIC_WS_CONNECTIONS: usize = 4;
+const BINANCE_BASIC_WS_RECONNECT_PERIOD_MS: u64 = 300_000;
 
 #[derive(Clone, Debug)]
 struct WsEndpointGroup {
@@ -120,14 +120,14 @@ impl WsEndpointGroup {
     }
 }
 
-fn binance_um_basic_ws_local_ips(local_ips: &[IpAddr]) -> Result<Vec<IpAddr>> {
+fn binance_basic_ws_local_ips(local_ips: &[IpAddr]) -> Result<Vec<IpAddr>> {
     match local_ips.len() {
-        1 => Ok(vec![local_ips[0]; BINANCE_UM_BASIC_WS_CONNECTIONS]),
+        1 => Ok(vec![local_ips[0]; BINANCE_BASIC_WS_CONNECTIONS]),
         2 => Ok(vec![local_ips[0], local_ips[1], local_ips[0], local_ips[1]]),
         4 => Ok(local_ips.to_vec()),
         n => Err(anyhow!(
-            "Binance UM basic WS requires 1, 2, or 4 local IPs for {} connections; got {}",
-            BINANCE_UM_BASIC_WS_CONNECTIONS,
+            "Binance basic WS requires 1, 2, or 4 local IPs for {} connections; got {}",
+            BINANCE_BASIC_WS_CONNECTIONS,
             n
         )),
     }
@@ -136,7 +136,7 @@ fn binance_um_basic_ws_local_ips(local_ips: &[IpAddr]) -> Result<Vec<IpAddr>> {
 #[cfg(test)]
 mod route_selection_tests {
     use super::{
-        binance_um_basic_ws_local_ips, select_binance_um_ws_route, BinanceUmWsRouteCandidate,
+        binance_basic_ws_local_ips, select_binance_um_ws_route, BinanceUmWsRouteCandidate,
         WsEndpointGroup,
     };
     use crate::ws_client::{WsCommand, WsCommandQueue, WsEndpointHandle, WsEndpointState};
@@ -157,23 +157,23 @@ mod route_selection_tests {
     }
 
     #[test]
-    fn binance_um_basic_ws_local_ip_layout_is_fixed_width() {
+    fn binance_basic_ws_local_ip_layout_is_fixed_width() {
         let ip0 = "172.31.0.10".parse().unwrap();
         let ip1 = "172.31.0.11".parse().unwrap();
         let ip2 = "172.31.0.12".parse().unwrap();
         let ip3 = "172.31.0.13".parse().unwrap();
 
         assert_eq!(
-            binance_um_basic_ws_local_ips(&[ip0]).unwrap(),
+            binance_basic_ws_local_ips(&[ip0]).unwrap(),
             vec![ip0, ip0, ip0, ip0]
         );
         assert_eq!(
-            binance_um_basic_ws_local_ips(&[ip0, ip1]).unwrap(),
+            binance_basic_ws_local_ips(&[ip0, ip1]).unwrap(),
             vec![ip0, ip1, ip0, ip1]
         );
-        assert!(binance_um_basic_ws_local_ips(&[ip0, ip1, ip2]).is_err());
+        assert!(binance_basic_ws_local_ips(&[ip0, ip1, ip2]).is_err());
         assert_eq!(
-            binance_um_basic_ws_local_ips(&[ip0, ip1, ip2, ip3]).unwrap(),
+            binance_basic_ws_local_ips(&[ip0, ip1, ip2, ip3]).unwrap(),
             vec![ip0, ip1, ip2, ip3]
         );
     }
@@ -2127,14 +2127,27 @@ impl TradeEngine {
                 (local_ips.clone(), local_ips.clone())
             };
 
-            // 统一走 DNS 解析：单个逻辑端点组，每个 basic local_ip 一条连接。
-            let basic_um_local_ips = binance_um_basic_ws_local_ips(&um_local_ips)?;
+            // UM and Spot share the same four-connection basic WS layout.
+            // Only the URL and UM whitelist selection differ.
+            let basic_um_local_ips = binance_basic_ws_local_ips(&um_local_ips)?;
+            let basic_spot_local_ips = binance_basic_ws_local_ips(&spot_local_ips)?;
             let planned_um_connection_count = basic_um_local_ips.len();
+            let planned_spot_connection_count = basic_spot_local_ips.len();
             info!(
                 "binance UM WS DNS mode; spawning 1 logical endpoint group, {} connection(s), reconnect_period_ms={}, local_ips={}",
-                basic_um_local_ips.len(),
-                BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
+                planned_um_connection_count,
+                BINANCE_BASIC_WS_RECONNECT_PERIOD_MS,
                 basic_um_local_ips
+                    .iter()
+                    .map(|ip| ip.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            info!(
+                "binance Spot WS DNS mode; spawning {} connection(s), reconnect_period_ms={}, local_ips={}",
+                planned_spot_connection_count,
+                BINANCE_BASIC_WS_RECONNECT_PERIOD_MS,
+                basic_spot_local_ips
                     .iter()
                     .map(|ip| ip.to_string())
                     .collect::<Vec<_>>()
@@ -2145,12 +2158,12 @@ impl TradeEngine {
             let spot_shutdown_on_rate_limit = spot_local_ips.len() <= 1;
             let mut um_endpoints = Vec::with_capacity(planned_um_connection_count);
             let mut um_endpoint_groups = Vec::with_capacity(1);
-            let mut spot_endpoints = Vec::with_capacity(spot_local_ips.len());
+            let mut spot_endpoints = Vec::with_capacity(planned_spot_connection_count);
             let um_states: Vec<_> = (0..planned_um_connection_count)
                 .map(|_| StdRc::new(RefCell::new(WsEndpointState::default())))
                 .collect();
             let um_reconnect_group = WsReconnectGroup::new(um_states.clone());
-            let spot_states: Vec<_> = (0..spot_local_ips.len())
+            let spot_states: Vec<_> = (0..planned_spot_connection_count)
                 .map(|_| StdRc::new(RefCell::new(WsEndpointState::default())))
                 .collect();
             let spot_reconnect_group = WsReconnectGroup::new(spot_states.clone());
@@ -2162,7 +2175,7 @@ impl TradeEngine {
                     let um_cmd_queue = WsCommandQueue::new();
                     let endpoint_state = um_states[um_idx].clone();
                     let reconnect_offset_ms = if planned_um_connection_count > 0 {
-                        BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS.saturating_mul(um_client_id as u64)
+                        BINANCE_BASIC_WS_RECONNECT_PERIOD_MS.saturating_mul(um_client_id as u64)
                             / planned_um_connection_count as u64
                     } else {
                         0
@@ -2194,7 +2207,7 @@ impl TradeEngine {
                     um_client = um_client.with_binance_um_route_group_id(group_idx as u32);
                     um_client = um_client.with_reconnect_group(um_reconnect_group.clone(), um_idx);
                     um_client = um_client.with_planned_reconnect(
-                        BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
+                        BINANCE_BASIC_WS_RECONNECT_PERIOD_MS,
                         reconnect_offset_ms,
                     );
                     info!(
@@ -2203,7 +2216,7 @@ impl TradeEngine {
                         group_idx,
                         um_client.local_ip(),
                         max_inflight,
-                        BINANCE_UM_BASIC_WS_RECONNECT_PERIOD_MS,
+                        BINANCE_BASIC_WS_RECONNECT_PERIOD_MS,
                         reconnect_offset_ms
                     );
                     let handle = tokio::task::spawn_local(async move {
@@ -2219,9 +2232,15 @@ impl TradeEngine {
             }
             binance_um_ws_endpoint_groups = Some(um_endpoint_groups);
 
-            for (idx, ip) in spot_local_ips.into_iter().enumerate() {
+            for (idx, &ip) in basic_spot_local_ips.iter().enumerate() {
                 let spot_cmd_queue = WsCommandQueue::new();
                 let spot_state = spot_states[idx].clone();
+                let reconnect_offset_ms = if planned_spot_connection_count > 0 {
+                    BINANCE_BASIC_WS_RECONNECT_PERIOD_MS.saturating_mul(idx as u64)
+                        / planned_spot_connection_count as u64
+                } else {
+                    0
+                };
                 let spot_client = TradeWsClient::new(
                     idx,
                     exchange,
@@ -2248,12 +2267,18 @@ impl TradeEngine {
                 let spot_client = spot_client
                     .with_tcp_loss_act(ws_route_dispatch)
                     .with_health_market(HEALTH_MARKET_SPOT)
-                    .with_reconnect_group(spot_reconnect_group.clone(), idx);
+                    .with_reconnect_group(spot_reconnect_group.clone(), idx)
+                    .with_planned_reconnect(
+                        BINANCE_BASIC_WS_RECONNECT_PERIOD_MS,
+                        reconnect_offset_ms,
+                    );
                 info!(
-                    "spawning binance spot ws client id={} ip={} max_inflight={}",
+                    "spawning binance spot ws client id={} ip={} source=dns max_inflight={} planned_reconnect_period_ms={} planned_reconnect_offset_ms={}",
                     idx,
                     spot_client.local_ip(),
-                    max_inflight
+                    max_inflight,
+                    BINANCE_BASIC_WS_RECONNECT_PERIOD_MS,
+                    reconnect_offset_ms
                 );
                 let handle = tokio::task::spawn_local(async move {
                     spot_client.run().await;
