@@ -47,7 +47,7 @@ pub use query_eng_channel::QueryEngHub;
 pub use resample_channel::{ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 pub use runner::{
     publish_snapshot_queries, IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade,
-    SnapshotQueryConfig, TakerDecisionThresholdRefreshConfig,
+    SnapshotQueryConfig, TakerDecisionModelRefreshConfig,
 };
 pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
 pub use trade_eng_channel::TradeEngHub;

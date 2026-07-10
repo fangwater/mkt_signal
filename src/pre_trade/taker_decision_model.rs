@@ -19,7 +19,7 @@ const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE: usize = 256;
 const MODEL_OUTPUT_POLL_MAX_PER_LOOP: usize = 256;
 const MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS: u64 = 60;
-const MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS: u64 = 60;
+const TAKER_DECISION_MODEL_REFRESH_INTERVAL_SECS: u64 = 60;
 const MODEL_SCORE_THRESHOLD_KEY_PREFIX: &str = "model_score_rolling_thresholds_";
 const DEFAULT_SCORE_ROLLING_MEAN_WINDOW: usize = 3;
 const TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY: &str =
@@ -27,6 +27,7 @@ const TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY: &str =
 
 thread_local! {
     static TAKER_DECISION_MODEL: RefCell<Option<PreTradeTakerDecisionModel>> = const { RefCell::new(None) };
+    static TAKER_DECISION_MODEL_TRANSITION: RefCell<Option<TakerDecisionModelTransition>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +101,13 @@ pub struct ModelUpdateEvent {
     pub percentile: Option<f64>,
     pub score_ready: bool,
     pub update_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct TakerDecisionModelTransition {
+    pub previous_service: String,
+    pub next_service: Option<String>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -252,44 +260,45 @@ impl PreTradeTakerDecisionModel {
         let ns = strategy_namespace_from_env(namespace);
         let key = strategy_params_key(&ns, open_venue, hedge_venue);
         let map = client.hgetall_map(&key).await?;
-        let enabled = map
-            .get("enable_taker_decsion_model")
-            .map(|raw| parse_bool(&key, "enable_taker_decsion_model", raw))
-            .unwrap_or(false);
+        let enabled = match map.get("enable_taker_decsion_model") {
+            Some(raw) => parse_bool(&key, "enable_taker_decsion_model", raw)?,
+            None => false,
+        };
         let service = map
             .get("taker_decsion_model_service")
             .map(|raw| raw.trim().to_string())
             .unwrap_or_else(|| "-".to_string());
-        let score_rolling_mean_window = map
-            .get(TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY)
-            .map(|raw| {
-                parse_positive_usize(&key, TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY, raw)
-            })
-            .unwrap_or(DEFAULT_SCORE_ROLLING_MEAN_WINDOW);
-        let keep_long_percentile = map
-            .get("taker_decsion_model_keep_long_percentile")
-            .map(|raw| parse_percentile(&key, "taker_decsion_model_keep_long_percentile", raw))
-            .unwrap_or(80.0);
-        let keep_short_percentile = map
-            .get("taker_decsion_model_keep_short_percentile")
-            .map(|raw| parse_percentile(&key, "taker_decsion_model_keep_short_percentile", raw))
-            .unwrap_or(20.0);
-        let open_cancel_long_percentile = map
-            .get("taker_decsion_model_open_cancel_long_percentile")
-            .map(|raw| {
-                parse_percentile(&key, "taker_decsion_model_open_cancel_long_percentile", raw)
-            })
-            .unwrap_or(keep_long_percentile);
-        let open_cancel_short_percentile = map
-            .get("taker_decsion_model_open_cancel_short_percentile")
-            .map(|raw| {
-                parse_percentile(
+        let score_rolling_mean_window = match map.get(TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY)
+        {
+            Some(raw) => {
+                parse_positive_usize(&key, TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY, raw)?
+            }
+            None => DEFAULT_SCORE_ROLLING_MEAN_WINDOW,
+        };
+        let keep_long_percentile = match map.get("taker_decsion_model_keep_long_percentile") {
+            Some(raw) => parse_percentile(&key, "taker_decsion_model_keep_long_percentile", raw)?,
+            None => 80.0,
+        };
+        let keep_short_percentile = match map.get("taker_decsion_model_keep_short_percentile") {
+            Some(raw) => parse_percentile(&key, "taker_decsion_model_keep_short_percentile", raw)?,
+            None => 20.0,
+        };
+        let open_cancel_long_percentile =
+            match map.get("taker_decsion_model_open_cancel_long_percentile") {
+                Some(raw) => {
+                    parse_percentile(&key, "taker_decsion_model_open_cancel_long_percentile", raw)?
+                }
+                None => keep_long_percentile,
+            };
+        let open_cancel_short_percentile =
+            match map.get("taker_decsion_model_open_cancel_short_percentile") {
+                Some(raw) => parse_percentile(
                     &key,
                     "taker_decsion_model_open_cancel_short_percentile",
                     raw,
-                )
-            })
-            .unwrap_or(keep_short_percentile);
+                )?,
+                None => keep_short_percentile,
+            };
         if keep_short_percentile > keep_long_percentile {
             anyhow::bail!(
                 "Redis hash '{}' taker_decsion_model_keep_short_percentile must be <= keep_long: short={} long={}",
@@ -338,12 +347,6 @@ impl PreTradeTakerDecisionModel {
                     key
                 );
             }
-            if service.trim().is_empty() || service.trim() == "-" {
-                anyhow::bail!(
-                    "Redis hash '{}' enable_taker_decsion_model=true requires taker_decsion_model_service",
-                    key
-                );
-            }
         }
         Ok(TakerDecisionConfig {
             enabled,
@@ -358,15 +361,87 @@ impl PreTradeTakerDecisionModel {
     }
 
     pub fn initialize(cfg: TakerDecisionConfig) -> Result<bool> {
+        let result = Self::apply_config_global(cfg);
+        if result.is_err() {
+            Self::clear_global("model_initialization_failed");
+        }
+        result
+    }
+
+    fn apply_config_global(cfg: TakerDecisionConfig) -> Result<bool> {
         if !cfg.enabled {
-            info!("pre_trade taker decision model disabled");
-            TAKER_DECISION_MODEL.with(|cell| {
-                *cell.borrow_mut() = None;
-            });
+            let cleared = Self::clear_global("model_disabled");
+            if cleared {
+                info!("pre_trade taker decision model disabled; pending lazy exposure will fallback to direct taker");
+            } else {
+                debug!("pre_trade taker decision model remains disabled");
+            }
             return Ok(false);
         }
+
         let service_name = normalize_service_name(&cfg.service)
             .ok_or_else(|| anyhow::anyhow!("taker_decsion_model_service is disabled"))?;
+        let current_service = Self::service_name_global();
+        if current_service.as_deref() == Some(service_name.as_str()) {
+            let score_rolling_mean_window = cfg.score_rolling_mean_window;
+            let keep_long = cfg.keep_long_percentile;
+            let keep_short = cfg.keep_short_percentile;
+            let open_cancel_long = cfg.open_cancel_long_percentile;
+            let open_cancel_short = cfg.open_cancel_short_percentile;
+            let symbol_config_count = cfg.symbol_configs.len();
+            TAKER_DECISION_MODEL.with(|cell| {
+                if let Some(model) = cell.borrow_mut().as_mut() {
+                    model.cfg = cfg;
+                }
+            });
+            debug!(
+                "pre_trade taker decision model config updated without reconnect service={} score_rolling_mean_window={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
+                service_name,
+                score_rolling_mean_window,
+                keep_long,
+                keep_short,
+                open_cancel_long,
+                open_cancel_short,
+                symbol_config_count
+            );
+            return Ok(true);
+        }
+
+        let model = Self::build_model(cfg, service_name.clone())?;
+        let threshold_output_key = model.threshold_output_key.clone();
+        let score_rolling_mean_window = model.cfg.score_rolling_mean_window;
+        let keep_long = model.cfg.keep_long_percentile;
+        let keep_short = model.cfg.keep_short_percentile;
+        let open_cancel_long = model.cfg.open_cancel_long_percentile;
+        let open_cancel_short = model.cfg.open_cancel_short_percentile;
+        let symbol_config_count = model.cfg.symbol_configs.len();
+        let previous_model = TAKER_DECISION_MODEL.with(|cell| cell.borrow_mut().replace(model));
+        let previous_service = previous_model
+            .as_ref()
+            .map(|model| model.service_name.clone());
+        drop(previous_model);
+        if let Some(previous_service) = previous_service {
+            Self::publish_transition(
+                previous_service,
+                Some(service_name.clone()),
+                "model_service_replaced",
+            );
+        }
+        info!(
+            "pre_trade taker decision model connected service={} threshold_key={} score_rolling_mean_window={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
+            service_name,
+            threshold_output_key,
+            score_rolling_mean_window,
+            keep_long,
+            keep_short,
+            open_cancel_long,
+            open_cancel_short,
+            symbol_config_count
+        );
+        Ok(true)
+    }
+
+    fn build_model(cfg: TakerDecisionConfig, service_name: String) -> Result<Self> {
         let model_name = model_name_from_service_name(&service_name).ok_or_else(|| {
             anyhow::anyhow!(
                 "cannot infer model name from taker_decsion_model_service={service_name}"
@@ -396,10 +471,10 @@ impl PreTradeTakerDecisionModel {
             .with_context(|| {
                 format!("create taker decision model subscriber failed: {service_name}")
             })?;
-        let model = Self {
+        Ok(Self {
             cfg,
-            service_name: service_name.clone(),
-            threshold_output_key: threshold_output_key.clone(),
+            service_name,
+            threshold_output_key,
             _node: node,
             subscriber,
             states: HashMap::new(),
@@ -407,28 +482,67 @@ impl PreTradeTakerDecisionModel {
             recv_count: 0,
             parse_err_count: 0,
             last_log: Instant::now(),
-        };
-        let score_rolling_mean_window = model.cfg.score_rolling_mean_window;
-        let keep_long = model.cfg.keep_long_percentile;
-        let keep_short = model.cfg.keep_short_percentile;
-        let open_cancel_long = model.cfg.open_cancel_long_percentile;
-        let open_cancel_short = model.cfg.open_cancel_short_percentile;
-        let symbol_config_count = model.cfg.symbol_configs.len();
+        })
+    }
+
+    fn service_name_global() -> Option<String> {
         TAKER_DECISION_MODEL.with(|cell| {
-            *cell.borrow_mut() = Some(model);
+            cell.borrow()
+                .as_ref()
+                .map(|model| model.service_name.clone())
+        })
+    }
+
+    fn publish_transition(previous_service: String, next_service: Option<String>, reason: &str) {
+        TAKER_DECISION_MODEL_TRANSITION.with(|cell| {
+            *cell.borrow_mut() = Some(TakerDecisionModelTransition {
+                previous_service,
+                next_service,
+                reason: reason.to_string(),
+            });
         });
-        info!(
-            "pre_trade taker decision model enabled service={} threshold_key={} score_rolling_mean_window={} default_keep_long={} default_keep_short={} default_open_cancel_long={} default_open_cancel_short={} override_symbols={}",
-            service_name,
-            threshold_output_key,
-            score_rolling_mean_window,
-            keep_long,
-            keep_short,
-            open_cancel_long,
-            open_cancel_short,
-            symbol_config_count
-        );
-        Ok(true)
+    }
+
+    fn clear_global(reason: &str) -> bool {
+        let previous_model = TAKER_DECISION_MODEL.with(|cell| cell.borrow_mut().take());
+        let previous_service = previous_model
+            .as_ref()
+            .map(|model| model.service_name.clone());
+        drop(previous_model);
+        if let Some(previous_service) = previous_service {
+            Self::publish_transition(previous_service, None, reason);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn take_transition_global() -> Option<TakerDecisionModelTransition> {
+        TAKER_DECISION_MODEL_TRANSITION.with(|cell| cell.borrow_mut().take())
+    }
+
+    fn transition_pending_global() -> bool {
+        TAKER_DECISION_MODEL_TRANSITION.with(|cell| cell.borrow().is_some())
+    }
+
+    pub async fn reload_config_global(
+        redis: &RedisSettings,
+        namespace: Option<&str>,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Result<Option<TakerDecisionThresholdReloadStats>> {
+        let cfg =
+            match Self::load_config_from_redis(redis, namespace, open_venue, hedge_venue).await {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    Self::clear_global("model_config_load_failed");
+                    return Err(err);
+                }
+            };
+        if let Err(err) = Self::initialize(cfg) {
+            return Err(err);
+        }
+        Self::reload_thresholds_global(redis).await
     }
 
     pub async fn reload_thresholds_global(
@@ -444,18 +558,30 @@ impl PreTradeTakerDecisionModel {
         Ok(Some(stats))
     }
 
-    pub fn start_threshold_background_refresh(redis: RedisSettings) {
+    pub fn start_config_background_refresh(
+        redis: RedisSettings,
+        namespace: Option<String>,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) {
         tokio::task::spawn_local(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(
-                MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS,
+                TAKER_DECISION_MODEL_REFRESH_INTERVAL_SECS,
             ));
-            interval.tick().await; // startup path already performs the first load
+            interval.tick().await;
             loop {
                 interval.tick().await;
-                match Self::reload_thresholds_global(&redis).await {
+                match Self::reload_config_global(
+                    &redis,
+                    namespace.as_deref(),
+                    open_venue,
+                    hedge_venue,
+                )
+                .await
+                {
                     Ok(Some(stats)) => {
                         debug!(
-                            "pre_trade taker decision score thresholds refreshed key={} fields={} ready_symbols={} cached_symbols={} invalid_payloads={}",
+                            "pre_trade taker decision model config refreshed key={} fields={} ready_symbols={} cached_symbols={} invalid_payloads={}",
                             stats.output_hash_key,
                             stats.fields,
                             stats.ready_symbols,
@@ -463,10 +589,12 @@ impl PreTradeTakerDecisionModel {
                             stats.invalid_payloads
                         );
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        debug!("pre_trade taker decision model config refreshed: model disabled");
+                    }
                     Err(err) => {
                         warn!(
-                            "pre_trade taker decision score threshold refresh failed: {:#}",
+                            "pre_trade taker decision model config refresh failed; fallback to no model: {:#}",
                             err
                         );
                     }
@@ -474,8 +602,8 @@ impl PreTradeTakerDecisionModel {
             }
         });
         info!(
-            "pre_trade taker decision score threshold refresh started (interval: {}s)",
-            MODEL_SCORE_THRESHOLD_REFRESH_INTERVAL_SECS
+            "pre_trade taker decision model config refresh started (interval: {}s)",
+            TAKER_DECISION_MODEL_REFRESH_INTERVAL_SECS
         );
     }
 
@@ -484,6 +612,9 @@ impl PreTradeTakerDecisionModel {
     }
 
     pub fn poll_updates_global_limit(max_updates: usize) -> Vec<ModelUpdateEvent> {
+        if Self::transition_pending_global() {
+            return Vec::new();
+        }
         TAKER_DECISION_MODEL.with(|cell| {
             let mut guard = cell.borrow_mut();
             let Some(model) = guard.as_mut() else {
@@ -1129,41 +1260,43 @@ fn strategy_params_key(
     )
 }
 
-fn parse_bool(redis_key: &str, field: &str, raw: &str) -> bool {
+fn parse_bool(redis_key: &str, field: &str, raw: &str) -> Result<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" | "" => false,
-        _ => panic!("Redis hash '{}' {} invalid bool: {}", redis_key, field, raw),
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" | "" => Ok(false),
+        _ => anyhow::bail!("Redis hash '{}' {} invalid bool: {}", redis_key, field, raw),
     }
 }
 
-fn parse_percentile(redis_key: &str, field: &str, raw: &str) -> f64 {
-    let value = raw.trim().parse::<f64>().unwrap_or_else(|_| {
-        panic!(
+fn parse_percentile(redis_key: &str, field: &str, raw: &str) -> Result<f64> {
+    let value = raw.trim().parse::<f64>().with_context(|| {
+        format!(
             "Redis hash '{}' {} invalid percentile: {}",
             redis_key, field, raw
         )
-    });
+    })?;
     if !(value.is_finite() && (0.0..=100.0).contains(&value)) {
-        panic!(
+        anyhow::bail!(
             "Redis hash '{}' {} percentile out of range [0,100]: {}",
-            redis_key, field, value
+            redis_key,
+            field,
+            value
         );
     }
-    value
+    Ok(value)
 }
 
-fn parse_positive_usize(redis_key: &str, field: &str, raw: &str) -> usize {
-    let value = raw.trim().parse::<usize>().unwrap_or_else(|_| {
-        panic!(
+fn parse_positive_usize(redis_key: &str, field: &str, raw: &str) -> Result<usize> {
+    let value = raw.trim().parse::<usize>().with_context(|| {
+        format!(
             "Redis hash {} {} invalid positive integer: {}",
             redis_key, field, raw
         )
-    });
+    })?;
     if value == 0 {
-        panic!("Redis hash {} {} must be > 0: {}", redis_key, field, value);
+        anyhow::bail!("Redis hash {} {} must be > 0: {}", redis_key, field, value);
     }
-    value
+    Ok(value)
 }
 
 fn env_flag_enabled(names: &[&str]) -> bool {
@@ -1233,9 +1366,10 @@ fn sanitize_node_suffix(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        decide_arb_open_cancel, parse_model_score_thresholds_hash, parse_symbol_configs,
-        select_score_threshold, SymbolScoreState, TakerDecisionOpenCancel,
-        TakerDecisionSymbolScoreThresholds,
+        decide_arb_open_cancel, normalize_service_name, parse_bool,
+        parse_model_score_thresholds_hash, parse_percentile, parse_positive_usize,
+        parse_symbol_configs, select_score_threshold, PreTradeTakerDecisionModel, SymbolScoreState,
+        TakerDecisionOpenCancel, TakerDecisionSymbolScoreThresholds,
     };
     use crate::pre_trade::order_manager::Side;
     use std::collections::HashMap;
@@ -1352,5 +1486,59 @@ mod tests {
 
         btc.observe(20.0, None, true, 1);
         assert_eq!(btc.latest_score, Some(20.0));
+    }
+
+    #[test]
+    fn invalid_model_config_values_return_errors_without_panicking() {
+        assert!(parse_bool("redis:test", "enabled", "invalid").is_err());
+        assert!(parse_percentile("redis:test", "percentile", "nan").is_err());
+        assert!(parse_positive_usize("redis:test", "window", "0").is_err());
+    }
+
+    #[test]
+    fn model_service_normalization_treats_bare_and_prefixed_names_equally() {
+        assert_eq!(
+            normalize_service_name("return_v2"),
+            Some("model_output/return_v2".to_string())
+        );
+        assert_eq!(
+            normalize_service_name("model_output/return_v2"),
+            Some("model_output/return_v2".to_string())
+        );
+        assert_eq!(normalize_service_name("-"), None);
+    }
+
+    #[test]
+    fn model_transition_is_consumed_once() {
+        let _ = PreTradeTakerDecisionModel::take_transition_global();
+        PreTradeTakerDecisionModel::publish_transition(
+            "model_output/old".to_string(),
+            Some("model_output/new".to_string()),
+            "model_service_replaced",
+        );
+
+        let transition = PreTradeTakerDecisionModel::take_transition_global()
+            .expect("transition should be published");
+        assert_eq!(transition.previous_service, "model_output/old");
+        assert_eq!(transition.next_service.as_deref(), Some("model_output/new"));
+        assert_eq!(transition.reason, "model_service_replaced");
+        assert!(PreTradeTakerDecisionModel::take_transition_global().is_none());
+    }
+
+    #[test]
+    fn model_transition_blocks_polling_until_consumed() {
+        let _ = PreTradeTakerDecisionModel::take_transition_global();
+        PreTradeTakerDecisionModel::publish_transition(
+            "model_output/old".to_string(),
+            Some("model_output/new".to_string()),
+            "model_service_replaced",
+        );
+
+        assert!(PreTradeTakerDecisionModel::transition_pending_global());
+        assert!(PreTradeTakerDecisionModel::poll_updates_global_limit(1).is_empty());
+        assert!(PreTradeTakerDecisionModel::transition_pending_global());
+
+        let _ = PreTradeTakerDecisionModel::take_transition_global();
+        assert!(!PreTradeTakerDecisionModel::transition_pending_global());
     }
 }

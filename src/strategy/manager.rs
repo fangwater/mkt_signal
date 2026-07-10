@@ -1162,6 +1162,19 @@ impl StrategyManager {
         arb_hedge.trigger_lazy_taker_on_model_update(now_ts, model_percentile)
     }
 
+    pub fn trigger_all_arb_hedge_lazy_taker_on_model_transition(&mut self, now_ts: i64) -> usize {
+        let mut triggered = 0usize;
+        for strategy in self.strategies.values_mut() {
+            let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+                continue;
+            };
+            if arb_hedge.trigger_lazy_taker_on_model_update(now_ts, None) {
+                triggered = triggered.saturating_add(1);
+            }
+        }
+        triggered
+    }
+
     pub fn trigger_arb_open_cancel_on_model_update(&mut self, symbol: &str, now_ts: i64) -> usize {
         let cancel_specs = [
             (

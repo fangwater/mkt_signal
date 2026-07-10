@@ -2746,8 +2746,9 @@ fn create_and_send_order(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_direct_taker_from_key, model_percentile_to_ret_qtl, pick_main_component_open_id,
-        ArbHedgeOrderMeta, ArbHedgeStrategy, ARB_HEDGE_QUERY_INTERVAL_US,
+        build_direct_taker_from_key, decide_due_hedge_route, model_percentile_to_ret_qtl,
+        pick_main_component_open_id, ArbHedgeOrderMeta, ArbHedgeStrategy, DueHedgeRoute,
+        ARB_HEDGE_QUERY_INTERVAL_US,
     };
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
@@ -3189,5 +3190,13 @@ mod tests {
         // 加权价 = (100*1 + 110*0.5) / 1.5 = 103.333...
         assert!((lot.price - (100.0 + 110.0 * 0.5) / 1.5).abs() < 1e-9);
         assert_eq!(strategy.pending_hedge_queue.len(), 1);
+    }
+
+    #[test]
+    fn lazy_taker_without_model_routes_directly_to_taker() {
+        assert_eq!(
+            decide_due_hedge_route(false, true, None),
+            DueHedgeRoute::DirectTaker
+        );
     }
 }
