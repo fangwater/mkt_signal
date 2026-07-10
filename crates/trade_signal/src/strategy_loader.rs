@@ -69,6 +69,35 @@ fn parse_bool_param(redis_key: &str, field: &str, raw: &str) -> bool {
     }
 }
 
+fn model_service_param_or_disabled(
+    hash_map: &HashMap<String, String>,
+    redis_key: &str,
+    namespace: &str,
+    field: &str,
+) -> String {
+    match hash_map.get(field) {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                warn!(
+                    "Redis hash '{}' {} 为空（ns={}），按 '-' 禁用处理",
+                    redis_key, field, namespace
+                );
+                "-".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        None => {
+            warn!(
+                "Redis hash '{}' 缺少 {}（ns={}），按 '-' 禁用处理",
+                redis_key, field, namespace
+            );
+            "-".to_string()
+        }
+    }
+}
+
 fn parse_percentile_exclusive(redis_key: &str, field: &str, raw: &str) -> f64 {
     let value = raw.trim().parse::<f64>().unwrap_or_else(|_| {
         panic!(
@@ -1695,108 +1724,14 @@ impl StrategyParams {
             .map(|raw| validate_open_block_utc_time_range(raw))
             .unwrap_or_else(default_open_block_utc_time_range);
 
-        let strict_return_model_required = ns == "mm";
-        let strict_env_model_dash_only = false;
-        let allow_missing_model_service = ns == "fr";
-        let return_model_service = match hash_map.get("return_model_service") {
-            Some(v) => {
-                let trimmed = v.trim();
-                if trimmed.is_empty() {
-                    if strict_return_model_required {
-                        panic!(
-                            "Redis hash '{}' return_model_service 为空（ns={}），不允许为空或 '-'",
-                            redis_key, ns
-                        );
-                    } else if allow_missing_model_service {
-                        warn!(
-                            "Redis hash '{}' return_model_service 为空（ns={}），按 '-' 处理",
-                            redis_key, ns
-                        );
-                        "-".to_string()
-                    } else {
-                        panic!(
-                            "Redis hash '{}' return_model_service 为空，需显式配置通道名或 '-'",
-                            redis_key
-                        );
-                    }
-                } else if strict_return_model_required && trimmed == "-" {
-                    panic!(
-                        "Redis hash '{}' return_model_service='-' 非法（ns={}），仅允许 environment_model_service='-'",
-                        redis_key, ns
-                    );
-                } else {
-                    trimmed.to_string()
-                }
-            }
-            None => {
-                if strict_return_model_required {
-                    panic!(
-                        "Redis hash '{}' 缺少 return_model_service（ns={}），不允许缺失或 '-'",
-                        redis_key, ns
-                    );
-                } else if allow_missing_model_service {
-                    warn!(
-                        "Redis hash '{}' 缺少 return_model_service（ns={}），按 '-' 处理",
-                        redis_key, ns
-                    );
-                    "-".to_string()
-                } else {
-                    panic!(
-                        "Redis hash '{}' 缺少 return_model_service，需显式配置通道名或 '-'",
-                        redis_key
-                    );
-                }
-            }
-        };
-
-        let environment_model_service = match hash_map.get("environment_model_service") {
-            Some(v) => {
-                let trimmed = v.trim();
-                if strict_env_model_dash_only {
-                    if trimmed != "-" {
-                        panic!(
-                            "Redis hash '{}' environment_model_service='{}' 非法（ns={}），必须为 '-'",
-                            redis_key, trimmed, ns
-                        );
-                    }
-                    "-".to_string()
-                } else if trimmed.is_empty() {
-                    if allow_missing_model_service {
-                        warn!(
-                            "Redis hash '{}' environment_model_service 为空（ns={}），按 '-' 处理",
-                            redis_key, ns
-                        );
-                        "-".to_string()
-                    } else {
-                        panic!(
-                            "Redis hash '{}' environment_model_service 为空，需显式配置通道名或 '-'",
-                            redis_key
-                        );
-                    }
-                } else {
-                    trimmed.to_string()
-                }
-            }
-            None => {
-                if strict_env_model_dash_only {
-                    panic!(
-                        "Redis hash '{}' 缺少 environment_model_service（ns={}），必须显式为 '-'",
-                        redis_key, ns
-                    );
-                } else if allow_missing_model_service {
-                    warn!(
-                        "Redis hash '{}' 缺少 environment_model_service（ns={}），按 '-' 处理",
-                        redis_key, ns
-                    );
-                    "-".to_string()
-                } else {
-                    panic!(
-                        "Redis hash '{}' 缺少 environment_model_service，需显式配置通道名或 '-'",
-                        redis_key
-                    );
-                }
-            }
-        };
+        let return_model_service =
+            model_service_param_or_disabled(&hash_map, &redis_key, &ns, "return_model_service");
+        let environment_model_service = model_service_param_or_disabled(
+            &hash_map,
+            &redis_key,
+            &ns,
+            "environment_model_service",
+        );
 
         Ok(Self {
             order_amount,
@@ -2078,6 +2013,26 @@ impl StrategyParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_service_param_allows_disabled_and_degrades_missing_values() {
+        let mut values = HashMap::new();
+        values.insert("return_model_service".to_string(), "-".to_string());
+        values.insert("environment_model_service".to_string(), "  ".to_string());
+
+        assert_eq!(
+            model_service_param_or_disabled(&values, "test", "mm", "return_model_service"),
+            "-"
+        );
+        assert_eq!(
+            model_service_param_or_disabled(&values, "test", "mm", "environment_model_service"),
+            "-"
+        );
+        assert_eq!(
+            model_service_param_or_disabled(&values, "test", "mm", "missing_model_service"),
+            "-"
+        );
+    }
 
     #[test]
     fn test_enable_return_score_cancel_default_is_false() {

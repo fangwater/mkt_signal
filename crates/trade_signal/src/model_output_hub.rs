@@ -76,18 +76,12 @@ impl ModelOutputHub {
             return self.subscribers.len();
         }
 
-        if normalized.is_empty() {
-            self.services.clear();
-            self.subscribers.clear();
-            self.latest_scores.clear();
-            info!("ModelOutputHub: subscriptions cleared");
-            return 0;
-        }
-
         let mut subscribers: Vec<ModelOutputSubscriberEntry> = Vec::new();
+        let mut active_services = Vec::new();
         for service_name in &normalized {
             match Self::create_subscriber(node, service_name) {
                 Ok(subscriber) => {
+                    active_services.push(service_name.clone());
                     subscribers.push(ModelOutputSubscriberEntry {
                         service_name: service_name.clone(),
                         subscriber,
@@ -101,26 +95,27 @@ impl ModelOutputHub {
                 }
             }
         }
-        if subscribers.is_empty() {
-            warn!(
-                "ModelOutputHub: no subscriber created, keep previous subscriptions count={}",
-                self.subscribers.len()
-            );
-            return self.subscribers.len();
-        }
 
-        self.services = normalized;
+        self.services = active_services;
         self.subscribers = subscribers;
         self.latest_scores.clear();
         self.msg_count = 0;
         self.parse_err_count = 0;
         self.last_log = Instant::now();
-        info!(
-            "ModelOutputHub: subscriptions updated count={} services={:?} buffer_size={}",
-            self.subscribers.len(),
-            self.services,
-            MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE
-        );
+
+        if normalized.is_empty() {
+            info!("ModelOutputHub: subscriptions cleared");
+        } else if self.subscribers.is_empty() {
+            warn!(
+                "ModelOutputHub: subscription replacement failed; fallback to no model requested={:?}",
+                normalized
+            );
+        } else {
+            info!(
+                "ModelOutputHub: subscriptions replaced active={:?} requested={:?} buffer_size={}",
+                self.services, normalized, MODEL_OUTPUT_SUBSCRIBER_BUFFER_SIZE
+            );
+        }
         self.subscribers.len()
     }
 
@@ -275,6 +270,13 @@ impl ModelOutputHub {
         &self.services
     }
 
+    pub fn is_subscribed(&self, model_service: &str) -> bool {
+        let Some(service_name) = Self::normalize_service_name(model_service) else {
+            return false;
+        };
+        self.services.iter().any(|service| service == &service_name)
+    }
+
     fn create_subscriber(
         node: &Node<ipc::Service>,
         service_name: &str,
@@ -327,6 +329,7 @@ impl ModelOutputHub {
 #[cfg(test)]
 mod tests {
     use super::ModelOutputHub;
+    use order_common::TradingVenue;
 
     #[test]
     fn normalizes_bare_service_name() {
@@ -344,5 +347,16 @@ mod tests {
     fn ignores_disabled_service_name() {
         assert_eq!(ModelOutputHub::normalize_service_name(""), None);
         assert_eq!(ModelOutputHub::normalize_service_name("-"), None);
+    }
+
+    #[test]
+    fn reports_only_active_subscriptions() {
+        let mut hub = ModelOutputHub::new(TradingVenue::BybitFutures);
+        hub.services = vec!["model_output/return_v1".to_string()];
+
+        assert!(hub.is_subscribed("return_v1"));
+        assert!(hub.is_subscribed("model_output/return_v1"));
+        assert!(!hub.is_subscribed("return_v2"));
+        assert!(!hub.is_subscribed("-"));
     }
 }

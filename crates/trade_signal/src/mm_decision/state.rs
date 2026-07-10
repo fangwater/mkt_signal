@@ -1,7 +1,7 @@
 use anyhow::Result;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::collections::HashMap;
 
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
@@ -38,6 +38,15 @@ pub(crate) const ENV_MODEL_TRUE_THRESHOLD_DEFAULT: f64 = 0.0;
 pub(crate) const MM_OPEN_INTERVAL_ALIGN_MS: u64 = 100;
 pub(crate) const CLOCK_ALIGN_BASE_MS: u64 = 60_000;
 const MINUTES_PER_UTC_DAY: u16 = 24 * 60;
+
+fn normalize_optional_model_service(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MmOpenSideBreakdown {
@@ -1018,27 +1027,41 @@ impl MmDecisionState {
         return_model_service: String,
         environment_model_service: String,
     ) {
-        let return_trimmed = return_model_service.trim();
-        if return_trimmed.is_empty() || return_trimmed == "-" {
-            panic!(
-                "MmDecision: return_model_service must not be '-' or empty (got '{}')",
-                return_trimmed
-            );
+        let requested_return = normalize_optional_model_service(&return_model_service);
+        let requested_environment = normalize_optional_model_service(&environment_model_service);
+        let mut services = Vec::new();
+        if let Some(return_service) = requested_return.as_ref() {
+            services.push(return_service.clone());
         }
-        self.return_model_service = Some(return_trimmed.to_string());
-        let env_trimmed = environment_model_service.trim();
-        self.environment_model_service = if env_trimmed.is_empty() || env_trimmed == "-" {
-            None
-        } else {
-            Some(env_trimmed.to_string())
-        };
-        let mut services = vec![return_trimmed.to_string()];
-        if let Some(env_service) = self.environment_model_service.as_ref() {
+        if let Some(env_service) = requested_environment.as_ref() {
             if !services.iter().any(|service| service == env_service) {
                 services.push(env_service.clone());
             }
         }
         self.model_output_hub.update_services(node, services);
+        self.return_model_service =
+            requested_return.filter(|service| self.model_output_hub.is_subscribed(service));
+        self.environment_model_service =
+            requested_environment.filter(|service| self.model_output_hub.is_subscribed(service));
+
+        if return_model_service.trim() != "-"
+            && !return_model_service.trim().is_empty()
+            && self.return_model_service.is_none()
+        {
+            warn!(
+                "MmDecision: return model subscription unavailable; fallback to neutral service={}",
+                return_model_service.trim()
+            );
+        }
+        if environment_model_service.trim() != "-"
+            && !environment_model_service.trim().is_empty()
+            && self.environment_model_service.is_none()
+        {
+            warn!(
+                "MmDecision: environment model subscription unavailable; disable environment model input service={}",
+                environment_model_service.trim()
+            );
+        }
         debug!(
             "MmDecision: model roles updated return={:?} environment={:?} env_true_threshold={:.6}",
             self.return_model_service,
@@ -1524,5 +1547,15 @@ mod tests {
         assert_eq!(utc_minute_of_day_from_us(0), 0);
         assert_eq!(utc_minute_of_day_from_us(3_600_000_000), 60);
         assert_eq!(utc_minute_of_day_from_us(86_399_000_000), 23 * 60 + 59);
+    }
+
+    #[test]
+    fn disabled_model_service_normalizes_to_none() {
+        assert_eq!(normalize_optional_model_service("-"), None);
+        assert_eq!(normalize_optional_model_service("  "), None);
+        assert_eq!(
+            normalize_optional_model_service("return_model"),
+            Some("return_model".to_string())
+        );
     }
 }

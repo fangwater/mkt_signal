@@ -128,3 +128,27 @@ fn resolve_inventory_hedge_signal_quantile(
     }
     score_quantile.filter(|v| v.is_finite())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_return_model_falls_back_to_neutral_signal_and_quantile() {
+        assert_eq!(
+            resolve_inventory_hedge_effective_signal(
+                true,
+                None,
+                Some(0.001),
+                "-",
+                "service_disabled",
+            )
+            .unwrap(),
+            INVENTORY_HEDGE_NEUTRAL_SIGNAL
+        );
+        assert_eq!(
+            resolve_inventory_hedge_signal_quantile(true, None, None, Some(0.001)),
+            Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE)
+        );
+    }
+}
