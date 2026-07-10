@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use runtime_common::redis_client::RedisSettings;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
@@ -10,6 +11,8 @@ use std::path::Path;
 /// - `ipc -> ipc`
 /// - `ipc -> zmq`
 /// - `zmq -> ipc`
+/// - `redis -> zmq`
+/// - `zmq -> redis`
 #[derive(Debug, Clone, Deserialize)]
 pub struct BridgeConfig {
     /// Forwarding routes.
@@ -29,6 +32,14 @@ pub struct RouteConfig {
 pub enum EndpointType {
     Ipc,
     Zmq,
+    Redis,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisKeyType {
+    Hash,
+    String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -38,9 +49,20 @@ pub struct RouteEndpoint {
     pub kind: EndpointType,
     /// For `ipc`, this is the service name.
     /// For `zmq`, this is the full ZMQ address, e.g. tcp://0.0.0.0:16666.
+    /// For `redis`, this is the Redis key.
     pub endpoint: String,
-    /// Payload size in bytes for this route endpoint.
+    /// Payload size in bytes for IPC endpoints.
+    #[serde(default)]
     pub size: usize,
+    /// Redis connection used when `type: redis`.
+    #[serde(default)]
+    pub redis: RedisSettings,
+    /// Redis value type used when `type: redis`.
+    #[serde(default = "default_redis_key_type")]
+    pub redis_type: RedisKeyType,
+    /// Poll interval used by a `redis -> zmq` source route.
+    #[serde(default = "default_redis_poll_interval_ms")]
+    pub poll_interval_ms: u64,
     /// Optional IceOryx service max_publishers override for open_or_create.
     #[serde(default)]
     pub max_publishers: Option<usize>,
@@ -75,14 +97,6 @@ impl BridgeConfig {
             if !route_ids.insert(r.id.as_str()) {
                 return Err(anyhow!("duplicate route id '{}'", r.id));
             }
-            if r.from.size == 0 || r.to.size == 0 {
-                return Err(anyhow!(
-                    "route '{}' size must be >0 (from.size={} to.size={})",
-                    r.id,
-                    r.from.size,
-                    r.to.size
-                ));
-            }
             if r.from.endpoint.trim().is_empty() || r.to.endpoint.trim().is_empty() {
                 return Err(anyhow!(
                     "route '{}' endpoint cannot be empty (from='{}' to='{}')",
@@ -94,7 +108,9 @@ impl BridgeConfig {
             validate_endpoint_options(&r.id, "from", &r.from)?;
             validate_endpoint_options(&r.id, "to", &r.to)?;
             validate_route_direction(r)?;
-            if r.from.size >= 32_768 || r.to.size >= 32_768 {
+            if (r.from.kind == EndpointType::Ipc && r.from.size >= 32_768)
+                || (r.to.kind == EndpointType::Ipc && r.to.size >= 32_768)
+            {
                 panic!(
                     "route '{}' uses too large payload size (from.size={} to.size={}); ipc_bridge does not support sizes >=32768",
                     r.id, r.from.size, r.to.size
@@ -107,6 +123,14 @@ impl BridgeConfig {
 }
 
 fn validate_endpoint_options(route_id: &str, side: &str, endpoint: &RouteEndpoint) -> Result<()> {
+    if endpoint.kind == EndpointType::Ipc && endpoint.size == 0 {
+        return Err(anyhow!(
+            "route '{}' {}.size must be >0 for ipc endpoint",
+            route_id,
+            side
+        ));
+    }
+
     for (field, value) in [
         ("max_publishers", endpoint.max_publishers),
         ("max_subscribers", endpoint.max_subscribers),
@@ -125,7 +149,7 @@ fn validate_endpoint_options(route_id: &str, side: &str, endpoint: &RouteEndpoin
                     field
                 ));
             }
-            if endpoint.kind == EndpointType::Zmq {
+            if endpoint.kind != EndpointType::Ipc {
                 return Err(anyhow!(
                     "route '{}' {}.{} is only supported for ipc endpoints",
                     route_id,
@@ -142,12 +166,32 @@ fn validate_route_direction(route: &RouteConfig) -> Result<()> {
     match (route.from.kind, route.to.kind) {
         (EndpointType::Ipc, EndpointType::Ipc)
         | (EndpointType::Ipc, EndpointType::Zmq)
-        | (EndpointType::Zmq, EndpointType::Ipc) => Ok(()),
-        (EndpointType::Zmq, EndpointType::Zmq) => Err(anyhow!(
-            "route '{}' does not support zmq->zmq forwarding",
-            route.id
+        | (EndpointType::Zmq, EndpointType::Ipc)
+        | (EndpointType::Redis, EndpointType::Zmq)
+        | (EndpointType::Zmq, EndpointType::Redis) => {
+            if route.from.kind == EndpointType::Redis && route.from.poll_interval_ms == 0 {
+                return Err(anyhow!(
+                    "route '{}' from.poll_interval_ms must be >0",
+                    route.id
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(anyhow!(
+            "route '{}' does not support {:?}->{:?} forwarding",
+            route.id,
+            route.from.kind,
+            route.to.kind
         )),
     }
+}
+
+const fn default_redis_key_type() -> RedisKeyType {
+    RedisKeyType::Hash
+}
+
+const fn default_redis_poll_interval_ms() -> u64 {
+    5_000
 }
 
 #[cfg(test)]
@@ -375,11 +419,62 @@ routes:
             .routes
             .iter()
             .filter(|r| r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc)
-            .filter(|r| r.to.endpoint.contains("binance-futures-mid-chg"))
+            .filter(|r| r.to.endpoint.contains("binance-futures-mid-re"))
             .map(|r| r.id.clone())
             .collect();
 
         assert_eq!(outgoing, incoming);
         assert_eq!(outgoing.len(), 3);
+    }
+
+    #[test]
+    fn parses_redis_hash_routes_without_ipc_sizes() {
+        let yaml = r#"
+routes:
+  - id: model_thresholds
+    from:
+      type: redis
+      endpoint: "model_score_rolling_thresholds_mid_chg_30s"
+      redis_type: hash
+      poll_interval_ms: 3000
+      redis:
+        host: 127.0.0.1
+        db: 0
+    to:
+      type: zmq
+      endpoint: "tcp://10.0.0.2:6360"
+  - id: model_thresholds_sink
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+    to:
+      type: redis
+      endpoint: "model_score_rolling_thresholds_mid_chg_30s"
+      redis_type: hash
+"#;
+
+        let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.routes[0].from.kind, EndpointType::Redis);
+        assert_eq!(cfg.routes[0].from.redis_type, RedisKeyType::Hash);
+        assert_eq!(cfg.routes[0].from.poll_interval_ms, 3000);
+    }
+
+    #[test]
+    fn rejects_zero_redis_poll_interval() {
+        let yaml = r#"
+routes:
+  - id: bad_redis_poll
+    from:
+      type: redis
+      endpoint: "model_thresholds"
+      poll_interval_ms: 0
+    to:
+      type: zmq
+      endpoint: "tcp://10.0.0.2:6360"
+"#;
+
+        let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_err());
     }
 }

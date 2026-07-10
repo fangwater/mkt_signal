@@ -58,44 +58,84 @@ routes:
   # ----------------------------------------
   # This host -> SG Binance model output ingest
   # ----------------------------------------
-  - id: public_binance_futures_mid_chg_30s_model_output_sg
+  - id: public_binance_futures_mid_re_30s_model_output_sg
     from:
       type: zmq
       endpoint: "tcp://0.0.0.0:6360"
       size: 2048
     to:
       type: ipc
-      endpoint: "model_output/binance-futures-mid-chg-30s"
+      endpoint: "model_output/binance-futures-mid-re-30s"
       size: 2048
       max_publishers: 1
       max_subscribers: 10
       history_size: 128
       subscriber_max_buffer_size: 256
 
-  - id: public_binance_futures_mid_chg_1m_model_output_sg
+  - id: public_binance_futures_mid_re_1m_model_output_sg
     from:
       type: zmq
       endpoint: "tcp://0.0.0.0:6360"
       size: 2048
     to:
       type: ipc
-      endpoint: "model_output/binance-futures-mid-chg-1m"
+      endpoint: "model_output/binance-futures-mid-re-1m"
       size: 2048
       max_publishers: 1
       max_subscribers: 10
       history_size: 128
       subscriber_max_buffer_size: 256
 
-  - id: public_binance_futures_mid_chg_5m_model_output_sg
+  - id: public_binance_futures_mid_re_5m_model_output_sg
     from:
       type: zmq
       endpoint: "tcp://0.0.0.0:6360"
       size: 2048
     to:
       type: ipc
-      endpoint: "model_output/binance-futures-mid-chg-5m"
+      endpoint: "model_output/binance-futures-mid-re-5m"
       size: 2048
       max_publishers: 1
       max_subscribers: 10
       history_size: 128
       subscriber_max_buffer_size: 256
+
+  # This host -> SG Redis model score thresholds
+  - id: public_binance_futures_mid_re_30s_redis_thresholds_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+    to:
+      type: redis
+      endpoint: "model_score_rolling_thresholds_binance-futures-mid-re-30s"
+      redis_type: hash
+      redis:
+        host: 127.0.0.1
+        port: 6379
+        db: 0
+
+  - id: public_binance_futures_mid_re_1m_redis_thresholds_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+    to:
+      type: redis
+      endpoint: "model_score_rolling_thresholds_binance-futures-mid-re-1m"
+      redis_type: hash
+      redis:
+        host: 127.0.0.1
+        port: 6379
+        db: 0
+
+  - id: public_binance_futures_mid_re_5m_redis_thresholds_sg
+    from:
+      type: zmq
+      endpoint: "tcp://0.0.0.0:6360"
+    to:
+      type: redis
+      endpoint: "model_score_rolling_thresholds_binance-futures-mid-re-5m"
+      redis_type: hash
+      redis:
+        host: 127.0.0.1
+        port: 6379
+        db: 0
