@@ -10,7 +10,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::{
-    register_signal_throttle_for_mode, SIGNAL_THROTTLE_TTL_US,
+    register_binance_futures_margin_signal_throttle_for_mode, SIGNAL_THROTTLE_TTL_US,
 };
 use crate::pre_trade::taker_decision_model::{
     LazyHedgeDecision, LazyHedgeDecisionSnapshot, PreTradeTakerDecisionModel,
@@ -2033,6 +2033,8 @@ impl ArbHedgeStrategy {
             Side::Buy => Side::Sell,
             Side::Sell => Side::Buy,
         };
+        let binance_direction_lock =
+            self.register_binance_insufficient_margin_direction_lock(now_ts, open_side, error_code);
 
         let is_binance_pm_fr = self.open_venue == TradingVenue::BinanceMargin
             && self.hedge_venue == TradingVenue::BinanceFutures
@@ -2092,9 +2094,64 @@ impl ArbHedgeStrategy {
         };
 
         warn!(
-            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency triggered: hedge_side={:?} open_side={:?} code={} account_open_block={}",
-            self.strategy_id, self.symbol, hedge_side, open_side, error_code, account_open_block
+            "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency triggered: hedge_side={:?} open_side={:?} code={} binance_direction_lock={} account_open_block={}",
+            self.strategy_id,
+            self.symbol,
+            hedge_side,
+            open_side,
+            error_code,
+            binance_direction_lock,
+            account_open_block
         );
+    }
+
+    fn register_binance_insufficient_margin_direction_lock(
+        &mut self,
+        now_ts: i64,
+        open_side: Side,
+        error_code: i32,
+    ) -> bool {
+        if self.hedge_venue != TradingVenue::BinanceFutures {
+            return false;
+        }
+
+        let registered = register_binance_futures_margin_signal_throttle_for_mode(
+            &self.symbol,
+            open_side,
+            error_code,
+            MonitorChannel::instance().arb_mode(),
+        );
+        if !registered {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} Binance insufficient-margin direction lock rejected open_side={:?} code={}",
+                self.strategy_id, self.symbol, open_side, error_code
+            );
+            return false;
+        }
+
+        let strategy_mgr_handle = MonitorChannel::instance().strategy_mgr();
+        let ids: Vec<i32> = strategy_mgr_handle
+            .borrow()
+            .arb_open_strategy_ids_by_symbol_and_side(&self.symbol, open_side);
+        for sid in &ids {
+            let mut mgr = strategy_mgr_handle.borrow_mut();
+            mgr.cancel_arb_open_by_id(
+                *sid,
+                open_side,
+                "binance_insufficient_margin_direction_lock",
+                now_ts,
+            );
+        }
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} Binance insufficient-margin direction lock registered open_side={:?} code={} block_for_s={} cancel_open_count={}",
+            self.strategy_id,
+            self.symbol,
+            open_side,
+            error_code,
+            SIGNAL_THROTTLE_TTL_US / 1_000_000,
+            ids.len()
+        );
+        true
     }
 
     fn cancel_all_arb_open_orders(&mut self, now_ts: i64, reason: &'static str) {

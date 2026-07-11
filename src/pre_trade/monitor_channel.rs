@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
+use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::close_inventory::{CloseInventoryLedger, CloseReservationGrant};
 use crate::pre_trade::net_position::NetPosition;
 use crate::pre_trade::order_manager::Side;
@@ -762,6 +763,7 @@ impl BasicAccountListener {
             BasicAccountEventType::BinanceStdUmWalletSnapshot => {
                 match BinanceStdUmWalletSnapshotMsg::from_bytes(data) {
                     Ok(msg) => {
+                        BinanceStdUmMarginGuard::apply_wallet_snapshot(&msg);
                         MonitorChannel::instance().apply_binance_std_um_wallet_snapshot(msg);
                         MonitorChannel::mark_basic_state_dirty();
                         RebalanceUsdtService::drive_from_account_update("um_wallet_snapshot");

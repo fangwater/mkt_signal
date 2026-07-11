@@ -10,9 +10,10 @@ use runtime_common::time_util::get_timestamp_us;
 use trade_signal::ArbMode;
 
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
-pub const INTRA_SIGNAL_THROTTLE_TTL_US: i64 = 60 * 1_000_000;
+pub const INTRA_SIGNAL_THROTTLE_TTL_US: i64 = SIGNAL_THROTTLE_TTL_US;
 pub const GATE_SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED: i32 = -2010;
+pub const SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT: i32 = -2018;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MAX_BORROWABLE_EXCEEDED: i32 = 51006;
@@ -44,6 +45,13 @@ struct SignalThrottleEntry {
     ban_until_us: i64,
     last_error_code: i32,
     updated_at_us: i64,
+    source: SignalThrottleSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalThrottleSource {
+    ExchangeError,
+    BinanceFuturesInsufficientMargin,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +89,8 @@ impl SignalThrottleKey {
 
 pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bool {
     match error_code {
-        SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED => {
+        SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED
+        | SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT => {
             matches!(exchange, Some(Exchange::Binance))
         }
         SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT
@@ -177,6 +186,35 @@ pub fn register_signal_throttle_for_mode(
     )
 }
 
+pub fn register_binance_futures_margin_signal_throttle_for_mode(
+    symbol: &str,
+    dir: Side,
+    error_code: i32,
+    arb_mode: ArbMode,
+) -> bool {
+    let now_us = get_timestamp_us();
+    register_signal_throttle_at_with_source(
+        symbol,
+        dir,
+        Some(Exchange::Binance),
+        error_code,
+        now_us,
+        signal_throttle_ttl_us_for_mode(Some(Exchange::Binance), arb_mode),
+        SignalThrottleSource::BinanceFuturesInsufficientMargin,
+    )
+}
+
+pub fn clear_binance_futures_margin_signal_throttles() -> usize {
+    SIGNAL_THROTTLE_MAP.with(|map| {
+        let mut guard = map.borrow_mut();
+        let before = guard.len();
+        guard.retain(|_, entry| {
+            entry.source != SignalThrottleSource::BinanceFuturesInsufficientMargin
+        });
+        before.saturating_sub(guard.len())
+    })
+}
+
 pub fn check_signal_throttle(symbol: &str, dir: Side) -> Option<SignalThrottleHit> {
     let now_us = get_timestamp_us();
     check_signal_throttle_at(symbol, dir, now_us)
@@ -255,6 +293,26 @@ fn register_signal_throttle_at(
     now_us: i64,
     ttl_us: i64,
 ) -> bool {
+    register_signal_throttle_at_with_source(
+        symbol,
+        dir,
+        exchange,
+        error_code,
+        now_us,
+        ttl_us,
+        SignalThrottleSource::ExchangeError,
+    )
+}
+
+fn register_signal_throttle_at_with_source(
+    symbol: &str,
+    dir: Side,
+    exchange: Option<Exchange>,
+    error_code: i32,
+    now_us: i64,
+    ttl_us: i64,
+    source: SignalThrottleSource,
+) -> bool {
     if !is_throttle_error_code(exchange, error_code) {
         return false;
     }
@@ -270,12 +328,14 @@ fn register_signal_throttle_at(
                     entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
                     entry.last_error_code = error_code;
                     entry.updated_at_us = now_us;
+                    entry.source = source;
                 }
                 None => {
                     *account_guard = Some(SignalThrottleEntry {
                         ban_until_us,
                         last_error_code: error_code,
                         updated_at_us: now_us,
+                        source,
                     });
                 }
             }
@@ -295,11 +355,15 @@ fn register_signal_throttle_at(
                 entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
                 entry.last_error_code = error_code;
                 entry.updated_at_us = now_us;
+                if source == SignalThrottleSource::ExchangeError {
+                    entry.source = source;
+                }
             })
             .or_insert(SignalThrottleEntry {
                 ban_until_us,
                 last_error_code: error_code,
                 updated_at_us: now_us,
+                source,
             });
     });
 
@@ -399,13 +463,14 @@ mod tests {
     }
 
     #[test]
-    fn intra_throttle_ttl_is_one_minute() {
+    fn binance_intra_throttle_ttl_matches_cross_two_hours() {
         let _guard = TEST_LOCK.lock();
         assert_eq!(
             signal_throttle_ttl_us_for_mode(Some(Exchange::Binance), ArbMode::IntraArb),
             INTRA_SIGNAL_THROTTLE_TTL_US
         );
-        assert_eq!(INTRA_SIGNAL_THROTTLE_TTL_US, 60 * 1_000_000);
+        assert_eq!(INTRA_SIGNAL_THROTTLE_TTL_US, SIGNAL_THROTTLE_TTL_US);
+        assert_eq!(INTRA_SIGNAL_THROTTLE_TTL_US, 2 * 60 * 60 * 1_000_000);
         assert_eq!(
             signal_throttle_ttl_us_for_mode(Some(Exchange::Binance), ArbMode::FundingArb),
             SIGNAL_THROTTLE_TTL_US
@@ -428,6 +493,7 @@ mod tests {
     fn detects_throttle_error_code() {
         let _guard = TEST_LOCK.lock();
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2010));
+        assert!(is_throttle_error_code(Some(Exchange::Binance), -2018));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51169));
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2019));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51006));
@@ -527,7 +593,32 @@ mod tests {
         assert!(!is_throttle_error_code(Some(Exchange::Okex), -2010));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 51168));
         assert!(!is_throttle_error_code(Some(Exchange::Binance), 516001));
-        assert!(!is_throttle_error_code(Some(Exchange::Binance), -2018));
+        assert!(!is_throttle_error_code(Some(Exchange::Okex), -2018));
+    }
+
+    #[test]
+    fn clears_only_binance_futures_margin_locks() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        assert!(register_binance_futures_margin_signal_throttle_for_mode(
+            "BTCUSDT",
+            Side::Buy,
+            SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT,
+            ArbMode::IntraArb,
+        ));
+        assert!(register_signal_throttle_at(
+            "ETHUSDT",
+            Side::Buy,
+            Some(Exchange::Binance),
+            SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT,
+            100,
+            1_000,
+        ));
+
+        assert_eq!(clear_binance_futures_margin_signal_throttles(), 1);
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, 100).is_none());
+        assert!(check_signal_throttle_at("ETHUSDT", Side::Buy, 100).is_some());
+        clear_all();
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::pre_trade::account_open_block::check_account_open_block;
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::leverage_guard::LeverageGuard;
@@ -202,6 +203,31 @@ fn arb_open_is_account_throttle_reducing(
     let hedge_pos = monitor.get_position_qty(hedging_symbol, hedging_venue);
 
     is_position_reducing(open_pos, open_add_qty) && is_position_reducing(hedge_pos, hedge_add_qty)
+}
+
+fn arb_open_is_binance_std_um_margin_reducing(
+    hedging_symbol: &str,
+    hedging_venue: TradingVenue,
+    open_side: Side,
+    qty: f64,
+) -> bool {
+    if open_side != Side::Sell || !(qty.is_finite() && qty > 0.0) {
+        return false;
+    }
+
+    let monitor = MonitorChannel::instance();
+    let hedge_order_base_qty = monitor
+        .qty_to_base(hedging_venue, hedging_symbol, qty)
+        .abs();
+    if !(hedge_order_base_qty.is_finite() && hedge_order_base_qty > 0.0) {
+        return false;
+    }
+
+    let hedge_pos = monitor.get_position_qty(hedging_symbol, hedging_venue);
+    is_position_reducing(
+        hedge_pos,
+        signed_qty_from_side(Side::Buy, hedge_order_base_qty),
+    )
 }
 
 fn should_drop_startup_buffered_signal(generation_time: i64, listener_start_us: i64) -> bool {
@@ -890,6 +916,22 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                     configured_open_venue, configured_hedge_venue, opening_venue, hedging_venue
                 );
                 return;
+            }
+
+            if BinanceStdUmMarginGuard::is_enabled() {
+                let margin_guard_reducing = arb_open_is_binance_std_um_margin_reducing(
+                    &hedging_symbol,
+                    hedging_venue,
+                    side,
+                    open_ctx.amount_value(),
+                );
+                if BinanceStdUmMarginGuard::should_block_arb_open(
+                    &symbol,
+                    side,
+                    margin_guard_reducing,
+                ) {
+                    return;
+                }
             }
 
             if LeverageGuard::should_block_arb_open(

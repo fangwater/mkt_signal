@@ -6,6 +6,7 @@ pub mod basic_balance_manager;
 pub mod basic_exposure_manager;
 pub mod basic_um_manager;
 pub mod binance_fr_position_limit_guard;
+pub mod binance_std_um_margin_guard;
 pub mod bitget_position_tier_guard;
 mod channel;
 pub mod close_inventory;
