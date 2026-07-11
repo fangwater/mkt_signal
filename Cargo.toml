@@ -177,6 +177,10 @@ name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
 
 [[bin]]
+name = "fusion_factor_1m_pub"
+path = "src/bin/fusion_factor_1m_pub.rs"
+
+[[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
 

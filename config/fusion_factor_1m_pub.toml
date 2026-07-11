@@ -1,0 +1,16 @@
+# 1-minute Fusion factor 发布配置
+# 独立 fusion_factor_1m_pub 进程；三套 1min Redis 配置完整时启动。
+# 1min 使用独立的 factor_plan_1m / zscore_1m / amount_thresholds_1m 配置，
+# 订阅 factor_pub/{venue}/trade_flow_feature_1m，输出 fusion_factor_1m/{venue}。
+# 从 tlen_config_server 拉 symbol + ordered factors + venue 级 zscore。
+[tlen_server]
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
+
+# rl_return_volatility 已迁移到 trade_flow_feature_pub.yaml[rl_factor]。
+# 这里保留默认字段兼容旧工具/旧配置，fusion_factor_1m_pub 本身不再发布该单因子。
+[rl_factor]
+pct_change_period = 12
+rolling_window = 30
+scale_factor = 1.3

@@ -2281,7 +2281,6 @@ dependencies = [
  "rayon",
  "redis",
  "reqwest",
- "rocksdb",
  "rolling_common",
  "rtrb",
  "runtime_common",

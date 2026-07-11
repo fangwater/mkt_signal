@@ -1,8 +1,4 @@
 # Fusion factor 发布配置
-
-# 同一进程始终运行 5s pipeline；1min 三套 Redis 配置完整时自动启用。
-# 1min 使用独立的 factor_plan_1m / zscore_1m / amount_thresholds_1m 配置，
-# 订阅 factor_pub/{venue}/trade_flow_feature_1m，输出 fusion_factor_1m/{venue}。
 # 从 tlen_config_server 拉 symbol + ordered factors + venue 级 zscore。
 # output service 固定为 fusion_factor/{venue}，例如 venue=binance-futures ->
 # fusion_factor/binance-futures

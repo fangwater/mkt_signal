@@ -784,6 +784,12 @@ impl FusionFactorPubApp {
             .context("default fusion factor pipeline must be configured")
     }
 
+    pub async fn new_one_minute(config_path: &str, venue: TradingVenue) -> Result<Self> {
+        Self::try_new_one_minute(config_path, venue)
+            .await?
+            .context("1-minute fusion factor configs are incomplete")
+    }
+
     pub async fn try_new_one_minute(
         config_path: &str,
         venue: TradingVenue,
@@ -1150,33 +1156,12 @@ impl FusionFactorPubApp {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        self.run_with_optional_one_minute(None).await
-    }
-
-    pub async fn run_with_optional_one_minute(
-        &mut self,
-        mut one_minute: Option<&mut Self>,
-    ) -> Result<()> {
         self.prepare_run()?;
-        if let Some(app) = one_minute.as_deref_mut() {
-            app.prepare_run()?;
-        }
 
         loop {
             self.maybe_reload_symbols().await;
-            if let Some(app) = one_minute.as_deref_mut() {
-                app.maybe_reload_symbols().await;
-            }
-
-            let mut has_message = self.poll_trade_flow()?;
-            if let Some(app) = one_minute.as_deref_mut() {
-                has_message |= app.poll_trade_flow()?;
-            }
-
+            let has_message = self.poll_trade_flow()?;
             self.maybe_log_stats();
-            if let Some(app) = one_minute.as_deref_mut() {
-                app.maybe_log_stats();
-            }
 
             if !has_message {
                 std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));

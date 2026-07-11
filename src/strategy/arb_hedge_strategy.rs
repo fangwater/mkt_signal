@@ -10,7 +10,8 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::signal_channel::SignalChannel;
 use crate::pre_trade::signal_throttle::{
-    register_binance_futures_margin_signal_throttle_for_mode, SIGNAL_THROTTLE_TTL_US,
+    register_binance_futures_margin_signal_throttle_for_mode, register_signal_throttle_for_mode,
+    SIGNAL_THROTTLE_TTL_US,
 };
 use crate::pre_trade::taker_decision_model::{
     LazyHedgeDecision, LazyHedgeDecisionSnapshot, PreTradeTakerDecisionModel,
