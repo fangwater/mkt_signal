@@ -33,6 +33,8 @@ from urllib.parse import parse_qs, urlparse
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
+BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S = 300
+BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 
 # Per-symbol overrides 面板（amount_u / max_pos_u / hedge_offset_limits）：
 # 三 arb config_server 共用 helper，这里只负责 import + 在 HTML / 路由里挂接。
@@ -1137,10 +1139,20 @@ __PER_SYMBOL_PANELS_HTML__
     async function saveRiskParams() {
       setStatus('risk-status', '保存中...');
       try {
+        const values = collectParamValues('risk-table');
+        if (normalizeExchange(BOOTSTRAP.default_exchange || '') === 'binance') {
+          const key = 'arb_hedge_order_rate_limit_10s';
+          const value = Number(String(values[key] || '').trim());
+          if (!Number.isFinite(value) || value !== 300) {
+            const message = `报警：Binance 合约 10 秒报单频率上限必须为 300，当前值=${values[key] || '空'}，禁止保存。`;
+            window.alert(message);
+            throw new Error(message);
+          }
+        }
         const payload = {
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
-          values: collectParamValues('risk-table'),
+          values,
         };
         const data = await fetchJson(apiUrl('risk-params'), {
           method: 'POST',
@@ -1774,6 +1786,29 @@ def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
     return normalized
 
 
+def normalize_intra_risk_limits(exchange: str, mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    if normalize_exchange(exchange) != "binance":
+        return normalized
+
+    key = BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY
+    raw_value = str(normalized.get(key, "")).strip()
+    try:
+        value = float(raw_value)
+    except Exception as exc:
+        raise ValueError(
+            f"alert: Binance futures 10s order rate limit must be "
+            f"{BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S}, got {raw_value or 'empty'}; save rejected"
+        ) from exc
+    if not math.isfinite(value) or value != BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S:
+        raise ValueError(
+            f"alert: Binance futures 10s order rate limit must be "
+            f"{BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S}, got {raw_value}; save rejected"
+        )
+    normalized[key] = str(BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S)
+    return normalized
+
+
 def sanitize_mapping_by_schema(
     values: Any,
     defaults: Dict[str, Any],
@@ -2202,6 +2237,19 @@ def render_index_html(
     rolling_defaults_mapping = build_runtime_rolling_defaults(
         default_open_venue, default_hedge_venue
     )
+    risk_defaults_mapping = dict(DEFAULT_RISK_PARAMS)
+    risk_comments_mapping = dict(RISK_PARAM_COMMENTS)
+    if normalize_exchange(default_exchange) == "binance":
+        risk_defaults_mapping[BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY] = str(
+            BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S
+        )
+        existing_comment = risk_comments_mapping.get(
+            BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY, ""
+        )
+        risk_comments_mapping[BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY] = (
+            f"{existing_comment} (Binance fixed at "
+            f"{BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S}; other values are rejected)"
+        ).strip()
     bootstrap = {
         "env_name": infer_dir_prefix_from_cwd() or "",
         "exchanges": SUPPORTED_EXCHANGES,
@@ -2219,14 +2267,14 @@ def render_index_html(
         "exchange_defaults": EXCHANGE_DEFAULTS,
         "defaults": {
             "symbol_lists": get_symbol_defaults(),
-            "risk_params": DEFAULT_RISK_PARAMS,
+            "risk_params": risk_defaults_mapping,
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
             "funding_thresholds": funding_defaults_mapping,
             "rolling_params": rolling_defaults_mapping,
             "spread_mapping": SPREAD_THRESHOLD_MAPPING,
         },
         "comments": {
-            "risk_params": RISK_PARAM_COMMENTS,
+            "risk_params": risk_comments_mapping,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
             "funding_thresholds": default_funding_threshold_comments(),
         },
@@ -2689,6 +2737,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
                 )
                 mapping = normalize_unimmr_control_lines(mapping)
+                mapping = normalize_intra_risk_limits(exchange, mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
