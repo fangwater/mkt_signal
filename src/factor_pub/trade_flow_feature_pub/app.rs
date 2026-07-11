@@ -8,16 +8,11 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use redis::Commands;
-use rocksdb::{
-    ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode, Options, WriteOptions, DB,
-};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::cfg::{PersistenceConfig, RlFactorConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
+use super::cfg::{RlFactorConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
 use super::publisher::{RlFactorPublisher, TradeFlowFeaturePublisher};
 use super::vol_state::{SealedBar, VolState};
 use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
@@ -32,12 +27,12 @@ const TRADE_MAX_BYTES: usize = 128;
 const IDLE_SLEEP_MICROS: u64 = 200;
 const AMOUNT_THRESHOLD_REDIS_KEY_SUFFIX: &str = "amount-thresholds";
 const REDIS_WARN_INTERVAL_SECS: u64 = 60;
-const ROCKSDB_WARN_INTERVAL_SECS: u64 = 60;
 const MISSING_DEPTH_WARN_INTERVAL_SECS: u64 = 60;
 const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
-const PERSISTENCE_CLEANUP_INTERVAL_SECS: u64 = 7_200;
-const TRADE_FLOW_FEATURE_CF_SUFFIX: &str = "trade_flow:feature";
 const FIXED_TRADE_CHANNEL: &str = "trade";
+const TRADE_FLOW_FEATURE_CHANNEL: &str = "trade_flow_feature";
+const TRADE_FLOW_FEATURE_1M_CHANNEL: &str = "trade_flow_feature_1m";
+const ONE_MINUTE_BAR_MS: i64 = 60_000;
 const FIXED_REDIS_HOST: &str = "127.0.0.1";
 const FIXED_REDIS_PORT: u16 = 6379;
 const FIXED_REDIS_DB: i64 = 0;
@@ -276,6 +271,41 @@ impl TradeBar {
         }
     }
 
+    fn merge_finalized(&mut self, source: &TradeBar) {
+        if source.has_trade {
+            if !self.has_trade {
+                self.has_trade = true;
+                self.open = source.open;
+                self.high = source.high;
+                self.low = source.low;
+                self.close = source.close;
+            } else {
+                self.high = self.high.max(source.high);
+                self.low = self.low.min(source.low);
+                self.close = source.close;
+            }
+        }
+
+        self.volume += source.volume;
+        self.amount += source.amount;
+        self.count += source.count;
+        self.buy_count += source.buy_count;
+        self.sell_count += source.sell_count;
+        self.buy_amount += source.buy_amount;
+        self.sell_amount += source.sell_amount;
+        self.buy_volume += source.buy_volume;
+        self.sell_volume += source.sell_volume;
+        self.large_order += source.large_order;
+        self.medium_order += source.medium_order;
+        self.small_order += source.small_order;
+        self.large_buy += source.large_buy;
+        self.large_sell += source.large_sell;
+        self.medium_buy += source.medium_buy;
+        self.medium_sell += source.medium_sell;
+        self.small_buy += source.small_buy;
+        self.small_sell += source.small_sell;
+    }
+
     fn finalize(
         mut self,
         last_close: Option<f64>,
@@ -443,6 +473,49 @@ impl SymbolState {
         }
 
         late_trade
+    }
+
+    fn apply_finalized_sub_bar(
+        &mut self,
+        source: &TradeBar,
+        source_period_ms: i64,
+        target_period_ms: i64,
+    ) {
+        let target_start_ms = align_to_period(source.start_ms, target_period_ms);
+
+        match self.bar.as_ref() {
+            None => {
+                if self
+                    .last_bar_start_ms
+                    .is_some_and(|last_start| target_start_ms <= last_start)
+                {
+                    return;
+                }
+                self.fill_empty_until(target_start_ms, target_period_ms);
+                self.bar = Some(TradeBar::new(target_start_ms));
+            }
+            Some(bar) if target_start_ms > bar.start_ms => {
+                if let Some(closed_bar) = self.bar.take().map(|bar| self.finalize_bar(bar)) {
+                    self.closed_bars.push(closed_bar);
+                }
+                self.fill_empty_until(target_start_ms, target_period_ms);
+                self.bar = Some(TradeBar::new(target_start_ms));
+            }
+            Some(bar) if target_start_ms < bar.start_ms => return,
+            Some(_) => {}
+        }
+
+        if let Some(bar) = self.bar.as_mut() {
+            bar.merge_finalized(source);
+        }
+
+        let source_end_ms = source.start_ms.saturating_add(source_period_ms);
+        let target_end_ms = target_start_ms.saturating_add(target_period_ms);
+        if source_end_ms >= target_end_ms {
+            if let Some(closed_bar) = self.bar.take().map(|bar| self.finalize_bar(bar)) {
+                self.closed_bars.push(closed_bar);
+            }
+        }
     }
 
     fn finalize_bar(&mut self, bar: TradeBar) -> TradeBar {
@@ -721,227 +794,6 @@ fn should_retry_redis_command(err: &redis::RedisError) -> bool {
     matches!(err.kind(), redis::ErrorKind::IoError)
 }
 
-#[derive(Debug, Clone)]
-struct PersistenceRuntime {
-    rocksdb_path: String,
-    retention_hours: u64,
-}
-
-impl PersistenceRuntime {
-    fn from_config(cfg: &PersistenceConfig) -> Self {
-        Self {
-            rocksdb_path: cfg.rocksdb_path.trim().to_string(),
-            retention_hours: cfg.retention_hours,
-        }
-    }
-
-    fn enabled(&self) -> bool {
-        self.retention_hours > 0
-    }
-}
-
-struct TradeFlowFeatureRocksDbStore {
-    db: DB,
-    cf_opts: Options,
-    known_cf_names: HashSet<String>,
-    sync_writes: bool,
-}
-
-impl TradeFlowFeatureRocksDbStore {
-    fn open(path: &str, venue_slug: &str, symbols: &HashSet<String>) -> Result<Self> {
-        let path_ref = Path::new(path);
-        if let Some(parent) = path_ref.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("create rocksdb parent dir failed: {}", parent.display())
-                })?;
-            }
-        }
-
-        let mut db_opts = Options::default();
-        db_opts.create_if_missing(true);
-        db_opts.create_missing_column_families(true);
-        db_opts.set_compression_type(DBCompressionType::Lz4);
-
-        let mut cf_opts = Options::default();
-        cf_opts.set_compression_type(DBCompressionType::Lz4);
-
-        let mut cf_names: HashSet<String> = HashSet::new();
-        cf_names.insert("default".to_string());
-        if path_ref.exists() {
-            match DB::list_cf(&db_opts, path_ref) {
-                Ok(existing) => {
-                    for name in existing {
-                        cf_names.insert(name);
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        "list rocksdb cfs failed (continue with requested only): path={} err={}",
-                        path_ref.display(),
-                        err
-                    );
-                }
-            }
-        }
-        for symbol in symbols {
-            cf_names.insert(cf_name_for_symbol(venue_slug, symbol));
-        }
-
-        let mut cf_names_sorted: Vec<String> = cf_names.into_iter().collect();
-        cf_names_sorted.sort_unstable();
-        let descriptors: Vec<ColumnFamilyDescriptor> = cf_names_sorted
-            .iter()
-            .map(|name| ColumnFamilyDescriptor::new(name.clone(), cf_opts.clone()))
-            .collect();
-
-        let db = DB::open_cf_descriptors(&db_opts, path_ref, descriptors)
-            .with_context(|| format!("open rocksdb failed: {}", path_ref.display()))?;
-
-        let mut known_cf_names = HashSet::new();
-        for name in cf_names_sorted {
-            known_cf_names.insert(name);
-        }
-
-        Ok(Self {
-            db,
-            cf_opts,
-            known_cf_names,
-            sync_writes: false,
-        })
-    }
-
-    fn ensure_symbol_cfs(&mut self, venue_slug: &str, symbols: &HashSet<String>) -> Result<()> {
-        for symbol in symbols {
-            let cf_name = cf_name_for_symbol(venue_slug, symbol);
-            self.ensure_cf(&cf_name)?;
-        }
-        Ok(())
-    }
-
-    fn put_feature(
-        &mut self,
-        venue_slug: &str,
-        symbol: &str,
-        ts_ms: i64,
-        payload: &[u8],
-    ) -> Result<()> {
-        let cf_name = cf_name_for_symbol(venue_slug, symbol);
-        self.ensure_cf(&cf_name)?;
-
-        let Some(cf) = self.db.cf_handle(&cf_name) else {
-            anyhow::bail!("rocksdb cf missing after ensure: {}", cf_name);
-        };
-        let key = encode_ts_key(ts_ms);
-        let mut write_opts = WriteOptions::default();
-        write_opts.set_sync(self.sync_writes);
-        self.db
-            .put_cf_opt(cf, key, payload, &write_opts)
-            .with_context(|| {
-                format!(
-                    "rocksdb put failed: cf={} symbol={} ts_ms={}",
-                    cf_name, symbol, ts_ms
-                )
-            })?;
-        Ok(())
-    }
-
-    fn cleanup_symbols_for_venue(
-        &mut self,
-        venue_slug: &str,
-        symbols: &HashSet<String>,
-    ) -> Result<usize> {
-        if symbols.is_empty() {
-            return Ok(0);
-        }
-
-        let mut dropped_cfs = 0usize;
-
-        let mut sorted_symbols: Vec<String> = symbols.iter().cloned().collect();
-        sorted_symbols.sort_unstable();
-
-        for symbol in sorted_symbols {
-            let cf_name = cf_name_for_symbol(venue_slug, &symbol);
-            if !self.known_cf_names.contains(&cf_name) || self.db.cf_handle(&cf_name).is_none() {
-                continue;
-            }
-
-            self.db.drop_cf(&cf_name).with_context(|| {
-                format!(
-                    "rocksdb retired symbol drop cf failed: cf={} symbol={}",
-                    cf_name, symbol
-                )
-            })?;
-            self.known_cf_names.remove(&cf_name);
-            dropped_cfs += 1;
-        }
-
-        Ok(dropped_cfs)
-    }
-
-    fn cleanup_before_for_venue(&self, venue_slug: &str, cutoff_ms: i64) -> Result<(usize, usize)> {
-        if cutoff_ms <= 0 {
-            return Ok((0, 0));
-        }
-
-        let start_key = [0u8; 8];
-        let end_key = encode_ts_key(cutoff_ms);
-        if end_key <= start_key {
-            return Ok((0, 0));
-        }
-
-        let mut touched_cfs = 0usize;
-        let mut deleted_ranges = 0usize;
-        let mut cf_names: Vec<String> = self.known_cf_names.iter().cloned().collect();
-        cf_names.sort_unstable();
-
-        for cf_name in cf_names {
-            if cf_name == "default" || !is_trade_flow_feature_cf_for_venue(&cf_name, venue_slug) {
-                continue;
-            }
-            let Some(cf) = self.db.cf_handle(&cf_name) else {
-                continue;
-            };
-
-            let mut iter = self
-                .db
-                .iterator_cf(cf, IteratorMode::From(&start_key, Direction::Forward));
-            let Some(first_item) = iter.next() else {
-                continue;
-            };
-            let (first_key, _) = first_item
-                .with_context(|| format!("rocksdb iterator failed while cleanup cf={}", cf_name))?;
-            if first_key.as_ref() >= end_key.as_slice() {
-                continue;
-            }
-
-            self.db
-                .delete_range_cf(cf, &start_key, &end_key)
-                .with_context(|| {
-                    format!(
-                        "rocksdb delete_range failed: cf={} cutoff_ms={}",
-                        cf_name, cutoff_ms
-                    )
-                })?;
-            touched_cfs += 1;
-            deleted_ranges += 1;
-        }
-
-        Ok((touched_cfs, deleted_ranges))
-    }
-
-    fn ensure_cf(&mut self, cf_name: &str) -> Result<()> {
-        if self.known_cf_names.contains(cf_name) {
-            return Ok(());
-        }
-        self.db
-            .create_cf(cf_name, &self.cf_opts)
-            .with_context(|| format!("create rocksdb cf failed: {}", cf_name))?;
-        self.known_cf_names.insert(cf_name.to_string());
-        Ok(())
-    }
-}
-
 fn with_prefix(prefix: Option<&str>, key: &str) -> String {
     match prefix {
         Some(prefix) => format!("{}{}", prefix, key),
@@ -960,21 +812,19 @@ pub struct TradeFlowFeaturePubApp {
     trade_subscriber: Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>,
     depth_subscriber: Option<DepthSubscriber>,
     publisher: Option<TradeFlowFeaturePublisher>,
+    publisher_1m: Option<TradeFlowFeaturePublisher>,
     rl_config: RlReturnVolatilityRuntimeConfig,
     rl_publisher: RlFactorPublisher,
     /// Per-symbol vol pipeline,与 Redis 白名单解耦,服务于 venue 全 symbol 集合。
     vol_states: HashMap<String, VolState>,
     symbols: HashMap<String, SymbolState>,
+    one_minute_symbols: HashMap<String, SymbolState>,
     latest_depth_by_symbol: HashMap<String, DepthSnapshot>,
     thresholds: HashMap<String, AmountThreshold>,
     online_symbols: HashSet<String>,
     symbol_ids: HashMap<String, u32>,
     next_symbol_id: u32,
     threshold_store: AmountThresholdRedisStore,
-    persistence: PersistenceRuntime,
-    rocksdb_store: Option<TradeFlowFeatureRocksDbStore>,
-    rocksdb_open_path: Option<String>,
-    last_rocksdb_warn: Instant,
     last_missing_depth_warn: Instant,
     missing_depth_drop_count: u64,
     recv_trade_raw_count: u64,
@@ -988,13 +838,15 @@ pub struct TradeFlowFeaturePubApp {
     publish_fail_invalid_count: u64,
     publish_fail_missing_depth_count: u64,
     publish_fail_send_count: u64,
+    publish_1m_success_count: u64,
+    publish_1m_fail_invalid_count: u64,
+    publish_1m_fail_missing_depth_count: u64,
+    publish_1m_fail_send_count: u64,
     rl_publish_success_count: u64,
     rl_publish_fail_count: u64,
     last_publish_outcome_log: Instant,
     last_threshold_reload: Instant,
     threshold_reload_interval: Duration,
-    cleanup_interval: Duration,
-    last_cleanup: Instant,
     last_retired_symbols: usize,
     trade_dedup_lru: TradeDedupLru,
     next_due_close_ms: Option<i64>,
@@ -1018,15 +870,26 @@ impl TradeFlowFeaturePubApp {
             None
         };
         let publisher = if depth_channel.feature_enabled() {
-            Some(TradeFlowFeaturePublisher::new(venue_slug)?)
+            Some(TradeFlowFeaturePublisher::new(
+                venue_slug,
+                TRADE_FLOW_FEATURE_CHANNEL,
+                Duration::from_millis((config.runtime.bar_ms + 1_000) as u64),
+            )?)
+        } else {
+            None
+        };
+        let publisher_1m = if depth_channel.feature_enabled() && config.runtime.enable_1m_bar {
+            Some(TradeFlowFeaturePublisher::new(
+                venue_slug,
+                TRADE_FLOW_FEATURE_1M_CHANNEL,
+                Duration::from_millis((ONE_MINUTE_BAR_MS + 1_000) as u64),
+            )?)
         } else {
             None
         };
         let rl_publisher = RlFactorPublisher::new(venue_slug)?;
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
-        let cleanup_interval = Duration::from_secs(PERSISTENCE_CLEANUP_INTERVAL_SECS);
-        let persistence = PersistenceRuntime::from_config(&config.persistence);
         let heartbeat_symbol = normalize_symbol_for_venue("BTCUSDT", venue);
 
         let mut app = Self {
@@ -1040,20 +903,18 @@ impl TradeFlowFeaturePubApp {
             trade_subscriber,
             depth_subscriber,
             publisher,
+            publisher_1m,
             rl_config,
             rl_publisher,
             vol_states: HashMap::new(),
             symbols: HashMap::new(),
+            one_minute_symbols: HashMap::new(),
             latest_depth_by_symbol: HashMap::new(),
             thresholds: HashMap::new(),
             online_symbols: HashSet::new(),
             symbol_ids: HashMap::new(),
             next_symbol_id: 1,
             threshold_store,
-            persistence,
-            rocksdb_store: None,
-            rocksdb_open_path: None,
-            last_rocksdb_warn: Instant::now() - Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS),
             last_missing_depth_warn: Instant::now()
                 - Duration::from_secs(MISSING_DEPTH_WARN_INTERVAL_SECS),
             missing_depth_drop_count: 0,
@@ -1068,20 +929,20 @@ impl TradeFlowFeaturePubApp {
             publish_fail_invalid_count: 0,
             publish_fail_missing_depth_count: 0,
             publish_fail_send_count: 0,
+            publish_1m_success_count: 0,
+            publish_1m_fail_invalid_count: 0,
+            publish_1m_fail_missing_depth_count: 0,
+            publish_1m_fail_send_count: 0,
             rl_publish_success_count: 0,
             rl_publish_fail_count: 0,
             last_publish_outcome_log: Instant::now(),
             last_threshold_reload: Instant::now() - threshold_reload_interval,
             threshold_reload_interval,
-            cleanup_interval,
-            // Avoid heavy cleanup right after startup; run it on its own cadence.
-            last_cleanup: Instant::now(),
             last_retired_symbols: 0,
             trade_dedup_lru: TradeDedupLru::new(TRADE_DEDUP_WINDOW_MS),
             next_due_close_ms: None,
         };
         if app.depth_channel.feature_enabled() {
-            app.ensure_persistence_ready(true);
             app.reload_thresholds(true);
         } else {
             info!(
@@ -1149,11 +1010,12 @@ impl TradeFlowFeaturePubApp {
 
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} threshold_reload_secs={} rl_pct_change_period={} rl_rolling_window={} rl_scale_factor={} redis={}:{} db={} persist_path={} persist_hours={} persist_symbols={}",
+            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} enable_1m_bar={} threshold_reload_secs={} rl_pct_change_period={} rl_rolling_window={} rl_scale_factor={} redis={}:{} db={} online_symbols={}",
             self.venue_slug,
             FIXED_TRADE_CHANNEL,
             self.depth_channel.as_str(),
             self.config.runtime.bar_ms,
+            self.config.runtime.enable_1m_bar,
             self.config.runtime.threshold_reload_secs,
             self.rl_config.pct_change_period,
             self.rl_config.rolling_window,
@@ -1161,8 +1023,6 @@ impl TradeFlowFeaturePubApp {
             self.threshold_store.settings.host,
             self.threshold_store.settings.port,
             self.threshold_store.settings.db,
-            self.persistence.rocksdb_path,
-            self.persistence.retention_hours,
             self.online_symbols.len()
         );
 
@@ -1344,6 +1204,19 @@ impl TradeFlowFeaturePubApp {
 
     fn process_closed_bars(&mut self, symbol: &str, bars: Vec<TradeBar>) -> Result<()> {
         for bar in bars {
+            let one_minute_bars = if self.config.runtime.enable_1m_bar {
+                let state = self
+                    .one_minute_symbols
+                    .entry(symbol.to_string())
+                    .or_insert_with(SymbolState::new);
+                state.apply_finalized_sub_bar(&bar, self.config.runtime.bar_ms, ONE_MINUTE_BAR_MS);
+                state.take_closed_bars()
+            } else {
+                Vec::new()
+            };
+            for one_minute_bar in one_minute_bars {
+                self.publish_one_minute_bar(symbol, &one_minute_bar)?;
+            }
             if !bar.has_valid_ffill_fields() {
                 self.publish_fail_invalid_count = self.publish_fail_invalid_count.saturating_add(1);
                 continue;
@@ -1363,8 +1236,6 @@ impl TradeFlowFeaturePubApp {
                 depth_values,
             )?;
 
-            self.maybe_persist_feature_payload(symbol, bar.start_ms, payload.as_ref());
-
             let Some(publisher) = self.publisher.as_mut() else {
                 continue;
             };
@@ -1377,6 +1248,42 @@ impl TradeFlowFeaturePubApp {
             } else {
                 self.publish_success_count = self.publish_success_count.saturating_add(1);
             }
+        }
+        Ok(())
+    }
+
+    fn publish_one_minute_bar(&mut self, symbol: &str, bar: &TradeBar) -> Result<()> {
+        if !bar.has_valid_ffill_fields() {
+            self.publish_1m_fail_invalid_count =
+                self.publish_1m_fail_invalid_count.saturating_add(1);
+            return Ok(());
+        }
+        let feature_values = bar.to_feature_values();
+        let Some(depth_values) = self.appended_depth_values(symbol) else {
+            self.publish_1m_fail_missing_depth_count =
+                self.publish_1m_fail_missing_depth_count.saturating_add(1);
+            self.warn_missing_depth_throttled(symbol, bar.start_ms);
+            return Ok(());
+        };
+        let payload = TradeFlowFeatureMsg::encode_from_slices(
+            symbol,
+            self.venue_u8,
+            bar.start_ms,
+            &feature_values,
+            depth_values,
+        )?;
+
+        let Some(publisher) = self.publisher_1m.as_mut() else {
+            return Ok(());
+        };
+        if !publisher.publish(payload.as_ref(), symbol) {
+            self.publish_1m_fail_send_count = self.publish_1m_fail_send_count.saturating_add(1);
+            warn!(
+                "failed to publish trade_flow_feature: venue={} channel={} symbol={} ts={}",
+                self.venue_slug, TRADE_FLOW_FEATURE_1M_CHANNEL, symbol, bar.start_ms
+            );
+        } else {
+            self.publish_1m_success_count = self.publish_1m_success_count.saturating_add(1);
         }
         Ok(())
     }
@@ -1432,6 +1339,20 @@ impl TradeFlowFeaturePubApp {
             self.rl_publisher.dropped_count(),
         );
 
+        let fail_1m_total = self
+            .publish_1m_fail_invalid_count
+            .saturating_add(self.publish_1m_fail_missing_depth_count)
+            .saturating_add(self.publish_1m_fail_send_count);
+        info!(
+            "TradeFlowFeaturePubApp[{}] publish_1m_outcome_10s: enabled={} success={} fail_total={} fail_invalid={} fail_missing_depth={} fail_send={}",
+            self.venue_slug,
+            self.config.runtime.enable_1m_bar,
+            self.publish_1m_success_count,
+            fail_1m_total,
+            self.publish_1m_fail_invalid_count,
+            self.publish_1m_fail_missing_depth_count,
+            self.publish_1m_fail_send_count,
+        );
         self.last_publish_outcome_log = Instant::now();
         self.recv_trade_raw_count = 0;
         self.recv_trade_parse_ok_count = 0;
@@ -1444,6 +1365,10 @@ impl TradeFlowFeaturePubApp {
         self.publish_fail_invalid_count = 0;
         self.publish_fail_missing_depth_count = 0;
         self.publish_fail_send_count = 0;
+        self.publish_1m_success_count = 0;
+        self.publish_1m_fail_invalid_count = 0;
+        self.publish_1m_fail_missing_depth_count = 0;
+        self.publish_1m_fail_send_count = 0;
         self.rl_publish_success_count = 0;
         self.rl_publish_fail_count = 0;
     }
@@ -1464,7 +1389,6 @@ impl TradeFlowFeaturePubApp {
         self.reload_runtime_config();
         if self.depth_channel.feature_enabled() {
             self.reload_thresholds(false);
-            self.maybe_cleanup_persistence();
         }
     }
 
@@ -1481,6 +1405,13 @@ impl TradeFlowFeaturePubApp {
             warn!(
                 "trade_flow_feature config change ignored: bar_ms '{}' -> '{}' (requires restart)",
                 self.config.runtime.bar_ms, loaded.runtime.bar_ms
+            );
+        }
+
+        if loaded.runtime.enable_1m_bar != self.config.runtime.enable_1m_bar {
+            warn!(
+                "trade_flow_feature config change ignored: enable_1m_bar '{}' -> '{}' (requires restart)",
+                self.config.runtime.enable_1m_bar, loaded.runtime.enable_1m_bar
             );
         }
 
@@ -1522,192 +1453,6 @@ impl TradeFlowFeaturePubApp {
                 self.config.data_source.depth_channel, loaded.data_source.depth_channel
             );
         }
-
-        if self.depth_channel.feature_enabled() {
-            self.apply_persistence_config(&loaded.persistence, false);
-        }
-    }
-
-    fn apply_persistence_config(&mut self, cfg: &PersistenceConfig, init: bool) {
-        let next = PersistenceRuntime::from_config(cfg);
-        let changed = init
-            || self.persistence.rocksdb_path != next.rocksdb_path
-            || self.persistence.retention_hours != next.retention_hours;
-
-        self.config.persistence = cfg.clone();
-        if !changed {
-            return;
-        }
-
-        self.persistence = next;
-        self.ensure_persistence_ready(init);
-    }
-
-    fn ensure_persistence_ready(&mut self, init: bool) {
-        if !self.persistence.enabled() {
-            if self.rocksdb_store.take().is_some() {
-                self.rocksdb_open_path = None;
-                info!(
-                    "trade_flow_feature persistence disabled: venue={} retention_hours={} symbols={}",
-                    self.venue_slug,
-                    self.persistence.retention_hours,
-                    self.online_symbols.len()
-                );
-            } else if init {
-                info!(
-                    "trade_flow_feature persistence disabled on startup: venue={} retention_hours={} symbols={}",
-                    self.venue_slug,
-                    self.persistence.retention_hours,
-                    self.online_symbols.len()
-                );
-            }
-            return;
-        }
-
-        let target_path = self.persistence.rocksdb_path.clone();
-        let need_open = self.rocksdb_store.is_none()
-            || self.rocksdb_open_path.as_deref() != Some(target_path.as_str());
-        if need_open {
-            match TradeFlowFeatureRocksDbStore::open(
-                &target_path,
-                &self.venue_slug,
-                &self.online_symbols,
-            ) {
-                Ok(store) => {
-                    self.rocksdb_store = Some(store);
-                    self.rocksdb_open_path = Some(target_path.clone());
-                    info!(
-                        "trade_flow_feature rocksdb {}opened: venue={} path={} retention_hours={} symbols={}",
-                        if init { "" } else { "re" },
-                        self.venue_slug,
-                        target_path,
-                        self.persistence.retention_hours,
-                        self.online_symbols.len()
-                    );
-                }
-                Err(err) => {
-                    self.warn_rocksdb_throttled(&format!(
-                        "trade_flow_feature rocksdb open failed: venue={} path={} err={:#}",
-                        self.venue_slug, target_path, err
-                    ));
-                    self.rocksdb_store = None;
-                    self.rocksdb_open_path = None;
-                    return;
-                }
-            }
-        }
-
-        if let Some(store) = self.rocksdb_store.as_mut() {
-            if let Err(err) = store.ensure_symbol_cfs(&self.venue_slug, &self.online_symbols) {
-                self.warn_rocksdb_throttled(&format!(
-                    "trade_flow_feature rocksdb ensure cfs failed: venue={} path={} err={:#}",
-                    self.venue_slug, self.persistence.rocksdb_path, err
-                ));
-            }
-        }
-    }
-
-    fn maybe_persist_feature_payload(&mut self, symbol: &str, ts_ms: i64, payload: &[u8]) {
-        if !self.persistence.enabled() || !self.online_symbols.contains(symbol) {
-            return;
-        }
-        if self.rocksdb_store.is_none() {
-            self.ensure_persistence_ready(false);
-        }
-        let Some(store) = self.rocksdb_store.as_mut() else {
-            return;
-        };
-
-        if let Err(err) = store.put_feature(&self.venue_slug, symbol, ts_ms, payload) {
-            self.warn_rocksdb_throttled(&format!(
-                "trade_flow_feature rocksdb put failed: venue={} symbol={} ts={} err={:#}",
-                self.venue_slug, symbol, ts_ms, err
-            ));
-        }
-    }
-
-    fn maybe_cleanup_persistence(&mut self) {
-        if self.last_cleanup.elapsed() < self.cleanup_interval {
-            return;
-        }
-        self.last_cleanup = Instant::now();
-
-        if !self.persistence.enabled() {
-            return;
-        }
-        let Some(store) = self.rocksdb_store.as_ref() else {
-            return;
-        };
-
-        let retention_ms = (self.persistence.retention_hours as i128) * 3_600_000i128;
-        if retention_ms <= 0 {
-            return;
-        }
-        let retention_ms = retention_ms.min(i64::MAX as i128) as i64;
-        let cutoff_ms = now_millis().saturating_sub(retention_ms);
-        if cutoff_ms <= 0 {
-            return;
-        }
-
-        let started = Instant::now();
-        match store.cleanup_before_for_venue(&self.venue_slug, cutoff_ms) {
-            Ok((touched_cfs, deleted_ranges)) => {
-                info!(
-                    "trade_flow_feature rocksdb rolling cleanup: venue={} cutoff_ms={} retention_hours={} elapsed_ms={} cfs={} ranges={}",
-                    self.venue_slug,
-                    cutoff_ms,
-                    self.persistence.retention_hours,
-                    started.elapsed().as_millis(),
-                    touched_cfs,
-                    deleted_ranges
-                );
-            }
-            Err(err) => {
-                self.warn_rocksdb_throttled(&format!(
-                    "trade_flow_feature rocksdb cleanup failed: venue={} cutoff_ms={} elapsed_ms={} err={:#}",
-                    self.venue_slug,
-                    cutoff_ms,
-                    started.elapsed().as_millis(),
-                    err
-                ));
-            }
-        }
-    }
-
-    fn maybe_cleanup_retired_symbols(&mut self, retired_symbols: &HashSet<String>) {
-        if retired_symbols.is_empty() || !self.persistence.enabled() {
-            return;
-        }
-
-        if self.rocksdb_store.is_none() {
-            self.ensure_persistence_ready(false);
-        }
-
-        let result = match self.rocksdb_store.as_mut() {
-            Some(store) => store.cleanup_symbols_for_venue(&self.venue_slug, retired_symbols),
-            None => return,
-        };
-
-        match result {
-            Ok(dropped_cfs) => {
-                if dropped_cfs > 0 {
-                    info!(
-                        "trade_flow_feature retired symbol cleanup: venue={} retired_symbols={} dropped_cfs={}",
-                        self.venue_slug,
-                        retired_symbols.len(),
-                        dropped_cfs
-                    );
-                }
-            }
-            Err(err) => {
-                self.warn_rocksdb_throttled(&format!(
-                    "trade_flow_feature retired symbol cleanup failed: venue={} retired_symbols={} err={:#}",
-                    self.venue_slug,
-                    retired_symbols.len(),
-                    err
-                ));
-            }
-        }
     }
 
     fn reload_thresholds(&mut self, init: bool) {
@@ -1738,6 +1483,8 @@ impl TradeFlowFeaturePubApp {
                 self.rebuild_symbol_ids();
                 self.symbols
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
+                self.one_minute_symbols
+                    .retain(|symbol, _| self.online_symbols.contains(symbol));
                 self.latest_depth_by_symbol
                     .retain(|symbol, _| self.online_symbols.contains(symbol));
                 self.recompute_next_due_close_ms();
@@ -1749,9 +1496,6 @@ impl TradeFlowFeaturePubApp {
                     self.online_symbols.len(),
                     self.last_retired_symbols
                 );
-
-                self.maybe_cleanup_retired_symbols(&retired_symbols);
-                self.ensure_persistence_ready(false);
             }
             Err(err) => {
                 self.threshold_store.warn_throttled(&format!(
@@ -1759,13 +1503,6 @@ impl TradeFlowFeaturePubApp {
                     self.venue_slug, err
                 ));
             }
-        }
-    }
-
-    fn warn_rocksdb_throttled(&mut self, msg: &str) {
-        if self.last_rocksdb_warn.elapsed() >= Duration::from_secs(ROCKSDB_WARN_INTERVAL_SECS) {
-            warn!("{}", msg);
-            self.last_rocksdb_warn = Instant::now();
         }
     }
 
@@ -1885,7 +1622,10 @@ mod threshold_reload_tests {
 
 #[cfg(test)]
 mod symbol_state_tests {
-    use super::{RuntimeConfig, SymbolState, TradeDedupLru, TradeSide, TRADE_DEDUP_WINDOW_MS};
+    use super::{
+        RuntimeConfig, SymbolState, TradeBar, TradeDedupLru, TradeSide, ONE_MINUTE_BAR_MS,
+        TRADE_DEDUP_WINDOW_MS,
+    };
     use crate::common::amount_threshold::AmountThreshold;
 
     #[test]
@@ -1893,6 +1633,7 @@ mod symbol_state_tests {
         let mut state = SymbolState::new();
         let runtime = RuntimeConfig {
             bar_ms: 5_000,
+            enable_1m_bar: true,
             threshold_reload_secs: 180,
         };
         let threshold = AmountThreshold {
@@ -1906,6 +1647,45 @@ mod symbol_state_tests {
 
         assert_eq!(state.take_closed_bars().len(), 1);
         assert_eq!(state.next_due_close_ms(runtime.bar_ms), Some(15_000));
+    }
+
+    #[test]
+    fn resamples_twelve_5s_bars_into_one_minute_without_ffill_open() {
+        let threshold = AmountThreshold {
+            medium_notional_threshold: 1_000.0,
+            large_notional_threshold: 2_000.0,
+        };
+        let mut minute_state = SymbolState::new();
+
+        let first = TradeBar::empty(0).finalize(Some(99.0), Some(99.0), Some(99.0), Some(99.0));
+        minute_state.apply_finalized_sub_bar(&first, 5_000, ONE_MINUTE_BAR_MS);
+
+        for i in 1..12 {
+            let mut source = TradeBar::new(i * 5_000);
+            let side = if i % 2 == 0 {
+                TradeSide::Buy
+            } else {
+                TradeSide::Sell
+            };
+            source.update(side, 100.0 + i as f64, 1.0, threshold);
+            let source = source.finalize(None, None, None, None);
+            minute_state.apply_finalized_sub_bar(&source, 5_000, ONE_MINUTE_BAR_MS);
+        }
+
+        let bars = minute_state.take_closed_bars();
+        assert_eq!(bars.len(), 1);
+        let bar = &bars[0];
+        assert_eq!(bar.start_ms, 0);
+        assert_eq!(bar.open, 101.0);
+        assert_eq!(bar.high, 111.0);
+        assert_eq!(bar.low, 101.0);
+        assert_eq!(bar.close, 111.0);
+        assert_eq!(bar.count, 11);
+        assert_eq!(bar.volume, 11.0);
+        assert_eq!(bar.amount, 1_166.0);
+        assert_eq!(bar.vwap, 106.0);
+        assert_eq!(bar.buy_count, 5);
+        assert_eq!(bar.sell_count, 6);
     }
 
     #[test]
@@ -1985,25 +1765,6 @@ mod parser_tests {
         assert_eq!(snapshot.best_bid_price, 0.0);
         assert_eq!(snapshot.best_ask_price, 101.0);
     }
-}
-
-fn cf_name_for_symbol(venue_slug: &str, symbol: &str) -> String {
-    format!(
-        "{}:{}:{}",
-        venue_slug,
-        symbol.to_uppercase(),
-        TRADE_FLOW_FEATURE_CF_SUFFIX
-    )
-}
-
-fn is_trade_flow_feature_cf_for_venue(cf_name: &str, venue_slug: &str) -> bool {
-    let prefix = format!("{}:", venue_slug);
-    cf_name.starts_with(&prefix) && cf_name.ends_with(TRADE_FLOW_FEATURE_CF_SUFFIX)
-}
-
-fn encode_ts_key(ts_ms: i64) -> [u8; 8] {
-    let ts_u64 = if ts_ms <= 0 { 0u64 } else { ts_ms as u64 };
-    ts_u64.to_be_bytes()
 }
 
 fn parse_depth_snapshot(

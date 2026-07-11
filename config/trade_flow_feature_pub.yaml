@@ -7,6 +7,8 @@ trade_flow_feature_pub:
 
   runtime:
     bar_ms: 5000
+    # 从已关闭的基础 bar 聚合并发布独立 1min bar
+    enable_1m_bar: true
     # 3分钟热更新一次 amount 阈值
     threshold_reload_secs: 180
 
@@ -14,9 +16,3 @@ trade_flow_feature_pub:
     pct_change_period: 12
     rolling_window: 30
     scale_factor: 1.3
-
-  persistence:
-    # RocksDB 数据目录（相对路径基于运行目录）
-    rocksdb_path: "data/trade_flow_feature_pub_rocksdb"
-    # 持久化保留小时数，0 表示禁用持久化
-    retention_hours: 0

@@ -157,7 +157,6 @@ path = "src/bin/depth_pub.rs"
 [[bin]]
 name = "trade_flow_feature_pub"
 path = "src/bin/trade_flow_feature_pub.rs"
-required-features = ["factor-rocksdb"]
 
 [[bin]]
 name = "pairmm_resample"
