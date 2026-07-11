@@ -155,7 +155,7 @@ def format_threshold(value: float) -> str:
 def main() -> int:
     _ = parse_args()
     print("return_model_score_thresholds_* 已废弃；不再同步该 Redis Hash。")
-    print("MM cancel 直接使用 model_output.score_quantile 与 strategy params 中的 90/10 分位配置。")
+    print("MM cancel 直接读取 model_score_rolling_thresholds_{model_name}，用 strategy params 的 90/10 选择阈值并比较 rolling mean score。")
     return 0
     args = parse_args()
     redis = try_import_redis()

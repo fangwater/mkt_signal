@@ -14,6 +14,9 @@ use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::{ArbDecision, VolGateCompare};
 use super::mm_decision::MmDecision;
+use super::return_score_threshold::{
+    model_score_threshold_output_key, parse_return_score_thresholds, ReturnScoreCancelThresholds,
+};
 use super::spread_factor::{FrOpenSpreadLimitOverride, SpreadFactor};
 use order_common::TradingVenue;
 
@@ -727,17 +730,23 @@ pub struct StrategyParams {
     #[serde(default = "default_signal_cooldown")]
     pub signal_cooldown: u64,
 
-    /// MM 是否启用基于 return score quantile 的方向撤单
+    /// MM 是否启用基于 rolling return score 的方向撤单
     #[serde(default = "default_enable_return_score_cancel")]
     pub enable_return_score_cancel: bool,
 
-    /// return score quantile 大于该百分位时，撤 sell 方向 open 单
+    /// 用于选择撤 sell 方向 score threshold 的百分位
     #[serde(default = "default_return_score_buy_cancel_quantile")]
     pub return_score_buy_cancel_quantile: f64,
 
-    /// return score quantile 小于该百分位时，撤 buy/long 方向 open 单
+    /// 用于选择撤 buy/long 方向 score threshold 的百分位
     #[serde(default = "default_return_score_sell_cancel_quantile")]
     pub return_score_sell_cancel_quantile: f64,
+
+    #[serde(default = "default_return_score_rolling_mean_window")]
+    pub return_score_rolling_mean_window: usize,
+
+    #[serde(skip)]
+    pub return_score_cancel_thresholds: HashMap<String, ReturnScoreCancelThresholds>,
 
     /// MM 是否启用基于 tlen 的开仓撤单链路（trigger/query/cancel）
     #[serde(default = "default_enable_tlen_cancel")]
@@ -885,6 +894,9 @@ fn default_return_score_buy_cancel_quantile() -> f64 {
 fn default_return_score_sell_cancel_quantile() -> f64 {
     10.0
 }
+fn default_return_score_rolling_mean_window() -> usize {
+    3
+}
 fn default_enable_tlen_cancel() -> bool {
     false
 }
@@ -974,6 +986,8 @@ impl Default for StrategyParams {
             enable_return_score_cancel: default_enable_return_score_cancel(),
             return_score_buy_cancel_quantile: default_return_score_buy_cancel_quantile(),
             return_score_sell_cancel_quantile: default_return_score_sell_cancel_quantile(),
+            return_score_rolling_mean_window: default_return_score_rolling_mean_window(),
+            return_score_cancel_thresholds: HashMap::new(),
             enable_tlen_cancel: default_enable_tlen_cancel(),
             tlen_cancel_freq_ms: default_tlen_cancel_freq_ms(),
             spread_cancel_cooldown_ms: default_spread_cancel_cooldown_ms(),
@@ -1571,6 +1585,24 @@ impl StrategyParams {
                 parse_percentile_exclusive(&redis_key, "return_score_sell_cancel_quantile", raw)
             })
             .unwrap_or_else(default_return_score_sell_cancel_quantile);
+        let return_score_rolling_mean_window = hash_map
+            .get("return_score_rolling_mean_window")
+            .map(|raw| {
+                let window = raw.trim().parse::<usize>().unwrap_or_else(|_| {
+                    panic!(
+                        "Redis hash '{}' return_score_rolling_mean_window 无法解析为正整数: {}",
+                        redis_key, raw
+                    )
+                });
+                if window == 0 {
+                    panic!(
+                        "Redis hash '{}' return_score_rolling_mean_window 必须 > 0",
+                        redis_key
+                    );
+                }
+                window
+            })
+            .unwrap_or_else(default_return_score_rolling_mean_window);
         let enable_tlen_cancel = match hash_map.get("enable_tlen_cancel") {
             Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "true" | "1" | "yes" | "on" => true,
@@ -1726,6 +1758,42 @@ impl StrategyParams {
 
         let return_model_service =
             model_service_param_or_disabled(&hash_map, &redis_key, &ns, "return_model_service");
+        let return_score_cancel_thresholds = if ns == "mm"
+            && enable_return_score_cancel
+            && return_model_service != "-"
+        {
+            match model_score_threshold_output_key(&return_model_service) {
+                Some(output_hash_key) => {
+                    let threshold_map = client.hgetall_map(&output_hash_key).await?;
+                    let load = parse_return_score_thresholds(
+                        &output_hash_key,
+                        &threshold_map,
+                        return_score_buy_cancel_quantile,
+                        return_score_sell_cancel_quantile,
+                        hedge_venue,
+                    );
+                    info!(
+                        "MM return score thresholds loaded key={} fields={} ready_symbols={} cached_symbols={} invalid_payloads={} rolling_mean_window={}",
+                            load.output_hash_key,
+                            load.fields,
+                            load.ready_symbols,
+                            load.cached_symbols,
+                            load.invalid_payloads,
+                            return_score_rolling_mean_window
+                    );
+                    load.by_symbol
+                }
+                None => {
+                    warn!(
+                        "MM return score threshold key unavailable service={}",
+                        return_model_service
+                    );
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
         let environment_model_service = model_service_param_or_disabled(
             &hash_map,
             &redis_key,
@@ -1766,6 +1834,8 @@ impl StrategyParams {
             enable_return_score_cancel,
             return_score_buy_cancel_quantile,
             return_score_sell_cancel_quantile,
+            return_score_rolling_mean_window,
+            return_score_cancel_thresholds,
             enable_tlen_cancel,
             tlen_cancel_freq_ms,
             spread_cancel_cooldown_ms,
@@ -1893,6 +1963,10 @@ impl StrategyParams {
         // 第一项总返回 true，订阅这一步永远跑不到，导致 hedge 模型订阅从未建立。这里拆开顺序执行。
         if arb_state_applied {
             ArbDecision::try_update_model_output_services(self.parse_model_output_services());
+            ArbDecision::try_configure_return_score_rolling(
+                return_model_service.as_deref(),
+                self.return_score_rolling_mean_window,
+            );
         }
         let mm_applied = MmDecision::try_with_mut(|_decision| {
             let open_buy_vol_scale =
@@ -1933,6 +2007,8 @@ impl StrategyParams {
                 self.enable_return_score_cancel,
                 self.return_score_buy_cancel_quantile,
                 self.return_score_sell_cancel_quantile,
+                self.return_score_rolling_mean_window,
+                self.return_score_cancel_thresholds.clone(),
             );
             _decision.update_enable_environment_model(self.enable_environment_model);
             _decision.update_enable_volatility_limit(self.enable_volatility_limit);

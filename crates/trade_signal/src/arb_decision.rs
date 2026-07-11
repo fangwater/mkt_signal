@@ -5611,6 +5611,18 @@ impl ArbDecision {
         try_update_arb_model_output_services(services)
     }
 
+    pub(crate) fn try_configure_return_score_rolling(
+        model_service: Option<&str>,
+        rolling_mean_window: usize,
+    ) -> bool {
+        Self::with_state_mut(|arb| {
+            if let Some(hub) = arb.model_output_hub.as_mut() {
+                hub.configure_rolling_mean_service(model_service, rolling_mean_window);
+            }
+        })
+        .is_some()
+    }
+
     pub fn init_mode(mode: ArbMode) -> Result<()> {
         ARB_MODE.with(|cell| {
             if let Some(existing) = cell.get().copied() {

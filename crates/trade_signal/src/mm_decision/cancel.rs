@@ -7,6 +7,7 @@ use super::super::symbol_list::SymbolList;
 use super::from_key::build_mm_cancel_from_key;
 use super::state::MmDecisionState;
 use crate::model_output_hub::ModelOutputUpdateEvent;
+use crate::return_score_threshold::ReturnScoreCancelThresholds;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::Side;
 use order_common::TradingVenue;
@@ -15,6 +16,16 @@ use signal_common::trade_signal::SignalType;
 
 pub(crate) struct MmCancelDecision {
     last_cancel_ts_us: HashMap<String, i64>,
+}
+
+fn return_score_cancel_hits(score: f64, thresholds: ReturnScoreCancelThresholds) -> (bool, bool) {
+    let sell_cancel_hit = thresholds
+        .sell_cancel_score_threshold
+        .is_some_and(|threshold| score > threshold);
+    let buy_cancel_hit = thresholds
+        .buy_cancel_score_threshold
+        .is_some_and(|threshold| score < threshold);
+    (sell_cancel_hit, buy_cancel_hit)
 }
 
 impl MmCancelDecision {
@@ -72,15 +83,22 @@ impl MmCancelDecision {
         state: &mut MmDecisionState,
         symbol: &str,
         return_score_value: f64,
-        return_qtl: f64,
+        return_qtl: Option<f64>,
+        thresholds: ReturnScoreCancelThresholds,
         now_us: i64,
     ) -> Result<Option<SignalType>> {
-        let return_qtl_pct = return_qtl * 100.0;
-        let sell_cancel_hit = return_qtl_pct > state.return_score_buy_cancel_quantile;
-        let buy_cancel_hit = return_qtl_pct < state.return_score_sell_cancel_quantile;
+        let Some(sell_cancel_threshold) = thresholds.sell_cancel_score_threshold else {
+            return Ok(None);
+        };
+        let Some(buy_cancel_threshold) = thresholds.buy_cancel_score_threshold else {
+            return Ok(None);
+        };
+        let (sell_cancel_hit, buy_cancel_hit) =
+            return_score_cancel_hits(return_score_value, thresholds);
         if !sell_cancel_hit && !buy_cancel_hit {
             return Ok(None);
         }
+        let return_qtl_pct = return_qtl.map(|value| value * 100.0);
 
         let open_quote = match MktChannel::instance().get_quote(symbol, state.open_venue) {
             Some(quote) => quote,
@@ -98,13 +116,13 @@ impl MmCancelDecision {
         if sell_cancel_hit {
             if self.cancel_throttled(symbol, Side::Sell, state, now_us) {
                 debug!(
-                    "MmDecision: skip sell MMCancel due to throttle symbol={} score={:.6} qtl_pct={:.2}",
+                    "MmDecision: skip sell MMCancel due to throttle symbol={} score={:.6} qtl_pct={:?}",
                     symbol_key, return_score_value, return_qtl_pct
                 );
             } else {
                 let from_key = build_mm_cancel_from_key(
                     now_us,
-                    Some(return_qtl),
+                    return_qtl,
                     Some(state.return_score_buy_cancel_quantile),
                     volatility,
                     &environment_signal,
@@ -121,13 +139,13 @@ impl MmCancelDecision {
         if buy_cancel_hit {
             if self.cancel_throttled(symbol, Side::Buy, state, now_us) {
                 debug!(
-                    "MmDecision: skip buy MMCancel due to throttle symbol={} score={:.6} qtl_pct={:.2}",
+                    "MmDecision: skip buy MMCancel due to throttle symbol={} score={:.6} qtl_pct={:?}",
                     symbol_key, return_score_value, return_qtl_pct
                 );
             } else {
                 let from_key = build_mm_cancel_from_key(
                     now_us,
-                    Some(return_qtl),
+                    return_qtl,
                     Some(state.return_score_sell_cancel_quantile),
                     volatility,
                     &environment_signal,
@@ -149,11 +167,13 @@ impl MmCancelDecision {
                 (false, false) => "-",
             };
             debug!(
-                "MmDecision: MMCancel symbol={} side={} score={:.6} qtl_pct={:.2} buy_cancel_qtl={:.2} sell_cancel_qtl={:.2}",
+                "MmDecision: MMCancel symbol={} side={} rolling_score={:.6} qtl_pct={:?} sell_cancel_threshold={:.6} buy_cancel_threshold={:.6} sell_threshold_qtl={:.2} buy_threshold_qtl={:.2}",
                 symbol_key,
                 side_text,
                 return_score_value,
                 return_qtl_pct,
+                sell_cancel_threshold,
+                buy_cancel_threshold,
                 state.return_score_buy_cancel_quantile,
                 state.return_score_sell_cancel_quantile,
             );
@@ -193,18 +213,26 @@ impl MmCancelDecision {
 
         let now_us = get_timestamp_us();
         for event in events {
-            if event.service_name != service_name || !event.score.is_finite() {
+            if event.service_name != service_name || !event.score.is_finite() || !event.score_ready
+            {
                 continue;
             }
-            let Some(return_qtl) = event.score_quantile.filter(|v| v.is_finite()) else {
-                continue;
-            };
             let symbol_key =
                 normalize_symbol_for_whitelist(&event.symbol_key, TradingVenue::OkexFutures);
             let Some(symbol) = online_set.get(&symbol_key) else {
                 continue;
             };
-            if let Err(err) = self.emit_for_symbol(state, symbol, event.score, return_qtl, now_us) {
+            let Some(thresholds) = state
+                .return_score_cancel_thresholds
+                .get(&symbol_key)
+                .copied()
+            else {
+                continue;
+            };
+            let return_qtl = event.score_quantile.filter(|value| value.is_finite());
+            if let Err(err) =
+                self.emit_for_symbol(state, symbol, event.score, return_qtl, thresholds, now_us)
+            {
                 warn!(
                     "MmDecision: MMCancel evaluate failed symbol={} err={:#}",
                     symbol_key, err
@@ -246,5 +274,16 @@ mod tests {
         let buy_key = MmCancelDecision::cancel_throttle_key("BTCUSDT", Side::Buy);
         let sell_key = MmCancelDecision::cancel_throttle_key("BTCUSDT", Side::Sell);
         assert_ne!(buy_key, sell_key);
+    }
+
+    #[test]
+    fn rolling_score_thresholds_are_side_specific() {
+        let thresholds = ReturnScoreCancelThresholds {
+            sell_cancel_score_threshold: Some(0.8),
+            buy_cancel_score_threshold: Some(0.2),
+        };
+        assert_eq!(return_score_cancel_hits(0.9, thresholds), (true, false));
+        assert_eq!(return_score_cancel_hits(0.1, thresholds), (false, true));
+        assert_eq!(return_score_cancel_hits(0.5, thresholds), (false, false));
     }
 }

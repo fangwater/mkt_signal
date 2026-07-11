@@ -5,7 +5,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
@@ -25,6 +25,7 @@ pub struct ModelOutputScoreLookupResult {
     pub subscribed: bool,
     pub score: Option<f64>,
     pub score_quantile: Option<f64>,
+    pub score_ready: bool,
     pub note: String,
 }
 
@@ -34,12 +35,34 @@ pub struct ModelOutputUpdateEvent {
     pub symbol_key: String,
     pub score: f64,
     pub score_quantile: Option<f64>,
+    pub score_ready: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct ModelOutputSnapshot {
     score: f64,
     score_quantile: Option<f64>,
+    score_ready: bool,
+}
+
+#[derive(Default)]
+struct RollingScoreState {
+    scores: VecDeque<f64>,
+    sum: f64,
+}
+
+impl RollingScoreState {
+    fn observe(&mut self, score: f64, window: usize) -> f64 {
+        let window = window.max(1);
+        self.scores.push_back(score);
+        self.sum += score;
+        while self.scores.len() > window {
+            if let Some(old_score) = self.scores.pop_front() {
+                self.sum -= old_score;
+            }
+        }
+        self.sum / self.scores.len() as f64
+    }
 }
 
 struct ModelOutputSubscriberEntry {
@@ -52,6 +75,8 @@ pub struct ModelOutputHub {
     subscribers: Vec<ModelOutputSubscriberEntry>,
     services: Vec<String>,
     latest_scores: HashMap<(String, String), ModelOutputSnapshot>,
+    rolling_mean_windows: HashMap<String, usize>,
+    rolling_scores: HashMap<(String, String), RollingScoreState>,
     msg_count: u64,
     parse_err_count: u64,
     last_log: Instant,
@@ -64,6 +89,8 @@ impl ModelOutputHub {
             subscribers: Vec::new(),
             services: Vec::new(),
             latest_scores: HashMap::new(),
+            rolling_mean_windows: HashMap::new(),
+            rolling_scores: HashMap::new(),
             msg_count: 0,
             parse_err_count: 0,
             last_log: Instant::now(),
@@ -99,6 +126,7 @@ impl ModelOutputHub {
         self.services = active_services;
         self.subscribers = subscribers;
         self.latest_scores.clear();
+        self.rolling_scores.clear();
         self.msg_count = 0;
         self.parse_err_count = 0;
         self.last_log = Instant::now();
@@ -117,6 +145,30 @@ impl ModelOutputHub {
             );
         }
         self.subscribers.len()
+    }
+
+    pub fn configure_rolling_mean_service(
+        &mut self,
+        model_service: Option<&str>,
+        rolling_mean_window: usize,
+    ) {
+        let mut next = HashMap::new();
+        if let Some(service) = model_service.and_then(Self::normalize_service_name) {
+            next.insert(service, rolling_mean_window.max(1));
+        }
+        if next == self.rolling_mean_windows {
+            return;
+        }
+        let service_unchanged = next.keys().eq(self.rolling_mean_windows.keys());
+        self.rolling_mean_windows = next;
+        self.latest_scores.clear();
+        if !service_unchanged {
+            self.rolling_scores.clear();
+        }
+        info!(
+            "ModelOutputHub: rolling score config updated services={:?}",
+            self.rolling_mean_windows
+        );
     }
 
     pub fn poll_updates(&mut self) -> Vec<ModelOutputUpdateEvent> {
@@ -154,17 +206,31 @@ impl ModelOutputHub {
 
                         let symbol_key = normalize_symbol_for_venue(&msg.symbol, self.hedge_venue);
                         let cache_key = (entry.service_name.clone(), symbol_key);
+                        let score = if msg.score.is_finite() {
+                            match self.rolling_mean_windows.get(&entry.service_name).copied() {
+                                Some(window) => self
+                                    .rolling_scores
+                                    .entry(cache_key.clone())
+                                    .or_default()
+                                    .observe(msg.score, window),
+                                None => msg.score,
+                            }
+                        } else {
+                            msg.score
+                        };
                         let event = ModelOutputUpdateEvent {
                             service_name: entry.service_name.clone(),
                             symbol_key: cache_key.1.clone(),
-                            score: msg.score,
+                            score,
                             score_quantile: msg.score_quantile,
+                            score_ready: msg.score_ready,
                         };
                         self.latest_scores.insert(
                             cache_key,
                             ModelOutputSnapshot {
-                                score: msg.score,
+                                score,
                                 score_quantile: msg.score_quantile,
+                                score_ready: msg.score_ready,
                             },
                         );
                         self.msg_count = self.msg_count.saturating_add(1);
@@ -220,6 +286,7 @@ impl ModelOutputHub {
                 subscribed: false,
                 score: None,
                 score_quantile: None,
+                score_ready: false,
                 note: "service_disabled".to_string(),
             };
         };
@@ -233,18 +300,34 @@ impl ModelOutputHub {
                 subscribed: false,
                 score: None,
                 score_quantile: None,
+                score_ready: false,
                 note: "service_not_subscribed".to_string(),
             };
         }
 
         let cache_key = (service_name.clone(), symbol_key.clone());
         match self.latest_scores.get(&cache_key).copied() {
+            Some(snapshot)
+                if self.rolling_mean_windows.contains_key(&service_name)
+                    && !snapshot.score_ready =>
+            {
+                ModelOutputScoreLookupResult {
+                    service_name,
+                    symbol_key,
+                    subscribed: true,
+                    score: None,
+                    score_quantile: snapshot.score_quantile,
+                    score_ready: false,
+                    note: "score_not_ready".to_string(),
+                }
+            }
             Some(snapshot) if snapshot.score.is_finite() => ModelOutputScoreLookupResult {
                 service_name,
                 symbol_key,
                 subscribed: true,
                 score: Some(snapshot.score),
                 score_quantile: snapshot.score_quantile,
+                score_ready: snapshot.score_ready,
                 note: "ok".to_string(),
             },
             Some(_) => ModelOutputScoreLookupResult {
@@ -253,6 +336,7 @@ impl ModelOutputHub {
                 subscribed: true,
                 score: None,
                 score_quantile: None,
+                score_ready: false,
                 note: "invalid_model_score".to_string(),
             },
             None => ModelOutputScoreLookupResult {
@@ -261,6 +345,7 @@ impl ModelOutputHub {
                 subscribed: true,
                 score: None,
                 score_quantile: None,
+                score_ready: false,
                 note: "missing_model_score".to_string(),
             },
         }
@@ -328,7 +413,7 @@ impl ModelOutputHub {
 
 #[cfg(test)]
 mod tests {
-    use super::ModelOutputHub;
+    use super::{ModelOutputHub, RollingScoreState};
     use order_common::TradingVenue;
 
     #[test]
@@ -358,5 +443,14 @@ mod tests {
         assert!(hub.is_subscribed("model_output/return_v1"));
         assert!(!hub.is_subscribed("return_v2"));
         assert!(!hub.is_subscribed("-"));
+    }
+
+    #[test]
+    fn rolling_score_state_tracks_latest_window() {
+        let mut state = RollingScoreState::default();
+        assert_eq!(state.observe(1.0, 3), 1.0);
+        assert_eq!(state.observe(2.0, 3), 1.5);
+        assert_eq!(state.observe(3.0, 3), 2.0);
+        assert_eq!(state.observe(7.0, 3), 4.0);
     }
 }

@@ -138,6 +138,7 @@ STRATEGY_PARAMS = {
     "enable_return_score_cancel": "false",
     "return_score_buy_cancel_quantile": "90",
     "return_score_sell_cancel_quantile": "10",
+    "return_score_rolling_mean_window": "3",
     "enable_tlen_cancel": "false",
     "tlen_cancel_freq_ms": "3000",
     "return_model_service": "-",
@@ -192,9 +193,10 @@ PARAM_COMMENTS: Dict[str, str] = {
     "enable_open_time_block": "是否启用 UTC 时间段开仓阻断（true=在 open_block_utc_time_range 内 trade signal 不发开仓单）",
     "open_block_utc_time_range": "UTC 开仓阻断时间段，格式 HH:MM-HH:MM，允许跨天，开始/结束不能相同",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
-    "enable_return_score_cancel": "是否启用基于模型 score_quantile 的 MM open 方向撤单",
-    "return_score_buy_cancel_quantile": "score_quantile*100 大于该分位数时，撤掉 symbol 所有 sell 方向 open 单；范围 (0,99)，默认 90",
-    "return_score_sell_cancel_quantile": "score_quantile*100 小于该分位数时，撤掉 symbol 所有 buy/long 方向 open 单；范围 (0,99)，默认 10",
+    "enable_return_score_cancel": "是否启用基于 rolling return score 与模型分位阈值的 MM open 方向撤单",
+    "return_score_buy_cancel_quantile": "从 model_score_rolling_thresholds_* 选择高分位 score threshold；rolling score 高于阈值时撤 sell，默认 90",
+    "return_score_sell_cancel_quantile": "从 model_score_rolling_thresholds_* 选择低分位 score threshold；rolling score 低于阈值时撤 buy，默认 10",
+    "return_score_rolling_mean_window": "return score rolling mean 窗口，正整数，默认 3",
     "enable_tlen_cancel": "是否启用基于 tlen 的 MM open 撤单链路（true=允许发 MMCancelTrigger 并走 query/cancel）",
     "tlen_cancel_freq_ms": "MMCancelTrigger 触发频率(ms)，需为正整数，默认 3000",
     "return_model_service": "收益率模型输出通道名（'-' 表示禁用）",
@@ -231,6 +233,7 @@ PARAM_PRINT_ORDER = [
     "enable_return_score_cancel",
     "return_score_buy_cancel_quantile",
     "return_score_sell_cancel_quantile",
+    "return_score_rolling_mean_window",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
     "return_model_service",
@@ -281,6 +284,12 @@ def validate_strategy_params(params: Dict[str, str]) -> None:
             value = float(params[key])
             if not (0.0 < value < 99.0):
                 raise ValueError(f"{key} 必须在 (0,99) 内: {value}")
+    if "return_score_rolling_mean_window" in params:
+        window = int(params["return_score_rolling_mean_window"])
+        if window <= 0:
+            raise ValueError(
+                f"return_score_rolling_mean_window 必须 > 0: {window}"
+            )
     if "enable_clock_shift_ms" in params:
         shift = int(params["enable_clock_shift_ms"])
         if shift < 0:

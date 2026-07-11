@@ -110,7 +110,7 @@ def parse_field(field_key: str) -> Optional[Tuple[str, str]]:
 
 def main() -> int:
     _ = parse_args()
-    print("MM return_model_score_thresholds_* 已废弃；cancel 改用 strategy params 中的 return score quantile 配置。")
+    print("MM return_model_score_thresholds_* 已废弃；cancel 直接读取 model_score_rolling_thresholds_{model_name} 并比较 rolling mean score。")
     return 0
 
 

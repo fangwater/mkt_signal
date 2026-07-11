@@ -352,7 +352,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_return_score_cancel` 控制基于模型 score_quantile 的方向撤单；`return_score_buy_cancel_quantile` / `return_score_sell_cancel_quantile` 必须在 (0,99) 内，默认 90/10；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；`enable_open_time_block` 启用后，在 UTC `open_block_utc_time_range` 内 trade signal 不发开仓单，时间格式必须为 `HH:MM-HH:MM`，允许跨天，但开始/结束不能相同；前端布尔项使用下拉框编辑。
+        `enable_return_score_cancel` 控制基于 rolling return score 与模型 score threshold 的方向撤单；`return_score_buy_cancel_quantile` / `return_score_sell_cancel_quantile` 必须在 (0,99) 内，默认 90/10；`return_score_rolling_mean_window` 控制 score 均值窗口，默认 3；`enable_tlen_cancel` 单独控制基于 tlen 的 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 MMCancelTrigger 的发送频率；`enable_return_score_adjust_hegde=false` 时，MM hedge offset 不再被 return score 调整；`enable_environment_model=false` 时 env/pnlu 仍会写入 from_key，但不阻拦开仓；`enable_volatility_limit` 控制是否启用波动率限制下单；`open_volatility_limit` 控制 trade signal / MM 决策侧内联波动率阈值采样使用的分位数；`enable_tradecount_limit` / `open_tradecount_limit` 与 vol 用法一致，但读取 trade_flow_feature 的 `count.rolling(30,min_periods=25).mean()` 做 gate，并且仅当 tradecount 大于阈值时允许 open；`enable_open_time_block` 启用后，在 UTC `open_block_utc_time_range` 内 trade signal 不发开仓单，时间格式必须为 `HH:MM-HH:MM`，允许跨天，但开始/结束不能相同；前端布尔项使用下拉框编辑。
       </div>
       <div class="kv-table" id="strategy-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -579,6 +579,13 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         }
         values[key] = String(value);
       });
+      if (Object.prototype.hasOwnProperty.call(values, 'return_score_rolling_mean_window')) {
+        const window = Number(values.return_score_rolling_mean_window);
+        if (!Number.isInteger(window) || window <= 0) {
+          throw new Error('return_score_rolling_mean_window 必须是正整数');
+        }
+        values.return_score_rolling_mean_window = String(window);
+      }
       return values;
     }
 
@@ -1705,6 +1712,10 @@ def normalize_open_block_utc_time_range(raw: Any) -> str:
 
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
+    if "return_score_rolling_mean_window" in normalized:
+        normalized["return_score_rolling_mean_window"] = normalize_positive_int_text(
+            normalized["return_score_rolling_mean_window"], "return_score_rolling_mean_window"
+        )
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"

@@ -378,11 +378,18 @@ impl MmDecision {
         enabled: bool,
         buy_cancel_quantile: f64,
         sell_cancel_quantile: f64,
+        rolling_mean_window: usize,
+        thresholds: std::collections::HashMap<
+            String,
+            crate::return_score_threshold::ReturnScoreCancelThresholds,
+        >,
     ) {
         self.state.update_return_score_cancel_params(
             enabled,
             buy_cancel_quantile,
             sell_cancel_quantile,
+            rolling_mean_window,
+            thresholds,
         );
     }
 

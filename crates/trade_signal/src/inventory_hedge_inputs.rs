@@ -117,7 +117,7 @@ fn resolve_inventory_hedge_effective_signal(
 fn resolve_inventory_hedge_signal_quantile(
     enable_return_score_adjust_hedge: bool,
     score: Option<f64>,
-    score_quantile: Option<f64>,
+    _score_quantile: Option<f64>,
     volatility: Option<f64>,
 ) -> Option<f64> {
     if !enable_return_score_adjust_hedge {
@@ -126,7 +126,9 @@ fn resolve_inventory_hedge_signal_quantile(
     if volatility.filter(|v| v.is_finite()).is_some() && score.filter(|v| v.is_finite()).is_none() {
         return Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE);
     }
-    score_quantile.filter(|v| v.is_finite())
+    // A ready return score uses the rolling raw-score path. Returning None makes the
+    // quote planner select its raw-score offset calculation instead of score_quantile.
+    None
 }
 
 #[cfg(test)]
@@ -149,6 +151,10 @@ mod tests {
         assert_eq!(
             resolve_inventory_hedge_signal_quantile(true, None, None, Some(0.001)),
             Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE)
+        );
+        assert_eq!(
+            resolve_inventory_hedge_signal_quantile(true, Some(0.2), Some(0.9), Some(0.001)),
+            None
         );
     }
 }

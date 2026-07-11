@@ -11,6 +11,7 @@ use super::super::inline_volatility::{
     snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
 };
 use super::super::model_output_hub::ModelOutputHub;
+use super::super::return_score_threshold::ReturnScoreCancelThresholds;
 use depth_pub_common::query_client::DepthQueryClient;
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use order_common::TradingVenue;
@@ -207,6 +208,8 @@ pub(crate) struct MmDecisionState {
     pub(crate) enable_return_score_cancel: bool,
     pub(crate) return_score_buy_cancel_quantile: f64,
     pub(crate) return_score_sell_cancel_quantile: f64,
+    pub(crate) return_score_rolling_mean_window: usize,
+    pub(crate) return_score_cancel_thresholds: HashMap<String, ReturnScoreCancelThresholds>,
     pub(crate) enable_tlen_cancel: bool,
     pub(crate) tlen_cancel_freq_ms: u64,
     pub(crate) enable_environment_model: bool,
@@ -437,6 +440,8 @@ impl MmDecisionState {
             enable_return_score_cancel: false,
             return_score_buy_cancel_quantile: 90.0,
             return_score_sell_cancel_quantile: 10.0,
+            return_score_rolling_mean_window: 3,
+            return_score_cancel_thresholds: HashMap::new(),
             enable_tlen_cancel: false,
             tlen_cancel_freq_ms: 3_000,
             enable_environment_model: true,
@@ -890,6 +895,8 @@ impl MmDecisionState {
         enabled: bool,
         buy_cancel_quantile: f64,
         sell_cancel_quantile: f64,
+        rolling_mean_window: usize,
+        thresholds: HashMap<String, ReturnScoreCancelThresholds>,
     ) {
         if !(buy_cancel_quantile.is_finite()
             && buy_cancel_quantile > 0.0
@@ -909,14 +916,21 @@ impl MmDecisionState {
                 sell_cancel_quantile
             );
         }
+        if rolling_mean_window == 0 {
+            panic!("MmDecision: return_score_rolling_mean_window must be > 0");
+        }
         self.enable_return_score_cancel = enabled;
         self.return_score_buy_cancel_quantile = buy_cancel_quantile;
         self.return_score_sell_cancel_quantile = sell_cancel_quantile;
+        self.return_score_rolling_mean_window = rolling_mean_window;
+        self.return_score_cancel_thresholds = thresholds;
         debug!(
-            "MmDecision: return score cancel params updated enabled={} buy_cancel_qtl={:.2} sell_cancel_qtl={:.2}",
+            "MmDecision: return score cancel params updated enabled={} buy_cancel_qtl={:.2} sell_cancel_qtl={:.2} rolling_mean_window={} threshold_symbols={}",
             self.enable_return_score_cancel,
             self.return_score_buy_cancel_quantile,
-            self.return_score_sell_cancel_quantile
+            self.return_score_sell_cancel_quantile,
+            self.return_score_rolling_mean_window,
+            self.return_score_cancel_thresholds.len()
         );
     }
 
@@ -1039,6 +1053,10 @@ impl MmDecisionState {
             }
         }
         self.model_output_hub.update_services(node, services);
+        self.model_output_hub.configure_rolling_mean_service(
+            requested_return.as_deref(),
+            self.return_score_rolling_mean_window,
+        );
         self.return_model_service =
             requested_return.filter(|service| self.model_output_hub.is_subscribed(service));
         self.environment_model_service =
