@@ -7,21 +7,21 @@
 # threads inherit the same affinity.
 core = 21
 
-# Canonical symbols used inside emitted PeriodMessage payloads.
-# Per-venue source symbols are mapped back to these names before collection.
+# Canonical symbols used inside emitted PeriodMessage payloads. Quantity-prefix
+# contract symbols such as 1000PEPEUSDT are normalized to PEPEUSDT.
 online_symbols = [
   "BTCUSDT",
   "ETHUSDT",
   "SOLUSDT",
   "XRPUSDT",
   "DOGEUSDT",
-  "1000PEPEUSDT",
+  "PEPEUSDT",
   "BNBUSDT",
   "SUIUSDT",
   "ADAUSDT",
   "LINKUSDT",
   "AVAXUSDT",
-  "1000SHIBUSDT",
+  "SHIBUSDT",
   "LTCUSDT",
   "BCHUSDT",
   "NEARUSDT",
@@ -47,12 +47,6 @@ topic = "binance-spot"
 poll_batch = 65536
 idle_sleep_us = 0
 delay_ms = 5
-
-# Canonical online symbol -> source symbol observed on this venue.
-# Binance spot/margin does not use futures quantity-prefix contract symbols.
-[venues.symbol_map]
-"1000PEPEUSDT" = "PEPEUSDT"
-"1000SHIBUSDT" = "SHIBUSDT"
 
 [[venues]]
 name = "binance-futures"

@@ -205,8 +205,16 @@ impl PeriodPbsConfig {
 
 impl VenueSymbolMap {
     pub fn canonical_for_source(&self, source_symbol: &str) -> Option<&str> {
+        let source_symbol = source_symbol.trim();
         self.source_to_canonical
-            .get(source_symbol.trim())
+            .get(source_symbol)
+            .or_else(|| {
+                let without_numeric_prefix =
+                    source_symbol.trim_start_matches(|ch: char| ch.is_ascii_digit());
+                (without_numeric_prefix != source_symbol)
+                    .then(|| self.source_to_canonical.get(without_numeric_prefix))
+                    .flatten()
+            })
             .map(String::as_str)
     }
 
@@ -302,10 +310,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_venue_source_symbols_back_to_online_symbols() {
+    fn normalizes_numeric_contract_prefixes_to_online_symbols() {
         let cfg: PeriodPbsConfig = toml::from_str(
             r#"
-online_symbols = ["BTCUSDT", "PUMPUSDT"]
+online_symbols = ["BTCUSDT", "PUMPUSDT", "1INCHUSDT"]
 
 [zmq]
 bind = "ipc:///tmp/period_pbs_test.ipc"
@@ -322,7 +330,6 @@ topic = "binance-futures"
 poll_batch = 123
 idle_sleep_us = 0
 delay_ms = 5
-symbol_map = { PUMPUSDT = "1000PUMPUSDT" }
 "#,
         )
         .expect("parse config");
@@ -337,6 +344,10 @@ symbol_map = { PUMPUSDT = "1000PUMPUSDT" }
         assert_eq!(
             futures.symbols.canonical_for_source("1000PUMPUSDT"),
             Some("PUMPUSDT")
+        );
+        assert_eq!(
+            futures.symbols.canonical_for_source("1INCHUSDT"),
+            Some("1INCHUSDT")
         );
         assert_eq!(
             futures.symbols.canonical_for_source("BTCUSDT"),
