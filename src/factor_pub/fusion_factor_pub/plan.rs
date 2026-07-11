@@ -1,4 +1,3 @@
-#![cfg_attr(not(feature = "factor-rocksdb"), allow(dead_code))]
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
@@ -281,6 +280,7 @@ fn decode_symbol_factor_plans(
 pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
     tlen: &TlenServerConfig,
     venue_slug: &str,
+    config_type: &str,
 ) -> Result<HashMap<String, SymbolFactorPlan>> {
     let base_url = tlen.base_url.trim_end_matches('/');
     let client = Client::builder()
@@ -291,7 +291,7 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
     let url = format!("{}/api/thresholds", base_url);
     let resp = client
         .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "factor_plan")])
+        .query(&[("venue", venue_slug), ("config_type", config_type)])
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -304,8 +304,8 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
         .with_context(|| format!("decode factor plan response failed: {}", url))?;
     decode_symbol_factor_plans(payload).with_context(|| {
         format!(
-            "decode symbol factor plans from tlen_server failed: venue={}",
-            venue_slug
+            "decode symbol factor plans from tlen_server failed: venue={} config_type={}",
+            venue_slug, config_type
         )
     })
 }

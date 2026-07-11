@@ -175,12 +175,10 @@ required-features = ["model-ort"]
 [[bin]]
 name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
-required-features = ["factor-rocksdb"]
 
 [[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
-required-features = ["factor-rocksdb"]
 
 [[bin]]
 name = "demo_bridge_pub"
@@ -308,7 +306,6 @@ crc32fast = "1.4"
 tar = "0.4"
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors"] }
-rocksdb = { version = "0.21", default-features = false, features = ["lz4"], optional = true }
 dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
@@ -324,7 +321,6 @@ arc-swap = "1.7"
 [features]
 default = []
 model-ort = ["dep:mkt_model_runtime"]
-factor-rocksdb = ["dep:rocksdb"]
 
 [dev-dependencies]
 signal_common = { path = "crates/signal_common", features = ["test-utils"] }

@@ -41,5 +41,15 @@ async fn main() -> Result<()> {
     );
 
     let mut app = FusionFactorPubApp::new(&args.config, args.venue).await?;
-    app.run().await
+    let mut one_minute = FusionFactorPubApp::try_new_one_minute(&args.config, args.venue).await?;
+    info!(
+        "fusion_factor_pub pipelines: venue={} 5s=enabled 1m={}",
+        args.venue.data_pub_slug(),
+        if one_minute.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    app.run_with_optional_one_minute(one_minute.as_mut()).await
 }

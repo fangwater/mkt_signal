@@ -1,4 +1,3 @@
-#![cfg_attr(not(feature = "factor-rocksdb"), allow(dead_code))]
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
@@ -98,10 +97,11 @@ struct ZscoreConfigResp {
     thresholds: HashMap<String, ZscoreRuntimeConfig>,
 }
 
-pub(crate) async fn load_zscore_config_from_tlen_server(
+pub(crate) async fn load_optional_zscore_config_from_tlen_server(
     tlen: &TlenServerConfig,
     venue_slug: &str,
-) -> Result<ZscoreRuntimeConfig> {
+    config_type: &str,
+) -> Result<Option<ZscoreRuntimeConfig>> {
     let base_url = tlen.base_url.trim_end_matches('/');
     let client = Client::builder()
         .timeout(Duration::from_millis(tlen.request_timeout_ms))
@@ -111,7 +111,7 @@ pub(crate) async fn load_zscore_config_from_tlen_server(
     let url = format!("{}/api/thresholds", base_url);
     let resp = client
         .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "zscore")])
+        .query(&[("venue", venue_slug), ("config_type", config_type)])
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -127,8 +127,25 @@ pub(crate) async fn load_zscore_config_from_tlen_server(
         .thresholds
         .get(TLEN_SHARED_CONFIG_FIELD)
         .or_else(|| payload.thresholds.values().next())
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("tlen_server returned empty zscore config"))?;
-    cfg.validate()?;
+        .cloned();
+    if let Some(cfg) = cfg.as_ref() {
+        cfg.validate()?;
+    }
     Ok(cfg)
+}
+
+pub(crate) async fn load_zscore_config_from_tlen_server(
+    tlen: &TlenServerConfig,
+    venue_slug: &str,
+    config_type: &str,
+) -> Result<ZscoreRuntimeConfig> {
+    load_optional_zscore_config_from_tlen_server(tlen, venue_slug, config_type)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "tlen_server returned empty zscore config: venue={} config_type={}",
+                venue_slug,
+                config_type
+            )
+        })
 }

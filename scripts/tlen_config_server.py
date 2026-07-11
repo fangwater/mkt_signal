@@ -10,6 +10,9 @@
       - amount_thresholds
       - factor_plan
       - zscore
+      - amount_thresholds_1m
+      - factor_plan_1m
+      - zscore_1m
   - 配置按 venue 维度存取。
 
 Redis key 约定：
@@ -17,6 +20,9 @@ Redis key 约定：
   - Amount thresholds: <venue>:amount-thresholds
   - Factor plan: <venue>:factor-plan
   - Zscore config: <venue>:zscore
+  - 1min Amount thresholds: <venue>:amount-thresholds-1m
+  - 1min Factor plan: <venue>:factor-plan-1m
+  - 1min Zscore config: <venue>:zscore-1m
 
 示例：
   python scripts/tlen_config_server.py
@@ -43,6 +49,9 @@ SUPPORTED_CONFIG_TYPES = [
     "amount_thresholds",
     "factor_plan",
     "zscore",
+    "amount_thresholds_1m",
+    "factor_plan_1m",
+    "zscore_1m",
 ]
 SUPPORTED_VENUES = [
     "binance-margin",
@@ -151,13 +160,47 @@ def normalize_config_type(value: object) -> Optional[str]:
     raw = str(value or "").strip().lower().replace("-", "_")
     if raw in ("tlen", "tlen_threshold", "tlen_thresholds"):
         return "tlen"
+    if raw in (
+        "amount_1m",
+        "amount_threshold_1m",
+        "amount_thresholds_1m",
+    ):
+        return "amount_thresholds_1m"
     if raw in ("amount", "amount_threshold", "amount_thresholds"):
         return "amount_thresholds"
+    if raw in (
+        "factor_plan_1m",
+        "factor_plans_1m",
+        "plan_1m",
+        "plans_1m",
+    ):
+        return "factor_plan_1m"
     if raw in ("factor_plan", "factor_plans", "plan", "plans"):
         return "factor_plan"
+    if raw in (
+        "zscore_1m",
+        "zscores_1m",
+        "z_score_1m",
+        "rolling_zscore_1m",
+    ):
+        return "zscore_1m"
     if raw in ("zscore", "zscores", "z_score", "rolling_zscore"):
         return "zscore"
     return None
+
+
+def config_type_family(config_type: str) -> str:
+    normalized = normalize_config_type(config_type)
+    if normalized is None:
+        raise ValueError(f"unsupported config_type: {config_type}")
+    return normalized.removesuffix("_1m")
+
+
+def config_type_for_family(config_type: str, family: str) -> str:
+    normalized = normalize_config_type(config_type)
+    if normalized is None:
+        raise ValueError(f"unsupported config_type: {config_type}")
+    return f"{family}_1m" if normalized.endswith("_1m") else family
 
 
 def redis_key(venue: str, config_type: str) -> str:
@@ -165,14 +208,18 @@ def redis_key(venue: str, config_type: str) -> str:
     if venue_norm is None:
         raise ValueError(f"unsupported venue: {venue}")
     normalized_type = normalize_config_type(config_type)
+    suffixes = {
+        "amount_thresholds": "amount-thresholds",
+        "factor_plan": "factor-plan",
+        "zscore": "zscore",
+        "amount_thresholds_1m": "amount-thresholds-1m",
+        "factor_plan_1m": "factor-plan-1m",
+        "zscore_1m": "zscore-1m",
+    }
     if normalized_type == "tlen":
         return f"{venue_prefix(venue_norm)}:tlen_threshold"
-    if normalized_type == "amount_thresholds":
-        return f"{venue_norm}:amount-thresholds"
-    if normalized_type == "factor_plan":
-        return f"{venue_norm}:factor-plan"
-    if normalized_type == "zscore":
-        return f"{venue_norm}:zscore"
+    if normalized_type in suffixes:
+        return f"{venue_norm}:{suffixes[normalized_type]}"
     raise ValueError(f"unsupported config_type: {config_type}")
 
 
@@ -326,15 +373,15 @@ def parse_thresholds_map(data: Dict[str, str], venue: str, config_type: str) -> 
             symbol = normalize_symbol_for_venue(raw_symbol, venue)
             thresholds[symbol] = parse_threshold_value(raw_value)
             continue
-        if config_type == "amount_thresholds":
+        if config_type_family(config_type) == "amount_thresholds":
             symbol = normalize_symbol_for_venue(raw_symbol, venue)
             thresholds[symbol] = parse_amount_threshold_value(raw_value)
             continue
-        if config_type == "factor_plan":
+        if config_type_family(config_type) == "factor_plan":
             symbol = normalize_symbol_for_venue(raw_symbol, venue)
             thresholds[symbol] = parse_factor_plan_value(raw_value)
             continue
-        if config_type == "zscore":
+        if config_type_family(config_type) == "zscore":
             if thresholds:
                 raise ValueError("zscore config must contain exactly one shared entry")
             thresholds[SHARED_CONFIG_FIELD] = parse_zscore_value(raw_value)
@@ -347,7 +394,7 @@ def coerce_thresholds(payload: dict, venue: str, config_type: str) -> Dict[str, 
     thresholds_raw = payload.get("thresholds", payload)
     if not isinstance(thresholds_raw, dict):
         raise ValueError("payload must be an object or contain object field 'thresholds'")
-    if config_type == "zscore" and len(thresholds_raw) != 1:
+    if config_type_family(config_type) == "zscore" and len(thresholds_raw) != 1:
         raise ValueError(f"{config_type} payload must contain exactly one shared entry")
 
     encoded: Dict[str, str] = {}
@@ -356,17 +403,17 @@ def coerce_thresholds(payload: dict, venue: str, config_type: str) -> Dict[str, 
             symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
             encoded[symbol] = f"{parse_threshold_value(raw_value):.8f}"
             continue
-        if config_type == "amount_thresholds":
+        if config_type_family(config_type) == "amount_thresholds":
             symbol = normalize_symbol_for_venue(str(raw_symbol), venue)
             value = parse_amount_threshold_value(raw_value)
             encoded[symbol] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
-        if config_type == "factor_plan":
+        if config_type_family(config_type) == "factor_plan":
             value = parse_factor_plan_value(raw_value)
             symbol_key = normalize_symbol_for_venue(str(raw_symbol), venue)
             encoded[symbol_key] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
-        if config_type == "zscore":
+        if config_type_family(config_type) == "zscore":
             value = parse_zscore_value(raw_value)
             encoded[SHARED_CONFIG_FIELD] = json.dumps(value, ensure_ascii=False, sort_keys=True)
             continue
@@ -408,14 +455,14 @@ class TlenConfigStore:
         key = redis_key(venue, config_type)
         thresholds = self._fetch_parsed(venue, config_type)
         if symbol:
-            if config_type == "factor_plan":
+            if config_type_family(config_type) == "factor_plan":
                 normalized_symbol = normalize_symbol_for_venue(symbol, venue)
                 thresholds = {
                     normalized_symbol: thresholds.get(
                         normalized_symbol, default_factor_plan_value()
                     )
                 }
-            elif config_type == "zscore":
+            elif config_type_family(config_type) == "zscore":
                 thresholds = (
                     {SHARED_CONFIG_FIELD: thresholds[SHARED_CONFIG_FIELD]}
                     if SHARED_CONFIG_FIELD in thresholds
@@ -438,18 +485,39 @@ class TlenConfigStore:
 
     def _fetch_parsed(self, venue: str, config_type: str) -> Dict[str, object]:
         key = redis_key(venue, config_type)
-        thresholds = parse_thresholds_map(decode_hash(self._redis.hgetall(key)), venue, config_type)
-        if config_type == "factor_plan":
-            amount_thresholds = parse_thresholds_map(
-                decode_hash(self._redis.hgetall(redis_key(venue, "amount_thresholds"))),
-                venue,
+        thresholds = parse_thresholds_map(
+            decode_hash(self._redis.hgetall(key)),
+            venue,
+            config_type,
+        )
+        if config_type_family(config_type) == "factor_plan":
+            amount_config_type = config_type_for_family(
+                config_type,
                 "amount_thresholds",
             )
-            thresholds = normalize_factor_plan_thresholds(venue, amount_thresholds, thresholds)
+            amount_thresholds = parse_thresholds_map(
+                decode_hash(
+                    self._redis.hgetall(redis_key(venue, amount_config_type))
+                ),
+                venue,
+                amount_config_type,
+            )
+            thresholds = normalize_factor_plan_thresholds(
+                venue,
+                amount_thresholds,
+                thresholds,
+            )
         elif config_type == "zscore" and not thresholds:
             default_value = default_zscore_value()
-            encoded = json.dumps(default_value, ensure_ascii=False, sort_keys=True)
-            self._redis.hset(key, mapping={SHARED_CONFIG_FIELD: encoded})
+            encoded = json.dumps(
+                default_value,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            self._redis.hset(
+                key,
+                mapping={SHARED_CONFIG_FIELD: encoded},
+            )
             thresholds = {SHARED_CONFIG_FIELD: default_value}
         return thresholds
 
@@ -459,9 +527,20 @@ class TlenConfigStore:
         config_type: str,
         thresholds: Dict[str, str],
     ) -> Dict[str, object]:
-        if config_type == "factor_plan":
-            parsed_factor_plans = parse_thresholds_map(thresholds, venue, "factor_plan")
-            amount_thresholds = self._fetch_parsed(venue, "amount_thresholds")
+        if config_type_family(config_type) == "factor_plan":
+            amount_config_type = config_type_for_family(
+                config_type,
+                "amount_thresholds",
+            )
+            parsed_factor_plans = parse_thresholds_map(
+                thresholds,
+                venue,
+                config_type,
+            )
+            amount_thresholds = self._fetch_parsed(
+                venue,
+                amount_config_type,
+            )
             normalized_factor_plans = normalize_factor_plan_thresholds(
                 venue,
                 amount_thresholds,
@@ -616,7 +695,7 @@ def page_html(config: ServerConfig) -> str:
   <div class="wrap">
     <div class="card">
       <h1>{SERVICE_NAME}</h1>
-      <div class="muted">共享配置管理服务。当前支持 <code>tlen_threshold</code>、<code>amount_thresholds</code>、<code>factor_plan</code> 与 <code>zscore</code>。</div>
+      <div class="muted">共享配置管理服务。支持 5s 与独立 1min 的 amount thresholds、factor plan 和 zscore。</div>
     </div>
 
     <div class="card">
@@ -1049,6 +1128,70 @@ def _run_tests() -> None:
         "zscore_cap": 3.0,
     }
     assert parse_zscore_value(default_zscore_value()) == default_zscore_value()
+
+
+    assert normalize_config_type("factor-plan-1m") == "factor_plan_1m"
+    assert normalize_config_type("z_score_1m") == "zscore_1m"
+    assert config_type_family("amount_thresholds_1m") == "amount_thresholds"
+    assert (
+        config_type_for_family("factor_plan_1m", "amount_thresholds")
+        == "amount_thresholds_1m"
+    )
+    assert (
+        redis_key("binance-futures", "amount_thresholds_1m")
+        == "binance-futures:amount-thresholds-1m"
+    )
+    assert (
+        redis_key("binance-futures", "factor_plan_1m")
+        == "binance-futures:factor-plan-1m"
+    )
+    assert (
+        redis_key("binance-futures", "zscore_1m")
+        == "binance-futures:zscore-1m"
+    )
+
+    class TestRedis:
+        def __init__(self) -> None:
+            self.hashes: Dict[str, Dict[str, str]] = {}
+
+        def hgetall(self, key: str) -> Dict[str, str]:
+            return dict(self.hashes.get(key, {}))
+
+        def hset(self, key: str, mapping: Dict[str, str]) -> None:
+            self.hashes.setdefault(key, {}).update(mapping)
+
+    store = object.__new__(TlenConfigStore)
+    store._redis = TestRedis()
+    assert store._fetch_parsed("binance-futures", "zscore_1m") == {}
+    assert "binance-futures:zscore-1m" not in store._redis.hashes
+    assert store._fetch_parsed("binance-futures", "zscore") == {
+        SHARED_CONFIG_FIELD: default_zscore_value()
+    }
+    assert "binance-futures:zscore" in store._redis.hashes
+    store._redis.hashes[
+        redis_key("binance-futures", "amount_thresholds_1m")
+    ] = {
+        "BTCUSDT": json.dumps(
+            _test_amount_threshold(),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    }
+    store._redis.hashes[
+        redis_key("binance-futures", "factor_plan_1m")
+    ] = {
+        "BTCUSDT": json.dumps(
+            _test_factor_plan("factor_001"),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    }
+    assert store._fetch_parsed(
+        "binance-futures",
+        "factor_plan_1m",
+    ) == {
+        "BTCUSDT": _test_factor_plan("factor_001")
+    }
 
 
 if __name__ == "__main__":
