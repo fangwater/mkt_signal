@@ -34,14 +34,12 @@ if [[ "${env_tag}" == "${dir_name}" ]]; then
   env_tag="intra"
 fi
 PROC_NAME="${HEDGE_LAZY_TAKER_EVAL_PROCESS_NAME:-intra_hlte_binance_${env_tag}}"
-CONFIG_PATH="${HEDGE_LAZY_TAKER_EVAL_CONFIG:-${BASE_DIR}/config/mkt_cfg.yaml}"
 OUTPUT_DIR="${HEDGE_LAZY_TAKER_EVAL_OUTPUT_DIR:-${BASE_DIR}/data/hedge_lazy_taker_eval}"
 DELAY_MS="${HEDGE_LAZY_TAKER_EVAL_DELAY_MS:-2}"
 BUFFER_SECS="${HEDGE_LAZY_TAKER_EVAL_BUFFER_SECS:-600}"
 MAX_POINTS="${HEDGE_LAZY_TAKER_EVAL_MAX_POINTS_PER_SYMBOL:-200000}"
 
 args=(
-  --config "${CONFIG_PATH}"
   --output-dir "${OUTPUT_DIR}"
   --delay-ms "${DELAY_MS}"
   --buffer-secs "${BUFFER_SECS}"
@@ -49,9 +47,6 @@ args=(
 )
 if [[ -n "${HEDGE_LAZY_TAKER_EVAL_CORE:-}" ]]; then
   args+=(--core "${HEDGE_LAZY_TAKER_EVAL_CORE}")
-fi
-if [[ -n "${HEDGE_LAZY_TAKER_EVAL_SYMBOLS:-}" ]]; then
-  args+=(--symbols "${HEDGE_LAZY_TAKER_EVAL_SYMBOLS}")
 fi
 
 shell_quote() {

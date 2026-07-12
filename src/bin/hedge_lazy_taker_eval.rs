@@ -1,32 +1,26 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use futures_util::stream::FuturesUnordered;
-use futures_util::StreamExt;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use mkt_signal::cfg::Config;
-use mkt_signal::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
+use mkt_parsers::msg::mkt_msg::{get_msg_type, AskBidSpreadMsg, MktMsgType};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use serde::Serialize;
-use serde_json::Value;
 use signal_common::lazy_taker_action::{
     LazyTakerAction, LazyTakerActionMsg, LAZY_TAKER_ACTION_CHANNEL, LAZY_TAKER_ACTION_PAYLOAD,
 };
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::path::PathBuf;
 use std::time::Duration;
-use tokio::sync::watch;
 
-const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
-const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
+const BBO_SERVICE: &str = "spread_pbs/binance-futures/ask_bid_spread";
+const BBO_PAYLOAD: usize = 128;
+const BBO_DRAIN_BUDGET: usize = 8192;
 
 #[derive(Parser)]
 #[command(name = "hedge_lazy_taker_eval")]
@@ -34,12 +28,6 @@ const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
 struct Args {
     #[arg(long)]
     core: Option<usize>,
-
-    #[arg(long)]
-    symbols: Option<String>,
-
-    #[arg(long)]
-    config: Option<String>,
 
     #[arg(long, default_value = "data/hedge_lazy_taker_eval")]
     output_dir: PathBuf,
@@ -493,6 +481,51 @@ impl ActionSubscriber {
     }
 }
 
+struct BboSubscriber {
+    _node: Node<ipc::Service>,
+    subscriber: Subscriber<ipc::Service, [u8; BBO_PAYLOAD], ()>,
+}
+
+impl BboSubscriber {
+    fn new() -> Result<Self> {
+        let node_name = format!("hedge_lazy_taker_eval_bbo_{}", std::process::id());
+        let node = NodeBuilder::new()
+            .name(&NodeName::new(&node_name)?)
+            .create::<ipc::Service>()?;
+        let service_name = build_service_name(BBO_SERVICE);
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; BBO_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(64)
+            .history_size(100)
+            .subscriber_max_buffer_size(8192)
+            .open_or_create()?;
+        let subscriber = service.subscriber_builder().create()?;
+        Ok(Self {
+            _node: node,
+            subscriber,
+        })
+    }
+
+    fn drain<F>(&self, mut handler: F) -> Result<usize>
+    where
+        F: FnMut(String, BboPoint),
+    {
+        let mut count = 0usize;
+        while count < BBO_DRAIN_BUDGET {
+            let Some(sample) = self.subscriber.receive()? else {
+                break;
+            };
+            if let Some((symbol, point)) = decode_bbo(sample.payload(), get_timestamp_us()) {
+                handler(symbol, point);
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -508,132 +541,63 @@ async fn main() -> Result<()> {
 }
 
 async fn run(args: Args) -> Result<()> {
-    let config_path = resolve_cfg_path(args.config.as_deref())?;
-    let cfg = Config::load_config(&config_path, TradingVenue::BinanceFutures).await?;
-    let symbols = match args.symbols.as_deref() {
-        Some(raw) => parse_symbols(raw),
-        None => cfg.wait_for_symbols().await,
-    };
-    anyhow::ensure!(!symbols.is_empty(), "empty Binance futures symbol set");
-
-    let state = Rc::new(RefCell::new(AnalyzerState::new(&args)?));
-    let handler_state = state.clone();
-    let handler: FrameHandler = Rc::new(move |recv_us, raw| {
-        let Some((symbol, bid, ask)) = parse_book_ticker(raw) else {
-            return;
-        };
-        handler_state.borrow_mut().push_bbo(
-            symbol,
-            BboPoint {
-                local_tp_us: recv_us,
-                bid,
-                ask,
-            },
-        );
-    });
-
-    let subscribe_msgs = build_subscribe(&symbols);
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ws_task = tokio::task::spawn_local(run_public_ws(
-        WsLoopParams {
-            label: "hedge-lazy-taker-eval",
-            url: BINANCE_FUTURES_WS_URL.to_string(),
-            local_ip: cfg.primary_local_ip.clone(),
-            remote_ip: None,
-            headers: Vec::new(),
-            subscribe_msgs,
-            keepalive: None,
-            parse_okex_notices: false,
-        },
-        handler,
-        shutdown_rx.clone(),
-    ));
-
-    let eval_state = state.clone();
-    let eval_shutdown = shutdown_rx.clone();
-    let eval_task = tokio::task::spawn_local(async move {
-        let result = async {
-            let subscriber = ActionSubscriber::new()?;
-            let mut ticker = tokio::time::interval(Duration::from_millis(1));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                if *eval_shutdown.borrow() {
-                    break;
-                }
-                subscriber.drain(|msg| eval_state.borrow_mut().handle_action(msg))?;
-                eval_state.borrow_mut().process_ready(get_timestamp_us())?;
-            }
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
-        if let Err(err) = result {
-            log::error!("hedge lazy taker eval action loop failed: {err:#}");
-        }
-    });
-
-    let ctrl_c_task = tokio::task::spawn_local(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                let _ = shutdown_tx.send(true);
-            }
-            Err(err) => log::error!("hedge lazy taker eval ctrl-c failed: {err:#}"),
-        }
-    });
+    let mut state = AnalyzerState::new(&args)?;
+    let bbo_subscriber = BboSubscriber::new()?;
+    let action_subscriber = ActionSubscriber::new()?;
+    let mut ticker = tokio::time::interval(Duration::from_millis(1));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
 
     log::info!(
-        "binance lazy taker eval started symbols={} delay_ms={} buffer_secs={} output_dir={} service=signal_pubs/{}",
-        symbols.len(),
+        "binance lazy taker eval started delay_ms={} buffer_secs={} output_dir={} bbo_service={} action_service=signal_pubs/{}",
         args.delay_ms,
         args.buffer_secs,
         args.output_dir.display(),
+        BBO_SERVICE,
         LAZY_TAKER_ACTION_CHANNEL,
     );
 
-    let mut tasks = FuturesUnordered::new();
-    tasks.push(ws_task);
-    tasks.push(eval_task);
-    tasks.push(ctrl_c_task);
-    while let Some(joined) = tasks.next().await {
-        if let Err(err) = joined {
-            log::error!("hedge lazy taker eval join failed: {err:#}");
+    loop {
+        tokio::select! {
+            result = &mut ctrl_c => {
+                result.context("install ctrl-c handler failed")?;
+                break;
+            }
+            _ = ticker.tick() => {
+                bbo_subscriber.drain(|symbol, point| state.push_bbo(symbol, point))?;
+                action_subscriber.drain(|msg| state.handle_action(msg))?;
+                state.process_ready(get_timestamp_us())?;
+            }
         }
-        break;
     }
     Ok(())
 }
 
-fn build_subscribe(symbols: &[String]) -> Vec<Value> {
-    let streams: Vec<String> = symbols
-        .iter()
-        .map(|symbol| format!("{}@bookTicker", symbol.to_ascii_lowercase()))
-        .collect();
-    streams
-        .chunks(BINANCE_SUBSCRIBE_CHUNK)
-        .enumerate()
-        .map(|(index, chunk)| {
-            serde_json::json!({
-                "method": "SUBSCRIBE",
-                "params": chunk,
-                "id": index + 1,
-            })
-        })
-        .collect()
-}
-
-fn parse_book_ticker(raw: &[u8]) -> Option<(String, f64, f64)> {
-    let value: Value = serde_json::from_slice(raw).ok()?;
-    let payload = value.get("data").unwrap_or(&value);
-    let symbol = payload.get("s")?.as_str()?.to_ascii_uppercase();
-    let bid = parse_f64(payload.get("b")?)?;
-    let ask = parse_f64(payload.get("a")?)?;
-    (bid.is_finite() && ask.is_finite() && bid > 0.0 && ask > 0.0).then_some((symbol, bid, ask))
-}
-
-fn parse_f64(value: &Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_str()?.parse::<f64>().ok())
+fn decode_bbo(payload: &[u8], local_tp_us: i64) -> Option<(String, BboPoint)> {
+    if payload.len() < 8 || get_msg_type(payload) != MktMsgType::AskBidSpread {
+        return None;
+    }
+    let symbol_len = u32::from_le_bytes(payload.get(4..8)?.try_into().ok()?) as usize;
+    if payload.len() < 8 + symbol_len + 40 {
+        return None;
+    }
+    let symbol = AskBidSpreadMsg::get_symbol(payload)
+        .trim()
+        .to_ascii_uppercase();
+    let bid = AskBidSpreadMsg::get_bid_price(payload);
+    let ask = AskBidSpreadMsg::get_ask_price(payload);
+    if symbol.is_empty() || !bid.is_finite() || !ask.is_finite() || bid <= 0.0 || ask <= 0.0 {
+        return None;
+    }
+    Some((
+        symbol,
+        BboPoint {
+            local_tp_us,
+            bid,
+            ask,
+        },
+    ))
 }
 
 fn taker_price(bbo: BboPoint, direction: i8) -> f64 {
@@ -642,25 +606,6 @@ fn taker_price(bbo: BboPoint, direction: i8) -> f64 {
     } else {
         bbo.ask
     }
-}
-
-fn parse_symbols(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|symbol| !symbol.is_empty())
-        .map(|symbol| symbol.to_ascii_uppercase())
-        .collect()
-}
-
-fn resolve_cfg_path(explicit: Option<&str>) -> Result<String> {
-    if let Some(path) = explicit {
-        return Ok(path.to_string());
-    }
-    if Path::new("config/mkt_cfg.yaml").exists() {
-        return Ok("config/mkt_cfg.yaml".to_string());
-    }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    Ok(format!("{home}/spread_pbs/config/mkt_cfg.yaml"))
 }
 
 fn csv_text(value: &str) -> String {
@@ -678,4 +623,23 @@ fn fmt_optional(value: Option<f64>) -> String {
     value
         .map(|number| format!("{number:.12}"))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_bbo_ipc_payload_with_local_receive_time() {
+        let encoded =
+            AskBidSpreadMsg::create("btcusdt".to_string(), 123, 100.0, 2.0, 101.0, 3.0).to_bytes();
+        let mut payload = [0u8; BBO_PAYLOAD];
+        payload[..encoded.len()].copy_from_slice(&encoded);
+
+        let (symbol, point) = decode_bbo(&payload, 456).expect("valid BBO");
+        assert_eq!(symbol, "BTCUSDT");
+        assert_eq!(point.local_tp_us, 456);
+        assert_eq!(point.bid, 100.0);
+        assert_eq!(point.ask, 101.0);
+    }
 }
