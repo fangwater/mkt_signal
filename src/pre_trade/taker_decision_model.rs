@@ -944,6 +944,41 @@ impl PreTradeTakerDecisionModel {
         })
     }
 
+    pub fn evaluation_model_name_global() -> Option<String> {
+        TAKER_DECISION_MODEL.with(|cell| {
+            let guard = cell.borrow();
+            let model = guard.as_ref()?;
+            let source = match model.cfg.model_type {
+                TakerDecisionModelType::TreeModel => model.service_name.as_str(),
+                TakerDecisionModelType::NnModel => {
+                    let configured = model.cfg.service.trim();
+                    if configured.is_empty() || configured == "-" {
+                        model.cfg.nn_zmq_ipc.as_deref().unwrap_or("nn_model")
+                    } else {
+                        configured
+                    }
+                }
+            };
+            model_name_from_service_name(source)
+                .or_else(|| Some(model.cfg.model_type.as_str().to_string()))
+        })
+    }
+
+    pub fn nn_score_global(symbol: &str) -> Option<f64> {
+        TAKER_DECISION_MODEL.with(|cell| {
+            let guard = cell.borrow();
+            let model = guard.as_ref()?;
+            if model.cfg.model_type != TakerDecisionModelType::NnModel {
+                return None;
+            }
+            model
+                .states
+                .get(&normalize_symbol_for_internal(symbol))?
+                .latest_score
+                .filter(|score| score.is_finite())
+        })
+    }
+
     pub fn arb_open_gate_global(symbol: &str) -> Option<TakerDecisionOpenGateSnapshot> {
         TAKER_DECISION_MODEL.with(|cell| {
             let guard = cell.borrow();

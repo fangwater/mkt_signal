@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::{
     register_account_open_block, register_bybit_internal_system_open_block, AccountOpenBlockReason,
     BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
+use crate::pre_trade::lazy_taker_action::publish_lazy_taker_action;
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
@@ -47,6 +48,7 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
 use signal_common::common::{align_price_floor, TradingLeg};
 use signal_common::hedge_signal::{ArbHedgeCtx, ArbHedgeSignalQueryMsg};
+use signal_common::lazy_taker_action::LazyTakerAction;
 use signal_common::tick_math::QuantizedValue;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
@@ -93,6 +95,32 @@ fn arb_hedge_force_taker() -> bool {
 fn arb_hedge_lazy_taker() -> bool {
     *ARB_HEDGE_LAZY_TAKER
         .get_or_init(|| env_flag_enabled(&["ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER"]))
+}
+
+fn publish_lazy_action(
+    symbol: &str,
+    venue: TradingVenue,
+    local_tp_us: i64,
+    due_hedge_qty: f64,
+    action: LazyTakerAction,
+) {
+    let direction = if due_hedge_qty > ARB_HEDGE_QTY_EPS {
+        1
+    } else if due_hedge_qty < -ARB_HEDGE_QTY_EPS {
+        -1
+    } else {
+        return;
+    };
+    let model_name = PreTradeTakerDecisionModel::evaluation_model_name_global()
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = publish_lazy_taker_action(
+        local_tp_us,
+        symbol,
+        &model_name,
+        venue.to_u8(),
+        action,
+        direction,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -926,6 +954,13 @@ impl ArbHedgeStrategy {
         let snapshot = PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty);
         match decide_due_hedge_route(false, true, snapshot.as_ref()) {
             DueHedgeRoute::Hold => {
+                publish_lazy_action(
+                    &self.symbol,
+                    self.hedge_venue,
+                    now_ts,
+                    due_hedge_qty,
+                    LazyTakerAction::Hold,
+                );
                 if let Some(snapshot) = snapshot.as_ref() {
                     debug!(
                         "ArbHedgeStrategy: strategy_id={} symbol={} lazy model update remains keep decision={:?} due_hedge_qty={:.8} due_hedge_usdt={:.8} q={:?}",
@@ -984,11 +1019,21 @@ impl ArbHedgeStrategy {
                 }
             }
         }
-        self.send_lazy_model_taker_hedge_direct(
+        let sent = self.send_lazy_model_taker_hedge_direct(
             now_ts,
             due_hedge_qty,
             snapshot.and_then(|snapshot| snapshot.percentile.or(model_percentile)),
-        )
+        );
+        if sent {
+            publish_lazy_action(
+                &self.symbol,
+                self.hedge_venue,
+                now_ts,
+                due_hedge_qty,
+                LazyTakerAction::Take,
+            );
+        }
+        sent
     }
 
     fn try_send_due_hedge_query(
@@ -1062,6 +1107,13 @@ impl ArbHedgeStrategy {
 
         match decide_due_hedge_route(force_taker, lazy_taker, snapshot.as_ref()) {
             DueHedgeRoute::Hold => {
+                publish_lazy_action(
+                    &self.symbol,
+                    self.hedge_venue,
+                    now_ts,
+                    due_hedge_qty,
+                    LazyTakerAction::Hold,
+                );
                 if throttle_on_skip {
                     self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 }
@@ -1137,6 +1189,15 @@ impl ArbHedgeStrategy {
                     )
                 };
                 if sent {
+                    if lazy_taker && !force_taker {
+                        publish_lazy_action(
+                            &self.symbol,
+                            self.hedge_venue,
+                            now_ts,
+                            due_hedge_qty,
+                            LazyTakerAction::Take,
+                        );
+                    }
                     return true;
                 }
                 if throttle_on_skip {

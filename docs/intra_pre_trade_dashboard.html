@@ -455,7 +455,7 @@
                 <th>hedge_qty</th>
                 <th>arb_time</th>
                 <th>arb_mode</th>
-                <th>arb_ret_qtl</th>
+                <th id="arb-model-value-head">arb_ret_qtl</th>
                 <th>offset</th>
                 <th>exposure_usdt</th>
               </tr>
@@ -517,6 +517,7 @@
 
           exposureBody: document.getElementById("exposure-body"),
           exposureEmpty: document.getElementById("exposure-empty"),
+          arbModelValueHead: document.getElementById("arb-model-value-head"),
         };
 
         const fmtQty = new Intl.NumberFormat("en-US", {
@@ -534,6 +535,10 @@
         const fmtQtl = new Intl.NumberFormat("en-US", {
           minimumFractionDigits: 3,
           maximumFractionDigits: 3,
+        });
+        const fmtScore = new Intl.NumberFormat("en-US", {
+          minimumFractionDigits: 6,
+          maximumFractionDigits: 6,
         });
         const fmtOffset = new Intl.NumberFormat("en-US", {
           minimumFractionDigits: 4,
@@ -776,6 +781,12 @@
             });
 
           el.exposureBody.innerHTML = "";
+          const showScore = filtered.some((r) =>
+            isFiniteNumber(r && r.arb_hedge_score)
+          );
+          el.arbModelValueHead.textContent = showScore
+            ? "arb_score"
+            : "arb_ret_qtl";
           for (const r of filtered) {
             const arbMode =
               r && typeof r.arb_hedge_is_taker === "boolean"
@@ -784,8 +795,12 @@
                   : "maker"
                 : "-";
             const arbTime = fmtTimeUtc8(r && r.arb_hedge_time_ms);
-            const arbRetQtl = isFiniteNumber(r && r.arb_hedge_ret_qtl)
-              ? fmt(r.arb_hedge_ret_qtl, fmtQtl)
+            const hasScore = isFiniteNumber(r && r.arb_hedge_score);
+            const arbModelValue = hasScore
+              ? r.arb_hedge_score
+              : r && r.arb_hedge_ret_qtl;
+            const arbModelText = isFiniteNumber(arbModelValue)
+              ? fmt(arbModelValue, hasScore ? fmtScore : fmtQtl)
               : "--";
             const offset = pickOffset(r);
             const offsetText = isFiniteNumber(offset)
@@ -800,7 +815,7 @@
               <td class="${classify(r.hedge_qty)}">${fmt(r.hedge_qty, fmtQty)}</td>
               <td class="muted">${arbTime}</td>
               <td class="muted">${arbMode}</td>
-              <td class="${classify(r.arb_hedge_ret_qtl)}">${arbRetQtl}</td>
+              <td class="${classify(arbModelValue)}">${arbModelText}</td>
               <td class="muted">${offsetText}</td>
               <td class="${classify(r.net_usdt)}">${fmt(r.net_usdt, fmtUsd)}</td>
             `;

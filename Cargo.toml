@@ -221,6 +221,10 @@ name = "binance_bbo_time_probe"
 path = "src/bin/binance_bbo_time_probe.rs"
 
 [[bin]]
+name = "hedge_lazy_taker_eval"
+path = "src/bin/hedge_lazy_taker_eval.rs"
+
+[[bin]]
 name = "binance_bbo_parser_bench"
 path = "src/bin/binance_bbo_parser_bench.rs"
 

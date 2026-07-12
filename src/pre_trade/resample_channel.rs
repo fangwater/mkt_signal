@@ -9,6 +9,7 @@ use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use anyhow::Result;
 use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use log::{debug, info, trace, warn};
@@ -707,6 +708,7 @@ impl ResampleChannel {
                 }
 
                 let symbol = exposure_price_mapper.asset_to_price_symbol(&asset_upper);
+                let arb_hedge_score = PreTradeTakerDecisionModel::nn_score_global(&symbol);
                 let mark = price_snapshot
                     .get(&symbol)
                     .map(|p| p.mark_price)
@@ -769,6 +771,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms,
                     arb_hedge_is_taker,
                     arb_hedge_ret_qtl,
+                    arb_hedge_score,
                     arb_hedge_offset,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
@@ -795,6 +798,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms: None,
                     arb_hedge_is_taker: None,
                     arb_hedge_ret_qtl: None,
+                    arb_hedge_score: None,
                     arb_hedge_offset: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),

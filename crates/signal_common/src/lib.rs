@@ -4,6 +4,7 @@ pub mod cancel_signal;
 pub mod common;
 pub mod exec_signal;
 pub mod hedge_signal;
+pub mod lazy_taker_action;
 pub mod min_qty_table;
 pub mod mm_signal;
 pub mod open_signal;
