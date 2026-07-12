@@ -55,6 +55,7 @@ STRATEGY_BOOL_PARAM_KEYS = [
     "enable_environment_model",
     "enable_volatility_limit",
     "enable_taker_decsion_model",
+    "enable_taker_decsion_model_cancel",
 ]
 
 REQUIRED_STRATEGY_PARAMS = {
@@ -1697,55 +1698,106 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
                 "or ARB_HEDGE_lazy_TAKER=on"
             )
 
+    model_type_key = "taker_decsion_model_type"
+    if model_type_key in normalized:
+        model_type = str(normalized[model_type_key]).strip().lower()
+        if model_type not in ("tree_model", "nn_model"):
+            raise ValueError("taker_decsion_model_type must be tree_model or nn_model")
+        normalized[model_type_key] = model_type
+    else:
+        model_type = "tree_model"
+
+    model_enabled = parse_bool_text(normalized.get(enable_key), False)
     service_key = "taker_decsion_model_service"
     if (
-        parse_bool_text(normalized.get(enable_key), False)
+        model_enabled
+        and model_type == "tree_model"
         and str(normalized.get(service_key, "")).strip() in ("", "-")
     ):
-        raise ValueError("enable_taker_decsion_model=true requires taker_decsion_model_service")
-
-    score_rolling_mean_window_key = "taker_decsion_model_score_rolling_mean_window"
-    if score_rolling_mean_window_key in normalized:
-        normalized[score_rolling_mean_window_key] = normalize_positive_int_text(
-            normalized[score_rolling_mean_window_key], score_rolling_mean_window_key
+        raise ValueError(
+            "tree_model requires taker_decsion_model_service when taker decision is enabled"
         )
 
+    score_rolling_mean_window_key = "taker_decsion_model_score_rolling_mean_window"
     keep_long_key = "taker_decsion_model_keep_long_percentile"
     keep_short_key = "taker_decsion_model_keep_short_percentile"
     open_cancel_long_key = "taker_decsion_model_open_cancel_long_percentile"
     open_cancel_short_key = "taker_decsion_model_open_cancel_short_percentile"
-    if keep_long_key in normalized:
-        normalized[keep_long_key] = normalize_percentile_param_text(
-            normalized[keep_long_key], keep_long_key
-        )
-    if keep_short_key in normalized:
-        normalized[keep_short_key] = normalize_percentile_param_text(
-            normalized[keep_short_key], keep_short_key
-        )
-    if open_cancel_long_key in normalized:
-        normalized[open_cancel_long_key] = normalize_percentile_param_text(
-            normalized[open_cancel_long_key], open_cancel_long_key
-        )
-    if open_cancel_short_key in normalized:
-        normalized[open_cancel_short_key] = normalize_percentile_param_text(
-            normalized[open_cancel_short_key], open_cancel_short_key
-        )
-    if keep_long_key in normalized and keep_short_key in normalized:
-        keep_long = float(normalized[keep_long_key])
-        keep_short = float(normalized[keep_short_key])
-        if keep_short > keep_long:
-            raise ValueError(
-                "taker_decsion_model_keep_short_percentile must be <= "
-                "taker_decsion_model_keep_long_percentile"
+    if model_type == "tree_model":
+        if score_rolling_mean_window_key in normalized:
+            normalized[score_rolling_mean_window_key] = normalize_positive_int_text(
+                normalized[score_rolling_mean_window_key], score_rolling_mean_window_key
             )
-    if open_cancel_long_key in normalized and open_cancel_short_key in normalized:
-        open_cancel_long = float(normalized[open_cancel_long_key])
-        open_cancel_short = float(normalized[open_cancel_short_key])
-        if open_cancel_short > open_cancel_long:
-            raise ValueError(
-                "taker_decsion_model_open_cancel_short_percentile must be <= "
-                "taker_decsion_model_open_cancel_long_percentile"
+        if keep_long_key in normalized:
+            normalized[keep_long_key] = normalize_percentile_param_text(
+                normalized[keep_long_key], keep_long_key
             )
+        if keep_short_key in normalized:
+            normalized[keep_short_key] = normalize_percentile_param_text(
+                normalized[keep_short_key], keep_short_key
+            )
+        if open_cancel_long_key in normalized:
+            normalized[open_cancel_long_key] = normalize_percentile_param_text(
+                normalized[open_cancel_long_key], open_cancel_long_key
+            )
+        if open_cancel_short_key in normalized:
+            normalized[open_cancel_short_key] = normalize_percentile_param_text(
+                normalized[open_cancel_short_key], open_cancel_short_key
+            )
+        if keep_long_key in normalized and keep_short_key in normalized:
+            keep_long = float(normalized[keep_long_key])
+            keep_short = float(normalized[keep_short_key])
+            if keep_short > keep_long:
+                raise ValueError(
+                    "taker_decsion_model_keep_short_percentile must be <= "
+                    "taker_decsion_model_keep_long_percentile"
+                )
+        if open_cancel_long_key in normalized and open_cancel_short_key in normalized:
+            open_cancel_long = float(normalized[open_cancel_long_key])
+            open_cancel_short = float(normalized[open_cancel_short_key])
+            if open_cancel_short > open_cancel_long:
+                raise ValueError(
+                    "taker_decsion_model_open_cancel_short_percentile must be <= "
+                    "taker_decsion_model_open_cancel_long_percentile"
+                )
+    elif model_enabled:
+        endpoint_key = "taker_decsion_nn_model_zmq_ipc"
+        endpoint = str(normalized.get(endpoint_key, "")).strip()
+        if not endpoint.startswith("ipc://"):
+            raise ValueError(
+                "nn_model requires taker_decsion_nn_model_zmq_ipc starting with ipc://"
+            )
+        normalized[endpoint_key] = endpoint
+
+        nn_keep_long_key = "taker_decsion_nn_model_keep_long_score"
+        nn_keep_short_key = "taker_decsion_nn_model_keep_short_score"
+        nn_cancel_long_key = "taker_decsion_nn_model_open_cancel_long_score"
+        nn_cancel_short_key = "taker_decsion_nn_model_open_cancel_short_score"
+        nn_score_keys = (nn_keep_long_key, nn_keep_short_key)
+        for key in nn_score_keys:
+            if key not in normalized or not str(normalized[key]).strip():
+                raise ValueError(f"nn_model requires {key}")
+            normalized[key] = normalize_float_text(normalized[key], key)
+
+        if float(normalized[nn_keep_short_key]) > float(normalized[nn_keep_long_key]):
+            raise ValueError(
+                "taker_decsion_nn_model_keep_short_score must be <= "
+                "taker_decsion_nn_model_keep_long_score"
+            )
+        if parse_bool_text(
+            normalized.get("enable_taker_decsion_model_cancel"), True
+        ):
+            for key in (nn_cancel_long_key, nn_cancel_short_key):
+                if key not in normalized or not str(normalized[key]).strip():
+                    raise ValueError(f"nn_model with cancel enabled requires {key}")
+                normalized[key] = normalize_float_text(normalized[key], key)
+            if float(normalized[nn_cancel_short_key]) > float(
+                normalized[nn_cancel_long_key]
+            ):
+                raise ValueError(
+                    "taker_decsion_nn_model_open_cancel_short_score must be <= "
+                    "taker_decsion_nn_model_open_cancel_long_score"
+                )
     return normalized
 
 

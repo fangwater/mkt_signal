@@ -233,6 +233,10 @@ name = "model_pub_probe"
 path = "src/bin/model_pub_probe.rs"
 
 [[bin]]
+name = "predict_rnn_zmq_ipc_demo"
+path = "src/bin/predict_rnn_zmq_ipc_demo.rs"
+
+[[bin]]
 name = "inspect_model_input"
 path = "src/bin/inspect_model_input.rs"
 
