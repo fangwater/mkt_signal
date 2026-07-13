@@ -242,6 +242,7 @@ struct ModelScoreThresholdPointsLoad {
 }
 
 struct SymbolScoreState {
+    latest_raw_score: Option<f64>,
     latest_score: Option<f64>,
     score_window: VecDeque<f64>,
     score_sum: f64,
@@ -253,6 +254,7 @@ struct SymbolScoreState {
 impl SymbolScoreState {
     fn new() -> Self {
         Self {
+            latest_raw_score: None,
             latest_score: None,
             score_window: VecDeque::new(),
             score_sum: 0.0,
@@ -269,6 +271,7 @@ impl SymbolScoreState {
         score_ready: bool,
         rolling_mean_window: usize,
     ) -> Option<f64> {
+        self.latest_raw_score = Some(score);
         let window_len = rolling_mean_window.max(1);
         self.score_window.push_back(score);
         self.score_sum += score;
@@ -282,6 +285,16 @@ impl SymbolScoreState {
         self.latest_score_ready = score_ready;
         self.update_count = self.update_count.saturating_add(1);
         self.latest_percentile
+    }
+
+    fn latest_observation(&self, model_type: TakerDecisionModelType) -> Option<f64> {
+        match model_type {
+            TakerDecisionModelType::NnModel => self.latest_raw_score,
+            TakerDecisionModelType::TreeModel => {
+                self.latest_percentile.map(|percentile| percentile / 100.0)
+            }
+        }
+        .filter(|value| value.is_finite())
     }
 
     fn score_ready(&self) -> bool {
@@ -974,8 +987,19 @@ impl PreTradeTakerDecisionModel {
             model
                 .states
                 .get(&normalize_symbol_for_internal(symbol))?
-                .latest_score
+                .latest_raw_score
                 .filter(|score| score.is_finite())
+        })
+    }
+
+    pub fn latest_observation_global(symbol: &str) -> Option<f64> {
+        TAKER_DECISION_MODEL.with(|cell| {
+            let guard = cell.borrow();
+            let model = guard.as_ref()?;
+            model
+                .states
+                .get(&normalize_symbol_for_internal(symbol))?
+                .latest_observation(model.cfg.model_type)
         })
     }
 
@@ -1845,15 +1869,25 @@ mod tests {
     fn symbol_score_state_keeps_rolling_mean_per_instance() {
         let mut btc = SymbolScoreState::new();
         assert_eq!(btc.observe(1.0, Some(0.1), true, 3), Some(10.0));
+        assert_eq!(btc.latest_raw_score, Some(1.0));
         assert_eq!(btc.latest_score, Some(1.0));
 
         btc.observe(2.0, Some(0.2), true, 3);
+        assert_eq!(btc.latest_raw_score, Some(2.0));
         assert_eq!(btc.latest_score, Some(1.5));
 
         btc.observe(4.0, Some(0.4), true, 3);
         assert_eq!(btc.latest_score, Some(7.0 / 3.0));
 
         btc.observe(10.0, Some(0.9), true, 3);
+        assert_eq!(
+            btc.latest_observation(TakerDecisionModelType::NnModel),
+            Some(10.0)
+        );
+        assert_eq!(
+            btc.latest_observation(TakerDecisionModelType::TreeModel),
+            Some(0.9)
+        );
         assert_eq!(btc.latest_score, Some(16.0 / 3.0));
 
         let mut eth = SymbolScoreState::new();

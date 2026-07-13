@@ -121,6 +121,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     binance)
       OPS_TO_SYNC=(
         "flatten_binance_std.py"
+        "sell_binance_std_spot_excess.py"
         "flatten_margin_and_um.py"
         "flatten_binance_std_um.py"
         "cancel_binance_std_orders.py"

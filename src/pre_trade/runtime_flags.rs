@@ -22,7 +22,7 @@ pub fn enable_ipc_fast_poll() -> bool {
             return false;
         }
     }
-    true
+    false
 }
 
 pub(crate) fn fast_poll_hot_path_mode() -> bool {
@@ -56,11 +56,11 @@ mod tests {
     }
 
     #[test]
-    fn enable_ipc_fast_poll_defaults_on() {
+    fn enable_ipc_fast_poll_defaults_off() {
         let _guard = env_test_lock();
         std::env::remove_var("ENABLE_IPC_FAST_POLL");
         std::env::remove_var("enable_ipc_fast_poll");
-        assert!(enable_ipc_fast_poll());
+        assert!(!enable_ipc_fast_poll());
     }
 
     #[test]

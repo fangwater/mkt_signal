@@ -5,6 +5,7 @@
 - 优先调用 /papi/v1/margin/account 与 /papi/v1/um/account；若 404 会 fallback 到 /sapi/v1/margin/account 或 /fapi/v2/account（可用 --no-fallback 禁用）。
 - 显式指定 --margin-account-kind spot 时，现货腿按 /api/v3/account 的 balances 解析，不做 margin fallback。
 - margin/UM 方向相反时，仅平掉多出的敞口（对齐两边）。
+- spot-excess 模式只卖出超过 abs(UM) 的正现货数量，绝不调整 UM 合约。
 - margin/UM 同向或单边时，平掉该方向的全部敞口。
 - margin netAsset > 0 走 SELL、< 0 走 BUY（忽略与 quote 相同的资产）。
 - spot free+locked > 0 走 SELL（与 STANDARD 面板快照口径一致）。
@@ -116,9 +117,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["align", "clear"],
+        choices=["align", "clear", "spot-excess"],
         default="align",
-        help="align: 调整多出的单腿使两边对齐；clear: spot/margin 与 UM 两腿分别清到可交易最小单位，dust 需单独转换",
+        help=(
+            "align: 调整多出的单腿使两边对齐；clear: spot/margin 与 UM 两腿分别清到可交易最小单位；"
+            "spot-excess: 仅卖出超过 abs(UM) 的正现货数量，绝不调整 UM"
+        ),
     )
     parser.add_argument(
         "--margin-account-kind",
@@ -557,6 +561,21 @@ def build_margin_order(
     return MarginOrder(asset=pos.asset, symbol=pos.symbol, side=side, quantity=qty), reduce_qty - qty
 
 
+def build_spot_excess_order(
+    pos: MarginPosition,
+    um_quantity: Decimal,
+    precision: int,
+    min_qty: Decimal,
+    qty_rule: Optional[QuantityRule],
+) -> Tuple[Optional[MarginOrder], Decimal]:
+    if pos.quantity <= 0:
+        return None, Decimal("0")
+    excess_qty = pos.quantity - abs(um_quantity)
+    if excess_qty <= 0:
+        return None, Decimal("0")
+    return build_margin_order(pos, excess_qty, precision, min_qty, qty_rule)
+
+
 def build_um_orders(
     positions: List[UmPosition],
     reduce_qty: Decimal,
@@ -715,6 +734,12 @@ def main() -> None:
     if args.margin_account_kind == "spot" and not args.no_fallback:
         raise SystemExit("spot 模式必须显式禁用 fallback（请传 --no-fallback）")
 
+    if args.mode == "spot-excess":
+        if args.margin_account_kind != "spot":
+            raise SystemExit("spot-excess 模式只支持 --margin-account-kind spot")
+        if args.skip_margin or args.skip_um:
+            raise SystemExit("spot-excess 模式需要同时查询 spot 与 UM，不能使用 --skip-margin/--skip-um")
+
     if args.skip_margin and args.skip_um:
         print("skip-margin 与 skip-um 同时开启，无事可做", file=sys.stderr)
         sys.exit(0)
@@ -822,7 +847,7 @@ def main() -> None:
         )
 
     um_qty_rules: Dict[str, QuantityRule] = {}
-    if not args.skip_um and um_by_symbol:
+    if args.mode != "spot-excess" and not args.skip_um and um_by_symbol:
         um_qty_rules = fetch_quantity_rules(
             args.um_exchange_info_base_url,
             UM_EXCHANGE_INFO_PATH,
@@ -857,7 +882,18 @@ def main() -> None:
         margin_remaining = Decimal("0")
         um_remaining = Decimal("0")
 
-        if args.mode == "clear":
+        if args.mode == "spot-excess":
+            if margin_pos is not None:
+                order, margin_remaining = build_spot_excess_order(
+                    margin_pos,
+                    um_qty,
+                    args.quantity_precision,
+                    args.min_qty,
+                    margin_qty_rules.get(symbol),
+                )
+                if order:
+                    symbol_margin_orders.append(order)
+        elif args.mode == "clear":
             if margin_qty != 0 and margin_pos is not None:
                 order, margin_remaining = build_margin_order(
                     margin_pos,

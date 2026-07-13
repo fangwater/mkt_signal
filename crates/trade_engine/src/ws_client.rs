@@ -1397,10 +1397,6 @@ impl TradeWsClient {
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(250)
             .max(1);
-        let tcp_health_log_ms = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(10_000);
         let mut tcp_loss_health = TcpLossHealth::new(TcpLossHealthConfig::from_env());
         {
             let mut health = self.health.entry.borrow_mut();
@@ -1413,9 +1409,6 @@ impl TradeWsClient {
         let mut tcp_health_interval = time::interval(Duration::from_millis(tcp_health_sample_ms));
         tcp_health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         tcp_health_interval.tick().await;
-        let tcp_health_log_interval =
-            (tcp_health_log_ms > 0).then(|| Duration::from_millis(tcp_health_log_ms));
-        let mut last_tcp_health_log = std::time::Instant::now();
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
@@ -1461,11 +1454,7 @@ impl TradeWsClient {
                     self.send_ping(ws).await?;
                 }
                 _ = tcp_health_interval.tick() => {
-                    self.eval_tcp_health(
-                        &mut tcp_loss_health,
-                        &mut last_tcp_health_log,
-                        tcp_health_log_interval,
-                    );
+                    self.eval_tcp_health(&mut tcp_loss_health);
                 }
                 _ = time::sleep_until(planned_reconnect_sleep_until), if planned_reconnect_deadline.is_some() => {
                     if self.can_planned_reconnect_now()
@@ -3690,12 +3679,7 @@ impl TradeWsClient {
     /// Sample kernel TCP_INFO, update the one-second health window, and apply
     /// the hard anomaly rule: any retransmission immediately quarantines the
     /// connection and schedules a guarded drain-and-reconnect.
-    fn eval_tcp_health(
-        &mut self,
-        health: &mut TcpLossHealth,
-        last_log: &mut std::time::Instant,
-        log_interval: Option<Duration>,
-    ) {
+    fn eval_tcp_health(&mut self, health: &mut TcpLossHealth) {
         let Some(fd) = self.current_tcp_fd else {
             return;
         };
@@ -3771,13 +3755,9 @@ impl TradeWsClient {
         }
         self.update_health_queue_depths();
 
-        let should_log = d_retrans > 0
-            || log_interval
-                .map(|interval| last_log.elapsed() >= interval)
-                .unwrap_or(false);
-        if should_log {
+        if d_retrans > 0 {
             info!(
-                "TcpHealth: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_data_segs_out={} window_retrans={} window_bp={} total_retrans={} rtt_us={} rttvar_us={} route={} verdict={:?} acted={}",
+                "TcpHealthAnomaly: endpoint_id={} exchange={} url={} local_ip={} remote_addr={:?} d_data_segs_out={} d_retrans={} window_data_segs_out={} window_retrans={} window_bp={} total_retrans={} rtt_us={} rttvar_us={} route={} verdict={:?} acted={}",
                 self.id,
                 self.exchange,
                 self.url,
@@ -3795,7 +3775,6 @@ impl TradeWsClient {
                 verdict,
                 acted,
             );
-            *last_log = now;
         }
     }
 

@@ -21,7 +21,9 @@ use super::factor_pool::{
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
 use super::score_rolling::InlineScoreRolling;
-use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
+use crate::factor_pub::fusion_factor_pub::publisher::{
+    FUSION_FACTOR_MAX_SUBSCRIBERS, FUSION_FACTOR_PAYLOAD_MAX_BYTES,
+};
 use mkt_parsers::msg::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 
 const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
@@ -338,7 +340,7 @@ impl ModelPubApp {
             .service_builder(&ServiceName::new(service_path)?)
             .publish_subscribe::<[u8; INPUT_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(FUSION_FACTOR_MAX_SUBSCRIBERS)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
             .open_or_create()

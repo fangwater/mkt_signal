@@ -708,6 +708,9 @@ impl ResampleChannel {
                 }
 
                 let symbol = exposure_price_mapper.asset_to_price_symbol(&asset_upper);
+                let arb_hedge_ret_qtl =
+                    PreTradeTakerDecisionModel::latest_observation_global(&symbol)
+                        .or(arb_hedge_ret_qtl);
                 let arb_hedge_score = PreTradeTakerDecisionModel::nn_score_global(&symbol);
                 let mark = price_snapshot
                     .get(&symbol)

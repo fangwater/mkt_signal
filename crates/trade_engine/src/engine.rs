@@ -59,7 +59,11 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
 use log::{debug, info, warn};
-use rolling_common::health_snapshot::{HEALTH_MARKET_SPOT, HEALTH_SNAPSHOT_PAYLOAD_LEN};
+use rolling_common::health_snapshot::{
+    HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_MARKET_FUTURES, HEALTH_MARKET_SPOT,
+    HEALTH_SNAPSHOT_PAYLOAD_LEN, HEALTH_STATE_DISCONNECTED, HEALTH_STATE_DRAINING,
+    HEALTH_STATE_HEALTHY, HEALTH_STATE_PAUSED, HEALTH_STATE_PROTECTED, HEALTH_STATE_RECONNECTING,
+};
 use rtrb::{Consumer, PopError, Producer, PushError, RingBuffer};
 use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
@@ -82,8 +86,101 @@ const IPC_THREAD_DRAIN_BUDGET: usize = 64;
 const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 1024;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
+const DEFAULT_TCP_HEALTH_LOG_INTERVAL_MS: u64 = 60_000;
 const BINANCE_BASIC_WS_CONNECTIONS: usize = 4;
 const BINANCE_BASIC_WS_RECONNECT_PERIOD_MS: u64 = 300_000;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TcpHealthSummary {
+    endpoints: usize,
+    connected: usize,
+    healthy: usize,
+    disconnected: usize,
+    paused: usize,
+    draining: usize,
+    reconnecting: usize,
+    protected: usize,
+    spot_endpoints: usize,
+    spot_connected: usize,
+    futures_endpoints: usize,
+    futures_connected: usize,
+    window_data_segs_out: u64,
+    window_retrans: u64,
+    total_retrans: u64,
+    rtt_us_sum: u64,
+    rtt_samples: u64,
+    rtt_us_max: u32,
+    rttvar_us_max: u32,
+    pending: u64,
+    inflight: u64,
+}
+
+impl TcpHealthSummary {
+    fn from_snapshots(snapshots: &[HealthSnapshotMsg]) -> Self {
+        let mut summary = Self::default();
+        for msg in snapshots {
+            let connected = msg.flags & HEALTH_FLAG_CONNECTED != 0;
+            summary.endpoints += 1;
+            summary.connected += usize::from(connected);
+            match msg.state {
+                HEALTH_STATE_DISCONNECTED => summary.disconnected += 1,
+                HEALTH_STATE_HEALTHY => summary.healthy += 1,
+                HEALTH_STATE_PAUSED => summary.paused += 1,
+                HEALTH_STATE_DRAINING => summary.draining += 1,
+                HEALTH_STATE_RECONNECTING => summary.reconnecting += 1,
+                HEALTH_STATE_PROTECTED => summary.protected += 1,
+                _ => {}
+            }
+            match msg.market_id {
+                HEALTH_MARKET_SPOT => {
+                    summary.spot_endpoints += 1;
+                    summary.spot_connected += usize::from(connected);
+                }
+                HEALTH_MARKET_FUTURES => {
+                    summary.futures_endpoints += 1;
+                    summary.futures_connected += usize::from(connected);
+                }
+                _ => {}
+            }
+            summary.window_data_segs_out = summary
+                .window_data_segs_out
+                .saturating_add(msg.window_data_segs_out);
+            summary.window_retrans = summary.window_retrans.saturating_add(msg.window_retrans);
+            summary.total_retrans = summary
+                .total_retrans
+                .saturating_add(u64::from(msg.total_retrans));
+            if msg.rtt_us > 0 {
+                summary.rtt_us_sum = summary.rtt_us_sum.saturating_add(u64::from(msg.rtt_us));
+                summary.rtt_samples = summary.rtt_samples.saturating_add(1);
+            }
+            summary.rtt_us_max = summary.rtt_us_max.max(msg.rtt_us);
+            summary.rttvar_us_max = summary.rttvar_us_max.max(msg.rttvar_us);
+            summary.pending = summary
+                .pending
+                .saturating_add(u64::from(msg.pending) + u64::from(msg.query_pending));
+            summary.inflight = summary
+                .inflight
+                .saturating_add(u64::from(msg.inflight) + u64::from(msg.query_inflight));
+        }
+        summary
+    }
+
+    fn window_bp(&self) -> u64 {
+        if self.window_data_segs_out == 0 {
+            0
+        } else {
+            self.window_retrans.saturating_mul(10_000) / self.window_data_segs_out
+        }
+    }
+
+    fn rtt_us_avg(&self) -> u64 {
+        if self.rtt_samples == 0 {
+            0
+        } else {
+            self.rtt_us_sum / self.rtt_samples
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct WsEndpointGroup {
@@ -130,6 +227,67 @@ fn binance_basic_ws_local_ips(local_ips: &[IpAddr]) -> Result<Vec<IpAddr>> {
             BINANCE_BASIC_WS_CONNECTIONS,
             n
         )),
+    }
+}
+
+#[cfg(test)]
+mod tcp_health_summary_tests {
+    use super::TcpHealthSummary;
+    use rolling_common::health_snapshot::{
+        HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_MARKET_FUTURES, HEALTH_MARKET_SPOT,
+        HEALTH_STATE_DISCONNECTED, HEALTH_STATE_HEALTHY, HEALTH_STATE_PAUSED,
+    };
+
+    #[test]
+    fn summarizes_endpoint_snapshots() {
+        let mut spot = HealthSnapshotMsg::new(1, 0, 0);
+        spot.flags = HEALTH_FLAG_CONNECTED;
+        spot.market_id = HEALTH_MARKET_SPOT;
+        spot.state = HEALTH_STATE_HEALTHY;
+        spot.window_data_segs_out = 100;
+        spot.window_retrans = 1;
+        spot.total_retrans = 3;
+        spot.rtt_us = 100;
+        spot.rttvar_us = 20;
+        spot.pending = 2;
+        spot.query_inflight = 1;
+
+        let mut futures = HealthSnapshotMsg::new(1, 1, 0);
+        futures.flags = HEALTH_FLAG_CONNECTED;
+        futures.market_id = HEALTH_MARKET_FUTURES;
+        futures.state = HEALTH_STATE_PAUSED;
+        futures.window_data_segs_out = 300;
+        futures.window_retrans = 1;
+        futures.total_retrans = 4;
+        futures.rtt_us = 200;
+        futures.rttvar_us = 30;
+        futures.query_pending = 3;
+        futures.inflight = 4;
+
+        let mut disconnected = HealthSnapshotMsg::new(1, 2, 0);
+        disconnected.market_id = HEALTH_MARKET_FUTURES;
+        disconnected.state = HEALTH_STATE_DISCONNECTED;
+
+        let summary = TcpHealthSummary::from_snapshots(&[spot, futures, disconnected]);
+
+        assert_eq!(summary.endpoints, 3);
+        assert_eq!(summary.connected, 2);
+        assert_eq!(summary.healthy, 1);
+        assert_eq!(summary.paused, 1);
+        assert_eq!(summary.disconnected, 1);
+        assert_eq!(summary.spot_connected, 1);
+        assert_eq!(summary.spot_endpoints, 1);
+        assert_eq!(summary.futures_connected, 1);
+        assert_eq!(summary.futures_endpoints, 2);
+        assert_eq!(summary.window_data_segs_out, 400);
+        assert_eq!(summary.window_retrans, 2);
+        assert_eq!(summary.window_bp(), 50);
+        assert_eq!(summary.total_retrans, 7);
+        assert_eq!(summary.rtt_us_avg(), 150);
+        assert_eq!(summary.rtt_us_max, 200);
+        assert_eq!(summary.rttvar_us_max, 30);
+        assert_eq!(summary.pending, 5);
+        assert_eq!(summary.inflight, 5);
     }
 }
 
@@ -396,7 +554,7 @@ fn enable_ipc_fast_poll() -> bool {
             return false;
         }
     }
-    true
+    false
 }
 
 fn router_idle_spin_iters(fast_poll: bool) -> usize {
@@ -1606,23 +1764,64 @@ impl TradeEngine {
         {
             let health_registry_for_ticker = health_registry.clone();
             let venue_id = exchange.to_u8() as u32;
+            let health_exchange = exchange.to_string();
             let shutdown_for_ticker = shutdown.clone();
             let snapshot_interval_ms = std::env::var("TRADE_ENGINE_HEALTH_SNAPSHOT_INTERVAL_MS")
                 .ok()
                 .and_then(|value| value.trim().parse::<u64>().ok())
                 .unwrap_or(1_000)
                 .max(1);
+            let tcp_health_log_interval = std::env::var("TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(DEFAULT_TCP_HEALTH_LOG_INTERVAL_MS);
             let ticker = tokio::task::spawn_local(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(snapshot_interval_ms));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 interval.tick().await;
+                let mut last_tcp_health_log = Instant::now();
                 loop {
                     tokio::select! {
                         biased;
                         _ = shutdown_for_ticker.cancelled() => break,
                         _ = interval.tick() => {
-                            for msg in health_registry_for_ticker.snapshots(venue_id) {
+                            let snapshots = health_registry_for_ticker.snapshots(venue_id);
+                            if tcp_health_log_interval > 0
+                                && last_tcp_health_log.elapsed()
+                                    >= Duration::from_millis(tcp_health_log_interval)
+                            {
+                                let summary = TcpHealthSummary::from_snapshots(&snapshots);
+                                if summary.endpoints > 0 {
+                                    info!(
+                                        "TcpHealthSummary: exchange={} endpoints={} connected={} healthy={} disconnected={} paused={} draining={} reconnecting={} protected={} spot_connected={}/{} futures_connected={}/{} window_data_segs_out={} window_retrans={} window_bp={} total_retrans={} rtt_us_avg={} rtt_us_max={} rttvar_us_max={} pending={} inflight={}",
+                                        health_exchange,
+                                        summary.endpoints,
+                                        summary.connected,
+                                        summary.healthy,
+                                        summary.disconnected,
+                                        summary.paused,
+                                        summary.draining,
+                                        summary.reconnecting,
+                                        summary.protected,
+                                        summary.spot_connected,
+                                        summary.spot_endpoints,
+                                        summary.futures_connected,
+                                        summary.futures_endpoints,
+                                        summary.window_data_segs_out,
+                                        summary.window_retrans,
+                                        summary.window_bp(),
+                                        summary.total_retrans,
+                                        summary.rtt_us_avg(),
+                                        summary.rtt_us_max,
+                                        summary.rttvar_us_max,
+                                        summary.pending,
+                                        summary.inflight,
+                                    );
+                                }
+                                last_tcp_health_log = Instant::now();
+                            }
+                            for msg in snapshots {
                                 if let Err(err) = health_publisher.send_copy(msg.into_bytes()) {
                                     warn!(
                                         "trade_engine: health snapshot publish failed: {}",
@@ -4087,11 +4286,11 @@ mod tests {
     }
 
     #[test]
-    fn enable_ipc_fast_poll_defaults_on() {
+    fn enable_ipc_fast_poll_defaults_off() {
         let _guard = env_test_lock();
         std::env::remove_var("ENABLE_IPC_FAST_POLL");
         std::env::remove_var("enable_ipc_fast_poll");
-        assert!(enable_ipc_fast_poll());
+        assert!(!enable_ipc_fast_poll());
     }
 
     #[test]
