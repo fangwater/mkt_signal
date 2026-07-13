@@ -59,6 +59,7 @@ const ARB_HEDGE_QTY_EPS: f64 = 1e-12;
 const ARB_HEDGE_PENDING_QUERY_MIN_USDT: f64 = 10.0;
 const ARB_HEDGE_BORROW_SHORTFALL_MAX_USDT: f64 = 1.0;
 const ARB_HEDGE_QUERY_INTERVAL_US: i64 = 1_000_000;
+const ARB_HEDGE_QUERY_TIMEOUT_US: i64 = 3_000_000;
 /// 保证金不足应急动作的冷却时间。同一 strategy 在窗口内的连续拒单
 /// 只触发一次账户级 open block/撤单，避免一秒万次拒单情况下重复执行。
 const ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US: i64 = 5_000_000;
@@ -128,6 +129,13 @@ enum DueHedgeRoute {
     Query,
     DirectTaker,
     Hold,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InflightHedgeQuery {
+    request_seq: u64,
+    sent_ts_us: i64,
+    deadline_ts_us: i64,
 }
 
 fn decide_due_hedge_route(
@@ -213,7 +221,7 @@ pub struct ArbHedgeStrategy {
     /// 启动时从账户快照带入的净敞口基线。这部分只作为状态展示，不反推出 hedge work。
     hedge_work_baseline_qv: f64,
     hedge_request_seq: u64,
-    pending_hedge_request_seq: Option<u64>,
+    inflight_hedge_query: Option<InflightHedgeQuery>,
     last_hedge_ts_ms: Option<i64>,
     last_hedge_is_taker: Option<bool>,
     last_ret_qtl: Option<f64>,
@@ -293,7 +301,7 @@ impl ArbHedgeStrategy {
             pending_hedge_queue: TimedNetQtyQueue::new(),
             hedge_work_baseline_qv: 0.0,
             hedge_request_seq: 0,
-            pending_hedge_request_seq: None,
+            inflight_hedge_query: None,
             last_hedge_ts_ms: None,
             last_hedge_is_taker: None,
             last_ret_qtl: None,
@@ -414,6 +422,55 @@ impl ArbHedgeStrategy {
             self.hedge_request_seq = 1;
         }
         self.hedge_request_seq
+    }
+
+    fn begin_inflight_hedge_query(&mut self, request_seq: u64, now_ts: i64) {
+        self.inflight_hedge_query = Some(InflightHedgeQuery {
+            request_seq,
+            sent_ts_us: now_ts,
+            deadline_ts_us: now_ts.saturating_add(ARB_HEDGE_QUERY_TIMEOUT_US),
+        });
+    }
+
+    fn retire_timed_out_hedge_query(&mut self, now_ts: i64) -> bool {
+        let Some(inflight) = self.inflight_hedge_query else {
+            return false;
+        };
+        if now_ts < inflight.deadline_ts_us {
+            return false;
+        }
+        self.inflight_hedge_query = None;
+        self.next_query_ts_us = 0;
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} hedge query timeout request_seq={} sent_ts_us={} deadline_ts_us={} now_ts={} pending_hedge_qty={:.8}",
+            self.strategy_id,
+            self.symbol,
+            inflight.request_seq,
+            inflight.sent_ts_us,
+            inflight.deadline_ts_us,
+            now_ts,
+            self.pending_hedge_queue.net_qty()
+        );
+        true
+    }
+
+    fn coalesce_while_hedge_query_inflight(&mut self, now_ts: i64, reason: &str) -> bool {
+        self.retire_timed_out_hedge_query(now_ts);
+        let Some(inflight) = self.inflight_hedge_query else {
+            return false;
+        };
+        debug!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} coalesce {} while hedge query inflight request_seq={} sent_ts_us={} deadline_ts_us={} pending_hedge_qty={:.8} due_hedge_qty={:.8}",
+            self.strategy_id,
+            self.symbol,
+            reason,
+            inflight.request_seq,
+            inflight.sent_ts_us,
+            inflight.deadline_ts_us,
+            self.pending_hedge_queue.net_qty(),
+            self.pending_hedge_queue.due_qty(now_ts)
+        );
+        true
     }
 
     fn mark_price(&self) -> Option<f64> {
@@ -700,6 +757,9 @@ impl ArbHedgeStrategy {
         source: &str,
         ret_qtl: Option<f64>,
     ) -> bool {
+        if self.coalesce_while_hedge_query_inflight(now_ts, source) {
+            return false;
+        }
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let Some(mark_price) = self.mark_price() else {
             if !suppress_pre_submit_hot_path_logs() {
@@ -819,7 +879,7 @@ impl ArbHedgeStrategy {
         }
 
         let request_seq = self.next_hedge_request_seq();
-        self.pending_hedge_request_seq = Some(request_seq);
+        self.begin_inflight_hedge_query(request_seq, now_ts);
         let mut ctx = ArbHedgeCtx::new();
         ctx.strategy_id = self.strategy_id;
         ctx.set_side(hedge_side);
@@ -852,7 +912,7 @@ impl ArbHedgeStrategy {
         true
     }
 
-    fn send_hedge_query(&mut self, now_ts: i64, due_hedge_qty: f64) {
+    fn send_hedge_query(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let risk_loader = PreTradeParamsLoader::instance();
         let symbol_exposure_u = risk_loader
@@ -860,7 +920,6 @@ impl ArbHedgeStrategy {
             .max(0.0)
             * risk_loader.max_symbol_exposure_ratio().max(0.0);
         let request_seq = self.next_hedge_request_seq();
-        self.pending_hedge_request_seq = Some(request_seq);
         let query_msg = ArbHedgeSignalQueryMsg::new(
             self.strategy_id,
             &self.symbol,
@@ -880,6 +939,7 @@ impl ArbHedgeStrategy {
             })
         }) {
             Ok(true) => {
+                self.begin_inflight_hedge_query(request_seq, now_ts);
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 if !suppress_pre_submit_hot_path_logs() {
                     info!(
@@ -893,18 +953,23 @@ impl ArbHedgeStrategy {
                         self.next_query_ts_us
                     );
                 }
+                true
             }
             Ok(false) => {
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 warn!(
                     "ArbHedgeStrategy: backward publisher 未配置，无法发送对冲状态查询 strategy_id={} symbol={} request_seq={}",
                     self.strategy_id, self.symbol, request_seq
                 );
+                false
             }
             Err(err) => {
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
                 warn!(
                     "ArbHedgeStrategy: 发送对冲状态查询失败 strategy_id={} symbol={} request_seq={} err={:#}",
                     self.strategy_id, self.symbol, request_seq, err
                 );
+                false
             }
         }
     }
@@ -933,6 +998,9 @@ impl ArbHedgeStrategy {
             return false;
         }
         if !self.is_active() {
+            return false;
+        }
+        if self.coalesce_while_hedge_query_inflight(now_ts, "lazy_model_update") {
             return false;
         }
         self.last_ret_qtl = model_percentile_to_ret_qtl(model_percentile);
@@ -1042,6 +1110,9 @@ impl ArbHedgeStrategy {
         reason: &'static str,
         throttle_on_skip: bool,
     ) -> bool {
+        if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
+            return false;
+        }
         let pending_hedge_qty = self.pending_hedge_queue.net_qty();
         if pending_hedge_qty.abs() <= ARB_HEDGE_QTY_EPS {
             return false;
@@ -1248,8 +1319,7 @@ impl ArbHedgeStrategy {
                     }
                     return false;
                 }
-                self.send_hedge_query(now_ts, due_hedge_qty);
-                true
+                self.send_hedge_query(now_ts, due_hedge_qty)
             }
         }
     }
@@ -1301,7 +1371,7 @@ impl ArbHedgeStrategy {
     }
 
     pub fn handle_arb_hedge_ctx_with_symbol(&mut self, ctx: ArbHedgeCtx, symbol: String) {
-        let Some(expected_request_seq) = self.pending_hedge_request_seq else {
+        let Some(inflight) = self.inflight_hedge_query else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} drop unexpected ArbHedge reply without pending query: symbol={} request_seq={}",
                 self.strategy_id,
@@ -1310,17 +1380,17 @@ impl ArbHedgeStrategy {
             );
             return;
         };
-        if ctx.request_seq != expected_request_seq {
+        if ctx.request_seq != inflight.request_seq {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} drop stale/duplicate ArbHedge reply: symbol={} request_seq={} expected_request_seq={}",
                 self.strategy_id,
                 symbol,
                 ctx.request_seq,
-                expected_request_seq
+                inflight.request_seq
             );
             return;
         }
-        self.pending_hedge_request_seq = None;
+        self.inflight_hedge_query = None;
         self.last_hedge_is_taker = Some(ctx.is_taker());
         self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
         // taker 时 ctx.price_offset = 0；maker 时由 trade_signal 计算的偏移量
@@ -2867,12 +2937,13 @@ mod tests {
     use super::{
         build_direct_taker_from_key, decide_due_hedge_route, model_percentile_to_ret_qtl,
         pick_main_component_open_id, ArbHedgeOrderMeta, ArbHedgeStrategy, DueHedgeRoute,
-        ARB_HEDGE_QUERY_INTERVAL_US,
+        ARB_HEDGE_QUERY_INTERVAL_US, ARB_HEDGE_QUERY_TIMEOUT_US,
     };
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
     use order_common::TradingVenue;
     use order_common::{Side, TradeEngineResponseMessage, TradeRequestType};
+    use signal_common::hedge_signal::ArbHedgeCtx;
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
@@ -3149,6 +3220,98 @@ mod tests {
             strategy.next_query_ts_us,
             2_000_i64.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US)
         );
+    }
+
+    #[test]
+    fn inflight_hedge_query_coalesces_multiple_open_terminals() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "CKBUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.hedge_request_seq = 12;
+        strategy.begin_inflight_hedge_query(12, 100);
+
+        for (index, open_id) in [1001, 1002, 1003, 1004].into_iter().enumerate() {
+            strategy.record_open_order_terminal(
+                101 + index as i64,
+                Side::Sell,
+                100.0,
+                100.0,
+                0.001,
+                0,
+                open_id,
+            );
+        }
+
+        assert_eq!(strategy.pending_hedge_qty(), -400.0);
+        assert_eq!(strategy.hedge_request_seq, 12);
+        assert_eq!(
+            strategy
+                .inflight_hedge_query
+                .expect("original query remains inflight")
+                .request_seq,
+            12
+        );
+    }
+
+    #[test]
+    fn inflight_hedge_query_retires_only_at_deadline() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "CKBUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.begin_inflight_hedge_query(12, 100);
+        strategy.next_query_ts_us = 999;
+
+        assert!(strategy
+            .coalesce_while_hedge_query_inflight(100 + ARB_HEDGE_QUERY_TIMEOUT_US - 1, "test"));
+        assert_eq!(
+            strategy
+                .inflight_hedge_query
+                .expect("query remains inflight before deadline")
+                .request_seq,
+            12
+        );
+
+        assert!(
+            !strategy.coalesce_while_hedge_query_inflight(100 + ARB_HEDGE_QUERY_TIMEOUT_US, "test")
+        );
+        assert!(strategy.inflight_hedge_query.is_none());
+        assert_eq!(strategy.next_query_ts_us, 0);
+    }
+
+    #[test]
+    fn late_hedge_reply_cannot_clear_new_inflight_query() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "CKBUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.begin_inflight_hedge_query(12, 100);
+        assert!(strategy.retire_timed_out_hedge_query(100 + ARB_HEDGE_QUERY_TIMEOUT_US));
+        strategy.begin_inflight_hedge_query(13, 200);
+
+        let mut stale_ctx = ArbHedgeCtx::new();
+        stale_ctx.request_seq = 12;
+        strategy.handle_arb_hedge_ctx_with_symbol(stale_ctx, "CKBUSDT".to_string());
+
+        assert_eq!(
+            strategy
+                .inflight_hedge_query
+                .expect("late reply must not clear current query")
+                .request_seq,
+            13
+        );
+
+        let mut current_ctx = ArbHedgeCtx::new();
+        current_ctx.request_seq = 13;
+        strategy.handle_arb_hedge_ctx_with_symbol(current_ctx, "CKBUSDT".to_string());
+        assert!(strategy.inflight_hedge_query.is_none());
     }
 
     #[test]
