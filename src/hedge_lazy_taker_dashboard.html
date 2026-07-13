@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hedge Lazy Taker Models</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <style>
+    :root{color-scheme:light;--bg:#f4f6f8;--surface:#fff;--line:#d9dee5;--strong:#bcc5cf;--text:#17212b;--muted:#66727f;--green:#087f5b;--red:#c92a2a;--blue:#1864ab}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;letter-spacing:0}button,select{font:inherit;letter-spacing:0}
+    .topbar{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 24px;background:#18232d;color:#f8fafc;border-bottom:1px solid #0f171e}
+    .brand{min-width:0}.brand h1{margin:0;font-size:18px;line-height:1.3}.brand p{margin:3px 0 0;color:#aeb9c4;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(65vw,900px)}
+    .live{display:inline-flex;align-items:center;gap:7px;flex:none;color:#d8e1e8;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:#868e96}.live.ok .dot{background:#38d996;box-shadow:0 0 0 3px rgba(56,217,150,.14)}
+    .workspace{width:min(1600px,100%);margin:0 auto;padding:18px 24px 32px}.toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+    .label{display:block;color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:7px}.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:1px}
+    .tab,.segment button{height:34px;border:1px solid var(--strong);background:var(--surface);color:#34414e;cursor:pointer;border-radius:5px;padding:0 12px;white-space:nowrap}.tab.active{background:#18232d;border-color:#18232d;color:#fff}
+    .segment{display:inline-flex;border:1px solid var(--strong);border-radius:5px;overflow:hidden;background:#fff}.segment button{border:0;border-right:1px solid var(--strong);border-radius:0}.segment button:last-child{border:0}.segment button.active{background:#dfe7ee;color:#111820;font-weight:650}
+    select{height:36px;min-width:160px;max-width:240px;border:1px solid var(--strong);border-radius:5px;background:#fff;color:var(--text);padding:0 32px 0 10px}select:disabled{color:#9aa4ae;background:#edf0f3}
+    .metrics{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin:16px 0 18px}.metric{background:#fff;border:1px solid var(--line);border-radius:6px;padding:12px 13px;box-shadow:0 1px 2px rgba(15,23,42,.06);min-width:0}
+    .metric .k{color:var(--muted);font-size:11px;font-weight:650;margin-bottom:5px}.metric .v{font-size:21px;line-height:1.2;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.metric .d{color:var(--muted);font-size:11px;margin-top:4px}.positive{color:var(--green)}.negative{color:var(--red)}
+    .charts{display:grid;grid-template-columns:minmax(0,3fr) minmax(320px,2fr);gap:14px}.panel{background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 1px 2px rgba(15,23,42,.06);min-width:0}
+    .head{height:48px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 14px;border-bottom:1px solid #e7eaee}.head h2{margin:0;font-size:13px}.meta{color:var(--muted);font-size:11px}.chart{width:100%;height:370px}.symbol-panel{margin-top:14px}.symbol-chart{height:420px}
+    .table-wrap{overflow:auto;max-height:520px}table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}th{position:sticky;top:0;z-index:1;background:#f7f9fa;color:#5b6672;text-align:right;font-weight:680;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}td{text-align:right;padding:8px 12px;border-bottom:1px solid #edf0f2;white-space:nowrap}tbody tr:hover{background:#f7fafb}
+    .empty{display:none;padding:70px 20px;text-align:center;color:var(--muted);border:1px dashed var(--strong);border-radius:6px;background:rgba(255,255,255,.55);margin-top:18px}.error{display:none;margin:12px 0 0;padding:9px 12px;color:#8a2b0b;background:#fff4e6;border:1px solid #ffd8a8;border-radius:5px;font-size:12px}
+    @media(max-width:1050px){.toolbar{grid-template-columns:1fr 1fr}.model-control{grid-column:1/-1}.metrics{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:1fr}}
+    @media(max-width:650px){.topbar{padding:10px 14px}.workspace{padding:14px 12px 24px}.toolbar{grid-template-columns:1fr}.model-control{grid-column:auto}.segment{display:flex}.segment button{flex:1;padding:0 7px}select{width:100%;max-width:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metric .v{font-size:18px}.chart{height:320px}.symbol-chart{height:380px}}
+  </style>
+</head>
+<body>
+<header class="topbar"><div class="brand"><h1>Hedge Lazy Taker Model Effects</h1><p id="sourcePath">loading source...</p></div><div class="live" id="live"><span class="dot"></span><span id="liveText">connecting</span></div></header>
+<main class="workspace">
+  <section class="toolbar">
+    <div class="model-control"><span class="label">Model</span><div class="tabs" id="modelTabs"></div></div>
+    <div><span class="label">Symbol View</span><div class="segment" id="views"><button data-view="aggregate" class="active">整体聚合</button><button data-view="single">单 Symbol</button><button data-view="all">全部 Symbol</button></div></div>
+    <div><label class="label" for="symbolSelect">Symbol</label><select id="symbolSelect" disabled></select></div>
+  </section>
+  <div class="error" id="error"></div>
+  <section class="metrics">
+    <article class="metric"><div class="k">累计 PnL</div><div class="v" id="cum">--</div><div class="d" id="avg">--</div></article>
+    <article class="metric"><div class="k">胜率</div><div class="v" id="rate">--</div><div class="d" id="wl">--</div></article>
+    <article class="metric"><div class="k">已评估 Held</div><div class="v" id="evaluated">--</div><div class="d" id="held">--</div></article>
+    <article class="metric"><div class="k">平均 Hold</div><div class="v" id="hold">--</div><div class="d">milliseconds</div></article>
+    <article class="metric"><div class="k">Missing BBO</div><div class="v" id="missing">--</div><div class="d" id="missingRate">--</div></article>
+    <article class="metric"><div class="k">No Hold</div><div class="v" id="noHold">--</div><div class="d" id="events">--</div></article>
+  </section>
+  <div class="empty" id="empty">等待 events.csv 数据</div>
+  <section id="detail">
+    <div class="charts" id="timelines">
+      <article class="panel"><div class="head"><h2>累计效果</h2><span class="meta" id="points"></span></div><div class="chart" id="cumChart"></div></article>
+      <article class="panel"><div class="head"><h2>单次 PnL / Hold</h2><span class="meta" id="scope"></span></div><div class="chart" id="eventChart"></div></article>
+    </div>
+    <article class="panel symbol-panel" id="symbolPanel"><div class="head"><h2>Symbol 效果对比</h2><span class="meta" id="symbolCount"></span></div><div class="chart symbol-chart" id="symbolChart"></div></article>
+    <article class="panel symbol-panel">
+      <div class="head"><h2>Symbol 明细</h2><span class="meta">按累计 PnL 排序</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>累计 PnL</th><th>平均 PnL</th><th>胜率</th><th>Wins</th><th>Losses</th><th>Held</th><th>Missing</th><th>Avg Hold ms</th></tr></thead><tbody id="rows"></tbody></table></div>
+    </article>
+  </section>
+</main>
+<script>
+const state={overview:null,model:null,view:"aggregate",symbol:null};
+const charts={cum:echarts.init(document.getElementById("cumChart")),event:echarts.init(document.getElementById("eventChart")),symbol:echarts.init(document.getElementById("symbolChart"))};
+const nf=new Intl.NumberFormat("en-US",{maximumFractionDigits:6}),ni=new Intl.NumberFormat("en-US");
+const esc=v=>String(v).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+const pnl=v=>Number.isFinite(v)?(v>0?"+":"")+nf.format(v):"--";
+const pct=v=>Number.isFinite(v)?(v*100).toFixed(2)+"%":"--";
+const time=us=>us?new Date(us/1000).toISOString().replace("T"," ").replace("Z"," UTC"):"--";
+async function json(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok){const b=await r.json().catch(()=>({}));throw new Error(b.error||"HTTP "+r.status)}return r.json()}
+function error(msg){const e=document.getElementById("error");e.style.display=msg?"block":"none";e.textContent=msg||""}
+function overview(data){
+  state.overview=data;const s=data.source;
+  document.getElementById("sourcePath").textContent=s.path+" · "+ni.format(s.rows_loaded)+" rows · "+time(s.last_event_tp_us);
+  document.getElementById("live").classList.toggle("ok",s.available);document.getElementById("liveText").textContent=s.available?"CSV live":"CSV waiting";
+  error(s.parse_errors?ni.format(s.parse_errors)+" malformed rows skipped":"");
+  const names=data.models.map(x=>x.name);if(!state.model||!names.includes(state.model))state.model=names[0]||null;
+  document.getElementById("modelTabs").innerHTML=data.models.map(x=>'<button class="tab '+(x.name===state.model?"active":"")+'" data-model="'+esc(x.name)+'">'+esc(x.name)+" ("+ni.format(x.stats.evaluated)+")</button>").join("");
+  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{state.model=b.dataset.model;state.symbol=null;overview(state.overview);loadModel()});
+}
+function symbols(list){
+  const select=document.getElementById("symbolSelect"),names=list.map(x=>x.symbol);
+  if(!state.symbol||!names.includes(state.symbol))state.symbol=names[0]||null;
+  select.innerHTML=names.map(x=>'<option value="'+esc(x)+'" '+(x===state.symbol?"selected":"")+">"+esc(x)+"</option>").join("");
+  select.disabled=state.view!=="single"||!names.length;
+}
+function metrics(s){
+  const c=document.getElementById("cum");c.textContent=pnl(s.cumulative_pnl);c.className="v "+(s.cumulative_pnl>0?"positive":s.cumulative_pnl<0?"negative":"");
+  document.getElementById("avg").textContent="avg "+pnl(s.average_pnl);document.getElementById("rate").textContent=pct(s.win_rate);
+  document.getElementById("wl").textContent=ni.format(s.wins)+" W / "+ni.format(s.losses)+" L / "+ni.format(s.flat)+" flat";
+  document.getElementById("evaluated").textContent=ni.format(s.evaluated);document.getElementById("held").textContent=ni.format(s.held_events)+" held events";
+  document.getElementById("hold").textContent=nf.format(s.average_hold_ms);document.getElementById("missing").textContent=ni.format(s.missing_bbo);
+  document.getElementById("missingRate").textContent=s.held_events?pct(s.missing_bbo/s.held_events)+" of held":"--";
+  document.getElementById("noHold").textContent=ni.format(s.no_hold_events);document.getElementById("events").textContent=ni.format(s.events)+" total rows";
+}
+function timeline(data){
+  const p=data.points,dates=p.map(x=>x.take_tp_us/1000);document.getElementById("points").textContent=ni.format(p.length)+" chart points";document.getElementById("scope").textContent=data.selected_symbol||"all symbols aggregated";
+  charts.cum.setOption({animation:false,grid:{left:58,right:22,top:28,bottom:58},tooltip:{trigger:"axis"},xAxis:{type:"time",axisLabel:{color:"#66727f",hideOverlap:true}},yAxis:{type:"value",scale:true,splitLine:{lineStyle:{color:"#edf0f2"}}},dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:12}],series:[{type:"line",showSymbol:false,sampling:"lttb",lineStyle:{width:2,color:"#087f5b"},areaStyle:{color:"rgba(8,127,91,.08)"},data:p.map((x,i)=>[dates[i],x.cumulative_pnl,x.symbol])}]},true);
+  charts.event.setOption({animation:false,grid:{left:58,right:54,top:28,bottom:58},tooltip:{trigger:"axis",formatter:a=>{const x=p[a[0]?.dataIndex];return x?time(x.take_tp_us)+"<br>"+x.symbol+"<br>PnL: "+pnl(x.pnl)+"<br>Hold: "+nf.format(x.hold_ms)+" ms":""}},xAxis:{type:"time",axisLabel:{color:"#66727f",hideOverlap:true}},yAxis:[{type:"value",scale:true,splitLine:{lineStyle:{color:"#edf0f2"}}},{type:"value",name:"hold ms",splitLine:{show:false}}],dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:12}],series:[{type:"bar",barMaxWidth:7,data:p.map((x,i)=>({value:[dates[i],x.pnl],itemStyle:{color:x.pnl>=0?"#20a879":"#dc4c4c"}}))},{type:"line",yAxisIndex:1,showSymbol:false,lineStyle:{width:1,color:"#1864ab",opacity:.72},data:p.map((x,i)=>[dates[i],x.hold_ms])}]},true);
+}
+function symbolViews(list){
+  const rows=[...list].sort((a,b)=>b.stats.cumulative_pnl-a.stats.cumulative_pnl),v=rows.slice(0,80);document.getElementById("symbolCount").textContent=ni.format(rows.length)+" symbols";
+  charts.symbol.setOption({animation:false,grid:{left:88,right:62,top:24,bottom:48},tooltip:{trigger:"axis",axisPointer:{type:"shadow"},formatter:a=>{const x=v[a[0]?.dataIndex];return x?x.symbol+"<br>Cumulative: "+pnl(x.stats.cumulative_pnl)+"<br>Win rate: "+pct(x.stats.win_rate)+"<br>Evaluated: "+ni.format(x.stats.evaluated):""}},xAxis:[{type:"value",name:"PnL",splitLine:{lineStyle:{color:"#edf0f2"}}},{type:"value",min:0,max:1,name:"win rate",splitLine:{show:false},axisLabel:{formatter:x=>Math.round(x*100)+"%"}}],yAxis:{type:"category",inverse:true,data:v.map(x=>x.symbol),axisLabel:{width:75,overflow:"truncate"}},dataZoom:v.length>18?[{type:"inside",yAxisIndex:0},{type:"slider",yAxisIndex:0,width:14,right:8}]:[],series:[{type:"bar",barMaxWidth:14,data:v.map(x=>({value:x.stats.cumulative_pnl,itemStyle:{color:x.stats.cumulative_pnl>=0?"#20a879":"#dc4c4c"}}))},{type:"scatter",xAxisIndex:1,symbolSize:7,itemStyle:{color:"#1864ab"},data:v.map((x,i)=>[x.stats.win_rate,i])}]},true);
+  document.getElementById("rows").innerHTML=rows.map(x=>{const s=x.stats;return"<tr><td><strong>"+esc(x.symbol)+"</strong></td><td class='"+(s.cumulative_pnl>=0?"positive":"negative")+"'>"+pnl(s.cumulative_pnl)+"</td><td>"+pnl(s.average_pnl)+"</td><td>"+pct(s.win_rate)+"</td><td>"+ni.format(s.wins)+"</td><td>"+ni.format(s.losses)+"</td><td>"+ni.format(s.held_events)+"</td><td>"+ni.format(s.missing_bbo)+"</td><td>"+nf.format(s.average_hold_ms)+"</td></tr>"}).join("");
+}
+function render(data){
+  symbols(data.symbols);metrics(data.stats);timeline(data);symbolViews(data.symbols);
+  const has=data.stats.events>0,all=state.view==="all";document.getElementById("empty").style.display=has?"none":"block";document.getElementById("detail").style.display=has?"block":"none";
+  document.getElementById("timelines").style.display=all?"none":"grid";document.getElementById("symbolPanel").style.display=state.view==="single"?"none":"block";
+  setTimeout(()=>Object.values(charts).forEach(x=>x.resize()),0);
+}
+async function loadModel(){
+  if(!state.model){document.getElementById("empty").style.display="block";document.getElementById("detail").style.display="none";return}
+  const q=new URLSearchParams({model:state.model,limit:"6000"});if(state.view==="single"&&state.symbol)q.set("symbol",state.symbol);
+  try{render(await json("/api/model?"+q))}catch(e){error(e.message)}
+}
+async function refresh(){try{overview(await json("/api/overview"));await loadModel()}catch(e){document.getElementById("live").classList.remove("ok");document.getElementById("liveText").textContent="backend offline";error(e.message)}}
+document.getElementById("views").onclick=e=>{const b=e.target.closest("button[data-view]");if(!b)return;state.view=b.dataset.view;document.querySelectorAll("#views button").forEach(x=>x.classList.toggle("active",x===b));document.getElementById("symbolSelect").disabled=state.view!=="single";loadModel()};
+document.getElementById("symbolSelect").onchange=e=>{state.symbol=e.target.value;loadModel()};window.onresize=()=>Object.values(charts).forEach(x=>x.resize());refresh();setInterval(refresh,2000);
+</script>
+</body>
+</html>

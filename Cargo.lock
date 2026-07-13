@@ -2251,6 +2251,7 @@ dependencies = [
  "comfy-table",
  "crc32fast",
  "crossbeam-channel",
+ "csv",
  "dashmap",
  "depth_pub",
  "env_logger",
