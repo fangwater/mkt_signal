@@ -35,6 +35,7 @@ pub(crate) fn parse_venue_slug_from_input_service(input_service: &str) -> Result
 pub(crate) async fn load_symbol_factor_names_from_tlen_server(
     config: &ModelPubConfig,
     venue_slug: &str,
+    factor_plan_config_type: &str,
 ) -> Result<HashMap<String, Vec<String>>> {
     let client = Client::builder()
         .timeout(Duration::from_millis(config.tlen_server_request_timeout_ms))
@@ -46,7 +47,10 @@ pub(crate) async fn load_symbol_factor_names_from_tlen_server(
     );
     let resp = client
         .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "factor_plan")])
+        .query(&[
+            ("venue", venue_slug),
+            ("config_type", factor_plan_config_type),
+        ])
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -215,5 +219,21 @@ mod tests {
         assert_eq!(normalize_symbol_key("bnb-usdt-swap"), "BNBUSDT");
         assert_eq!(normalize_symbol_key("BTC_USDT_PERP"), "BTCUSDT");
         assert_eq!(normalize_symbol_key("ETH/USDT:SWAP"), "ETHUSDT");
+    }
+
+    #[test]
+    fn build_extract_indices_follows_model_factor_order() {
+        let plan = vec![
+            "factor_001".to_string(),
+            "avg_price".to_string(),
+            "factor_002".to_string(),
+        ];
+        let positions = build_factor_position_map("BTCUSDT", &plan).expect("position map");
+        let model_factors = vec!["factor_002".to_string(), "factor_001".to_string()];
+
+        assert_eq!(
+            build_extract_indices("model-1m", "BTCUSDT", &model_factors, &positions),
+            vec![2, 0]
+        );
     }
 }

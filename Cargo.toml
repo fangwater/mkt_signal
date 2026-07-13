@@ -168,6 +168,11 @@ path = "src/bin/model_pub.rs"
 required-features = ["model-ort"]
 
 [[bin]]
+name = "model_1m_pub"
+path = "src/bin/model_1m_pub.rs"
+required-features = ["model-ort"]
+
+[[bin]]
 name = "onnx_csv_predict"
 path = "src/bin/onnx_csv_predict.rs"
 required-features = ["model-ort"]

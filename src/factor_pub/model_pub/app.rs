@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::cfg::ModelPubConfig;
+use super::cfg::{ModelPubConfig, ModelPubVersion};
 use super::factor_pool::{
     build_extract_indices, build_factor_indices, build_factor_position_map,
     load_symbol_factor_names_from_tlen_server, normalize_symbol_key,
@@ -104,6 +104,35 @@ impl ModelPubApp {
         model_name: &str,
         warming_dir: Option<&Path>,
     ) -> Result<Self> {
+        Self::new_with_version(
+            config_path,
+            model_name,
+            warming_dir,
+            ModelPubVersion::Default,
+        )
+        .await
+    }
+
+    pub async fn new_one_minute(
+        config_path: &str,
+        model_name: &str,
+        warming_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::new_with_version(
+            config_path,
+            model_name,
+            warming_dir,
+            ModelPubVersion::OneMinute,
+        )
+        .await
+    }
+
+    async fn new_with_version(
+        config_path: &str,
+        model_name: &str,
+        warming_dir: Option<&Path>,
+        version: ModelPubVersion,
+    ) -> Result<Self> {
         let model_name = normalize_model_name(model_name)?;
 
         let config = ModelPubConfig::load(config_path)?;
@@ -112,14 +141,19 @@ impl ModelPubApp {
         let input_service = config.input_service.trim().to_string();
         let output_service = config.output_service.trim().to_string();
         let venue_slug = parse_venue_slug_from_input_service(&input_service)?;
-        let symbol_factor_names = load_symbol_factor_names_from_tlen_server(&config, &venue_slug)
-            .await
-            .with_context(|| {
-                format!(
-                    "load symbol factor plans from tlen_server failed: venue={}",
-                    venue_slug
-                )
-            })?;
+        let factor_plan_config_type = version.factor_plan_config_type();
+        let symbol_factor_names = load_symbol_factor_names_from_tlen_server(
+            &config,
+            &venue_slug,
+            factor_plan_config_type,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "load symbol factor plans from tlen_server failed: venue={} config_type={}",
+                venue_slug, factor_plan_config_type
+            )
+        })?;
 
         let models_by_symbol =
             Self::load_models_from_model_manager(&config, &model_name, &symbol_factor_names)
@@ -165,8 +199,12 @@ impl ModelPubApp {
             );
         }
 
-        let subscriber = Self::create_subscriber(&model_name, &input_service)?;
-        let publisher_node = format!("model_pub_{}_out", sanitize_node_suffix(&model_name));
+        let subscriber = Self::create_subscriber(version, &model_name, &input_service)?;
+        let publisher_node = format!(
+            "{}_{}_out",
+            version.node_prefix(),
+            sanitize_node_suffix(&model_name)
+        );
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
         let mut score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
         if let Some(dir) = warming_dir {
@@ -180,11 +218,13 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp started: input={} output={} symbols={} venue={} symbol_factor_plans={} warming_dir={}",
+            "ModelPubApp started: version={} input={} output={} symbols={} venue={} factor_plan_config={} symbol_factor_plans={} warming_dir={}",
+            version.label(),
             input_service,
             output_service,
             models_by_symbol.len(),
             venue_slug,
+            factor_plan_config_type,
             symbol_factor_names.len(),
             warming_dir
                 .map(|dir| dir.display().to_string())
@@ -281,10 +321,15 @@ impl ModelPubApp {
     }
 
     fn create_subscriber(
+        version: ModelPubVersion,
         model_name: &str,
         service_path: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; INPUT_MAX_BYTES], ()>> {
-        let node_name = format!("model_pub_{}_in", sanitize_node_suffix(model_name));
+        let node_name = format!(
+            "{}_{}_in",
+            version.node_prefix(),
+            sanitize_node_suffix(model_name)
+        );
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
