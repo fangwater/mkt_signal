@@ -3,6 +3,7 @@ use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGua
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
+use crate::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
 use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::{log_pending_limit_summary, log_strategy_inactive_summary};
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -914,6 +915,27 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 warn!(
                     "ArbOpen: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got open={:?} hedge={:?}, ignore",
                     configured_open_venue, configured_hedge_venue, opening_venue, hedging_venue
+                );
+                return;
+            }
+
+            if IntraUnimmrOpenLock::is_locked()
+                && !arb_open_is_account_throttle_reducing(
+                    &symbol,
+                    opening_venue,
+                    &hedging_symbol,
+                    hedging_venue,
+                    side,
+                    open_ctx.amount_value(),
+                )
+            {
+                info!(
+                    "ArbOpen blocked by intra UniMMR reduce-only lock: symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8}",
+                    symbol,
+                    side.as_str(),
+                    opening_venue,
+                    hedging_venue,
+                    open_ctx.amount_value()
                 );
                 return;
             }

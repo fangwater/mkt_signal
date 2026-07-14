@@ -308,7 +308,7 @@ fn resolve_amount_u_for_symbol(
 fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Option<(f64, f64)> {
     if trigger_line.is_finite()
         && recover_line.is_finite()
-        && trigger_line > EXCHANGE_WARNING_MODE_UPPER_UNIMMR
+        && trigger_line >= EXCHANGE_WARNING_MODE_UPPER_UNIMMR
         && recover_line > trigger_line
     {
         Some((trigger_line, recover_line))
@@ -1331,7 +1331,7 @@ mod tests {
     #[test]
     fn test_normalize_unimmr_control_lines() {
         assert_eq!(normalize_unimmr_control_lines(2.0, 2.2), Some((2.0, 2.2)));
-        assert_eq!(normalize_unimmr_control_lines(1.5, 2.2), None);
+        assert_eq!(normalize_unimmr_control_lines(1.5, 2.2), Some((1.5, 2.2)));
         assert_eq!(normalize_unimmr_control_lines(2.2, 2.0), None);
     }
 }

@@ -764,10 +764,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>UniMMR 平仓候选 <span class="hint">{env}:intra_unimmr_close_symbols</span></h3>
-          <textarea id="sym-unimmr-close" class="mono" placeholder="每行一个 symbol"></textarea>
-        </div>
-        <div>
           <h3>正套建仓 <span class="hint">intra_fwd_trade_symbols</span></h3>
           <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
@@ -1092,7 +1088,6 @@ __PER_SYMBOL_PANELS_HTML__
       try {
         const data = await fetchJson(`${apiUrl('symbol-lists')}?${queryParams()}`);
         document.getElementById('sym-dump').value = fromList(data.dump_symbols || []);
-        document.getElementById('sym-unimmr-close').value = fromList(data.unimmr_close_symbols || []);
         document.getElementById('sym-fwd').value = fromList(data.fwd_trade_symbols || []);
         document.getElementById('sym-bwd').value = fromList(data.bwd_trade_symbols || []);
         document.getElementById('sym-vol-gate').value = fromList(data.vol_gate_symbols || []);
@@ -1109,7 +1104,6 @@ __PER_SYMBOL_PANELS_HTML__
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           dump_symbols: toList(document.getElementById('sym-dump').value),
-          unimmr_close_symbols: toList(document.getElementById('sym-unimmr-close').value),
           fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
           bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
           vol_gate_symbols: toList(document.getElementById('sym-vol-gate').value),
@@ -1129,7 +1123,6 @@ __PER_SYMBOL_PANELS_HTML__
       const ex = normalizeExchange(BOOTSTRAP.default_exchange || '');
       const defaults = (BOOTSTRAP.defaults.symbol_lists || {})[ex] || {};
       document.getElementById('sym-dump').value = fromList(defaults.dump_symbols || []);
-      document.getElementById('sym-unimmr-close').value = fromList(defaults.unimmr_close_symbols || []);
       document.getElementById('sym-fwd').value = fromList(defaults.fwd_trade_symbols || []);
       document.getElementById('sym-bwd').value = fromList(defaults.bwd_trade_symbols || []);
       document.getElementById('sym-vol-gate').value = fromList(defaults.vol_gate_symbols || []);
@@ -1845,9 +1838,9 @@ def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
         recover = float(str(normalized["unimmr_recover_line"]).strip())
     except Exception as exc:
         raise ValueError("unimmr_trigger_line/unimmr_recover_line must be numbers") from exc
-    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.5 < trigger < recover):
+    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.5 <= trigger < recover):
         raise ValueError(
-            "unimmr control lines must satisfy 1.5 < unimmr_trigger_line < unimmr_recover_line"
+            "unimmr control lines must satisfy 1.5 <= unimmr_trigger_line < unimmr_recover_line"
         )
     normalized["unimmr_trigger_line"] = f"{trigger:g}"
     normalized["unimmr_recover_line"] = f"{recover:g}"
@@ -1907,11 +1900,6 @@ def make_unimmr_close_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
 
-def build_unimmr_close_symbol_list_key(open_venue: str, hedge_venue: str) -> str:
-    base = f"intra_unimmr_close_symbols:{make_unimmr_close_key_suffix(open_venue, hedge_venue)}"
-    env_name = infer_dir_prefix_from_cwd() or ""
-    return f"{env_name}:{base}" if env_name else base
-
 
 def build_vol_gate_symbol_list_key(open_venue: str, hedge_venue: str) -> str:
     return f"intra_vol_gate_symbols:{make_unimmr_close_key_suffix(open_venue, hedge_venue)}"
@@ -1961,7 +1949,6 @@ def get_symbol_defaults() -> Dict[str, Dict[str, List[str]]]:
     for ex in SUPPORTED_EXCHANGES:
         defaults[ex] = {
             "dump_symbols": dump_symbols,
-            "unimmr_close_symbols": [],
             "fwd_trade_symbols": fwd_symbols,
             "bwd_trade_symbols": bwd_symbols,
             "vol_gate_symbols": vol_gate_symbols,
@@ -2210,11 +2197,6 @@ def sync_thresholds(
         raise RuntimeError(f"{kind} mapping is empty")
 
     target_symbols = load_symbol_lists_fn(rds, key_suffix)
-    try:
-        unimmr_symbols = load_symbol_lists_fn(rds, key_suffix, infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
-        target_symbols = sorted(set(target_symbols).union(unimmr_symbols))
-    except TypeError:
-        pass
     if symbol:
         target_symbols = [str(symbol).strip().upper()]
     if not target_symbols:
@@ -2493,9 +2475,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "exchange": exchange,
                 "key_suffix": key_suffix,
                 "dump_symbols": read_symbol_list(rds, f"intra_dump_symbols:{key_suffix}"),
-                "unimmr_close_symbols": read_symbol_list(
-                    rds, build_unimmr_close_symbol_list_key(open_venue, hedge_venue)
-                ),
                 "fwd_trade_symbols": read_symbol_list(rds, f"intra_fwd_trade_symbols:{key_suffix}"),
                 "bwd_trade_symbols": read_symbol_list(rds, f"intra_bwd_trade_symbols:{key_suffix}"),
                 "vol_gate_symbols": read_symbol_list(
@@ -2700,17 +2679,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             raw_dump = payload.get("dump_symbols") or []
-            raw_unimmr_close = payload.get("unimmr_close_symbols") or []
             raw_fwd = payload.get("fwd_trade_symbols") or []
             raw_bwd = payload.get("bwd_trade_symbols") or []
             raw_vol_gate = payload.get("vol_gate_symbols") or []
             dump_symbols = normalize_symbol_list_for_intra(raw_dump)
-            unimmr_close_symbols = normalize_symbol_list_for_intra(raw_unimmr_close)
             fwd_symbols = normalize_symbol_list_for_intra(raw_fwd)
             bwd_symbols = normalize_symbol_list_for_intra(raw_bwd)
             vol_gate_symbols = normalize_symbol_list_for_intra(raw_vol_gate)
             raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
-            raw_unimmr_close_len, raw_unimmr_close_sample = summarize_symbol_payload(raw_unimmr_close)
             raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
             raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
             raw_vol_gate_len, raw_vol_gate_sample = summarize_symbol_payload(raw_vol_gate)
@@ -2722,14 +2698,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             print(
                 "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
                     raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] unimmr_close raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_unimmr_close_len,
-                    len(unimmr_close_symbols),
-                    raw_unimmr_close_sample,
-                    unimmr_close_symbols[:5],
                 )
             )
             print(
@@ -2759,10 +2727,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                     json.dumps(dump_symbols, ensure_ascii=False),
                 )
                 rds.set(
-                    build_unimmr_close_symbol_list_key(open_v, hedge_v),
-                    json.dumps(unimmr_close_symbols, ensure_ascii=False),
-                )
-                rds.set(
                     f"intra_fwd_trade_symbols:{key_suffix}",
                     json.dumps(fwd_symbols, ensure_ascii=False),
                 )
@@ -2784,7 +2748,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "exchange": exchange,
                     "key_suffix": key_suffix,
                     "dump_count": len(dump_symbols),
-                    "unimmr_close_count": len(unimmr_close_symbols),
                     "fwd_count": len(fwd_symbols),
                     "bwd_count": len(bwd_symbols),
                     "vol_gate_count": len(vol_gate_symbols),

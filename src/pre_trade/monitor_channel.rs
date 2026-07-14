@@ -748,6 +748,10 @@ impl BasicAccountListener {
             }
             BasicAccountEventType::AccountRisk => match BasicAccountRiskMsg::from_bytes(data) {
                 Ok(msg) => {
+                    crate::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock::apply_account_risk(
+                        account_scope,
+                        &msg,
+                    );
                     MonitorChannel::instance().apply_account_risk(account_scope, msg);
                     MonitorChannel::mark_basic_state_dirty();
                     MONITOR_FAST_POLL_LOW_WEIGHT

@@ -11,6 +11,7 @@ use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLim
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
+use mkt_signal::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
@@ -369,6 +370,7 @@ async fn main() -> Result<()> {
                 return Err(err);
             }
             info!("MonitorChannel initialized successfully");
+            IntraUnimmrOpenLock::initialize(arb_mode, binance_account_mode);
 
             // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
             //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan

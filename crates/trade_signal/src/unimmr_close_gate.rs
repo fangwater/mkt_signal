@@ -13,7 +13,7 @@
 //!
 //! 阈值 hot reload 不直接改变 state，只在下一条 AccountRisk 到来时生效；与
 //! pre_trade 端 `PreTradeParamsLoader::normalize_unimmr_control_lines` 同一
-//! 验证口径（`1.5 < trigger < recover`，否则回退到 `(2.0, 2.2)`）。
+//! 验证口径（`1.5 <= trigger < recover`，否则回退到 `(2.0, 2.2)`）。
 //!
 //! 本次只实现"听 + 维护状态"，**不**接 close 触发；下游通过
 //! [`UnimmrCloseGate::is_close_allowed`] 查询。
@@ -96,7 +96,7 @@ impl UnimmrCloseGate {
         UnimmrCloseGate
     }
 
-    /// 写入合法的阈值（调用方负责确保 `1.5 < trigger < recover`，否则使用默认）。
+    /// 写入合法的阈值（调用方负责确保 `1.5 <= trigger < recover`，否则使用默认）。
     /// 见 [`normalize_unimmr_control_lines`]。
     pub fn set_thresholds(&self, trigger_line: f64, recover_line: f64) {
         let (trigger_line, recover_line) =
@@ -200,7 +200,7 @@ fn next_state(
 fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Option<(f64, f64)> {
     if trigger_line.is_finite()
         && recover_line.is_finite()
-        && trigger_line > EXCHANGE_WARNING_MODE_UPPER_UNIMMR
+        && trigger_line >= EXCHANGE_WARNING_MODE_UPPER_UNIMMR
         && recover_line > trigger_line
     {
         Some((trigger_line, recover_line))
@@ -249,7 +249,7 @@ pub async fn load_thresholds_from_redis(
     let (trigger, recover) = normalize_unimmr_control_lines(raw_trigger, raw_recover)
         .unwrap_or_else(|| {
             warn!(
-                "unimmr control lines invalid trigger={} recover={}（要求 {:.2} < trigger < recover），回退默认 trigger={:.2} recover={:.2}",
+                "unimmr control lines invalid trigger={} recover={}（要求 {:.2} <= trigger < recover），回退默认 trigger={:.2} recover={:.2}",
                 raw_trigger,
                 raw_recover,
                 EXCHANGE_WARNING_MODE_UPPER_UNIMMR,
@@ -411,9 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn normalize_rejects_under_warning_floor_and_inverted() {
+    fn normalize_accepts_warning_floor_and_rejects_inverted() {
         assert_eq!(normalize_unimmr_control_lines(2.0, 2.2), Some((2.0, 2.2)));
-        assert_eq!(normalize_unimmr_control_lines(1.5, 2.2), None);
+        assert_eq!(normalize_unimmr_control_lines(1.5, 2.2), Some((1.5, 2.2)));
         assert_eq!(normalize_unimmr_control_lines(2.2, 2.0), None);
         assert_eq!(normalize_unimmr_control_lines(f64::NAN, 2.0), None);
     }

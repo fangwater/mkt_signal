@@ -45,7 +45,7 @@ struct SymbolListInner {
     /// 反套建仓列表
     bwd_trade_symbols: FastHashSet<String>,
 
-    /// UniMMR 算法平仓 symbol list（仅 fr / intra / cross 加载；mm 跳过）。
+    /// UniMMR 算法平仓 symbol list（仅 FR 加载）。
     /// 参与 `collect_online` 并集，确保下游阈值/订阅会覆盖这些 symbol。
     unimmr_close_symbols: FastHashSet<String>,
 
@@ -222,11 +222,11 @@ impl SymbolList {
             }
         }
 
-        // 读取 UniMMR 算法平仓 symbol list（仅 fr/intra/cross；mm 跳过）。
+        // UniMMR 算法平仓 symbol list 仅属于 FR。
         // 与 `pre_trade::unimmr_close_symbol_list` 共用同一 Redis key 与归一化口径，
         // 这里加载只是为了把它并入 online 集合，保证下游阈值/数据订阅覆盖到这些
         // symbol；pre_trade 仍以自己的副本做 close 决策。
-        if ns != "mm" {
+        if ns == "fr" {
             let unimmr_key = symbol_list_redis_key(
                 key_prefix.as_deref(),
                 &ns,
@@ -384,7 +384,7 @@ impl SymbolList {
         Self::with_inner(|inner| inner.bwd_trade_symbols.iter().cloned().collect())
     }
 
-    /// 获取 UniMMR 算法平仓列表（fr/intra/cross 加载；mm 始终为空）
+    /// 获取 UniMMR 算法平仓列表（仅 FR 加载；其他模式为空）
     pub fn get_unimmr_close_symbols(&self) -> Vec<String> {
         Self::with_inner(|inner| inner.unimmr_close_symbols.iter().cloned().collect())
     }
