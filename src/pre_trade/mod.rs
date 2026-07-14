@@ -13,6 +13,7 @@ pub mod close_inventory;
 pub mod event;
 pub mod gate_fr_risk_limit_guard;
 pub mod intra_bwd_symbol_list;
+pub mod kalman_filter;
 pub mod lazy_taker_action;
 pub mod leverage_guard;
 pub mod log_throttle;

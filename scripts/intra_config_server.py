@@ -61,16 +61,19 @@ STRATEGY_BOOL_PARAM_KEYS = [
 REQUIRED_STRATEGY_PARAMS = {
     "enable_intra_funding_close_signal": "false",
     "vol_gate_compare": "lt",
+    "taker_decsion_nn_model_kalman_q": "0.02",
 }
 
 REQUIRED_STRATEGY_PARAM_COMMENTS = {
     "enable_intra_funding_close_signal": "是否启用 intra funding close 信号（命中 current FR MA close 后仍需通过 spread close gate）",
     "vol_gate_compare": "vol gate symbol 的放行方向：lt 表示 vol < threshold 才允许开仓；gt 表示 vol > threshold 才允许开仓",
+    "taker_decsion_nn_model_kalman_q": "nn_model 强制 local-level Kalman 平滑的 Q/R，有限且 >=0；默认 0.02",
 }
 
 REQUIRED_STRATEGY_PARAM_AFTER = {
     "enable_intra_funding_close_signal": "spread_cancel_cooldown_ms",
     "vol_gate_compare": "open_volatility_limit",
+    "taker_decsion_nn_model_kalman_q": "taker_decsion_nn_model_zmq_ipc",
 }
 
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
@@ -346,6 +349,13 @@ def normalize_float_text(raw: Any, field_name: str) -> str:
     if not math.isfinite(value):
         raise ValueError(f"{field_name} must be finite: {text}")
     return f"{value:.12g}"
+
+
+def normalize_nonnegative_float_text(raw: Any, field_name: str) -> str:
+    text = normalize_float_text(raw, field_name)
+    if float(text) < 0.0:
+        raise ValueError(f"{field_name} must be >= 0: {raw}")
+    return text
 
 
 def read_static_funding_close_thresholds(
@@ -1658,6 +1668,12 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
     for key in STRATEGY_BOOL_PARAM_KEYS:
         if key in normalized:
             normalized[key] = normalize_bool_param_text(normalized[key], key)
+
+    nn_kalman_q_key = "taker_decsion_nn_model_kalman_q"
+    if nn_kalman_q_key in normalized:
+        normalized[nn_kalman_q_key] = normalize_nonnegative_float_text(
+            normalized[nn_kalman_q_key], nn_kalman_q_key
+        )
 
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(

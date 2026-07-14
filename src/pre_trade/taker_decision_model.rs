@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::pre_trade::kalman_filter::{LocalLevelKalmanFilter, DEFAULT_LOCAL_LEVEL_KALMAN_Q};
 use crate::pre_trade::order_manager::Side;
 use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
 use mkt_parsers::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
@@ -25,6 +26,7 @@ const DEFAULT_SCORE_ROLLING_MEAN_WINDOW: usize = 3;
 const DEFAULT_ZMQ_TOPIC_PREFIX: &str = "model_output/";
 const TAKER_DECISION_SCORE_ROLLING_MEAN_WINDOW_KEY: &str =
     "taker_decsion_model_score_rolling_mean_window";
+const TAKER_DECISION_NN_MODEL_KALMAN_Q_KEY: &str = "taker_decsion_nn_model_kalman_q";
 
 thread_local! {
     static TAKER_DECISION_MODEL: RefCell<Option<PreTradeTakerDecisionModel>> = const { RefCell::new(None) };
@@ -70,6 +72,7 @@ pub struct TakerDecisionConfig {
     pub nn_keep_short_score: Option<f64>,
     pub nn_open_cancel_long_score: Option<f64>,
     pub nn_open_cancel_short_score: Option<f64>,
+    pub nn_kalman_q: f64,
     pub score_rolling_mean_window: usize,
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
@@ -244,6 +247,7 @@ struct ModelScoreThresholdPointsLoad {
 struct SymbolScoreState {
     latest_raw_score: Option<f64>,
     latest_score: Option<f64>,
+    nn_filter: LocalLevelKalmanFilter,
     score_window: VecDeque<f64>,
     score_sum: f64,
     latest_percentile: Option<f64>,
@@ -252,16 +256,24 @@ struct SymbolScoreState {
 }
 
 impl SymbolScoreState {
-    fn new() -> Self {
-        Self {
+    fn new(nn_kalman_q: f64) -> Result<Self> {
+        Ok(Self {
             latest_raw_score: None,
             latest_score: None,
+            nn_filter: LocalLevelKalmanFilter::new(nn_kalman_q)
+                .context("create NN local-level Kalman filter")?,
             score_window: VecDeque::new(),
             score_sum: 0.0,
             latest_percentile: None,
             latest_score_ready: false,
             update_count: 0,
-        }
+        })
+    }
+
+    fn set_nn_kalman_q(&mut self, q: f64) -> Result<()> {
+        self.nn_filter
+            .set_q(q)
+            .context("update NN local-level Kalman filter q")
     }
 
     fn observe(
@@ -269,18 +281,26 @@ impl SymbolScoreState {
         score: f64,
         score_quantile: Option<f64>,
         score_ready: bool,
+        model_type: TakerDecisionModelType,
         rolling_mean_window: usize,
     ) -> Option<f64> {
         self.latest_raw_score = Some(score);
-        let window_len = rolling_mean_window.max(1);
-        self.score_window.push_back(score);
-        self.score_sum += score;
-        while self.score_window.len() > window_len {
-            if let Some(old_score) = self.score_window.pop_front() {
-                self.score_sum -= old_score;
+        match model_type {
+            TakerDecisionModelType::NnModel => {
+                self.latest_score = self.nn_filter.update(score);
+            }
+            TakerDecisionModelType::TreeModel => {
+                let window_len = rolling_mean_window.max(1);
+                self.score_window.push_back(score);
+                self.score_sum += score;
+                while self.score_window.len() > window_len {
+                    if let Some(old_score) = self.score_window.pop_front() {
+                        self.score_sum -= old_score;
+                    }
+                }
+                self.latest_score = Some(self.score_sum / self.score_window.len() as f64);
             }
         }
-        self.latest_score = Some(self.score_sum / self.score_window.len() as f64);
         self.latest_percentile = score_quantile.map(|value| value * 100.0);
         self.latest_score_ready = score_ready;
         self.update_count = self.update_count.saturating_add(1);
@@ -289,7 +309,7 @@ impl SymbolScoreState {
 
     fn latest_observation(&self, model_type: TakerDecisionModelType) -> Option<f64> {
         match model_type {
-            TakerDecisionModelType::NnModel => self.latest_raw_score,
+            TakerDecisionModelType::NnModel => self.latest_score,
             TakerDecisionModelType::TreeModel => {
                 self.latest_percentile.map(|percentile| percentile / 100.0)
             }
@@ -409,6 +429,16 @@ impl PreTradeTakerDecisionModel {
             None => true,
         };
         let model_type = TakerDecisionModelType::parse(&key, map.get("taker_decsion_model_type"))?;
+        let nn_kalman_q = if model_type == TakerDecisionModelType::NnModel {
+            match map.get(TAKER_DECISION_NN_MODEL_KALMAN_Q_KEY) {
+                Some(raw) => {
+                    parse_nonnegative_finite_f64(&key, TAKER_DECISION_NN_MODEL_KALMAN_Q_KEY, raw)?
+                }
+                None => DEFAULT_LOCAL_LEVEL_KALMAN_Q,
+            }
+        } else {
+            DEFAULT_LOCAL_LEVEL_KALMAN_Q
+        };
         let service = map
             .get("taker_decsion_model_service")
             .map(|raw| raw.trim().to_string())
@@ -618,6 +648,7 @@ impl PreTradeTakerDecisionModel {
             nn_keep_short_score,
             nn_open_cancel_long_score,
             nn_open_cancel_short_score,
+            nn_kalman_q,
             score_rolling_mean_window,
             keep_long_percentile,
             keep_short_percentile,
@@ -650,22 +681,30 @@ impl PreTradeTakerDecisionModel {
         let current_service = Self::service_name_global();
         if current_service.as_deref() == Some(service_name.as_str()) {
             let model_type = cfg.model_type;
+            let nn_kalman_q = cfg.nn_kalman_q;
             let effective_rolling_mean_window = if model_type == TakerDecisionModelType::NnModel {
                 1
             } else {
                 cfg.score_rolling_mean_window
             };
-            TAKER_DECISION_MODEL.with(|cell| {
+            TAKER_DECISION_MODEL.with(|cell| -> Result<()> {
                 if let Some(model) = cell.borrow_mut().as_mut() {
+                    if model_type == TakerDecisionModelType::NnModel {
+                        for state in model.states.values_mut() {
+                            state.set_nn_kalman_q(nn_kalman_q)?;
+                        }
+                    }
                     model.fixed_score_thresholds = cfg.nn_fixed_thresholds();
                     model.cfg = cfg;
                 }
-            });
+                Ok(())
+            })?;
             debug!(
-                "pre_trade taker decision model config updated without reconnect model_type={} service={} effective_score_rolling_mean_window={}",
+                "pre_trade taker decision model config updated without reconnect model_type={} service={} effective_score_rolling_mean_window={} nn_kalman_q={}",
                 model_type.as_str(),
                 service_name,
-                effective_rolling_mean_window
+                effective_rolling_mean_window,
+                nn_kalman_q
             );
             return Ok(true);
         }
@@ -682,6 +721,7 @@ impl PreTradeTakerDecisionModel {
         } else {
             model.cfg.score_rolling_mean_window
         };
+        let nn_kalman_q = model.cfg.nn_kalman_q;
         let previous_model = TAKER_DECISION_MODEL.with(|cell| cell.borrow_mut().replace(model));
         let previous_service = previous_model
             .as_ref()
@@ -695,11 +735,12 @@ impl PreTradeTakerDecisionModel {
             );
         }
         info!(
-            "pre_trade taker decision model connected model_type={} service={} threshold_key={} effective_score_rolling_mean_window={}",
+            "pre_trade taker decision model connected model_type={} service={} threshold_key={} effective_score_rolling_mean_window={} nn_kalman_q={}",
             model_type.as_str(),
             service_name,
             threshold_output_key,
-            effective_rolling_mean_window
+            effective_rolling_mean_window,
+            nn_kalman_q
         );
         Ok(true)
     }
@@ -718,6 +759,10 @@ impl PreTradeTakerDecisionModel {
     }
 
     fn build_model(cfg: TakerDecisionConfig, service_name: String) -> Result<Self> {
+        if cfg.model_type == TakerDecisionModelType::NnModel {
+            LocalLevelKalmanFilter::new(cfg.nn_kalman_q)
+                .context("invalid taker_decsion_nn_model_kalman_q")?;
+        }
         let fixed_score_thresholds = cfg.nn_fixed_thresholds();
         let (threshold_output_key, subscriber) = match cfg.model_type {
             TakerDecisionModelType::TreeModel => {
@@ -987,7 +1032,7 @@ impl PreTradeTakerDecisionModel {
             model
                 .states
                 .get(&normalize_symbol_for_internal(symbol))?
-                .latest_raw_score
+                .latest_score
                 .filter(|score| score.is_finite())
         })
     }
@@ -1082,10 +1127,23 @@ impl PreTradeTakerDecisionModel {
             if symbol.is_empty() {
                 continue;
             }
-            let state = self
-                .states
-                .entry(symbol.clone())
-                .or_insert_with(SymbolScoreState::new);
+            if !self.states.contains_key(&symbol) {
+                match SymbolScoreState::new(self.cfg.nn_kalman_q) {
+                    Ok(state) => {
+                        self.states.insert(symbol.clone(), state);
+                    }
+                    Err(err) => {
+                        warn!(
+                            "pre_trade taker decision model failed to create symbol filter service={} symbol={} err={:#}",
+                            self.service_name, symbol, err
+                        );
+                        continue;
+                    }
+                }
+            }
+            let Some(state) = self.states.get_mut(&symbol) else {
+                continue;
+            };
             let rolling_mean_window = if self.cfg.model_type == TakerDecisionModelType::NnModel {
                 1
             } else {
@@ -1095,6 +1153,7 @@ impl PreTradeTakerDecisionModel {
                 msg.score,
                 msg.score_quantile,
                 msg.score_ready,
+                self.cfg.model_type,
                 rolling_mean_window,
             );
             let smoothed_score = state.latest_score.unwrap_or(msg.score);
@@ -1109,13 +1168,14 @@ impl PreTradeTakerDecisionModel {
         }
         if self.last_log.elapsed().as_secs() >= MODEL_OUTPUT_STATS_LOG_INTERVAL_SECS {
             info!(
-                "pre_trade taker decision model stats model_type={} service={} override_symbols={} active_symbols={} recv={} parse_err={}",
+                "pre_trade taker decision model stats model_type={} service={} override_symbols={} active_symbols={} recv={} parse_err={} nn_kalman_q={}",
                 self.cfg.model_type.as_str(),
                 self.service_name,
                 self.cfg.symbol_configs.len(),
                 self.states.len(),
                 self.recv_count,
-                self.parse_err_count
+                self.parse_err_count,
+                self.cfg.nn_kalman_q
             );
             self.recv_count = 0;
             self.parse_err_count = 0;
@@ -1691,6 +1751,24 @@ fn parse_optional_finite_score(
     Ok(Some(value))
 }
 
+fn parse_nonnegative_finite_f64(redis_key: &str, field: &str, raw: &str) -> Result<f64> {
+    let value = raw.trim().parse::<f64>().with_context(|| {
+        format!(
+            "Redis hash '{}' {} invalid non-negative number: {}",
+            redis_key, field, raw
+        )
+    })?;
+    if !value.is_finite() || value < 0.0 {
+        anyhow::bail!(
+            "Redis hash '{}' {} must be finite and >= 0: {}",
+            redis_key,
+            field,
+            raw
+        );
+    }
+    Ok(value)
+}
+
 fn parse_positive_usize(redis_key: &str, field: &str, raw: &str) -> Result<usize> {
     let value = raw.trim().parse::<usize>().with_context(|| {
         format!(
@@ -1867,42 +1945,88 @@ mod tests {
 
     #[test]
     fn symbol_score_state_keeps_rolling_mean_per_instance() {
-        let mut btc = SymbolScoreState::new();
-        assert_eq!(btc.observe(1.0, Some(0.1), true, 3), Some(10.0));
+        let mut btc = SymbolScoreState::new(DEFAULT_LOCAL_LEVEL_KALMAN_Q).expect("state");
+        assert_eq!(
+            btc.observe(1.0, Some(0.1), true, TakerDecisionModelType::TreeModel, 3),
+            Some(10.0)
+        );
         assert_eq!(btc.latest_raw_score, Some(1.0));
         assert_eq!(btc.latest_score, Some(1.0));
 
-        btc.observe(2.0, Some(0.2), true, 3);
+        btc.observe(2.0, Some(0.2), true, TakerDecisionModelType::TreeModel, 3);
         assert_eq!(btc.latest_raw_score, Some(2.0));
         assert_eq!(btc.latest_score, Some(1.5));
 
-        btc.observe(4.0, Some(0.4), true, 3);
+        btc.observe(4.0, Some(0.4), true, TakerDecisionModelType::TreeModel, 3);
         assert_eq!(btc.latest_score, Some(7.0 / 3.0));
 
-        btc.observe(10.0, Some(0.9), true, 3);
-        assert_eq!(
-            btc.latest_observation(TakerDecisionModelType::NnModel),
-            Some(10.0)
-        );
+        btc.observe(10.0, Some(0.9), true, TakerDecisionModelType::TreeModel, 3);
         assert_eq!(
             btc.latest_observation(TakerDecisionModelType::TreeModel),
             Some(0.9)
         );
         assert_eq!(btc.latest_score, Some(16.0 / 3.0));
 
-        let mut eth = SymbolScoreState::new();
-        eth.observe(9.0, None, true, 3);
+        let mut eth = SymbolScoreState::new(DEFAULT_LOCAL_LEVEL_KALMAN_Q).expect("state");
+        eth.observe(9.0, None, true, TakerDecisionModelType::TreeModel, 3);
         assert_eq!(eth.latest_score, Some(9.0));
         assert_eq!(btc.latest_score, Some(16.0 / 3.0));
 
-        btc.observe(20.0, None, true, 1);
+        btc.observe(20.0, None, true, TakerDecisionModelType::TreeModel, 1);
         assert_eq!(btc.latest_score, Some(20.0));
+    }
+
+    #[test]
+    fn nn_symbol_score_state_exposes_filtered_value() {
+        let mut state = SymbolScoreState::new(0.02).expect("state");
+        state.observe(0.5, Some(0.5), true, TakerDecisionModelType::NnModel, 1);
+        state.observe(-0.5, Some(0.25), true, TakerDecisionModelType::NnModel, 1);
+
+        assert_eq!(state.latest_raw_score, Some(-0.5));
+        let filtered = state.latest_score.expect("filtered score");
+        assert!((filtered - -0.004_950_495_049_504_955).abs() < 1e-12);
+        assert_eq!(
+            state.latest_observation(TakerDecisionModelType::NnModel),
+            Some(filtered)
+        );
+    }
+
+    #[test]
+    fn nn_global_resample_accessors_expose_filtered_value() {
+        let cfg = nn_test_config(unique_test_ipc_endpoint());
+        let service_name = PreTradeTakerDecisionModel::connection_name_for_config(&cfg)
+            .expect("nn connection name");
+        let mut model = PreTradeTakerDecisionModel::build_model(cfg, service_name)
+            .expect("build nn model subscriber");
+        let mut state = SymbolScoreState::new(DEFAULT_LOCAL_LEVEL_KALMAN_Q).expect("state");
+        state.observe(0.5, Some(0.5), true, TakerDecisionModelType::NnModel, 1);
+        state.observe(-0.5, Some(0.25), true, TakerDecisionModelType::NnModel, 1);
+        let filtered = state.latest_score.expect("filtered score");
+        model.states.insert("BTCUSDT".to_string(), state);
+
+        let previous = TAKER_DECISION_MODEL.with(|cell| cell.borrow_mut().replace(model));
+        assert_eq!(
+            PreTradeTakerDecisionModel::nn_score_global("BTCUSDT"),
+            Some(filtered)
+        );
+        assert_eq!(
+            PreTradeTakerDecisionModel::latest_observation_global("BTCUSDT"),
+            Some(filtered)
+        );
+        TAKER_DECISION_MODEL.with(|cell| {
+            let _ = cell.borrow_mut().take();
+            if let Some(previous) = previous {
+                cell.borrow_mut().replace(previous);
+            }
+        });
     }
 
     #[test]
     fn invalid_model_config_values_return_errors_without_panicking() {
         assert!(parse_bool("redis:test", "enabled", "invalid").is_err());
         assert!(parse_percentile("redis:test", "percentile", "nan").is_err());
+        assert!(parse_nonnegative_finite_f64("redis:test", "q", "-0.01").is_err());
+        assert!(parse_nonnegative_finite_f64("redis:test", "q", "inf").is_err());
         assert!(parse_positive_usize("redis:test", "window", "0").is_err());
     }
 
@@ -1963,6 +2087,7 @@ mod tests {
             nn_keep_short_score: Some(-0.2),
             nn_open_cancel_long_score: Some(0.1),
             nn_open_cancel_short_score: Some(-0.1),
+            nn_kalman_q: DEFAULT_LOCAL_LEVEL_KALMAN_Q,
             score_rolling_mean_window: 99,
             keep_long_percentile: 80.0,
             keep_short_percentile: 20.0,
@@ -2017,12 +2142,13 @@ mod tests {
         cfg.enable_cancel = false;
         cfg.nn_open_cancel_long_score = None;
         cfg.nn_open_cancel_short_score = None;
+        let nn_kalman_q = cfg.nn_kalman_q;
         let service_name = PreTradeTakerDecisionModel::connection_name_for_config(&cfg)
             .expect("nn connection name");
         let mut model = PreTradeTakerDecisionModel::build_model(cfg, service_name)
             .expect("build nn model subscriber");
-        let mut state = SymbolScoreState::new();
-        state.observe(0.5, Some(0.5), true, 1);
+        let mut state = SymbolScoreState::new(nn_kalman_q).expect("state");
+        state.observe(0.5, Some(0.5), true, TakerDecisionModelType::NnModel, 1);
         model.states.insert("BTCUSDT".to_string(), state);
 
         let previous = TAKER_DECISION_MODEL.with(|cell| cell.borrow_mut().replace(model));
@@ -2113,12 +2239,12 @@ mod tests {
             1_783_820_502_000,
             1_783_820_502_200,
             43,
-            -0.5,
+            -1.0,
             Some(0.25),
             true,
             MODEL_STATUS_OK,
             vec![0],
-            vec![-0.5],
+            vec![-1.0],
         );
         let second_payload = second_msg.to_bytes().expect("encode second ModelMsg");
         publisher
@@ -2138,7 +2264,7 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         };
-        assert_eq!(second_event.score, -0.5);
+        assert!((second_event.score - -0.257_425_742_574_257_43).abs() < 1e-12);
         assert_eq!(second_event.update_count, 2);
         assert_eq!(
             model

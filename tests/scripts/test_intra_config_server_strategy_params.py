@@ -36,6 +36,20 @@ class TestStrategyParamsSchema(unittest.TestCase):
         self.assertIn("vol_gate_compare", intra_cfg.STRATEGY_PARAM_COMMENTS)
         self.assertIn("vol_gate_compare", intra_cfg.STRATEGY_PARAM_ORDER)
 
+    def test_nn_kalman_q_is_configurable_with_default(self):
+        key = "taker_decsion_nn_model_kalman_q"
+        self.assertEqual(intra_cfg.DEFAULT_STRATEGY_PARAMS[key], "0.02")
+        self.assertIn(key, intra_cfg.STRATEGY_PARAM_COMMENTS)
+        self.assertIn(key, intra_cfg.STRATEGY_PARAM_ORDER)
+        normalized = intra_cfg.normalize_strategy_params_by_schema({key: "0.3"})
+        self.assertEqual(normalized[key], "0.3")
+
+    def test_nn_kalman_q_rejects_negative_or_nonfinite_values(self):
+        key = "taker_decsion_nn_model_kalman_q"
+        for invalid in ("-0.01", "nan", "inf"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                intra_cfg.normalize_strategy_params_by_schema({key: invalid})
+
     def test_strategy_bool_params_normalize_on_save(self):
         normalized = intra_cfg.normalize_strategy_params_by_schema(
             {
