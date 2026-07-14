@@ -2,6 +2,7 @@ use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
 use bytes::Bytes;
 use log::{info, warn};
+use mkt_parsers::msg::basic_account_msg::BasicAccountRiskMsg;
 use once_cell::sync::Lazy;
 use order_common::TradingVenue;
 use parking_lot::Mutex;
@@ -9,7 +10,6 @@ use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicI64, Ordering};
-use trade_engine::query_parsers::bitget_capacity_snapshot::BitgetCapacitySnapshotMsg;
 use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
 const BINANCE_PM_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
@@ -23,7 +23,6 @@ const GATE_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const GATE_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
 const GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 const BITGET_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
-const BITGET_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
 const BITGET_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 pub const BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US: i64 = 30 * 60 * 1_000_000;
 
@@ -125,7 +124,9 @@ impl CapacityVenue {
             Self::BinancePm => "free",
             Self::OkexUnified => "available",
             Self::GateUnified => "available",
-            Self::BitgetUnified => "available",
+            // Bitget `assets.USDT.available` is a wallet balance, not the
+            // unified-account initial-margin headroom for a new UTA order.
+            Self::BitgetUnified => "initial_margin_headroom",
         }
     }
 
@@ -152,7 +153,7 @@ impl CapacityVenue {
             Self::BinancePm => BINANCE_PM_CAPACITY_POLL_INTERVAL_US,
             Self::OkexUnified => OKEX_UNIFIED_CAPACITY_POLL_INTERVAL_US,
             Self::GateUnified => GATE_UNIFIED_CAPACITY_POLL_INTERVAL_US,
-            Self::BitgetUnified => BITGET_UNIFIED_CAPACITY_POLL_INTERVAL_US,
+            Self::BitgetUnified => 0,
         }
     }
 
@@ -260,9 +261,45 @@ pub fn drive_account_open_block_capacity_poll(now_us: i64) {
     if gate_unified_capacity_poll_enabled() {
         drive_capacity_poll(CapacityVenue::GateUnified, now_us);
     }
-    if bitget_unified_capacity_poll_enabled() {
-        drive_capacity_poll(CapacityVenue::BitgetUnified, now_us);
+}
+
+/// Applies Bitget's unified-account risk stream to the account-wide ArbOpen gate.
+///
+/// `assets.USDT.available` can remain large while open positions consume nearly all
+/// initial-margin capacity. `effEquity - imr` uses the exchange's UTA risk values
+/// and is the capacity relevant to opening another position.
+pub fn apply_bitget_unified_account_risk(msg: &BasicAccountRiskMsg) {
+    if !bitget_unified_capacity_poll_enabled() {
+        return;
     }
+    apply_bitget_unified_account_risk_at(msg, get_timestamp_us());
+}
+
+fn apply_bitget_unified_account_risk_at(msg: &BasicAccountRiskMsg, now_us: i64) {
+    if !msg.adj_equity_usd.is_finite() || !msg.initial_margin_usd.is_finite() {
+        warn!(
+            "AccountOpenBlock: ignore invalid bitget_unified risk snapshot adj_equity_usd={} initial_margin_usd={}",
+            msg.adj_equity_usd, msg.initial_margin_usd
+        );
+        return;
+    }
+
+    let headroom = msg.adj_equity_usd - msg.initial_margin_usd;
+    {
+        let mut state = BITGET_UNIFIED_CAPACITY_POLL.lock();
+        state.last_query_sent_us = now_us;
+        state.available_query_id = None;
+        state.max_borrowable_query_id = None;
+        state.last_usdt_available = Some(headroom);
+        state.last_usdt_max_borrowable = Some(0.0);
+        state.last_margin_ratio = msg.margin_ratio.is_finite().then_some(msg.margin_ratio);
+        state.last_capacity_check_us = now_us;
+        state.last_completed_usdt_available = Some(headroom);
+        state.last_completed_usdt_max_borrowable = Some(0.0);
+        state.last_usdt_max_available_margin = Some(headroom);
+    }
+
+    evaluate_capacity(CapacityVenue::BitgetUnified, headroom, 0.0, now_us, now_us);
 }
 
 fn drive_capacity_poll(venue: CapacityVenue, now_us: i64) {
@@ -432,33 +469,15 @@ pub fn handle_account_open_block_query_response(
             true
         }
         QueryRequestType::BitgetUsdtAvailableSnapshot => {
-            match BitgetCapacitySnapshotMsg::from_bytes(body) {
-                Some(snapshot) if snapshot.available_value().is_some() => {
-                    update_bitget_capacity_snapshot(req_type, client_query_id, snapshot);
-                }
-                Some(_) => warn!(
-                    "AccountOpenBlock: Bitget USDT available snapshot missing available field"
-                ),
-                None => warn!(
-                    "AccountOpenBlock: parse Bitget USDT available failed body={}",
-                    trim_body(body)
-                ),
-            }
+            // Bitget UTA ArbOpen capacity comes from AccountRisk (effEquity - imr),
+            // not this wallet-level `assets.USDT.available` response.
+            let _ = (client_query_id, body);
             true
         }
         QueryRequestType::BitgetUsdtMaxTransferable => {
-            match BitgetCapacitySnapshotMsg::from_bytes(body) {
-                Some(snapshot) if snapshot.max_borrowable_value().is_some() => {
-                    update_bitget_capacity_snapshot(req_type, client_query_id, snapshot);
-                }
-                Some(_) => warn!(
-                    "AccountOpenBlock: Bitget USDT max transferable snapshot missing max_borrowable field"
-                ),
-                None => warn!(
-                    "AccountOpenBlock: parse Bitget USDT borrowMaxTransfer failed body={}",
-                    trim_body(body)
-                ),
-            }
+            // `borrowMaxTransfer` is not additive initial-margin capacity for a
+            // unified-account futures order.
+            let _ = (client_query_id, body);
             true
         }
         _ => false,
@@ -647,29 +666,6 @@ fn latest_usdt_max_available_margin_snapshot_for_venue(
         threshold: venue.threshold(),
         ts_us: state.last_capacity_check_us,
     })
-}
-
-fn update_bitget_capacity_snapshot(
-    req_type: QueryRequestType,
-    client_query_id: i64,
-    snapshot: BitgetCapacitySnapshotMsg,
-) {
-    if let Some(margin_ratio) = snapshot.margin_ratio_value() {
-        BITGET_UNIFIED_CAPACITY_POLL.lock().last_margin_ratio = Some(margin_ratio);
-    }
-    let value = if req_type == QueryRequestType::BitgetUsdtAvailableSnapshot {
-        snapshot.available_value()
-    } else {
-        snapshot.max_borrowable_value()
-    };
-    if let Some(value) = value {
-        update_capacity_snapshot(
-            CapacityVenue::BitgetUnified,
-            req_type,
-            client_query_id,
-            value,
-        );
-    }
 }
 
 fn update_capacity_snapshot(
@@ -1336,54 +1332,30 @@ mod tests {
     }
 
     #[test]
-    fn locks_when_bitget_unified_usdt_capacity_is_below_threshold_without_existing_block() {
-        let _guard = TEST_LOCK.lock();
-        clear_all();
-        seed_poll_state(CapacityVenue::BitgetUnified, -11, -12);
-
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BitgetUsdtAvailableSnapshot,
-            -11,
-            &BitgetCapacitySnapshotMsg::available(10.0, 30.0).to_bytes(),
-        ));
-        assert!(check_account_open_block().is_none());
-
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BitgetUsdtMaxTransferable,
-            -12,
-            &BitgetCapacitySnapshotMsg::max_borrowable(1989.0).to_bytes(),
-        ));
-        let hit = check_account_open_block().expect("low Bitget capacity must lock ArbOpen");
-        assert_eq!(
-            hit.reason,
-            AccountOpenBlockReason::BitgetUnifiedInsufficientMargin
-        );
-        assert_eq!(hit.last_error_code, BITGET_UNIFIED_CAPACITY_LOW_ERROR_CODE);
-    }
-
-    #[test]
-    fn unlocks_when_bitget_unified_usdt_capacity_exceeds_threshold() {
+    fn bitget_risk_headroom_keeps_25203_locked_until_margin_recovers() {
         let _guard = TEST_LOCK.lock();
         clear_all();
         register_account_open_block_at(
             AccountOpenBlockReason::BitgetUnifiedInsufficientMargin,
-            40800,
+            25203,
             3_000_000,
         );
-        seed_poll_state(CapacityVenue::BitgetUnified, -13, -14);
+        let low_headroom =
+            BasicAccountRiskMsg::create(0, 23_000.0, 76_000.0, 6_000.0, 22_000.0, 3.8, 0.0, 0.0);
+        apply_bitget_unified_account_risk_at(&low_headroom, 3_100_000);
+        let hit = check_account_open_block().expect("low risk headroom must keep ArbOpen locked");
+        assert_eq!(
+            hit.reason,
+            AccountOpenBlockReason::BitgetUnifiedInsufficientMargin
+        );
+        assert_eq!(hit.last_error_code, 25203);
 
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BitgetUsdtAvailableSnapshot,
-            -13,
-            &BitgetCapacitySnapshotMsg::available(100.5, 30.0).to_bytes(),
-        ));
-        assert!(check_account_open_block().is_some());
-
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BitgetUsdtMaxTransferable,
-            -14,
-            &BitgetCapacitySnapshotMsg::max_borrowable(2000.0).to_bytes(),
-        ));
+        let recovered_headroom =
+            BasicAccountRiskMsg::create(0, 25_000.0, 76_000.0, 6_000.0, 22_000.0, 4.1, 0.0, 0.0);
+        apply_bitget_unified_account_risk_at(&recovered_headroom, 3_200_000);
         assert!(check_account_open_block().is_none());
+        let state = BITGET_UNIFIED_CAPACITY_POLL.lock();
+        assert_eq!(state.last_usdt_max_available_margin, Some(3_000.0));
+        assert_eq!(state.last_margin_ratio, Some(4.1));
     }
 }

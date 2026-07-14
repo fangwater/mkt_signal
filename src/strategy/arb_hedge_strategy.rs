@@ -2607,6 +2607,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                         response.error_code(),
                     );
                 }
+                self.next_query_ts_us =
+                    now_ts.saturating_add(ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US);
             } else if is_bybit_open_interest_position_limit || is_bybit_collateral_not_enabled {
                 self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
             } else if is_bybit_internal_system_error {
