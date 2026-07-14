@@ -9,6 +9,7 @@ use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicI64, Ordering};
+use trade_engine::query_parsers::bitget_capacity_snapshot::BitgetCapacitySnapshotMsg;
 use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
 const BINANCE_PM_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
@@ -81,6 +82,7 @@ pub struct UsdtMaxAvailableMarginSnapshot {
     pub available_label: &'static str,
     pub available: f64,
     pub max_borrowable: f64,
+    pub margin_ratio: Option<f64>,
     pub usdt_max_available_margin: f64,
     pub threshold: f64,
     pub ts_us: i64,
@@ -93,6 +95,7 @@ struct CapacityPollState {
     max_borrowable_query_id: Option<i64>,
     last_usdt_available: Option<f64>,
     last_usdt_max_borrowable: Option<f64>,
+    last_margin_ratio: Option<f64>,
     last_capacity_check_us: i64,
     last_completed_usdt_available: Option<f64>,
     last_completed_usdt_max_borrowable: Option<f64>,
@@ -429,15 +432,13 @@ pub fn handle_account_open_block_query_response(
             true
         }
         QueryRequestType::BitgetUsdtAvailableSnapshot => {
-            match parse_bitget_unified_usdt_available(body) {
-                Some(value) => {
-                    update_capacity_snapshot(
-                        CapacityVenue::BitgetUnified,
-                        req_type,
-                        client_query_id,
-                        value,
-                    );
+            match BitgetCapacitySnapshotMsg::from_bytes(body) {
+                Some(snapshot) if snapshot.available_value().is_some() => {
+                    update_bitget_capacity_snapshot(req_type, client_query_id, snapshot);
                 }
+                Some(_) => warn!(
+                    "AccountOpenBlock: Bitget USDT available snapshot missing available field"
+                ),
                 None => warn!(
                     "AccountOpenBlock: parse Bitget USDT available failed body={}",
                     trim_body(body)
@@ -446,15 +447,13 @@ pub fn handle_account_open_block_query_response(
             true
         }
         QueryRequestType::BitgetUsdtMaxTransferable => {
-            match parse_bitget_unified_borrow_max_transfer(body) {
-                Some(value) => {
-                    update_capacity_snapshot(
-                        CapacityVenue::BitgetUnified,
-                        req_type,
-                        client_query_id,
-                        value,
-                    );
+            match BitgetCapacitySnapshotMsg::from_bytes(body) {
+                Some(snapshot) if snapshot.max_borrowable_value().is_some() => {
+                    update_bitget_capacity_snapshot(req_type, client_query_id, snapshot);
                 }
+                Some(_) => warn!(
+                    "AccountOpenBlock: Bitget USDT max transferable snapshot missing max_borrowable field"
+                ),
                 None => warn!(
                     "AccountOpenBlock: parse Bitget USDT borrowMaxTransfer failed body={}",
                     trim_body(body)
@@ -643,10 +642,34 @@ fn latest_usdt_max_available_margin_snapshot_for_venue(
         available_label: venue.available_label(),
         available,
         max_borrowable,
+        margin_ratio: state.last_margin_ratio,
         usdt_max_available_margin,
         threshold: venue.threshold(),
         ts_us: state.last_capacity_check_us,
     })
+}
+
+fn update_bitget_capacity_snapshot(
+    req_type: QueryRequestType,
+    client_query_id: i64,
+    snapshot: BitgetCapacitySnapshotMsg,
+) {
+    if let Some(margin_ratio) = snapshot.margin_ratio_value() {
+        BITGET_UNIFIED_CAPACITY_POLL.lock().last_margin_ratio = Some(margin_ratio);
+    }
+    let value = if req_type == QueryRequestType::BitgetUsdtAvailableSnapshot {
+        snapshot.available_value()
+    } else {
+        snapshot.max_borrowable_value()
+    };
+    if let Some(value) = value {
+        update_capacity_snapshot(
+            CapacityVenue::BitgetUnified,
+            req_type,
+            client_query_id,
+            value,
+        );
+    }
 }
 
 fn update_capacity_snapshot(
@@ -899,41 +922,6 @@ fn parse_gate_unified_max_borrowable(body: &Bytes) -> Option<f64> {
         }
     }
     None
-}
-
-fn parse_bitget_unified_usdt_available(body: &Bytes) -> Option<f64> {
-    let text = trim_body(body);
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    if !bitget_response_ok(&value) {
-        return None;
-    }
-    let assets = value.get("data")?.get("assets")?.as_array()?;
-    let row = assets.iter().find(|row| {
-        row.get("coin")
-            .and_then(|v| v.as_str())
-            .is_some_and(|coin| coin.eq_ignore_ascii_case("USDT"))
-    })?;
-    parse_json_f64(row.get("available"))
-        .or_else(|| parse_json_f64(row.get("balance")))
-        .or_else(|| parse_json_f64(row.get("equity")))
-}
-
-fn parse_bitget_unified_borrow_max_transfer(body: &Bytes) -> Option<f64> {
-    let text = trim_body(body);
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    if !bitget_response_ok(&value) {
-        return None;
-    }
-    let data = value.get("data")?;
-    parse_json_f64(data.get("borrowMaxTransfer"))
-        .or_else(|| parse_json_f64(data.get("borrow_max_transfer")))
-}
-
-fn bitget_response_ok(value: &serde_json::Value) -> bool {
-    value
-        .get("code")
-        .and_then(|v| v.as_str())
-        .is_some_and(|code| code == "00000" || code == "0")
 }
 
 fn okex_response_ok(value: &serde_json::Value) -> bool {
@@ -1356,18 +1344,14 @@ mod tests {
         assert!(handle_account_open_block_query_response(
             QueryRequestType::BitgetUsdtAvailableSnapshot,
             -11,
-            &Bytes::from_static(
-                br#"{"code":"00000","data":{"assets":[{"coin":"USDT","available":"10","balance":"10"}]}}"#,
-            ),
+            &BitgetCapacitySnapshotMsg::available(10.0, 30.0).to_bytes(),
         ));
         assert!(check_account_open_block().is_none());
 
         assert!(handle_account_open_block_query_response(
             QueryRequestType::BitgetUsdtMaxTransferable,
             -12,
-            &Bytes::from_static(
-                br#"{"code":"00000","data":{"coin":"USDT","borrowMaxTransfer":"1989.0","maxTransfer":"100"}}"#,
-            ),
+            &BitgetCapacitySnapshotMsg::max_borrowable(1989.0).to_bytes(),
         ));
         let hit = check_account_open_block().expect("low Bitget capacity must lock ArbOpen");
         assert_eq!(
@@ -1391,16 +1375,14 @@ mod tests {
         assert!(handle_account_open_block_query_response(
             QueryRequestType::BitgetUsdtAvailableSnapshot,
             -13,
-            &Bytes::from_static(
-                br#"{"code":"00000","data":{"assets":[{"coin":"USDT","available":"100.5","balance":"100.5"}]}}"#,
-            ),
+            &BitgetCapacitySnapshotMsg::available(100.5, 30.0).to_bytes(),
         ));
         assert!(check_account_open_block().is_some());
 
         assert!(handle_account_open_block_query_response(
             QueryRequestType::BitgetUsdtMaxTransferable,
             -14,
-            &Bytes::from_static(br#"{"code":"00000","data":{"borrowMaxTransfer":"2000.0"}}"#),
+            &BitgetCapacitySnapshotMsg::max_borrowable(2000.0).to_bytes(),
         ));
         assert!(check_account_open_block().is_none());
     }

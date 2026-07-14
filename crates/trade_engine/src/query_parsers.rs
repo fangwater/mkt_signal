@@ -7,6 +7,7 @@ pub mod binance_um_account_snapshot;
 pub mod binance_um_balance_snapshot_std;
 pub mod binance_um_order;
 pub mod bitget_account_balance_snapshot;
+pub mod bitget_capacity_snapshot;
 pub mod bitget_order;
 pub mod bitget_positions_snapshot;
 pub mod bybit_account_balance_snapshot;

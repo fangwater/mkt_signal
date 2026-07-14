@@ -1,11 +1,13 @@
 /// Bitget trade/rest/ws error codes to short descriptions.
 pub const POSITION_TIER_LIMIT_EXCEEDED: i32 = 40763;
+pub const UTA_INSUFFICIENT_MARGIN: i32 = 25203;
 
 pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
     match code {
         0 => Some("Success"),
         25001 => Some("Operation timed out"),
         25116 => Some("Exceeded the currency lending limit"),
+        UTA_INSUFFICIENT_MARGIN => Some("Insufficient margin"),
         25204 => Some("Order does not exist"),
         25120 => Some("Current mode does not support leverage"),
         40015 => Some("System error, retry later"),

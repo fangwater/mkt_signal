@@ -2184,8 +2184,7 @@ impl ArbHedgeStrategy {
                     | gate::POSITION_MARGIN_TOO_LOW
             );
         let is_bitget_unified_fr = self.open_venue == TradingVenue::BitgetMargin
-            && self.hedge_venue == TradingVenue::BitgetFutures
-            && error_code == 40800;
+            && self.hedge_venue == TradingVenue::BitgetFutures;
         let account_open_block = if is_binance_pm_fr {
             register_account_open_block(
                 AccountOpenBlockReason::BinancePmInsufficientMargin,

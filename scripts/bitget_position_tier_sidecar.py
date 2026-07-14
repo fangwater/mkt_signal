@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple, TypeVar
 
 from lib.bitget_tier_pool import (
     DEFAULT_CACHE_KEY,
@@ -28,6 +28,9 @@ from lib.bitget_tier_pool import (
     load_pool_from_redis,
     now_ms,
 )
+
+
+T = TypeVar("T")
 
 
 def try_import_redis():
@@ -48,6 +51,37 @@ def redis_client(args: argparse.Namespace) -> Any:
     db = args.redis_db if args.redis_db is not None else int(os.environ.get("REDIS_DB", "0"))
     password = args.redis_password if args.redis_password is not None else os.environ.get("REDIS_PASSWORD", "")
     return redis.Redis(host=host, port=port, db=db, password=password or None)
+
+
+def is_retryable_redis_error(exc: Exception) -> bool:
+    redis = try_import_redis()
+    if redis is None:
+        return False
+    return isinstance(exc, (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError))
+
+
+def retry_redis_operation(
+    operation: Callable[[], T],
+    *,
+    description: str,
+    attempts: int,
+    delay_sec: float,
+) -> T:
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if not is_retryable_redis_error(exc) or attempt >= attempts:
+                raise
+            print(
+                f"[warn] Redis {description} failed attempt={attempt}/{attempts}: {exc}; "
+                f"retrying in {delay_sec:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            if delay_sec > 0:
+                time.sleep(delay_sec)
+    raise AssertionError("Redis retry loop exited unexpectedly")
 
 
 def dec(value: Any, default: str = "0") -> Decimal:
@@ -265,6 +299,36 @@ def write_cache(
     rds.set(cache_key, payload)
 
 
+def write_cache_with_retry(
+    rds: Any,
+    *,
+    pool_key: str,
+    cache_key: str,
+    product_type: str,
+    active_symbols: Sequence[str],
+    records: Dict[str, Dict[str, Any]],
+    errors: Dict[str, str],
+    last_attempt_ms: Dict[str, int],
+    attempts: int,
+    delay_sec: float,
+) -> None:
+    retry_redis_operation(
+        lambda: write_cache(
+            rds,
+            pool_key=pool_key,
+            cache_key=cache_key,
+            product_type=product_type,
+            active_symbols=active_symbols,
+            records=records,
+            errors=errors,
+            last_attempt_ms=last_attempt_ms,
+        ),
+        description="cache write",
+        attempts=attempts,
+        delay_sec=delay_sec,
+    )
+
+
 def symbol_last_query_ms(symbol: str, records: Dict[str, Dict[str, Any]], last_attempt_ms: Dict[str, int]) -> int:
     record = records.get(symbol)
     record_ts = int_or_zero(record.get("updated_at_ms")) if isinstance(record, dict) else 0
@@ -377,6 +441,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--redis-port", type=int, default=None)
     parser.add_argument("--redis-db", type=int, default=None)
     parser.add_argument("--redis-password", default=None)
+    parser.add_argument(
+        "--redis-retry-attempts",
+        type=int,
+        default=3,
+        help="Attempts for transient Redis connection/time-out failures (default: 3).",
+    )
+    parser.add_argument(
+        "--redis-retry-delay-sec",
+        type=float,
+        default=1.0,
+        help="Seconds to wait between transient Redis retries (default: 1).",
+    )
     return parser.parse_args()
 
 
@@ -390,10 +466,34 @@ def main() -> int:
         raise SystemExit("--symbol-cooldown-sec must be non-negative")
     if args.symbol_sleep_ms < 0:
         raise SystemExit("--symbol-sleep-ms must be non-negative")
+    if args.redis_retry_attempts <= 0:
+        raise SystemExit("--redis-retry-attempts must be positive")
+    if args.redis_retry_delay_sec < 0:
+        raise SystemExit("--redis-retry-delay-sec must be non-negative")
 
     cooldown_ms = int(args.symbol_cooldown_sec * 1000)
     rds = redis_client(args)
-    records, errors, last_attempt_ms = load_existing_state(rds, args.cache_key)
+    while True:
+        try:
+            records, errors, last_attempt_ms = retry_redis_operation(
+                lambda: load_existing_state(rds, args.cache_key),
+                description="initial cache read",
+                attempts=args.redis_retry_attempts,
+                delay_sec=args.redis_retry_delay_sec,
+            )
+            break
+        except Exception as exc:
+            if not is_retryable_redis_error(exc):
+                raise
+            print(
+                f"[error] Redis initial cache read failed after {args.redis_retry_attempts} attempts: {exc}; "
+                f"waiting {max(args.interval_sec, args.redis_retry_delay_sec, 1.0):.1f}s before retrying",
+                file=sys.stderr,
+                flush=True,
+            )
+            if args.once:
+                return 2
+            time.sleep(max(args.interval_sec, args.redis_retry_delay_sec, 1.0))
     cursor = 0
     tick = 0
     print(
@@ -406,7 +506,12 @@ def main() -> int:
     while True:
         tick += 1
         try:
-            active_symbols = refresh_active_symbols(args, rds)
+            active_symbols = retry_redis_operation(
+                lambda: refresh_active_symbols(args, rds),
+                description="active symbol refresh",
+                attempts=args.redis_retry_attempts,
+                delay_sec=args.redis_retry_delay_sec,
+            )
         except Exception as exc:
             print(f"[error] refresh active symbols failed: {exc}", file=sys.stderr, flush=True)
             if args.once:
@@ -418,16 +523,27 @@ def main() -> int:
         if not active_symbols:
             print("[warn] active symbol set is empty", flush=True)
             if not args.dry_run:
-                write_cache(
-                    rds,
-                    pool_key=args.pool_key,
-                    cache_key=args.cache_key,
-                    product_type=args.product_type,
-                    active_symbols=[],
-                    records=records,
-                    errors=errors,
-                    last_attempt_ms=last_attempt_ms,
-                )
+                try:
+                    write_cache_with_retry(
+                        rds,
+                        pool_key=args.pool_key,
+                        cache_key=args.cache_key,
+                        product_type=args.product_type,
+                        active_symbols=[],
+                        records=records,
+                        errors=errors,
+                        last_attempt_ms=last_attempt_ms,
+                        attempts=args.redis_retry_attempts,
+                        delay_sec=args.redis_retry_delay_sec,
+                    )
+                except Exception as exc:
+                    if not is_retryable_redis_error(exc):
+                        raise
+                    print(f"[error] Redis cache write failed after retries: {exc}", file=sys.stderr, flush=True)
+                    if args.once:
+                        return 2
+                    time.sleep(max(args.interval_sec, args.redis_retry_delay_sec, 1.0))
+                    continue
             if args.once:
                 return 0
             time.sleep(max(args.interval_sec, 1.0))
@@ -481,16 +597,27 @@ def main() -> int:
             if idx + 1 < len(batch) and args.symbol_sleep_ms > 0:
                 time.sleep(args.symbol_sleep_ms / 1000.0)
 
-        write_cache(
-            rds,
-            pool_key=args.pool_key,
-            cache_key=args.cache_key,
-            product_type=args.product_type,
-            active_symbols=active_symbols,
-            records=records,
-            errors=errors,
-            last_attempt_ms=last_attempt_ms,
-        )
+        try:
+            write_cache_with_retry(
+                rds,
+                pool_key=args.pool_key,
+                cache_key=args.cache_key,
+                product_type=args.product_type,
+                active_symbols=active_symbols,
+                records=records,
+                errors=errors,
+                last_attempt_ms=last_attempt_ms,
+                attempts=args.redis_retry_attempts,
+                delay_sec=args.redis_retry_delay_sec,
+            )
+        except Exception as exc:
+            if not is_retryable_redis_error(exc):
+                raise
+            print(f"[error] Redis cache write failed after retries: {exc}", file=sys.stderr, flush=True)
+            if args.once:
+                return 2
+            time.sleep(max(args.interval_sec, args.redis_retry_delay_sec, 1.0))
+            continue
 
         wrapped = next_cursor <= cursor and len(active_symbols) > 0
         cursor = next_cursor

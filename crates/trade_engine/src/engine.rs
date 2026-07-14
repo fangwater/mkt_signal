@@ -19,6 +19,9 @@ use crate::query_parsers::binance_um_account_snapshot::parse_binance_um_account_
 use crate::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
+use crate::query_parsers::bitget_capacity_snapshot::{
+    parse_bitget_usdt_available_snapshot, parse_bitget_usdt_max_transferable,
+};
 use crate::query_parsers::bitget_order::{
     parse_bitget_order_query_json, BitgetOrderQueryParseErrorKind, BitgetOrderQueryParseResult,
 };
@@ -4177,6 +4180,32 @@ impl TradeEngine {
                                                 );
                                                 bytes::Bytes::from_static(b"E")
                                             }
+                                        }
+                                        crate::query_request::QueryRequestType::BitgetUsdtAvailableSnapshot
+                                            if status == 200 =>
+                                        {
+                                            parse_bitget_usdt_available_snapshot(&body)
+                                                .map(|snapshot| snapshot.to_bytes())
+                                                .unwrap_or_else(|| {
+                                                    warn!(
+                                                        "bitget USDT available snapshot parse failed; body={}",
+                                                        truncate_for_log(&body, 512)
+                                                    );
+                                                    bytes::Bytes::from_static(b"E")
+                                                })
+                                        }
+                                        crate::query_request::QueryRequestType::BitgetUsdtMaxTransferable
+                                            if status == 200 =>
+                                        {
+                                            parse_bitget_usdt_max_transferable(&body)
+                                                .map(|snapshot| snapshot.to_bytes())
+                                                .unwrap_or_else(|| {
+                                                    warn!(
+                                                        "bitget USDT max transferable parse failed; body={}",
+                                                        truncate_for_log(&body, 512)
+                                                    );
+                                                    bytes::Bytes::from_static(b"E")
+                                                })
                                         }
                                         _ => bytes::Bytes::from(body),
                                     };

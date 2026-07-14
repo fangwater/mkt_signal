@@ -196,7 +196,7 @@ pub trait TradeEngineResponse {
             Some(Exchange::Bitget) => {
                 matches!(
                     self.error_code(),
-                    25116 | 40798 | 40800 | 43012 | 45002 | 45003
+                    25116 | bitget::UTA_INSUFFICIENT_MARGIN | 40798 | 40800 | 43012 | 45002 | 45003
                 )
             }
             Some(Exchange::Gate) => matches!(

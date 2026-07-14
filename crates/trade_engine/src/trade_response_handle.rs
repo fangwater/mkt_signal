@@ -1,7 +1,7 @@
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
-use order_common::trade_error_code::{bybit, gate};
+use order_common::trade_error_code::{bitget, bybit, gate};
 use order_common::TradeRequestType;
 use runtime_common::exchange::Exchange;
 use serde_json::Value;
@@ -175,6 +175,18 @@ fn is_binance_post_only_reject_msg(msg: &str) -> bool {
     msg.contains("would immediately match and take") || msg.contains("post only")
 }
 
+fn is_bitget_margin_risk_msg(msg: &str) -> bool {
+    let msg = msg.to_ascii_lowercase();
+    [
+        "insufficient margin",
+        "insufficient balance",
+        "account at risk",
+        "forced liquidation",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
+}
+
 fn normalize_trade_error(
     exchange: Exchange,
     code: i32,
@@ -192,6 +204,13 @@ fn normalize_trade_error(
                 return (mapped_code, msg);
             }
         }
+    }
+
+    if exchange == Exchange::Bitget
+        && code != bitget::UTA_INSUFFICIENT_MARGIN
+        && msg.as_deref().is_some_and(is_bitget_margin_risk_msg)
+    {
+        return (bitget::UTA_INSUFFICIENT_MARGIN, msg);
     }
 
     (code, msg)
@@ -323,6 +342,30 @@ mod tests {
         assert_eq!(msg.as_deref(), Some("New order rejected"));
     }
 
+    #[test]
+    fn normalizes_bitget_unknown_margin_risk_messages() {
+        for message in [
+            "Insufficient margin",
+            "Insufficient balance for this order",
+            "Account at risk, trading temporarily disabled",
+            "Account is in forced liquidation status",
+        ] {
+            let (code, msg) =
+                normalize_trade_error(Exchange::Bitget, 29999, Some(message.to_string()));
+            assert_eq!(code, bitget::UTA_INSUFFICIENT_MARGIN);
+            assert_eq!(msg.as_deref(), Some(message));
+        }
+    }
+
+    #[test]
+    fn keeps_unrelated_bitget_unknown_message() {
+        let (code, _) = normalize_trade_error(
+            Exchange::Bitget,
+            29999,
+            Some("Order price is invalid".to_string()),
+        );
+        assert_eq!(code, 29999);
+    }
     #[test]
     fn normalizes_gate_order_poc_from_label() {
         let body = r#"{"header":{"status":400},"data":{"errs":{"label":"ORDER_POC","message":"poc order would be filled immediately"}}}"#;
