@@ -4221,9 +4221,7 @@ impl TradeEngine {
             worker_handles.push(("query_router", query_router));
         }
 
-        while !shutdown.is_cancelled() {
-            tokio::task::yield_now().await;
-        }
+        shutdown.cancelled().await;
 
         info!("trade_engine shutdown requested; stopping workers");
 
