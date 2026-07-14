@@ -14,13 +14,14 @@ use signal_common::lazy_taker_action::{
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 const BBO_SERVICE: &str = "spread_pbs/binance-futures/ask_bid_spread";
 const BBO_PAYLOAD: usize = 128;
 const BBO_DRAIN_BUDGET: usize = 8192;
+const EVENTS_HEADER: &str = "take_tp_us,direct_tp_us,hold_us,symbol,model_name,venue,direction,category,direct_target_us,lazy_target_us,direct_price,lazy_price,hold_count,return_rate,position,pnl,status";
 
 #[derive(Parser)]
 #[command(name = "hedge_lazy_taker_eval")]
@@ -79,7 +80,7 @@ impl SymbolBboBuffer {
 
 #[derive(Clone)]
 struct HeldAction {
-    direct_tp_us: i64,
+    hold_tp_us: Vec<i64>,
     direction: i8,
     model_name: String,
     venue: u8,
@@ -90,9 +91,8 @@ struct PendingEvaluation {
     model_name: String,
     venue: u8,
     direction: i8,
-    direct_tp_us: i64,
+    hold_tp_us: Vec<i64>,
     take_tp_us: i64,
-    held: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -126,6 +126,9 @@ struct EvaluationResult {
     lazy_target_us: i64,
     direct_price: Option<f64>,
     lazy_price: Option<f64>,
+    hold_count: usize,
+    return_rate: Option<f64>,
+    position: f64,
     pnl: Option<f64>,
     status: &'static str,
 }
@@ -143,6 +146,19 @@ impl OutputStore {
         let needs_header = fs::metadata(&events_path)
             .map(|meta| meta.len() == 0)
             .unwrap_or(true);
+        if !needs_header {
+            let mut header = String::new();
+            BufReader::new(File::open(&events_path).with_context(|| {
+                format!("open events header failed: {}", events_path.display())
+            })?)
+            .read_line(&mut header)
+            .with_context(|| format!("read events header failed: {}", events_path.display()))?;
+            anyhow::ensure!(
+                header.trim_end_matches(['\r', '\n']) == EVENTS_HEADER,
+                "events CSV schema mismatch: convert {} to the stepped-return schema before starting",
+                events_path.display()
+            );
+        }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -150,10 +166,7 @@ impl OutputStore {
             .with_context(|| format!("open events file failed: {}", events_path.display()))?;
         let mut events = BufWriter::new(file);
         if needs_header {
-            writeln!(
-                events,
-                "take_tp_us,direct_tp_us,hold_us,symbol,model_name,venue,direction,category,direct_target_us,lazy_target_us,direct_price,lazy_price,pnl,status"
-            )?;
+            writeln!(events, "{EVENTS_HEADER}")?;
             events.flush()?;
         }
         Ok(Self { dir, events })
@@ -167,7 +180,7 @@ impl OutputStore {
     ) -> Result<()> {
         writeln!(
             self.events,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             result.take_tp_us,
             result.direct_tp_us,
             result.take_tp_us.saturating_sub(result.direct_tp_us),
@@ -180,6 +193,9 @@ impl OutputStore {
             result.lazy_target_us,
             fmt_optional(result.direct_price),
             fmt_optional(result.lazy_price),
+            result.hold_count,
+            fmt_optional(result.return_rate),
+            result.position,
             fmt_optional(result.pnl),
             result.status,
         )?;
@@ -188,6 +204,8 @@ impl OutputStore {
         let summary = serde_json::json!({
             "updated_tp_us": get_timestamp_us(),
             "delay_us": delay_us,
+            "position_mode": "each_hold_adds_one_then_take_clears",
+            "pnl_basis": "sum_of_segment_return_rate_x_active_count",
             "models": stats,
         });
         let tmp_path = self.dir.join("summary.json.tmp");
@@ -261,12 +279,13 @@ impl AnalyzerState {
 
         match msg.action {
             LazyTakerAction::Hold => {
-                match self.holds.get(&symbol) {
+                match self.holds.get_mut(&symbol) {
                     Some(existing)
                         if existing.direction == msg.direction
                             && existing.model_name == model_name
                             && existing.venue == msg.venue =>
                     {
+                        existing.hold_tp_us.push(msg.local_tp_us);
                         self.stats.entry(model_name).or_default().repeated_holds += 1;
                         return Ok(());
                     }
@@ -281,7 +300,7 @@ impl AnalyzerState {
                 self.holds.insert(
                     symbol,
                     HeldAction {
-                        direct_tp_us: msg.local_tp_us,
+                        hold_tp_us: vec![msg.local_tp_us],
                         direction: msg.direction,
                         model_name,
                         venue: msg.venue,
@@ -320,9 +339,8 @@ impl AnalyzerState {
                         model_name,
                         venue: msg.venue,
                         direction: msg.direction,
-                        direct_tp_us: held.direct_tp_us,
+                        hold_tp_us: held.hold_tp_us,
                         take_tp_us: msg.local_tp_us,
-                        held: true,
                     });
                 }
             }
@@ -351,6 +369,9 @@ impl AnalyzerState {
             lazy_target_us: target_us,
             direct_price: None,
             lazy_price: None,
+            hold_count: 0,
+            return_rate: Some(0.0),
+            position: 0.0,
             pnl: Some(0.0),
             status: "no_hold",
         };
@@ -375,22 +396,36 @@ impl AnalyzerState {
     }
 
     fn evaluate_held(&mut self, item: PendingEvaluation) -> Result<()> {
-        debug_assert!(item.held);
-        let direct_target_us = item.direct_tp_us.saturating_add(self.delay_us);
+        debug_assert!(!item.hold_tp_us.is_empty());
+        let direct_tp_us = item.hold_tp_us[0];
+        let direct_target_us = direct_tp_us.saturating_add(self.delay_us);
         let lazy_target_us = item.take_tp_us.saturating_add(self.delay_us);
-        let direct_bbo = self
-            .books
-            .get(&item.symbol)
-            .and_then(|book| book.at_or_before(direct_target_us));
-        let lazy_bbo = self
-            .books
-            .get(&item.symbol)
-            .and_then(|book| book.at_or_before(lazy_target_us));
-        let direct_price = direct_bbo.map(|bbo| taker_price(bbo, item.direction));
-        let lazy_price = lazy_bbo.map(|bbo| taker_price(bbo, item.direction));
-        let pnl = direct_price
-            .zip(lazy_price)
-            .map(|(direct, lazy)| item.direction as f64 * (lazy - direct));
+        let hold_count = item.hold_tp_us.len();
+
+        let mut target_us = item
+            .hold_tp_us
+            .iter()
+            .map(|tp_us| tp_us.saturating_add(self.delay_us))
+            .collect::<Vec<_>>();
+        target_us.push(lazy_target_us);
+
+        let prices = self.books.get(&item.symbol).and_then(|book| {
+            target_us
+                .iter()
+                .map(|target| {
+                    book.at_or_before(*target)
+                        .map(|bbo| taker_price(bbo, item.direction))
+                })
+                .collect::<Option<Vec<_>>>()
+        });
+        let direct_price = prices.as_ref().and_then(|values| values.first().copied());
+        let lazy_price = prices.as_ref().and_then(|values| values.last().copied());
+        let stepped = prices
+            .as_deref()
+            .and_then(|values| stepped_position_result(values, item.direction));
+        let return_rate = stepped.map(|result| result.average_return_rate);
+        let position = hold_count as f64;
+        let pnl = stepped.map(|result| result.pnl);
         let status = if pnl.is_some() { "ok" } else { "missing_bbo" };
         let result = EvaluationResult {
             symbol: item.symbol,
@@ -398,12 +433,15 @@ impl AnalyzerState {
             venue: item.venue,
             direction: item.direction,
             category: "held",
-            direct_tp_us: item.direct_tp_us,
+            direct_tp_us,
             take_tp_us: item.take_tp_us,
             direct_target_us,
             lazy_target_us,
             direct_price,
             lazy_price,
+            hold_count,
+            return_rate,
+            position,
             pnl,
             status,
         };
@@ -608,6 +646,34 @@ fn taker_price(bbo: BboPoint, direction: i8) -> f64 {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SteppedPositionResult {
+    average_return_rate: f64,
+    pnl: f64,
+}
+
+fn stepped_position_result(prices: &[f64], direction: i8) -> Option<SteppedPositionResult> {
+    let hold_count = prices.len().checked_sub(1)?;
+    if hold_count == 0 || !matches!(direction, -1 | 1) {
+        return None;
+    }
+    let mut pnl = 0.0;
+    for (index, segment) in prices.windows(2).enumerate() {
+        let [start, end] = segment else {
+            unreachable!("windows(2) always yields pairs");
+        };
+        if !start.is_finite() || !end.is_finite() || *start <= 0.0 || *end <= 0.0 {
+            return None;
+        }
+        let return_rate = direction as f64 * (end - start) / start;
+        pnl += return_rate * (index + 1) as f64;
+    }
+    Some(SteppedPositionResult {
+        average_return_rate: pnl / hold_count as f64,
+        pnl,
+    })
+}
+
 fn csv_text(value: &str) -> String {
     if value
         .bytes()
@@ -641,5 +707,21 @@ mod tests {
         assert_eq!(point.local_tp_us, 456);
         assert_eq!(point.bid, 100.0);
         assert_eq!(point.ask, 101.0);
+    }
+
+    #[test]
+    fn sell_hold_count_uses_stepped_segment_positions() {
+        let result = stepped_position_result(&[100.0, 101.0, 102.0], 1).unwrap();
+        let expected = (101.0 - 100.0) / 100.0 + 2.0 * (102.0 - 101.0) / 101.0;
+        assert!((result.pnl - expected).abs() < 1e-12);
+        assert!((result.average_return_rate - expected / 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn buy_hold_count_uses_stepped_segment_positions() {
+        let result = stepped_position_result(&[100.0, 99.0, 98.0], -1).unwrap();
+        let expected = (100.0 - 99.0) / 100.0 + 2.0 * (99.0 - 98.0) / 99.0;
+        assert!((result.pnl - expected).abs() < 1e-12);
+        assert!((result.average_return_rate - expected / 2.0).abs() < 1e-12);
     }
 }

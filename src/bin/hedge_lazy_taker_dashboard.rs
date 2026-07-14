@@ -49,6 +49,9 @@ struct EventRow {
     model_name: String,
     direction: i8,
     category: String,
+    hold_count: usize,
+    return_rate: Option<f64>,
+    position: f64,
     pnl: Option<f64>,
     status: String,
 }
@@ -130,6 +133,9 @@ struct RawPoint {
     hold_us: i64,
     symbol: String,
     direction: i8,
+    hold_count: usize,
+    return_rate: f64,
+    position: f64,
     pnl: f64,
 }
 
@@ -192,6 +198,9 @@ impl DataStore {
                     hold_us: event.hold_us,
                     symbol: event.symbol,
                     direction: event.direction,
+                    hold_count: event.hold_count,
+                    return_rate: event.return_rate.unwrap_or_default(),
+                    position: event.position,
                     pnl,
                 });
                 while model.points.len() > self.max_points {
@@ -266,6 +275,9 @@ struct ChartPoint {
     symbol: String,
     direction: i8,
     hold_ms: f64,
+    hold_count: usize,
+    return_rate: f64,
+    position: f64,
     pnl: f64,
     cumulative_pnl: f64,
 }
@@ -294,6 +306,9 @@ struct HeaderIndex {
     model_name: usize,
     direction: usize,
     category: usize,
+    hold_count: usize,
+    return_rate: usize,
+    position: usize,
     pnl: usize,
     status: usize,
 }
@@ -313,6 +328,9 @@ impl HeaderIndex {
             model_name: index("model_name")?,
             direction: index("direction")?,
             category: index("category")?,
+            hold_count: index("hold_count")?,
+            return_rate: index("return_rate")?,
+            position: index("position")?,
             pnl: index("pnl")?,
             status: index("status")?,
         })
@@ -454,6 +472,18 @@ fn parse_event(record: &StringRecord, header: &HeaderIndex) -> Result<EventRow> 
     let direction = field(header.direction, "direction")?
         .parse()
         .context("invalid direction")?;
+    let hold_count = field(header.hold_count, "hold_count")?
+        .parse()
+        .context("invalid hold_count")?;
+    let return_rate_text = field(header.return_rate, "return_rate")?.trim();
+    let return_rate = if return_rate_text.is_empty() {
+        None
+    } else {
+        Some(return_rate_text.parse().context("invalid return_rate")?)
+    };
+    let position = field(header.position, "position")?
+        .parse()
+        .context("invalid position")?;
     let pnl_text = field(header.pnl, "pnl")?.trim();
     let pnl = if pnl_text.is_empty() {
         None
@@ -471,6 +501,9 @@ fn parse_event(record: &StringRecord, header: &HeaderIndex) -> Result<EventRow> 
         model_name,
         direction,
         category: field(header.category, "category")?.trim().to_string(),
+        hold_count,
+        return_rate,
+        position,
         pnl,
         status: field(header.status, "status")?.trim().to_string(),
     })
@@ -549,6 +582,9 @@ async fn model_data(
                 symbol: point.symbol.clone(),
                 direction: point.direction,
                 hold_ms: point.hold_us as f64 / 1000.0,
+                hold_count: point.hold_count,
+                return_rate: point.return_rate,
+                position: point.position,
                 pnl: point.pnl,
                 cumulative_pnl,
             }
@@ -649,18 +685,22 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    const HEADER: &[u8] = b"take_tp_us,direct_tp_us,hold_us,symbol,model_name,venue,direction,category,direct_target_us,lazy_target_us,direct_price,lazy_price,pnl,status";
+    const HEADER: &[u8] = b"take_tp_us,direct_tp_us,hold_us,symbol,model_name,venue,direction,category,direct_target_us,lazy_target_us,direct_price,lazy_price,hold_count,return_rate,position,pnl,status";
 
     #[test]
     fn parses_named_columns_and_quoted_model() {
         let header_record = parse_csv_record(HEADER).unwrap();
         let header = HeaderIndex::from_record(&header_record).unwrap();
-        let row =
-            parse_csv_record(b"100,90,10,BTCUSDT,\"model,one\",2,-1,held,92,102,10,9.5,0.5,ok")
-                .unwrap();
+        let row = parse_csv_record(
+            b"100,90,10,BTCUSDT,\"model,one\",2,-1,held,92,102,10,9.5,2,0.25,2,0.5,ok",
+        )
+        .unwrap();
         let event = parse_event(&row, &header).unwrap();
         assert_eq!(event.model_name, "model,one");
         assert_eq!(event.symbol, "BTCUSDT");
+        assert_eq!(event.hold_count, 2);
+        assert_eq!(event.return_rate, Some(0.25));
+        assert_eq!(event.position, 2.0);
         assert_eq!(event.pnl, Some(0.5));
     }
 
@@ -685,6 +725,9 @@ mod tests {
                 model_name: model.to_string(),
                 direction: 1,
                 category: "held".to_string(),
+                hold_count: 1,
+                return_rate: Some(pnl),
+                position: 1.0,
                 pnl: Some(pnl),
                 status: "ok".to_string(),
             });

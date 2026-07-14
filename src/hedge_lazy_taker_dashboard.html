@@ -36,7 +36,7 @@
   </section>
   <div class="error" id="error"></div>
   <section class="metrics">
-    <article class="metric"><div class="k">累计 PnL</div><div class="v" id="cum">--</div><div class="d" id="avg">--</div></article>
+    <article class="metric"><div class="k">累计收益</div><div class="v" id="cum">--</div><div class="d" id="avg">--</div></article>
     <article class="metric"><div class="k">胜率</div><div class="v" id="rate">--</div><div class="d" id="wl">--</div></article>
     <article class="metric"><div class="k">已评估 Held</div><div class="v" id="evaluated">--</div><div class="d" id="held">--</div></article>
     <article class="metric"><div class="k">平均 Hold</div><div class="v" id="hold">--</div><div class="d">milliseconds</div></article>
@@ -47,12 +47,12 @@
   <section id="detail">
     <div class="charts" id="timelines">
       <article class="panel"><div class="head"><h2>累计效果</h2><span class="meta" id="points"></span></div><div class="chart" id="cumChart"></div></article>
-      <article class="panel"><div class="head"><h2>单次 PnL / Hold</h2><span class="meta" id="scope"></span></div><div class="chart" id="eventChart"></div></article>
+      <article class="panel"><div class="head"><h2>单次收益 / Hold</h2><span class="meta" id="scope"></span></div><div class="chart" id="eventChart"></div></article>
     </div>
     <article class="panel symbol-panel" id="symbolPanel"><div class="head"><h2>Symbol 效果对比</h2><span class="meta" id="symbolCount"></span></div><div class="chart symbol-chart" id="symbolChart"></div></article>
     <article class="panel symbol-panel">
-      <div class="head"><h2>Symbol 明细</h2><span class="meta">按累计 PnL 排序</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>累计 PnL</th><th>平均 PnL</th><th>胜率</th><th>Wins</th><th>Losses</th><th>Held</th><th>Missing</th><th>Avg Hold ms</th></tr></thead><tbody id="rows"></tbody></table></div>
+      <div class="head"><h2>Symbol 明细</h2><span class="meta">按累计收益排序</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>累计收益</th><th>平均收益</th><th>胜率</th><th>Wins</th><th>Losses</th><th>Held</th><th>Missing</th><th>Avg Hold ms</th></tr></thead><tbody id="rows"></tbody></table></div>
     </article>
   </section>
 </main>
@@ -93,11 +93,11 @@ function metrics(s){
 function timeline(data){
   const p=data.points,dates=p.map(x=>x.take_tp_us/1000);document.getElementById("points").textContent=ni.format(p.length)+" chart points";document.getElementById("scope").textContent=data.selected_symbol||"all symbols aggregated";
   charts.cum.setOption({animation:false,grid:{left:58,right:22,top:28,bottom:58},tooltip:{trigger:"axis"},xAxis:{type:"time",axisLabel:{color:"#66727f",hideOverlap:true}},yAxis:{type:"value",scale:true,splitLine:{lineStyle:{color:"#edf0f2"}}},dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:12}],series:[{type:"line",showSymbol:false,sampling:"lttb",lineStyle:{width:2,color:"#087f5b"},areaStyle:{color:"rgba(8,127,91,.08)"},data:p.map((x,i)=>[dates[i],x.cumulative_pnl,x.symbol])}]},true);
-  charts.event.setOption({animation:false,grid:{left:58,right:54,top:28,bottom:58},tooltip:{trigger:"axis",formatter:a=>{const x=p[a[0]?.dataIndex];return x?time(x.take_tp_us)+"<br>"+x.symbol+"<br>PnL: "+pnl(x.pnl)+"<br>Hold: "+nf.format(x.hold_ms)+" ms":""}},xAxis:{type:"time",axisLabel:{color:"#66727f",hideOverlap:true}},yAxis:[{type:"value",scale:true,splitLine:{lineStyle:{color:"#edf0f2"}}},{type:"value",name:"hold ms",splitLine:{show:false}}],dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:12}],series:[{type:"bar",barMaxWidth:7,data:p.map((x,i)=>({value:[dates[i],x.pnl],itemStyle:{color:x.pnl>=0?"#20a879":"#dc4c4c"}}))},{type:"line",yAxisIndex:1,showSymbol:false,lineStyle:{width:1,color:"#1864ab",opacity:.72},data:p.map((x,i)=>[dates[i],x.hold_ms])}]},true);
+  charts.event.setOption({animation:false,grid:{left:58,right:54,top:28,bottom:58},tooltip:{trigger:"axis",formatter:a=>{const x=p[a[0]?.dataIndex];return x?time(x.take_tp_us)+"<br>"+x.symbol+"<br>Hold count: "+ni.format(x.hold_count)+"<br>Return: "+pct(x.return_rate)+"<br>Position: "+nf.format(x.position)+"<br>PnL: "+pnl(x.pnl)+"<br>Hold: "+nf.format(x.hold_ms)+" ms":""}},xAxis:{type:"time",axisLabel:{color:"#66727f",hideOverlap:true}},yAxis:[{type:"value",scale:true,splitLine:{lineStyle:{color:"#edf0f2"}}},{type:"value",name:"hold ms",splitLine:{show:false}}],dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:12}],series:[{type:"bar",barMaxWidth:7,data:p.map((x,i)=>({value:[dates[i],x.pnl],itemStyle:{color:x.pnl>=0?"#20a879":"#dc4c4c"}}))},{type:"line",yAxisIndex:1,showSymbol:false,lineStyle:{width:1,color:"#1864ab",opacity:.72},data:p.map((x,i)=>[dates[i],x.hold_ms])}]},true);
 }
 function symbolViews(list){
   const rows=[...list].sort((a,b)=>b.stats.cumulative_pnl-a.stats.cumulative_pnl),v=rows.slice(0,80);document.getElementById("symbolCount").textContent=ni.format(rows.length)+" symbols";
-  charts.symbol.setOption({animation:false,grid:{left:88,right:62,top:24,bottom:48},tooltip:{trigger:"axis",axisPointer:{type:"shadow"},formatter:a=>{const x=v[a[0]?.dataIndex];return x?x.symbol+"<br>Cumulative: "+pnl(x.stats.cumulative_pnl)+"<br>Win rate: "+pct(x.stats.win_rate)+"<br>Evaluated: "+ni.format(x.stats.evaluated):""}},xAxis:[{type:"value",name:"PnL",splitLine:{lineStyle:{color:"#edf0f2"}}},{type:"value",min:0,max:1,name:"win rate",splitLine:{show:false},axisLabel:{formatter:x=>Math.round(x*100)+"%"}}],yAxis:{type:"category",inverse:true,data:v.map(x=>x.symbol),axisLabel:{width:75,overflow:"truncate"}},dataZoom:v.length>18?[{type:"inside",yAxisIndex:0},{type:"slider",yAxisIndex:0,width:14,right:8}]:[],series:[{type:"bar",barMaxWidth:14,data:v.map(x=>({value:x.stats.cumulative_pnl,itemStyle:{color:x.stats.cumulative_pnl>=0?"#20a879":"#dc4c4c"}}))},{type:"scatter",xAxisIndex:1,symbolSize:7,itemStyle:{color:"#1864ab"},data:v.map((x,i)=>[x.stats.win_rate,i])}]},true);
+  charts.symbol.setOption({animation:false,grid:{left:88,right:62,top:24,bottom:48},tooltip:{trigger:"axis",axisPointer:{type:"shadow"},formatter:a=>{const x=v[a[0]?.dataIndex];return x?x.symbol+"<br>Cumulative: "+pnl(x.stats.cumulative_pnl)+"<br>Win rate: "+pct(x.stats.win_rate)+"<br>Evaluated: "+ni.format(x.stats.evaluated):""}},xAxis:[{type:"value",name:"收益",splitLine:{lineStyle:{color:"#edf0f2"}}},{type:"value",min:0,max:1,name:"win rate",splitLine:{show:false},axisLabel:{formatter:x=>Math.round(x*100)+"%"}}],yAxis:{type:"category",inverse:true,data:v.map(x=>x.symbol),axisLabel:{width:75,overflow:"truncate"}},dataZoom:v.length>18?[{type:"inside",yAxisIndex:0},{type:"slider",yAxisIndex:0,width:14,right:8}]:[],series:[{type:"bar",barMaxWidth:14,data:v.map(x=>({value:x.stats.cumulative_pnl,itemStyle:{color:x.stats.cumulative_pnl>=0?"#20a879":"#dc4c4c"}}))},{type:"scatter",xAxisIndex:1,symbolSize:7,itemStyle:{color:"#1864ab"},data:v.map((x,i)=>[x.stats.win_rate,i])}]},true);
   document.getElementById("rows").innerHTML=rows.map(x=>{const s=x.stats;return"<tr><td><strong>"+esc(x.symbol)+"</strong></td><td class='"+(s.cumulative_pnl>=0?"positive":"negative")+"'>"+pnl(s.cumulative_pnl)+"</td><td>"+pnl(s.average_pnl)+"</td><td>"+pct(s.win_rate)+"</td><td>"+ni.format(s.wins)+"</td><td>"+ni.format(s.losses)+"</td><td>"+ni.format(s.held_events)+"</td><td>"+ni.format(s.missing_bbo)+"</td><td>"+nf.format(s.average_hold_ms)+"</td></tr>"}).join("");
 }
 function render(data){

@@ -28,6 +28,24 @@ if [[ "${PMDAEMON_BIN}" != */* ]] && ! command -v "${PMDAEMON_BIN}" >/dev/null 2
   exit 1
 fi
 
+find_running_pids() {
+  ps -eo pid=,args= | awk -v bin="${BIN_PATH}" '$2 == bin { print $1 }'
+}
+
+verify_single_process() {
+  local -a live_pids=()
+  for _ in {1..30}; do
+    mapfile -t live_pids < <(find_running_pids)
+    if [[ ${#live_pids[@]} -eq 1 ]]; then
+      echo "[INFO] verified single ${PROC_NAME} process pid=${live_pids[0]}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "[ERROR] expected exactly one ${PROC_NAME} process, found ${#live_pids[@]}: ${live_pids[*]}" >&2
+  return 1
+}
+
 env_tag="${dir_name#binance-intra-}"
 env_tag="${env_tag//-/_}"
 if [[ "${env_tag}" == "${dir_name}" ]]; then
@@ -83,6 +101,7 @@ JSON
 
 "${SCRIPT_DIR}/stop_hedge_lazy_taker_eval.sh"
 "${PMDAEMON_BIN}" --config "${cfg_file}" start --name "${PROC_NAME}"
+verify_single_process
 
 echo "[INFO] started ${PROC_NAME}"
 echo "[INFO] output: ${OUTPUT_DIR}"
