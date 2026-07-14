@@ -305,6 +305,7 @@ pub fn start_threshold_refresh(
 pub fn spawn_account_risk_listener(exchange: Exchange) {
     let service_name = build_service_name(&format!("account_pubs/{}_pm", exchange.as_str()));
     let node_name = format!("trade_signal_unimmr_gate_{}_pm", exchange.as_str());
+    let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
 
     tokio::task::spawn_local(async move {
         let result: Result<()> = async move {
@@ -361,7 +362,7 @@ pub fn spawn_account_risk_listener(exchange: Exchange) {
                             ),
                         }
                     }
-                    Ok(None) => tokio::task::yield_now().await,
+                    Ok(None) => crate::runtime_flags::idle_poll_wait(fast_poll).await,
                     Err(err) => {
                         warn!(
                             "UnimmrCloseGate account_pubs receive error service={}: {err}",

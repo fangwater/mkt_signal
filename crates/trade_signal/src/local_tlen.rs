@@ -388,6 +388,7 @@ pub fn query_batch_local_only_for_cancel(
 }
 
 fn spawn_incremental_listener(venue: TradingVenue) {
+    let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
     tokio::task::spawn_local(async move {
         let result: Result<()> = async move {
             let venue_slug = venue.data_pub_slug();
@@ -426,7 +427,7 @@ fn spawn_incremental_listener(venue: TradingVenue) {
                     Ok(None) => {
                         drained = 0;
                         local_tlen_housekeeping();
-                        tokio::task::yield_now().await;
+                        crate::runtime_flags::idle_poll_wait(fast_poll).await;
                     }
                     Err(err) => {
                         drained = 0;

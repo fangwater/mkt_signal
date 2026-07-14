@@ -776,6 +776,7 @@ impl MktChannel {
         hedge_venue: TradingVenue,
         quotes: Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
     ) {
+        let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
                 let node = NodeBuilder::new()
@@ -844,7 +845,7 @@ impl MktChannel {
                                 &mut stats_unlisted_sample,
                                 &mut decision_quote_age,
                             );
-                            tokio::task::yield_now().await;
+                            crate::runtime_flags::idle_poll_wait(fast_poll).await;
                         }
                         Err(err) => {
                             flush_askbid_dirty_symbols(
@@ -887,6 +888,7 @@ impl MktChannel {
         hedge_venue: TradingVenue,
         quotes: Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
     ) {
+        let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
                 let open_node = NodeBuilder::new()
@@ -940,9 +942,11 @@ impl MktChannel {
                 let mut decision_quote_age = DecisionQuoteAgeKll::new(stats_label.clone());
 
                 loop {
+                    let mut has_message = false;
                     loop {
                         match open_subscriber.receive() {
                             Ok(Some(sample)) => {
+                                has_message = true;
                                 process_askbid_payload(
                                     sample.payload(),
                                     open_venue,
@@ -979,6 +983,7 @@ impl MktChannel {
                     loop {
                         match hedge_subscriber.receive() {
                             Ok(Some(sample)) => {
+                                has_message = true;
                                 process_askbid_payload(
                                     sample.payload(),
                                     hedge_venue,
@@ -1034,7 +1039,11 @@ impl MktChannel {
                         &mut stats_unlisted_sample,
                         &mut decision_quote_age,
                     );
-                    tokio::task::yield_now().await;
+                    if has_message {
+                        tokio::task::yield_now().await;
+                    } else {
+                        crate::runtime_flags::idle_poll_wait(fast_poll).await;
+                    }
                 }
             }
             .await;
@@ -1057,6 +1066,7 @@ impl MktChannel {
         mark_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
         index_prices: Rc<RefCell<HashMap<TradingVenue, HashMap<String, f64>>>>,
     ) {
+        let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
         tokio::task::spawn_local(async move {
             let result: Result<()> = async move {
                 let node = NodeBuilder::new()
@@ -1222,7 +1232,7 @@ impl MktChannel {
                                 &mut stats_unlisted_sample,
                             );
                             drain_count = 0;
-                            tokio::task::yield_now().await;
+                            crate::runtime_flags::idle_poll_wait(fast_poll).await;
                         }
                         Err(err) => {
                             flush_derivatives_dirty_symbols(

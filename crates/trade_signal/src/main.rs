@@ -393,6 +393,17 @@ async fn run(
     token: CancellationToken,
 ) -> Result<()> {
     info!("{} 启动（事件驱动模式） branch={:?}", PROCESS_NAME, branch);
+    let fast_poll = trade_signal::runtime_flags::enable_ipc_fast_poll();
+    info!(
+        "trade_signal idle poll configured (enable_ipc_fast_poll={} idle_policy={} sleep_ms={})",
+        fast_poll,
+        if fast_poll { "yield" } else { "sleep" },
+        if fast_poll {
+            0
+        } else {
+            trade_signal::runtime_flags::NON_FAST_POLL_IDLE_SLEEP.as_millis()
+        }
+    );
 
     // 1️⃣ 初始化所有单例
     info!("初始化单例...");

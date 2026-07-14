@@ -898,6 +898,7 @@ impl MmDecision {
     }
 
     pub fn spawn_backward_listener() {
+        let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
         tokio::task::spawn_local(async move {
             loop {
                 let mut has_message = false;
@@ -927,7 +928,7 @@ impl MmDecision {
                 });
 
                 if !has_message {
-                    tokio::task::yield_now().await;
+                    crate::runtime_flags::idle_poll_wait(fast_poll).await;
                 }
             }
         });

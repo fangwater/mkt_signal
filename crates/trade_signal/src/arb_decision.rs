@@ -954,12 +954,13 @@ pub fn spawn_backward_listener_loop<F>(source: &'static str, mut drain_pending: 
 where
     F: FnMut() -> bool + 'static,
 {
+    let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
     tokio::task::spawn_local(async move {
         log::info!("{source} backward listener started");
         loop {
             let has_message = drain_pending();
             if !has_message {
-                tokio::task::yield_now().await;
+                crate::runtime_flags::idle_poll_wait(fast_poll).await;
             }
         }
     });

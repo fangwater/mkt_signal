@@ -29,6 +29,7 @@ use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 const PARAM_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SNAPSHOT_QUERY_INTERVAL: Duration = Duration::from_secs(60);
 const EXPOSURE_TABLE_PRINT_INTERVAL: Duration = Duration::from_secs(10);
+const NON_FAST_POLL_IDLE_SLEEP: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy, Debug)]
 struct FastPollDispatchBudgets {
@@ -372,6 +373,17 @@ fn fast_poll_budget(name: &str, default_value: usize) -> usize {
         .unwrap_or(default_value)
 }
 
+fn reactor_idle_spin_iters(fast_poll: bool) -> usize {
+    if !fast_poll {
+        return 0;
+    }
+
+    std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1024)
+}
+
 impl Default for PreTrade {
     fn default() -> Self {
         Self::new()
@@ -499,20 +511,24 @@ impl PreTrade {
         );
 
         // 周期检查频率设为 20ms，提高 MM trigger 响应及时性，同时保持较低调度开销。
-        // IPC hot path 不等待这个 tick；空闲时先做 bounded busy-poll，超过预算才 yield。
+        // IPC hot path 不等待这个 tick；fast poll 关闭时空闲 1ms，充分让出 CPU。
         let period_clock_interval = Duration::from_millis(20);
         let mut next_period_clock = Instant::now();
         let mut pending_period_strategy_inspect = 0usize;
         let mut pending_period_orphan_inspect = 0usize;
-        let idle_spin_iters = std::env::var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(if fast_poll { 1024 } else { 64 });
+        let idle_spin_iters = reactor_idle_spin_iters(fast_poll);
         let mut idle_spin_count = 0usize;
-        info!(
-            "pre_trade reactor idle spin configured (enable_ipc_fast_poll={} iters={} idle_policy=yield)",
-            fast_poll, idle_spin_iters
-        );
+        if fast_poll {
+            info!(
+                "pre_trade reactor idle configured (enable_ipc_fast_poll=true spin_iters={} idle_policy=yield)",
+                idle_spin_iters
+            );
+        } else {
+            info!(
+                "pre_trade reactor idle configured (enable_ipc_fast_poll=false spin_iters=0 idle_policy=sleep sleep_ms={})",
+                NON_FAST_POLL_IDLE_SLEEP.as_millis()
+            );
+        }
         info!(
             "pre_trade hot-path log suppression configured (suppress_pre_submit_hot_path_logs={})",
             suppress_pre_submit_hot_path_logs()
@@ -905,24 +921,29 @@ impl PreTrade {
                 continue;
             }
 
-            if idle_spin_count < idle_spin_iters {
-                idle_spin_count += 1;
-                std::hint::spin_loop();
-                if fast_poll {
-                    pending_maintenance_open_drop_reason = next_loop_open_drop_reason;
-                }
-                last_loop_end_us = get_timestamp_us();
-                continue;
-            }
-            idle_spin_count = 0;
-
             if fast_poll {
+                if idle_spin_count < idle_spin_iters {
+                    idle_spin_count += 1;
+                    std::hint::spin_loop();
+                    pending_maintenance_open_drop_reason = next_loop_open_drop_reason;
+                    last_loop_end_us = get_timestamp_us();
+                    continue;
+                }
+                idle_spin_count = 0;
+
                 pending_maintenance_open_drop_reason = next_loop_open_drop_reason;
-            }
-            last_loop_end_us = get_timestamp_us();
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => break,
-                _ = tokio::task::yield_now() => {}
+                last_loop_end_us = get_timestamp_us();
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => break,
+                    _ = tokio::task::yield_now() => {}
+                }
+            } else {
+                idle_spin_count = 0;
+                last_loop_end_us = get_timestamp_us();
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => break,
+                    _ = tokio::time::sleep(NON_FAST_POLL_IDLE_SLEEP) => {}
+                }
             }
         }
 
@@ -933,7 +954,10 @@ impl PreTrade {
 
 #[cfg(test)]
 mod tests {
-    use super::{drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc};
+    use super::{
+        drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc,
+        reactor_idle_spin_iters,
+    };
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use order_common::{OrderUpdate, TradeUpdate};
@@ -941,6 +965,21 @@ mod tests {
     use std::any::Any;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn reactor_idle_spin_is_disabled_when_fast_poll_is_off() {
+        let _guard = env_test_lock();
+        std::env::set_var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS", "2048");
+        assert_eq!(reactor_idle_spin_iters(false), 0);
+        assert_eq!(reactor_idle_spin_iters(true), 2048);
+        std::env::remove_var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS");
+    }
 
     struct ReentrantTickStrategy {
         id: i32,

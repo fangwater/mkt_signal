@@ -32,6 +32,7 @@ pub mod model_output_hub;
 pub mod rate_fetcher;
 pub mod return_score_threshold;
 pub mod rolling_threshold_sync;
+pub mod runtime_flags;
 pub mod spread_factor;
 pub mod spread_threshold_loader;
 pub mod strategy_loader;
