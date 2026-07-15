@@ -41,8 +41,10 @@ impl WsOrderUpdate {
                 | TradeRequestType::GateFuturesNewOrder
                 | TradeRequestType::BitgetNewMarginOrder
                 | TradeRequestType::BitgetNewUMOrder
+                | TradeRequestType::BitgetNewSpotOrder
                 | TradeRequestType::BitgetCancelMarginOrder
-                | TradeRequestType::BitgetCancelUMOrder)
+                | TradeRequestType::BitgetCancelUMOrder
+                | TradeRequestType::BitgetCancelSpotOrder)
         )
     }
 

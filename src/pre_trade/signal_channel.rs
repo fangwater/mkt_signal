@@ -1,4 +1,4 @@
-use crate::pre_trade::account_open_block::check_account_open_block;
+use crate::pre_trade::account_open_block::{check_account_open_block, AccountOpenBlockReason};
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
@@ -204,6 +204,27 @@ fn arb_open_is_account_throttle_reducing(
     let hedge_pos = monitor.get_position_qty(hedging_symbol, hedging_venue);
 
     is_position_reducing(open_pos, open_add_qty) && is_position_reducing(hedge_pos, hedge_add_qty)
+}
+
+fn arb_open_is_bitget_margin_lock_spot_deleverage(
+    opening_symbol: &str,
+    opening_venue: TradingVenue,
+    hedging_symbol: &str,
+    hedging_venue: TradingVenue,
+    side: Side,
+    qty: f64,
+) -> bool {
+    opening_venue == TradingVenue::BitgetMargin
+        && hedging_venue == TradingVenue::BitgetFutures
+        && side == Side::Sell
+        && arb_open_is_account_throttle_reducing(
+            opening_symbol,
+            opening_venue,
+            hedging_symbol,
+            hedging_venue,
+            side,
+            qty,
+        )
 }
 
 fn arb_open_is_binance_std_um_margin_reducing(
@@ -1004,16 +1025,33 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
 
+            let bitget_margin_lock_spot_deleverage =
+                account_open_block_hit.as_ref().is_some_and(|hit| {
+                    hit.reason == AccountOpenBlockReason::BitgetUnifiedInsufficientMargin
+                        && arb_open_is_bitget_margin_lock_spot_deleverage(
+                            &symbol,
+                            opening_venue,
+                            &hedging_symbol,
+                            hedging_venue,
+                            side,
+                            open_ctx.amount_value(),
+                        )
+                });
             if let Some(hit) = account_open_block_hit.as_ref() {
-                let reducing = hit.allows_reducing_open()
-                    && arb_open_is_account_throttle_reducing(
-                        &symbol,
-                        opening_venue,
-                        &hedging_symbol,
-                        hedging_venue,
-                        side,
-                        open_ctx.amount_value(),
-                    );
+                let reducing =
+                    if hit.reason == AccountOpenBlockReason::BitgetUnifiedInsufficientMargin {
+                        bitget_margin_lock_spot_deleverage
+                    } else {
+                        hit.allows_reducing_open()
+                            && arb_open_is_account_throttle_reducing(
+                                &symbol,
+                                opening_venue,
+                                &hedging_symbol,
+                                hedging_venue,
+                                side,
+                                open_ctx.amount_value(),
+                            )
+                    };
                 if !reducing {
                     debug!(
                         "ArbOpen: account-wide open block, reason={} symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} first_seen_us={} updated_at_us={} last_code={}, skip strategy construction",
@@ -1115,6 +1153,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 open_ctx,
                 symbol,
                 pending_limit_prechecked,
+                bitget_margin_lock_spot_deleverage,
                 receive_us,
                 handle_start_us,
             );

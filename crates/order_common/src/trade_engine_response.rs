@@ -65,7 +65,8 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BybitNewMarginOrder
                 | TradeRequestType::BybitNewUMOrder
                 | TradeRequestType::BitgetNewMarginOrder
-                | TradeRequestType::BitgetNewUMOrder,
+                | TradeRequestType::BitgetNewUMOrder
+                | TradeRequestType::BitgetNewSpotOrder,
             ) => TradeRequestKind::Open,
             Ok(
                 TradeRequestType::BinanceCancelUMOrder
@@ -80,7 +81,8 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BybitCancelMarginOrder
                 | TradeRequestType::BybitCancelUMOrder
                 | TradeRequestType::BitgetCancelMarginOrder
-                | TradeRequestType::BitgetCancelUMOrder,
+                | TradeRequestType::BitgetCancelUMOrder
+                | TradeRequestType::BitgetCancelSpotOrder,
             ) => TradeRequestKind::Cancel,
             _ => TradeRequestKind::Other,
         }

@@ -43,6 +43,7 @@ impl ArbOpenStrategy {
         ctx: ArbOpenCtxView<'_>,
         symbol: Cow<'_, str>,
         pending_limit_prechecked: bool,
+        bitget_spot_order: bool,
         pre_trade_recv_ts: i64,
         pre_trade_handle_ts: i64,
     ) {
@@ -84,6 +85,7 @@ impl ArbOpenStrategy {
             order_price_qv: Some(ctx.price_qv),
             price_offset: ctx.price_offset,
             reduce_only: false,
+            bitget_spot_order,
             client_order_id: None,
             pending_limit_prechecked,
             close_ts,

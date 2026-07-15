@@ -1315,6 +1315,7 @@ pub struct Order {
     pub price_qv: Option<OrderQuantizedValue>,    // 已对齐/量化的价格缓存
     pub qty_multiplier: f64,                      // 数量乘数（venue qty -> base qty）
     pub reduce_only: bool,                        // 是否只减仓
+    pub bitget_spot_order: bool,                  // Bitget UTA order category=SPOT
     pub cumulative_filled_quantity: f64,          // 成交量
     pub exchange_order_id: Option<i64>,           // 交易所返回的 orderId
     pub status: OrderExecutionStatus,             // 订单执行状态
@@ -1356,6 +1357,7 @@ impl Order {
             price_qv: None,
             qty_multiplier,
             reduce_only,
+            bitget_spot_order: false,
             status: OrderExecutionStatus::Commit,
             cumulative_filled_quantity: 0.0,
             exchange_order_id: None,
@@ -1389,6 +1391,10 @@ impl Order {
         if let Some(price_qv) = price_qv {
             self.set_price_qv(price_qv);
         }
+    }
+
+    pub fn set_bitget_spot_order(&mut self, enabled: bool) {
+        self.bitget_spot_order = enabled;
     }
 
     /// 更新订单状态

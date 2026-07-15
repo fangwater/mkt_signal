@@ -16,12 +16,12 @@ pub fn build_login_payload(creds: &BitgetCredentials) -> Result<String> {
 pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<String> {
     let req_type = msg.req_type;
     let topic = match req_type {
-        TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
-            "place-order"
-        }
-        TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
-            "cancel-order"
-        }
+        TradeRequestType::BitgetNewMarginOrder
+        | TradeRequestType::BitgetNewUMOrder
+        | TradeRequestType::BitgetNewSpotOrder => "place-order",
+        TradeRequestType::BitgetCancelMarginOrder
+        | TradeRequestType::BitgetCancelUMOrder
+        | TradeRequestType::BitgetCancelSpotOrder => "cancel-order",
         _ => {
             return Err(anyhow!(
                 "unsupported bitget ws request type: {:?}",
@@ -43,7 +43,9 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
     out.push_str(",\"args\":[{");
 
     match req_type {
-        TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewUMOrder => {
+        TradeRequestType::BitgetNewMarginOrder
+        | TradeRequestType::BitgetNewUMOrder
+        | TradeRequestType::BitgetNewSpotOrder => {
             let params = BitgetNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Bitget WS new order requires typed params, req_type={:?}",
@@ -52,7 +54,9 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
             })?;
             push_bitget_new_order_arg(&mut out, &params, msg.client_order_id);
         }
-        TradeRequestType::BitgetCancelMarginOrder | TradeRequestType::BitgetCancelUMOrder => {
+        TradeRequestType::BitgetCancelMarginOrder
+        | TradeRequestType::BitgetCancelUMOrder
+        | TradeRequestType::BitgetCancelSpotOrder => {
             let params = BitgetCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Bitget WS cancel order requires typed params, req_type={:?}",
@@ -75,6 +79,9 @@ fn bitget_category(req_type: TradeRequestType) -> Result<&'static str> {
         }
         TradeRequestType::BitgetNewUMOrder | TradeRequestType::BitgetCancelUMOrder => {
             Ok("usdt-futures")
+        }
+        TradeRequestType::BitgetNewSpotOrder | TradeRequestType::BitgetCancelSpotOrder => {
+            Ok("spot")
         }
         _ => return Err(anyhow!("unsupported bitget req_type")),
     }
@@ -350,6 +357,27 @@ mod tests {
         assert!(val["args"][0].get("category").is_none());
         assert!(val["args"][0].get("size").is_none());
         assert!(val["args"][0].get("force").is_none());
+    }
+
+    #[test]
+    fn builds_bitget_spot_order_payload_from_typed_params() {
+        let params = BitgetNewOrderParams {
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Sell,
+            order_type: OrderType::Market,
+            quantity_qv: QuantizedValue::from_parts(1, -3, 10),
+            price_qv: QuantizedValue::zero(),
+            reduce_only: false,
+        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::BitgetNewSpotOrder, 123, &params);
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        assert_eq!(val["category"], json!("spot"));
+        assert_eq!(val["topic"], json!("place-order"));
+        assert_eq!(val["args"][0]["side"], json!("sell"));
+        assert_eq!(val["args"][0]["qty"], json!("0.010"));
+        assert!(val["args"][0].get("reduceOnly").is_none());
     }
 
     #[test]

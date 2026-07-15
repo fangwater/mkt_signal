@@ -285,6 +285,7 @@ pub trait PreTradeOrderManagerRequestExt {
         quantity_qv: Option<OrderQuantizedValue>,
         price_qv: Option<OrderQuantizedValue>,
         reduce_only: bool,
+        bitget_spot_order: bool,
         qty_multiplier: f64,
         signal_t: i64,
         signal_kind: u8,
@@ -459,6 +460,7 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         quantity_qv: Option<OrderQuantizedValue>,
         price_qv: Option<OrderQuantizedValue>,
         reduce_only: bool,
+        bitget_spot_order: bool,
         qty_multiplier: f64,
         signal_t: i64,
         signal_kind: u8,
@@ -487,6 +489,7 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
             qty_multiplier,
             true,
             |order| {
+                order.set_bitget_spot_order(bitget_spot_order);
                 if let Some(quantity_qv) = quantity_qv {
                     order.set_quantity_qv(quantity_qv);
                 }
@@ -632,7 +635,11 @@ impl PreTradeOrderRequestExt for Order {
                 let client_order_id = self.client_order_id.to_string();
                 let req_type = match self.venue {
                     TradingVenue::BitgetMargin => {
-                        trade_engine::trade_request::TradeRequestType::BitgetCancelMarginOrder
+                        if self.bitget_spot_order {
+                            trade_engine::trade_request::TradeRequestType::BitgetCancelSpotOrder
+                        } else {
+                            trade_engine::trade_request::TradeRequestType::BitgetCancelMarginOrder
+                        }
                     }
                     TradingVenue::BitgetFutures => {
                         trade_engine::trade_request::TradeRequestType::BitgetCancelUMOrder
@@ -931,7 +938,11 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
                 BitgetNewOrderParams::request_bytes_from_parts(
-                    trade_engine::trade_request::TradeRequestType::BitgetNewMarginOrder,
+                    if self.bitget_spot_order {
+                        trade_engine::trade_request::TradeRequestType::BitgetNewSpotOrder
+                    } else {
+                        trade_engine::trade_request::TradeRequestType::BitgetNewMarginOrder
+                    },
                     create_ts,
                     self.client_order_id,
                     &self.symbol,
@@ -1197,7 +1208,11 @@ impl PreTradeOrderRequestExt for Order {
                 let quantity_qv = resolved.require_quantity_qv(self, "bitget")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "bitget")?;
                 BitgetNewOrderParams::prepared_request_from_parts(
-                    trade_engine::trade_request::TradeRequestType::BitgetNewMarginOrder,
+                    if self.bitget_spot_order {
+                        trade_engine::trade_request::TradeRequestType::BitgetNewSpotOrder
+                    } else {
+                        trade_engine::trade_request::TradeRequestType::BitgetNewMarginOrder
+                    },
                     create_ts,
                     self.client_order_id,
                     &self.symbol,
@@ -1293,8 +1308,10 @@ mod tests {
             }
             TradeRequestType::BitgetNewMarginOrder
             | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
-            | TradeRequestType::BitgetCancelUMOrder => {
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder => {
                 let payload = bitget_ws::build_order_payload(&msg, 999)
                     .expect("bitget ws payload should build");
                 let payload: Value =

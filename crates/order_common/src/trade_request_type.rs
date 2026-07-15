@@ -36,6 +36,8 @@ pub enum TradeRequestType {
     BitgetNewUMOrder = 5402,                    // Bitget 统一账户 U 本位下单请求
     BitgetCancelMarginOrder = 5403,             // Bitget 统一账户现货撤单请求
     BitgetCancelUMOrder = 5404,                 // Bitget 统一账户 U 本位撤单请求
+    BitgetNewSpotOrder = 5405,                  // Bitget UTA Spot 下单请求
+    BitgetCancelSpotOrder = 5406,               // Bitget UTA Spot 撤单请求
 }
 
 impl TryFrom<u32> for TradeRequestType {
@@ -74,6 +76,8 @@ impl TryFrom<u32> for TradeRequestType {
             5402 => Ok(TradeRequestType::BitgetNewUMOrder),
             5403 => Ok(TradeRequestType::BitgetCancelMarginOrder),
             5404 => Ok(TradeRequestType::BitgetCancelUMOrder),
+            5405 => Ok(TradeRequestType::BitgetNewSpotOrder),
+            5406 => Ok(TradeRequestType::BitgetCancelSpotOrder),
             _ => Err(()),
         }
     }
@@ -96,6 +100,7 @@ impl TradeRequestType {
                 | TradeRequestType::BybitNewUMOrder
                 | TradeRequestType::BitgetNewMarginOrder
                 | TradeRequestType::BitgetNewUMOrder
+                | TradeRequestType::BitgetNewSpotOrder
         )
     }
 }

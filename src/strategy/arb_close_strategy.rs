@@ -313,6 +313,7 @@ impl ArbCloseStrategy {
             order_price_qv: None,
             price_offset: ctx.price_offset,
             reduce_only: true,
+            bitget_spot_order: false,
             client_order_id: Some(client_order_id),
             pending_limit_prechecked: true,
             close_ts: 0,

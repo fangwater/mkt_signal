@@ -1394,12 +1394,16 @@ fn decode_internal_open_terminate_order_meta(
                 qty: params.quantity_qv.get_val(),
             })
         }
-        TradeRequestType::BitgetNewMarginOrder => {
+        TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewSpotOrder => {
             let params = BitgetNewOrderParams::from_bytes(&msg.params)?;
             Some(InternalOpenTerminateOrderMeta {
                 symbol: params.symbol,
                 dir: params.side.as_str(),
-                venue: "bitget_margin",
+                venue: if msg.req_type == TradeRequestType::BitgetNewSpotOrder {
+                    "bitget_spot"
+                } else {
+                    "bitget_margin"
+                },
                 qty: params.quantity_qv.get_val(),
             })
         }

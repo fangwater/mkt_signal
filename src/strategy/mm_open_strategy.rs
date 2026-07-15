@@ -56,6 +56,7 @@ impl MarketMakerOpenStrategy {
             order_price_qv: Some(ctx.price_qv),
             price_offset: ctx.price_offset,
             reduce_only: false,
+            bitget_spot_order: false,
             client_order_id: None,
             pending_limit_prechecked: false,
             close_ts: 0,

@@ -1,5 +1,6 @@
 use crate::pre_trade::account_open_block::{
-    register_account_open_block, register_bybit_internal_system_open_block, AccountOpenBlockReason,
+    check_account_open_block, register_account_open_block,
+    register_bybit_internal_system_open_block, AccountOpenBlockReason,
     BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
 use crate::pre_trade::lazy_taker_action::publish_lazy_taker_action;
@@ -261,6 +262,30 @@ struct ArbHedgeOrderMeta {
 }
 
 impl ArbHedgeStrategy {
+    fn bitget_margin_lock_reduce_only_hedge(
+        &self,
+        venue: TradingVenue,
+        side: Side,
+        order_base_qty: f64,
+    ) -> bool {
+        const EPS: f64 = 1e-12;
+        if self.open_venue != TradingVenue::BitgetMargin
+            || self.hedge_venue != TradingVenue::BitgetFutures
+            || venue != TradingVenue::BitgetFutures
+            || side != Side::Buy
+            || !(order_base_qty.is_finite() && order_base_qty > 0.0)
+            || !check_account_open_block().is_some_and(|hit| {
+                hit.reason == AccountOpenBlockReason::BitgetUnifiedInsufficientMargin
+            })
+        {
+            return false;
+        }
+
+        let futures_net =
+            MonitorChannel::instance().get_position_qty(&self.symbol, TradingVenue::BitgetFutures);
+        futures_net < -EPS && order_base_qty <= -futures_net + EPS
+    }
+
     fn is_gate_futures_open_ack_unknown(response: &dyn TradeEngineResponse) -> bool {
         response.status() == 504
             && response.req_type() == TradeRequestType::GateFuturesNewOrder as u32
@@ -1546,6 +1571,8 @@ impl ArbHedgeStrategy {
             );
         }
 
+        let bitget_margin_lock_reduce_only =
+            self.bitget_margin_lock_reduce_only_hedge(venue, side, order_base_qty);
         let client_order_id = self.next_order_id();
         let qty_multiplier = (order_base_qty / qty).max(1e-12);
         // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 ArbHedge 桶）。
@@ -1566,7 +1593,7 @@ impl ArbHedgeStrategy {
                 side,
                 qty,
                 price,
-                false,
+                bitget_margin_lock_reduce_only,
                 qty_multiplier,
                 false,
                 |order| {
