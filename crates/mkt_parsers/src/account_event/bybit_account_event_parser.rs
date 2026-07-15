@@ -61,7 +61,7 @@ impl BybitAccountEventParser {
                 } else if maintenance_margin.abs() > f64::EPSILON {
                     total_margin_balance / maintenance_margin
                 } else {
-                    0.0
+                    f64::INFINITY
                 };
                 let msg = BasicAccountRiskMsg::create(
                     timestamp,
@@ -888,6 +888,33 @@ mod tests {
         assert!((risk.initial_margin_usd - 8_000.0).abs() < 1e-9);
         assert!((risk.margin_ratio - (1.0 / 0.0150185459)).abs() < 1e-9);
         assert!((risk.borrowed_usd - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn account_risk_with_zero_maintenance_margin_is_infinite() {
+        let parser = BybitAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let wallet = Bytes::from_static(
+            br#"{
+                "topic":"wallet",
+                "creationTime":1710000000999,
+                "data":[{
+                    "updatedTime":"1710000000123",
+                    "totalEquity":"1000",
+                    "totalMarginBalance":"1000",
+                    "totalInitialMargin":"0",
+                    "totalMaintenanceMargin":"0",
+                    "accountMMRate":"0",
+                    "coin":[]
+                }]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(wallet, &sink), 1);
+        let wrapped_risk = sink.recv().expect("risk event");
+        let (_, _, payload) = split_basic_account_event(&wrapped_risk).expect("wrapped risk");
+        let risk = BasicAccountRiskMsg::from_bytes(payload).expect("risk payload");
+        assert!(risk.margin_ratio.is_infinite() && risk.margin_ratio.is_sign_positive());
     }
 
     #[test]

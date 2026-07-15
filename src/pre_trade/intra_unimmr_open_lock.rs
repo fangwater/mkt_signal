@@ -50,7 +50,7 @@ impl IntraUnimmrOpenLock {
     /// Values inside `[trigger, recover]` retain the existing state to avoid
     /// flapping. This is intentionally separate from FR's active-close gate.
     pub fn apply_account_risk(scope: BasicAccountScope, msg: &BasicAccountRiskMsg) {
-        if !msg.margin_ratio.is_finite() {
+        if msg.margin_ratio.is_nan() {
             return;
         }
 
@@ -114,6 +114,18 @@ mod tests {
             borrowed_usd: 0.0,
             notional_usd: 0.0,
         }
+    }
+
+    #[test]
+    fn infinite_margin_ratio_recovers_locked_account() {
+        IntraUnimmrOpenLock::initialize(ArbMode::IntraArb, None);
+        IntraUnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(1.0));
+        assert!(IntraUnimmrOpenLock::is_locked());
+        IntraUnimmrOpenLock::apply_account_risk(
+            BasicAccountScope::BybitUnified,
+            &risk_msg(f64::INFINITY),
+        );
+        assert!(!IntraUnimmrOpenLock::is_locked());
     }
 
     #[test]
