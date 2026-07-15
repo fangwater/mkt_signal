@@ -72,7 +72,8 @@ pub struct TakerDecisionConfig {
     pub nn_keep_short_score: Option<f64>,
     pub nn_open_cancel_long_score: Option<f64>,
     pub nn_open_cancel_short_score: Option<f64>,
-    pub nn_kalman_q: f64,
+    /// `None` means NN scores are consumed without Kalman smoothing.
+    pub nn_kalman_q: Option<f64>,
     pub score_rolling_mean_window: usize,
     pub keep_long_percentile: f64,
     pub keep_short_percentile: f64,
@@ -247,7 +248,7 @@ struct ModelScoreThresholdPointsLoad {
 struct SymbolScoreState {
     latest_raw_score: Option<f64>,
     latest_score: Option<f64>,
-    nn_filter: LocalLevelKalmanFilter,
+    nn_filter: Option<LocalLevelKalmanFilter>,
     score_window: VecDeque<f64>,
     score_sum: f64,
     latest_percentile: Option<f64>,
@@ -256,11 +257,13 @@ struct SymbolScoreState {
 }
 
 impl SymbolScoreState {
-    fn new(nn_kalman_q: f64) -> Result<Self> {
+    fn new(nn_kalman_q: Option<f64>) -> Result<Self> {
         Ok(Self {
             latest_raw_score: None,
             latest_score: None,
-            nn_filter: LocalLevelKalmanFilter::new(nn_kalman_q)
+            nn_filter: nn_kalman_q
+                .map(LocalLevelKalmanFilter::new)
+                .transpose()
                 .context("create NN local-level Kalman filter")?,
             score_window: VecDeque::new(),
             score_sum: 0.0,
@@ -270,10 +273,23 @@ impl SymbolScoreState {
         })
     }
 
-    fn set_nn_kalman_q(&mut self, q: f64) -> Result<()> {
-        self.nn_filter
-            .set_q(q)
-            .context("update NN local-level Kalman filter q")
+    fn set_nn_kalman_q(&mut self, q: Option<f64>) -> Result<()> {
+        match (self.nn_filter.as_mut(), q) {
+            (Some(filter), Some(q)) => filter
+                .set_q(q)
+                .context("update NN local-level Kalman filter q"),
+            (_, Some(q)) => {
+                self.nn_filter = Some(
+                    LocalLevelKalmanFilter::new(q)
+                        .context("create NN local-level Kalman filter")?,
+                );
+                Ok(())
+            }
+            (_, None) => {
+                self.nn_filter = None;
+                Ok(())
+            }
+        }
     }
 
     fn observe(
@@ -287,7 +303,10 @@ impl SymbolScoreState {
         self.latest_raw_score = Some(score);
         match model_type {
             TakerDecisionModelType::NnModel => {
-                self.latest_score = self.nn_filter.update(score);
+                self.latest_score = self
+                    .nn_filter
+                    .as_mut()
+                    .map_or(Some(score), |filter| filter.update(score));
             }
             TakerDecisionModelType::TreeModel => {
                 let window_len = rolling_mean_window.max(1);
@@ -431,13 +450,15 @@ impl PreTradeTakerDecisionModel {
         let model_type = TakerDecisionModelType::parse(&key, map.get("taker_decsion_model_type"))?;
         let nn_kalman_q = if model_type == TakerDecisionModelType::NnModel {
             match map.get(TAKER_DECISION_NN_MODEL_KALMAN_Q_KEY) {
-                Some(raw) => {
-                    parse_nonnegative_finite_f64(&key, TAKER_DECISION_NN_MODEL_KALMAN_Q_KEY, raw)?
-                }
-                None => DEFAULT_LOCAL_LEVEL_KALMAN_Q,
+                Some(raw) => parse_optional_nonnegative_finite_f64(
+                    &key,
+                    TAKER_DECISION_NN_MODEL_KALMAN_Q_KEY,
+                    raw,
+                )?,
+                None => Some(DEFAULT_LOCAL_LEVEL_KALMAN_Q),
             }
         } else {
-            DEFAULT_LOCAL_LEVEL_KALMAN_Q
+            None
         };
         let service = map
             .get("taker_decsion_model_service")
@@ -681,7 +702,7 @@ impl PreTradeTakerDecisionModel {
         let current_service = Self::service_name_global();
         if current_service.as_deref() == Some(service_name.as_str()) {
             let model_type = cfg.model_type;
-            let nn_kalman_q = cfg.nn_kalman_q;
+            let nn_kalman_q = nn_kalman_q_label(cfg.nn_kalman_q);
             let effective_rolling_mean_window = if model_type == TakerDecisionModelType::NnModel {
                 1
             } else {
@@ -691,7 +712,7 @@ impl PreTradeTakerDecisionModel {
                 if let Some(model) = cell.borrow_mut().as_mut() {
                     if model_type == TakerDecisionModelType::NnModel {
                         for state in model.states.values_mut() {
-                            state.set_nn_kalman_q(nn_kalman_q)?;
+                            state.set_nn_kalman_q(cfg.nn_kalman_q)?;
                         }
                     }
                     model.fixed_score_thresholds = cfg.nn_fixed_thresholds();
@@ -721,7 +742,7 @@ impl PreTradeTakerDecisionModel {
         } else {
             model.cfg.score_rolling_mean_window
         };
-        let nn_kalman_q = model.cfg.nn_kalman_q;
+        let nn_kalman_q = nn_kalman_q_label(model.cfg.nn_kalman_q);
         let previous_model = TAKER_DECISION_MODEL.with(|cell| cell.borrow_mut().replace(model));
         let previous_service = previous_model
             .as_ref()
@@ -760,8 +781,10 @@ impl PreTradeTakerDecisionModel {
 
     fn build_model(cfg: TakerDecisionConfig, service_name: String) -> Result<Self> {
         if cfg.model_type == TakerDecisionModelType::NnModel {
-            LocalLevelKalmanFilter::new(cfg.nn_kalman_q)
-                .context("invalid taker_decsion_nn_model_kalman_q")?;
+            if let Some(q) = cfg.nn_kalman_q {
+                LocalLevelKalmanFilter::new(q)
+                    .context("invalid taker_decsion_nn_model_kalman_q")?;
+            }
         }
         let fixed_score_thresholds = cfg.nn_fixed_thresholds();
         let (threshold_output_key, subscriber) = match cfg.model_type {
@@ -1175,7 +1198,7 @@ impl PreTradeTakerDecisionModel {
                 self.states.len(),
                 self.recv_count,
                 self.parse_err_count,
-                self.cfg.nn_kalman_q
+                nn_kalman_q_label(self.cfg.nn_kalman_q)
             );
             self.recv_count = 0;
             self.parse_err_count = 0;
@@ -1769,6 +1792,21 @@ fn parse_nonnegative_finite_f64(redis_key: &str, field: &str, raw: &str) -> Resu
     Ok(value)
 }
 
+fn parse_optional_nonnegative_finite_f64(
+    redis_key: &str,
+    field: &str,
+    raw: &str,
+) -> Result<Option<f64>> {
+    if raw.trim() == "-" {
+        return Ok(None);
+    }
+    parse_nonnegative_finite_f64(redis_key, field, raw).map(Some)
+}
+
+fn nn_kalman_q_label(q: Option<f64>) -> String {
+    q.map(|q| q.to_string()).unwrap_or_else(|| "-".to_string())
+}
+
 fn parse_positive_usize(redis_key: &str, field: &str, raw: &str) -> Result<usize> {
     let value = raw.trim().parse::<usize>().with_context(|| {
         format!(
@@ -1945,7 +1983,7 @@ mod tests {
 
     #[test]
     fn symbol_score_state_keeps_rolling_mean_per_instance() {
-        let mut btc = SymbolScoreState::new(DEFAULT_LOCAL_LEVEL_KALMAN_Q).expect("state");
+        let mut btc = SymbolScoreState::new(Some(DEFAULT_LOCAL_LEVEL_KALMAN_Q)).expect("state");
         assert_eq!(
             btc.observe(1.0, Some(0.1), true, TakerDecisionModelType::TreeModel, 3),
             Some(10.0)
@@ -1967,7 +2005,7 @@ mod tests {
         );
         assert_eq!(btc.latest_score, Some(16.0 / 3.0));
 
-        let mut eth = SymbolScoreState::new(DEFAULT_LOCAL_LEVEL_KALMAN_Q).expect("state");
+        let mut eth = SymbolScoreState::new(Some(DEFAULT_LOCAL_LEVEL_KALMAN_Q)).expect("state");
         eth.observe(9.0, None, true, TakerDecisionModelType::TreeModel, 3);
         assert_eq!(eth.latest_score, Some(9.0));
         assert_eq!(btc.latest_score, Some(16.0 / 3.0));
@@ -1978,7 +2016,7 @@ mod tests {
 
     #[test]
     fn nn_symbol_score_state_exposes_filtered_value() {
-        let mut state = SymbolScoreState::new(0.02).expect("state");
+        let mut state = SymbolScoreState::new(Some(0.02)).expect("state");
         state.observe(0.5, Some(0.5), true, TakerDecisionModelType::NnModel, 1);
         state.observe(-0.5, Some(0.25), true, TakerDecisionModelType::NnModel, 1);
 
@@ -1992,13 +2030,27 @@ mod tests {
     }
 
     #[test]
+    fn nn_symbol_score_state_without_kalman_uses_raw_score() {
+        let mut state = SymbolScoreState::new(None).expect("state");
+        state.observe(0.5, Some(0.5), true, TakerDecisionModelType::NnModel, 1);
+        state.observe(-0.5, Some(0.25), true, TakerDecisionModelType::NnModel, 1);
+
+        assert_eq!(state.latest_raw_score, Some(-0.5));
+        assert_eq!(state.latest_score, Some(-0.5));
+        assert_eq!(
+            state.latest_observation(TakerDecisionModelType::NnModel),
+            Some(-0.5)
+        );
+    }
+
+    #[test]
     fn nn_global_resample_accessors_expose_filtered_value() {
         let cfg = nn_test_config(unique_test_ipc_endpoint());
         let service_name = PreTradeTakerDecisionModel::connection_name_for_config(&cfg)
             .expect("nn connection name");
         let mut model = PreTradeTakerDecisionModel::build_model(cfg, service_name)
             .expect("build nn model subscriber");
-        let mut state = SymbolScoreState::new(DEFAULT_LOCAL_LEVEL_KALMAN_Q).expect("state");
+        let mut state = SymbolScoreState::new(Some(DEFAULT_LOCAL_LEVEL_KALMAN_Q)).expect("state");
         state.observe(0.5, Some(0.5), true, TakerDecisionModelType::NnModel, 1);
         state.observe(-0.5, Some(0.25), true, TakerDecisionModelType::NnModel, 1);
         let filtered = state.latest_score.expect("filtered score");
@@ -2027,6 +2079,10 @@ mod tests {
         assert!(parse_percentile("redis:test", "percentile", "nan").is_err());
         assert!(parse_nonnegative_finite_f64("redis:test", "q", "-0.01").is_err());
         assert!(parse_nonnegative_finite_f64("redis:test", "q", "inf").is_err());
+        assert_eq!(
+            parse_optional_nonnegative_finite_f64("redis:test", "q", "-").expect("disabled"),
+            None
+        );
         assert!(parse_positive_usize("redis:test", "window", "0").is_err());
     }
 
@@ -2087,7 +2143,7 @@ mod tests {
             nn_keep_short_score: Some(-0.2),
             nn_open_cancel_long_score: Some(0.1),
             nn_open_cancel_short_score: Some(-0.1),
-            nn_kalman_q: DEFAULT_LOCAL_LEVEL_KALMAN_Q,
+            nn_kalman_q: Some(DEFAULT_LOCAL_LEVEL_KALMAN_Q),
             score_rolling_mean_window: 99,
             keep_long_percentile: 80.0,
             keep_short_percentile: 20.0,

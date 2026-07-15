@@ -67,7 +67,7 @@ REQUIRED_STRATEGY_PARAMS = {
 REQUIRED_STRATEGY_PARAM_COMMENTS = {
     "enable_intra_funding_close_signal": "是否启用 intra funding close 信号（命中 current FR MA close 后仍需通过 spread close gate）",
     "vol_gate_compare": "vol gate symbol 的放行方向：lt 表示 vol < threshold 才允许开仓；gt 表示 vol > threshold 才允许开仓",
-    "taker_decsion_nn_model_kalman_q": "nn_model 强制 local-level Kalman 平滑的 Q/R，有限且 >=0；默认 0.02",
+    "taker_decsion_nn_model_kalman_q": "nn_model local-level Kalman 平滑的 Q/R，有限且 >=0；'-' 表示不使用滤波器；默认 0.02",
 }
 
 REQUIRED_STRATEGY_PARAM_AFTER = {
@@ -356,6 +356,13 @@ def normalize_nonnegative_float_text(raw: Any, field_name: str) -> str:
     if float(text) < 0.0:
         raise ValueError(f"{field_name} must be >= 0: {raw}")
     return text
+
+
+def normalize_nn_kalman_q_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if text == "-":
+        return text
+    return normalize_nonnegative_float_text(text, field_name)
 
 
 def read_static_funding_close_thresholds(
@@ -1664,7 +1671,7 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
 
     nn_kalman_q_key = "taker_decsion_nn_model_kalman_q"
     if nn_kalman_q_key in normalized:
-        normalized[nn_kalman_q_key] = normalize_nonnegative_float_text(
+        normalized[nn_kalman_q_key] = normalize_nn_kalman_q_text(
             normalized[nn_kalman_q_key], nn_kalman_q_key
         )
 

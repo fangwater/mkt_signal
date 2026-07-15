@@ -44,6 +44,9 @@ class TestStrategyParamsSchema(unittest.TestCase):
         normalized = intra_cfg.normalize_strategy_params_by_schema({key: "0.3"})
         self.assertEqual(normalized[key], "0.3")
 
+        normalized = intra_cfg.normalize_strategy_params_by_schema({key: "-"})
+        self.assertEqual(normalized[key], "-")
+
     def test_nn_kalman_q_rejects_negative_or_nonfinite_values(self):
         key = "taker_decsion_nn_model_kalman_q"
         for invalid in ("-0.01", "nan", "inf"):

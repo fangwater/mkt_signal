@@ -113,7 +113,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "taker_decsion_model_type": "模型类型：tree_model 或 nn_model；默认 tree_model",
     "taker_decsion_model_service": "tree_model 的 Iceoryx 输出通道名（'-' 表示禁用；裸通道名归一到 model_output/<name>）",
     "taker_decsion_nn_model_zmq_ipc": "nn_model 的 ZMQ IPC endpoint，必须以 ipc:// 开头",
-    "taker_decsion_nn_model_kalman_q": "nn_model 强制 local-level Kalman 平滑的 Q/R，有限且 >=0；默认 0.02",
+    "taker_decsion_nn_model_kalman_q": "nn_model local-level Kalman 平滑的 Q/R，有限且 >=0；'-' 表示不使用滤波器；默认 0.02",
     "taker_decsion_nn_model_keep_long_score": "nn_model 滤波结果高于该固定值时 keep long",
     "taker_decsion_nn_model_keep_short_score": "nn_model 滤波结果低于该固定值时 keep short",
     "taker_decsion_nn_model_open_cancel_long_score": "nn_model 滤波结果低于该固定值时撤掉 open long",
