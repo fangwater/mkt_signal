@@ -1,5 +1,6 @@
 /// Bitget trade/rest/ws error codes to short descriptions.
 pub const POSITION_TIER_LIMIT_EXCEEDED: i32 = 40763;
+pub const MAX_POSSIBLE_LEVERAGE_EXCEEDED: i32 = 45045;
 pub const UTA_INSUFFICIENT_MARGIN: i32 = 25203;
 
 pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
@@ -13,6 +14,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         40015 => Some("System error, retry later"),
         40715 => Some("Order size exceeds max open size"),
         POSITION_TIER_LIMIT_EXCEEDED => Some("Exceeds position tier limit"),
+        MAX_POSSIBLE_LEVERAGE_EXCEEDED => Some("Exceeds the maximum possible leverage"),
         40774 => Some("One-way position account requires one-way order type"),
         40798 => Some("Contract account balance insufficient"),
         40800 => Some("Insufficient margin amount"),

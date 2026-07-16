@@ -2575,6 +2575,9 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         let is_bybit_collateral_not_enabled = response.is_bybit_collateral_not_enabled();
         let is_bybit_internal_system_error = response.is_bybit_internal_system_error();
         let is_bitget_position_tier_limit = response.is_bitget_position_tier_limit_exceeded();
+        let is_bitget_max_possible_leverage = response.is_bitget_max_possible_leverage_exceeded();
+        let is_bitget_futures_open_limit =
+            is_bitget_position_tier_limit || is_bitget_max_possible_leverage;
         if is_bybit_open_interest_position_limit {
             self.register_bybit_open_interest_position_limit_throttle(
                 now_ts,
@@ -2600,7 +2603,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US / 1_000_000
             );
         }
-        if is_bitget_position_tier_limit {
+        if is_bitget_futures_open_limit {
             self.register_bitget_position_tier_limit_throttle(
                 now_ts,
                 order_snapshot.as_ref().map(|(side, _, _)| *side),
@@ -2641,7 +2644,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             } else if is_bybit_internal_system_error {
                 self.next_query_ts_us =
                     now_ts.saturating_add(BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US);
-            } else if is_bitget_position_tier_limit
+            } else if is_bitget_futures_open_limit
                 && self.bitget_position_tier_limit_block_until_us > now_ts
             {
                 self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
@@ -2675,6 +2678,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 " [BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK]"
             } else if is_bitget_position_tier_limit {
                 " [BITGET_POSITION_TIER_LIMIT]"
+            } else if is_bitget_max_possible_leverage {
+                " [BITGET_MAX_POSSIBLE_LEVERAGE]"
             } else {
                 ""
             }

@@ -169,6 +169,12 @@ pub trait TradeEngineResponse {
             && self.error_code() == bitget::POSITION_TIER_LIMIT_EXCEEDED
     }
 
+    fn is_bitget_max_possible_leverage_exceeded(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Bitget))
+            && self.is_open_request()
+            && self.error_code() == bitget::MAX_POSSIBLE_LEVERAGE_EXCEEDED
+    }
+
     /// OKX: insufficient margin / loanable assets.
     /// Gate uses string labels for errors; mapping happens in
     /// `trade_response_handle::normalize_trade_error`, which converts the

@@ -21,7 +21,7 @@ use trade_signal::ArbMode;
 type HmacSha256 = Hmac<Sha256>;
 type HmacSha512 = Hmac<Sha512>;
 
-const TARGET_LEVERAGES: [u8; 3] = [5, 4, 3];
+const TARGET_LEVERAGES: [u8; 1] = [5];
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
@@ -411,7 +411,12 @@ impl LeverageGuard {
                 if matches!(
                     state.targets.get(&global.trigger),
                     Some(status) if status.is_confirmed()
-                ) {
+                ) || (global.trigger.venue == TradingVenue::BitgetFutures
+                    && matches!(
+                        state.targets.get(&global.trigger),
+                        Some(TargetStatus::Failed { .. })
+                    ))
+                {
                     cleared_global = Some(global.trigger.label());
                     state.global_block = None;
                 }
@@ -492,7 +497,6 @@ impl LeverageGuard {
                     .stats
                     .record("global_open_block".to_string(), global.reason.clone());
                 state.stats.maybe_log(state.global_block.as_ref(), now_us);
-                request_refresh = true;
                 return true;
             }
 
@@ -501,6 +505,9 @@ impl LeverageGuard {
                 match state.targets.get(&target) {
                     Some(status) if status.is_confirmed() => {}
                     Some(status) => {
+                        if target.venue == TradingVenue::BitgetFutures {
+                            continue;
+                        }
                         let reason = match status {
                             TargetStatus::Confirmed(_) => "confirmed".to_string(),
                             TargetStatus::Failed { last_error } => {
@@ -509,15 +516,8 @@ impl LeverageGuard {
                         };
                         state.stats.record(target.label(), reason);
                         blocked = true;
-                        request_refresh = true;
                     }
                     None => {
-                        state.targets.insert(
-                            target.clone(),
-                            TargetStatus::Failed {
-                                last_error: "unknown_symbol_or_venue".to_string(),
-                            },
-                        );
                         state.global_block = Some(GlobalBlock {
                             trigger: target.clone(),
                             reason: "unknown_symbol_or_venue".to_string(),
@@ -581,11 +581,6 @@ async fn refresh_guard_targets_with_state(
         .into_iter()
         .map(|target| (target.label(), target))
         .collect();
-    for (target, status) in &existing_targets {
-        if !status.is_confirmed() {
-            desired_targets_map.insert(target.label(), target.clone());
-        }
-    }
     if let Some(trigger) = global_trigger {
         desired_targets_map.insert(trigger.label(), trigger);
     }
@@ -596,15 +591,7 @@ async fn refresh_guard_targets_with_state(
         .build()
         .context("build leverage guard http client")?;
 
-    let mut statuses: HashMap<LeverageTarget, TargetStatus> = existing_targets
-        .iter()
-        .filter_map(|(target, status)| match status {
-            TargetStatus::Confirmed(level) => {
-                Some((target.clone(), TargetStatus::Confirmed(*level)))
-            }
-            TargetStatus::Failed { .. } => None,
-        })
-        .collect();
+    let mut statuses = existing_targets;
 
     let mut retried_targets = 0usize;
     let desired_targets_len = desired_targets.len();

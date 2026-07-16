@@ -977,12 +977,22 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 }
             }
 
-            if LeverageGuard::should_block_arb_open(
+            let leverage_guard_reducing = arb_open_is_account_throttle_reducing(
                 &symbol,
                 opening_venue,
                 &hedging_symbol,
                 hedging_venue,
-            ) {
+                side,
+                open_ctx.amount_value(),
+            );
+            if !leverage_guard_reducing
+                && LeverageGuard::should_block_arb_open(
+                    &symbol,
+                    opening_venue,
+                    &hedging_symbol,
+                    hedging_venue,
+                )
+            {
                 return;
             }
 
@@ -1017,6 +1027,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 opening_venue,
                 &hedging_symbol,
                 hedging_venue,
+                leverage_guard_reducing,
             ) {
                 debug!(
                     "ArbOpen: blocked by Bitget position-tier snapshot guard, symbol={} hedge_symbol={} open_venue={:?} hedge_venue={:?}",

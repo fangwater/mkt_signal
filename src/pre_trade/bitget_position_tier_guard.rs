@@ -340,8 +340,12 @@ impl BitgetPositionTierGuard {
         opening_venue: TradingVenue,
         hedging_symbol: &str,
         hedging_venue: TradingVenue,
+        is_reducing: bool,
     ) -> bool {
         if !is_bitget_position_tier_venues(opening_venue, hedging_venue) {
+            return false;
+        }
+        if is_reducing {
             return false;
         }
         let symbol =
@@ -364,8 +368,20 @@ impl BitgetPositionTierGuard {
             if !state.enabled {
                 return false;
             }
-            if state.limits.contains_key(&symbol) {
-                return false;
+            if let Some(record) = state.limits.get(&symbol) {
+                if record.exact_leverage_match {
+                    return false;
+                }
+                let now_us = get_timestamp_us();
+                state.stats.record(
+                    symbol.clone(),
+                    format!(
+                        "configured_leverage={} unavailable selected_leverage={} max_leverage={:?}",
+                        record.configured_leverage, record.leverage, record.max_leverage
+                    ),
+                );
+                state.stats.maybe_log(now_us);
+                return true;
             }
             let now_us = get_timestamp_us();
             state.stats.record(
