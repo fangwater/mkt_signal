@@ -261,7 +261,9 @@ pub async fn create_adapter(
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
             Box::new(crate::spread_pbs::bybit::BybitAdapter::new(venue))
         }
-        TradingVenue::GateMargin => Box::new(crate::spread_pbs::gate::GateAdapter::new(venue)),
+        TradingVenue::GateMargin => {
+            Box::new(crate::spread_pbs::gate_sbe::GateSpotSbeAdapter::new())
+        }
         TradingVenue::GateFutures => Box::new(crate::spread_pbs::gate_sbe::GateSbeAdapter::new()),
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
             Box::new(crate::spread_pbs::bitget::BitgetAdapter::new(venue))

@@ -1,14 +1,8 @@
-//! Gate Futures SBE `book_ticker` spread 适配器。
+//! Gate spot/futures SBE spread adapter.
 //!
-//! - prod URL: `wss://fx-ws.gateio.ws/v4/ws/usdt/sbe`
-//! - subscribe: JSON，格式与 JSON 端一致，channel=`futures.book_ticker`
-//! - data push: WebSocket 二进制帧 (opcode=2 = SBE)；文本帧 (opcode=1) 为 subscribe ack / pong
-//! - SBE schema: gate_fex_ws_prod_latest.xml, schemaId=1
-//!   - bbo (templateId=1): time i64 | e i8 | t i64 | u i64 | pxExp i8 | szExp i8
-//!                          | askPxM i64 | askSzM i64 | bidPxM i64 | bidSzM i64
-//!                          → varString8 channel + varString8 symbol
-//! - ts_us: 取 `t`（撮合引擎时间戳，µs），与 JSON 端 `result.t*1000` 同语义
-//! - 心跳: 每 15s 发 `{"time":<unix>,"channel":"futures.ping"}`
+//! Subscription requests and acknowledgements are JSON text frames. BBO, trade, incremental
+//! order book, and futures ticker updates are SBE binary frames using schemaId=1. Spot and
+//! futures reuse template IDs but have different field and repeating-group layouts.
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -21,8 +15,8 @@ use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
 };
 
-const GATE_SBE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe";
-const GATE_JSON_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
+const GATE_SBE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe?sbe_schema_id=1";
+const GATE_SBE_SPOT_WS_URL: &str = "wss://api.gateio.ws/ws/v4/ws/spot/sbe?sbe_schema_id=1";
 const GATE_SUBSCRIBE_CHUNK: usize = 100;
 
 pub struct GateSbeAdapter;
@@ -67,10 +61,6 @@ impl VenueAdapter for GateSbeAdapter {
         build_channel_subscribe(symbols, "tickers")
     }
 
-    fn incremental_ws_url(&self) -> Option<String> {
-        Some(GATE_JSON_FUTURES_WS_URL.to_string())
-    }
-
     fn parse_frame(
         &self,
         _value: &Value,
@@ -78,13 +68,6 @@ impl VenueAdapter for GateSbeAdapter {
     ) -> Result<()> {
         // SBE 端的文本帧只有 subscribe ack / pong；静默忽略
         Ok(())
-    }
-
-    fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
-        Ok(gate_codec::parse_incremental_json(value)
-            .into_iter()
-            .map(crate::spread_pbs::gate::book_to_incremental)
-            .collect())
     }
 
     fn parse_binary_frame(
@@ -112,6 +95,13 @@ impl VenueAdapter for GateSbeAdapter {
             .collect())
     }
 
+    fn parse_incremental_binary_frame(&self, raw: &[u8]) -> Result<Vec<IncrementalFrame>> {
+        Ok(gate_codec::parse_futures_sbe_incremental(raw)
+            .into_iter()
+            .map(crate::spread_pbs::gate::book_to_incremental)
+            .collect())
+    }
+
     fn keepalive(&self) -> Option<KeepaliveSpec> {
         Some(KeepaliveSpec::dynamic(Duration::from_secs(15), || {
             let timestamp = std::time::SystemTime::now()
@@ -125,6 +115,104 @@ impl VenueAdapter for GateSbeAdapter {
             Message::Text(body.to_string())
         }))
     }
+}
+
+pub struct GateSpotSbeAdapter;
+
+impl GateSpotSbeAdapter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl VenueAdapter for GateSpotSbeAdapter {
+    fn name(&self) -> &'static str {
+        "gate-spot-sbe"
+    }
+
+    fn ws_url(&self) -> String {
+        GATE_SBE_SPOT_WS_URL.to_string()
+    }
+
+    fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_spot_channel_subscribe(symbols, "book_ticker")
+    }
+
+    fn build_trade_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_spot_channel_subscribe(symbols, "trades")
+    }
+
+    fn build_incremental_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        symbols
+            .iter()
+            .map(|symbol| {
+                serde_json::json!({
+                    "time": now_unix_secs(),
+                    "channel": "spot.order_book_update",
+                    "event": "subscribe",
+                    "payload": [symbol.as_str(), "100ms"],
+                })
+            })
+            .collect()
+    }
+
+    fn parse_frame(
+        &self,
+        _value: &Value,
+        _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn parse_binary_frame(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        if let Some(bbo) = gate_codec::parse_spot_sbe_bbo(raw) {
+            emit(crate::spread_pbs::gate::bbo_to_frame(bbo))?;
+        }
+        Ok(())
+    }
+
+    fn parse_trade_binary_frame(&self, raw: &[u8]) -> Result<Vec<TradeFrame>> {
+        Ok(gate_codec::parse_spot_sbe_trades(raw)
+            .into_iter()
+            .map(crate::spread_pbs::gate::trade_to_frame)
+            .collect())
+    }
+
+    fn parse_incremental_binary_frame(&self, raw: &[u8]) -> Result<Vec<IncrementalFrame>> {
+        Ok(gate_codec::parse_spot_sbe_incremental(raw)
+            .into_iter()
+            .map(crate::spread_pbs::gate::book_to_incremental)
+            .collect())
+    }
+
+    fn keepalive(&self) -> Option<KeepaliveSpec> {
+        Some(KeepaliveSpec::dynamic(Duration::from_secs(15), || {
+            let body = serde_json::json!({
+                "time": now_unix_secs(),
+                "channel": "spot.ping",
+            });
+            Message::Text(body.to_string())
+        }))
+    }
+}
+
+fn build_spot_channel_subscribe(symbols: &[String], channel: &str) -> Vec<Value> {
+    let channel = format!("spot.{}", channel);
+    symbols
+        .chunks(GATE_SUBSCRIBE_CHUNK.max(1))
+        .map(|chunk| {
+            serde_json::json!({
+                "time": now_unix_secs(),
+                "channel": channel,
+                "event": "subscribe",
+                "payload": chunk,
+            })
+        })
+        .collect()
 }
 
 fn build_channel_subscribe(symbols: &[String], channel: &str) -> Vec<Value> {
@@ -391,5 +479,197 @@ mod tests {
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0]["payload"].as_array().unwrap().len(), 100);
         assert_eq!(msgs[2]["payload"].as_array().unwrap().len(), 50);
+    }
+    fn build_spot_bbo_frame() -> Vec<u8> {
+        build_bbo_frame(
+            1_748_000_000_000_000,
+            1_748_000_000_001_000,
+            98765432,
+            -1,
+            -4,
+            677_357,
+            93_708,
+            677_358,
+            33_373,
+            "spot.book_ticker",
+            "BTC_USDT",
+        )
+    }
+
+    fn build_spot_trade_frame() -> Vec<u8> {
+        let block_length: u16 = 60;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&block_length.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_TEMPLATE_TRADE.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&1_748_000_000_000_000i64.to_le_bytes());
+        buf.push(2);
+        buf.push((-1i8) as u8);
+        buf.push((-4i8) as u8);
+        buf.extend_from_slice(&9001u64.to_le_bytes());
+        buf.extend_from_slice(&77u64.to_le_bytes());
+        buf.extend_from_slice(&1_748_000_000_001_000i64.to_le_bytes());
+        buf.extend_from_slice(&1_748_000_000_001_234i64.to_le_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&677_357i64.to_le_bytes());
+        buf.extend_from_slice(&93_708i64.to_le_bytes());
+        push_var_string(&mut buf, "spot.trades");
+        push_var_string(&mut buf, "BTC_USDT");
+        push_var_string(&mut buf, "77-77");
+        buf
+    }
+
+    fn push_level_group(buf: &mut Vec<u8>, levels: &[(i64, i64)]) {
+        buf.extend_from_slice(&16u16.to_le_bytes());
+        buf.extend_from_slice(&(levels.len() as u16).to_le_bytes());
+        for (price, amount) in levels {
+            buf.extend_from_slice(&price.to_le_bytes());
+            buf.extend_from_slice(&amount.to_le_bytes());
+        }
+    }
+
+    fn build_futures_incremental_frame() -> Vec<u8> {
+        let block_length: u16 = 36;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&block_length.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_TEMPLATE_BOOK_UPDATE.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&1_748_000_000_000_000i64.to_le_bytes());
+        buf.push(2);
+        buf.extend_from_slice(&1_748_000_000_001_000i64.to_le_bytes());
+        buf.extend_from_slice(&100i64.to_le_bytes());
+        buf.extend_from_slice(&102i64.to_le_bytes());
+        buf.push((-1i8) as u8);
+        buf.push((-3i8) as u8);
+        buf.push(100);
+        push_level_group(&mut buf, &[(677_358, 3_337)]);
+        push_level_group(&mut buf, &[(677_357, 9_370)]);
+        push_var_string(&mut buf, "futures.order_book_update");
+        push_var_string(&mut buf, "BTC_USDT");
+        buf
+    }
+
+    fn build_spot_incremental_frame() -> Vec<u8> {
+        let block_length: u16 = 44;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&block_length.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_TEMPLATE_BOOK_UPDATE.to_le_bytes());
+        buf.extend_from_slice(&gate_codec::SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&1_748_000_000_000_000i64.to_le_bytes());
+        buf.push(2);
+        buf.extend_from_slice(&1_748_000_000_001_000i64.to_le_bytes());
+        buf.extend_from_slice(&1_748_000_000_000_500i64.to_le_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&200i64.to_le_bytes());
+        buf.extend_from_slice(&202i64.to_le_bytes());
+        buf.push((-1i8) as u8);
+        buf.push((-4i8) as u8);
+        push_level_group(&mut buf, &[(677_357, 93_708)]);
+        push_level_group(&mut buf, &[(677_358, 33_373)]);
+        push_var_string(&mut buf, "spot.order_book_update");
+        push_var_string(&mut buf, "BTC_USDT");
+        push_var_string(&mut buf, "100ms");
+        push_var_string(&mut buf, "depthUpdate");
+        buf
+    }
+
+    #[test]
+    fn decodes_spot_bbo_field_order() {
+        let frames = GateSpotSbeAdapter::new()
+            .collect_binary_frame(&build_spot_bbo_frame())
+            .expect("decode spot bbo");
+        assert_eq!(frames.len(), 1);
+        let frame = &frames[0];
+        assert_eq!(frame.symbol, "BTCUSDT");
+        assert_eq!(frame.seq_id, 98765432);
+        assert!((frame.bid_price - 67735.7).abs() < 1e-6);
+        assert!((frame.bid_amount - 9.3708).abs() < 1e-9);
+        assert!((frame.ask_price - 67735.8).abs() < 1e-6);
+        assert!((frame.ask_amount - 3.3373).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decodes_spot_fixed_root_trade() {
+        let trades = GateSpotSbeAdapter::new()
+            .parse_trade_binary_frame(&build_spot_trade_frame())
+            .expect("decode spot trade");
+        assert_eq!(trades.len(), 1);
+        let trade = &trades[0];
+        assert_eq!(trade.symbol, "BTC_USDT");
+        assert_eq!(trade.timestamp_us, 1_748_000_000_001_234);
+        assert_eq!(trade.trade_id, 9001);
+        assert_eq!(trade.side, 'S');
+        assert!((trade.price - 67735.7).abs() < 1e-6);
+        assert!((trade.amount - 9.3708).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decodes_futures_sbe_incremental_ask_then_bid_groups() {
+        let frames = GateSbeAdapter::new()
+            .parse_incremental_binary_frame(&build_futures_incremental_frame())
+            .expect("decode futures incremental");
+        assert_eq!(frames.len(), 1);
+        let IncrementalFrame::Book {
+            symbol,
+            timestamp,
+            first_update_id,
+            final_update_id,
+            bids,
+            asks,
+            ..
+        } = &frames[0]
+        else {
+            panic!("expected order book");
+        };
+        assert_eq!(symbol, "BTC_USDT");
+        assert_eq!(*timestamp, 1_748_000_000_001_000);
+        assert_eq!((*first_update_id, *final_update_id), (100, 102));
+        assert!((bids[0].price - 67735.7).abs() < 1e-6);
+        assert!((bids[0].amount - 9.370).abs() < 1e-9);
+        assert!((asks[0].price - 67735.8).abs() < 1e-6);
+        assert!((asks[0].amount - 3.337).abs() < 1e-9);
+    }
+
+    #[test]
+    fn decodes_spot_sbe_incremental_bid_then_ask_groups() {
+        let frames = GateSpotSbeAdapter::new()
+            .parse_incremental_binary_frame(&build_spot_incremental_frame())
+            .expect("decode spot incremental");
+        assert_eq!(frames.len(), 1);
+        let IncrementalFrame::Book {
+            symbol,
+            timestamp,
+            first_update_id,
+            final_update_id,
+            bids,
+            asks,
+            ..
+        } = &frames[0]
+        else {
+            panic!("expected order book");
+        };
+        assert_eq!(symbol, "BTC_USDT");
+        assert_eq!(*timestamp, 1_748_000_000_001_000);
+        assert_eq!((*first_update_id, *final_update_id), (200, 202));
+        assert!((bids[0].price - 67735.7).abs() < 1e-6);
+        assert!((bids[0].amount - 9.3708).abs() < 1e-9);
+        assert!((asks[0].price - 67735.8).abs() < 1e-6);
+        assert!((asks[0].amount - 3.3373).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spot_uses_sbe_url_and_json_subscriptions() {
+        let adapter = GateSpotSbeAdapter::new();
+        assert_eq!(adapter.ws_url(), GATE_SBE_SPOT_WS_URL);
+        let bbo = adapter.build_subscribe(&["BTC_USDT".to_string()]);
+        let trades = adapter.build_trade_subscribe(&["BTC_USDT".to_string()]);
+        let incremental = adapter.build_incremental_subscribe(&["BTC_USDT".to_string()]);
+        assert_eq!(bbo[0]["channel"], "spot.book_ticker");
+        assert_eq!(trades[0]["channel"], "spot.trades");
+        assert_eq!(incremental[0]["channel"], "spot.order_book_update");
+        assert_eq!(incremental[0]["payload"][1], "100ms");
     }
 }

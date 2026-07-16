@@ -11,6 +11,9 @@ pub const SBE_TEMPLATE_TICKER: u16 = 9;
 
 const SBE_HEADER_SIZE: usize = 8;
 const SBE_BBO_ROOT_MIN: usize = 59;
+const SBE_SPOT_TRADE_ROOT_MIN: usize = 60;
+const SBE_FUTURES_BOOK_UPDATE_ROOT_MIN: usize = 36;
+const SBE_SPOT_BOOK_UPDATE_ROOT_MIN: usize = 44;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Level {
@@ -523,6 +526,44 @@ pub fn parse_sbe_bbo(raw: &[u8]) -> Option<Bbo> {
     })
 }
 
+pub fn parse_spot_sbe_bbo(raw: &[u8]) -> Option<Bbo> {
+    let header = sbe_header(raw)?;
+    if header.template_id != SBE_TEMPLATE_BBO {
+        return None;
+    }
+    let body = SBE_HEADER_SIZE;
+    if raw.len() < body + header.block_length || header.block_length < SBE_BBO_ROOT_MIN {
+        return None;
+    }
+    let timestamp_us = read_i64_le(raw, body + 9)?;
+    let seq_id = read_i64_le(raw, body + 17)?;
+    let px_exp = read_i8(raw, body + 25)?;
+    let sz_exp = read_i8(raw, body + 26)?;
+    let bid_px_m = read_i64_le(raw, body + 27)?;
+    let bid_sz_m = read_i64_le(raw, body + 35)?;
+    let ask_px_m = read_i64_le(raw, body + 43)?;
+    let ask_sz_m = read_i64_le(raw, body + 51)?;
+    let mut off = body + header.block_length;
+    off = sbe_var_string_skip(raw, off)?;
+    let (symbol, _) = sbe_var_string(raw, off)?;
+    let bid_price = mantissa_to_f64(bid_px_m, px_exp);
+    let ask_price = mantissa_to_f64(ask_px_m, px_exp);
+    let bid_amount = mantissa_to_f64(bid_sz_m, sz_exp);
+    let ask_amount = mantissa_to_f64(ask_sz_m, sz_exp);
+    if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
+        return None;
+    }
+    Some(Bbo {
+        symbol: symbol.replace('_', "").to_ascii_uppercase(),
+        timestamp_us,
+        seq_id,
+        bid_price,
+        bid_amount,
+        ask_price,
+        ask_amount,
+    })
+}
+
 pub fn parse_sbe_trades(raw: &[u8]) -> Vec<Trade> {
     let Some(header) = sbe_header(raw) else {
         return Vec::new();
@@ -584,6 +625,137 @@ pub fn parse_sbe_trades(raw: &[u8]) -> Vec<Trade> {
         });
     }
     out
+}
+
+pub fn parse_spot_sbe_trades(raw: &[u8]) -> Vec<Trade> {
+    let Some(header) = sbe_header(raw) else {
+        return Vec::new();
+    };
+    if header.template_id != SBE_TEMPLATE_TRADE {
+        return Vec::new();
+    }
+    let body = SBE_HEADER_SIZE;
+    if raw.len() < body + header.block_length || header.block_length < SBE_SPOT_TRADE_ROOT_MIN {
+        return Vec::new();
+    }
+    let Some(px_exp) = read_i8(raw, body + 9) else {
+        return Vec::new();
+    };
+    let Some(sz_exp) = read_i8(raw, body + 10) else {
+        return Vec::new();
+    };
+    let Some(trade_id) = read_u64_le(raw, body + 11).and_then(|id| i64::try_from(id).ok()) else {
+        return Vec::new();
+    };
+    let create_time_us = read_i64_le(raw, body + 27).unwrap_or(0);
+    let precise_time_us = read_i64_le(raw, body + 35).unwrap_or(0);
+    let Some(side) = raw.get(body + 43).and_then(|side| match side {
+        0 => Some('S'),
+        1 => Some('B'),
+        _ => None,
+    }) else {
+        return Vec::new();
+    };
+    let Some(price_m) = read_i64_le(raw, body + 44) else {
+        return Vec::new();
+    };
+    let Some(amount_m) = read_i64_le(raw, body + 52) else {
+        return Vec::new();
+    };
+    let mut off = body + header.block_length;
+    off = match sbe_var_string_skip(raw, off) {
+        Some(off) => off,
+        None => return Vec::new(),
+    };
+    let Some((symbol, _)) = sbe_var_string(raw, off) else {
+        return Vec::new();
+    };
+    let price = mantissa_to_f64(price_m, px_exp);
+    let amount = mantissa_to_f64(amount_m, sz_exp);
+    if price <= 0.0 || amount <= 0.0 {
+        return Vec::new();
+    }
+    vec![Trade {
+        symbol,
+        timestamp_us: if precise_time_us > 0 {
+            precise_time_us
+        } else {
+            create_time_us
+        },
+        seq_id: trade_id,
+        trade_id,
+        side,
+        price,
+        amount,
+    }]
+}
+
+pub fn parse_futures_sbe_incremental(raw: &[u8]) -> Vec<Book> {
+    parse_sbe_book_update(raw, SbeBookUpdateLayout::Futures)
+        .into_iter()
+        .collect()
+}
+
+pub fn parse_spot_sbe_incremental(raw: &[u8]) -> Vec<Book> {
+    parse_sbe_book_update(raw, SbeBookUpdateLayout::Spot)
+        .into_iter()
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum SbeBookUpdateLayout {
+    Futures,
+    Spot,
+}
+
+fn parse_sbe_book_update(raw: &[u8], layout: SbeBookUpdateLayout) -> Option<Book> {
+    let header = sbe_header(raw)?;
+    if header.template_id != SBE_TEMPLATE_BOOK_UPDATE {
+        return None;
+    }
+    let body = SBE_HEADER_SIZE;
+    let (root_min, first_id_off, last_id_off, px_exp_off, sz_exp_off, spot_full_off) = match layout
+    {
+        SbeBookUpdateLayout::Futures => (SBE_FUTURES_BOOK_UPDATE_ROOT_MIN, 17, 25, 33, 34, None),
+        SbeBookUpdateLayout::Spot => (SBE_SPOT_BOOK_UPDATE_ROOT_MIN, 26, 34, 42, 43, Some(25)),
+    };
+    if raw.len() < body + header.block_length || header.block_length < root_min {
+        return None;
+    }
+    let event = *raw.get(body + 8)?;
+    let timestamp_us = read_i64_le(raw, body + 9)?;
+    let first_update_id = read_i64_le(raw, body + first_id_off)?;
+    let final_update_id = read_i64_le(raw, body + last_id_off)?;
+    let px_exp = read_i8(raw, body + px_exp_off)?;
+    let sz_exp = read_i8(raw, body + sz_exp_off)?;
+
+    let (first_levels, off) = sbe_level_group(raw, body + header.block_length, px_exp, sz_exp)?;
+    let (second_levels, mut off) = sbe_level_group(raw, off, px_exp, sz_exp)?;
+    let (bids, asks) = match layout {
+        SbeBookUpdateLayout::Futures => (second_levels, first_levels),
+        SbeBookUpdateLayout::Spot => (first_levels, second_levels),
+    };
+    if bids.is_empty() && asks.is_empty() {
+        return None;
+    }
+    off = sbe_var_string_skip(raw, off)?;
+    let (symbol, _) = sbe_var_string(raw, off)?;
+    let is_snapshot = event == 3
+        || spot_full_off
+            .and_then(|off| raw.get(body + off))
+            .is_some_and(|full| *full == 1);
+    Some(Book {
+        symbol,
+        timestamp_us,
+        seq_id: final_update_id,
+        prev_seq_id: i64::MIN,
+        first_update_id,
+        final_update_id,
+        gap_check: false,
+        is_snapshot,
+        bids,
+        asks,
+    })
 }
 
 pub fn parse_sbe_derivatives(raw: &[u8]) -> Vec<Derivative> {
@@ -796,6 +968,26 @@ fn sbe_group(buf: &[u8], off: usize) -> Option<(usize, usize, usize)> {
     let entry_len = read_u16_le(buf, off)? as usize;
     let entry_count = read_u16_le(buf, off + 2)? as usize;
     Some((entry_len, entry_count, off + 4))
+}
+
+fn sbe_level_group(buf: &[u8], off: usize, px_exp: i8, sz_exp: i8) -> Option<(Vec<Level>, usize)> {
+    let (entry_len, entry_count, mut cursor) = sbe_group(buf, off)?;
+    if entry_len < 16 {
+        return None;
+    }
+    let group_len = entry_len.checked_mul(entry_count)?;
+    buf.get(cursor..cursor.checked_add(group_len)?)?;
+
+    let mut levels = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let price = mantissa_to_f64(read_i64_le(buf, cursor)?, px_exp);
+        let amount = mantissa_to_f64(read_i64_le(buf, cursor + 8)?, sz_exp);
+        if price > 0.0 {
+            levels.push(Level { price, amount });
+        }
+        cursor += entry_len;
+    }
+    Some((levels, cursor))
 }
 
 fn sbe_var_string(buf: &[u8], off: usize) -> Option<(String, usize)> {
