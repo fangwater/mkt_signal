@@ -1,0 +1,37 @@
+# Each model writes <out_dir>/<symbol>/data/<UTC YYYY-MM-DD>/<model_name>.csv.
+# CSV columns are exactly: timestamp_ms,prediction
+instance = "local"
+out_dir = "predict_file"
+flush_every = 256
+flush_interval_ms = 1000
+poll_interval_ms = 10
+max_drain_per_source = 256
+stats_secs = 60
+# In-memory chart cache. A point is retained for 30 minutes and contains the
+# newest Binance futures mid observed when that model point was recorded.
+cache_minutes = 30
+cache_cleanup_ms = 30000
+
+# Read-only model/mid chart API and ECharts page.
+http_bind = "127.0.0.1"
+http_port = 8818
+
+
+pm2_namespace = "predict_file"
+pm2_name = "predict_file-local"
+rust_log = "info"
+
+# Tree model from Iceoryx. A bare service name automatically gets model_output/.
+[[models]]
+model_name = "binance_futures_direction_model"
+source = "ipc"
+service = "model_output/binance_futures_direction_model"
+interval_ms = 1000
+
+# NN model from ZeroMQ. Uncomment and set the real endpoint/model name.
+# [[models]]
+# model_name = "taker_decision_nn"
+# source = "zmq"
+# endpoint = "ipc:///tmp/predict_rnn_layer.ipc"
+# topic = "model_output/"
+# interval_ms = 1000

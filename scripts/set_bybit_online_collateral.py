@@ -7,7 +7,6 @@ The online set is built from Redis symbol-list keys:
     + unimmr_close_symbols
   Intra:
     intra_dump_symbols + intra_trade_symbols + intra_fwd_trade_symbols
-    + intra_bwd_trade_symbols + intra_unimmr_close_symbols
 
 Default is dry-run. Add --execute to submit Bybit private API requests that
 change account collateral settings.
@@ -178,12 +177,10 @@ def intra_symbol_keys(ctx: EnvContext) -> List[str]:
     exchange_suffix = ctx.exchange
     venue_suffix = f"{ctx.open_venue}_{ctx.hedge_venue}"
     return [
-        f"intra_dump_symbols:{exchange_suffix}",
-        f"intra_trade_symbols:{exchange_suffix}",
-        f"intra_fwd_trade_symbols:{exchange_suffix}",
-        f"intra_bwd_trade_symbols:{exchange_suffix}",
-        f"intra_unimmr_close_symbols:{exchange_suffix}",
-        f"{ctx.env_name}:intra_unimmr_close_symbols:{venue_suffix}",
+        f"{ctx.env_name}:intra_dump_symbols:{exchange_suffix}",
+        f"{ctx.env_name}:intra_trade_symbols:{exchange_suffix}",
+        f"{ctx.env_name}:intra_fwd_trade_symbols:{exchange_suffix}",
+        f"{ctx.env_name}:intra_bwd_trade_symbols:{exchange_suffix}",
     ]
 
 

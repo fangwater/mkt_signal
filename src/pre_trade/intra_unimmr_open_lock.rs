@@ -117,6 +117,17 @@ mod tests {
     }
 
     #[test]
+    fn unified_account_lock_honors_trigger_and_recovery_hysteresis() {
+        IntraUnimmrOpenLock::initialize(ArbMode::IntraArb, None);
+        IntraUnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(1.9));
+        assert!(IntraUnimmrOpenLock::is_locked());
+        IntraUnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(2.1));
+        assert!(IntraUnimmrOpenLock::is_locked());
+        IntraUnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(2.3));
+        assert!(!IntraUnimmrOpenLock::is_locked());
+    }
+
+    #[test]
     fn infinite_margin_ratio_recovers_locked_account() {
         IntraUnimmrOpenLock::initialize(ArbMode::IntraArb, None);
         IntraUnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(1.0));

@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+use mkt_parsers::msg::basic_account_msg::{
+    BasicAccountRiskMsg, BasicBalanceMsg, BasicBorrowInterestMsg,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +20,16 @@ struct BybitWalletBalanceResult {
 
 #[derive(Debug, Deserialize)]
 struct BybitWalletBalanceAccount {
+    #[serde(default, rename = "totalAvailableBalance")]
+    total_available_balance: String,
+    #[serde(default, rename = "totalEquity")]
+    total_equity: String,
+    #[serde(default, rename = "totalInitialMargin")]
+    total_initial_margin: String,
+    #[serde(default, rename = "totalMaintenanceMargin")]
+    total_maintenance_margin: String,
+    #[serde(default, rename = "accountMMRate")]
+    account_mm_rate: String,
     #[serde(default)]
     coin: Vec<BybitWalletBalanceCoin>,
 }
@@ -46,6 +58,53 @@ fn parse_f64(v: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
+/// Maps Bybit UTA wallet totals into the common account-risk representation.
+///
+/// `totalAvailableBalance` is the exchange-calculated capacity for a new UTA
+/// order. The common capacity gate derives headroom as `adj_equity - initial`;
+/// storing `available + initial` therefore preserves Bybit exact available
+/// balance rather than reconstructing it from local positions.
+fn parse_bybit_unified_account_risk(account: &BybitWalletBalanceAccount, ts: i64) -> Option<Bytes> {
+    let available = parse_f64(&account.total_available_balance)?;
+    let actual_equity = parse_f64(&account.total_equity)?;
+    let initial_margin = parse_f64(&account.total_initial_margin)?;
+    let maintenance_margin = parse_f64(&account.total_maintenance_margin)?;
+    if !(available.is_finite()
+        && actual_equity.is_finite()
+        && initial_margin.is_finite()
+        && maintenance_margin.is_finite())
+    {
+        return None;
+    }
+
+    // Bybit reports accountMMRate as maintenance margin / equity. Prefer its
+    // account-level value and use the wallet totals as a compatibility fallback.
+    let margin_ratio = parse_f64(&account.account_mm_rate)
+        .filter(|rate| rate.is_finite() && *rate > f64::EPSILON)
+        .map(|rate| 1.0 / rate)
+        .unwrap_or_else(|| {
+            if maintenance_margin > f64::EPSILON {
+                actual_equity / maintenance_margin
+            } else {
+                f64::INFINITY
+            }
+        });
+
+    Some(
+        BasicAccountRiskMsg::create(
+            ts,
+            available + initial_margin,
+            actual_equity,
+            maintenance_margin,
+            initial_margin,
+            margin_ratio,
+            0.0,
+            0.0,
+        )
+        .to_bytes(),
+    )
+}
+
 pub fn parse_bybit_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     let resp: BybitWalletBalanceResponse = serde_json::from_str(json).ok()?;
     if resp.ret_code != 0 {
@@ -55,6 +114,9 @@ pub fn parse_bybit_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
     let ts = chrono::Utc::now().timestamp_millis();
 
     let mut out = Vec::new();
+    if let Some(risk) = parse_bybit_unified_account_risk(&account, ts) {
+        out.push(risk);
+    }
     for coin in account.coin {
         let symbol = coin.coin.to_ascii_uppercase();
         if symbol.is_empty() {
@@ -85,7 +147,8 @@ pub fn parse_bybit_account_balance_snapshot(json: &str) -> Option<Vec<Bytes>> {
 mod tests {
     use super::*;
     use mkt_parsers::msg::basic_account_msg::{
-        get_basic_event_type, BasicAccountEventType, BasicBalanceMsg, BasicBorrowInterestMsg,
+        get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
+        BasicBorrowInterestMsg,
     };
 
     #[test]
@@ -113,6 +176,30 @@ mod tests {
         assert_eq!(clear.symbol, "BTC");
         assert_eq!(clear.borrowed, 0.0);
         assert_eq!(clear.interest, 0.0);
+    }
+
+    #[test]
+    fn wallet_totals_emit_exact_unified_capacity_and_unimmr() {
+        let json = r#"{
+            "retCode":0,
+            "result":{"list":[{
+                "totalAvailableBalance":"7000",
+                "totalEquity":"10000",
+                "totalInitialMargin":"3000",
+                "totalMaintenanceMargin":"500",
+                "accountMMRate":"0.05",
+                "coin":[]
+            }]}
+        }"#;
+        let msgs = parse_bybit_account_balance_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 1);
+        let risk = BasicAccountRiskMsg::from_bytes(&msgs[0]).expect("risk ok");
+        assert!((risk.adj_equity_usd - 10_000.0).abs() < 1e-12);
+        assert!((risk.actual_equity_usd - 10_000.0).abs() < 1e-12);
+        assert!((risk.initial_margin_usd - 3_000.0).abs() < 1e-12);
+        assert!((risk.maintenance_margin_usd - 500.0).abs() < 1e-12);
+        assert!((risk.margin_ratio - 20.0).abs() < 1e-12);
+        assert!((risk.adj_equity_usd - risk.initial_margin_usd - 7_000.0).abs() < 1e-12);
     }
 
     #[test]

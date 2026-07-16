@@ -757,14 +757,15 @@ fn online_symbol_keys(config: &GuardStartupConfig) -> Vec<String> {
         ArbMode::IntraArb => {
             let exchange_suffix = config.open_venue.trade_engine_exchange();
             vec![
-                format!("intra_dump_symbols:{exchange_suffix}"),
-                format!("intra_trade_symbols:{exchange_suffix}"),
-                format!("intra_fwd_trade_symbols:{exchange_suffix}"),
-                format!("intra_bwd_trade_symbols:{exchange_suffix}"),
-                format!("intra_unimmr_close_symbols:{exchange_suffix}"),
+                format!("{}:intra_dump_symbols:{exchange_suffix}", config.env_name),
+                format!("{}:intra_trade_symbols:{exchange_suffix}", config.env_name),
                 format!(
-                    "{}:intra_unimmr_close_symbols:{}",
-                    config.env_name, venue_suffix
+                    "{}:intra_fwd_trade_symbols:{exchange_suffix}",
+                    config.env_name
+                ),
+                format!(
+                    "{}:intra_bwd_trade_symbols:{exchange_suffix}",
+                    config.env_name
                 ),
             ]
         }
@@ -1490,12 +1491,10 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "intra_dump_symbols:gate",
-                "intra_trade_symbols:gate",
-                "intra_fwd_trade_symbols:gate",
-                "intra_bwd_trade_symbols:gate",
-                "intra_unimmr_close_symbols:gate",
-                "gate-intra-arb01:intra_unimmr_close_symbols:gate-margin_gate-futures",
+                "gate-intra-arb01:intra_dump_symbols:gate",
+                "gate-intra-arb01:intra_trade_symbols:gate",
+                "gate-intra-arb01:intra_fwd_trade_symbols:gate",
+                "gate-intra-arb01:intra_bwd_trade_symbols:gate",
             ]
         );
     }

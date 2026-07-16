@@ -83,12 +83,17 @@ impl ParamRefreshConfig {
 #[derive(Clone)]
 pub struct IntraBwdRefreshConfig {
     redis: RedisSettings,
+    env_name: String,
     key_suffix: String,
 }
 
 impl IntraBwdRefreshConfig {
-    pub fn new(redis: RedisSettings, key_suffix: String) -> Self {
-        Self { redis, key_suffix }
+    pub fn new(redis: RedisSettings, env_name: String, key_suffix: String) -> Self {
+        Self {
+            redis,
+            env_name,
+            key_suffix,
+        }
     }
 }
 
@@ -477,6 +482,7 @@ impl PreTrade {
         if let Some(refresh_cfg) = intra_bwd_refresh.as_ref() {
             IntraBwdSymbolList::start_background_refresh(
                 refresh_cfg.redis.clone(),
+                refresh_cfg.env_name.clone(),
                 refresh_cfg.key_suffix.clone(),
             );
         }

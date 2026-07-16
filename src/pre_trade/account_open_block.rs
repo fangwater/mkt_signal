@@ -24,6 +24,8 @@ const GATE_UNIFIED_CAPACITY_POLL_INTERVAL_US: i64 = 60_000_000;
 const GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 const BITGET_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
 const BITGET_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
+const BYBIT_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD: f64 = 2_000.0;
+const BYBIT_UNIFIED_CAPACITY_LOW_ERROR_CODE: i32 = 0;
 pub const BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US: i64 = 30 * 60 * 1_000_000;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -32,6 +34,7 @@ pub enum AccountOpenBlockReason {
     OkexUnifiedInsufficientMargin,
     GateUnifiedInsufficientMargin,
     BitgetUnifiedInsufficientMargin,
+    BybitUnifiedInsufficientMargin,
     BinanceStdUsdtRebalance,
     BybitInternalSystemError,
 }
@@ -43,6 +46,7 @@ impl AccountOpenBlockReason {
             Self::OkexUnifiedInsufficientMargin => "okex_unified_insufficient_margin",
             Self::GateUnifiedInsufficientMargin => "gate_unified_insufficient_margin",
             Self::BitgetUnifiedInsufficientMargin => "bitget_unified_insufficient_margin",
+            Self::BybitUnifiedInsufficientMargin => "bybit_unified_insufficient_margin",
             Self::BinanceStdUsdtRebalance => "binance_std_usdt_rebalance",
             Self::BybitInternalSystemError => "bybit_internal_system_error",
         }
@@ -107,6 +111,7 @@ enum CapacityVenue {
     OkexUnified,
     GateUnified,
     BitgetUnified,
+    BybitUnified,
 }
 
 impl CapacityVenue {
@@ -116,6 +121,7 @@ impl CapacityVenue {
             Self::OkexUnified => "okex_unified",
             Self::GateUnified => "gate_unified",
             Self::BitgetUnified => "bitget_unified",
+            Self::BybitUnified => "bybit_unified",
         }
     }
 
@@ -127,6 +133,8 @@ impl CapacityVenue {
             // Bitget `assets.USDT.available` is a wallet balance, not the
             // unified-account initial-margin headroom for a new UTA order.
             Self::BitgetUnified => "initial_margin_headroom",
+            // Bybit `totalAvailableBalance` is the exchange-calculated UTA headroom.
+            Self::BybitUnified => "total_available_balance",
         }
     }
 
@@ -136,6 +144,7 @@ impl CapacityVenue {
             Self::OkexUnified => "okex",
             Self::GateUnified => "gate",
             Self::BitgetUnified => "bitget",
+            Self::BybitUnified => "bybit",
         }
     }
 
@@ -145,6 +154,7 @@ impl CapacityVenue {
             Self::OkexUnified => OKEX_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD,
             Self::GateUnified => GATE_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD,
             Self::BitgetUnified => BITGET_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD,
+            Self::BybitUnified => BYBIT_UNIFIED_USDT_OPEN_BLOCK_THRESHOLD,
         }
     }
 
@@ -154,6 +164,7 @@ impl CapacityVenue {
             Self::OkexUnified => OKEX_UNIFIED_CAPACITY_POLL_INTERVAL_US,
             Self::GateUnified => GATE_UNIFIED_CAPACITY_POLL_INTERVAL_US,
             Self::BitgetUnified => 0,
+            Self::BybitUnified => 0,
         }
     }
 
@@ -163,6 +174,7 @@ impl CapacityVenue {
             Self::OkexUnified => OKEX_UNIFIED_CAPACITY_LOW_ERROR_CODE,
             Self::GateUnified => GATE_UNIFIED_CAPACITY_LOW_ERROR_CODE,
             Self::BitgetUnified => BITGET_UNIFIED_CAPACITY_LOW_ERROR_CODE,
+            Self::BybitUnified => BYBIT_UNIFIED_CAPACITY_LOW_ERROR_CODE,
         }
     }
 
@@ -172,6 +184,7 @@ impl CapacityVenue {
             Self::OkexUnified => AccountOpenBlockReason::OkexUnifiedInsufficientMargin,
             Self::GateUnified => AccountOpenBlockReason::GateUnifiedInsufficientMargin,
             Self::BitgetUnified => AccountOpenBlockReason::BitgetUnifiedInsufficientMargin,
+            Self::BybitUnified => AccountOpenBlockReason::BybitUnifiedInsufficientMargin,
         }
     }
 
@@ -181,6 +194,7 @@ impl CapacityVenue {
             Self::OkexUnified => QueryRequestType::OkexUsdtAvailableSnapshot,
             Self::GateUnified => QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
             Self::BitgetUnified => QueryRequestType::BitgetUsdtAvailableSnapshot,
+            Self::BybitUnified => QueryRequestType::BybitAccountBalanceSnapshot,
         }
     }
 
@@ -190,6 +204,7 @@ impl CapacityVenue {
             Self::OkexUnified => QueryRequestType::OkexUsdtMaxLoan,
             Self::GateUnified => QueryRequestType::GateUnifiedUsdtMaxBorrowable,
             Self::BitgetUnified => QueryRequestType::BitgetUsdtMaxTransferable,
+            Self::BybitUnified => QueryRequestType::BybitAccountBalanceSnapshot,
         }
     }
 
@@ -199,6 +214,7 @@ impl CapacityVenue {
             Self::OkexUnified => Bytes::from_static(b"ccy=USDT"),
             Self::GateUnified => Bytes::from_static(b"currency=USDT"),
             Self::BitgetUnified => Bytes::new(),
+            Self::BybitUnified => Bytes::from_static(b"accountType=UNIFIED"),
         }
     }
 
@@ -208,6 +224,7 @@ impl CapacityVenue {
             Self::OkexUnified => Bytes::from_static(OKEX_USDT_MAX_LOAN_PARAMS),
             Self::GateUnified => Bytes::from_static(b"currency=USDT"),
             Self::BitgetUnified => Bytes::from_static(b"coin=USDT"),
+            Self::BybitUnified => Bytes::from_static(b"accountType=UNIFIED"),
         }
     }
 }
@@ -223,6 +240,8 @@ static OKEX_UNIFIED_CAPACITY_POLL: Lazy<Mutex<CapacityPollState>> =
 static GATE_UNIFIED_CAPACITY_POLL: Lazy<Mutex<CapacityPollState>> =
     Lazy::new(|| Mutex::new(CapacityPollState::default()));
 static BITGET_UNIFIED_CAPACITY_POLL: Lazy<Mutex<CapacityPollState>> =
+    Lazy::new(|| Mutex::new(CapacityPollState::default()));
+static BYBIT_UNIFIED_CAPACITY_POLL: Lazy<Mutex<CapacityPollState>> =
     Lazy::new(|| Mutex::new(CapacityPollState::default()));
 static NEXT_CAPACITY_QUERY_ID: AtomicI64 = AtomicI64::new(-9_100_000);
 
@@ -263,30 +282,44 @@ pub fn drive_account_open_block_capacity_poll(now_us: i64) {
     }
 }
 
-/// Applies Bitget's unified-account risk stream to the account-wide ArbOpen gate.
-///
-/// `assets.USDT.available` can remain large while open positions consume nearly all
-/// initial-margin capacity. `effEquity - imr` uses the exchange's UTA risk values
-/// and is the capacity relevant to opening another position.
+/// Applies Bitget unified-account risk to the account-wide ArbOpen gate.
 pub fn apply_bitget_unified_account_risk(msg: &BasicAccountRiskMsg) {
-    if !bitget_unified_capacity_poll_enabled() {
-        return;
+    if bitget_unified_capacity_poll_enabled() {
+        apply_unified_account_risk_at(CapacityVenue::BitgetUnified, msg, get_timestamp_us());
     }
-    apply_bitget_unified_account_risk_at(msg, get_timestamp_us());
 }
 
-fn apply_bitget_unified_account_risk_at(msg: &BasicAccountRiskMsg, now_us: i64) {
+/// Applies Bybit UTA wallet risk to both the account-wide capacity gate and Viz.
+/// The parser maps `adj_equity - initial_margin` exactly to Bybit
+/// `totalAvailableBalance`.
+pub fn apply_bybit_unified_account_risk(msg: &BasicAccountRiskMsg) {
+    if bybit_unified_capacity_poll_enabled() {
+        apply_unified_account_risk_at(CapacityVenue::BybitUnified, msg, get_timestamp_us());
+    }
+}
+
+fn apply_unified_account_risk_at(venue: CapacityVenue, msg: &BasicAccountRiskMsg, now_us: i64) {
     if !msg.adj_equity_usd.is_finite() || !msg.initial_margin_usd.is_finite() {
         warn!(
-            "AccountOpenBlock: ignore invalid bitget_unified risk snapshot adj_equity_usd={} initial_margin_usd={}",
-            msg.adj_equity_usd, msg.initial_margin_usd
+            "AccountOpenBlock: ignore invalid {} risk snapshot adj_equity_usd={} initial_margin_usd={}",
+            venue.label(),
+            msg.adj_equity_usd,
+            msg.initial_margin_usd
         );
         return;
     }
 
     let headroom = msg.adj_equity_usd - msg.initial_margin_usd;
+    if !headroom.is_finite() {
+        warn!(
+            "AccountOpenBlock: ignore invalid {} capacity headroom={}",
+            venue.label(),
+            headroom
+        );
+        return;
+    }
     {
-        let mut state = BITGET_UNIFIED_CAPACITY_POLL.lock();
+        let mut state = capacity_poll_state(venue).lock();
         state.last_query_sent_us = now_us;
         state.available_query_id = None;
         state.max_borrowable_query_id = None;
@@ -299,7 +332,7 @@ fn apply_bitget_unified_account_risk_at(msg: &BasicAccountRiskMsg, now_us: i64) 
         state.last_usdt_max_available_margin = Some(headroom);
     }
 
-    evaluate_capacity(CapacityVenue::BitgetUnified, headroom, 0.0, now_us, now_us);
+    evaluate_capacity(venue, headroom, 0.0, now_us, now_us);
 }
 
 fn drive_capacity_poll(venue: CapacityVenue, now_us: i64) {
@@ -515,6 +548,12 @@ fn bitget_unified_capacity_poll_enabled() -> bool {
         && monitor.hedge_venue() == TradingVenue::BitgetFutures
 }
 
+fn bybit_unified_capacity_poll_enabled() -> bool {
+    let monitor = MonitorChannel::instance();
+    monitor.open_venue() == TradingVenue::BybitMargin
+        && monitor.hedge_venue() == TradingVenue::BybitFutures
+}
+
 fn capacity_venue_for_monitor() -> Option<CapacityVenue> {
     let Some((open_venue, hedge_venue)) = MonitorChannel::try_venues() else {
         return None;
@@ -529,6 +568,8 @@ fn capacity_venue_for_monitor() -> Option<CapacityVenue> {
     } else if open_venue == TradingVenue::BitgetMargin && hedge_venue == TradingVenue::BitgetFutures
     {
         Some(CapacityVenue::BitgetUnified)
+    } else if open_venue == TradingVenue::BybitMargin && hedge_venue == TradingVenue::BybitFutures {
+        Some(CapacityVenue::BybitUnified)
     } else {
         None
     }
@@ -643,6 +684,7 @@ fn capacity_poll_state(venue: CapacityVenue) -> &'static Mutex<CapacityPollState
         CapacityVenue::OkexUnified => &OKEX_UNIFIED_CAPACITY_POLL,
         CapacityVenue::GateUnified => &GATE_UNIFIED_CAPACITY_POLL,
         CapacityVenue::BitgetUnified => &BITGET_UNIFIED_CAPACITY_POLL,
+        CapacityVenue::BybitUnified => &BYBIT_UNIFIED_CAPACITY_POLL,
     }
 }
 
@@ -1342,7 +1384,7 @@ mod tests {
         );
         let low_headroom =
             BasicAccountRiskMsg::create(0, 23_000.0, 76_000.0, 6_000.0, 22_000.0, 3.8, 0.0, 0.0);
-        apply_bitget_unified_account_risk_at(&low_headroom, 3_100_000);
+        apply_unified_account_risk_at(CapacityVenue::BitgetUnified, &low_headroom, 3_100_000);
         let hit = check_account_open_block().expect("low risk headroom must keep ArbOpen locked");
         assert_eq!(
             hit.reason,
@@ -1352,10 +1394,37 @@ mod tests {
 
         let recovered_headroom =
             BasicAccountRiskMsg::create(0, 25_000.0, 76_000.0, 6_000.0, 22_000.0, 4.1, 0.0, 0.0);
-        apply_bitget_unified_account_risk_at(&recovered_headroom, 3_200_000);
+        apply_unified_account_risk_at(CapacityVenue::BitgetUnified, &recovered_headroom, 3_200_000);
         assert!(check_account_open_block().is_none());
         let state = BITGET_UNIFIED_CAPACITY_POLL.lock();
         assert_eq!(state.last_usdt_max_available_margin, Some(3_000.0));
         assert_eq!(state.last_margin_ratio, Some(4.1));
+    }
+
+    #[test]
+    fn bybit_wallet_headroom_locks_and_recovers_the_arb_open_gate() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+
+        let low_headroom =
+            BasicAccountRiskMsg::create(0, 4_999.0, 7_000.0, 500.0, 3_000.0, 14.0, 0.0, 0.0);
+        apply_unified_account_risk_at(CapacityVenue::BybitUnified, &low_headroom, 3_100_000);
+        let hit = check_account_open_block().expect("low Bybit wallet headroom must lock ArbOpen");
+        assert_eq!(
+            hit.reason,
+            AccountOpenBlockReason::BybitUnifiedInsufficientMargin
+        );
+
+        let recovered_headroom =
+            BasicAccountRiskMsg::create(0, 5_001.0, 7_000.0, 500.0, 3_000.0, 14.0, 0.0, 0.0);
+        apply_unified_account_risk_at(CapacityVenue::BybitUnified, &recovered_headroom, 3_200_000);
+        assert!(check_account_open_block().is_none());
+        let snapshot =
+            latest_usdt_max_available_margin_snapshot_for_venue(CapacityVenue::BybitUnified)
+                .expect("Bybit capacity snapshot");
+        assert_eq!(snapshot.venue, "bybit_unified");
+        assert_eq!(snapshot.available_label, "total_available_balance");
+        assert_eq!(snapshot.usdt_max_available_margin, 2_001.0);
+        assert_eq!(snapshot.margin_ratio, Some(14.0));
     }
 }

@@ -295,9 +295,12 @@ async fn main() -> Result<()> {
             let mut taker_decision_model_refresh = None;
             if arb_mode == ArbMode::IntraArb {
                 let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
+                let bwd_env_name = dir_prefix.clone().unwrap_or_else(|| {
+                    panic!("intra_bwd_trade_symbols requires an env directory prefix")
+                });
                 let bwd_redis = RedisSettings::default();
                 if let Err(err) =
-                    IntraBwdSymbolList::load_from_redis(&bwd_redis, &bwd_key_suffix).await
+                    IntraBwdSymbolList::load_from_redis(&bwd_redis, &bwd_env_name, &bwd_key_suffix).await
                 {
                     warn!(
                         "intra_bwd 借贷白名单初次加载失败 key_suffix='{}': {:#}",
@@ -305,9 +308,9 @@ async fn main() -> Result<()> {
                     );
                 }
                 if fast_poll {
-                    intra_bwd_refresh = Some(IntraBwdRefreshConfig::new(bwd_redis, bwd_key_suffix));
+                    intra_bwd_refresh = Some(IntraBwdRefreshConfig::new(bwd_redis, bwd_env_name, bwd_key_suffix));
                 } else {
-                    IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_key_suffix);
+                    IntraBwdSymbolList::start_background_refresh(bwd_redis, bwd_env_name, bwd_key_suffix);
                 }
             }
 

@@ -1908,8 +1908,18 @@ def make_unimmr_close_key_suffix(open_venue: str, hedge_venue: str) -> str:
 
 
 
-def build_vol_gate_symbol_list_key(open_venue: str, hedge_venue: str) -> str:
-    return f"intra_vol_gate_symbols:{make_unimmr_close_key_suffix(open_venue, hedge_venue)}"
+def intra_symbol_list_key(env_name: str, name: str, key_suffix: str) -> str:
+    env = (env_name or "").strip().lower()
+    if not env:
+        raise ValueError("env_name unavailable (no cwd prefix)")
+    return f"{env}:intra_{name}:{key_suffix.strip().lower()}"
+
+
+def current_env_name() -> str:
+    env = infer_dir_prefix_from_cwd() or ""
+    if not env:
+        raise ValueError("env_name unavailable (no cwd prefix)")
+    return env
 
 
 def resolve_venues(
@@ -2183,6 +2193,7 @@ def generate_threshold_fields(
 def sync_thresholds(
     rds,
     kind: str,
+    env_name: str,
     open_venue: str,
     hedge_venue: str,
     key_suffix: str,
@@ -2203,7 +2214,9 @@ def sync_thresholds(
     if not mapping:
         raise RuntimeError(f"{kind} mapping is empty")
 
-    target_symbols = load_symbol_lists_fn(rds, key_suffix)
+    target_symbols = load_symbol_lists_fn(
+        rds, key_suffix, env_name, open_venue, hedge_venue
+    )
     if symbol:
         target_symbols = [str(symbol).strip().upper()]
     if not target_symbols:
@@ -2267,9 +2280,11 @@ def sync_spread_thresholds(
 ) -> Dict[str, Any]:
     if spread_sync is None:
         raise RuntimeError("sync_intra_spread_thresholds.py not available")
+    env_name = current_env_name()
     return sync_thresholds(
         rds,
         "spread",
+        env_name,
         open_venue,
         hedge_venue,
         key_suffix,
@@ -2478,15 +2493,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             rds = self.server.context.redis_client
+            env_name = current_env_name()
             data = {
                 "exchange": exchange,
+                "env_name": env_name,
                 "key_suffix": key_suffix,
-                "dump_symbols": read_symbol_list(rds, f"intra_dump_symbols:{key_suffix}"),
-                "fwd_trade_symbols": read_symbol_list(rds, f"intra_fwd_trade_symbols:{key_suffix}"),
-                "bwd_trade_symbols": read_symbol_list(rds, f"intra_bwd_trade_symbols:{key_suffix}"),
-                "vol_gate_symbols": read_symbol_list(
-                    rds, build_vol_gate_symbol_list_key(open_venue, hedge_venue)
-                ),
+                "dump_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "dump_symbols", key_suffix)),
+                "fwd_trade_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)),
+                "bwd_trade_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)),
+                "vol_gate_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix)),
             }
             self._send_json(200, data)
             return
@@ -2729,22 +2744,11 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             rds = self.server.context.redis_client
             try:
-                rds.set(
-                    f"intra_dump_symbols:{key_suffix}",
-                    json.dumps(dump_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    f"intra_fwd_trade_symbols:{key_suffix}",
-                    json.dumps(fwd_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    f"intra_bwd_trade_symbols:{key_suffix}",
-                    json.dumps(bwd_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    build_vol_gate_symbol_list_key(open_v, hedge_v),
-                    json.dumps(vol_gate_symbols, ensure_ascii=False),
-                )
+                env_name = current_env_name()
+                rds.set(intra_symbol_list_key(env_name, "dump_symbols", key_suffix), json.dumps(dump_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix), json.dumps(fwd_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix), json.dumps(bwd_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix), json.dumps(vol_gate_symbols, ensure_ascii=False))
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return

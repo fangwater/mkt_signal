@@ -699,21 +699,16 @@ fn online_symbol_keys(config: &GateFrRiskLimitConfig) -> Vec<String> {
             .collect()
         }
         ArbMode::IntraArb => {
+            let Some(env_name) = config.env_name.as_deref() else {
+                return Vec::new();
+            };
             let exchange_suffix = config.open_venue.trade_engine_exchange();
-            let mut keys = vec![
-                format!("intra_dump_symbols:{exchange_suffix}"),
-                format!("intra_trade_symbols:{exchange_suffix}"),
-                format!("intra_fwd_trade_symbols:{exchange_suffix}"),
-                format!("intra_bwd_trade_symbols:{exchange_suffix}"),
-                format!("intra_unimmr_close_symbols:{exchange_suffix}"),
-            ];
-            if let Some(env_name) = config.env_name.as_deref() {
-                keys.push(format!(
-                    "{}:intra_unimmr_close_symbols:{}",
-                    env_name, venue_suffix
-                ));
-            }
-            keys
+            vec![
+                format!("{env_name}:intra_dump_symbols:{exchange_suffix}"),
+                format!("{env_name}:intra_trade_symbols:{exchange_suffix}"),
+                format!("{env_name}:intra_fwd_trade_symbols:{exchange_suffix}"),
+                format!("{env_name}:intra_bwd_trade_symbols:{exchange_suffix}"),
+            ]
         }
         ArbMode::CrossArb => Vec::new(),
     }
@@ -973,12 +968,10 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "intra_dump_symbols:gate",
-                "intra_trade_symbols:gate",
-                "intra_fwd_trade_symbols:gate",
-                "intra_bwd_trade_symbols:gate",
-                "intra_unimmr_close_symbols:gate",
-                "gate-intra-arb01:intra_unimmr_close_symbols:gate-margin_gate-futures",
+                "gate-intra-arb01:intra_dump_symbols:gate",
+                "gate-intra-arb01:intra_trade_symbols:gate",
+                "gate-intra-arb01:intra_fwd_trade_symbols:gate",
+                "gate-intra-arb01:intra_bwd_trade_symbols:gate",
             ]
         );
     }

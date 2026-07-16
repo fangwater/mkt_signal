@@ -120,6 +120,10 @@ path = "src/bin/latency_csv_capture.rs"
 [[bin]]
 name = "latency_collector"
 path = "src/bin/latency_collector.rs"
+[[bin]]
+name = "predict_file"
+path = "src/bin/predict_file.rs"
+
 
 [[bin]]
 name = "bybit_am_latency_probe"

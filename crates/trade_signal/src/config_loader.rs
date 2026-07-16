@@ -225,7 +225,7 @@ async fn reload_symbol_list(
         Ok(mut client) => {
             let symbol_list = SymbolList::instance();
             let ns = normalize_namespace(namespace);
-            let env_dir = if ns == "fr" {
+            let env_dir = if ns == "fr" || ns == "intra" {
                 Some(funding_env_dir_or_panic())
             } else {
                 None

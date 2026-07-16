@@ -326,12 +326,10 @@ def online_symbol_keys(spec: EnvSpec) -> List[str]:
         exchange_suffix = spec.open_exchange
         venue_suffix = f"{spec.open_venue}_{spec.hedge_venue}"
         return [
-            f"intra_dump_symbols:{exchange_suffix}",
-            f"intra_trade_symbols:{exchange_suffix}",
-            f"intra_fwd_trade_symbols:{exchange_suffix}",
-            f"intra_bwd_trade_symbols:{exchange_suffix}",
-            f"intra_unimmr_close_symbols:{exchange_suffix}",
-            f"{spec.env_name}:intra_unimmr_close_symbols:{venue_suffix}",
+            f"{spec.env_name}:intra_dump_symbols:{exchange_suffix}",
+            f"{spec.env_name}:intra_trade_symbols:{exchange_suffix}",
+            f"{spec.env_name}:intra_fwd_trade_symbols:{exchange_suffix}",
+            f"{spec.env_name}:intra_bwd_trade_symbols:{exchange_suffix}",
         ]
 
     if spec.mode == "cross":

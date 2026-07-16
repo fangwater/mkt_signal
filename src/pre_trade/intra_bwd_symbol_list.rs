@@ -56,18 +56,28 @@ impl IntraBwdSymbolList {
 
     /// 从 Redis 拉取一次 `intra_bwd_trade_symbols:<key_suffix>` 并整体替换本地缓存。
     /// key 不存在时清空缓存（语义对齐"白名单空 = 默认禁借贷"）。
-    pub async fn load_from_redis(redis: &RedisSettings, key_suffix: &str) -> Result<()> {
+    pub async fn load_from_redis(
+        redis: &RedisSettings,
+        env_name: &str,
+        key_suffix: &str,
+    ) -> Result<()> {
+        let env_name = env_name.trim().to_ascii_lowercase();
         let key_suffix = key_suffix.trim().to_ascii_lowercase();
-        let key = format!("intra_bwd_trade_symbols:{key_suffix}");
+        let key = format!("{env_name}:intra_bwd_trade_symbols:{key_suffix}");
         let mut client = RedisClient::connect(redis.clone())
             .await
             .context("connect redis for intra_bwd_trade_symbols")?;
         Self::apply_raw_redis_value(&key, client.get_string(&key).await?)
     }
 
-    pub fn load_from_redis_blocking(redis: &RedisSettings, key_suffix: &str) -> Result<()> {
+    pub fn load_from_redis_blocking(
+        redis: &RedisSettings,
+        env_name: &str,
+        key_suffix: &str,
+    ) -> Result<()> {
+        let env_name = env_name.trim().to_ascii_lowercase();
         let key_suffix = key_suffix.trim().to_ascii_lowercase();
-        let key = format!("intra_bwd_trade_symbols:{key_suffix}");
+        let key = format!("{env_name}:intra_bwd_trade_symbols:{key_suffix}");
         let mut client = BlockingRedisClient::connect(redis.clone())
             .context("connect redis for intra_bwd_trade_symbols")?;
         Self::apply_raw_redis_value(&key, client.get_string(&key)?)
@@ -98,13 +108,15 @@ impl IntraBwdSymbolList {
 
     /// 启动后台 60s 间隔刷新任务（与 PreTradeParamsLoader 同款）。
     /// 启动处的同步加载已经做过一次，这里跳过 interval 的首个立即触发，避免重复读 Redis。
-    pub fn start_background_refresh(redis: RedisSettings, key_suffix: String) {
+    pub fn start_background_refresh(redis: RedisSettings, env_name: String, key_suffix: String) {
         tokio::task::spawn_local(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
             interval.tick().await; // 立即返回的第一次 tick：跳过，已有启动同步加载
             loop {
                 interval.tick().await;
-                if let Err(err) = IntraBwdSymbolList::load_from_redis(&redis, &key_suffix).await {
+                if let Err(err) =
+                    IntraBwdSymbolList::load_from_redis(&redis, &env_name, &key_suffix).await
+                {
                     warn!(
                         "intra_bwd 借贷白名单后台刷新失败 key_suffix='{}': {:#}",
                         key_suffix, err

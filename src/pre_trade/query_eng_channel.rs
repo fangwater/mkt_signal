@@ -768,6 +768,12 @@ impl QueryEngChannel {
                                     BasicAccountEventType::AccountRisk => {
                                         match BasicAccountRiskMsg::from_bytes(body) {
                                             Ok(msg) => {
+                                                crate::pre_trade::account_open_block::apply_bitget_unified_account_risk(&msg);
+                                                crate::pre_trade::account_open_block::apply_bybit_unified_account_risk(&msg);
+                                                crate::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock::apply_account_risk(
+                                                    account_scope,
+                                                    &msg,
+                                                );
                                                 MonitorChannel::instance()
                                                     .apply_account_risk(account_scope, msg);
                                                 MonitorChannel::mark_basic_state_dirty();

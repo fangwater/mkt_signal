@@ -6,7 +6,6 @@
 
 工作流程：
   1. 从 Redis 读取 intra_dump_symbols:{exchange}、intra_fwd_trade_symbols:{exchange}、
-     intra_bwd_trade_symbols:{exchange}、{env_name}:intra_unimmr_close_symbols:{open_venue}_{hedge_venue}
   2. 合并列表得到要同步的 symbols（去重）
   3. 从 rolling_metrics_thresholds_{open_venue}_{hedge_venue} 读取这些 symbols 的百分位数据
   4. 根据 SPREAD_THRESHOLD_MAPPING 提取对应百分位值
@@ -115,9 +114,10 @@ def _read_symbol_list(rds, key: str, label: str, symbols_set: Set[str]) -> None:
         print(f"⚠️  解析 '{key}' 失败: {exc}")
 
 
-def unimmr_close_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
-    suffix = f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
-    return f"{env_name}:intra_unimmr_close_symbols:{suffix}" if env_name else f"intra_unimmr_close_symbols:{suffix}"
+def symbol_list_key(env_name: str, name: str, exchange: str) -> str:
+    if not env_name:
+        raise ValueError("env_name is required for intra symbol lists")
+    return f"{env_name}:intra_{name}:{exchange}"
 
 
 def load_symbol_lists(
@@ -128,16 +128,9 @@ def load_symbol_lists(
     hedge_venue: Optional[str] = None,
 ) -> List[str]:
     symbols_set: Set[str] = set()
-    _read_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{exchange}", "dump", symbols_set)
-    _read_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{exchange}", "fwd_trade", symbols_set)
-    _read_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{exchange}", "bwd_trade", symbols_set)
-    if open_venue and hedge_venue:
-        _read_symbol_list(
-            rds,
-            unimmr_close_key(env_name or "", open_venue, hedge_venue),
-            "unimmr_close",
-            symbols_set,
-        )
+    _read_symbol_list(rds, symbol_list_key(env_name or "", "dump_symbols", exchange), "dump", symbols_set)
+    _read_symbol_list(rds, symbol_list_key(env_name or "", "fwd_trade_symbols", exchange), "fwd_trade", symbols_set)
+    _read_symbol_list(rds, symbol_list_key(env_name or "", "bwd_trade_symbols", exchange), "bwd_trade", symbols_set)
     result = sorted(symbols_set)
     print(f"✅ 合并后共 {len(result)} 个唯一 symbols")
     return result

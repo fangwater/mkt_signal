@@ -1779,6 +1779,16 @@ impl TradeWsClient {
                 transport_id,
                 payload.len()
             );
+        } else if self.exchange == Exchange::Bitget {
+            debug!(
+                "trade ws client id={} exchange={} sending order req_type={:?} client_order_id={} transport_id={} payload: {}",
+                self.id,
+                self.exchange,
+                msg.req_type,
+                msg.client_order_id,
+                transport_id,
+                payload
+            );
         }
         let ws_send_start_time_us = get_timestamp_us();
         ws.send(Message::Text(payload)).await?;
