@@ -113,8 +113,8 @@ find_running_pids() {
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" '
-      index($0, "pre_trade") > 0 && index($0, base_dir) > 0 && index($0, open_arg) > 0 && index($0, hedge_arg) > 0 {
+    ps -eo pid=,comm=,args= | awk -v base_dir="$BASE_DIR" -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" '
+      $2 == "pre_trade" && index($0, base_dir) > 0 && index($0, open_arg) > 0 && index($0, hedge_arg) > 0 {
         print $1
       }
     '
