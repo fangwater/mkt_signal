@@ -1,22 +1,24 @@
 ---
 name: aws-marketdata-core-layout
-description: AWS market-data deployment layout for mkt_signal. Use when deploying or documenting the current AWS market-data host core binding for spread_pbs and depth_pub, especially Binance/Gate/OKEx/Bitget market-data publishers and the live Binance depth override.
+description: AWS market-data deployment layout for mkt_signal. Use when operating or documenting spread_pbs, depth_pub, and model-input processes directly on the current market-data host, especially Binance/Gate/OKEx/Bitget publishers and their CPU bindings.
 ---
 
 # AWS Marketdata Core Layout
 
 ## Scope
 
-Use this skill in `/home/ubuntu/crypto_mkt/mkt_signal` when redeploying or
-documenting the current AWS market-data host reached by `ssh jp2`.
+Use this skill when operating directly on the current AWS market-data host.
+Run deployment, restart, and verification commands locally on the host that owns the runtime
+directories under `~/spread_pbs`, `~/depth_pub`, `~/rolling_metrics`, and
+`~/trade_flow_feature`.
 
-The repo checkout that invokes this skill may be on a different host. Always
-operate on `ssh jp2` for this layout. As of 2026-06-26, `ssh jp2` resolves to
-host `ip-172-31-35-228`; a local shell on `ip-172-31-33-133` is not this
-market-data target.
+Before a live operation, run `hostname -f` and verify that the expected runtime
+directory exists. Do not infer host identity from a historical hostname or SSH
+alias. If the runtime directory is absent, stop and locate the current
+market-data host instead of applying this layout to another machine.
 
 This layout pins market-data processes to dedicated cores where possible.
-`lscpu -e=CPU,NODE,SOCKET,CORE,CACHE,ONLINE` on `jp2` currently shows CPUs
+`lscpu -e=CPU,NODE,SOCKET,CORE,CACHE,ONLINE` on the market-data host currently shows CPUs
 0-47 online and a single visible L3 cache id (`...:0`) for all online CPUs.
 Treat CPU0-5 as housekeeping/general OS capacity and market-data cores as
 explicit per-process bindings.
@@ -27,7 +29,7 @@ explicit per-process bindings.
 - 2 `depth_pub` processes:
   - Binance runs one `binance-both` depth publisher on CPU14.
   - OKEx runs one `okex-both` depth publisher on CPU13 for model input.
-  - Bitget and Gate depth publishers are not running in the current `jp2`
+  - Bitget and Gate depth publishers are not running in the current
     layout.
 - Model-input auxiliary processes also run on housekeeping/general cores:
   - OKEx margin/futures rolling metrics: `rm_ok_mg_ok_fu`.
@@ -46,7 +48,7 @@ explicit per-process bindings.
 | 13 | `depth_pub` | `~/depth_pub/okex-both` | `DEPTH_PUB_CORE=13` | `dp_ok_both` |
 | 14 | `depth_pub` | `~/depth_pub/binance-both` | `DEPTH_PUB_CORE=14` | `dp_bn_both` |
 
-Treat the table as authoritative for `ssh jp2` unless the user explicitly
+Treat the table as authoritative for the current market-data host unless the user explicitly
 updates the topology. Do not assume CPU13 is Bitget depth on this host; it is
 currently OKEx `depth_pub`.
 
@@ -82,13 +84,13 @@ git diff --stat
 Deploy the selected venues from the repo checkout:
 
 ```bash
-ssh jp2 'cd ~/spread_pbs/<venue> && ./scripts/start_spread_pbs.sh'
-ssh jp2 'cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh'
-ssh jp2 'cd ~/trade_flow_feature/okex-futures && ./scripts/start_trade_flow_feature_pub.sh'
+cd ~/spread_pbs/<venue> && ./scripts/start_spread_pbs.sh
+cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh
+cd ~/trade_flow_feature/okex-futures && ./scripts/start_trade_flow_feature_pub.sh
 ```
 
-The live `jp2` host may not have a repo checkout at
-`~/crypto_mkt/mkt_signal`; it uses deployed runtime directories under
+The live host may not use the active repo checkout for execution. It uses
+deployed runtime directories under
 `~/spread_pbs`, `~/depth_pub`, `~/rolling_metrics`, and
 `~/trade_flow_feature`. The spread/depth start scripts read per-venue `env.sh`
 files:
@@ -98,8 +100,8 @@ files:
 
 Write or preserve only the relevant core override in each deployed venue. Do
 not hard-code credentials in repo files. OKEx `spread_pbs` needs
-`OKX_API_KEY`, `OKX_API_SECRET`, and `OKX_PASSPHRASE` for SBE handshake; on
-`jp2`, `~/spread_pbs/okex-both/env.sh` sources `~/okex-intra-arb01/env.sh`
+`OKX_API_KEY`, `OKX_API_SECRET`, and `OKX_PASSPHRASE` for SBE handshake.
+`~/spread_pbs/okex-both/env.sh` sources `~/okex-intra-arb01/env.sh`
 and then sets `SPREAD_PBS_CORE=12`.
 
 ## Startup Order
@@ -107,16 +109,17 @@ and then sets `SPREAD_PBS_CORE=12`.
 Start each process from its deployed venue directory:
 
 ```bash
-ssh jp2 'cd ~/spread_pbs/binance-margin && ./scripts/start_spread_pbs.sh'
-ssh jp2 'cd ~/spread_pbs/binance-futures && ./scripts/start_spread_pbs.sh'
-ssh jp2 'cd ~/spread_pbs/gate-both && ./scripts/start_spread_pbs.sh'
-ssh jp2 'cd ~/spread_pbs/bitget-both && ./scripts/start_spread_pbs.sh'
-ssh jp2 'cd ~/spread_pbs/okex-both && ./scripts/start_spread_pbs.sh'
-ssh jp2 'cd ~/depth_pub/okex-both && ./scripts/start_depth_pub.sh'
-ssh jp2 'cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh'
-ssh jp2 'pmdaemon delete rm_ok_mg_ok_fu >/dev/null 2>&1 || true; cd ~/rolling_metrics/okex-margin-okex-futures && source ./env.sh && pmdaemon start -n rm_ok_mg_ok_fu --cwd ~/rolling_metrics/okex-margin-okex-futures -e RUST_LOG=info,rolling_metrics=info,mkt_signal=info ~/rolling_metrics/okex-margin-okex-futures/rolling_metrics -- --open-venue okex-margin --hedge-venue okex-futures'
-ssh jp2 'cd ~/trade_flow_feature/okex-margin && source ./env.sh && ./scripts/start_trade_flow_feature_pub.sh'
-ssh jp2 'cd ~/trade_flow_feature/okex-futures && source ./env.sh && ./scripts/start_trade_flow_feature_pub.sh'
+cd ~/spread_pbs/binance-margin && ./scripts/start_spread_pbs.sh
+cd ~/spread_pbs/binance-futures && ./scripts/start_spread_pbs.sh
+cd ~/spread_pbs/gate-both && ./scripts/start_spread_pbs.sh
+cd ~/spread_pbs/bitget-both && ./scripts/start_spread_pbs.sh
+cd ~/spread_pbs/okex-both && ./scripts/start_spread_pbs.sh
+cd ~/depth_pub/okex-both && ./scripts/start_depth_pub.sh
+cd ~/depth_pub/binance-both && ./scripts/start_depth_pub.sh
+pmdaemon delete rm_ok_mg_ok_fu >/dev/null 2>&1 || true
+cd ~/rolling_metrics/okex-margin-okex-futures && source ./env.sh && pmdaemon start -n rm_ok_mg_ok_fu --cwd ~/rolling_metrics/okex-margin-okex-futures -e RUST_LOG=info,rolling_metrics=info,mkt_signal=info ~/rolling_metrics/okex-margin-okex-futures/rolling_metrics -- --open-venue okex-margin --hedge-venue okex-futures
+cd ~/trade_flow_feature/okex-margin && source ./env.sh && ./scripts/start_trade_flow_feature_pub.sh
+cd ~/trade_flow_feature/okex-futures && source ./env.sh && ./scripts/start_trade_flow_feature_pub.sh
 ```
 
 Before starting a `*-both` `spread_pbs`, stop conflicting single-side processes for the same exchange. The start script checks for conflicts, but do not rely on it as the only guard when operating live deployments.
@@ -127,10 +130,10 @@ After startup, verify the market-data process names exist and are pinned to the
 expected live cores:
 
 ```bash
-ssh jp2 'pmdaemon list | grep -E "spp_|dp_"'
-ssh jp2 'ps -eo pid,psr,comm,args | grep -E "spread_pbs|depth_pub" | grep -v grep'
-ssh jp2 'pmdaemon list | grep -E "rm_ok_mg_ok_fu|tff_ok_mg|tff_ok_fu"'
-ssh jp2 'ps -eo pid,psr,comm,args | grep -E "rolling_metrics|trade_flow_feature_pub" | grep -E "okex|ok_" | grep -v grep'
+pmdaemon list | grep -E "spp_|dp_"
+ps -eo pid,psr,comm,args | grep -E "spread_pbs|depth_pub" | grep -v grep
+pmdaemon list | grep -E "rm_ok_mg_ok_fu|tff_ok_mg|tff_ok_fu"
+ps -eo pid,psr,comm,args | grep -E "rolling_metrics|trade_flow_feature_pub" | grep -E "okex|ok_" | grep -v grep
 ```
 
 Expected process names:
