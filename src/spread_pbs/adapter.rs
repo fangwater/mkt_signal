@@ -4,11 +4,8 @@ use mkt_parsers::binance::{RawBbo, RawBookParse, RawTrade};
 use serde_json::Value;
 
 use mkt_parsers::msg::mkt_msg::Level;
-use std::rc::Rc;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
-
-use crate::spread_pbs::publisher::SpreadDerivativesPublisher;
 
 /// 各家 spread 解析后的统一中间表示。
 #[derive(Debug, Clone)]
@@ -185,14 +182,13 @@ pub trait VenueAdapter {
     fn skip_json_fallback_after_raw_miss(&self) -> bool {
         false
     }
-    /// Optional raw derivatives hot path. Return Some(published_count) when the
-    /// frame was fully handled and callers can skip `serde_json::Value`.
-    fn publish_derivatives_raw(
+    /// Optional raw derivatives hot path. Return encoded messages when the
+    /// frame was fully handled so shared A/B dedup runs before IPC publication.
+    fn parse_derivatives_raw(
         &self,
         _raw: &[u8],
-        _publisher: &Rc<SpreadDerivativesPublisher>,
         _symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
-    ) -> Option<usize> {
+    ) -> Option<Vec<Bytes>> {
         None
     }
     fn parse_binary_frame(

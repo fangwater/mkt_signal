@@ -16,9 +16,6 @@ use crate::spread_pbs::adapter::{
 };
 use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use order_common::TradingVenue;
-use std::rc::Rc;
-
-use crate::spread_pbs::publisher::SpreadDerivativesPublisher;
 
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
@@ -322,18 +319,17 @@ impl VenueAdapter for BinanceAdapter {
         self.venue == TradingVenue::BinanceFutures
     }
 
-    fn publish_derivatives_raw(
+    fn parse_derivatives_raw(
         &self,
         raw: &[u8],
-        publisher: &Rc<SpreadDerivativesPublisher>,
         symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
-    ) -> Option<usize> {
+    ) -> Option<Vec<Bytes>> {
         if self.venue != TradingVenue::BinanceFutures {
             return None;
         }
         let active_is_empty = self.symbol_slot_by_symbol.borrow().is_empty();
         let mut handled = false;
-        let mut published = 0usize;
+        let mut encoded = Vec::new();
         let parsed = binance_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
             handled = true;
             let symbol = raw_derivative_symbol(&derivative);
@@ -341,13 +337,10 @@ impl VenueAdapter for BinanceAdapter {
             if !active_is_empty && slot_index.is_none() {
                 return Some(());
             }
-            match publish_raw_derivative(publisher, derivative) {
-                Ok(count) => published += count,
-                Err(e) => log::warn!("spread_pbs derivatives publish failed: {:#}", e),
-            }
+            encoded.extend(raw_derivative_to_bytes(derivative));
             Some(())
         });
-        (parsed.is_some() && handled).then_some(published)
+        (parsed.is_some() && handled).then_some(encoded)
     }
 
     fn parse_binary_frame(
@@ -596,10 +589,7 @@ fn raw_derivative_symbol<'a>(derivative: &'a binance_codec::RawDerivative<'a>) -
     }
 }
 
-fn publish_raw_derivative(
-    publisher: &Rc<SpreadDerivativesPublisher>,
-    derivative: binance_codec::RawDerivative<'_>,
-) -> Result<usize> {
+fn raw_derivative_to_bytes(derivative: binance_codec::RawDerivative<'_>) -> Vec<Bytes> {
     match derivative {
         binance_codec::RawDerivative::MarkPrice {
             symbol,
@@ -611,20 +601,23 @@ fn publish_raw_derivative(
         } => {
             let mark_price = mark_price.filter(|price| *price > 0.0);
             let index_price = index_price.filter(|price| *price > 0.0);
-            let mut count = 0usize;
+            let mut encoded = Vec::with_capacity(3);
             if let Some(price) = mark_price {
-                publisher.publish_mark_price(symbol, price, timestamp_us)?;
-                count += 1;
+                encoded
+                    .push(MarkPriceMsg::create(symbol.to_string(), price, timestamp_us).to_bytes());
             }
             if let Some(price) = index_price {
-                publisher.publish_index_price(symbol, price, timestamp_us)?;
-                count += 1;
+                encoded.push(
+                    IndexPriceMsg::create(symbol.to_string(), price, timestamp_us).to_bytes(),
+                );
             }
             if let (Some(rate), Some(next_time)) = (funding_rate, next_funding_time_us) {
-                publisher.publish_funding_rate(symbol, rate, next_time, timestamp_us)?;
-                count += 1;
+                encoded.push(
+                    FundingRateMsg::create(symbol.to_string(), rate, next_time, timestamp_us)
+                        .to_bytes(),
+                );
             }
-            Ok(count)
+            encoded
         }
         binance_codec::RawDerivative::Liquidation {
             symbol,
@@ -633,8 +626,10 @@ fn publish_raw_derivative(
             price,
             timestamp_us,
         } => {
-            publisher.publish_liquidation(symbol, side, amount, price, timestamp_us)?;
-            Ok(1)
+            vec![
+                LiquidationMsg::create(symbol.to_string(), side, amount, price, timestamp_us)
+                    .to_bytes(),
+            ]
         }
     }
 }

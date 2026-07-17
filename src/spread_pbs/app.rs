@@ -32,9 +32,15 @@ use crate::spread_pbs::publisher::{
     PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
     SpreadPbsPublishRoots, SpreadPublisher, SpreadTradePublisher,
 };
-use crate::spread_pbs::ws::{run_public_ws, FrameHandler, WsLoopParams};
+use crate::spread_pbs::ws::{run_public_ws, FrameHandler, RollingRestartSpec, WsLoopParams};
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
+const DERIVATIVES_DEDUP_WINDOW_US: i64 = 30_000_000;
+const DERIVATIVES_DEDUP_PRUNE_EVERY: usize = 4_096;
+const WS_BUSINESS_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const INCREMENTAL_HEALTH_STARTUP_GRACE: Duration = Duration::from_secs(30);
+const INCREMENTAL_CRITICAL_STALE_US: i64 = 15_000_000;
+const INCREMENTAL_CRITICAL_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
 const ENV_ENABLE_INCREMENTAL: &str = "SPREAD_PBS_ENABLE_INCREMENTAL";
 const ENV_ENABLE_DERIVATIVES: &str = "SPREAD_PBS_ENABLE_DERIVATIVES";
@@ -308,7 +314,7 @@ fn build_market_subscribe(
 
 /// 一条 ws 连接的运行态：shutdown 通道 + JoinHandle，外加重启用得上的 local_ip。
 struct WsLeg {
-    label: &'static str,
+    label: String,
     local_ip: String,
     url: String,
     source: MarketSource,
@@ -323,9 +329,6 @@ struct LegCtx {
     trade_publisher: Option<Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
-    direct_trade_publisher: Option<Rc<SpreadTradePublisher>>,
-    direct_incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
-    direct_derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
     incremental_max_levels: Option<usize>,
     state: Rc<RefCell<SharedState>>,
     url: String,
@@ -681,6 +684,9 @@ impl SpreadPbsApp {
             incremental_dropped_by_seq: 0,
             incremental_gap_warnings: 0,
             derivatives_published: 0,
+            derivatives_dropped_duplicate: 0,
+            derivatives_recent: fast_hash_map_with_capacity(2048),
+            derivatives_since_prune: 0,
             selected_whitelist: 0,
             selected_normal: 0,
             selected_other: 0,
@@ -712,9 +718,6 @@ impl SpreadPbsApp {
             trade_publisher: main_trade_publisher,
             incremental_publisher: main_incremental_publisher,
             derivatives_publisher: main_derivatives_publisher,
-            direct_trade_publisher: trade_publisher.clone(),
-            direct_incremental_publisher: incremental_publisher.clone(),
-            direct_derivatives_publisher: derivatives_publisher.clone(),
             incremental_max_levels: self.config.data_types.max_levels_per_msg,
             state: state.clone(),
             url: adapter.ws_url(),
@@ -843,6 +846,10 @@ impl SpreadPbsApp {
         let mut stats_ticker = tokio::time::interval(Duration::from_secs(30));
         stats_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         stats_ticker.tick().await;
+        let health_started_at = Instant::now();
+        let mut health_ticker = tokio::time::interval(Duration::from_secs(1));
+        health_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        health_ticker.tick().await;
         loop {
             tokio::select! {
                 changed = shutdown_rx.changed() => {
@@ -887,12 +894,13 @@ impl SpreadPbsApp {
                         }
                     }
                     log::info!(
-                        "spread_pbs[{}] stats published={} trades_published={} incremental_published={} derivatives_published={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={} incremental_gap_warnings={} symbols_seen={} trade_symbols_seen={} incremental_symbols_seen={}",
+                        "spread_pbs[{}] stats published={} trades_published={} incremental_published={} derivatives_published={} derivatives_dropped_duplicate={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={} incremental_gap_warnings={} symbols_seen={} trade_symbols_seen={} incremental_symbols_seen={}",
                         venue_slug,
                         s.published,
                         s.trades_published,
                         s.incremental_published,
                         s.derivatives_published,
+                        s.derivatives_dropped_duplicate,
                         s.dropped_by_seq,
                         s.trades_dropped_by_seq,
                         s.incremental_dropped_by_seq,
@@ -903,19 +911,32 @@ impl SpreadPbsApp {
                     );
                     s.log_and_reset_selected_source_stats(venue_slug);
                 }
+                _ = health_ticker.tick(), if direct_incremental_enabled => {
+                    if health_started_at.elapsed() >= INCREMENTAL_HEALTH_STARTUP_GRACE {
+                        let now_us = get_timestamp_us();
+                        let stale = state
+                            .borrow()
+                            .symbol_state
+                            .stale_incremental_symbols(
+                                &INCREMENTAL_CRITICAL_SYMBOLS,
+                                now_us,
+                                INCREMENTAL_CRITICAL_STALE_US,
+                            );
+                        if !stale.is_empty() {
+                            bail!(
+                                "spread_pbs[{}] critical incremental input stale symbols={} threshold_ms={}",
+                                venue_slug,
+                                stale.join(","),
+                                INCREMENTAL_CRITICAL_STALE_US / 1_000,
+                            );
+                        }
+                    }
+                }
                 _ = tokio::time::sleep_until(next_primary_restart) => {
                     if let Some(primary) = primary.as_mut() {
                         restart_leg(
                             venue_slug,
                             primary,
-                            &self.config,
-                            &ctx,
-                            &mut current_symbols,
-                        ).await;
-                    } else {
-                        restart_direct_extra_legs(
-                            venue_slug,
-                            &mut direct_extra_legs,
                             &self.config,
                             &ctx,
                             &mut current_symbols,
@@ -985,6 +1006,9 @@ impl SpreadPbsApp {
             incremental_dropped_by_seq: 0,
             incremental_gap_warnings: 0,
             derivatives_published: 0,
+            derivatives_dropped_duplicate: 0,
+            derivatives_recent: fast_hash_map_with_capacity(2048),
+            derivatives_since_prune: 0,
             selected_whitelist: 0,
             selected_normal: 0,
             selected_other: 0,
@@ -1069,7 +1093,7 @@ impl SpreadPbsApp {
 }
 
 fn spawn_leg(
-    label: &'static str,
+    label: impl Into<String>,
     local_ip: String,
     url: String,
     source: MarketSource,
@@ -1077,9 +1101,10 @@ fn spawn_leg(
     ctx: &LegCtx,
     publisher: Rc<SpreadPublisher>,
 ) -> WsLeg {
+    let label = label.into();
     let (tx, rx) = watch::channel(false);
     let handler = make_handler(
-        label,
+        label.clone(),
         ctx.adapter.clone(),
         publisher,
         ctx.trade_publisher.clone(),
@@ -1091,7 +1116,7 @@ fn spawn_leg(
     );
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
-            label,
+            label: label.clone(),
             url: url.clone(),
             local_ip: local_ip.clone(),
             remote_ip: None,
@@ -1099,6 +1124,8 @@ fn spawn_leg(
             subscribe_msgs: subs,
             keepalive: ctx.adapter.keepalive(),
             parse_okex_notices: ctx.parse_okex_notices,
+            business_idle_timeout: Some(WS_BUSINESS_IDLE_TIMEOUT),
+            rolling_restart: None,
         },
         handler,
         rx,
@@ -1114,15 +1141,16 @@ fn spawn_leg(
 }
 
 fn spawn_replacement_leg_on_main_ws(
-    label: &'static str,
+    label: impl Into<String>,
     local_ip: String,
     url: String,
     subs: Vec<serde_json::Value>,
     ctx: &LegCtx,
 ) -> WsLeg {
+    let label = label.into();
     let (tx, rx) = watch::channel(false);
     let handler = make_replacement_handler(
-        label,
+        label.clone(),
         ctx.adapter.clone(),
         ctx.trade_publisher.clone(),
         ctx.incremental_publisher.clone(),
@@ -1132,7 +1160,7 @@ fn spawn_replacement_leg_on_main_ws(
     );
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
-            label,
+            label: label.clone(),
             url: url.clone(),
             local_ip: local_ip.clone(),
             remote_ip: None,
@@ -1140,6 +1168,8 @@ fn spawn_replacement_leg_on_main_ws(
             subscribe_msgs: subs,
             keepalive: ctx.adapter.keepalive(),
             parse_okex_notices: ctx.parse_okex_notices,
+            business_idle_timeout: Some(WS_BUSINESS_IDLE_TIMEOUT),
+            rolling_restart: None,
         },
         handler,
         rx,
@@ -1165,7 +1195,7 @@ fn spawn_okex_derivatives_leg(
     let handler = make_okex_derivatives_handler(publisher, active_symbols, state);
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
-            label: "okex-derivatives",
+            label: "okex-derivatives".to_string(),
             url: OKEX_PUBLIC_WS_URL.to_string(),
             local_ip: local_ip.clone(),
             remote_ip: None,
@@ -1173,12 +1203,14 @@ fn spawn_okex_derivatives_leg(
             subscribe_msgs,
             keepalive: Some(KeepaliveSpec::text(Duration::from_secs(25), "ping")),
             parse_okex_notices: true,
+            business_idle_timeout: None,
+            rolling_restart: None,
         },
         handler,
         rx,
     ));
     WsLeg {
-        label: "okex-derivatives",
+        label: "okex-derivatives".to_string(),
         local_ip,
         url: OKEX_PUBLIC_WS_URL.to_string(),
         source: MarketSource::Other,
@@ -1236,9 +1268,10 @@ fn spawn_binance_bookticker_leg(
     source: MarketSource,
     subscribe_msgs: Vec<serde_json::Value>,
 ) -> WsLeg {
+    let label = label.to_string();
     let (tx, rx) = watch::channel(false);
     let handler = make_handler(
-        label,
+        label.clone(),
         adapter.clone(),
         publisher,
         None,
@@ -1250,7 +1283,7 @@ fn spawn_binance_bookticker_leg(
     );
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
-            label,
+            label: label.clone(),
             url: url.clone(),
             local_ip: local_ip.clone(),
             remote_ip: remote_ip.clone(),
@@ -1258,6 +1291,8 @@ fn spawn_binance_bookticker_leg(
             subscribe_msgs,
             keepalive: adapter.keepalive(),
             parse_okex_notices: false,
+            business_idle_timeout: Some(WS_BUSINESS_IDLE_TIMEOUT),
+            rolling_restart: None,
         },
         handler,
         rx,
@@ -1305,6 +1340,7 @@ fn spawn_direct_extra_legs(
             None,
             None,
             config.data_types.max_levels_per_msg,
+            Duration::from_secs(config.restart_duration_secs),
             state.clone(),
         );
     }
@@ -1322,6 +1358,7 @@ fn spawn_direct_extra_legs(
             Some(publisher),
             None,
             config.data_types.max_levels_per_msg,
+            Duration::from_secs(config.restart_duration_secs),
             state.clone(),
         );
     }
@@ -1339,78 +1376,12 @@ fn spawn_direct_extra_legs(
             None,
             Some(publisher),
             config.data_types.max_levels_per_msg,
+            Duration::from_secs(config.restart_duration_secs),
             state.clone(),
         );
     }
 
     legs
-}
-
-async fn restart_direct_extra_legs(
-    venue_slug: &'static str,
-    legs: &mut Vec<WsLeg>,
-    config: &Config,
-    ctx: &LegCtx,
-    current_symbols: &mut HashSet<String>,
-) {
-    log::info!("spread_pbs[{}] direct extra legs restart begin", venue_slug);
-    let new_symbols = match config.get_symbols().await {
-        Ok(v) if !v.is_empty() => apply_symbol_filter(v, venue_slug),
-        Ok(_) => {
-            log::error!(
-                "spread_pbs[{}] direct extra legs restart skipped: get_symbols() returned empty",
-                venue_slug
-            );
-            return;
-        }
-        Err(e) => {
-            log::error!(
-                "spread_pbs[{}] direct extra legs restart skipped: get_symbols() failed: {:#}",
-                venue_slug,
-                e
-            );
-            return;
-        }
-    };
-    if new_symbols.is_empty() {
-        log::error!(
-            "spread_pbs[{}] direct extra legs restart skipped: no symbols left after {} filter",
-            venue_slug,
-            ENV_SYMBOLS
-        );
-        return;
-    }
-    let new_set: HashSet<String> = new_symbols.iter().cloned().collect();
-    let added = new_set.difference(current_symbols).count();
-    let removed = current_symbols.difference(&new_set).count();
-    if added > 0 {
-        seed_runtime_symbols(venue_slug, ctx, &new_symbols);
-    }
-    *current_symbols = new_set;
-
-    let local_ip = legs
-        .first()
-        .map(|leg| leg.local_ip.clone())
-        .unwrap_or_default();
-    shutdown_legs(legs).await;
-    *legs = spawn_direct_extra_legs(
-        &ctx.adapter,
-        &new_symbols,
-        config,
-        &local_ip,
-        ctx.direct_trade_publisher.clone(),
-        ctx.direct_incremental_publisher.clone(),
-        ctx.direct_derivatives_publisher.clone(),
-        ctx.state.clone(),
-    );
-    log::info!(
-        "spread_pbs[{}] direct extra legs restart done symbols={} added={} removed={} legs={}",
-        venue_slug,
-        new_symbols.len(),
-        added,
-        removed,
-        legs.len()
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1488,79 +1459,9 @@ async fn restart_binance_bookticker_legs(
     );
 }
 
-fn seed_runtime_symbols(venue_slug: &str, ctx: &LegCtx, symbols: &[String]) {
-    let mut s = ctx.state.borrow_mut();
-    s.symbol_state.ensure_symbols(symbols);
-    drop(s);
-    ctx.adapter.seed_symbols(symbols);
-    if let Some(publisher) = ctx.publisher.as_ref() {
-        if let Err(e) = publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed BBO payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-    if let Some(trade_publisher) = ctx.trade_publisher.as_ref() {
-        if let Err(e) = trade_publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed trade payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-    if let Some(incremental_publisher) = ctx.incremental_publisher.as_ref() {
-        if let Err(e) = incremental_publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed incremental payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-    if let Some(derivatives_publisher) = ctx.derivatives_publisher.as_ref() {
-        if let Err(e) = derivatives_publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed derivatives payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-    if let Some(trade_publisher) = ctx.direct_trade_publisher.as_ref() {
-        if let Err(e) = trade_publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed direct trade payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-    if let Some(incremental_publisher) = ctx.direct_incremental_publisher.as_ref() {
-        if let Err(e) = incremental_publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed direct incremental payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-    if let Some(derivatives_publisher) = ctx.direct_derivatives_publisher.as_ref() {
-        if let Err(e) = derivatives_publisher.seed_symbols(symbols) {
-            log::warn!(
-                "spread_pbs[{}] failed to seed direct derivatives payload prefixes: {:#}",
-                venue_slug,
-                e
-            );
-        }
-    }
-}
-
 fn spawn_direct_replacement_batch_legs(
     legs: &mut Vec<WsLeg>,
-    label: &'static str,
+    label: &str,
     url: String,
     local_ip: String,
     subscribe_msgs: Vec<serde_json::Value>,
@@ -1569,6 +1470,7 @@ fn spawn_direct_replacement_batch_legs(
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
     incremental_max_levels: Option<usize>,
+    rolling_restart_interval: Duration,
     state: Rc<RefCell<SharedState>>,
 ) {
     if subscribe_msgs.is_empty() {
@@ -1581,24 +1483,36 @@ fn spawn_direct_replacement_batch_legs(
         subscribe_msgs.len(),
         url
     );
-    for subscribe_msg in subscribe_msgs {
-        legs.push(spawn_direct_replacement_leg(
-            label,
-            url.clone(),
-            local_ip.clone(),
-            vec![subscribe_msg],
-            adapter.clone(),
-            trade_publisher.clone(),
-            incremental_publisher.clone(),
-            derivatives_publisher.clone(),
-            incremental_max_levels,
-            state.clone(),
-        ));
+    for (batch_index, subscribe_msg) in subscribe_msgs.into_iter().enumerate() {
+        for (replica_index, replica) in ["a", "b"].into_iter().enumerate() {
+            let leg_label = format!("{label}-{batch_index}-{replica}");
+            let first_after = if replica_index == 0 {
+                rolling_restart_interval
+            } else {
+                rolling_restart_interval / 2
+            };
+            legs.push(spawn_direct_replacement_leg(
+                leg_label,
+                url.clone(),
+                local_ip.clone(),
+                vec![subscribe_msg.clone()],
+                adapter.clone(),
+                trade_publisher.clone(),
+                incremental_publisher.clone(),
+                derivatives_publisher.clone(),
+                incremental_max_levels,
+                Some(RollingRestartSpec {
+                    interval: rolling_restart_interval,
+                    first_after,
+                }),
+                state.clone(),
+            ));
+        }
     }
 }
 
 fn spawn_direct_replacement_leg(
-    label: &'static str,
+    label: String,
     url: String,
     local_ip: String,
     subscribe_msgs: Vec<serde_json::Value>,
@@ -1607,11 +1521,15 @@ fn spawn_direct_replacement_leg(
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
     derivatives_publisher: Option<Rc<SpreadDerivativesPublisher>>,
     incremental_max_levels: Option<usize>,
+    rolling_restart: Option<RollingRestartSpec>,
     state: Rc<RefCell<SharedState>>,
 ) -> WsLeg {
+    let business_idle_timeout = derivatives_publisher
+        .is_none()
+        .then_some(WS_BUSINESS_IDLE_TIMEOUT);
     let (tx, rx) = watch::channel(false);
     let handler = make_replacement_handler(
-        label,
+        label.clone(),
         adapter.clone(),
         trade_publisher,
         incremental_publisher,
@@ -1621,7 +1539,7 @@ fn spawn_direct_replacement_leg(
     );
     let handle = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
-            label,
+            label: label.clone(),
             url: url.clone(),
             local_ip: local_ip.clone(),
             remote_ip: None,
@@ -1629,6 +1547,8 @@ fn spawn_direct_replacement_leg(
             subscribe_msgs,
             keepalive: adapter.keepalive(),
             parse_okex_notices: adapter.name() == "okex",
+            business_idle_timeout,
+            rolling_restart,
         },
         handler,
         rx,
@@ -1705,7 +1625,7 @@ async fn restart_leg(
         log::error!(
             "spread_pbs[{}] leg={} restart skipped: no symbols left after {} filter",
             venue_slug,
-            leg.label,
+            leg.label.clone(),
             ENV_SYMBOLS
         );
         return;
@@ -1722,7 +1642,7 @@ async fn restart_leg(
         log::error!(
             "spread_pbs[{}] leg={} restart skipped: adapter.build_subscribe empty (symbols={})",
             venue_slug,
-            leg.label,
+            leg.label.clone(),
             new_symbols.len()
         );
         return;
@@ -1781,7 +1701,7 @@ async fn restart_leg(
 
     let new_leg = if let Some(publisher) = ctx.publisher.as_ref().cloned() {
         spawn_leg(
-            leg.label,
+            leg.label.clone(),
             leg.local_ip.clone(),
             leg.url.clone(),
             leg.source,
@@ -1791,7 +1711,7 @@ async fn restart_leg(
         )
     } else {
         spawn_replacement_leg_on_main_ws(
-            leg.label,
+            leg.label.clone(),
             leg.local_ip.clone(),
             leg.url.clone(),
             new_subs,
@@ -1819,6 +1739,7 @@ struct SymbolSeqState {
     latency_measurement_symbol: Vec<bool>,
     trade_seq: Vec<i64>,
     incremental_seq: Vec<i64>,
+    incremental_last_seen_us: Vec<i64>,
     bbo_seen: usize,
     trade_seen: usize,
     incremental_seen: usize,
@@ -1833,6 +1754,7 @@ impl SymbolSeqState {
             latency_measurement_symbol: Vec::with_capacity(symbols.len()),
             trade_seq: Vec::with_capacity(symbols.len()),
             incremental_seq: Vec::with_capacity(symbols.len()),
+            incremental_last_seen_us: Vec::with_capacity(symbols.len()),
             bbo_seen: 0,
             trade_seen: 0,
             incremental_seen: 0,
@@ -1859,6 +1781,7 @@ impl SymbolSeqState {
             .push(is_latency_measurement_symbol(symbol));
         self.trade_seq.push(i64::MIN);
         self.incremental_seq.push(i64::MIN);
+        self.incremental_last_seen_us.push(0);
         idx
     }
 
@@ -1952,6 +1875,24 @@ impl SymbolSeqState {
             self.incremental_seen += 1;
         }
         self.incremental_seq[slot.idx] = seq_id;
+        self.incremental_last_seen_us[slot.idx] = get_timestamp_us();
+    }
+
+    fn stale_incremental_symbols(
+        &self,
+        critical_symbols: &[&str],
+        now_us: i64,
+        stale_after_us: i64,
+    ) -> Vec<String> {
+        critical_symbols
+            .iter()
+            .filter_map(|symbol| {
+                let idx = *self.index_by_symbol.get(*symbol)?;
+                let last_seen_us = self.incremental_last_seen_us[idx];
+                (last_seen_us == 0 || now_us.saturating_sub(last_seen_us) > stale_after_us)
+                    .then(|| (*symbol).to_string())
+            })
+            .collect()
     }
 
     fn clear_bbo(&mut self) -> usize {
@@ -1983,6 +1924,9 @@ struct SharedState {
     incremental_dropped_by_seq: u64,
     incremental_gap_warnings: u64,
     derivatives_published: u64,
+    derivatives_dropped_duplicate: u64,
+    derivatives_recent: FastHashMap<Vec<u8>, i64>,
+    derivatives_since_prune: usize,
     selected_whitelist: u64,
     selected_normal: u64,
     selected_other: u64,
@@ -2035,7 +1979,7 @@ impl ReplacementBatch {
 }
 
 fn parse_replacement_batch(
-    label: &'static str,
+    label: &str,
     adapter: &dyn VenueAdapter,
     raw: &[u8],
     include_bbo: bool,
@@ -2098,7 +2042,7 @@ fn should_drop_json_after_raw_miss(adapter: &dyn VenueAdapter, raw: &[u8]) -> bo
 }
 
 fn parse_json_replacement_batch(
-    label: &'static str,
+    label: &str,
     adapter: &dyn VenueAdapter,
     value: &serde_json::Value,
     include_bbo: bool,
@@ -2177,7 +2121,7 @@ fn parse_json_replacement_batch(
 }
 
 fn parse_binary_replacement_batch(
-    label: &'static str,
+    label: &str,
     adapter: &dyn VenueAdapter,
     raw: &[u8],
     include_bbo: bool,
@@ -2252,7 +2196,7 @@ fn parse_binary_replacement_batch(
 }
 
 fn make_replacement_handler(
-    label: &'static str,
+    label: String,
     adapter: Rc<dyn VenueAdapter>,
     trade_publisher: Option<Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
@@ -2263,10 +2207,11 @@ fn make_replacement_handler(
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
         if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
             let mut symbol_slot = |symbol: &str| adapter.symbol_slot_index(symbol);
-            if let Some(published) =
-                adapter.publish_derivatives_raw(raw, derivatives_publisher, &mut symbol_slot)
-            {
-                state.borrow_mut().derivatives_published += published as u64;
+            if let Some(encoded) = adapter.parse_derivatives_raw(raw, &mut symbol_slot) {
+                let mut s = state.borrow_mut();
+                for bytes in encoded {
+                    process_derivatives_bytes(&mut s, derivatives_publisher, &bytes);
+                }
                 return;
             }
             if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
@@ -2343,7 +2288,7 @@ fn make_replacement_handler(
 
         let mut emit_noop = |_frame: BboFrame| Ok(());
         let batch = parse_replacement_batch(
-            label,
+            &label,
             adapter.as_ref(),
             raw,
             false,
@@ -2380,7 +2325,7 @@ fn make_replacement_handler(
 }
 
 fn make_handler(
-    label: &'static str,
+    label: String,
     adapter: Rc<dyn VenueAdapter>,
     publisher: Rc<SpreadPublisher>,
     trade_publisher: Option<Rc<SpreadTradePublisher>>,
@@ -2429,7 +2374,7 @@ fn make_handler(
             Ok(())
         };
         let batch = parse_replacement_batch(
-            label,
+            &label,
             adapter.as_ref(),
             raw,
             true,
@@ -2842,9 +2787,26 @@ fn process_derivatives_bytes(
     publisher: &Rc<SpreadDerivativesPublisher>,
     bytes: &[u8],
 ) {
+    let now_us = get_timestamp_us();
+    if state
+        .derivatives_recent
+        .get(bytes)
+        .is_some_and(|last_us| now_us.saturating_sub(*last_us) <= DERIVATIVES_DEDUP_WINDOW_US)
+    {
+        state.derivatives_dropped_duplicate += 1;
+        return;
+    }
     if let Err(e) = publisher.publish(bytes) {
         log::warn!("spread_pbs derivatives publish failed: {:#}", e);
         return;
+    }
+    state.derivatives_recent.insert(bytes.to_vec(), now_us);
+    state.derivatives_since_prune += 1;
+    if state.derivatives_since_prune >= DERIVATIVES_DEDUP_PRUNE_EVERY {
+        state
+            .derivatives_recent
+            .retain(|_, seen_us| now_us.saturating_sub(*seen_us) <= DERIVATIVES_DEDUP_WINDOW_US);
+        state.derivatives_since_prune = 0;
     }
     state.derivatives_published += 1;
 }
@@ -3114,6 +3076,9 @@ mod tests {
             incremental_dropped_by_seq: 0,
             incremental_gap_warnings: 0,
             derivatives_published: 0,
+            derivatives_dropped_duplicate: 0,
+            derivatives_recent: fast_hash_map_with_capacity(16),
+            derivatives_since_prune: 0,
             selected_whitelist: 0,
             selected_normal: 0,
             selected_other: 0,
@@ -3348,7 +3313,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_direct_replacement_batch_legs_keeps_one_subscribe_batch_per_ws() {
+    fn spawn_direct_replacement_batch_legs_creates_two_unique_replicas_per_batch() {
         struct NoopAdapter;
 
         impl VenueAdapter for NoopAdapter {
@@ -3403,10 +3368,24 @@ mod tests {
                 None,
                 None,
                 None,
+                Duration::from_secs(1_800),
                 state,
             );
 
-            assert_eq!(legs.len(), 3);
+            assert_eq!(legs.len(), 6);
+            assert_eq!(
+                legs.iter()
+                    .map(|leg| leg.label.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "direct-test-0-a",
+                    "direct-test-0-b",
+                    "direct-test-1-a",
+                    "direct-test-1-b",
+                    "direct-test-2-a",
+                    "direct-test-2-b",
+                ]
+            );
             for leg in legs {
                 let _ = leg.shutdown_tx.send(true);
                 leg.handle.abort();

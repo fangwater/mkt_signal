@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::watch;
+use tokio::time::Instant;
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::{
@@ -38,8 +39,14 @@ const RECONNECT_BACKOFF_SECS: u64 = 3;
 /// 立即抓的本地微秒时间戳，下游可用作"纯网络延迟"统计的端点。
 pub type FrameHandler = Rc<dyn Fn(i64, &[u8])>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct RollingRestartSpec {
+    pub interval: Duration,
+    pub first_after: Duration,
+}
+
 pub struct WsLoopParams {
-    pub label: &'static str,
+    pub label: String,
     pub url: String,
     pub local_ip: String,
     pub remote_ip: Option<String>,
@@ -47,6 +54,16 @@ pub struct WsLoopParams {
     pub subscribe_msgs: Vec<serde_json::Value>,
     pub keepalive: Option<KeepaliveSpec>,
     pub parse_okex_notices: bool,
+    pub business_idle_timeout: Option<Duration>,
+    pub rolling_restart: Option<RollingRestartSpec>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionEnd {
+    Shutdown,
+    Disconnected,
+    BusinessIdle,
+    RollingRestart,
 }
 
 /// 一条 ws 的连接 + 自动重连主循环。每个业务帧同步调 `handler`。
@@ -64,7 +81,10 @@ pub async fn run_public_ws(
         subscribe_msgs,
         keepalive,
         parse_okex_notices,
+        business_idle_timeout,
+        rolling_restart,
     } = params;
+    let mut rolling_deadline = rolling_restart.map(|spec| Instant::now() + spec.first_after);
 
     loop {
         if *shutdown_rx.borrow() {
@@ -88,22 +108,37 @@ pub async fn run_public_ws(
                     url,
                     remote_ip.as_deref().unwrap_or("dns")
                 );
-                run_session(
-                    label,
+                let end = run_session(
+                    &label,
                     sink,
                     read,
                     &handler,
                     &mut shutdown_rx,
                     keepalive.as_ref(),
                     parse_okex_notices,
+                    business_idle_timeout,
+                    rolling_deadline,
                 )
                 .await;
-                if *shutdown_rx.borrow() {
+                if end == SessionEnd::Shutdown || *shutdown_rx.borrow() {
                     return;
                 }
+                if end == SessionEnd::RollingRestart {
+                    if let (Some(spec), Some(deadline)) = (rolling_restart, rolling_deadline) {
+                        let now = Instant::now();
+                        let mut next = deadline + spec.interval;
+                        while next <= now {
+                            next += spec.interval;
+                        }
+                        rolling_deadline = Some(next);
+                    }
+                    log::info!("spread_pbs ws[{}] rolling reconnect", label);
+                    continue;
+                }
                 log::warn!(
-                    "spread_pbs ws[{}] disconnected; reconnect in {}s",
+                    "spread_pbs ws[{}] session ended reason={:?}; reconnect in {}s",
                     label,
+                    end,
                     RECONNECT_BACKOFF_SECS
                 );
             }
@@ -275,14 +310,16 @@ async fn connect_tcp_with_local_ip(
 }
 
 async fn run_session(
-    label: &'static str,
+    label: &str,
     mut sink: WsSink,
     mut read: WsRead,
     handler: &FrameHandler,
     shutdown_rx: &mut watch::Receiver<bool>,
     keepalive: Option<&KeepaliveSpec>,
     parse_okex_notices: bool,
-) {
+    business_idle_timeout: Option<Duration>,
+    rolling_deadline: Option<Instant>,
+) -> SessionEnd {
     let interval = keepalive
         .map(|k| k.interval)
         .unwrap_or(Duration::from_secs(60));
@@ -290,6 +327,7 @@ async fn run_session(
     keepalive_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // 第一次 tick 立刻就触发，跳过它以免连上来就发心跳干扰订阅。
     keepalive_ticker.tick().await;
+    let mut business_idle_deadline = business_idle_timeout.map(|timeout| Instant::now() + timeout);
 
     loop {
         tokio::select! {
@@ -297,14 +335,37 @@ async fn run_session(
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     let _ = sink.close().await;
-                    return;
+                    return SessionEnd::Shutdown;
                 }
+            }
+            _ = async {
+                match business_idle_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                log::error!(
+                    "spread_pbs ws[{}] business frame idle for {}ms; reconnecting",
+                    label,
+                    business_idle_timeout.unwrap_or_default().as_millis(),
+                );
+                let _ = sink.close().await;
+                return SessionEnd::BusinessIdle;
+            }
+            _ = async {
+                match rolling_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let _ = sink.close().await;
+                return SessionEnd::RollingRestart;
             }
             _ = keepalive_ticker.tick(), if keepalive.is_some() => {
                 let payload = (keepalive.unwrap().build)();
                 if let Err(e) = sink.send(payload).await {
                     log::warn!("spread_pbs ws[{}] keepalive failed: {:#}", label, e);
-                    return;
+                    return SessionEnd::Disconnected;
                 }
             }
             next = read.next() => {
@@ -327,7 +388,7 @@ async fn run_session(
                                         label
                                     );
                                     let _ = sink.close().await;
-                                    return;
+                                    return SessionEnd::Disconnected;
                                 }
                                 continue;
                             }
@@ -335,9 +396,13 @@ async fn run_session(
                         if is_keepalive_response(&text) {
                             continue;
                         }
+                        business_idle_deadline =
+                            business_idle_timeout.map(|timeout| Instant::now() + timeout);
                         handler(recv_us, text.as_bytes());
                     }
                     Some(Ok(Message::Binary(bin))) => {
+                        business_idle_deadline =
+                            business_idle_timeout.map(|timeout| Instant::now() + timeout);
                         handler(recv_us, bin.as_slice());
                     }
                     Some(Ok(Message::Ping(payload))) => {
@@ -346,16 +411,16 @@ async fn run_session(
                     Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Close(frame))) => {
                         log::warn!("spread_pbs ws[{}] close frame: {:?}", label, frame);
-                        return;
+                        return SessionEnd::Disconnected;
                     }
                     Some(Ok(Message::Frame(_))) => {}
                     Some(Err(e)) => {
                         log::warn!("spread_pbs ws[{}] read error: {:#}", label, e);
-                        return;
+                        return SessionEnd::Disconnected;
                     }
                     None => {
                         log::warn!("spread_pbs ws[{}] stream ended", label);
-                        return;
+                        return SessionEnd::Disconnected;
                     }
                 }
             }

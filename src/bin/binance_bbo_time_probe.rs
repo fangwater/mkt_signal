@@ -168,7 +168,7 @@ async fn run(args: Args) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let ws_task = tokio::task::spawn_local(run_public_ws(
         WsLoopParams {
-            label: "binance-bbo-time-probe",
+            label: "binance-bbo-time-probe".to_string(),
             url: BINANCE_FUTURES_WS_URL.to_string(),
             local_ip: cfg.primary_local_ip.clone(),
             remote_ip: None,
@@ -176,6 +176,8 @@ async fn run(args: Args) -> Result<()> {
             subscribe_msgs,
             keepalive: None,
             parse_okex_notices: false,
+            business_idle_timeout: None,
+            rolling_restart: None,
         },
         handler,
         shutdown_rx,
