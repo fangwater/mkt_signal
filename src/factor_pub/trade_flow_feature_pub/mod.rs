@@ -2,5 +2,6 @@
 
 pub mod app;
 pub mod cfg;
+pub mod local_baseline;
 pub mod publisher;
 pub mod vol_state;

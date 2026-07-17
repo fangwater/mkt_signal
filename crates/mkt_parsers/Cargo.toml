@@ -14,4 +14,5 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sonic-rs = "0.5.1"
 symbol_utils = { path = "../symbol_utils" }
+rolling_common = { path = "../rolling_common" }
 tokio = { version = "1.0", features = ["sync"] }

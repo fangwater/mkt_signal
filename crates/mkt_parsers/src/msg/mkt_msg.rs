@@ -18,6 +18,7 @@ pub enum MktMsgType {
     FactorValue = 2001,
     PairMmResample = 3001,
     TradeFlowFeature = 3002,
+    TradeNotionalKll = 3003,
     Feature = 4101,
     Model = 4102,
     Error = 2222,
@@ -866,6 +867,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         2001 => MktMsgType::FactorValue,
         3001 => MktMsgType::PairMmResample,
         3002 => MktMsgType::TradeFlowFeature,
+        3003 => MktMsgType::TradeNotionalKll,
         4101 => MktMsgType::Feature,
         4102 => MktMsgType::Model,
         _ => MktMsgType::TpReset, // 默认值

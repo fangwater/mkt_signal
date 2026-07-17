@@ -94,6 +94,17 @@ pub struct StreamingKllSketch {
     sketch: KllSketch,
 }
 
+/// Immutable representation of a completed KLL window.
+///
+/// Each level retains its original weight (`2^level`), so the snapshot can be
+/// persisted and queried without keeping the mutable sketch allocation alive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrozenKllSketch {
+    pub level_capacity: usize,
+    pub sample_count: usize,
+    pub levels: Vec<Vec<f64>>,
+}
+
 impl Default for StreamingKllSketch {
     fn default() -> Self {
         Self::new()
@@ -128,6 +139,14 @@ impl StreamingKllSketch {
         qs.iter()
             .map(|&q| quantile_from_weighted(&samples, q))
             .collect()
+    }
+
+    pub fn freeze(&self) -> FrozenKllSketch {
+        FrozenKllSketch {
+            level_capacity: self.sketch.level_capacity,
+            sample_count: self.sketch.n,
+            levels: self.sketch.levels.clone(),
+        }
     }
 
     pub fn reset(&mut self) {

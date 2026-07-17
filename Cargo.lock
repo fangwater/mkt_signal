@@ -307,9 +307,9 @@ dependencies = [
 
 [[package]]
 name = "backon"
-version = "1.6.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+checksum = "302eaff5357a264a2c42f127ecb8bac761cf99749fc3dc95677e2743991f99e7"
 dependencies = [
  "fastrand",
 ]
@@ -2226,6 +2226,7 @@ dependencies = [
  "fast-float",
  "log",
  "memchr",
+ "rolling_common",
  "serde",
  "serde_json",
  "sonic-rs",

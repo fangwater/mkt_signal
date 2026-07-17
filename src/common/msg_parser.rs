@@ -19,6 +19,7 @@ pub enum MktMsgType {
     FactorValue = 2001,
     PairMmResample = 3001,
     TradeFlowFeature = 3002,
+    TradeNotionalKll = 3003,
     Feature = 4101,
     Model = 4102,
     Error = 2222,

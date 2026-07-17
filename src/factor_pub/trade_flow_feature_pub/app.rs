@@ -9,7 +9,7 @@ use iceoryx2::service::ipc;
 use log::{info, warn};
 use redis::Commands;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use super::cfg::{RlFactorConfig, RuntimeConfig, TradeFlowFeaturePubConfig};
@@ -39,6 +39,23 @@ const FIXED_REDIS_DB: i64 = 0;
 const TRADE_DEDUP_WINDOW_MS: i64 = 10_000;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_DIM: usize = MAX_DEPTH_LEVELS_CACHE * 4;
+const DEFAULT_BAR_CLOSE_DELAY_MS: i64 = 100;
+
+fn bar_close_delay_ms(venue: TradingVenue) -> i64 {
+    match venue {
+        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => 3,
+        TradingVenue::GateMargin
+        | TradingVenue::GateFutures
+        | TradingVenue::BybitMargin
+        | TradingVenue::BybitFutures => 5,
+        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 10,
+        TradingVenue::OkexMargin | TradingVenue::OkexFutures => 3,
+        TradingVenue::AsterMargin
+        | TradingVenue::AsterFutures
+        | TradingVenue::HyperliquidMargin
+        | TradingVenue::HyperliquidFutures => DEFAULT_BAR_CLOSE_DELAY_MS,
+    }
+}
 #[derive(Debug, Clone)]
 struct RlReturnVolatilityRuntimeConfig {
     pct_change_period: usize,
@@ -409,7 +426,9 @@ impl TradeBar {
 }
 
 struct SymbolState {
-    bar: Option<TradeBar>,
+    /// 尚在封闭宽限期内的 bars。必须保留相邻时间桶，避免新桶 trade
+    /// 先到时抢先封闭旧桶，丢掉延迟到达的旧桶 trade。
+    pending_bars: BTreeMap<i64, TradeBar>,
     last_bar_start_ms: Option<i64>,
     last_close: Option<f64>,
     last_vwap: Option<f64>,
@@ -421,7 +440,7 @@ struct SymbolState {
 impl SymbolState {
     fn new() -> Self {
         Self {
-            bar: None,
+            pending_bars: BTreeMap::new(),
             last_bar_start_ms: None,
             last_close: None,
             last_vwap: None,
@@ -440,39 +459,21 @@ impl SymbolState {
         runtime: &RuntimeConfig,
         threshold: AmountThreshold,
     ) -> bool {
-        let mut late_trade = false;
         let trade_bar_start_ms = align_to_period(trade_timestamp_ms, runtime.bar_ms);
 
-        match self.bar.as_mut() {
-            None => {
-                if let Some(last_start) = self.last_bar_start_ms {
-                    if trade_bar_start_ms <= last_start {
-                        return true;
-                    }
-                }
-                self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms);
-                let mut bar = TradeBar::new(trade_bar_start_ms);
-                bar.update(trade_side, trade_price, trade_amount, threshold);
-                self.bar = Some(bar);
-            }
-            Some(bar) => {
-                if trade_bar_start_ms == bar.start_ms {
-                    bar.update(trade_side, trade_price, trade_amount, threshold);
-                } else if trade_bar_start_ms > bar.start_ms {
-                    if let Some(closed_bar) = self.bar.take().map(|b| self.finalize_bar(b)) {
-                        self.closed_bars.push(closed_bar);
-                    }
-                    self.fill_empty_until(trade_bar_start_ms, runtime.bar_ms);
-                    let mut next_bar = TradeBar::new(trade_bar_start_ms);
-                    next_bar.update(trade_side, trade_price, trade_amount, threshold);
-                    self.bar = Some(next_bar);
-                } else {
-                    late_trade = true;
-                }
-            }
+        if self
+            .last_bar_start_ms
+            .is_some_and(|last_start| trade_bar_start_ms <= last_start)
+        {
+            return true;
         }
 
-        late_trade
+        self.pending_bars
+            .entry(trade_bar_start_ms)
+            .or_insert_with(|| TradeBar::new(trade_bar_start_ms))
+            .update(trade_side, trade_price, trade_amount, threshold);
+
+        false
     }
 
     fn apply_finalized_sub_bar(
@@ -483,36 +484,26 @@ impl SymbolState {
     ) {
         let target_start_ms = align_to_period(source.start_ms, target_period_ms);
 
-        match self.bar.as_ref() {
-            None => {
-                if self
-                    .last_bar_start_ms
-                    .is_some_and(|last_start| target_start_ms <= last_start)
-                {
-                    return;
-                }
-                self.fill_empty_until(target_start_ms, target_period_ms);
-                self.bar = Some(TradeBar::new(target_start_ms));
-            }
-            Some(bar) if target_start_ms > bar.start_ms => {
-                if let Some(closed_bar) = self.bar.take().map(|bar| self.finalize_bar(bar)) {
-                    self.closed_bars.push(closed_bar);
-                }
-                self.fill_empty_until(target_start_ms, target_period_ms);
-                self.bar = Some(TradeBar::new(target_start_ms));
-            }
-            Some(bar) if target_start_ms < bar.start_ms => return,
-            Some(_) => {}
+        if self
+            .last_bar_start_ms
+            .is_some_and(|last_start| target_start_ms <= last_start)
+        {
+            return;
         }
 
-        if let Some(bar) = self.bar.as_mut() {
-            bar.merge_finalized(source);
-        }
+        self.pending_bars
+            .entry(target_start_ms)
+            .or_insert_with(|| TradeBar::new(target_start_ms))
+            .merge_finalized(source);
 
         let source_end_ms = source.start_ms.saturating_add(source_period_ms);
         let target_end_ms = target_start_ms.saturating_add(target_period_ms);
         if source_end_ms >= target_end_ms {
-            if let Some(closed_bar) = self.bar.take().map(|bar| self.finalize_bar(bar)) {
+            if let Some(closed_bar) = self
+                .pending_bars
+                .remove(&target_start_ms)
+                .map(|bar| self.finalize_bar(bar))
+            {
                 self.closed_bars.push(closed_bar);
             }
         }
@@ -542,39 +533,26 @@ impl SymbolState {
     }
 
     fn close_due_bars(&mut self, now_ms: i64, period_ms: i64) {
-        if let Some(bar) = self.bar.take() {
-            let close_at_ms = bar.start_ms + period_ms;
-            if now_ms >= close_at_ms {
-                let finalized = self.finalize_bar(bar);
-                self.closed_bars.push(finalized);
-            } else {
-                self.bar = Some(bar);
-            }
-        }
-
-        if self.bar.is_none() {
-            let mut next_start = match self.last_bar_start_ms {
-                Some(start) => start + period_ms,
-                None => return,
-            };
-
-            while next_start + period_ms <= now_ms {
-                let finalized = self.finalize_bar(TradeBar::empty(next_start));
-                self.closed_bars.push(finalized);
-                next_start += period_ms;
-            }
-        }
-    }
-
-    fn fill_empty_until(&mut self, target_start_ms: i64, period_ms: i64) {
-        let Some(last_start) = self.last_bar_start_ms else {
+        if period_ms <= 0 || now_ms < period_ms {
             return;
+        }
+        let last_sealable_start_ms = align_to_period(now_ms - period_ms, period_ms);
+        let mut next_start = match self.last_bar_start_ms {
+            Some(start_ms) => start_ms.saturating_add(period_ms),
+            None => match self.pending_bars.first_key_value() {
+                Some((&start_ms, _)) => start_ms,
+                None => return,
+            },
         };
-        let mut next_start = last_start + period_ms;
-        while next_start < target_start_ms {
-            let finalized = self.finalize_bar(TradeBar::empty(next_start));
+
+        while next_start <= last_sealable_start_ms {
+            let bar = self
+                .pending_bars
+                .remove(&next_start)
+                .unwrap_or_else(|| TradeBar::empty(next_start));
+            let finalized = self.finalize_bar(bar);
             self.closed_bars.push(finalized);
-            next_start += period_ms;
+            next_start = next_start.saturating_add(period_ms);
         }
     }
 
@@ -587,13 +565,20 @@ impl SymbolState {
             return None;
         }
 
-        self.bar
-            .as_ref()
-            .map(|bar| bar.start_ms.saturating_add(period_ms))
-            .or_else(|| {
-                self.last_bar_start_ms
-                    .map(|start_ms| start_ms.saturating_add(period_ms).saturating_add(period_ms))
-            })
+        let pending_due_ms = self
+            .pending_bars
+            .first_key_value()
+            .map(|(&start_ms, _)| start_ms.saturating_add(period_ms));
+        let ffill_due_ms = self
+            .last_bar_start_ms
+            .map(|start_ms| start_ms.saturating_add(period_ms).saturating_add(period_ms));
+
+        match (pending_due_ms, ffill_due_ms) {
+            (Some(pending), Some(ffill)) => Some(pending.min(ffill)),
+            (Some(pending), None) => Some(pending),
+            (None, Some(ffill)) => Some(ffill),
+            (None, None) => None,
+        }
     }
 }
 
@@ -805,6 +790,7 @@ pub struct TradeFlowFeaturePubApp {
     venue_slug: String,
     venue_u8: u8,
     venue: TradingVenue,
+    bar_close_delay_ms: i64,
     heartbeat_symbol: String,
     config_path: String,
     config: TradeFlowFeaturePubConfig,
@@ -891,11 +877,13 @@ impl TradeFlowFeaturePubApp {
         let threshold_store = AmountThresholdRedisStore::new(fixed_redis_settings())?;
         let threshold_reload_interval = Duration::from_secs(config.runtime.threshold_reload_secs);
         let heartbeat_symbol = normalize_symbol_for_venue("BTCUSDT", venue);
+        let bar_close_delay_ms = bar_close_delay_ms(venue);
 
         let mut app = Self {
             venue_slug: venue_slug.to_string(),
             venue_u8,
             venue,
+            bar_close_delay_ms,
             heartbeat_symbol,
             config_path: config_path.to_string(),
             config,
@@ -1010,11 +998,12 @@ impl TradeFlowFeaturePubApp {
 
     pub fn run(&mut self) -> Result<()> {
         info!(
-            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} enable_1m_bar={} threshold_reload_secs={} rl_pct_change_period={} rl_rolling_window={} rl_scale_factor={} redis={}:{} db={} online_symbols={}",
+            "TradeFlowFeaturePubApp[{}] started: trade_channel={} depth_channel={} bar_ms={} bar_close_delay_ms={} enable_1m_bar={} threshold_reload_secs={} rl_pct_change_period={} rl_rolling_window={} rl_scale_factor={} redis={}:{} db={} online_symbols={}",
             self.venue_slug,
             FIXED_TRADE_CHANNEL,
             self.depth_channel.as_str(),
             self.config.runtime.bar_ms,
+            self.bar_close_delay_ms,
             self.config.runtime.enable_1m_bar,
             self.config.runtime.threshold_reload_secs,
             self.rl_config.pct_change_period,
@@ -1123,10 +1112,11 @@ impl TradeFlowFeaturePubApp {
             return Ok(());
         };
         let now_ms = now_millis();
-        if now_ms < next_due_close_ms {
+        let close_after_ms = next_due_close_ms.saturating_add(self.bar_close_delay_ms);
+        if now_ms < close_after_ms {
             return Ok(());
         }
-        self.close_due_bars(now_ms)
+        self.close_due_bars(now_ms.saturating_sub(self.bar_close_delay_ms))
     }
 
     /// Vol 通道每轮 tick:把已经过期的 pending bucket 全部 seal,无 trade 也 ffill。
@@ -1623,10 +1613,11 @@ mod threshold_reload_tests {
 #[cfg(test)]
 mod symbol_state_tests {
     use super::{
-        RuntimeConfig, SymbolState, TradeBar, TradeDedupLru, TradeSide, ONE_MINUTE_BAR_MS,
-        TRADE_DEDUP_WINDOW_MS,
+        bar_close_delay_ms, RuntimeConfig, SymbolState, TradeBar, TradeDedupLru, TradeSide,
+        ONE_MINUTE_BAR_MS, TRADE_DEDUP_WINDOW_MS,
     };
     use crate::common::amount_threshold::AmountThreshold;
+    use order_common::TradingVenue;
 
     #[test]
     fn next_due_close_advances_after_bar_is_closed() {
@@ -1647,6 +1638,47 @@ mod symbol_state_tests {
 
         assert_eq!(state.take_closed_bars().len(), 1);
         assert_eq!(state.next_due_close_ms(runtime.bar_ms), Some(15_000));
+    }
+
+    #[test]
+    fn keeps_previous_bucket_open_while_next_bucket_is_pending() {
+        let runtime = RuntimeConfig {
+            bar_ms: 5_000,
+            enable_1m_bar: true,
+            threshold_reload_secs: 180,
+        };
+        let threshold = AmountThreshold {
+            medium_notional_threshold: 10.0,
+            large_notional_threshold: 20.0,
+        };
+        let mut state = SymbolState::new();
+
+        assert!(!state.apply_trade(4_990, TradeSide::Buy, 100.0, 1.0, &runtime, threshold));
+        assert!(!state.apply_trade(5_001, TradeSide::Buy, 101.0, 1.0, &runtime, threshold));
+
+        // Simulates a local close delay: the next bucket is known, but the prior
+        // bucket remains writable until its delayed close deadline is reached.
+        state.close_due_bars(4_999, runtime.bar_ms);
+        assert!(state.take_closed_bars().is_empty());
+        assert!(!state.apply_trade(4_999, TradeSide::Buy, 102.0, 1.0, &runtime, threshold));
+
+        state.close_due_bars(5_000, runtime.bar_ms);
+        let bars = state.take_closed_bars();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].start_ms, 0);
+        assert_eq!(bars[0].count, 2);
+        assert_eq!(bars[0].close, 102.0);
+    }
+
+    #[test]
+    fn bar_close_delay_is_selected_by_venue() {
+        assert_eq!(bar_close_delay_ms(TradingVenue::BinanceFutures), 3);
+        assert_eq!(bar_close_delay_ms(TradingVenue::BinanceMargin), 3);
+        assert_eq!(bar_close_delay_ms(TradingVenue::GateFutures), 5);
+        assert_eq!(bar_close_delay_ms(TradingVenue::BybitFutures), 5);
+        assert_eq!(bar_close_delay_ms(TradingVenue::BitgetFutures), 10);
+        assert_eq!(bar_close_delay_ms(TradingVenue::OkexFutures), 3);
+        assert_eq!(bar_close_delay_ms(TradingVenue::AsterFutures), 100);
     }
 
     #[test]
