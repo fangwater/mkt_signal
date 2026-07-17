@@ -1,7 +1,9 @@
 //! Replay Tardis trades and incremental L2 files through the live market-data IPC contract.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use bytes::Bytes;
 use clap::{Parser, ValueEnum};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use csv::StringRecord;
 use flate2::read::GzDecoder;
 use iceoryx2::port::publisher::Publisher;
@@ -9,11 +11,16 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 use mkt_parsers::msg::mkt_msg::{IncMsg, Level, TradeMsg};
+use mkt_parsers::msg::trade_flow_feature_msg::{
+    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
+};
 use mkt_parsers::msg::trade_notional_kll_msg::{TradeNotionalKllMsg, TRADE_NOTIONAL_KLL_MAX_BYTES};
 use mkt_signal::factor_pub::trade_flow_feature_pub::local_baseline::{
-    HourlyNotionalKll, HourlyNotionalKllSnapshot, LocalBaselineAggregator,
+    BaselineBar, HourlyNotionalKll, HourlyNotionalKllSnapshot, LocalBaselineAggregator,
 };
 use order_common::TradingVenue;
+use rayon::prelude::*;
+use serde::Deserialize;
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -26,57 +33,98 @@ const INCREMENTAL_PAYLOAD_BYTES: usize = 2048;
 const MAX_LEVELS_PER_INCREMENTAL_CHUNK: usize = 100;
 const HISTORY_SIZE: usize = 100;
 const MAX_SUBSCRIBERS: usize = 10;
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ReplaySource {
-    All,
-    Trades,
-    Incremental,
-}
+const BASELINE_DATABASE: &str = "baseline";
+const BASELINE_VALUE_COUNT: usize = TRADE_FLOW_FEATURE_DIM + 80;
+const DEFAULT_CLICKHOUSE_URL: &str = "http://127.0.0.1:18123";
+const DEFAULT_CLICKHOUSE_BATCH_ROWS: usize = 10_000;
+const DEFAULT_CLICKHOUSE_FLUSH_MS: u64 = 1_000;
+const DEFAULT_CLICKHOUSE_QUEUE_CAPACITY: usize = 100_000;
+const PROGRESS_LOG_EVENTS: u64 = 1_000_000;
+const PROGRESS_BAR_WIDTH: usize = 24;
 
 #[derive(Parser, Debug)]
 #[command(name = "tardis_ipc_replay")]
 #[command(about = "Replay Tardis trades and incremental L2 as dat_pbs IPC market data")]
 struct Args {
-    /// Tardis symbol root containing trades/ and incremental_book_L2/.
-    #[arg(long)]
+    /// Replay TOML configuration.
+    #[arg(long, default_value = "config/tardis_replay.toml")]
+    config: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplayConfig {
+    /// Root containing Tardis trades/ and incremental_book_L2/ directories.
     data_dir: PathBuf,
-
-    /// Venue that determines dat_pbs/<venue>/trade and incremental service names.
-    #[arg(long, value_enum, default_value_t = TradingVenue::BinanceFutures)]
-    venue: TradingVenue,
-
-    /// Exchange symbol to replay.
-    #[arg(long, default_value = "BTCUSDT")]
-    symbol: String,
-
-    /// First UTC date to include, in YYYY-MM-DD format.
-    #[arg(long)]
+    /// Venue used in dat_pbs/<SYMBOL>/<venue>/trade and incremental service names.
+    venue: String,
+    /// Symbols are standardized to uppercase before discovering files and opening IPC services.
+    symbols: Vec<String>,
+    #[serde(default)]
     start_date: Option<String>,
-
-    /// Last UTC date to include, in YYYY-MM-DD format.
-    #[arg(long)]
+    #[serde(default)]
     end_date: Option<String>,
-
-    /// Which historical stream to publish.
-    #[arg(long, value_enum, default_value_t = ReplaySource::All)]
-    source: ReplaySource,
-
-    /// Historical time multiplier. Zero publishes as fast as IPC accepts messages.
-    #[arg(long, default_value_t = 0.0)]
-    speed: f64,
-
-    /// Stop after this many source events. Zero replays all selected files.
-    #[arg(long, default_value_t = 0)]
-    max_events: u64,
-
-    /// Aggregate local 5s baseline bars and derive 10s/60s bars from them.
-    #[arg(long)]
-    aggregate_baseline: bool,
-
-    /// Publish one frozen notional KLL snapshot per UTC hour to a dedicated IPC service.
-    #[arg(long)]
+    #[serde(default = "default_replay_workers")]
+    replay_workers: usize,
+    #[serde(default = "default_publish_ipc")]
+    publish_ipc: bool,
+    #[serde(default)]
     publish_hourly_notional_kll: bool,
+    #[serde(default)]
+    clickhouse: ClickHouseConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClickHouseConfig {
+    #[serde(default = "default_clickhouse_url")]
+    url: String,
+    #[serde(default = "default_clickhouse_database")]
+    database: String,
+    #[serde(default = "default_clickhouse_batch_rows")]
+    batch_rows: usize,
+    #[serde(default = "default_clickhouse_flush_ms")]
+    flush_ms: u64,
+    #[serde(default = "default_clickhouse_queue_capacity")]
+    queue_capacity: usize,
+}
+
+impl Default for ClickHouseConfig {
+    fn default() -> Self {
+        Self {
+            url: default_clickhouse_url(),
+            database: default_clickhouse_database(),
+            batch_rows: default_clickhouse_batch_rows(),
+            flush_ms: default_clickhouse_flush_ms(),
+            queue_capacity: default_clickhouse_queue_capacity(),
+        }
+    }
+}
+
+fn default_replay_workers() -> usize {
+    1
+}
+
+fn default_publish_ipc() -> bool {
+    true
+}
+
+fn default_clickhouse_url() -> String {
+    DEFAULT_CLICKHOUSE_URL.to_string()
+}
+
+fn default_clickhouse_database() -> String {
+    BASELINE_DATABASE.to_string()
+}
+
+fn default_clickhouse_batch_rows() -> usize {
+    DEFAULT_CLICKHOUSE_BATCH_ROWS
+}
+
+fn default_clickhouse_flush_ms() -> u64 {
+    DEFAULT_CLICKHOUSE_FLUSH_MS
+}
+
+fn default_clickhouse_queue_capacity() -> usize {
+    DEFAULT_CLICKHOUSE_QUEUE_CAPACITY
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +221,11 @@ impl CsvGzipReader {
             }
         }
     }
+
+    fn file_progress(&self) -> (usize, usize) {
+        let active_file = usize::from(self.reader.is_some());
+        (self.next_path.saturating_sub(active_file), self.paths.len())
+    }
 }
 
 struct TradeEventReader {
@@ -255,36 +308,24 @@ impl ReplayInput {
         symbol: &str,
         start_date: Option<&str>,
         end_date: Option<&str>,
-        source: ReplaySource,
     ) -> Result<Self> {
-        let wants_trades = matches!(source, ReplaySource::All | ReplaySource::Trades);
-        let wants_books = matches!(source, ReplaySource::All | ReplaySource::Incremental);
-        let trades = wants_trades
-            .then(|| {
-                discover_files(data_dir, "trades", venue_slug, symbol, start_date, end_date).map(
-                    |paths| TradeEventReader {
-                        records: CsvGzipReader::new(paths),
-                    },
-                )
-            })
-            .transpose()?;
-        let books = wants_books
-            .then(|| {
-                discover_files(
-                    data_dir,
-                    "incremental_book_L2",
-                    venue_slug,
-                    symbol,
-                    start_date,
-                    end_date,
-                )
-                .map(|paths| BookEventReader {
-                    records: CsvGzipReader::new(paths),
-                    symbol: symbol.to_string(),
-                    pending: None,
-                })
-            })
-            .transpose()?;
+        let trades = Some(TradeEventReader {
+            records: CsvGzipReader::new(discover_files(
+                data_dir, "trades", venue_slug, symbol, start_date, end_date,
+            )?),
+        });
+        let books = Some(BookEventReader {
+            records: CsvGzipReader::new(discover_files(
+                data_dir,
+                "incremental_book_L2",
+                venue_slug,
+                symbol,
+                start_date,
+                end_date,
+            )?),
+            symbol: symbol.to_string(),
+            pending: None,
+        });
 
         let mut input = Self {
             trades,
@@ -324,6 +365,20 @@ impl ReplayInput {
         };
         Ok(event)
     }
+
+    fn file_progress(&self) -> (usize, usize) {
+        let (trade_done, trade_total) = self
+            .trades
+            .as_ref()
+            .map(|reader| reader.records.file_progress())
+            .unwrap_or_default();
+        let (book_done, book_total) = self
+            .books
+            .as_ref()
+            .map(|reader| reader.records.file_progress())
+            .unwrap_or_default();
+        (trade_done + book_done, trade_total + book_total)
+    }
 }
 
 struct IpcReplayPublisher {
@@ -335,13 +390,69 @@ struct HourlyNotionalKllPublisher {
     publisher: Publisher<ipc::Service, [u8; TRADE_NOTIONAL_KLL_MAX_BYTES], ()>,
 }
 
+#[derive(Debug, Clone)]
+struct ClickHouseWriterConfig {
+    url: String,
+    database: String,
+    table: String,
+    batch_rows: usize,
+    flush_interval: Duration,
+}
+
+#[derive(Debug, Default)]
+struct ClickHouseWriterStats {
+    inserted_rows: u64,
+    inserted_batches: u64,
+}
+
+struct BaselineClickHouseWriter {
+    sender: Sender<Bytes>,
+    join_handle: thread::JoinHandle<Result<ClickHouseWriterStats>>,
+}
+
+impl BaselineClickHouseWriter {
+    fn start(config: ClickHouseWriterConfig, queue_capacity: usize) -> Result<Self> {
+        if config.batch_rows == 0 {
+            bail!("clickhouse_batch_rows must be > 0");
+        }
+        if queue_capacity == 0 {
+            bail!("clickhouse_queue_capacity must be > 0");
+        }
+        ensure_baseline_tables(&config.url, &config.database, &config.table)?;
+        let (sender, receiver) = bounded(queue_capacity);
+        let join_handle = thread::Builder::new()
+            .name("baseline-clickhouse-writer".to_string())
+            .spawn(move || run_clickhouse_writer(receiver, config))
+            .context("spawn baseline ClickHouse writer")?;
+        Ok(Self {
+            sender,
+            join_handle,
+        })
+    }
+
+    fn sender(&self) -> Sender<Bytes> {
+        self.sender.clone()
+    }
+
+    fn finish(self) -> Result<ClickHouseWriterStats> {
+        drop(self.sender);
+        self.join_handle
+            .join()
+            .map_err(|_| anyhow!("baseline ClickHouse writer panicked"))?
+    }
+}
+
 impl HourlyNotionalKllPublisher {
-    fn new(venue_slug: &str) -> Result<Self> {
-        let node_name = format!("tardis_notional_kll_pub_{}", venue_slug.replace('-', "_"));
+    fn new(symbol: &str, venue_slug: &str) -> Result<Self> {
+        let node_name = format!(
+            "tardis_notional_kll_pub_{}_{}",
+            symbol.to_ascii_lowercase(),
+            venue_slug.replace('-', "_")
+        );
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
-        let service_name = format!("factor_pub/{venue_slug}/trade_notional_kll_hourly");
+        let service_name = format!("factor_pub/{symbol}/{venue_slug}/trade_notional_kll_hourly");
         let service = node
             .service_builder(&ServiceName::new(&service_name)?)
             .publish_subscribe::<[u8; TRADE_NOTIONAL_KLL_MAX_BYTES]>()
@@ -376,44 +487,46 @@ impl HourlyNotionalKllPublisher {
 }
 
 impl IpcReplayPublisher {
-    fn new(venue_slug: &str, source: ReplaySource) -> Result<Self> {
-        let node_name = format!("tardis_ipc_replay_{}", venue_slug.replace('-', "_"));
+    fn new(symbol: &str, venue_slug: &str) -> Result<Self> {
+        let node_name = format!(
+            "tardis_ipc_replay_{}_{}",
+            symbol.to_ascii_lowercase(),
+            venue_slug.replace('-', "_")
+        );
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let trade = matches!(source, ReplaySource::All | ReplaySource::Trades)
-            .then(|| {
-                let service_name = format!("dat_pbs/{venue_slug}/trade");
-                node.service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; TRADE_PAYLOAD_BYTES]>()
-                    .max_publishers(1)
-                    .max_subscribers(MAX_SUBSCRIBERS)
-                    .history_size(HISTORY_SIZE)
-                    .subscriber_max_buffer_size(8192)
-                    .open_or_create()?
-                    .publisher_builder()
-                    .create()
-                    .with_context(|| format!("failed to create trade publisher {service_name}"))
-            })
-            .transpose()?;
-        let incremental = matches!(source, ReplaySource::All | ReplaySource::Incremental)
-            .then(|| {
-                let service_name = format!("dat_pbs/{venue_slug}/incremental");
-                node.service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; INCREMENTAL_PAYLOAD_BYTES]>()
-                    .max_publishers(1)
-                    .max_subscribers(MAX_SUBSCRIBERS)
-                    .history_size(HISTORY_SIZE)
-                    .subscriber_max_buffer_size(8192)
-                    .open_or_create()?
-                    .publisher_builder()
-                    .create()
-                    .with_context(|| {
-                        format!("failed to create incremental publisher {service_name}")
-                    })
-            })
-            .transpose()?;
+        let trade_service_name = replay_ipc_service_name(symbol, venue_slug, "trade");
+        let trade = Some(
+            node.service_builder(&ServiceName::new(&trade_service_name)?)
+                .publish_subscribe::<[u8; TRADE_PAYLOAD_BYTES]>()
+                .max_publishers(1)
+                .max_subscribers(MAX_SUBSCRIBERS)
+                .history_size(HISTORY_SIZE)
+                .subscriber_max_buffer_size(8192)
+                .open_or_create()?
+                .publisher_builder()
+                .create()
+                .with_context(|| {
+                    format!("failed to create trade publisher {trade_service_name}")
+                })?,
+        );
+        let incremental_service_name = replay_ipc_service_name(symbol, venue_slug, "incremental");
+        let incremental = Some(
+            node.service_builder(&ServiceName::new(&incremental_service_name)?)
+                .publish_subscribe::<[u8; INCREMENTAL_PAYLOAD_BYTES]>()
+                .max_publishers(1)
+                .max_subscribers(MAX_SUBSCRIBERS)
+                .history_size(HISTORY_SIZE)
+                .subscriber_max_buffer_size(8192)
+                .open_or_create()?
+                .publisher_builder()
+                .create()
+                .with_context(|| {
+                    format!("failed to create incremental publisher {incremental_service_name}")
+                })?,
+        );
 
         info!(
             "Tardis IPC publisher ready: trade={} incremental={}",
@@ -647,11 +760,8 @@ fn parse_side(value: &str) -> Result<char> {
     }
 }
 
-fn validate_dates(args: &Args) -> Result<()> {
-    if !args.speed.is_finite() || args.speed < 0.0 {
-        bail!("speed must be finite and >= 0");
-    }
-    for date in [&args.start_date, &args.end_date].into_iter().flatten() {
+fn validate_dates(config: &ReplayConfig) -> Result<()> {
+    for date in [&config.start_date, &config.end_date].into_iter().flatten() {
         if date.len() != 10
             || !date.as_bytes().get(4).is_some_and(|byte| *byte == b'-')
             || !date.as_bytes().get(7).is_some_and(|byte| *byte == b'-')
@@ -663,7 +773,7 @@ fn validate_dates(args: &Args) -> Result<()> {
             bail!("date must use YYYY-MM-DD, got '{date}'");
         }
     }
-    if let (Some(start), Some(end)) = (&args.start_date, &args.end_date) {
+    if let (Some(start), Some(end)) = (&config.start_date, &config.end_date) {
         if start > end {
             bail!("start_date must not be after end_date");
         }
@@ -671,40 +781,147 @@ fn validate_dates(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn replay(args: &Args) -> Result<()> {
-    validate_dates(args)?;
-    if args.publish_hourly_notional_kll
-        && !matches!(args.source, ReplaySource::All | ReplaySource::Trades)
-    {
-        bail!("--publish-hourly-notional-kll requires a replay source that includes trades");
+fn replay(config: &ReplayConfig) -> Result<()> {
+    validate_dates(config)?;
+    if config.replay_workers == 0 {
+        bail!("replay_workers must be > 0");
     }
-    let symbol = args.symbol.trim().to_ascii_uppercase();
-    if symbol.is_empty() {
-        bail!("symbol must not be empty");
-    }
-    let venue_slug = args.venue.data_pub_slug();
-    let mut input = ReplayInput::new(
-        &args.data_dir,
-        venue_slug,
-        &symbol,
-        args.start_date.as_deref(),
-        args.end_date.as_deref(),
-        args.source,
-    )?;
-    let publisher = IpcReplayPublisher::new(venue_slug, args.source)?;
-    let hourly_kll_publisher = args
-        .publish_hourly_notional_kll
-        .then(|| HourlyNotionalKllPublisher::new(venue_slug))
+    let venue = TradingVenue::from_str(&config.venue, true)
+        .map_err(|err| anyhow!("unsupported replay venue '{}': {err}", config.venue))?;
+    let venue_slug = venue.data_pub_slug();
+    let symbols = replay_symbols(config)?;
+    let replay_pool = (symbols.len() > 1)
+        .then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(config.replay_workers.min(symbols.len()))
+                .build()
+                .context("build Tardis replay Rayon pool")
+        })
         .transpose()?;
-    let mut baseline = args.aggregate_baseline.then(LocalBaselineAggregator::new);
-    let mut hourly_kll = args
+    let mut clickhouse_writer = Some(BaselineClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: baseline_table_name(venue_slug, 5_000),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?);
+    let clickhouse_sender = clickhouse_writer
+        .as_ref()
+        .map(BaselineClickHouseWriter::sender);
+
+    let replay_result = if symbols.len() == 1 {
+        replay_symbol(
+            config,
+            venue,
+            venue_slug,
+            &symbols[0],
+            clickhouse_sender.as_ref(),
+        )
+    } else {
+        let workers = config.replay_workers.min(symbols.len());
+        info!(
+            "Starting parallel Tardis IPC replay: venue={} symbols={} workers={}",
+            venue_slug,
+            symbols.len(),
+            workers
+        );
+        replay_pool
+            .as_ref()
+            .expect("parallel replay pool created for multiple symbols")
+            .install(|| {
+                symbols.par_iter().try_for_each(|symbol| {
+                    replay_symbol(
+                        config,
+                        venue,
+                        venue_slug,
+                        symbol,
+                        clickhouse_sender.as_ref(),
+                    )
+                })
+            })
+    };
+
+    let writer_result = clickhouse_writer
+        .take()
+        .map(BaselineClickHouseWriter::finish);
+    replay_result?;
+    if let Some(stats) = writer_result.transpose()? {
+        info!(
+            "Tardis baseline ClickHouse writer: inserted_rows={} inserted_batches={}",
+            stats.inserted_rows, stats.inserted_batches
+        );
+    }
+    Ok(())
+}
+
+fn replay_symbols(config: &ReplayConfig) -> Result<Vec<String>> {
+    normalize_replay_symbols(&config.symbols)
+}
+
+fn normalize_replay_symbols(raw_symbols: &[String]) -> Result<Vec<String>> {
+    let mut symbols = Vec::with_capacity(raw_symbols.len());
+    for raw_symbol in raw_symbols {
+        let symbol = raw_symbol.trim().to_ascii_uppercase();
+        if symbol.is_empty() {
+            bail!("symbol must not be empty");
+        }
+        if !symbols.contains(&symbol) {
+            symbols.push(symbol);
+        }
+    }
+    if symbols.is_empty() {
+        bail!("at least one symbol is required");
+    }
+    Ok(symbols)
+}
+
+fn replay_ipc_service_name(symbol: &str, venue_slug: &str, channel: &str) -> String {
+    format!("dat_pbs/{symbol}/{venue_slug}/{channel}")
+}
+
+fn replay_symbol(
+    config: &ReplayConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+    symbol: &str,
+    clickhouse_sender: Option<&Sender<Bytes>>,
+) -> Result<()> {
+    let mut input = ReplayInput::new(
+        &config.data_dir,
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let publisher = config
+        .publish_ipc
+        .then(|| IpcReplayPublisher::new(symbol, venue_slug))
+        .transpose()?;
+    let hourly_kll_publisher = config
+        .publish_hourly_notional_kll
+        .then(|| HourlyNotionalKllPublisher::new(symbol, venue_slug))
+        .transpose()?;
+    let mut baseline = Some(LocalBaselineAggregator::new());
+    let mut baseline_missing_depth = 0u64;
+    let mut hourly_kll = config
         .publish_hourly_notional_kll
         .then(HourlyNotionalKll::new);
+    let (initial_files_done, total_files) = input.file_progress();
 
     info!(
-        "Starting Tardis IPC replay: root={} venue={} symbol={} source={:?} dates={:?}..{:?} speed={}x",
-        args.data_dir.display(), venue_slug, symbol, args.source, args.start_date, args.end_date, args.speed
+        "Starting Tardis replay: root={} venue={} symbol={} ipc={} dates={:?}..{:?} input_files={}",
+        config.data_dir.display(),
+        venue_slug,
+        symbol,
+        config.publish_ipc,
+        config.start_date,
+        config.end_date,
+        total_files
     );
+    log_replay_progress(symbol, initial_files_done, total_files, 0);
 
     let mut previous_timestamp_us = None;
     let mut source_events = 0u64;
@@ -712,10 +929,8 @@ fn replay(args: &Args) -> Result<()> {
     let mut incremental_messages = 0u64;
     let mut hourly_kll_messages = 0u64;
     let mut next_update_id = 1i64;
+    let mut last_progress_files = initial_files_done;
     while let Some(event) = input.next_event()? {
-        if args.max_events != 0 && source_events >= args.max_events {
-            break;
-        }
         let timestamp_us = event.timestamp_us();
         if let Some(previous) = previous_timestamp_us {
             if timestamp_us < previous {
@@ -723,61 +938,107 @@ fn replay(args: &Args) -> Result<()> {
                     "Tardis source timestamp moved backward: previous={} current={}",
                     previous, timestamp_us
                 );
-            } else if args.speed > 0.0 {
-                let delay_us = (timestamp_us - previous) as f64 / args.speed;
-                if delay_us >= 1.0 {
-                    thread::sleep(Duration::from_micros(delay_us.min(u64::MAX as f64) as u64));
-                }
             }
         }
         previous_timestamp_us = Some(timestamp_us);
 
         match event {
             ReplayEvent::Trade(row) => {
-                publisher.publish_trade(&row)?;
-                trade_messages += 1;
+                if let Some(publisher) = publisher.as_ref() {
+                    publisher.publish_trade(&row)?;
+                    trade_messages += 1;
+                }
                 if let Some(baseline) = baseline.as_mut() {
-                    baseline.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount);
+                    let closed =
+                        baseline.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount);
+                    if let Some(writer) = clickhouse_sender {
+                        enqueue_baseline_bars(
+                            &closed,
+                            &row.symbol,
+                            venue.to_u8(),
+                            writer,
+                            &mut baseline_missing_depth,
+                        )?;
+                    }
                 }
                 if let Some(kll) = hourly_kll.as_mut() {
                     if let Some(snapshot) = kll.on_trade(row.timestamp_us, row.price, row.amount) {
                         hourly_kll_publisher
                             .as_ref()
                             .expect("KLL publisher is enabled with KLL aggregation")
-                            .publish(&row.symbol, args.venue, snapshot)?;
+                            .publish(&row.symbol, venue, snapshot)?;
                         hourly_kll_messages += 1;
                     }
                 }
             }
             ReplayEvent::Book(event) => {
-                incremental_messages += publisher.publish_book(&event, next_update_id)? as u64;
+                if let Some(baseline) = baseline.as_mut() {
+                    let closed = baseline.on_book(
+                        event.timestamp_us,
+                        event.is_snapshot,
+                        &event.bids,
+                        &event.asks,
+                    );
+                    if let Some(writer) = clickhouse_sender {
+                        enqueue_baseline_bars(
+                            &closed,
+                            &event.symbol,
+                            venue.to_u8(),
+                            writer,
+                            &mut baseline_missing_depth,
+                        )?;
+                    }
+                }
+                if let Some(publisher) = publisher.as_ref() {
+                    incremental_messages += publisher.publish_book(&event, next_update_id)? as u64;
+                }
                 next_update_id = next_update_id
                     .checked_add(1)
                     .context("synthetic update id overflow")?;
             }
         }
         source_events += 1;
+        let (files_done, _) = input.file_progress();
+        if files_done != last_progress_files || source_events % PROGRESS_LOG_EVENTS == 0 {
+            log_replay_progress(symbol, files_done, total_files, source_events);
+            last_progress_files = files_done;
+        }
     }
+    let (files_done, _) = input.file_progress();
+    log_replay_progress(symbol, files_done, total_files, source_events);
 
     if let Some(baseline) = baseline.as_mut() {
-        baseline.flush();
+        let closed = baseline.flush();
+        if let Some(writer) = clickhouse_sender {
+            enqueue_baseline_bars(
+                &closed,
+                symbol,
+                venue.to_u8(),
+                writer,
+                &mut baseline_missing_depth,
+            )?;
+        }
         for stats in baseline.stats() {
             info!(
-                "Tardis local baseline: bar_ms={} closed={} traded={} ffill={} late_trades={}",
+                "Tardis local baseline: bar_ms={} closed={} traded={} depth20={} late_trades={}",
                 stats.bar_ms,
                 stats.closed_bars,
                 stats.traded_bars,
-                stats.ffill_bars,
+                stats.depth20_bars,
                 stats.late_trades
             );
         }
+        info!(
+            "Tardis baseline ClickHouse enqueue summary: missing_depth20={}",
+            baseline_missing_depth
+        );
     }
     if let Some(kll) = hourly_kll.as_mut() {
         if let Some(snapshot) = kll.flush() {
             hourly_kll_publisher
                 .as_ref()
                 .expect("KLL publisher is enabled with KLL aggregation")
-                .publish(&symbol, args.venue, snapshot)?;
+                .publish(symbol, venue, snapshot)?;
             hourly_kll_messages += 1;
         }
         info!(
@@ -794,9 +1055,224 @@ fn replay(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn log_replay_progress(symbol: &str, files_done: usize, total_files: usize, source_events: u64) {
+    let filled = if total_files == 0 {
+        0
+    } else {
+        (files_done * PROGRESS_BAR_WIDTH / total_files).min(PROGRESS_BAR_WIDTH)
+    };
+    let bar = format!(
+        "{}{}",
+        "#".repeat(filled),
+        "-".repeat(PROGRESS_BAR_WIDTH - filled)
+    );
+    info!(
+        "Tardis replay progress: symbol={} [{}] files={}/{} events={}",
+        symbol, bar, files_done, total_files, source_events
+    );
+}
+
+fn enqueue_baseline_bars(
+    bars: &[BaselineBar],
+    symbol: &str,
+    venue: u8,
+    writer: &Sender<Bytes>,
+    missing_depth: &mut u64,
+) -> Result<()> {
+    for bar in bars {
+        let Some(payload) = bar.to_trade_flow_feature_payload(symbol, venue)? else {
+            *missing_depth = missing_depth.saturating_add(1);
+            continue;
+        };
+        writer
+            .send(payload)
+            .map_err(|_| anyhow!("baseline ClickHouse writer stopped"))?;
+    }
+    Ok(())
+}
+
+fn baseline_table_name(venue_slug: &str, bar_ms: i64) -> String {
+    let venue = venue_slug.replace('-', "_");
+    format!("baseline_{venue}_{}s", bar_ms / 1_000)
+}
+
+fn ensure_baseline_tables(url: &str, database: &str, table: &str) -> Result<()> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+    let client = clickhouse_http_client()?;
+    clickhouse_execute(
+        &client,
+        url,
+        &format!("CREATE DATABASE IF NOT EXISTS {database}"),
+    )?;
+    let query = format!(
+        "CREATE TABLE IF NOT EXISTS {database}.{table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+        baseline_table_columns_sql()
+    );
+    clickhouse_execute(&client, url, &query)
+}
+
+fn validate_identifier(value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        bail!("invalid ClickHouse identifier: {value}");
+    }
+    Ok(())
+}
+
+fn baseline_table_columns_sql() -> String {
+    let mut columns = vec![
+        "ts DateTime64(3, 'UTC') CODEC(Delta, ZSTD)".to_string(),
+        "symbol String".to_string(),
+    ];
+    columns.extend(
+        TRADE_FLOW_FEATURE_FIELD_NAMES
+            .iter()
+            .map(|name| format!("{name} Float64")),
+    );
+    for side in ["bid", "ask"] {
+        for level in 0..20 {
+            columns.push(format!("{side}_{level:02}_price Float64"));
+            columns.push(format!("{side}_{level:02}_amount Float64"));
+        }
+    }
+    columns.join(", ")
+}
+
+fn clickhouse_http_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .pool_max_idle_per_host(1)
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("build ClickHouse HTTP client")
+}
+
+fn clickhouse_execute(client: &reqwest::blocking::Client, url: &str, query: &str) -> Result<()> {
+    let response = client
+        .post(url.trim_end_matches('/'))
+        .query(&[("query", query)])
+        .body(Vec::new())
+        .send()
+        .with_context(|| format!("ClickHouse request failed: {query}"))?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    bail!("ClickHouse request failed: status={status} body={body}");
+}
+
+fn run_clickhouse_writer(
+    receiver: Receiver<Bytes>,
+    config: ClickHouseWriterConfig,
+) -> Result<ClickHouseWriterStats> {
+    let client = clickhouse_http_client()?;
+    let mut batch = Vec::with_capacity(config.batch_rows);
+    let mut stats = ClickHouseWriterStats::default();
+    loop {
+        match receiver.recv_timeout(config.flush_interval) {
+            Ok(payload) => {
+                batch.push(payload);
+                if batch.len() >= config.batch_rows {
+                    flush_clickhouse_batch(&client, &config, &mut batch, &mut stats)?;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                flush_clickhouse_batch(&client, &config, &mut batch, &mut stats)?;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                flush_clickhouse_batch(&client, &config, &mut batch, &mut stats)?;
+                return Ok(stats);
+            }
+        }
+    }
+}
+
+fn flush_clickhouse_batch(
+    client: &reqwest::blocking::Client,
+    config: &ClickHouseWriterConfig,
+    batch: &mut Vec<Bytes>,
+    stats: &mut ClickHouseWriterStats,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut body = Vec::with_capacity(batch.len() * 1_000);
+    for payload in batch.iter() {
+        let message = TradeFlowFeatureMsg::from_bytes(payload)
+            .context("decode standard baseline TradeFlowFeatureMsg")?;
+        append_clickhouse_row_binary(&mut body, &message)?;
+    }
+    let query = format!(
+        "INSERT INTO {}.{} FORMAT RowBinary",
+        config.database, config.table
+    );
+    let response = client
+        .post(config.url.trim_end_matches('/'))
+        .query(&[("query", query.as_str())])
+        .header("Content-Type", "application/octet-stream")
+        .body(body)
+        .send()
+        .with_context(|| {
+            format!(
+                "ClickHouse insert into {}.{}",
+                config.database, config.table
+            )
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let response_body = response.text().unwrap_or_default();
+        bail!(
+            "ClickHouse insert failed: table={}.{} status={} body={}",
+            config.database,
+            config.table,
+            status,
+            response_body
+        );
+    }
+    stats.inserted_rows = stats.inserted_rows.saturating_add(batch.len() as u64);
+    stats.inserted_batches = stats.inserted_batches.saturating_add(1);
+    batch.clear();
+    Ok(())
+}
+
+fn append_clickhouse_row_binary(output: &mut Vec<u8>, message: &TradeFlowFeatureMsg) -> Result<()> {
+    if message.values.len() != BASELINE_VALUE_COUNT {
+        bail!(
+            "baseline message value count={} expected={}",
+            message.values.len(),
+            BASELINE_VALUE_COUNT
+        );
+    }
+    output.extend_from_slice(&message.ts.to_le_bytes());
+    append_var_uint(output, message.symbol.len() as u64);
+    output.extend_from_slice(message.symbol.as_bytes());
+    for value in &message.values {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn append_var_uint(output: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        output.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
 fn main() -> Result<()> {
     env_logger::init();
-    replay(&Args::parse())
+    let args = Args::parse();
+    let content = fs::read_to_string(&args.config)
+        .with_context(|| format!("read replay config {}", args.config.display()))?;
+    let config: ReplayConfig = toml::from_str(&content)
+        .with_context(|| format!("parse replay config {}", args.config.display()))?;
+    replay(&config)
 }
 
 #[cfg(test)]
@@ -864,5 +1340,76 @@ mod tests {
             .iter()
             .all(|chunk| chunk.levels.len() <= MAX_LEVELS_PER_INCREMENTAL_CHUNK));
         assert!(chunks.iter().all(|chunk| chunk.final_update_id == 42));
+    }
+
+    #[test]
+    fn baseline_schema_matches_standard_message_width() {
+        let columns = baseline_table_columns_sql();
+        assert_eq!(columns.matches(" Float64").count(), BASELINE_VALUE_COUNT);
+        assert!(columns.starts_with("ts DateTime64(3, 'UTC')"));
+        assert!(columns.contains(", symbol String,"));
+        assert_eq!(
+            baseline_table_name("binance-futures", 5_000),
+            "baseline_binance_futures_5s"
+        );
+    }
+
+    #[test]
+    fn row_binary_preserves_standard_message_order() {
+        let values: Vec<f64> = (0..BASELINE_VALUE_COUNT)
+            .map(|index| index as f64)
+            .collect();
+        let message = TradeFlowFeatureMsg::from_indexed_values(
+            "BTCUSDT".to_string(),
+            TradingVenue::BinanceFutures.to_u8(),
+            1_700_000_000_005,
+            &values,
+        )
+        .expect("message");
+        let mut row = Vec::new();
+        append_clickhouse_row_binary(&mut row, &message).expect("row binary");
+
+        assert_eq!(i64::from_le_bytes(row[..8].try_into().unwrap()), message.ts);
+        assert_eq!(row[8], message.symbol.len() as u8);
+        assert_eq!(&row[9..16], b"BTCUSDT");
+        assert_eq!(f64::from_le_bytes(row[16..24].try_into().unwrap()), 0.0);
+        let last_offset = 16 + (BASELINE_VALUE_COUNT - 1) * 8;
+        assert_eq!(
+            f64::from_le_bytes(row[last_offset..last_offset + 8].try_into().unwrap()),
+            (BASELINE_VALUE_COUNT - 1) as f64
+        );
+    }
+
+    #[test]
+    fn normalizes_and_deduplicates_parallel_symbols() {
+        let symbols = normalize_replay_symbols(&[
+            "btcusdt".to_string(),
+            " ETHUSDT ".to_string(),
+            "BTCUSDT".to_string(),
+        ])
+        .expect("symbols");
+        assert_eq!(symbols, ["BTCUSDT", "ETHUSDT"]);
+    }
+
+    #[test]
+    fn scopes_replay_ipc_services_by_symbol_then_venue() {
+        assert_eq!(
+            replay_ipc_service_name("BTCUSDT", "binance-futures", "trade"),
+            "dat_pbs/BTCUSDT/binance-futures/trade"
+        );
+        assert_eq!(
+            replay_ipc_service_name("ETHUSDT", "binance-futures", "incremental"),
+            "dat_pbs/ETHUSDT/binance-futures/incremental"
+        );
+    }
+
+    #[test]
+    fn replay_config_template_parses() {
+        let config: ReplayConfig = toml::from_str(include_str!("../../config/tardis_replay.toml"))
+            .expect("replay config template");
+        assert_eq!(config.venue, "binance-futures");
+        assert_eq!(config.symbols, ["BTCUSDT", "ETHUSDT"]);
+        assert_eq!(config.replay_workers, 2);
+        assert_eq!(config.clickhouse.database, "baseline");
     }
 }

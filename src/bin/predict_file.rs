@@ -26,6 +26,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HISTORY_SIZE: usize = 128;
 const SUBSCRIBER_BUFFER_SIZE: usize = 256;
+const IPC_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
+const ZMQ_RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
 const CSV_HEADER: &str = "timestamp_ms,prediction\n";
 const DASHBOARD_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script><style>body{margin:0;background:#f4f6f8;color:#17212b;font:14px Arial,sans-serif}header{height:52px;background:#fff;border-bottom:1px solid #d8dee5;display:flex;align-items:center;padding:0 20px;gap:16px}select{height:30px;border:1px solid #b9c5d1;background:#fff;padding:0 8px;color:#17212b}.label{color:#526170;font-size:12px}#chart{height:calc(100vh - 53px);width:100%}</style></head><body><header><span class="label">Model</span><select id="model"></select><span class="label">Symbol</span><select id="symbol"></select><span class="label" id="status"></span></header><div id="chart"></div><script>const model=document.querySelector('#model'),symbol=document.querySelector('#symbol'),status=document.querySelector('#status'),chart=echarts.init(document.querySelector('#chart'));let options={};function fill(el,items){el.replaceChildren(...items.map(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;return o}))}async function loadSeries(){if(!model.value||!symbol.value)return;const d=await(await fetch(`/api/series?model=${encodeURIComponent(model.value)}&symbol=${encodeURIComponent(symbol.value)}`)).json(),p=d.points||[];chart.setOption({animation:false,grid:{left:64,right:72,top:28,bottom:42},tooltip:{trigger:'axis'},xAxis:{type:'time'},yAxis:[{type:'value',name:'Model'},{type:'value',name:'Mid',position:'right',scale:true}],series:[{name:'Model',type:'line',showSymbol:false,data:p.map(x=>[x.timestamp_ms,x.value]),lineStyle:{width:1.5,color:'#1769aa'}},{name:'Mid',type:'line',yAxisIndex:1,showSymbol:false,connectNulls:false,data:p.map(x=>[x.timestamp_ms,x.mid_price]),lineStyle:{width:1.2,color:'#c55a11'}}]});status.textContent=`${p.length} points`}async function loadOptions(){const d=await(await fetch('/api/options')).json();options=d.symbols||{};fill(model,d.models||[]);fill(symbol,options[model.value]||[]);await loadSeries()}model.addEventListener('change',async()=>{fill(symbol,options[model.value]||[]);await loadSeries()});symbol.addEventListener('change',loadSeries);window.addEventListener('resize',()=>chart.resize());loadOptions();setInterval(loadSeries,5000);</script></body></html>"#;
 
@@ -191,6 +193,83 @@ enum SubscriberKind {
     },
 }
 
+enum SubscriberConfig {
+    Ipc {
+        service_name: String,
+        max_subscribers: usize,
+    },
+    Zmq {
+        endpoint: String,
+        topic_prefix: String,
+    },
+}
+
+impl SubscriberConfig {
+    fn reconnect_interval(&self) -> Duration {
+        match self {
+            Self::Ipc { .. } => IPC_RECONNECT_INTERVAL,
+            Self::Zmq { .. } => ZMQ_RECONNECT_INTERVAL,
+        }
+    }
+
+    fn connect(&self, node: &Node<ipc::Service>, model_name: &str) -> Result<SubscriberKind> {
+        match self {
+            Self::Ipc {
+                service_name,
+                max_subscribers,
+            } => {
+                let service = node
+                    .service_builder(&ServiceName::new(service_name)?)
+                    .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
+                    .max_publishers(1)
+                    .max_subscribers(*max_subscribers)
+                    .history_size(HISTORY_SIZE)
+                    .subscriber_max_buffer_size(SUBSCRIBER_BUFFER_SIZE)
+                    .open_or_create()
+                    .with_context(|| format!("open IPC service {service_name}"))?;
+                let subscriber = service
+                    .subscriber_builder()
+                    .buffer_size(SUBSCRIBER_BUFFER_SIZE)
+                    .create()
+                    .with_context(|| format!("create IPC subscriber {service_name}"))?;
+                log::info!(
+                    "predict_file subscribe model={model_name} source=ipc service={service_name}"
+                );
+                Ok(SubscriberKind::Ipc(subscriber))
+            }
+            Self::Zmq {
+                endpoint,
+                topic_prefix,
+            } => {
+                let context = zmq::Context::new();
+                let socket = context.socket(zmq::SUB).context("create ZMQ SUB socket")?;
+                socket.set_linger(0).context("set ZMQ linger")?;
+                socket
+                    .set_rcvhwm(SUBSCRIBER_BUFFER_SIZE as i32)
+                    .context("set ZMQ receive HWM")?;
+                socket
+                    .set_reconnect_ivl(ZMQ_RECONNECT_INTERVAL.as_millis() as i32)
+                    .context("set ZMQ reconnect interval")?;
+                socket
+                    .set_subscribe(topic_prefix.as_bytes())
+                    .with_context(|| format!("subscribe ZMQ topic {topic_prefix:?}"))?;
+                socket
+                    .connect(endpoint)
+                    .with_context(|| format!("connect ZMQ endpoint {endpoint}"))?;
+                log::info!(
+                    "predict_file subscribe model={model_name} source=zmq endpoint={endpoint} topic={topic_prefix:?} reconnect_interval_secs={}",
+                    ZMQ_RECONNECT_INTERVAL.as_secs()
+                );
+                Ok(SubscriberKind::Zmq {
+                    _context: context,
+                    socket,
+                    topic_prefix: topic_prefix.clone(),
+                })
+            }
+        }
+    }
+}
+
 impl SubscriberKind {
     fn try_receive(&self) -> Result<Option<ModelMsg>> {
         match self {
@@ -234,12 +313,53 @@ impl SubscriberKind {
 
 struct Source {
     model_name: String,
-    subscriber: SubscriberKind,
+    subscription: SubscriberConfig,
+    subscriber: Option<SubscriberKind>,
+    reconnect_at: Option<Instant>,
     interval: Duration,
     last_written: HashMap<String, Instant>,
     received: u64,
     persisted: u64,
     skipped: u64,
+}
+
+impl Source {
+    fn reconnect_if_due(&mut self, node: &Node<ipc::Service>) {
+        if self
+            .reconnect_at
+            .is_some_and(|reconnect_at| Instant::now() < reconnect_at)
+        {
+            return;
+        }
+
+        let reconnect_interval = self.subscription.reconnect_interval();
+        match self.subscription.connect(node, &self.model_name) {
+            Ok(subscriber) => {
+                self.subscriber = Some(subscriber);
+                self.reconnect_at = None;
+                log::info!("predict_file reconnected model={}", self.model_name);
+            }
+            Err(err) => {
+                self.reconnect_at = Some(Instant::now() + reconnect_interval);
+                log::warn!(
+                    "predict_file reconnect failed model={}, retry_in_secs={}: {err:#}",
+                    self.model_name,
+                    reconnect_interval.as_secs()
+                );
+            }
+        }
+    }
+
+    fn schedule_reconnect(&mut self, err: &anyhow::Error) {
+        let reconnect_interval = self.subscription.reconnect_interval();
+        self.subscriber = None;
+        self.reconnect_at = Some(Instant::now() + reconnect_interval);
+        log::warn!(
+            "predict_file receive error model={}, reconnect_in_secs={}: {err:#}",
+            self.model_name,
+            reconnect_interval.as_secs()
+        );
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -499,16 +619,22 @@ fn main() -> Result<()> {
         }
 
         for source in &mut sources {
+            if source.subscriber.is_none() {
+                source.reconnect_if_due(&node);
+                continue;
+            }
             for _ in 0..cfg.max_drain_per_source {
-                let msg = match source.subscriber.try_receive() {
+                let received_msg = source
+                    .subscriber
+                    .as_ref()
+                    .expect("subscriber checked above")
+                    .try_receive();
+                let msg = match received_msg {
                     Ok(Some(msg)) => msg,
                     Ok(None) => break,
                     Err(err) => {
                         errors = errors.saturating_add(1);
-                        log::warn!(
-                            "predict_file receive error model={}: {err:#}",
-                            source.model_name
-                        );
+                        source.schedule_reconnect(&err);
                         break;
                     }
                 };
@@ -595,48 +721,41 @@ fn poll_mid_prices(
 }
 
 fn build_sources(node: &Node<ipc::Service>, cfg: &Config) -> Result<Vec<Source>> {
-    cfg.models.iter().map(|model| {
-        let model_name = model.model_name.trim().to_string();
-        let subscriber = match model.source.trim().to_ascii_lowercase().as_str() {
-            "ipc" => {
-                let service_name = normalize_service(model.service.as_deref()).expect("validated IPC service");
-                let service = node
-                    .service_builder(&ServiceName::new(&service_name)?)
-                    .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
-                    .max_publishers(1)
-                    .max_subscribers(model.max_subscribers)
-                    .history_size(HISTORY_SIZE)
-                    .subscriber_max_buffer_size(SUBSCRIBER_BUFFER_SIZE)
-                    .open_or_create()
-                    .with_context(|| format!("open IPC service {service_name}"))?;
-                let subscriber = service.subscriber_builder().buffer_size(SUBSCRIBER_BUFFER_SIZE).create()
-                    .with_context(|| format!("create IPC subscriber {service_name}"))?;
-                log::info!("predict_file subscribe model={model_name} source=ipc service={service_name}");
-                SubscriberKind::Ipc(subscriber)
-            }
-            "zmq" => {
-                let endpoint = model.endpoint.as_deref().expect("validated ZMQ endpoint").trim();
-                let context = zmq::Context::new();
-                let socket = context.socket(zmq::SUB).context("create ZMQ SUB socket")?;
-                socket.set_linger(0).context("set ZMQ linger")?;
-                socket.set_rcvhwm(SUBSCRIBER_BUFFER_SIZE as i32).context("set ZMQ receive HWM")?;
-                socket.set_subscribe(model.topic.as_bytes()).with_context(|| format!("subscribe ZMQ topic {:?}", model.topic))?;
-                socket.connect(endpoint).with_context(|| format!("connect ZMQ endpoint {endpoint}"))?;
-                log::info!("predict_file subscribe model={model_name} source=zmq endpoint={endpoint} topic={:?}", model.topic);
-                SubscriberKind::Zmq { _context: context, socket, topic_prefix: model.topic.clone() }
-            }
-            _ => unreachable!("validated source"),
-        };
-        Ok(Source {
-            model_name,
-            subscriber,
-            interval: Duration::from_millis(model.interval_ms),
-            last_written: HashMap::new(),
-            received: 0,
-            persisted: 0,
-            skipped: 0,
+    cfg.models
+        .iter()
+        .map(|model| {
+            let model_name = model.model_name.trim().to_string();
+            let subscription = match model.source.trim().to_ascii_lowercase().as_str() {
+                "ipc" => SubscriberConfig::Ipc {
+                    service_name: normalize_service(model.service.as_deref())
+                        .expect("validated IPC service"),
+                    max_subscribers: model.max_subscribers,
+                },
+                "zmq" => SubscriberConfig::Zmq {
+                    endpoint: model
+                        .endpoint
+                        .as_deref()
+                        .expect("validated ZMQ endpoint")
+                        .trim()
+                        .to_string(),
+                    topic_prefix: model.topic.clone(),
+                },
+                _ => unreachable!("validated source"),
+            };
+            let subscriber = subscription.connect(node, &model_name)?;
+            Ok(Source {
+                model_name,
+                subscription,
+                subscriber: Some(subscriber),
+                reconnect_at: None,
+                interval: Duration::from_millis(model.interval_ms),
+                last_written: HashMap::new(),
+                received: 0,
+                persisted: 0,
+                skipped: 0,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 struct CsvWriter {

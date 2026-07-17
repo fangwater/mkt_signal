@@ -1,0 +1,23 @@
+# Tardis replay root. It contains trades/ and incremental_book_L2/;
+# individual symbol files are discovered beneath those shared directories.
+data_dir = "/mnt/Data/tardis/binance-futures"
+venue = "binance-futures"
+symbols = ["BTCUSDT", "ETHUSDT"]
+
+# Omit either bound to replay every discovered date on that side.
+# start_date = "2025-01-01"
+# end_date = "2025-01-31"
+
+# One Rayon worker processes one symbol's full date range.
+replay_workers = 2
+# Set false for ClickHouse-only backfills. This avoids IPC publisher backpressure
+# when no replay consumer is attached.
+publish_ipc = true
+
+# Baseline aggregation and ClickHouse persistence are always enabled.
+[clickhouse]
+url = "http://127.0.0.1:18123"
+database = "baseline"
+batch_rows = 10000
+flush_ms = 1000
+queue_capacity = 100000
