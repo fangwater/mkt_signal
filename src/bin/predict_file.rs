@@ -28,7 +28,7 @@ const HISTORY_SIZE: usize = 128;
 const SUBSCRIBER_BUFFER_SIZE: usize = 256;
 const IPC_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const ZMQ_RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
-const CSV_HEADER: &str = "timestamp_ms,prediction\n";
+const CSV_HEADER: &str = "timestamp_ms,prediction,mid_price\n";
 const DASHBOARD_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script><style>body{margin:0;background:#f4f6f8;color:#17212b;font:14px Arial,sans-serif}header{height:52px;background:#fff;border-bottom:1px solid #d8dee5;display:flex;align-items:center;padding:0 20px;gap:16px}select{height:30px;border:1px solid #b9c5d1;background:#fff;padding:0 8px;color:#17212b}.label{color:#526170;font-size:12px}#chart{height:calc(100vh - 53px);width:100%}</style></head><body><header><span class="label">Model</span><select id="model"></select><span class="label">Symbol</span><select id="symbol"></select><span class="label" id="status"></span></header><div id="chart"></div><script>const model=document.querySelector('#model'),symbol=document.querySelector('#symbol'),status=document.querySelector('#status'),chart=echarts.init(document.querySelector('#chart'));let options={};function fill(el,items){el.replaceChildren(...items.map(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;return o}))}async function loadSeries(){if(!model.value||!symbol.value)return;const d=await(await fetch(`/api/series?model=${encodeURIComponent(model.value)}&symbol=${encodeURIComponent(symbol.value)}`)).json(),p=d.points||[];chart.setOption({animation:false,grid:{left:64,right:72,top:28,bottom:42},tooltip:{trigger:'axis'},xAxis:{type:'time'},yAxis:[{type:'value',name:'Model'},{type:'value',name:'Mid',position:'right',scale:true}],series:[{name:'Model',type:'line',showSymbol:false,data:p.map(x=>[x.timestamp_ms,x.value]),lineStyle:{width:1.5,color:'#1769aa'}},{name:'Mid',type:'line',yAxisIndex:1,showSymbol:false,connectNulls:false,data:p.map(x=>[x.timestamp_ms,x.mid_price]),lineStyle:{width:1.2,color:'#c55a11'}}]});status.textContent=`${p.length} points`}async function loadOptions(){const d=await(await fetch('/api/options')).json();options=d.symbols||{};fill(model,d.models||[]);fill(symbol,options[model.value]||[]);await loadSeries()}model.addEventListener('change',async()=>{fill(symbol,options[model.value]||[]);await loadSeries()});symbol.addEventListener('change',loadSeries);window.addEventListener('resize',()=>chart.resize());loadOptions();setInterval(loadSeries,5000);</script></body></html>"#;
 
 const BINANCE_FUTURES_VENUE: &str = "binance-futures";
@@ -82,6 +82,7 @@ impl Default for Config {
 struct ModelConfig {
     #[serde(alias = "name")]
     model_name: String,
+    group: String,
     source: String,
     service: Option<String>,
     endpoint: Option<String>,
@@ -94,6 +95,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             model_name: String::new(),
+            group: String::new(),
             source: "ipc".to_string(),
             service: None,
             endpoint: None,
@@ -147,6 +149,13 @@ impl Config {
             if name.is_empty() || safe_component(name).is_empty() || !names.insert(name) {
                 bail!(
                     "config {} has an empty, unsafe, or duplicate model_name: {name:?}",
+                    path.display()
+                );
+            }
+            let group = model.group.trim();
+            if group.is_empty() || safe_component(group).is_empty() {
+                bail!(
+                    "config {} model {name} requires a non-empty, safe group",
                     path.display()
                 );
             }
@@ -313,6 +322,7 @@ impl SubscriberKind {
 
 struct Source {
     model_name: String,
+    group: String,
     subscription: SubscriberConfig,
     subscriber: Option<SubscriberKind>,
     reconnect_at: Option<Instant>,
@@ -392,7 +402,7 @@ impl CacheStore {
         }
     }
 
-    fn record(&mut self, model: &str, symbol: &str, timestamp_ms: i64, value: f64) {
+    fn record(&mut self, model: &str, symbol: &str, timestamp_ms: i64, value: f64) -> Option<f64> {
         self.tracked_symbols.insert(symbol.to_string());
         let cutoff = now_ms().saturating_sub(self.ttl_ms);
         let mid_price = self
@@ -408,6 +418,7 @@ impl CacheStore {
                 value,
                 mid_price,
             });
+        mid_price
     }
 
     fn observe_mid(&mut self, symbol: &str, timestamp_ms: i64, bid: f64, ask: f64) {
@@ -657,16 +668,24 @@ fn main() -> Result<()> {
                 } else {
                     Utc::now().timestamp_millis()
                 };
-                writer.write(&symbol, &source.model_name, timestamp_ms, msg.score)?;
+                let mid_price =
+                    cache
+                        .write()
+                        .record(&source.model_name, &symbol, timestamp_ms, msg.score);
+                writer.write(
+                    &source.group,
+                    &symbol,
+                    &source.model_name,
+                    timestamp_ms,
+                    msg.score,
+                    mid_price,
+                )?;
                 persisted = persisted.saturating_add(1);
                 source.persisted = source.persisted.saturating_add(1);
                 if cfg.flush_every > 0 && writer.pending_rows >= cfg.flush_every {
                     writer.flush()?;
                     last_flush = Instant::now();
                 }
-                cache
-                    .write()
-                    .record(&source.model_name, &symbol, timestamp_ms, msg.score);
             }
         }
         if last_flush.elapsed() >= Duration::from_millis(cfg.flush_interval_ms) {
@@ -725,6 +744,7 @@ fn build_sources(node: &Node<ipc::Service>, cfg: &Config) -> Result<Vec<Source>>
         .iter()
         .map(|model| {
             let model_name = model.model_name.trim().to_string();
+            let group = model.group.trim().to_string();
             let subscription = match model.source.trim().to_ascii_lowercase().as_str() {
                 "ipc" => SubscriberConfig::Ipc {
                     service_name: normalize_service(model.service.as_deref())
@@ -745,6 +765,7 @@ fn build_sources(node: &Node<ipc::Service>, cfg: &Config) -> Result<Vec<Source>>
             let subscriber = subscription.connect(node, &model_name)?;
             Ok(Source {
                 model_name,
+                group,
                 subscription,
                 subscriber: Some(subscriber),
                 reconnect_at: None,
@@ -766,6 +787,7 @@ struct CsvWriter {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FileKey {
+    group: String,
     symbol: String,
     date: String,
     model_name: String,
@@ -782,10 +804,12 @@ impl CsvWriter {
 
     fn write(
         &mut self,
+        group: &str,
         symbol: &str,
         model_name: &str,
         timestamp_ms: i64,
         prediction: f64,
+        mid_price: Option<f64>,
     ) -> Result<()> {
         let date = Utc
             .timestamp_millis_opt(timestamp_ms)
@@ -794,6 +818,7 @@ impl CsvWriter {
             .format("%Y-%m-%d")
             .to_string();
         let key = FileKey {
+            group: safe_component(group),
             symbol: safe_component(symbol),
             date,
             model_name: safe_component(model_name),
@@ -815,10 +840,11 @@ impl CsvWriter {
             log::info!("predict_file writing {}", path.display());
             self.writers.insert(key.clone(), writer);
         }
-        writeln!(
-            self.writers.get_mut(&key).expect("writer inserted"),
-            "{timestamp_ms},{prediction}"
-        )?;
+        let writer = self.writers.get_mut(&key).expect("writer inserted");
+        match mid_price {
+            Some(mid_price) => writeln!(writer, "{timestamp_ms},{prediction},{mid_price}")?,
+            None => writeln!(writer, "{timestamp_ms},{prediction},")?,
+        }
         self.pending_rows = self.pending_rows.saturating_add(1);
         Ok(())
     }
@@ -833,6 +859,7 @@ impl CsvWriter {
 
     fn path(&self, key: &FileKey) -> PathBuf {
         self.out_dir
+            .join(&key.group)
             .join(&key.symbol)
             .join("data")
             .join(&key.date)
@@ -872,8 +899,8 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_service, safe_component, Config};
-    use std::path::Path;
+    use super::{normalize_service, now_ms, safe_component, Config, CsvWriter};
+    use std::{fs, path::Path};
 
     #[test]
     fn normalizes_bare_ipc_service() {
@@ -892,6 +919,50 @@ mod tests {
     fn rejects_config_without_models() {
         let cfg: Config = toml::from_str("instance = 'test'").unwrap();
         assert!(cfg.validate(Path::new("test.toml")).is_err());
+    }
+
+    #[test]
+    fn csv_writer_groups_by_group_and_writes_mid_price() {
+        let out_dir = std::env::temp_dir().join(format!(
+            "predict_file_test_{}_{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let mut writer = CsvWriter::new(out_dir.clone());
+        let timestamp_ms = 1_704_067_200_000;
+        writer
+            .write(
+                "rpan",
+                "BTCUSDT",
+                "predict_rnn_layer",
+                timestamp_ms,
+                0.25,
+                Some(101.5),
+            )
+            .unwrap();
+        writer
+            .write(
+                "rpan",
+                "BTCUSDT",
+                "predict_rnn_layer",
+                timestamp_ms + 1,
+                0.5,
+                None,
+            )
+            .unwrap();
+        writer.flush().unwrap();
+
+        let path = out_dir
+            .join("rpan")
+            .join("BTCUSDT")
+            .join("data")
+            .join("2024-01-01")
+            .join("predict_rnn_layer.csv");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "timestamp_ms,prediction,mid_price\n1704067200000,0.25,101.5\n1704067200001,0.5,\n"
+        );
+        fs::remove_dir_all(out_dir).unwrap();
     }
 }
 #[test]

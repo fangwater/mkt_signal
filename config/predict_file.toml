@@ -1,5 +1,5 @@
-# Each model writes <out_dir>/<symbol>/data/<UTC YYYY-MM-DD>/<model_name>.csv.
-# CSV columns are exactly: timestamp_ms,prediction
+# Each model writes <out_dir>/<group>/<symbol>/data/<UTC YYYY-MM-DD>/<model_name>.csv.
+# CSV columns are exactly: timestamp_ms,prediction,mid_price
 instance = "local"
 out_dir = "predict_file"
 flush_every = 256
@@ -24,6 +24,7 @@ rust_log = "info"
 # Tree model from Iceoryx. A bare service name automatically gets model_output/.
 [[models]]
 model_name = "binance_futures_direction_model"
+group = "guoqi"
 source = "ipc"
 service = "model_output/binance_futures_direction_model"
 interval_ms = 1000
@@ -31,6 +32,7 @@ interval_ms = 1000
 # NN model from ZeroMQ. Uncomment and set the real endpoint/model name.
 # [[models]]
 # model_name = "taker_decision_nn"
+# group = "rpan"
 # source = "zmq"
 # endpoint = "ipc:///tmp/predict_rnn_layer.ipc"
 # topic = "model_output/"
