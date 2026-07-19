@@ -428,6 +428,65 @@ impl MarketMakerHedgeStrategy {
         self.handle_mm_hedge_ctx_with_symbol(ctx, symbol);
     }
 
+    fn next_hedge_order_id(&mut self) -> i64 {
+        if self.order_seq == u32::MAX {
+            self.order_seq = 1;
+        } else {
+            self.order_seq += 1;
+            if self.order_seq == 0 {
+                self.order_seq = 1;
+            }
+        }
+        Self::compose_order_id(self.strategy_id, self.order_seq)
+    }
+
+    fn prepare_hedge_plan(&mut self, ctx: &MmHedgeCtx, split_orders: Vec<HedgeSplitOrder>) {
+        self.hedge_plan.clear();
+        self.hedge_order_meta.clear();
+
+        let weighted_inventory_price = self.weighted_inventory_price();
+        for HedgeSplitOrder {
+            level_index,
+            side,
+            price,
+            qty,
+        } in split_orders
+        {
+            let client_order_id = self.next_hedge_order_id();
+            let (order_type, order_price, order_from_key, price_offset) = if ctx.use_taker {
+                (
+                    OrderType::Market,
+                    weighted_inventory_price,
+                    ctx.from_key.clone(),
+                    0.0,
+                )
+            } else {
+                let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
+                let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
+                let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
+                (OrderType::Limit, price, order_from_key, price_offset)
+            };
+
+            self.hedge_order_meta.insert(
+                client_order_id,
+                HedgeOrderMeta {
+                    from_key: order_from_key.clone(),
+                    price_offset,
+                },
+            );
+            self.hedge_plan.push(HedgePlanOrder {
+                client_order_id,
+                level_index,
+                side,
+                order_type,
+                price: order_price,
+                qty,
+                from_key: order_from_key,
+                mkt_ts: ctx.opening_leg.ts,
+            });
+        }
+    }
+
     pub fn handle_mm_hedge_ctx_with_symbol(&mut self, ctx: MmHedgeCtx, symbol: String) {
         let Some(expected_request_seq) = self.pending_hedge_request_seq else {
             warn!(
@@ -593,88 +652,9 @@ impl MarketMakerHedgeStrategy {
             level_stats_json,
         );
 
-        self.hedge_plan.clear();
-        self.hedge_order_meta.clear();
         let reply_is_taker = ctx.use_taker;
         self.last_hedge_is_taker = Some(reply_is_taker);
-        if reply_is_taker {
-            if self.order_seq == u32::MAX {
-                self.order_seq = 1;
-            } else {
-                self.order_seq += 1;
-                if self.order_seq == 0 {
-                    self.order_seq = 1;
-                }
-            }
-            let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
-            let total_qty = split.orders.iter().map(|order| order.qty).sum::<f64>();
-            let side = split
-                .orders
-                .first()
-                .map(|order| order.side)
-                .unwrap_or_else(|| {
-                    if net_qty >= 0.0 {
-                        Side::Sell
-                    } else {
-                        Side::Buy
-                    }
-                });
-            self.hedge_order_meta.insert(
-                client_order_id,
-                HedgeOrderMeta {
-                    from_key: ctx.from_key.clone(),
-                    price_offset: 0.0,
-                },
-            );
-            self.hedge_plan.push(HedgePlanOrder {
-                client_order_id,
-                level_index: 0,
-                side,
-                order_type: OrderType::Market,
-                price: self.weighted_inventory_price(),
-                qty: total_qty,
-                from_key: ctx.from_key.clone(),
-                mkt_ts: ctx.opening_leg.ts,
-            });
-        } else {
-            for HedgeSplitOrder {
-                level_index,
-                side,
-                price,
-                qty,
-            } in split.orders
-            {
-                if self.order_seq == u32::MAX {
-                    self.order_seq = 1;
-                } else {
-                    self.order_seq += 1;
-                    if self.order_seq == 0 {
-                        self.order_seq = 1;
-                    }
-                }
-                let client_order_id = Self::compose_order_id(self.strategy_id, self.order_seq);
-                let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
-                let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
-                let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
-                self.hedge_order_meta.insert(
-                    client_order_id,
-                    HedgeOrderMeta {
-                        from_key: order_from_key.clone(),
-                        price_offset,
-                    },
-                );
-                self.hedge_plan.push(HedgePlanOrder {
-                    client_order_id,
-                    level_index,
-                    side,
-                    order_type: OrderType::Limit,
-                    price,
-                    qty,
-                    from_key: order_from_key,
-                    mkt_ts: ctx.opening_leg.ts,
-                });
-            }
-        }
+        self.prepare_hedge_plan(&ctx, split.orders);
 
         let mut table = String::new();
         table.push_str(
@@ -1657,8 +1637,10 @@ mod tests {
     };
     use crate::strategy::hedge_strategy_common::{mark_price_lookup_symbol, NET_EXPOSURE_EPS_USDT};
     use crate::strategy::order_reconcile::{monotonic_cumulative_fill, PendingOrderQueryReason};
-    use order_common::Side;
+    use order_common::{OrderType, Side};
+    use quote_plan::hedge_split::HedgeSplitOrder;
     use runtime_common::exchange::Exchange;
+    use signal_common::hedge_signal::MmHedgeCtx;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {
@@ -1813,6 +1795,61 @@ mod tests {
         assert_eq!(strategy.net_qty_queue.net_qty(), -5.0);
         assert_eq!(strategy.net_qty_queue.len(), 1);
         assert_eq!(strategy.weighted_inventory_price(), 2500.0);
+
+        std::mem::forget(strategy);
+    }
+
+    #[test]
+    fn taker_hedge_plan_preserves_trade_signal_splits() {
+        let mut strategy = MarketMakerHedgeStrategy::new(17, "BANKUSDT".to_string());
+        let mut ctx = MmHedgeCtx::new();
+        ctx.use_taker = true;
+        ctx.from_key = b"mm_hedge".to_vec();
+        ctx.opening_leg.ts = 123_456;
+        let split_orders = vec![
+            HedgeSplitOrder {
+                level_index: 0,
+                side: Side::Buy,
+                price: 0.2038,
+                qty: 20.0,
+            },
+            HedgeSplitOrder {
+                level_index: 1,
+                side: Side::Buy,
+                price: 0.2039,
+                qty: 20.0,
+            },
+            HedgeSplitOrder {
+                level_index: 2,
+                side: Side::Buy,
+                price: 0.2040,
+                qty: 15.0,
+            },
+        ];
+
+        strategy.prepare_hedge_plan(&ctx, split_orders);
+
+        assert_eq!(strategy.hedge_plan.len(), 3);
+        assert_eq!(
+            strategy
+                .hedge_plan
+                .iter()
+                .map(|order| order.qty)
+                .collect::<Vec<_>>(),
+            vec![20.0, 20.0, 15.0]
+        );
+        assert!(strategy
+            .hedge_plan
+            .iter()
+            .all(|order| order.order_type == OrderType::Market));
+        assert!(strategy
+            .hedge_plan
+            .windows(2)
+            .all(|orders| orders[0].client_order_id != orders[1].client_order_id));
+        assert!(strategy
+            .hedge_order_meta
+            .values()
+            .all(|meta| meta.price_offset == 0.0 && meta.from_key == b"mm_hedge"));
 
         std::mem::forget(strategy);
     }
