@@ -106,6 +106,12 @@ struct DepthReplayTask {
     end_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+struct DepthReplaySymbol {
+    symbol: String,
+    days: Vec<DepthReplayTask>,
+}
+
 impl Default for ClickHouseConfig {
     fn default() -> Self {
         Self {
@@ -958,27 +964,20 @@ fn replay_staging(
         },
         config.clickhouse.queue_capacity,
     )?;
-    let kll_writer = config
+    let kll_config = config
         .write_hourly_notional_kll
-        .then(|| {
-            StageClickHouseWriter::start(
-                ClickHouseWriterConfig {
-                    url: config.clickhouse.url.clone(),
-                    database: config.clickhouse.database.clone(),
-                    table: kll_table,
-                    batch_rows: config.clickhouse.batch_rows,
-                    flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-                },
-                config.clickhouse.queue_capacity,
-            )
-        })
-        .transpose()?;
+        .then(|| ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: kll_table,
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        });
     let trade_sender = trade_writer.sender();
     let depth_sender = depth_writer.sender();
-    let kll_sender = kll_writer.as_ref().map(StageClickHouseWriter::sender);
-    let depth_tasks = build_depth_tasks(config, venue_slug, symbols)?;
+    let depth_symbols = build_depth_tasks(config, venue_slug, symbols)?;
     let workers = config.replay_workers.min(symbols.len()).max(1);
-    info!("Starting split Tardis staging replay: venue={} trade_symbols={} depth_day_tasks={} trade_workers={} depth_workers={}", venue_slug, symbols.len(), depth_tasks.len(), workers, workers);
+    info!("Starting split Tardis staging replay: venue={} symbols={} trade_workers={} depth_workers={}", venue_slug, symbols.len(), workers, workers);
     let trade_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
         .build()
@@ -997,15 +996,15 @@ fn replay_staging(
                         venue_slug,
                         symbol,
                         &trade_sender,
-                        kll_sender.as_ref(),
+                        kll_config.as_ref(),
                     )
                 })
             })
         });
         let depth_result = depth_pool.install(|| {
-            depth_tasks
+            depth_symbols
                 .par_iter()
-                .try_for_each(|task| replay_depth_stage_day(task, &depth_sender))
+                .try_for_each(|symbol| replay_depth_stage_symbol(symbol, &depth_sender))
         });
         let trade_result = trade_handle
             .join()
@@ -1014,12 +1013,10 @@ fn replay_staging(
     });
     drop(trade_sender);
     drop(depth_sender);
-    drop(kll_sender);
     let trade_stats = trade_writer.finish()?;
     let depth_stats = depth_writer.finish()?;
-    let kll_stats = kll_writer.map(StageClickHouseWriter::finish).transpose()?;
     result?;
-    info!("Tardis staging replay complete: trade_rows={} depth_rows={} kll_rows={} trade_batches={} depth_batches={}", trade_stats.inserted_rows, depth_stats.inserted_rows, kll_stats.as_ref().map_or(0, |stats| stats.inserted_rows), trade_stats.inserted_batches, depth_stats.inserted_batches);
+    info!("Tardis staging replay complete: trade_rows={} depth_rows={} trade_batches={} depth_batches={}", trade_stats.inserted_rows, depth_stats.inserted_rows, trade_stats.inserted_batches, depth_stats.inserted_batches);
     Ok(())
 }
 
@@ -1029,7 +1026,7 @@ fn replay_trade_stage_symbol(
     venue_slug: &str,
     symbol: &str,
     sender: &Sender<Bytes>,
-    kll_sender: Option<&Sender<Bytes>>,
+    kll_config: Option<&ClickHouseWriterConfig>,
 ) -> Result<()> {
     let data_dir = replay_data_dir(config, symbol)?;
     let mut reader = TradeEventReader {
@@ -1046,6 +1043,7 @@ fn replay_trade_stage_symbol(
     let mut hourly_kll = config
         .write_hourly_notional_kll
         .then(HourlyNotionalKll::new);
+    let mut kll_rows = Vec::new();
     let mut rows = 0u64;
     while let Some(row) = reader.next_event()? {
         for bar in aggregator.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount) {
@@ -1060,7 +1058,7 @@ fn replay_trade_stage_symbol(
         }
         if let Some(kll) = hourly_kll.as_mut() {
             if let Some(snapshot) = kll.on_trade(row.timestamp_us, row.price, row.amount) {
-                enqueue_hourly_kll(&snapshot, symbol, venue.to_u8(), kll_sender)?;
+                kll_rows.push(encode_hourly_kll(&snapshot, symbol, venue.to_u8())?);
             }
         }
     }
@@ -1076,8 +1074,13 @@ fn replay_trade_stage_symbol(
     }
     if let Some(kll) = hourly_kll.as_mut() {
         if let Some(snapshot) = kll.flush() {
-            enqueue_hourly_kll(&snapshot, symbol, venue.to_u8(), kll_sender)?;
+            kll_rows.push(encode_hourly_kll(&snapshot, symbol, venue.to_u8())?);
         }
+    }
+    if let Some(kll_config) = kll_config {
+        let client = clickhouse_http_client()?;
+        let mut stats = ClickHouseWriterStats::default();
+        flush_stage_clickhouse_batch(&client, kll_config, &mut kll_rows, &mut stats)?;
     }
     info!(
         "Tardis trade staging complete: symbol={} rows={}",
@@ -1086,13 +1089,11 @@ fn replay_trade_stage_symbol(
     Ok(())
 }
 
-fn enqueue_hourly_kll(
+fn encode_hourly_kll(
     snapshot: &HourlyNotionalKllSnapshot,
     symbol: &str,
     venue: u8,
-    sender: Option<&Sender<Bytes>>,
-) -> Result<()> {
-    let sender = sender.context("KLL writer is disabled")?;
+) -> Result<Bytes> {
     let payload = TradeNotionalKllMsg {
         symbol: symbol.to_string(),
         venue,
@@ -1109,9 +1110,14 @@ fn enqueue_hourly_kll(
     row.extend_from_slice(&(snapshot.sketch.level_capacity as u32).to_le_bytes());
     append_var_uint(&mut row, payload.len() as u64);
     row.extend_from_slice(&payload);
-    sender
-        .send(Bytes::from(row))
-        .map_err(|_| anyhow!("KLL staging writer stopped"))
+    Ok(Bytes::from(row))
+}
+
+fn replay_depth_stage_symbol(symbol: &DepthReplaySymbol, sender: &Sender<Bytes>) -> Result<()> {
+    for task in &symbol.days {
+        replay_depth_stage_day(task, sender)?;
+    }
+    Ok(())
 }
 
 fn replay_depth_stage_day(task: &DepthReplayTask, sender: &Sender<Bytes>) -> Result<()> {
@@ -1147,9 +1153,10 @@ fn build_depth_tasks(
     config: &ReplayConfig,
     venue_slug: &str,
     symbols: &[String],
-) -> Result<Vec<DepthReplayTask>> {
-    let mut tasks = Vec::new();
+) -> Result<Vec<DepthReplaySymbol>> {
+    let mut symbols_tasks = Vec::with_capacity(symbols.len());
     for symbol in symbols {
+        let mut days = Vec::new();
         let data_dir = replay_data_dir(config, symbol)?;
         for path in discover_files(
             data_dir,
@@ -1171,15 +1178,19 @@ fn build_depth_tasks(
                 Utc,
             )
             .timestamp_millis();
-            tasks.push(DepthReplayTask {
+            days.push(DepthReplayTask {
                 symbol: symbol.clone(),
                 path,
                 start_ms,
                 end_ms: start_ms + 86_400_000,
             });
         }
+        symbols_tasks.push(DepthReplaySymbol {
+            symbol: symbol.clone(),
+            days,
+        });
     }
-    Ok(tasks)
+    Ok(symbols_tasks)
 }
 
 fn encode_stage_row(ts_ms: i64, symbol: &str, values: &[f64]) -> Bytes {

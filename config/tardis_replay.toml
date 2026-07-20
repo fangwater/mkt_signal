@@ -19,8 +19,9 @@ symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
 start_date = "2026-06-15"
 end_date = "2026-07-15"
 
-# Four workers aggregate the four trade streams, while a second four-worker pool
-# schedules independent (symbol, day) L2 reconstruction tasks.
+# Four workers aggregate the four continuous trade streams. A second four-worker
+# pool reconstructs each symbol's daily L2 files sequentially. Together with
+# the trade/depth writers this uses 2 * symbol_count + 2 threads.
 replay_workers = 4
 # This replay writes ClickHouse staging tables only. IPC publication is handled
 # by a separate future publisher.
