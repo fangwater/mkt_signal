@@ -31,7 +31,7 @@ use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TRADE_PAYLOAD_BYTES: usize = 128;
 const INCREMENTAL_PAYLOAD_BYTES: usize = 2048;
@@ -1052,6 +1052,19 @@ fn replay_trade_stage_symbol(
         .then(HourlyNotionalKll::new);
     let mut kll_rows = Vec::new();
     let mut rows = 0u64;
+    let mut source_events = 0u64;
+    let mut last_progress_files = 0usize;
+    let started = Instant::now();
+    let (_, total_files) = reader.records.file_progress();
+    log_stage_progress(
+        "trade",
+        symbol,
+        0,
+        total_files,
+        source_events,
+        rows,
+        started.elapsed(),
+    );
     while let Some(row) = reader.next_event()? {
         for bar in aggregator.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount) {
             sender
@@ -1067,6 +1080,20 @@ fn replay_trade_stage_symbol(
             if let Some(snapshot) = kll.on_trade(row.timestamp_us, row.price, row.amount) {
                 kll_rows.push(encode_hourly_kll(&snapshot, symbol, venue.to_u8())?);
             }
+        }
+        source_events += 1;
+        let (files_done, _) = reader.records.file_progress();
+        if files_done != last_progress_files || source_events % PROGRESS_LOG_EVENTS == 0 {
+            log_stage_progress(
+                "trade",
+                symbol,
+                files_done,
+                total_files,
+                source_events,
+                rows,
+                started.elapsed(),
+            );
+            last_progress_files = files_done;
         }
     }
     for bar in aggregator.flush() {
@@ -1089,9 +1116,22 @@ fn replay_trade_stage_symbol(
         let mut stats = ClickHouseWriterStats::default();
         flush_stage_clickhouse_batch(&client, kll_config, &mut kll_rows, &mut stats)?;
     }
+    let (files_done, _) = reader.records.file_progress();
+    log_stage_progress(
+        "trade",
+        symbol,
+        files_done,
+        total_files,
+        source_events,
+        rows,
+        started.elapsed(),
+    );
     info!(
-        "Tardis trade staging complete: symbol={} rows={}",
-        symbol, rows
+        "Tardis trade staging complete: symbol={} source_events={} rows={} elapsed={:.2?}",
+        symbol,
+        source_events,
+        rows,
+        started.elapsed(),
     );
     Ok(())
 }
@@ -1121,39 +1161,76 @@ fn encode_hourly_kll(
 }
 
 fn replay_depth_stage_symbol(symbol: &DepthReplaySymbol, sender: &Sender<Bytes>) -> Result<()> {
-    for task in &symbol.days {
-        replay_depth_stage_day(task, sender)?;
+    let started = Instant::now();
+    let total_days = symbol.days.len();
+    let mut source_events = 0u64;
+    let mut rows = 0u64;
+    log_stage_progress(
+        "depth",
+        &symbol.symbol,
+        0,
+        total_days,
+        source_events,
+        rows,
+        started.elapsed(),
+    );
+    for (day_index, task) in symbol.days.iter().enumerate() {
+        let day_stats = replay_depth_stage_day(task, sender)?;
+        source_events += day_stats.source_events;
+        rows += day_stats.rows;
+        log_stage_progress(
+            "depth",
+            &symbol.symbol,
+            day_index + 1,
+            total_days,
+            source_events,
+            rows,
+            started.elapsed(),
+        );
     }
+    info!(
+        "Tardis depth staging complete: symbol={} source_events={} rows={} elapsed={:.2?}",
+        symbol.symbol,
+        source_events,
+        rows,
+        started.elapsed(),
+    );
     Ok(())
 }
 
-fn replay_depth_stage_day(task: &DepthReplayTask, sender: &Sender<Bytes>) -> Result<()> {
+#[derive(Default)]
+struct DepthStageStats {
+    source_events: u64,
+    rows: u64,
+}
+
+fn replay_depth_stage_day(
+    task: &DepthReplayTask,
+    sender: &Sender<Bytes>,
+) -> Result<DepthStageStats> {
     let mut reader = BookEventReader {
         records: CsvGzipReader::new(vec![task.path.clone()]),
         pending: None,
         symbol: task.symbol.clone(),
     };
     let mut aggregator = DailyDepthAggregator::new(task.start_ms, task.end_ms);
-    let mut rows = 0u64;
+    let mut stats = DepthStageStats::default();
     while let Some(event) = reader.next_event()? {
         for (ts, values) in aggregator.on_book(&event) {
             sender
                 .send(encode_stage_row(ts, &task.symbol, &values))
                 .map_err(|_| anyhow!("depth staging writer stopped"))?;
-            rows += 1;
+            stats.rows += 1;
         }
+        stats.source_events += 1;
     }
     for (ts, values) in aggregator.finish() {
         sender
             .send(encode_stage_row(ts, &task.symbol, &values))
             .map_err(|_| anyhow!("depth staging writer stopped"))?;
-        rows += 1;
+        stats.rows += 1;
     }
-    info!(
-        "Tardis depth staging complete: symbol={} day_start_ms={} rows={}",
-        task.symbol, task.start_ms, rows
-    );
-    Ok(())
+    Ok(stats)
 }
 
 fn build_depth_tasks(
@@ -1408,20 +1485,47 @@ fn replay_symbol(
 }
 
 fn log_replay_progress(symbol: &str, files_done: usize, total_files: usize, source_events: u64) {
+    let bar = progress_bar(files_done, total_files);
+    info!(
+        "Tardis replay progress: symbol={} [{}] files={}/{} events={}",
+        symbol, bar, files_done, total_files, source_events
+    );
+}
+
+fn log_stage_progress(
+    stream: &str,
+    symbol: &str,
+    files_done: usize,
+    total_files: usize,
+    source_events: u64,
+    rows: u64,
+    elapsed: Duration,
+) {
+    let bar = progress_bar(files_done, total_files);
+    info!(
+        "Tardis staging progress: stream={} symbol={} [{}] files={}/{} source_events={} rows={} elapsed={:.2?}",
+        stream,
+        symbol,
+        bar,
+        files_done,
+        total_files,
+        source_events,
+        rows,
+        elapsed,
+    );
+}
+
+fn progress_bar(files_done: usize, total_files: usize) -> String {
     let filled = if total_files == 0 {
         0
     } else {
         (files_done * PROGRESS_BAR_WIDTH / total_files).min(PROGRESS_BAR_WIDTH)
     };
-    let bar = format!(
+    format!(
         "{}{}",
         "#".repeat(filled),
         "-".repeat(PROGRESS_BAR_WIDTH - filled)
-    );
-    info!(
-        "Tardis replay progress: symbol={} [{}] files={}/{} events={}",
-        symbol, bar, files_done, total_files, source_events
-    );
+    )
 }
 
 fn enqueue_baseline_bars(
