@@ -626,11 +626,11 @@ mod tests {
             toml::from_str(include_str!("../../config/db_fusion_factor_replay.toml"))
                 .expect("replay config template");
         assert_eq!(config.venue, "binance-futures");
-        assert_eq!(config.symbols, ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]);
-        assert_eq!(config.start_date, "2026-06-15");
-        assert_eq!(config.end_date, "2026-07-15");
+        assert_eq!(config.symbols, ["SOLUSDT"]);
+        assert_eq!(config.start_date, "2024-12-01");
+        assert_eq!(config.end_date, "2024-12-31");
         assert_eq!(config.factors, ["baseline_118"]);
-        assert_eq!(config.replay_workers, 4);
+        assert_eq!(config.replay_workers, 1);
         assert_eq!(
             config.clickhouse.input_trade_table,
             "baseline_binance_futures_5s_trade"

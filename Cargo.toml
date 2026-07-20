@@ -171,6 +171,10 @@ name = "db_fusion_factor_replay"
 path = "src/bin/db_fusion_factor_replay.rs"
 
 [[bin]]
+name = "trade_notional_kll_aggregate"
+path = "src/bin/trade_notional_kll_aggregate.rs"
+
+[[bin]]
 name = "tardis_parser_bench"
 path = "src/bin/tardis_parser_bench.rs"
 

@@ -105,9 +105,97 @@ pub struct FrozenKllSketch {
     pub levels: Vec<Vec<f64>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrozenKllMergeError {
+    InvalidLevelCapacity,
+    IncompatibleLevelCapacity { expected: usize, actual: usize },
+}
+
+impl std::fmt::Display for FrozenKllMergeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLevelCapacity => write!(formatter, "KLL level capacity must be positive"),
+            Self::IncompatibleLevelCapacity { expected, actual } => write!(
+                formatter,
+                "cannot merge KLL sketches with level capacities {expected} and {actual}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FrozenKllMergeError {}
+
 impl Default for StreamingKllSketch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl FrozenKllSketch {
+    pub fn quantiles(&self, qs: &[f32]) -> Vec<Option<f64>> {
+        let mut samples = Vec::new();
+        for (level, values) in self.levels.iter().enumerate() {
+            let weight = level_weight(level);
+            samples.extend(
+                values
+                    .iter()
+                    .copied()
+                    .map(|value| WeightedSample { value, weight }),
+            );
+        }
+        samples.sort_by(|a, b| a.value.total_cmp(&b.value));
+        qs.iter()
+            .map(|&q| quantile_from_weighted(&samples, q))
+            .collect()
+    }
+
+    /// Merge completed KLL windows into one bounded sketch.
+    ///
+    /// Values already retained at level `n` keep their `2^n` weight. The
+    /// combined levels are then compacted using the common level capacity, so
+    /// the result remains bounded independently of the number of windows.
+    pub fn merge_all<'a>(
+        sketches: impl IntoIterator<Item = &'a FrozenKllSketch>,
+    ) -> Result<Option<Self>, FrozenKllMergeError> {
+        let mut sketches = sketches.into_iter();
+        let Some(first) = sketches.next() else {
+            return Ok(None);
+        };
+        if first.level_capacity == 0 {
+            return Err(FrozenKllMergeError::InvalidLevelCapacity);
+        }
+
+        let mut merged = KllSketch::new(first.level_capacity, RNG_SEED);
+        merged.levels = vec![Vec::new(); first.levels.len().max(1)];
+        append_frozen_sketch(&mut merged, first);
+        for sketch in sketches {
+            if sketch.level_capacity != merged.level_capacity {
+                return Err(FrozenKllMergeError::IncompatibleLevelCapacity {
+                    expected: merged.level_capacity,
+                    actual: sketch.level_capacity,
+                });
+            }
+            append_frozen_sketch(&mut merged, sketch);
+        }
+
+        for level in 0..merged.levels.len() {
+            merged.compact_if_needed(level);
+        }
+        Ok(Some(FrozenKllSketch {
+            level_capacity: merged.level_capacity,
+            sample_count: merged.n,
+            levels: merged.levels,
+        }))
+    }
+}
+
+fn append_frozen_sketch(target: &mut KllSketch, source: &FrozenKllSketch) {
+    target.n = target.n.saturating_add(source.sample_count);
+    if target.levels.len() < source.levels.len() {
+        target.levels.resize_with(source.levels.len(), Vec::new);
+    }
+    for (level, values) in source.levels.iter().enumerate() {
+        target.levels[level].extend(values.iter().copied().filter(|value| value.is_finite()));
     }
 }
 
@@ -264,7 +352,7 @@ fn next_random(state: &mut u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{segmented_quantiles_linear, StreamingKllSketch};
+    use super::{segmented_quantiles_linear, FrozenKllSketch, StreamingKllSketch};
 
     #[test]
     fn small_windows_remain_exact() {
@@ -314,5 +402,39 @@ mod tests {
 
         sketch.reset();
         assert!(sketch.is_empty());
+    }
+
+    #[test]
+    fn frozen_sketches_merge_with_their_original_weights() {
+        let mut first = StreamingKllSketch::new();
+        first.insert(1.0);
+        first.insert(2.0);
+        let mut second = StreamingKllSketch::new();
+        second.insert(3.0);
+        second.insert(4.0);
+
+        let merged = FrozenKllSketch::merge_all([&first.freeze(), &second.freeze()])
+            .expect("compatible KLL sketches")
+            .expect("non-empty input");
+        assert_eq!(merged.sample_count, 4);
+        assert_eq!(
+            merged.quantiles(&[0.0, 0.5, 1.0]),
+            vec![Some(1.0), Some(2.5), Some(4.0)]
+        );
+    }
+
+    #[test]
+    fn frozen_sketch_merge_rejects_different_capacities() {
+        let first = FrozenKllSketch {
+            level_capacity: 128,
+            sample_count: 1,
+            levels: vec![vec![1.0]],
+        };
+        let second = FrozenKllSketch {
+            level_capacity: 256,
+            sample_count: 1,
+            levels: vec![vec![2.0]],
+        };
+        assert!(FrozenKllSketch::merge_all([&first, &second]).is_err());
     }
 }

@@ -36,6 +36,7 @@ use std::time::Duration;
 const TRADE_PAYLOAD_BYTES: usize = 128;
 const INCREMENTAL_PAYLOAD_BYTES: usize = 2048;
 const MAX_LEVELS_PER_INCREMENTAL_CHUNK: usize = 100;
+const MAX_LEVELS_PER_BOOK_EVENT: usize = 10_000;
 const HISTORY_SIZE: usize = 100;
 const MAX_SUBSCRIBERS: usize = 10;
 const BASELINE_DATABASE: &str = "baseline";
@@ -294,6 +295,12 @@ impl BookEventReader {
             };
             let row = parse_book_record(&record)?;
             if row.timestamp_us != timestamp_us {
+                self.pending = Some(row);
+                break;
+            }
+            if bids.len() + asks.len() >= MAX_LEVELS_PER_BOOK_EVENT {
+                // A pathological same-timestamp batch must not monopolize replay.
+                // The next chunk keeps the same timestamp and is applied in order.
                 self.pending = Some(row);
                 break;
             }
@@ -1917,15 +1924,15 @@ mod tests {
         let config: ReplayConfig = toml::from_str(include_str!("../../config/tardis_replay.toml"))
             .expect("replay config template");
         assert_eq!(config.venue, "binance-futures");
-        assert_eq!(config.symbols, ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]);
-        assert_eq!(config.start_date.as_deref(), Some("2026-06-15"));
-        assert_eq!(config.end_date.as_deref(), Some("2026-07-15"));
+        assert_eq!(config.symbols, ["SOLUSDT"]);
+        assert_eq!(config.start_date.as_deref(), Some("2024-12-01"));
+        assert_eq!(config.end_date.as_deref(), Some("2024-12-31"));
         assert!(!config.publish_ipc);
         assert_eq!(
-            replay_data_dir(&config, "ETHUSDT").expect("ETH data directory"),
-            Path::new("/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_ethusdt")
+            replay_data_dir(&config, "SOLUSDT").expect("SOL data directory"),
+            Path::new("/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_solusdt")
         );
-        assert_eq!(config.replay_workers, 4);
+        assert_eq!(config.replay_workers, 1);
         assert_eq!(config.clickhouse.database, "baseline");
     }
 }

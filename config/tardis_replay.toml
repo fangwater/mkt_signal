@@ -3,7 +3,7 @@
 # symbol. Use symbol_data_dirs when each symbol has its own source root.
 #
 # USD-M futures source directories use a binance-futures file prefix and map to
-# venue = "binance-futures". The active range below is 2026-06-15..2026-07-15.
+# venue = "binance-futures". The active range below is 2024-12-01..2024-12-31.
 #
 # Spot BTCUSDT data lives at:
 #   /mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_btcusdt
@@ -12,17 +12,16 @@
 # current discovery needs a separate source-prefix mapping before spot replay.
 # data_dir = "/mnt/Data/tardis/binance-futures"
 venue = "binance-futures"
-symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
+symbols = ["SOLUSDT"]
 
 # Bounds are inclusive. Omit either bound to replay every discovered date on
 # that side.
-start_date = "2026-06-15"
-end_date = "2026-07-15"
+start_date = "2024-12-01"
+end_date = "2024-12-31"
 
-# Four workers aggregate the four continuous trade streams. A second four-worker
-# pool reconstructs each symbol's daily L2 files sequentially. Together with
-# the trade/depth writers this uses 2 * symbol_count + 2 threads.
-replay_workers = 4
+# One worker aggregates SOLUSDT's continuous trade stream and one reconstructs
+# its daily L2 files. Together with the trade/depth writers this uses 4 threads.
+replay_workers = 1
 # This replay writes ClickHouse staging tables only. IPC publication is handled
 # by a separate future publisher.
 publish_ipc = false
@@ -30,9 +29,6 @@ publish_ipc = false
 write_hourly_notional_kll = true
 
 [symbol_data_dirs]
-BTCUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_btcusdt"
-ETHUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_ethusdt"
-BNBUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_bnbusdt"
 SOLUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_solusdt"
 
 # Trade and L2 depth are replayed independently into append-only staging tables.

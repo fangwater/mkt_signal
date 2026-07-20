@@ -2,10 +2,10 @@
 # tardis_ipc_replay. The output is one wide table: (symbol, ts) is a row and
 # each named factor below becomes a Float64 column holding its raw value.
 venue = "binance-futures"
-symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
-start_date = "2026-06-15"
-end_date = "2026-07-15"
-replay_workers = 4
+symbols = ["SOLUSDT"]
+start_date = "2024-12-01"
+end_date = "2024-12-31"
+replay_workers = 1
 
 # Add only the baseline factors required by the experiment. To add a new
 # factor later, append it here and replay the target range with the complete
