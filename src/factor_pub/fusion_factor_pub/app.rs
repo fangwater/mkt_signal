@@ -52,7 +52,7 @@ const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
 const TRADE_FLOW_MAX_SUBSCRIBERS: usize = 10;
-const MAX_SYMBOL_HISTORY: usize = 4096;
+pub const MAX_SYMBOL_HISTORY: usize = 4096;
 const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
@@ -382,6 +382,45 @@ impl Default for SymbolRollingStats {
             ),
             corr_mid_midvol_300: RollingWelfordCovariance::new(ROLLING_CORR_MID_MIDVOL_300_WINDOW),
         }
+    }
+}
+
+/// Stateful baseline evaluator shared by the database replay path.
+///
+/// It deliberately uses the same trade-flow/depth derived metrics and rolling
+/// covariance updates as the live fusion publisher.
+#[derive(Default)]
+pub struct BaselineReplayState {
+    state: SymbolCalcState,
+    rolling: SymbolRollingStats,
+}
+
+impl BaselineReplayState {
+    pub fn push(&mut self, mut msg: TradeFlowFeatureMsg) -> Result<()> {
+        let symbol = msg.symbol.clone();
+        FusionFactorPubApp::validate_and_fix_trade_flow("db-replay", &symbol, &mut msg)
+            .map_err(anyhow::Error::msg)?;
+        let depth =
+            parse_embedded_depth(&msg).map(|snapshot| DepthDerived::from_snapshot(&snapshot));
+        self.state.push_trade_flow(&msg);
+        if let Some(depth) = depth.as_ref() {
+            self.state.push_depth_metrics_derived(depth);
+        }
+        FusionFactorPubApp::update_symbol_rolling_stats(
+            &mut self.state,
+            &mut self.rolling,
+            &msg,
+            depth.as_ref(),
+        );
+        Ok(())
+    }
+
+    pub fn baseline_values(&mut self, names: &[String]) -> Vec<f64> {
+        let series = FusionFactorPubApp::build_symbol_series_from_state(&mut self.state);
+        names
+            .iter()
+            .map(|name| baseline_engine::compute_baseline(name, &series).unwrap_or(f64::NAN))
+            .collect()
     }
 }
 

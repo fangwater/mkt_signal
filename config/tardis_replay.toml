@@ -1,20 +1,40 @@
-# Tardis replay root. It contains trades/ and incremental_book_L2/;
-# individual symbol files are discovered beneath those shared directories.
-data_dir = "/mnt/Data/tardis/binance-futures"
+# Tardis replay root contains trades/ and incremental_book_L2/ directly; do not
+# point it at the TardisSource parent. data_dir is a legacy fallback for every
+# symbol. Use symbol_data_dirs when each symbol has its own source root.
+#
+# USD-M futures source directories use a binance-futures file prefix and map to
+# venue = "binance-futures". The active range below is 2026-06-15..2026-07-15.
+#
+# Spot BTCUSDT data lives at:
+#   /mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_btcusdt
+# Its files use the `binance_*` source prefix and span 2021-01-01 through
+# 2026-07-12 (2019 common trades/L2 dates). IPC spot is `binance-margin`, so
+# current discovery needs a separate source-prefix mapping before spot replay.
+# data_dir = "/mnt/Data/tardis/binance-futures"
 venue = "binance-futures"
-symbols = ["BTCUSDT", "ETHUSDT"]
+symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
 
-# Omit either bound to replay every discovered date on that side.
-# start_date = "2025-01-01"
-# end_date = "2025-01-31"
+# Bounds are inclusive. Omit either bound to replay every discovered date on
+# that side.
+start_date = "2026-06-15"
+end_date = "2026-07-15"
 
-# One Rayon worker processes one symbol's full date range.
-replay_workers = 2
-# Set false for ClickHouse-only backfills. This avoids IPC publisher backpressure
-# when no replay consumer is attached.
-publish_ipc = true
+# Four workers aggregate the four trade streams, while a second four-worker pool
+# schedules independent (symbol, day) L2 reconstruction tasks.
+replay_workers = 4
+# This replay writes ClickHouse staging tables only. IPC publication is handled
+# by a separate future publisher.
+publish_ipc = false
+# Persist hourly trade-notional KLL sketches beside the trade/depth staging data.
+write_hourly_notional_kll = true
 
-# Baseline aggregation and ClickHouse persistence are always enabled.
+[symbol_data_dirs]
+BTCUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_btcusdt"
+ETHUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_ethusdt"
+BNBUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_bnbusdt"
+SOLUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_solusdt"
+
+# Trade and L2 depth are replayed independently into append-only staging tables.
 [clickhouse]
 url = "http://127.0.0.1:18123"
 database = "baseline"

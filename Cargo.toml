@@ -167,6 +167,10 @@ name = "tardis_ipc_replay"
 path = "src/bin/tardis_ipc_replay.rs"
 
 [[bin]]
+name = "db_fusion_factor_replay"
+path = "src/bin/db_fusion_factor_replay.rs"
+
+[[bin]]
 name = "tardis_parser_bench"
 path = "src/bin/tardis_parser_bench.rs"
 

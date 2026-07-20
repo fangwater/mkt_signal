@@ -271,7 +271,7 @@ impl BaselineBar {
     /// completed bar has the standard 20-level wire shape.
     pub fn to_trade_flow_feature_payload(&self, symbol: &str, venue: u8) -> Result<Bytes> {
         let depth = &self.depth20;
-        let values = self.to_trade_flow_feature_values();
+        let values = self.trade_feature_values();
         let mut depth_values = [0.0; BASELINE_DEPTH_LEVELS * 4];
         for (index, (price, amount)) in depth.bids.iter().enumerate() {
             let offset = index * 2;
@@ -293,7 +293,7 @@ impl BaselineBar {
         .map_err(Into::into)
     }
 
-    fn to_trade_flow_feature_values(&self) -> [f64; TRADE_FLOW_FEATURE_DIM] {
+    pub fn trade_feature_values(&self) -> [f64; TRADE_FLOW_FEATURE_DIM] {
         [
             self.open,
             self.high,
