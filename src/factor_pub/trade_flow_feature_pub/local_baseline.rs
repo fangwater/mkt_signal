@@ -453,6 +453,9 @@ impl LocalBaselineAggregator {
             self.orderbook
                 .apply_update(&bid_updates, &ask_updates, update_id, timestamp_us);
         }
+        if !self.orderbook.is_valid() {
+            self.orderbook.prune_crossed_by_best_update_id();
+        }
         completed
     }
 
@@ -631,6 +634,27 @@ mod tests {
         assert_eq!(depth.asks[0], (101.0, 2.0));
         assert_eq!(depth.asks[19], (120.0, 21.0));
         assert_eq!(agg.stats()[0].depth20_bars, 1);
+    }
+
+    #[test]
+    fn prunes_crossed_book_before_attaching_depth20() {
+        let mut agg = LocalBaselineAggregator::new();
+        let bids: Vec<Level> = (0..25)
+            .map(|i| Level::from_values(100.0 - i as f64, 1.0))
+            .collect();
+        let asks: Vec<Level> = (0..25)
+            .map(|i| Level::from_values(101.0 + i as f64, 1.0))
+            .collect();
+        agg.on_book(100, true, &bids, &asks);
+        agg.on_book(2_000_000, false, &[Level::from_values(102.0, 1.0)], &[]);
+        agg.on_trade(3_000_000, true, 102.0, 1.0);
+        let closed = agg.on_trade(5_001_000, false, 102.5, 1.0);
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].depth20.bids[0], (102.0, 1.0));
+        assert_eq!(closed[0].depth20.asks[0], (103.0, 1.0));
+        assert_eq!(agg.stats()[0].depth20_bars, 1);
+        assert_eq!(agg.stats()[0].padded_depth20_bars, 0);
     }
 
     #[test]
