@@ -323,6 +323,15 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_gate_risk_check_market_forbidden_from_message() {
+        let body = r#"{"header":{"status":403},"data":{"errs":{"label":"RISK_CHECK_MARKET_FORBIDDEN","message":"Risk management requirements prohibit operations."}}}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Gate, code, msg);
+        assert_eq!(code, gate::RISK_CHECK_MARKET_FORBIDDEN);
+        assert_eq!(msg.as_deref(), Some("RISK_CHECK_MARKET_FORBIDDEN"));
+    }
+
+    #[test]
     fn normalizes_binance_limit_maker_cross_reject_from_message() {
         let body = r#"{"code":-2010,"msg":"Order would immediately match and take."}"#;
         let (code, msg) = parse_error_code_and_msg(body);

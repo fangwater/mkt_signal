@@ -291,6 +291,118 @@ impl ArbHedgeStrategy {
             && response.req_type() == TradeRequestType::GateFuturesNewOrder as u32
     }
 
+    fn should_retry_gate_market_forbidden_reduce_only(
+        response: &dyn TradeEngineResponse,
+        order: &Order,
+    ) -> bool {
+        response.exchange_enum() == Some(Exchange::Gate)
+            && response.req_type() == TradeRequestType::GateFuturesNewOrder as u32
+            && response.error_code() == gate::RISK_CHECK_MARKET_FORBIDDEN
+            && order.venue == TradingVenue::GateFutures
+            && order.order_type == OrderType::Market
+            && !order.reduce_only
+    }
+
+    fn is_gate_market_forbidden_reduce_only_failure(
+        response: &dyn TradeEngineResponse,
+        order: &Order,
+    ) -> bool {
+        response.exchange_enum() == Some(Exchange::Gate)
+            && response.req_type() == TradeRequestType::GateFuturesNewOrder as u32
+            && response.error_code() == gate::RISK_CHECK_MARKET_FORBIDDEN
+            && order.venue == TradingVenue::GateFutures
+            && order.order_type == OrderType::Market
+            && order.reduce_only
+    }
+
+    fn retry_gate_market_forbidden_reduce_only(
+        &mut self,
+        response: &dyn TradeEngineResponse,
+        client_order_id: i64,
+        order: &Order,
+        now_ts: i64,
+    ) -> bool {
+        if !Self::should_retry_gate_market_forbidden_reduce_only(response, order) {
+            return false;
+        }
+        let Some(meta) = self.hedge_order_meta.remove(&client_order_id) else {
+            return false;
+        };
+
+        self.clear_order_query_state(client_order_id);
+        let retry_client_order_id = self.next_order_id();
+        let symbol = order.symbol.clone();
+        let quantity_qv = order.quantity_qv;
+        let price_qv = order.price_qv;
+        let signal_ts = order.timestamp.signal_t;
+        let signal_kind = order.timestamp.signal_kind;
+        let mkt_ts = order.timestamp.mkt_t;
+        let pre_trade_recv_ts = order.timestamp.pre_trade_recv_t;
+        let pre_trade_handle_ts = order.timestamp.pre_trade_handle_t;
+        let order_mgr = MonitorChannel::instance().order_manager();
+        {
+            let mut order_mgr = order_mgr.borrow_mut();
+            let _ = order_mgr.remove(client_order_id);
+            order_mgr.create_order_with_mut(
+                order.venue,
+                retry_client_order_id,
+                order.order_type,
+                symbol.clone(),
+                order.side,
+                order.quantity,
+                order.price,
+                true,
+                order.qty_multiplier,
+                order.count_pending_limit,
+                |retry_order| {
+                    if let Some(quantity_qv) = quantity_qv {
+                        retry_order.set_quantity_qv(quantity_qv);
+                    }
+                    if let Some(price_qv) = price_qv {
+                        retry_order.set_price_qv(price_qv);
+                    }
+                    retry_order.set_signal_meta(signal_ts, signal_kind);
+                    retry_order.set_mkt_time(mkt_ts);
+                    retry_order.set_pre_trade_open_trace(pre_trade_recv_ts, pre_trade_handle_ts);
+                },
+            );
+        }
+        self.hedge_order_meta.insert(retry_client_order_id, meta);
+
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} Gate market order rejected by risk check; retry once reduce_only=true old_client_order_id={} retry_client_order_id={} symbol={} side={:?} qty={:.8}",
+            self.strategy_id,
+            client_order_id,
+            retry_client_order_id,
+            symbol,
+            order.side,
+            order.quantity
+        );
+        if let Err(err) = create_and_send_order(
+            self.strategy_id,
+            retry_client_order_id,
+            "Gate reduce-only 状态对冲重试",
+            &symbol,
+        ) {
+            self.cleanup_unsent_hedge_order_after_send_failure(
+                retry_client_order_id,
+                now_ts,
+                order.price,
+            );
+            self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} send Gate reduce-only hedge retry failed client_order_id={} symbol={} err={}",
+                self.strategy_id, retry_client_order_id, symbol, err
+            );
+        } else {
+            self.schedule_order_query_watchdog(
+                retry_client_order_id,
+                PendingOrderQueryReason::OrderWatchdog,
+            );
+        }
+        true
+    }
+
     fn handle_gate_futures_open_ack_unknown(&mut self, response: &dyn TradeEngineResponse) -> bool {
         if !Self::is_gate_futures_open_ack_unknown(response) {
             return false;
@@ -2563,12 +2675,20 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         client_order_id: i64,
     ) {
         let now_ts = get_timestamp_us();
-        // 同时取出 hedge 失败那笔单的 side：51008 应急时需要据此推算 open 端方向。
+        // 同时取出 hedge 失败那笔单：Gate 风控降级和 51008 应急都依赖原订单字段。
         let order_snapshot = MonitorChannel::instance()
             .order_manager()
             .borrow()
-            .get(client_order_id)
-            .map(|order| (order.side, order.price, order.symbol.clone()));
+            .get(client_order_id);
+        if order_snapshot.as_ref().is_some_and(|order| {
+            self.retry_gate_market_forbidden_reduce_only(response, client_order_id, order, now_ts)
+        }) {
+            return;
+        }
+        let is_gate_market_forbidden_reduce_only_failure =
+            order_snapshot.as_ref().is_some_and(|order| {
+                Self::is_gate_market_forbidden_reduce_only_failure(response, order)
+            });
         let is_insufficient_margin = response.is_insufficient_margin();
         let is_bybit_open_interest_position_limit =
             response.is_bybit_open_interest_position_limit();
@@ -2581,14 +2701,14 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         if is_bybit_open_interest_position_limit {
             self.register_bybit_open_interest_position_limit_throttle(
                 now_ts,
-                order_snapshot.as_ref().map(|(side, _, _)| *side),
+                order_snapshot.as_ref().map(|order| order.side),
                 response.error_code(),
             );
         }
         if is_bybit_collateral_not_enabled {
             self.register_bybit_collateral_not_enabled_throttle(
                 now_ts,
-                order_snapshot.as_ref().map(|(side, _, _)| *side),
+                order_snapshot.as_ref().map(|order| order.side),
                 response.error_code(),
             );
         }
@@ -2606,14 +2726,14 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         if is_bitget_futures_open_limit {
             self.register_bitget_position_tier_limit_throttle(
                 now_ts,
-                order_snapshot.as_ref().map(|(side, _, _)| *side),
+                order_snapshot.as_ref().map(|order| order.side),
                 response.error_code(),
             );
         }
         if let Some(meta) = self.hedge_order_meta.remove(&client_order_id) {
             let release_price = order_snapshot
                 .as_ref()
-                .map(|(_, price, _)| *price)
+                .map(|order| order.price)
                 .filter(|price| price.is_finite() && *price > 0.0)
                 .unwrap_or(0.0);
             self.release_borrowed_with_bound_id(
@@ -2630,7 +2750,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                     >= ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US
                 {
                     self.last_insufficient_margin_action_ts = now_ts;
-                    let hedge_side = order_snapshot.as_ref().map(|(side, _, _)| *side);
+                    let hedge_side = order_snapshot.as_ref().map(|order| order.side);
                     self.handle_insufficient_margin_emergency(
                         now_ts,
                         hedge_side,
@@ -2648,6 +2768,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 && self.bitget_position_tier_limit_block_until_us > now_ts
             {
                 self.next_query_ts_us = self.bitget_position_tier_limit_block_until_us;
+            } else if is_gate_market_forbidden_reduce_only_failure {
+                self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             } else {
                 self.trigger_hedge_query_after_pending_release(now_ts, "hedge_open_failed");
             }
@@ -2666,7 +2788,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
             client_order_id,
             order_snapshot
                 .as_ref()
-                .map(|(_, _, symbol)| symbol.as_str())
+                .map(|order| order.symbol.as_str())
                 .unwrap_or(""),
             if is_insufficient_margin {
                 " [INSUFFICIENT_MARGIN]"
@@ -2680,6 +2802,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 " [BITGET_POSITION_TIER_LIMIT]"
             } else if is_bitget_max_possible_leverage {
                 " [BITGET_MAX_POSSIBLE_LEVERAGE]"
+            } else if is_gate_market_forbidden_reduce_only_failure {
+                " [GATE_REDUCE_ONLY_RETRY_FAILED]"
             } else {
                 ""
             }
@@ -2974,8 +3098,10 @@ mod tests {
     };
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
+    use order_common::trade_error_code::gate;
     use order_common::TradingVenue;
-    use order_common::{Side, TradeEngineResponseMessage, TradeRequestType};
+    use order_common::{Order, OrderType, Side, TradeEngineResponseMessage, TradeRequestType};
+    use runtime_common::exchange::Exchange;
     use signal_common::hedge_signal::ArbHedgeCtx;
 
     const OPEN_ID_A: i64 = 1001;
@@ -3019,6 +3145,71 @@ mod tests {
         assert!(!ArbHedgeStrategy::is_gate_futures_open_ack_unknown(
             &gate_futures_400
         ));
+    }
+
+    #[test]
+    fn gate_market_forbidden_retries_only_non_reduce_only_futures_market_order() {
+        let response = TradeEngineResponseMessage::new(
+            403,
+            TradeRequestType::GateFuturesNewOrder as u32,
+            Exchange::Gate as u32,
+            123,
+            gate::RISK_CHECK_MARKET_FORBIDDEN,
+        );
+        let order = Order::new(
+            TradingVenue::GateFutures,
+            123,
+            OrderType::Market,
+            "BANKUSDT".to_string(),
+            Side::Buy,
+            4.0,
+            0.0,
+            false,
+            100.0,
+            None,
+            false,
+        );
+        assert!(
+            ArbHedgeStrategy::should_retry_gate_market_forbidden_reduce_only(&response, &order)
+        );
+
+        let mut reduce_only_order = order.clone();
+        reduce_only_order.reduce_only = true;
+        assert!(
+            !ArbHedgeStrategy::should_retry_gate_market_forbidden_reduce_only(
+                &response,
+                &reduce_only_order,
+            )
+        );
+        assert!(
+            ArbHedgeStrategy::is_gate_market_forbidden_reduce_only_failure(
+                &response,
+                &reduce_only_order,
+            )
+        );
+        assert!(
+            !ArbHedgeStrategy::is_gate_market_forbidden_reduce_only_failure(&response, &order,)
+        );
+
+        let mut limit_order = order.clone();
+        limit_order.order_type = OrderType::Limit;
+        assert!(
+            !ArbHedgeStrategy::should_retry_gate_market_forbidden_reduce_only(
+                &response,
+                &limit_order,
+            )
+        );
+
+        let other_error = TradeEngineResponseMessage::new(
+            403,
+            TradeRequestType::GateFuturesNewOrder as u32,
+            Exchange::Gate as u32,
+            123,
+            gate::MARGIN_NOT_ENOUGH,
+        );
+        assert!(
+            !ArbHedgeStrategy::should_retry_gate_market_forbidden_reduce_only(&other_error, &order)
+        );
     }
 
     #[test]
