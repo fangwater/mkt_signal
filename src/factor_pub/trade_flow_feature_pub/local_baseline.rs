@@ -18,6 +18,7 @@ pub struct BaselineStats {
     pub closed_bars: u64,
     pub traded_bars: u64,
     pub depth20_bars: u64,
+    pub padded_depth20_bars: u64,
     pub late_trades: u64,
 }
 
@@ -51,8 +52,8 @@ pub struct BaselineBar {
     pub net_buy_amount: f64,
     pub net_buy_volume: f64,
     pub net_buy_pct: f64,
-    /// Latest valid book at the right edge of this bar. No synthetic depth is used.
-    pub depth20: Option<BaselineDepth20>,
+    /// Latest book at the right edge of this bar, padded with zero levels when needed.
+    pub depth20: BaselineDepth20,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +163,10 @@ impl BaselineBar {
             net_buy_amount: 0.0,
             net_buy_volume: 0.0,
             net_buy_pct: 0.0,
-            depth20: None,
+            depth20: BaselineDepth20 {
+                bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+                asks: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+            },
         }
     }
 
@@ -263,11 +267,10 @@ impl BaselineBar {
     ///
     /// Local Tardis baseline aggregation has no amount-threshold configuration,
     /// so the large/medium/small trade buckets and their net values are zero.
-    /// A bar without a complete depth20 snapshot is intentionally not encodable.
-    pub fn to_trade_flow_feature_payload(&self, symbol: &str, venue: u8) -> Result<Option<Bytes>> {
-        let Some(depth) = self.depth20.as_ref() else {
-            return Ok(None);
-        };
+    /// Missing book levels are encoded as zero price and zero amount so every
+    /// completed bar has the standard 20-level wire shape.
+    pub fn to_trade_flow_feature_payload(&self, symbol: &str, venue: u8) -> Result<Bytes> {
+        let depth = &self.depth20;
         let values = self.to_trade_flow_feature_values();
         let mut depth_values = [0.0; BASELINE_DEPTH_LEVELS * 4];
         for (index, (price, amount)) in depth.bids.iter().enumerate() {
@@ -287,7 +290,7 @@ impl BaselineBar {
             &values,
             &depth_values,
         )
-        .map(Some)
+        .map_err(Into::into)
     }
 
     fn to_trade_flow_feature_values(&self) -> [f64; TRADE_FLOW_FEATURE_DIM] {
@@ -512,22 +515,35 @@ impl LocalBaselineAggregator {
         let Some(mut bar) = self.base.close_current() else {
             return;
         };
-        bar.depth20 = self.depth20();
-        if bar.depth20.is_some() {
+        let (depth20, is_complete) = self.depth20();
+        bar.depth20 = depth20;
+        if is_complete {
             self.base.stats.depth20_bars = self.base.stats.depth20_bars.saturating_add(1);
+        } else {
+            self.base.stats.padded_depth20_bars =
+                self.base.stats.padded_depth20_bars.saturating_add(1);
         }
         self.consume_base_bar(&bar);
         completed.push(bar);
     }
 
-    fn depth20(&self) -> Option<BaselineDepth20> {
-        if !self.book_initialized || !self.orderbook.is_valid() {
-            return None;
-        }
+    fn depth20(&self) -> (BaselineDepth20, bool) {
         let (bids, asks) = self.orderbook.get_depth(BASELINE_DEPTH_LEVELS);
-        let bids: [(f64, f64); BASELINE_DEPTH_LEVELS] = bids.try_into().ok()?;
-        let asks: [(f64, f64); BASELINE_DEPTH_LEVELS] = asks.try_into().ok()?;
-        Some(BaselineDepth20 { bids, asks })
+        let mut depth20 = BaselineDepth20 {
+            bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+            asks: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+        };
+        for (index, level) in bids.iter().enumerate() {
+            depth20.bids[index] = *level;
+        }
+        for (index, level) in asks.iter().enumerate() {
+            depth20.asks[index] = *level;
+        }
+        let is_complete = self.book_initialized
+            && self.orderbook.is_valid()
+            && bids.len() == BASELINE_DEPTH_LEVELS
+            && asks.len() == BASELINE_DEPTH_LEVELS;
+        (depth20, is_complete)
     }
 
     fn consume_base_bar(&mut self, bar: &BaselineBar) {
@@ -609,7 +625,7 @@ mod tests {
         let closed = agg.on_book(5_001_000, false, &[], &[]);
 
         assert_eq!(closed.len(), 1);
-        let depth = closed[0].depth20.as_ref().expect("depth20 attached");
+        let depth = &closed[0].depth20;
         assert_eq!(depth.bids[0], (100.0, 1.0));
         assert_eq!(depth.bids[19], (81.0, 20.0));
         assert_eq!(depth.asks[0], (101.0, 2.0));
@@ -632,8 +648,7 @@ mod tests {
 
         let bytes = closed[0]
             .to_trade_flow_feature_payload("BTCUSDT", 2)
-            .expect("encode")
-            .expect("depth20 exists");
+            .expect("encode");
         let message = TradeFlowFeatureMsg::from_bytes(&bytes).expect("decode");
         assert_eq!(message.symbol, "BTCUSDT");
         assert_eq!(message.venue, 2);
@@ -644,6 +659,47 @@ mod tests {
         assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM + 1], 1.0);
         assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM + 78], 120.0);
         assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM + 79], 21.0);
+    }
+
+    #[test]
+    fn encodes_partial_or_missing_books_with_zero_padded_depth() {
+        let mut agg = LocalBaselineAggregator::new();
+        let bids: Vec<Level> = (0..2)
+            .map(|i| Level::from_values(100.0 - i as f64, 1.0 + i as f64))
+            .collect();
+        let asks = [Level::from_values(101.0, 3.0)];
+        agg.on_book(100, true, &bids, &asks);
+        agg.on_trade(1_000, true, 100.5, 1.0);
+        let closed = agg.on_trade(5_001_000, false, 100.6, 1.0);
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].depth20.bids[0], (100.0, 1.0));
+        assert_eq!(closed[0].depth20.bids[1], (99.0, 2.0));
+        assert_eq!(closed[0].depth20.bids[2], (0.0, 0.0));
+        assert_eq!(closed[0].depth20.asks[0], (101.0, 3.0));
+        assert_eq!(closed[0].depth20.asks[1], (0.0, 0.0));
+        assert_eq!(agg.stats()[0].padded_depth20_bars, 1);
+
+        let message = TradeFlowFeatureMsg::from_bytes(
+            &closed[0]
+                .to_trade_flow_feature_payload("BTCUSDT", 2)
+                .expect("encode"),
+        )
+        .expect("decode");
+        assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM + 4], 0.0);
+        assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM + 42], 0.0);
+
+        let mut without_book = LocalBaselineAggregator::new();
+        without_book.on_trade(1_000, true, 100.0, 1.0);
+        let closed = without_book.on_trade(5_001_000, true, 101.0, 1.0);
+        let message = TradeFlowFeatureMsg::from_bytes(
+            &closed[0]
+                .to_trade_flow_feature_payload("BTCUSDT", 2)
+                .expect("encode without a snapshot"),
+        )
+        .expect("decode without a snapshot");
+        assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM], 0.0);
+        assert_eq!(message.values[TRADE_FLOW_FEATURE_DIM + 79], 0.0);
     }
 
     #[test]

@@ -905,7 +905,6 @@ fn replay_symbol(
         .then(|| HourlyNotionalKllPublisher::new(symbol, venue_slug))
         .transpose()?;
     let mut baseline = Some(LocalBaselineAggregator::new());
-    let mut baseline_missing_depth = 0u64;
     let mut hourly_kll = config
         .publish_hourly_notional_kll
         .then(HourlyNotionalKll::new);
@@ -952,13 +951,7 @@ fn replay_symbol(
                     let closed =
                         baseline.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount);
                     if let Some(writer) = clickhouse_sender {
-                        enqueue_baseline_bars(
-                            &closed,
-                            &row.symbol,
-                            venue.to_u8(),
-                            writer,
-                            &mut baseline_missing_depth,
-                        )?;
+                        enqueue_baseline_bars(&closed, &row.symbol, venue.to_u8(), writer)?;
                     }
                 }
                 if let Some(kll) = hourly_kll.as_mut() {
@@ -980,13 +973,7 @@ fn replay_symbol(
                         &event.asks,
                     );
                     if let Some(writer) = clickhouse_sender {
-                        enqueue_baseline_bars(
-                            &closed,
-                            &event.symbol,
-                            venue.to_u8(),
-                            writer,
-                            &mut baseline_missing_depth,
-                        )?;
+                        enqueue_baseline_bars(&closed, &event.symbol, venue.to_u8(), writer)?;
                     }
                 }
                 if let Some(publisher) = publisher.as_ref() {
@@ -1010,28 +997,19 @@ fn replay_symbol(
     if let Some(baseline) = baseline.as_mut() {
         let closed = baseline.flush();
         if let Some(writer) = clickhouse_sender {
-            enqueue_baseline_bars(
-                &closed,
-                symbol,
-                venue.to_u8(),
-                writer,
-                &mut baseline_missing_depth,
-            )?;
+            enqueue_baseline_bars(&closed, symbol, venue.to_u8(), writer)?;
         }
         for stats in baseline.stats() {
             info!(
-                "Tardis local baseline: bar_ms={} closed={} traded={} depth20={} late_trades={}",
+                "Tardis local baseline: bar_ms={} closed={} traded={} depth20={} padded_depth20={} late_trades={}",
                 stats.bar_ms,
                 stats.closed_bars,
                 stats.traded_bars,
                 stats.depth20_bars,
+                stats.padded_depth20_bars,
                 stats.late_trades
             );
         }
-        info!(
-            "Tardis baseline ClickHouse enqueue summary: missing_depth20={}",
-            baseline_missing_depth
-        );
     }
     if let Some(kll) = hourly_kll.as_mut() {
         if let Some(snapshot) = kll.flush() {
@@ -1077,13 +1055,9 @@ fn enqueue_baseline_bars(
     symbol: &str,
     venue: u8,
     writer: &Sender<Bytes>,
-    missing_depth: &mut u64,
 ) -> Result<()> {
     for bar in bars {
-        let Some(payload) = bar.to_trade_flow_feature_payload(symbol, venue)? else {
-            *missing_depth = missing_depth.saturating_add(1);
-            continue;
-        };
+        let payload = bar.to_trade_flow_feature_payload(symbol, venue)?;
         writer
             .send(payload)
             .map_err(|_| anyhow!("baseline ClickHouse writer stopped"))?;
