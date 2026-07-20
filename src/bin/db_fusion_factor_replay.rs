@@ -626,11 +626,14 @@ mod tests {
             toml::from_str(include_str!("../../config/db_fusion_factor_replay.toml"))
                 .expect("replay config template");
         assert_eq!(config.venue, "binance-futures");
-        assert_eq!(config.symbols, ["SOLUSDT"]);
+        assert_eq!(
+            config.symbols,
+            ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
+        );
         assert_eq!(config.start_date, "2024-12-01");
         assert_eq!(config.end_date, "2024-12-31");
         assert_eq!(config.factors, ["baseline_118"]);
-        assert_eq!(config.replay_workers, 1);
+        assert_eq!(config.replay_workers, 6);
         assert_eq!(
             config.clickhouse.input_trade_table,
             "baseline_binance_futures_5s_trade"
@@ -642,6 +645,23 @@ mod tests {
         assert_eq!(
             config.clickhouse.output_table,
             "fusion_factor_binance_futures_5s"
+        );
+
+        let config: Config = toml::from_str(include_str!(
+            "../../config/db_fusion_factor_replay_60s.toml"
+        ))
+        .expect("60s replay config template");
+        assert_eq!(
+            config.clickhouse.input_trade_table,
+            "baseline_binance_futures_60s_trade"
+        );
+        assert_eq!(
+            config.clickhouse.input_depth_table,
+            "baseline_binance_futures_60s_depth"
+        );
+        assert_eq!(
+            config.clickhouse.output_table,
+            "fusion_factor_binance_futures_60s"
         );
     }
 }

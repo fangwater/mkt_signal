@@ -12,24 +12,32 @@
 # current discovery needs a separate source-prefix mapping before spot replay.
 # data_dir = "/mnt/Data/tardis/binance-futures"
 venue = "binance-futures"
-symbols = ["SOLUSDT"]
+symbols = ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
 
 # Bounds are inclusive. Omit either bound to replay every discovered date on
 # that side.
 start_date = "2024-12-01"
 end_date = "2024-12-31"
 
-# One worker aggregates SOLUSDT's continuous trade stream and one reconstructs
-# its daily L2 files. Together with the trade/depth writers this uses 4 threads.
-replay_workers = 1
+# Each worker owns one symbol's continuous trade stream and daily L2 sequence.
+# Six symbols run in parallel; 5s/60s trade/depth staging has four writers.
+replay_workers = 6
 # This replay writes ClickHouse staging tables only. IPC publication is handled
 # by a separate future publisher.
 publish_ipc = false
 # Persist hourly trade-notional KLL sketches beside the trade/depth staging data.
 write_hourly_notional_kll = true
+# Rerunning this date/symbol selection first synchronously deletes matching rows
+# from the four staging tables and hourly KLL table, then writes a fresh result.
+overwrite_existing = true
 
 [symbol_data_dirs]
+XRPUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_xrpusdt"
+DOGEUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_dogeusdt"
 SOLUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_solusdt"
+ETHUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_ethusdt"
+BTCUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_btcusdt"
+BNBUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_bnbusdt"
 
 # Trade and L2 depth are replayed independently into append-only staging tables.
 [clickhouse]

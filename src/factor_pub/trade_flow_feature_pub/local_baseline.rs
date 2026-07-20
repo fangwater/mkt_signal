@@ -393,6 +393,7 @@ pub struct LocalBaselineAggregator {
     base: BarState,
     ten_seconds: BarState,
     sixty_seconds: BarState,
+    completed_sixty_seconds: Vec<BaselineBar>,
     orderbook: OrderBook,
     book_initialized: bool,
     next_book_update_id: i64,
@@ -410,6 +411,7 @@ impl LocalBaselineAggregator {
             base: BarState::new(BASELINE_BAR_MS),
             ten_seconds: BarState::new(RESAMPLED_BAR_MS[0]),
             sixty_seconds: BarState::new(RESAMPLED_BAR_MS[1]),
+            completed_sixty_seconds: Vec::new(),
             orderbook: OrderBook::new(),
             book_initialized: false,
             next_book_update_id: 1,
@@ -489,8 +491,15 @@ impl LocalBaselineAggregator {
         let mut completed = Vec::new();
         self.finish_base_current(&mut completed);
         self.ten_seconds.close_current();
-        self.sixty_seconds.close_current();
+        if let Some(bar) = self.sixty_seconds.close_current() {
+            self.completed_sixty_seconds.push(bar);
+        }
         completed
+    }
+
+    /// Returns finalized 60-second trade bars generated from finalized 5-second bars.
+    pub fn drain_sixty_second_bars(&mut self) -> Vec<BaselineBar> {
+        std::mem::take(&mut self.completed_sixty_seconds)
     }
 
     pub fn stats(&self) -> [BaselineStats; 3] {
@@ -550,19 +559,26 @@ impl LocalBaselineAggregator {
     }
 
     fn consume_base_bar(&mut self, bar: &BaselineBar) {
-        consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS);
-        consume_sub_bar(&mut self.sixty_seconds, bar, BASELINE_BAR_MS);
+        let _ = consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS);
+        if let Some(completed) = consume_sub_bar(&mut self.sixty_seconds, bar, BASELINE_BAR_MS) {
+            self.completed_sixty_seconds.push(completed);
+        }
     }
 }
 
-fn consume_sub_bar(state: &mut BarState, source: &BaselineBar, source_bar_ms: i64) {
+fn consume_sub_bar(
+    state: &mut BarState,
+    source: &BaselineBar,
+    source_bar_ms: i64,
+) -> Option<BaselineBar> {
     let target_start = align(source.start_ms, state.bar_ms);
+    let mut completed = None;
     match state.current.as_ref().map(|bar| bar.start_ms) {
         None => state.current = Some(BaselineBar::new(target_start)),
         Some(start) if target_start > start => {
-            state.close_current();
+            completed = state.close_current();
         }
-        Some(start) if target_start < start => return,
+        Some(start) if target_start < start => return None,
         Some(_) => {}
     }
     if state.current.is_none() {
@@ -572,8 +588,9 @@ fn consume_sub_bar(state: &mut BarState, source: &BaselineBar, source_bar_ms: i6
         target.merge(source);
     }
     if source.start_ms.saturating_add(source_bar_ms) >= target_start.saturating_add(state.bar_ms) {
-        state.close_current();
+        completed = state.close_current();
     }
+    completed
 }
 
 fn align(timestamp_ms: i64, bar_ms: i64) -> i64 {
@@ -601,6 +618,19 @@ mod tests {
         assert_eq!(stats[1].closed_bars, 2);
         assert_eq!(stats[2].bar_ms, 60_000);
         assert_eq!(stats[2].closed_bars, 1);
+    }
+
+    #[test]
+    fn exposes_finalized_sixty_second_bars() {
+        let mut agg = LocalBaselineAggregator::new();
+        for second in (0..=60).step_by(5) {
+            agg.on_trade(second * 1_000_000 + 1, true, 100.0, 1.0);
+        }
+
+        let completed = agg.drain_sixty_second_bars();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].start_ms, 0);
+        assert!(completed[0].has_trade);
     }
 
     #[test]

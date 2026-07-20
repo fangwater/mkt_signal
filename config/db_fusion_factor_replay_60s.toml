@@ -1,0 +1,20 @@
+# Offline fusion factor replay for 60-second baseline bars. Rows and factor
+# columns use the same format as the 5-second table; only input/output cadence
+# and table names differ.
+venue = "binance-futures"
+symbols = ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
+start_date = "2024-12-01"
+end_date = "2024-12-31"
+replay_workers = 6
+
+# Keep the complete factor list here whenever widening the table later.
+factors = ["baseline_118"]
+
+[clickhouse]
+url = "http://127.0.0.1:18123"
+input_database = "baseline"
+input_trade_table = "baseline_binance_futures_60s_trade"
+input_depth_table = "baseline_binance_futures_60s_depth"
+output_database = "fusion"
+output_table = "fusion_factor_binance_futures_60s"
+batch_rows = 10000
