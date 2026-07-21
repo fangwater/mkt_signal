@@ -39,7 +39,9 @@ const DERIVATIVES_DEDUP_WINDOW_US: i64 = 30_000_000;
 const DERIVATIVES_DEDUP_PRUNE_EVERY: usize = 4_096;
 const WS_BUSINESS_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 const INCREMENTAL_HEALTH_STARTUP_GRACE: Duration = Duration::from_secs(30);
-const INCREMENTAL_CRITICAL_STALE_US: i64 = 15_000_000;
+const INCREMENTAL_CRITICAL_STALE: Duration = Duration::from_secs(15);
+const INCREMENTAL_STALE_LOG_INTERVAL: Duration = Duration::from_secs(30);
+const HEALTH_WALL_CLOCK_JUMP_THRESHOLD: Duration = Duration::from_secs(1);
 const INCREMENTAL_CRITICAL_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
 const ENV_ENABLE_INCREMENTAL: &str = "SPREAD_PBS_ENABLE_INCREMENTAL";
@@ -850,6 +852,11 @@ impl SpreadPbsApp {
         let mut health_ticker = tokio::time::interval(Duration::from_secs(1));
         health_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         health_ticker.tick().await;
+        let mut reported_stale_incremental_symbols = Vec::<String>::new();
+        let mut next_incremental_stale_log_at = health_started_at;
+        let mut incremental_stale_started_at = None::<Instant>;
+        let mut last_health_sample_at = health_started_at;
+        let mut last_health_wall_us = get_timestamp_us();
         loop {
             tokio::select! {
                 changed = shutdown_rx.changed() => {
@@ -913,22 +920,74 @@ impl SpreadPbsApp {
                 }
                 _ = health_ticker.tick(), if direct_incremental_enabled => {
                     if health_started_at.elapsed() >= INCREMENTAL_HEALTH_STARTUP_GRACE {
-                        let now_us = get_timestamp_us();
+                        let now = Instant::now();
+                        let wall_now_us = get_timestamp_us();
+                        let clock_delta_us = wall_clock_delta_us(
+                            last_health_wall_us,
+                            wall_now_us,
+                            now.duration_since(last_health_sample_at),
+                        );
+                        if clock_delta_us.unsigned_abs()
+                            >= HEALTH_WALL_CLOCK_JUMP_THRESHOLD.as_micros()
+                        {
+                            log::error!(
+                                "spread_pbs[{}] wall clock jump detected delta_us={}",
+                                venue_slug,
+                                clock_delta_us,
+                            );
+                        }
+                        last_health_sample_at = now;
+                        last_health_wall_us = wall_now_us;
                         let stale = state
                             .borrow()
                             .symbol_state
                             .stale_incremental_symbols(
                                 &INCREMENTAL_CRITICAL_SYMBOLS,
-                                now_us,
-                                INCREMENTAL_CRITICAL_STALE_US,
+                                now,
+                                INCREMENTAL_CRITICAL_STALE,
                             );
-                        if !stale.is_empty() {
-                            bail!(
-                                "spread_pbs[{}] critical incremental input stale symbols={} threshold_ms={}",
-                                venue_slug,
-                                stale.join(","),
-                                INCREMENTAL_CRITICAL_STALE_US / 1_000,
-                            );
+                        if stale.is_empty() {
+                            if !reported_stale_incremental_symbols.is_empty() {
+                                let stale_duration_ms = incremental_stale_started_at
+                                    .take()
+                                    .map(|started_at| now.duration_since(started_at).as_millis())
+                                    .unwrap_or(0);
+                                let s = state.borrow();
+                                let symbol_ages = s.symbol_state.critical_stream_age_summary(&INCREMENTAL_CRITICAL_SYMBOLS, now);
+                                log::warn!(
+                                    "spread_pbs[{}] critical incremental input recovered symbols={} threshold_ms={} stale_duration_ms={} symbol_ages={} incremental_published={} trades_published={}",
+                                    venue_slug,
+                                    reported_stale_incremental_symbols.join(","),
+                                    INCREMENTAL_CRITICAL_STALE.as_millis(),
+                                    stale_duration_ms,
+                                    symbol_ages,
+                                    s.incremental_published,
+                                    s.trades_published,
+                                );
+                            }
+                            reported_stale_incremental_symbols.clear();
+                            next_incremental_stale_log_at = now;
+                        } else {
+                            incremental_stale_started_at.get_or_insert(now);
+                            let stale_changed = stale != reported_stale_incremental_symbols;
+                            if stale_changed || now >= next_incremental_stale_log_at {
+                                let s = state.borrow();
+                                let symbol_ages = s.symbol_state.critical_stream_age_summary(&INCREMENTAL_CRITICAL_SYMBOLS, now);
+                                log::error!(
+                                    "spread_pbs[{}] critical incremental input stale symbols={} threshold_ms={} symbol_ages={} incremental_published={} trades_published={} incremental_dropped_by_seq={} trades_dropped_by_seq={}; keeping process alive while websocket legs reconnect",
+                                    venue_slug,
+                                    stale.join(","),
+                                    INCREMENTAL_CRITICAL_STALE.as_millis(),
+                                    symbol_ages,
+                                    s.incremental_published,
+                                    s.trades_published,
+                                    s.incremental_dropped_by_seq,
+                                    s.trades_dropped_by_seq,
+                                );
+                                next_incremental_stale_log_at =
+                                    now + INCREMENTAL_STALE_LOG_INTERVAL;
+                            }
+                            reported_stale_incremental_symbols = stale;
                         }
                     }
                 }
@@ -1732,14 +1791,29 @@ async fn restart_leg(
     );
 }
 
+fn wall_clock_delta_us(
+    previous_wall_us: i64,
+    current_wall_us: i64,
+    monotonic_elapsed: Duration,
+) -> i128 {
+    (current_wall_us as i128 - previous_wall_us as i128) - monotonic_elapsed.as_micros() as i128
+}
+
+fn stream_age_ms(last_seen_at: Option<Instant>, now: Instant) -> String {
+    last_seen_at
+        .map(|last_seen| now.duration_since(last_seen).as_millis().to_string())
+        .unwrap_or_else(|| "never".to_string())
+}
+
 struct SymbolSeqState {
     index_by_symbol: FastHashMap<String, usize>,
     bbo_seq: Vec<i64>,
     bbo_ts_us: Vec<i64>,
     latency_measurement_symbol: Vec<bool>,
     trade_seq: Vec<i64>,
+    trade_last_seen_at: Vec<Option<Instant>>,
     incremental_seq: Vec<i64>,
-    incremental_last_seen_us: Vec<i64>,
+    incremental_last_seen_at: Vec<Option<Instant>>,
     bbo_seen: usize,
     trade_seen: usize,
     incremental_seen: usize,
@@ -1753,8 +1827,9 @@ impl SymbolSeqState {
             bbo_ts_us: Vec::with_capacity(symbols.len()),
             latency_measurement_symbol: Vec::with_capacity(symbols.len()),
             trade_seq: Vec::with_capacity(symbols.len()),
+            trade_last_seen_at: Vec::with_capacity(symbols.len()),
             incremental_seq: Vec::with_capacity(symbols.len()),
-            incremental_last_seen_us: Vec::with_capacity(symbols.len()),
+            incremental_last_seen_at: Vec::with_capacity(symbols.len()),
             bbo_seen: 0,
             trade_seen: 0,
             incremental_seen: 0,
@@ -1780,8 +1855,9 @@ impl SymbolSeqState {
         self.latency_measurement_symbol
             .push(is_latency_measurement_symbol(symbol));
         self.trade_seq.push(i64::MIN);
+        self.trade_last_seen_at.push(None);
         self.incremental_seq.push(i64::MIN);
-        self.incremental_last_seen_us.push(0);
+        self.incremental_last_seen_at.push(None);
         idx
     }
 
@@ -1844,10 +1920,15 @@ impl SymbolSeqState {
     }
 
     fn set_trade_slot(&mut self, slot: SymbolSlot, seq_id: i64) {
+        self.set_trade_slot_at(slot, seq_id, Instant::now());
+    }
+
+    fn set_trade_slot_at(&mut self, slot: SymbolSlot, seq_id: i64, seen_at: Instant) {
         if slot.prev == i64::MIN {
             self.trade_seen += 1;
         }
         self.trade_seq[slot.idx] = seq_id;
+        self.trade_last_seen_at[slot.idx] = Some(seen_at);
     }
 
     fn incremental_slot(&mut self, symbol: &str) -> SymbolSlot {
@@ -1871,28 +1952,50 @@ impl SymbolSeqState {
     }
 
     fn set_incremental_slot(&mut self, slot: SymbolSlot, seq_id: i64) {
+        self.set_incremental_slot_at(slot, seq_id, Instant::now());
+    }
+
+    fn set_incremental_slot_at(&mut self, slot: SymbolSlot, seq_id: i64, seen_at: Instant) {
         if slot.prev == i64::MIN {
             self.incremental_seen += 1;
         }
         self.incremental_seq[slot.idx] = seq_id;
-        self.incremental_last_seen_us[slot.idx] = get_timestamp_us();
+        self.incremental_last_seen_at[slot.idx] = Some(seen_at);
     }
 
     fn stale_incremental_symbols(
         &self,
         critical_symbols: &[&str],
-        now_us: i64,
-        stale_after_us: i64,
+        now: Instant,
+        stale_after: Duration,
     ) -> Vec<String> {
         critical_symbols
             .iter()
             .filter_map(|symbol| {
                 let idx = *self.index_by_symbol.get(*symbol)?;
-                let last_seen_us = self.incremental_last_seen_us[idx];
-                (last_seen_us == 0 || now_us.saturating_sub(last_seen_us) > stale_after_us)
+                self.incremental_last_seen_at[idx]
+                    .map_or(true, |last_seen| {
+                        now.duration_since(last_seen) > stale_after
+                    })
                     .then(|| (*symbol).to_string())
             })
             .collect()
+    }
+
+    fn critical_stream_age_summary(&self, critical_symbols: &[&str], now: Instant) -> String {
+        critical_symbols
+            .iter()
+            .filter_map(|symbol| {
+                let idx = *self.index_by_symbol.get(*symbol)?;
+                let incremental_age = stream_age_ms(self.incremental_last_seen_at[idx], now);
+                let trade_age = stream_age_ms(self.trade_last_seen_at[idx], now);
+                Some(format!(
+                    "{}:incremental_age_ms={}:trade_age_ms={}",
+                    symbol, incremental_age, trade_age
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     fn clear_bbo(&mut self) -> usize {
@@ -3184,6 +3287,76 @@ mod tests {
         assert_eq!(state.bbo_seen(), 0);
         assert_eq!(state.trade_seen(), 1);
         assert_eq!(state.incremental_prev_seen("BTCUSDT"), Some(30));
+    }
+
+    #[test]
+    fn incremental_staleness_uses_monotonic_time() {
+        let symbols = vec![
+            "BTCUSDT".to_string(),
+            "ETHUSDT".to_string(),
+            "SOLUSDT".to_string(),
+        ];
+        let mut state = SymbolSeqState::with_symbols(&symbols);
+        let seen_at = Instant::now();
+
+        assert_eq!(
+            state.stale_incremental_symbols(
+                &INCREMENTAL_CRITICAL_SYMBOLS,
+                seen_at,
+                INCREMENTAL_CRITICAL_STALE,
+            ),
+            symbols
+        );
+
+        for (seq_id, symbol) in symbols.iter().enumerate() {
+            let slot = state.incremental_slot(symbol);
+            state.set_incremental_slot_at(slot, seq_id as i64, seen_at);
+        }
+
+        assert!(state
+            .stale_incremental_symbols(
+                &INCREMENTAL_CRITICAL_SYMBOLS,
+                seen_at + INCREMENTAL_CRITICAL_STALE,
+                INCREMENTAL_CRITICAL_STALE,
+            )
+            .is_empty());
+        assert_eq!(
+            state.stale_incremental_symbols(
+                &INCREMENTAL_CRITICAL_SYMBOLS,
+                seen_at + INCREMENTAL_CRITICAL_STALE + Duration::from_micros(1),
+                INCREMENTAL_CRITICAL_STALE,
+            ),
+            symbols
+        );
+    }
+
+    #[test]
+    fn wall_clock_jump_delta_compares_system_and_monotonic_time() {
+        assert_eq!(
+            wall_clock_delta_us(1_000_000, 18_000_000, Duration::from_secs(1)),
+            16_000_000
+        );
+        assert_eq!(
+            wall_clock_delta_us(18_000_000, 1_000_000, Duration::from_secs(1)),
+            -18_000_000
+        );
+    }
+
+    #[test]
+    fn critical_stream_age_summary_reports_incremental_and_trade_freshness() {
+        let symbols = vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()];
+        let mut state = SymbolSeqState::with_symbols(&symbols);
+        let seen_at = Instant::now();
+
+        let trade = state.trade_slot("BTCUSDT");
+        state.set_trade_slot_at(trade, 1, seen_at);
+        let incremental = state.incremental_slot("BTCUSDT");
+        state.set_incremental_slot_at(incremental, 2, seen_at);
+
+        assert_eq!(
+            state.critical_stream_age_summary(&["BTCUSDT", "ETHUSDT"], seen_at + Duration::from_secs(2)),
+            "BTCUSDT:incremental_age_ms=2000:trade_age_ms=2000,ETHUSDT:incremental_age_ms=never:trade_age_ms=never"
+        );
     }
 
     #[test]
