@@ -44,7 +44,7 @@ explicit per-process bindings.
 | 9 | `spread_pbs` | `~/spread_pbs/binance-futures` | `SPREAD_PBS_CORE=9` | `spp_bn_fu` |
 | 10 | `spread_pbs` | `~/spread_pbs/gate-both` | `SPREAD_PBS_CORE=10` | `spp_gt_bo` |
 | 11 | `spread_pbs` | `~/spread_pbs/bitget-both` | `SPREAD_PBS_CORE=11` | `spp_bg_bo` |
-| 12 | `spread_pbs` | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=12` plus OKX env sourced from `~/okex-intra-arb01/env.sh` | `spp_ok_bo` |
+| 12 | `spread_pbs` | `~/spread_pbs/okex-both` | `SPREAD_PBS_CORE=12`; source OKX credentials, then unset `IPC_NAMESPACE` | `spp_ok_bo` |
 | 13 | `depth_pub` | `~/depth_pub/okex-both` | `DEPTH_PUB_CORE=13` | `dp_ok_both` |
 | 14 | `depth_pub` | `~/depth_pub/binance-both` | `DEPTH_PUB_CORE=14` | `dp_bn_both` |
 
@@ -101,8 +101,11 @@ files:
 Write or preserve only the relevant core override in each deployed venue. Do
 not hard-code credentials in repo files. OKEx `spread_pbs` needs
 `OKX_API_KEY`, `OKX_API_SECRET`, and `OKX_PASSPHRASE` for SBE handshake.
-`~/spread_pbs/okex-both/env.sh` sources `~/okex-intra-arb01/env.sh`
-and then sets `SPREAD_PBS_CORE=12`.
+`~/spread_pbs/okex-both/env.sh` sources `~/okex-intra-arb01/env.sh` for the
+three OKX credentials, immediately unsets `IPC_NAMESPACE`, and then sets
+`SPREAD_PBS_CORE=12`. The publisher must remain in the default namespace with
+the other market-data publishers; the sourced trading namespace is not part of
+the SBE authentication configuration.
 
 ## Startup Order
 
