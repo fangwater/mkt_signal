@@ -127,7 +127,7 @@ impl CapacityVenue {
 
     fn available_label(self) -> &'static str {
         match self {
-            Self::BinancePm => "free",
+            Self::BinancePm => "total_available_balance",
             Self::OkexUnified => "available",
             Self::GateUnified => "available",
             // Bitget `assets.USDT.available` is a wallet balance, not the
@@ -190,7 +190,7 @@ impl CapacityVenue {
 
     fn available_req_type(self) -> QueryRequestType {
         match self {
-            Self::BinancePm => QueryRequestType::BinancePmUsdtFreeSnapshot,
+            Self::BinancePm => QueryRequestType::BinancePmAccountSnapshot,
             Self::OkexUnified => QueryRequestType::OkexUsdtAvailableSnapshot,
             Self::GateUnified => QueryRequestType::GateUnifiedUsdtAvailableSnapshot,
             Self::BitgetUnified => QueryRequestType::BitgetUsdtAvailableSnapshot,
@@ -198,19 +198,19 @@ impl CapacityVenue {
         }
     }
 
-    fn max_borrowable_req_type(self) -> QueryRequestType {
+    fn max_borrowable_req_type(self) -> Option<QueryRequestType> {
         match self {
-            Self::BinancePm => QueryRequestType::BinancePmUsdtMaxBorrowable,
-            Self::OkexUnified => QueryRequestType::OkexUsdtMaxLoan,
-            Self::GateUnified => QueryRequestType::GateUnifiedUsdtMaxBorrowable,
-            Self::BitgetUnified => QueryRequestType::BitgetUsdtMaxTransferable,
-            Self::BybitUnified => QueryRequestType::BybitAccountBalanceSnapshot,
+            Self::BinancePm => None,
+            Self::OkexUnified => Some(QueryRequestType::OkexUsdtMaxLoan),
+            Self::GateUnified => Some(QueryRequestType::GateUnifiedUsdtMaxBorrowable),
+            Self::BitgetUnified => Some(QueryRequestType::BitgetUsdtMaxTransferable),
+            Self::BybitUnified => Some(QueryRequestType::BybitAccountBalanceSnapshot),
         }
     }
 
     fn available_params(self) -> Bytes {
         match self {
-            Self::BinancePm => Bytes::from_static(b"asset=USDT"),
+            Self::BinancePm => Bytes::new(),
             Self::OkexUnified => Bytes::from_static(b"ccy=USDT"),
             Self::GateUnified => Bytes::from_static(b"currency=USDT"),
             Self::BitgetUnified => Bytes::new(),
@@ -220,7 +220,7 @@ impl CapacityVenue {
 
     fn max_borrowable_params(self) -> Bytes {
         match self {
-            Self::BinancePm => Bytes::from_static(b"asset=USDT"),
+            Self::BinancePm => Bytes::new(),
             Self::OkexUnified => Bytes::from_static(OKEX_USDT_MAX_LOAN_PARAMS),
             Self::GateUnified => Bytes::from_static(b"currency=USDT"),
             Self::BitgetUnified => Bytes::from_static(b"coin=USDT"),
@@ -344,17 +344,19 @@ fn drive_capacity_poll(venue: CapacityVenue, now_us: i64) {
             return;
         }
         let available_query_id = next_capacity_query_id();
-        let max_borrowable_query_id = next_capacity_query_id();
+        let max_borrowable_query_id = venue
+            .max_borrowable_req_type()
+            .map(|_| next_capacity_query_id());
         state.last_query_sent_us = now_us;
         state.available_query_id = Some(available_query_id);
-        state.max_borrowable_query_id = Some(max_borrowable_query_id);
+        state.max_borrowable_query_id = max_borrowable_query_id;
         state.last_usdt_available = None;
-        state.last_usdt_max_borrowable = None;
+        state.last_usdt_max_borrowable = venue.max_borrowable_req_type().is_none().then_some(0.0);
         (available_query_id, max_borrowable_query_id)
     };
 
     info!(
-        "AccountOpenBlock: {} capacity poll sent available_query_id={} max_borrowable_query_id={} threshold={:.8}",
+        "AccountOpenBlock: {} capacity poll sent available_query_id={} max_borrowable_query_id={:?} threshold={:.8}",
         venue.label(),
         available_query_id,
         max_borrowable_query_id,
@@ -377,19 +379,19 @@ fn drive_capacity_poll(venue: CapacityVenue, now_us: i64) {
         );
     }
 
-    let max_borrow_req = GenericQueryRequest::create(
-        venue.max_borrowable_req_type(),
-        now_us,
-        max_borrowable_query_id,
-        venue.max_borrowable_params(),
-    );
-    if let Err(err) =
-        QueryEngHub::publish_query_request(venue.exchange(), &max_borrow_req.to_bytes())
+    if let (Some(req_type), Some(query_id)) =
+        (venue.max_borrowable_req_type(), max_borrowable_query_id)
     {
-        warn!(
-            "AccountOpenBlock: publish {} USDT maxBorrowable query failed: {err:#}",
-            venue.label()
-        );
+        let max_borrow_req =
+            GenericQueryRequest::create(req_type, now_us, query_id, venue.max_borrowable_params());
+        if let Err(err) =
+            QueryEngHub::publish_query_request(venue.exchange(), &max_borrow_req.to_bytes())
+        {
+            warn!(
+                "AccountOpenBlock: publish {} USDT maxBorrowable query failed: {err:#}",
+                venue.label()
+            );
+        }
     }
 }
 
@@ -399,8 +401,8 @@ pub fn handle_account_open_block_query_response(
     body: &Bytes,
 ) -> bool {
     match req_type {
-        QueryRequestType::BinancePmUsdtFreeSnapshot => {
-            match parse_binance_pm_usdt_free(body) {
+        QueryRequestType::BinancePmAccountSnapshot => {
+            match parse_binance_pm_total_available_balance(body) {
                 Some(value) => {
                     update_capacity_snapshot(
                         CapacityVenue::BinancePm,
@@ -410,24 +412,7 @@ pub fn handle_account_open_block_query_response(
                     );
                 }
                 None => warn!(
-                    "AccountOpenBlock: parse USDT free failed body={}",
-                    trim_body(body)
-                ),
-            }
-            true
-        }
-        QueryRequestType::BinancePmUsdtMaxBorrowable => {
-            match parse_binance_pm_max_borrowable(body) {
-                Some(value) => {
-                    update_capacity_snapshot(
-                        CapacityVenue::BinancePm,
-                        req_type,
-                        client_query_id,
-                        value,
-                    );
-                }
-                None => warn!(
-                    "AccountOpenBlock: parse USDT maxBorrowable failed body={}",
+                    "AccountOpenBlock: parse Binance PM totalAvailableBalance failed body={}",
                     trim_body(body)
                 ),
             }
@@ -731,7 +716,7 @@ fn update_capacity_snapshot(
                 return;
             }
             state.last_usdt_available = Some(value);
-        } else if req_type == venue.max_borrowable_req_type() {
+        } else if venue.max_borrowable_req_type() == Some(req_type) {
             if state.max_borrowable_query_id != Some(client_query_id) {
                 warn!(
                     "AccountOpenBlock: ignore stale {} USDT maxBorrowable query response client_query_id={} expected={:?}",
@@ -841,32 +826,10 @@ fn next_capacity_query_id() -> i64 {
     NEXT_CAPACITY_QUERY_ID.fetch_sub(1, Ordering::Relaxed)
 }
 
-fn parse_binance_pm_usdt_free(body: &Bytes) -> Option<f64> {
+fn parse_binance_pm_total_available_balance(body: &Bytes) -> Option<f64> {
     let text = trim_body(body);
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    if let Some(rows) = value.as_array() {
-        rows.iter()
-            .find(|row| {
-                row.get("asset")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|asset| asset.eq_ignore_ascii_case("USDT"))
-            })
-            .and_then(|row| parse_json_f64(row.get("crossMarginFree")))
-    } else if value
-        .get("asset")
-        .and_then(|v| v.as_str())
-        .is_some_and(|asset| asset.eq_ignore_ascii_case("USDT"))
-    {
-        parse_json_f64(value.get("crossMarginFree"))
-    } else {
-        None
-    }
-}
-
-fn parse_binance_pm_max_borrowable(body: &Bytes) -> Option<f64> {
-    let text = trim_body(body);
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    parse_json_f64(value.get("amount"))
+    parse_json_f64(value.get("totalAvailableBalance"))
 }
 
 fn parse_okex_unified_usdt_available(body: &Bytes) -> Option<f64> {
@@ -1045,6 +1008,18 @@ mod tests {
         };
     }
 
+    fn seed_single_poll_state(venue: CapacityVenue, available_query_id: i64) {
+        *capacity_poll_state(venue).lock() = CapacityPollState {
+            last_query_sent_us: 3_000_000,
+            available_query_id: Some(available_query_id),
+            max_borrowable_query_id: None,
+            last_usdt_available: None,
+            last_usdt_max_borrowable: Some(0.0),
+            last_capacity_check_us: 0,
+            ..CapacityPollState::default()
+        };
+    }
+
     #[test]
     fn registers_persistent_account_open_block() {
         let _guard = TEST_LOCK.lock();
@@ -1132,21 +1107,17 @@ mod tests {
             -2019,
             3_000_000,
         );
-        seed_poll_state(CapacityVenue::BinancePm, -1, -2);
+        seed_single_poll_state(CapacityVenue::BinancePm, -1);
 
         assert!(handle_account_open_block_query_response(
-            QueryRequestType::BinancePmUsdtFreeSnapshot,
+            QueryRequestType::BinancePmAccountSnapshot,
             -1,
-            &Bytes::from_static(br#"{"asset":"USDT","crossMarginFree":"100.5"}"#),
-        ));
-        assert!(check_account_open_block().is_some());
-
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BinancePmUsdtMaxBorrowable,
-            -2,
-            &Bytes::from_static(br#"{"amount":"2000.0","borrowLimit":"100000"}"#),
+            &Bytes::from_static(br#"{"totalAvailableBalance":"2000.01"}"#),
         ));
         assert!(check_account_open_block().is_none());
+        let state = BINANCE_PM_CAPACITY_POLL.lock();
+        assert_eq!(state.last_completed_usdt_available, Some(2000.01));
+        assert_eq!(state.last_completed_usdt_max_borrowable, Some(0.0));
     }
 
     #[test]
@@ -1158,17 +1129,12 @@ mod tests {
             -2019,
             3_000_000,
         );
-        seed_poll_state(CapacityVenue::BinancePm, -3, -4);
+        seed_single_poll_state(CapacityVenue::BinancePm, -3);
 
         assert!(handle_account_open_block_query_response(
-            QueryRequestType::BinancePmUsdtFreeSnapshot,
+            QueryRequestType::BinancePmAccountSnapshot,
             -3,
-            &Bytes::from_static(br#"[{"asset":"USDT","crossMarginFree":"10"}]"#),
-        ));
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BinancePmUsdtMaxBorrowable,
-            -4,
-            &Bytes::from_static(br#"{"amount":"1989.0"}"#),
+            &Bytes::from_static(br#"{"totalAvailableBalance":"1999.99"}"#),
         ));
         assert!(check_account_open_block().is_some());
     }
@@ -1177,20 +1143,13 @@ mod tests {
     fn locks_when_binance_pm_usdt_capacity_is_below_threshold_without_existing_block() {
         let _guard = TEST_LOCK.lock();
         clear_all();
-        seed_poll_state(CapacityVenue::BinancePm, -5, -6);
+        seed_single_poll_state(CapacityVenue::BinancePm, -5);
 
         assert!(check_account_open_block().is_none());
         assert!(handle_account_open_block_query_response(
-            QueryRequestType::BinancePmUsdtFreeSnapshot,
+            QueryRequestType::BinancePmAccountSnapshot,
             -5,
-            &Bytes::from_static(br#"{"asset":"USDT","crossMarginFree":"10"}"#),
-        ));
-        assert!(check_account_open_block().is_none());
-
-        assert!(handle_account_open_block_query_response(
-            QueryRequestType::BinancePmUsdtMaxBorrowable,
-            -6,
-            &Bytes::from_static(br#"{"amount":"1989.0"}"#),
+            &Bytes::from_static(br#"{"totalAvailableBalance":"1999.99"}"#),
         ));
         let hit = check_account_open_block().expect("low capacity must lock ArbOpen");
         assert_eq!(
@@ -1198,6 +1157,31 @@ mod tests {
             AccountOpenBlockReason::BinancePmInsufficientMargin
         );
         assert_eq!(hit.last_error_code, BINANCE_PM_CAPACITY_LOW_ERROR_CODE);
+    }
+
+    #[test]
+    fn ignores_empty_binance_pm_total_available_balance() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        register_account_open_block_at(
+            AccountOpenBlockReason::BinancePmInsufficientMargin,
+            -2019,
+            3_000_000,
+        );
+        seed_single_poll_state(CapacityVenue::BinancePm, -7);
+
+        assert!(handle_account_open_block_query_response(
+            QueryRequestType::BinancePmAccountSnapshot,
+            -7,
+            &Bytes::from_static(br#"{"totalAvailableBalance":""}"#),
+        ));
+        assert!(check_account_open_block().is_some());
+        assert_eq!(
+            BINANCE_PM_CAPACITY_POLL
+                .lock()
+                .last_completed_usdt_available,
+            None
+        );
     }
 
     #[test]

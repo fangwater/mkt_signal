@@ -113,7 +113,7 @@ impl LtpRestClient {
                     )],
                 }
             }
-            QueryRequestType::BinancePmUsdtFreeSnapshot
+            QueryRequestType::BinancePmAccountSnapshot
             | QueryRequestType::OkexUsdtAvailableSnapshot => {
                 match self.signed_get(ASSET_PATH, &BTreeMap::new()).await {
                     Ok((status, body)) => parse_ltp_usdt_available_snapshot(
@@ -131,7 +131,7 @@ impl LtpRestClient {
                     )],
                 }
             }
-            QueryRequestType::BinancePmUsdtMaxBorrowable | QueryRequestType::OkexUsdtMaxLoan => {
+            QueryRequestType::OkexUsdtMaxLoan => {
                 vec![query_outcome(
                     msg,
                     logical_exchange,
@@ -401,11 +401,10 @@ fn parse_ltp_usdt_available_body(
         .or_else(|| first_present_f64(&[&row.equity]))
         .unwrap_or(0.0);
     let response = match req_type {
-        QueryRequestType::BinancePmUsdtFreeSnapshot => {
-            json!([{
-                "asset": "USDT",
-                "crossMarginFree": available.to_string(),
-            }])
+        QueryRequestType::BinancePmAccountSnapshot => {
+            json!({
+                "totalAvailableBalance": available.to_string(),
+            })
         }
         QueryRequestType::OkexUsdtAvailableSnapshot => {
             json!({
