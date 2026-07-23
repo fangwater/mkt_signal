@@ -18,7 +18,6 @@ use crate::pre_trade::taker_decision_model::{
 use crate::strategy::arb_close_strategy::ArbCloseStrategy;
 use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
-use crate::strategy::exec_strategy::ExecStrategy;
 use crate::strategy::mm_hedge_strategy::MarketMakerHedgeStrategy;
 use crate::strategy::mm_open_strategy::MarketMakerOpenStrategy;
 use crate::strategy::open_strategy_common::OpenStrategyCommon;
@@ -40,7 +39,6 @@ use signal_common::arb_signal::{
 };
 use signal_common::cancel_signal::{ArbCancelCtx, MmCancelCtx};
 use signal_common::common::bytes_helper;
-use signal_common::exec_signal::{ExecCtx, ExecPositionTargetCtx, ExecRequestCtx};
 use signal_common::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use signal_common::mm_signal::{
     MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
@@ -331,9 +329,6 @@ pub fn take_signal_counts() -> HashMap<String, u64> {
             SignalType::MMCancelTrigger,
             SignalType::ArbCancelTrigger,
             SignalType::ArbHedge,
-            SignalType::ExecRequest,
-            SignalType::Exec,
-            SignalType::ExecPositionTarget,
         ] {
             let idx = signal_count_index(&signal_type);
             let count = counts[idx];
@@ -363,9 +358,6 @@ fn signal_count_index(signal_type: &SignalType) -> usize {
         SignalType::MMCancelTrigger => 8,
         SignalType::ArbCancelTrigger => 9,
         SignalType::ArbHedge => 10,
-        SignalType::ExecRequest => 11,
-        SignalType::Exec => 12,
-        SignalType::ExecPositionTarget => 13,
     }
 }
 
@@ -1931,147 +1923,6 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
                 }
             }
             Err(err) => warn!("failed to decode MMHedge context: {err}"),
-        },
-        SignalType::ExecRequest => match ExecRequestCtx::from_slice(signal.context) {
-            Ok(mut exec_ctx) => {
-                let symbol = normalize_fixed_symbol_for_internal(&exec_ctx.exec_symbol);
-                if symbol.is_empty() {
-                    warn!("ExecRequest: empty symbol");
-                    return;
-                }
-                let Some(exec_venue) = TradingVenue::from_u8(exec_ctx.exec_leg.venue) else {
-                    warn!("ExecRequest: invalid venue {}", exec_ctx.exec_leg.venue);
-                    return;
-                };
-                let configured_open_venue = MonitorChannel::instance().open_venue();
-                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
-                if exec_venue != configured_open_venue && exec_venue != configured_hedge_venue {
-                    warn!(
-                        "ExecRequest: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got {:?}, ignore",
-                        configured_open_venue, configured_hedge_venue, exec_venue
-                    );
-                    return;
-                }
-                exec_ctx.set_exec_symbol(&symbol);
-                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let strategy_id = strategy_mgr
-                    .borrow_mut()
-                    .ensure_exec_strategy_for_normalized_symbol(&symbol, exec_venue);
-                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
-                if let Some(mut strategy) = strategy_opt {
-                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
-                        exec.handle_exec_request_ctx_with_symbol(exec_ctx, symbol.clone());
-                    } else {
-                        warn!(
-                            "ExecRequest: target strategy type mismatch strategy_id={}",
-                            strategy_id
-                        );
-                    }
-                    if strategy.is_active() {
-                        strategy_mgr.borrow_mut().insert(strategy);
-                    } else {
-                        debug!("ExecRequest: strategy inactive id={}", strategy_id);
-                    }
-                }
-            }
-            Err(err) => warn!("failed to decode ExecRequest context: {err}"),
-        },
-        SignalType::Exec => match ExecCtx::from_slice(signal.context) {
-            Ok(mut exec_ctx) => {
-                let symbol = normalize_fixed_symbol_for_internal(&exec_ctx.exec_symbol);
-                if symbol.is_empty() {
-                    warn!("Exec: empty symbol");
-                    return;
-                }
-                let Some(exec_venue) = TradingVenue::from_u8(exec_ctx.exec_leg.venue) else {
-                    warn!("Exec: invalid venue {}", exec_ctx.exec_leg.venue);
-                    return;
-                };
-                exec_ctx.set_exec_symbol(&symbol);
-                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let strategy_id = if exec_ctx.strategy_id > 0 {
-                    exec_ctx.strategy_id
-                } else {
-                    strategy_mgr
-                        .borrow_mut()
-                        .ensure_exec_strategy_for_normalized_symbol(&symbol, exec_venue)
-                };
-                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
-                if let Some(mut strategy) = strategy_opt {
-                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
-                        exec.handle_exec_ctx_with_symbol(exec_ctx, symbol.clone());
-                    } else {
-                        warn!(
-                            "Exec: target strategy type mismatch strategy_id={}",
-                            strategy_id
-                        );
-                    }
-                    if strategy.is_active() {
-                        strategy_mgr.borrow_mut().insert(strategy);
-                    } else {
-                        debug!("Exec: strategy inactive id={}", strategy_id);
-                    }
-                } else {
-                    debug!(
-                        "Exec: target strategy missing id={} symbol={}",
-                        strategy_id, symbol
-                    );
-                }
-            }
-            Err(err) => warn!("failed to decode Exec context: {err}"),
-        },
-        SignalType::ExecPositionTarget => match ExecPositionTargetCtx::from_slice(signal.context) {
-            Ok(mut target_ctx) => {
-                let symbol = normalize_fixed_symbol_for_internal(&target_ctx.exec_symbol);
-                if symbol.is_empty() {
-                    warn!("ExecPositionTarget: empty symbol");
-                    return;
-                }
-                let Some(exec_venue) = target_ctx.get_exec_venue() else {
-                    warn!(
-                        "ExecPositionTarget: invalid venue {}",
-                        target_ctx.exec_venue
-                    );
-                    return;
-                };
-                let configured_open_venue = MonitorChannel::instance().open_venue();
-                let configured_hedge_venue = MonitorChannel::instance().hedge_venue();
-                if exec_venue != configured_open_venue && exec_venue != configured_hedge_venue {
-                    warn!(
-                            "ExecPositionTarget: signal venue mismatch, configured_open={:?} configured_hedge={:?} but got {:?}, ignore",
-                            configured_open_venue, configured_hedge_venue, exec_venue
-                        );
-                    return;
-                }
-                target_ctx.set_exec_symbol(&symbol);
-                if target_ctx.generation_time <= 0 {
-                    target_ctx.generation_time = signal.generation_time;
-                }
-                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-                let strategy_id = strategy_mgr
-                    .borrow_mut()
-                    .ensure_exec_strategy_for_normalized_symbol(&symbol, exec_venue);
-                let strategy_opt = { strategy_mgr.borrow_mut().take(strategy_id) };
-                if let Some(mut strategy) = strategy_opt {
-                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<ExecStrategy>() {
-                        exec.handle_exec_position_target_ctx_with_symbol(
-                            target_ctx,
-                            symbol.clone(),
-                        );
-                    } else {
-                        warn!(
-                            "ExecPositionTarget: target strategy type mismatch strategy_id={}",
-                            strategy_id
-                        );
-                    }
-                    if strategy.is_active() {
-                        strategy_mgr.borrow_mut().insert(strategy);
-                    } else {
-                        debug!("ExecPositionTarget: strategy inactive id={}", strategy_id);
-                    }
-                }
-            }
-            Err(err) => warn!("failed to decode ExecPositionTarget context: {err}"),
         },
     }
 }

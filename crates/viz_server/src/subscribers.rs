@@ -13,8 +13,13 @@ use crate::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::server::WsHub;
 use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
 use runtime_common::time_util::get_timestamp_us;
-use viz_common::resample::{PreTradeExposureResampleEntry, PreTradeRiskResampleEntry};
-use viz_common::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
+use viz_common::resample::{
+    ExecAccountRiskResampleEntry, ExecStrategyStateResampleEntry, PreTradeExposureResampleEntry,
+    PreTradeRiskResampleEntry,
+};
+use viz_common::{
+    DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL, EXEC_RISK_CHANNEL, EXEC_STATE_CHANNEL,
+};
 
 const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;
 const PRE_TRADE_RISK_CHANNEL: &str = DEFAULT_RISK_CHANNEL;
@@ -88,6 +93,68 @@ pub fn spawn_pre_trade_resample_listeners_with_cfg(
         spawn_pre_trade_risk_listener(hub.clone(), &ns, PRE_TRADE_RISK_CHANNEL, None)?;
     }
     Ok(())
+}
+
+pub fn spawn_exec_pre_trade_resample_listeners_with_cfg(
+    hub: WsHub,
+    server: &VizServerCfg,
+) -> Result<()> {
+    let exec = &server.exec_pre_trade;
+    if !exec.enabled {
+        return Ok(());
+    }
+    let namespace = exec.namespace.trim();
+    anyhow::ensure!(
+        !namespace.is_empty(),
+        "viz: exec_pre_trade.enabled requires an explicit exec_pre_trade.namespace"
+    );
+
+    spawn_exec_state_listener(hub.clone(), namespace)?;
+    spawn_exec_risk_listener(hub, namespace)
+}
+
+fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
+    let namespace = namespace.to_string();
+    let namespace_for_msg = namespace.clone();
+    let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_STATE_CHANNEL);
+    spawn_resample_channel(
+        &format!("viz_exec_state_{}", sanitize_node_component(&namespace)),
+        &service_name,
+        move |entry: ExecStrategyStateResampleEntry, hub: WsHub| {
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "exec_pre_trade_state",
+                "namespace": namespace_for_msg.as_str(),
+                "channel": EXEC_STATE_CHANNEL,
+                "ts_ms": get_timestamp_us() / 1000,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        hub,
+    )
+}
+
+fn spawn_exec_risk_listener(hub: WsHub, namespace: &str) -> Result<()> {
+    let namespace = namespace.to_string();
+    let namespace_for_msg = namespace.clone();
+    let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_RISK_CHANNEL);
+    spawn_resample_channel(
+        &format!("viz_exec_risk_{}", sanitize_node_component(&namespace)),
+        &service_name,
+        move |entry: ExecAccountRiskResampleEntry, hub: WsHub| {
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "exec_pre_trade_risk",
+                "namespace": namespace_for_msg.as_str(),
+                "channel": EXEC_RISK_CHANNEL,
+                "ts_ms": get_timestamp_us() / 1000,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        hub,
+    )
 }
 
 fn spawn_pre_trade_exposure_listener(
@@ -316,4 +383,31 @@ fn sanitize_node_component(raw: &str) -> String {
     raw.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spawn_exec_pre_trade_resample_listeners_with_cfg;
+    use crate::config::VizCfg;
+    use crate::server::WsHub;
+
+    #[test]
+    fn exec_listener_never_falls_back_to_normal_namespace() {
+        let cfg: VizCfg = toml::from_str(
+            r#"
+                [[servers]]
+                namespaces = ["normal_trade"]
+
+                [servers.exec_pre_trade]
+                enabled = true
+            "#,
+        )
+        .unwrap();
+
+        let err = spawn_exec_pre_trade_resample_listeners_with_cfg(WsHub::new(4), &cfg.servers[0])
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("explicit exec_pre_trade.namespace"));
+    }
 }

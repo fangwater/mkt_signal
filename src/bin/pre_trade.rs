@@ -1,14 +1,16 @@
 use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
-use anyhow::Result;
-use clap::Parser;
+use anyhow::{Context, Result};
+use clap::{Parser, ValueEnum};
 use log::{info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
+use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
+use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
@@ -35,15 +37,26 @@ use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::redis_client::RedisSettings;
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::time::Duration;
+use tokio::process::Command;
 use trade_engine::config::RestConstants;
 use trade_signal::ArbMode;
 
 #[derive(Parser, Debug)]
-#[command(name = "pre_trade")]
+#[command(name = env!("CARGO_BIN_NAME"))]
 #[command(about = "Pre-trade risk management and order execution")]
 struct Args {
+    /// Single execution venue. Required by exec-pre-trade.
+    #[arg(long, value_enum)]
+    venue: Option<ExecVenue>,
+
+    /// Redis reload interval for BatchExec config and targets.
+    #[arg(long, default_value_t = 1_000)]
+    config_reload_ms: u64,
+
     /// Venue for opening leg (e.g., binance-margin).
     /// If omitted (and hedge_venue also omitted), venues will be inferred from current directory name.
     #[arg(long, value_enum)]
@@ -57,6 +70,21 @@ struct Args {
     /// 绑定到指定 CPU 核（可选）；未提供则尝试 PRE_TRADE_CORE 环境变量
     #[arg(long)]
     core: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExecVenue {
+    BinanceFutures,
+    OkexFutures,
+}
+
+impl From<ExecVenue> for TradingVenue {
+    fn from(value: ExecVenue) -> Self {
+        match value {
+            ExecVenue::BinanceFutures => Self::BinanceFutures,
+            ExecVenue::OkexFutures => Self::OkexFutures,
+        }
+    }
 }
 
 fn normalize_exchange(ex: &str) -> &str {
@@ -162,6 +190,116 @@ fn is_mm_pre_trade_mode(open_venue: TradingVenue, hedge_venue: TradingVenue) -> 
     open_venue == hedge_venue
 }
 
+fn exec_cancel_script(name: &str) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("resolve current directory")?;
+    let candidates = [
+        cwd.join("scripts").join(name),
+        cwd.join(name),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join(name),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| anyhow::anyhow!("startup cancel script not found: scripts/{name}"))
+}
+
+fn exec_python_bin() -> String {
+    std::env::var("PYTHON_BIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            let deployed = "/home/ubuntu/jupyter_env/bin/python";
+            if Path::new(deployed).is_file() {
+                deployed.to_string()
+            } else {
+                "python3".to_string()
+            }
+        })
+}
+
+async fn cancel_all_exec_orders_on_startup(
+    venue: TradingVenue,
+    binance_account_mode: Option<BinanceAccountMode>,
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("resolve current directory")?;
+    let (script_name, args): (&str, Vec<String>) = match venue {
+        TradingVenue::BinanceFutures => match binance_account_mode {
+            Some(BinanceAccountMode::Standard) => (
+                "binance_cancel_all_std_um_ws_orders.py",
+                vec![
+                    "--execute".to_string(),
+                    "--env-dir".to_string(),
+                    cwd.display().to_string(),
+                ],
+            ),
+            Some(BinanceAccountMode::Unified) => (
+                "binance_cancel_all_unified_open_orders.py",
+                vec![
+                    "--scope".to_string(),
+                    "um".to_string(),
+                    "--execute".to_string(),
+                ],
+            ),
+            None => anyhow::bail!("BINANCE_ACCOUNT_MODE is required for binance-futures"),
+        },
+        TradingVenue::OkexFutures => (
+            "okx_swap_open_orders.py",
+            vec![
+                "--fetch-all".to_string(),
+                "--max-pages".to_string(),
+                "0".to_string(),
+                "--cancel".to_string(),
+            ],
+        ),
+        _ => anyhow::bail!(
+            "exec-pre-trade only supports binance-futures and okex-futures: venue={venue:?}"
+        ),
+    };
+    let script = exec_cancel_script(script_name)?;
+    let timeout_secs = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(120)
+        .max(1);
+
+    warn!(
+        "exec-pre-trade startup gate: cancelling all {:?} open orders with {}",
+        venue,
+        script.display()
+    );
+    let mut command = Command::new(exec_python_bin());
+    command
+        .arg(&script)
+        .args(&args)
+        .current_dir(&cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    let status = tokio::time::timeout(Duration::from_secs(timeout_secs), command.status())
+        .await
+        .with_context(|| {
+            format!(
+                "startup cancel timed out after {timeout_secs}s: {}",
+                script.display()
+            )
+        })?
+        .with_context(|| format!("run startup cancel script {}", script.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "startup cancel failed: script={} status={status}",
+            script.display()
+        );
+    }
+    info!(
+        "exec-pre-trade startup gate passed: all {:?} open orders cancelled",
+        venue
+    );
+    Ok(())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let log_env = env_logger::Env::default().default_filter_or("info");
@@ -169,39 +307,70 @@ async fn main() -> Result<()> {
 
     // 解析命令行参数
     let args = Args::parse();
+    let exec_pre_trade = env!("CARGO_BIN_NAME") == "exec-pre-trade";
     maybe_pin_current_thread(args.core, "PRE_TRADE_CORE")?;
-    let (open_venue, hedge_venue) = match (args.open_venue, args.hedge_venue) {
-        (Some(open), Some(hedge)) => (open, hedge),
-        (None, None) => {
-            let cwd = std::env::current_dir().ok();
-            let inferred = infer_venues_from_cwd().ok_or_else(|| {
+    let (open_venue, hedge_venue) = if exec_pre_trade {
+        if args.open_venue.is_some() || args.hedge_venue.is_some() {
+            return Err(anyhow::anyhow!(
+                "exec-pre-trade accepts --venue, not --open-venue/--hedge-venue"
+            ));
+        }
+        let venue = args
+            .venue
+            .ok_or_else(|| anyhow::anyhow!("exec-pre-trade requires --venue"))?
+            .into();
+        if !matches!(
+            venue,
+            TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+        ) {
+            return Err(anyhow::anyhow!(
+                "exec-pre-trade only supports binance-futures and okex-futures"
+            ));
+        }
+        (venue, venue)
+    } else {
+        if args.venue.is_some() {
+            return Err(anyhow::anyhow!(
+                "pre_trade accepts --open-venue/--hedge-venue; BatchExec flags belong to exec-pre-trade"
+            ));
+        }
+        match (args.open_venue, args.hedge_venue) {
+            (Some(open), Some(hedge)) => (open, hedge),
+            (None, None) => {
+                let cwd = std::env::current_dir().ok();
+                let inferred = infer_venues_from_cwd().ok_or_else(|| {
                 anyhow::anyhow!(
                     "missing --open-venue/--hedge-venue and failed to infer from cwd={:?}; please pass both flags explicitly",
                     cwd
                 )
             })?;
-            info!(
-                "venues inferred from cwd={:?}: open_venue={:?} hedge_venue={:?}",
-                cwd, inferred.0, inferred.1
-            );
-            inferred
-        }
-        _ => {
-            return Err(anyhow::anyhow!(
+                info!(
+                    "venues inferred from cwd={:?}: open_venue={:?} hedge_venue={:?}",
+                    cwd, inferred.0, inferred.1
+                );
+                inferred
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
                 "invalid args: --open-venue and --hedge-venue must be provided together, or both omitted"
             ));
+            }
         }
     };
     let venue_arb_mode = ArbMode::from_venues(open_venue, hedge_venue);
     let cwd_arb_mode = infer_arb_mode_from_cwd();
     let arb_mode = cwd_arb_mode.unwrap_or(venue_arb_mode);
-    info!(
-        "pre_trade starting, open_venue={:?}, hedge_venue={:?}, arb_mode={} (venue_derived={})",
-        open_venue,
-        hedge_venue,
-        arb_mode.as_str(),
-        venue_arb_mode.as_str()
-    );
+    if exec_pre_trade {
+        info!("exec-pre-trade starting, venue={:?}", open_venue);
+    } else {
+        info!(
+            "pre_trade starting, open_venue={:?}, hedge_venue={:?}, arb_mode={} (venue_derived={})",
+            open_venue,
+            hedge_venue,
+            arb_mode.as_str(),
+            venue_arb_mode.as_str()
+        );
+    }
     let need_binance = open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance";
     let binance_account_mode = if need_binance {
@@ -228,6 +397,9 @@ async fn main() -> Result<()> {
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
     }
+    if exec_pre_trade {
+        cancel_all_exec_orders_on_startup(open_venue, binance_account_mode).await?;
+    }
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -236,12 +408,20 @@ async fn main() -> Result<()> {
             info!("Initializing PreTradeParamsLoader singleton...");
 
             // 使用默认 Redis 设置（127.0.0.1:6379/0）
-            // Redis 风控参数按目录 + open/hedge 实例隔离：
-            // <dir>:<open>:<hedge>:pre_trade_risk_params
+            // 普通模式：<dir>:<open>:<hedge>:pre_trade_risk_params
+            // Exec 模式：<dir>:<venue>:pre_trade_risk_params
             let mut redis_settings = RedisSettings::default();
             // 统一标准：使用 kebab-case venue slug（例如 okex-margin），与 scripts/ 运维保持一致。
             let dir_prefix = infer_dir_prefix_from_cwd();
-            let prefix = match dir_prefix.as_deref() {
+            let prefix = if exec_pre_trade {
+                match dir_prefix.as_deref() {
+                    Some(name) if !name.is_empty() => {
+                        format!("{}:{}:", name, open_venue.data_pub_slug())
+                    }
+                    _ => format!("{}:", open_venue.data_pub_slug()),
+                }
+            } else {
+                match dir_prefix.as_deref() {
                 Some(name) if !name.is_empty() => format!(
                     "{}:{}:{}:",
                     name,
@@ -253,6 +433,7 @@ async fn main() -> Result<()> {
                     open_venue.data_pub_slug(),
                     hedge_venue.data_pub_slug()
                 ),
+                }
             };
             redis_settings.prefix = Some(prefix.clone());
             info!(
@@ -373,7 +554,33 @@ async fn main() -> Result<()> {
                 return Err(err);
             }
             info!("MonitorChannel initialized successfully");
+            if exec_pre_trade {
+                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, open_venue)?;
+                info!(
+                    "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
+                    open_venue.data_pub_slug()
+                );
+            }
             IntraUnimmrOpenLock::initialize(arb_mode, binance_account_mode);
+
+            if exec_pre_trade {
+                let mut batch_redis = RedisSettings::default();
+                batch_redis.prefix = Some(prefix.clone());
+                let mut reloader = BatchExecConfigReloader::connect(
+                    batch_redis,
+                    open_venue,
+                )
+                .await?;
+                reloader.reload(&strategy_mgr).await?;
+                reloader.spawn(
+                    strategy_mgr.clone(),
+                    Duration::from_millis(args.config_reload_ms.max(100)),
+                );
+                info!(
+                    "BatchExec Redis reload started: interval_ms={} index_key=batch_exec:strategy_names",
+                    args.config_reload_ms.max(100)
+                );
+            }
 
             // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
             //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan
@@ -539,27 +746,36 @@ async fn main() -> Result<()> {
 
             // 5. 初始化 SignalChannel
             info!("Initializing SignalChannel singleton...");
-            SignalChannel::initialize(DEFAULT_SIGNAL_CHANNEL, Some(DEFAULT_BACKWARD_CHANNEL))?;
-            info!(
-                "SignalChannel initialized on channel: {} backward_channel: {}",
-                DEFAULT_SIGNAL_CHANNEL, DEFAULT_BACKWARD_CHANNEL
-            );
-
-            // 6. 初始化 ResampleChannel
-            info!("Initializing ResampleChannel singleton...");
-            let exposure_ch = "pre_trade_exposure".to_string();
-            let risk_ch = "pre_trade_risk".to_string();
-            if let Err(err) = ResampleChannel::initialize(&exposure_ch, &risk_ch) {
-                warn!("Failed to initialize ResampleChannel: {err:#}");
+            if exec_pre_trade {
+                SignalChannel::initialize("exec_pre_trade_unused", None)?;
+                info!("SignalChannel initialized without backward channel for shared reactor");
             } else {
+                SignalChannel::initialize(DEFAULT_SIGNAL_CHANNEL, Some(DEFAULT_BACKWARD_CHANNEL))?;
                 info!(
-                    "ResampleChannel initialized successfully (exposure={} risk={})",
-                    exposure_ch, risk_ch
+                    "SignalChannel initialized on channel: {} backward_channel: {}",
+                    DEFAULT_SIGNAL_CHANNEL, DEFAULT_BACKWARD_CHANNEL
                 );
             }
 
-            if !fast_poll {
-                ResampleChannel::start_exposure_table_printer(Duration::from_secs(10));
+            // 6. 初始化观测输出。BatchExec 使用单账户语义的独立频道。
+            if exec_pre_trade {
+                ExecResampleChannel::initialize()?;
+                ExecResampleChannel::start(Duration::from_secs(1));
+            } else {
+                info!("Initializing ResampleChannel singleton...");
+                let exposure_ch = "pre_trade_exposure".to_string();
+                let risk_ch = "pre_trade_risk".to_string();
+                if let Err(err) = ResampleChannel::initialize(&exposure_ch, &risk_ch) {
+                    warn!("Failed to initialize ResampleChannel: {err:#}");
+                } else {
+                    info!(
+                        "ResampleChannel initialized successfully (exposure={} risk={})",
+                        exposure_ch, risk_ch
+                    );
+                }
+                if !fast_poll {
+                    ResampleChannel::start_exposure_table_printer(Duration::from_secs(10));
+                }
             }
 
             // 7. 初始化 TradeEngHub（按 open/hedge 需求注册交易所）
@@ -653,6 +869,9 @@ async fn main() -> Result<()> {
             let mut pre_trade = PreTrade::new()
                 .with_param_refresh(param_refresh)
                 .with_snapshot_query(snapshot_query);
+            if exec_pre_trade {
+                pre_trade = pre_trade.without_legacy_resample();
+            }
             if let Some(config) = intra_bwd_refresh {
                 pre_trade = pre_trade.with_intra_bwd_refresh(config);
             }

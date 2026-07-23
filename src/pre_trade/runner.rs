@@ -149,6 +149,7 @@ pub struct PreTrade {
     snapshot_query: Option<SnapshotQueryConfig>,
     auto_repay: Option<AutoRepayService>,
     auto_collection: Option<AutoCollectionService>,
+    publish_legacy_resample: bool,
 }
 
 fn drive_strategy_manager_period_clock_rc(
@@ -404,6 +405,7 @@ impl PreTrade {
             snapshot_query: None,
             auto_repay: None,
             auto_collection: None,
+            publish_legacy_resample: true,
         }
     }
 
@@ -440,6 +442,11 @@ impl PreTrade {
         self
     }
 
+    pub fn without_legacy_resample(mut self) -> Self {
+        self.publish_legacy_resample = false;
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         info!("pre_trade main loop starting");
         let param_refresh = self.param_refresh;
@@ -448,6 +455,7 @@ impl PreTrade {
         let snapshot_query = self.snapshot_query;
         let mut auto_repay = self.auto_repay;
         let mut auto_collection = self.auto_collection;
+        let publish_legacy_resample = self.publish_legacy_resample;
 
         // 定时器状态
         let resample_interval = std::time::Duration::from_secs(3);
@@ -784,7 +792,7 @@ impl PreTrade {
                     finish_fast_poll_work!(next_loop_open_drop_reason);
                 }
 
-                if instant_now >= next_resample {
+                if publish_legacy_resample && instant_now >= next_resample {
                     let result = ResampleChannel::with(|ch| ch.publish_resample_entries());
                     if let Err(err) = result {
                         warn!("pre_trade resample publish failed: {err:#}");
@@ -797,7 +805,7 @@ impl PreTrade {
                     finish_fast_poll_work!(next_loop_open_drop_reason);
                 }
 
-                if instant_now >= next_exposure_table_print {
+                if publish_legacy_resample && instant_now >= next_exposure_table_print {
                     let exposure_table_print_start_us = get_timestamp_us();
                     ResampleChannel::with(|ch| ch.print_exposure_table_snapshot());
                     let exposure_table_print_elapsed_us =
@@ -870,14 +878,16 @@ impl PreTrade {
                 }
 
                 // 发布重采样数据
-                while instant_now >= next_resample {
-                    let result = ResampleChannel::with(|ch| ch.publish_resample_entries());
-                    if let Err(err) = result {
-                        warn!("pre_trade resample publish failed: {err:#}");
-                        next_resample = Instant::now() + resample_interval;
-                        break;
+                if publish_legacy_resample {
+                    while instant_now >= next_resample {
+                        let result = ResampleChannel::with(|ch| ch.publish_resample_entries());
+                        if let Err(err) = result {
+                            warn!("pre_trade resample publish failed: {err:#}");
+                            next_resample = Instant::now() + resample_interval;
+                            break;
+                        }
+                        next_resample += resample_interval;
                     }
-                    next_resample += resample_interval;
                 }
 
                 while instant_now >= next_throttle_log {

@@ -27,13 +27,13 @@ use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
-use trade_engine::query_request::QueryRequestType;
+use trade_engine::query_request::{is_snapshot_complete_body, QueryRequestType};
 
 thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = const { OnceCell::new() };
 }
 
-const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 4096;
 const QUERY_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
 
 fn query_request_create_time_us(bytes: &Bytes) -> Option<i64> {
@@ -41,6 +41,38 @@ fn query_request_create_time_us(bytes: &Bytes) -> Option<i64> {
         return None;
     }
     Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
+}
+
+fn snapshot_initializes_exec_venue(
+    req_type: QueryRequestType,
+    venue: TradingVenue,
+    binance_is_standard: bool,
+) -> bool {
+    match venue {
+        TradingVenue::BinanceMargin => {
+            if binance_is_standard {
+                req_type == QueryRequestType::BinanceSpotAccountSnapshotStd
+            } else {
+                req_type == QueryRequestType::BinancePmBalanceSnapshot
+            }
+        }
+        TradingVenue::BinanceFutures => {
+            if binance_is_standard {
+                req_type == QueryRequestType::BinanceUmAccountSnapshotStd
+            } else {
+                req_type == QueryRequestType::BinanceUmAccountSnapshot
+            }
+        }
+        TradingVenue::OkexMargin => req_type == QueryRequestType::OkexAccountBalanceSnapshot,
+        TradingVenue::OkexFutures => req_type == QueryRequestType::OkexPositionsSnapshot,
+        TradingVenue::GateMargin => req_type == QueryRequestType::GateUnifiedBalanceSnapshot,
+        TradingVenue::GateFutures => req_type == QueryRequestType::GateUnifiedPositionsSnapshot,
+        TradingVenue::BybitMargin => req_type == QueryRequestType::BybitAccountBalanceSnapshot,
+        TradingVenue::BybitFutures => req_type == QueryRequestType::BybitPositionsSnapshot,
+        TradingVenue::BitgetMargin => req_type == QueryRequestType::BitgetAccountBalanceSnapshot,
+        TradingVenue::BitgetFutures => req_type == QueryRequestType::BitgetPositionsSnapshot,
+        _ => false,
+    }
 }
 
 fn dispatch_query_response_to_strategy_manager(
@@ -458,6 +490,22 @@ impl QueryEngChannel {
                                         .unwrap_or(exchange_enum);
                                 let binance_is_standard =
                                     mc.order_manager().borrow().binance_is_standard();
+                                if is_snapshot_complete_body(body) {
+                                    if open_venue == hedge_venue
+                                        && req_type.is_some_and(|req_type| {
+                                            snapshot_initializes_exec_venue(
+                                                req_type,
+                                                open_venue,
+                                                binance_is_standard,
+                                            )
+                                        })
+                                    {
+                                        mc.mark_exec_position_snapshot_ready(
+                                            "query_snapshot_complete",
+                                        );
+                                    }
+                                    continue;
+                                }
                                 if matches!(
                                     req_type,
                                     Some(
@@ -496,6 +544,19 @@ impl QueryEngChannel {
                                             "positions snapshot returned empty list; cleared pre_trade UM state exchange={} req_type={:?}",
                                             exchange, req_type
                                         );
+                                        if open_venue == hedge_venue
+                                            && req_type.is_some_and(|req_type| {
+                                                snapshot_initializes_exec_venue(
+                                                    req_type,
+                                                    open_venue,
+                                                    binance_is_standard,
+                                                )
+                                            })
+                                        {
+                                            mc.mark_exec_position_snapshot_ready(
+                                                "query_positions_empty",
+                                            );
+                                        }
                                     }
                                     continue;
                                 }
@@ -862,6 +923,7 @@ impl QueryEngChannel {
 mod tests {
     use super::{
         dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
+        snapshot_initializes_exec_venue,
     };
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
@@ -871,6 +933,46 @@ mod tests {
     use std::any::Any;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use trade_engine::query_request::QueryRequestType;
+
+    #[test]
+    fn exec_position_snapshot_mapping_matches_venue_and_account_mode() {
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinancePmBalanceSnapshot,
+            order_common::TradingVenue::BinanceMargin,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceSpotAccountSnapshotStd,
+            order_common::TradingVenue::BinanceMargin,
+            true,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceUmAccountSnapshot,
+            order_common::TradingVenue::BinanceFutures,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceUmAccountSnapshotStd,
+            order_common::TradingVenue::BinanceFutures,
+            true,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::OkexPositionsSnapshot,
+            order_common::TradingVenue::OkexFutures,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::GateUnifiedPositionsSnapshot,
+            order_common::TradingVenue::GateFutures,
+            false,
+        ));
+        assert!(!snapshot_initializes_exec_venue(
+            QueryRequestType::OkexAccountBalanceSnapshot,
+            order_common::TradingVenue::OkexFutures,
+            false,
+        ));
+    }
 
     struct ReentrantQueryStrategy {
         id: i32,

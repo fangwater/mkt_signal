@@ -1,7 +1,7 @@
 pub mod arb_close_strategy;
 pub mod arb_hedge_strategy;
 pub mod arb_open_strategy;
-pub mod exec_strategy;
+pub mod batch_exec_strategy;
 pub mod hedge_order_reconcile;
 pub mod hedge_orphan_order_strategy;
 pub mod hedge_strategy_common;

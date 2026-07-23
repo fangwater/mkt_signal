@@ -3277,6 +3277,17 @@ impl TradeEngine {
                                                         query_count_1m: outcome.order_count_1m,
                                                     });
                                                 }
+                                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: bytes::Bytes::from_static(
+                                                        crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                    ),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
                                             }
                                         }
                                         crate::query_request::QueryRequestType::BinanceUmBalanceSnapshotStd
@@ -3325,6 +3336,17 @@ impl TradeEngine {
                                                         });
                                                     }
                                                 }
+                                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: bytes::Bytes::from_static(
+                                                        crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                    ),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
                                             }
                                         }
                                         crate::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
@@ -3354,6 +3376,17 @@ impl TradeEngine {
                                                         });
                                                     }
                                                 }
+                                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: bytes::Bytes::from_static(
+                                                        crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                    ),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
                                             }
                                         }
                                         crate::query_request::QueryRequestType::BinanceSpotAccountSnapshotStd
@@ -3373,6 +3406,17 @@ impl TradeEngine {
                                                         query_count_1m: outcome.order_count_1m,
                                                     });
                                                 }
+                                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: outcome.status,
+                                                    body: bytes::Bytes::from_static(
+                                                        crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                    ),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                    query_count_1m: outcome.order_count_1m,
+                                                });
                                             }
                                         }
                                         _ => {
@@ -3532,6 +3576,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                             }
@@ -3554,6 +3609,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                             }
@@ -3740,6 +3806,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                             }
@@ -3764,6 +3841,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                                 let no_positions = parsed.rows_total == 0
@@ -3913,6 +4001,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                 }
+                                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                                    req_type: msg.req_type,
+                                                    client_query_id: msg.client_query_id,
+                                                    status: 200,
+                                                    body: bytes::Bytes::from_static(
+                                                        crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                    ),
+                                                    exchange: exchange_copy,
+                                                    ip_used_weight_1m: None,
+                                                    query_count_1m: None,
+                                                });
                                             }
                                         } else {
                                             warn!(
@@ -4008,6 +4107,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                             }
@@ -4148,6 +4258,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                             }
@@ -4174,6 +4295,17 @@ impl TradeEngine {
                                                             query_count_1m: None,
                                                         });
                                                     }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
                                                     continue;
                                                 }
                                                 bytes::Bytes::new()

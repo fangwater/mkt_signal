@@ -476,7 +476,7 @@ impl MktChannel {
     /// open/hedge 由调用方传入；每个 venue 都订阅 ask_bid_spread。
     /// 若某个 venue 是 futures，则额外订阅 funding/mark/index price 衍生品频道。
     pub fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
-        Self::init_singleton_with_mode(open_venue, hedge_venue, true)
+        Self::init_singleton_with_mode(open_venue, hedge_venue, true, true)
     }
 
     /// 初始化只读单例并启动订阅任务，但不触发任何决策逻辑。
@@ -486,13 +486,22 @@ impl MktChannel {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<()> {
-        Self::init_singleton_with_mode(open_venue, hedge_venue, false)
+        Self::init_singleton_with_mode(open_venue, hedge_venue, false, true)
+    }
+
+    /// 初始化只包含 spread_pbs BBO 的只读缓存。
+    pub fn init_bbo_singleton_readonly(
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+    ) -> Result<()> {
+        Self::init_singleton_with_mode(open_venue, hedge_venue, false, false)
     }
 
     fn init_singleton_with_mode(
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         trigger_decisions: bool,
+        subscribe_derivatives: bool,
     ) -> Result<()> {
         let open_slug = open_venue.data_pub_slug();
         let hedge_slug = hedge_venue.data_pub_slug();
@@ -606,7 +615,7 @@ impl MktChannel {
             );
         }
 
-        if is_futures(open_venue) {
+        if subscribe_derivatives && is_futures(open_venue) {
             let derivatives_service = derivatives_service_name(open_venue);
             let derivatives_node = build_node_name(open_slug, "derivatives");
             Self::spawn_derivatives_listener(
@@ -621,7 +630,7 @@ impl MktChannel {
                 index_prices.clone(),
             );
         }
-        if hedge_venue != open_venue && is_futures(hedge_venue) {
+        if subscribe_derivatives && hedge_venue != open_venue && is_futures(hedge_venue) {
             let derivatives_service = derivatives_service_name(hedge_venue);
             let derivatives_node = build_node_name(hedge_slug, "derivatives");
             Self::spawn_derivatives_listener(
@@ -635,7 +644,7 @@ impl MktChannel {
                 mark_prices.clone(),
                 index_prices.clone(),
             );
-        } else if hedge_venue == open_venue && is_futures(open_venue) {
+        } else if subscribe_derivatives && hedge_venue == open_venue && is_futures(open_venue) {
             info!(
                 "MktChannel derivatives listener deduped for venue={:?}",
                 open_venue

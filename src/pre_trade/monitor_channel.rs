@@ -254,6 +254,7 @@ thread_local! {
     static BASIC_STATE_PRICE_DIRTY: Cell<bool> = const { Cell::new(false) };
     static BASIC_STATE_LAST_REFRESH_US: Cell<i64> = const { Cell::new(0) };
     static PENDING_RISK_CHECKS: RefCell<PendingRiskChecks> = RefCell::new(PendingRiskChecks::default());
+    static EXEC_POSITION_SNAPSHOT_READY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// MonitorChannel 单例访问器（零大小类型）
@@ -2744,6 +2745,7 @@ impl MonitorChannel {
         };
 
         Self::clear_basic_state_runtime_cache();
+        EXEC_POSITION_SNAPSHOT_READY.with(|ready| ready.set(false));
         MONITOR_CHANNEL.with(|mc| {
             *mc.borrow_mut() = Some(inner);
         });
@@ -4219,6 +4221,25 @@ impl MonitorChannel {
     /// 返回持仓数量，正数表示多头，负数表示空头
     pub fn get_position_qty(&self, symbol: &str, venue: TradingVenue) -> f64 {
         Self::with_inner(|inner| Self::get_position_qty_inner(inner, symbol, venue))
+    }
+
+    pub fn mark_exec_position_snapshot_ready(&self, source: &'static str) {
+        let changed = EXEC_POSITION_SNAPSHOT_READY.with(|ready| {
+            let changed = !ready.get();
+            ready.set(true);
+            changed
+        });
+        if changed {
+            info!("exec position snapshot ready: source={source}");
+        }
+    }
+
+    pub fn exec_position_snapshot_ready(&self) -> bool {
+        EXEC_POSITION_SNAPSHOT_READY.with(Cell::get)
+    }
+
+    pub fn refresh_exec_risk_state(&self) {
+        Self::refresh_basic_state_cache();
     }
 
     // ==================== 内部辅助方法 ====================

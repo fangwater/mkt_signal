@@ -3,7 +3,7 @@ use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::taker_decision_model::{PreTradeTakerDecisionModel, TakerDecisionOpenCancel};
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
-use crate::strategy::exec_strategy::{ExecSnapshot, ExecStrategy};
+use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecSnapshot, BatchExecStrategy};
 use crate::strategy::mm_hedge_strategy::{MarketMakerHedgeStrategy, MmHedgeSnapshot};
 use crate::strategy::open_strategy_common::{OpenCancelInput, OpenStrategyCommon};
 use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -24,9 +24,6 @@ use std::sync::OnceLock;
 use std::thread::{self, ThreadId};
 
 const STRATEGY_ID_MASK: i64 = 0x7FFF_FFFF;
-const TRADING_VENUE_INDEX_LEN: usize = 14;
-type ExecStrategyIdsByVenue = [i32; TRADING_VENUE_INDEX_LEN];
-
 static STRATEGY_ID_OWNER_THREAD: OnceLock<ThreadId> = OnceLock::new();
 
 thread_local! {
@@ -116,12 +113,27 @@ pub struct OpenPriceMapEntry {
     pub price_qv: QuantizedValueKey,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct StrategyKindIndexFlags {
     is_mm_hedge: bool,
     is_arb_hedge: bool,
-    exec_venue: Option<TradingVenue>,
+    batch_exec_strategy_name: Option<String>,
     has_order_terminal_recorder: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BatchExecIndexKey {
+    strategy_name: String,
+    symbol: String,
+}
+
+impl BatchExecIndexKey {
+    fn new(strategy_name: &str, symbol: &str) -> Self {
+        Self {
+            strategy_name: strategy_name.to_string(),
+            symbol: symbol.to_string(),
+        }
+    }
 }
 
 pub trait Strategy {
@@ -249,7 +261,7 @@ pub struct StrategyManager {
     symbol_index: FastHashMap<String, BTreeSet<i32>>,
     mm_hedge_index: FastHashMap<String, i32>,
     arb_hedge_index: FastHashMap<String, i32>,
-    exec_strategy_index: FastHashMap<String, ExecStrategyIdsByVenue>,
+    batch_exec_strategy_index: FastHashMap<BatchExecIndexKey, i32>,
     order_terminal_recorder_index: FastHashMap<String, i32>,
     mm_open_price_index: FastHashMap<String, FastHashMap<QuantizedValueKey, BTreeSet<i32>>>,
     mm_open_strategy_index: FastHashMap<i32, OpenPriceMapEntry>,
@@ -273,7 +285,7 @@ impl StrategyManager {
             symbol_index: fast_hash_map(),
             mm_hedge_index: fast_hash_map(),
             arb_hedge_index: fast_hash_map(),
-            exec_strategy_index: fast_hash_map(),
+            batch_exec_strategy_index: fast_hash_map(),
             order_terminal_recorder_index: fast_hash_map(),
             mm_open_price_index: fast_hash_map(),
             mm_open_strategy_index: fast_hash_map(),
@@ -323,21 +335,14 @@ impl StrategyManager {
         }
     }
 
-    #[inline]
-    fn venue_index(venue: TradingVenue) -> usize {
-        let index = venue.to_u8() as usize;
-        debug_assert!(index < TRADING_VENUE_INDEX_LEN);
-        index
-    }
-
     fn kind_index_flags(strategy: &dyn Strategy) -> StrategyKindIndexFlags {
         StrategyKindIndexFlags {
             is_mm_hedge: strategy.as_any().is::<MarketMakerHedgeStrategy>(),
             is_arb_hedge: strategy.as_any().is::<ArbHedgeStrategy>(),
-            exec_venue: strategy
+            batch_exec_strategy_name: strategy
                 .as_any()
-                .downcast_ref::<ExecStrategy>()
-                .map(ExecStrategy::exec_venue),
+                .downcast_ref::<BatchExecStrategy>()
+                .map(|strategy| strategy.strategy_name().to_string()),
             has_order_terminal_recorder: strategy.has_order_terminal_recorder(),
         }
     }
@@ -354,10 +359,9 @@ impl StrategyManager {
         if flags.is_arb_hedge {
             self.arb_hedge_index.insert(symbol.to_string(), id);
         }
-        if let Some(exec_venue) = flags.exec_venue {
-            self.exec_strategy_index
-                .entry(symbol.to_string())
-                .or_insert([0; TRADING_VENUE_INDEX_LEN])[Self::venue_index(exec_venue)] = id;
+        if let Some(strategy_name) = flags.batch_exec_strategy_name {
+            self.batch_exec_strategy_index
+                .insert(BatchExecIndexKey::new(&strategy_name, symbol), id);
         }
         if flags.has_order_terminal_recorder {
             self.order_terminal_recorder_index
@@ -377,17 +381,14 @@ impl StrategyManager {
         if flags.is_arb_hedge && self.arb_hedge_index.get(symbol).is_some_and(|v| *v == id) {
             self.arb_hedge_index.remove(symbol);
         }
-        if let Some(exec_venue) = flags.exec_venue {
-            let mut remove_symbol = false;
-            if let Some(ids) = self.exec_strategy_index.get_mut(symbol) {
-                let index = Self::venue_index(exec_venue);
-                if ids[index] == id {
-                    ids[index] = 0;
-                }
-                remove_symbol = ids.iter().all(|value| *value == 0);
-            }
-            if remove_symbol {
-                self.exec_strategy_index.remove(symbol);
+        if let Some(strategy_name) = flags.batch_exec_strategy_name {
+            let key = BatchExecIndexKey::new(&strategy_name, symbol);
+            if self
+                .batch_exec_strategy_index
+                .get(&key)
+                .is_some_and(|value| *value == id)
+            {
+                self.batch_exec_strategy_index.remove(&key);
             }
         }
         if flags.has_order_terminal_recorder
@@ -532,7 +533,7 @@ impl StrategyManager {
             })
         });
         if let Some((old_symbol, old_kind_flags)) = old_symbol_and_flags.as_ref() {
-            self.unregister_kind_indexes_for_symbol(id, old_symbol, *old_kind_flags);
+            self.unregister_kind_indexes_for_symbol(id, old_symbol, old_kind_flags.clone());
             if let Some(set) = self.symbol_index.get_mut(old_symbol.as_str()) {
                 set.remove(&id);
                 if set.is_empty() {
@@ -881,27 +882,25 @@ impl StrategyManager {
     }
 
     /// 查询指定 symbol 的 Arb 对冲状态策略 id（symbol 不区分大小写）
-    pub fn find_exec_strategy_id(&self, symbol: &str, exec_venue: TradingVenue) -> Option<i32> {
+    pub fn find_batch_exec_strategy_id(&self, strategy_name: &str, symbol: &str) -> Option<i32> {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        self.find_exec_strategy_id_for_normalized_symbol(&symbol_upper, exec_venue)
+        self.find_batch_exec_strategy_id_for_normalized_symbol(strategy_name, &symbol_upper)
     }
 
-    pub fn find_exec_strategy_id_for_normalized_symbol(
+    pub fn find_batch_exec_strategy_id_for_normalized_symbol(
         &self,
+        strategy_name: &str,
         symbol_upper: &str,
-        exec_venue: TradingVenue,
     ) -> Option<i32> {
-        if let Some(ids) = self.exec_strategy_index.get(symbol_upper) {
-            let id = ids[Self::venue_index(exec_venue)];
-            if id != 0 {
-                return Some(id);
-            }
+        let key = BatchExecIndexKey::new(strategy_name, symbol_upper);
+        if let Some(id) = self.batch_exec_strategy_index.get(&key) {
+            return Some(*id);
         }
         let ids = self.symbol_index.get(symbol_upper)?;
         for id in ids {
             if let Some(strategy) = self.strategies.get(id) {
-                if let Some(exec) = strategy.as_any().downcast_ref::<ExecStrategy>() {
-                    if exec.exec_venue() == exec_venue {
+                if let Some(exec) = strategy.as_any().downcast_ref::<BatchExecStrategy>() {
+                    if exec.strategy_name() == strategy_name {
                         return Some(*id);
                     }
                 }
@@ -910,35 +909,67 @@ impl StrategyManager {
         None
     }
 
-    pub fn ensure_exec_strategy(&mut self, symbol: &str, exec_venue: TradingVenue) -> i32 {
+    pub fn ensure_batch_exec_strategy(
+        &mut self,
+        strategy_name: &str,
+        symbol: &str,
+        exec_venue: TradingVenue,
+        config: BatchExecConfig,
+    ) -> i32 {
         let symbol_upper = normalize_symbol_for_internal(symbol);
-        self.ensure_exec_strategy_for_normalized_symbol(&symbol_upper, exec_venue)
+        self.ensure_batch_exec_strategy_for_normalized_symbol(
+            strategy_name,
+            &symbol_upper,
+            exec_venue,
+            config,
+        )
     }
 
-    pub fn ensure_exec_strategy_for_normalized_symbol(
+    pub fn ensure_batch_exec_strategy_for_normalized_symbol(
         &mut self,
+        strategy_name: &str,
         symbol_upper: &str,
         exec_venue: TradingVenue,
+        config: BatchExecConfig,
     ) -> i32 {
-        if let Some(id) = self.find_exec_strategy_id_for_normalized_symbol(symbol_upper, exec_venue)
+        if let Some(id) =
+            self.find_batch_exec_strategy_id_for_normalized_symbol(strategy_name, symbol_upper)
         {
+            if let Some(mut strategy) = self.take(id) {
+                if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                    if let Err(err) = exec.update_config(config) {
+                        log::warn!(
+                            "BatchExecStrategy config update rejected strategy_id={} err={}",
+                            id,
+                            err
+                        );
+                    }
+                }
+                self.insert(strategy);
+            }
             return id;
         }
         let symbol_upper = symbol_upper.to_string();
         let strategy_id = StrategyManager::generate_strategy_id();
-        let strategy = ExecStrategy::new(strategy_id, symbol_upper.clone(), exec_venue);
+        let strategy = BatchExecStrategy::new(
+            strategy_id,
+            strategy_name,
+            symbol_upper.clone(),
+            exec_venue,
+            config,
+        );
         info!(
-            "ExecStrategy init: symbol={} exec_venue={:?} strategy_id={}",
-            symbol_upper, exec_venue, strategy_id
+            "BatchExecStrategy init: strategy_name={} symbol={} exec_venue={:?} strategy_id={}",
+            strategy_name, symbol_upper, exec_venue, strategy_id
         );
         self.insert(Box::new(strategy));
         strategy_id
     }
 
-    pub fn exec_snapshots(&self, now_ts: i64) -> Vec<ExecSnapshot> {
+    pub fn batch_exec_snapshots(&self, now_ts: i64) -> Vec<BatchExecSnapshot> {
         let mut snapshots = Vec::new();
         for strategy in self.strategies.values() {
-            if let Some(exec) = strategy.as_any().downcast_ref::<ExecStrategy>() {
+            if let Some(exec) = strategy.as_any().downcast_ref::<BatchExecStrategy>() {
                 snapshots.push(exec.snapshot(now_ts));
             }
         }
@@ -1273,7 +1304,7 @@ mod tests {
         StrategyManager, STRATEGY_ID_MASK,
     };
     use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
-    use crate::strategy::exec_strategy::ExecStrategy;
+    use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecStrategy};
     use crate::strategy::mm_hedge_strategy::MarketMakerHedgeStrategy;
     use order_common::{OrderUpdate, TradeUpdate};
     use order_common::{Side, TradingVenue};
@@ -1496,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn hedge_and_exec_strategy_indexes_follow_lifecycle() {
+    fn hedge_and_batch_exec_strategy_indexes_follow_lifecycle() {
         let mut manager = StrategyManager::new();
 
         manager.insert(Box::new(MarketMakerHedgeStrategy::new(
@@ -1509,10 +1540,21 @@ mod tests {
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
         )));
-        manager.insert(Box::new(ExecStrategy::new(
+        manager.insert(Box::new(BatchExecStrategy::new(
             53,
+            "cta_alpha",
             "SOLUSDT",
             TradingVenue::GateFutures,
+            BatchExecConfig {
+                single_order_usdt: 100.0,
+                orders_per_batch: 3,
+                maker_price_anchor: crate::strategy::batch_exec_strategy::MakerPriceAnchor::OwnBest,
+                tick_spacing: 2,
+                batch_interval_ms: 500,
+                maker_timeout_ms: 1_000,
+                max_maker_requotes: 2,
+                target_tolerance_usdt: 10.0,
+            },
         )));
 
         assert_eq!(
@@ -1524,26 +1566,22 @@ mod tests {
             Some(52)
         );
         assert_eq!(
-            manager
-                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateFutures),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
             Some(53)
         );
         assert_eq!(
-            manager
-                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateMargin),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_beta", "SOLUSDT"),
             None
         );
 
-        let exec = manager.take(53).expect("exec strategy should exist");
+        let exec = manager.take(53).expect("batch exec strategy should exist");
         assert_eq!(
-            manager
-                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateFutures),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
             None
         );
         manager.insert(exec);
         assert_eq!(
-            manager
-                .find_exec_strategy_id_for_normalized_symbol("SOLUSDT", TradingVenue::GateFutures),
+            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
             Some(53)
         );
 

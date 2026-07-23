@@ -35,9 +35,6 @@ from typing import Dict, Optional
 EXCHANGE_DEFAULTS = {
     "binance": "binance-futures",
     "okex": "okex-futures",
-    "bybit": "bybit-futures",
-    "bitget": "bitget-futures",
-    "gate": "gate-futures",
 }
 
 
@@ -115,6 +112,8 @@ def parse_args() -> argparse.Namespace:
     if not args.exec_venue:
         p.error("需要 --exec-venue，或在 exec 目录运行")
     args.exec_venue = args.exec_venue.lower()
+    if args.exec_venue not in ("binance-futures", "okex-futures"):
+        p.error("exec venue 只支持 binance-futures 或 okex-futures")
 
     if not args.env_name:
         args.env_name = infer_env_name_from_cwd()

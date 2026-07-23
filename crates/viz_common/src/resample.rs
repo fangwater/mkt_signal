@@ -132,6 +132,43 @@ pub struct PreTradeVenueRiskResampleEntry {
     pub leverage: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecStrategyStateRow {
+    pub strategy_name: String,
+    pub symbol: String,
+    pub target_qty: f64,
+    pub current_qty: f64,
+    pub effective_position_qty: f64,
+    pub delta_qty: f64,
+    pub live_order_qty: f64,
+    pub pending_qty: f64,
+    pub target_usdt: f64,
+    pub current_usdt: f64,
+    pub delta_usdt: f64,
+    pub live_order_usdt: f64,
+    pub pending_usdt: f64,
+    pub active_batches: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecStrategyStateResampleEntry {
+    pub ts_ms: i64,
+    pub position_ready: bool,
+    pub rows: Vec<ExecStrategyStateRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecAccountRiskResampleEntry {
+    pub ts_ms: i64,
+    pub venue: String,
+    pub equity_usdt: f64,
+    pub long_notional_usdt: f64,
+    pub short_notional_usdt: f64,
+    pub net_notional_usdt: f64,
+    pub gross_notional_usdt: f64,
+    pub leverage: f64,
+}
+
 macro_rules! impl_codec {
     ($ty:ty) => {
         impl $ty {
@@ -148,3 +185,42 @@ macro_rules! impl_codec {
 
 impl_codec!(PreTradeExposureResampleEntry);
 impl_codec!(PreTradeRiskResampleEntry);
+impl_codec!(ExecStrategyStateResampleEntry);
+impl_codec!(ExecAccountRiskResampleEntry);
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecStrategyStateResampleEntry, ExecStrategyStateRow};
+
+    #[test]
+    fn exec_strategy_state_codec_round_trip() {
+        let entry = ExecStrategyStateResampleEntry {
+            ts_ms: 123,
+            position_ready: true,
+            rows: vec![ExecStrategyStateRow {
+                strategy_name: "cta_alpha".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                target_qty: 1.0,
+                current_qty: 0.25,
+                effective_position_qty: 0.3,
+                delta_qty: 0.7,
+                live_order_qty: 0.05,
+                pending_qty: 0.65,
+                target_usdt: 100.0,
+                current_usdt: 25.0,
+                delta_usdt: 70.0,
+                live_order_usdt: 5.0,
+                pending_usdt: 65.0,
+                active_batches: 1,
+            }],
+        };
+
+        let decoded = ExecStrategyStateResampleEntry::from_bytes(&entry.to_bytes().unwrap())
+            .expect("decode exec strategy state");
+        assert_eq!(decoded.ts_ms, entry.ts_ms);
+        assert!(decoded.position_ready);
+        assert_eq!(decoded.rows.len(), 1);
+        assert_eq!(decoded.rows[0].strategy_name, "cta_alpha");
+        assert_eq!(decoded.rows[0].pending_qty, 0.65);
+    }
+}

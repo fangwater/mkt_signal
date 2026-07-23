@@ -187,13 +187,15 @@ def cancel_orders(
     orders: List[Dict[str, Any]],
     timeout: int,
     simulated: bool,
-) -> None:
+) -> bool:
+    all_ok = True
     for batch in chunked(orders, MAX_BATCH):
         payload: List[Dict[str, Any]] = []
         for order in batch:
             inst_id = order.get("instId")
             ord_id = order.get("ordId")
             if not inst_id or not ord_id:
+                all_ok = False
                 continue
             payload.append({"instId": inst_id, "ordId": ord_id})
         if not payload:
@@ -211,11 +213,19 @@ def cancel_orders(
             simulated=simulated,
         )
         ok, code, msg, data = parse_okx_body(body_text)
-        tag = "OK" if ok and 200 <= status < 300 else "ERR"
+        request_ok = ok and 200 <= status < 300
+        tag = "OK" if request_ok else "ERR"
         print(f"Cancel batch {tag}: http={status} code={code} msg={msg}")
-        if not ok:
+        if not request_ok:
             print(body_text)
+            all_ok = False
             continue
+        if len(data) != len(payload):
+            print(
+                f"Cancel batch response count mismatch: requested={len(payload)} returned={len(data)}",
+                file=sys.stderr,
+            )
+            all_ok = False
         for item in data:
             inst_id = item.get("instId", "")
             ord_id = item.get("ordId", "")
@@ -223,6 +233,9 @@ def cancel_orders(
             s_msg = item.get("sMsg", "")
             s_tag = "OK" if str(s_code) in ("", "0") else "ERR"
             print(f"  - {s_tag} {inst_id} ordId={ord_id} sCode={s_code} sMsg={s_msg}")
+            if s_tag == "ERR":
+                all_ok = False
+    return all_ok
 
 
 def parse_args() -> argparse.Namespace:
@@ -292,7 +305,7 @@ def main() -> None:
         print("No open orders to cancel.")
         return
 
-    cancel_orders(
+    if not cancel_orders(
         base_url=base_url,
         api_key=api_key,
         api_secret=api_secret,
@@ -300,7 +313,8 @@ def main() -> None:
         orders=orders,
         timeout=args.timeout,
         simulated=simulated,
-    )
+    ):
+        sys.exit(3)
 
 
 if __name__ == "__main__":

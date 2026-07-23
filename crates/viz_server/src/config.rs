@@ -29,6 +29,8 @@ pub struct VizServerCfg {
     pub namespaces: Vec<String>,
     #[serde(default)]
     pub pre_trade: PreTradeSrcCfg,
+    #[serde(default)]
+    pub exec_pre_trade: ExecPreTradeSrcCfg,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,4 +85,54 @@ pub struct PreTradeInstanceCfg {
     pub namespace: Option<String>,
     pub exposure_channel: String,
     pub risk_channel: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ExecPreTradeSrcCfg {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Exec 必须显式使用独立 namespace，不继承 server.namespaces。
+    #[serde(default)]
+    pub namespace: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VizCfg;
+
+    #[test]
+    fn exec_pre_trade_namespace_is_explicit_and_disabled_by_default() {
+        let cfg: VizCfg = toml::from_str(
+            r#"
+                [[servers]]
+                namespaces = ["normal_trade"]
+            "#,
+        )
+        .unwrap();
+
+        assert!(!cfg.servers[0].exec_pre_trade.enabled);
+        assert!(cfg.servers[0].exec_pre_trade.namespace.is_empty());
+    }
+
+    #[test]
+    fn parses_dedicated_exec_pre_trade_namespace() {
+        let cfg: VizCfg = toml::from_str(
+            r#"
+                [[servers]]
+
+                [servers.pre_trade]
+                enabled = false
+
+                [servers.exec_pre_trade]
+                enabled = true
+                namespace = "cta_exec_trade"
+            "#,
+        )
+        .unwrap();
+
+        assert!(cfg.servers[0].exec_pre_trade.enabled);
+        assert_eq!(cfg.servers[0].exec_pre_trade.namespace, "cta_exec_trade");
+        assert!(!cfg.servers[0].pre_trade.enabled);
+        assert!(cfg.servers[0].namespaces.is_empty());
+    }
 }

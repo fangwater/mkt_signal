@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Exec Pre-Trade</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "PingFang SC", sans-serif;
+        --bg: #0b0f14;
+        --surface: #121820;
+        --surface-2: #171f29;
+        --line: #2a3441;
+        --text: #edf2f7;
+        --muted: #91a0b2;
+        --green: #4ade80;
+        --red: #fb7185;
+        --amber: #fbbf24;
+        --cyan: #38bdf8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        letter-spacing: 0;
+      }
+      header {
+        min-height: 62px;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+        background: #0e141b;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      h1 { margin: 0; font-size: 18px; font-weight: 650; }
+      .connection {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+      .dot.ok { background: var(--green); }
+      .dot.err { background: var(--red); }
+      .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      select, input, button, a.command {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 10px;
+        font: inherit;
+        font-size: 13px;
+      }
+      select { min-width: 190px; }
+      input { width: 180px; }
+      button, a.command { cursor: pointer; }
+      button:hover, a.command:hover { border-color: var(--cyan); }
+      a.command { display: inline-flex; align-items: center; text-decoration: none; }
+      main { padding: 16px 18px 28px; display: grid; gap: 16px; }
+      .risk-band {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(130px, 1fr));
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--surface);
+      }
+      .metric { padding: 14px; border-right: 1px solid var(--line); min-width: 0; }
+      .metric:last-child { border-right: 0; }
+      .metric label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+      .metric strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+      .section { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+      .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+      .section-head h2 { margin: 0; font-size: 14px; }
+      .meta { color: var(--muted); font-size: 12px; }
+      .meta.stale { color: var(--red); }
+      .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+      .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
+      .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+      table { width: 100%; min-width: 1420px; border-collapse: collapse; }
+      thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+      th, td {
+        height: 40px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: right;
+        white-space: nowrap;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      th { color: var(--muted); font-weight: 550; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      tbody tr:last-child td { border-bottom: 0; }
+      tbody tr:hover { background: #18212b; }
+      .positive { color: var(--green); }
+      .negative { color: var(--red); }
+      .muted { color: var(--muted); }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 74px;
+        height: 23px;
+        padding: 0 7px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .status.live { color: var(--cyan); border-color: #176b8e; }
+      .status.done { color: var(--green); border-color: #287a45; }
+      .status.wait { color: var(--amber); border-color: #82661d; }
+      .config-link { color: var(--cyan); text-decoration: none; }
+      .empty { padding: 42px; text-align: center; color: var(--muted); }
+      @media (max-width: 980px) {
+        .risk-band { grid-template-columns: repeat(3, 1fr); }
+        .metric:nth-child(3) { border-right: 0; }
+        .metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+        .toolbar { margin-left: 0; width: 100%; }
+        select, input { flex: 1; min-width: 130px; }
+      }
+      @media (max-width: 560px) {
+        header, main { padding-left: 10px; padding-right: 10px; }
+        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .metric { border-bottom: 1px solid var(--line); }
+        .metric:nth-child(2n) { border-right: 0; }
+        .metric:nth-last-child(-n+2) { border-bottom: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Exec Pre-Trade</h1>
+      <div class="connection">
+        <span id="conn-dot" class="dot"></span>
+        <span id="conn-text">Connecting</span>
+        <span id="namespace">-</span>
+        <span id="last-update">-</span>
+      </div>
+      <div class="toolbar">
+        <select id="strategy-filter" aria-label="Strategy name"><option value="">All strategies</option></select>
+        <input id="symbol-filter" placeholder="Symbol" aria-label="Symbol filter" />
+        <button id="refresh" type="button">Refresh</button>
+        <a id="config-link" class="command" href="./config/">Config</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="risk-band" aria-label="Account risk">
+        <div class="metric"><label>Equity USDT</label><strong id="equity">--</strong></div>
+        <div class="metric"><label>Leverage</label><strong id="leverage">--</strong></div>
+        <div class="metric"><label>Gross Notional</label><strong id="gross">--</strong></div>
+        <div class="metric"><label>Net Notional</label><strong id="net">--</strong></div>
+        <div class="metric"><label>Long Notional</label><strong id="long">--</strong></div>
+        <div class="metric"><label>Short Notional</label><strong id="short">--</strong></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Target Positions</h2>
+          <span id="state-meta" class="meta">No data</span>
+          <div class="summary">
+            <span>Target <strong id="sum-target">--</strong></span>
+            <span>Current <strong id="sum-current">--</strong></span>
+            <span>Delta <strong id="sum-delta">--</strong></span>
+            <span>Pending <strong id="sum-pending">--</strong></span>
+            <span>Live <strong id="sum-live">--</strong></span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Strategy</th><th>Symbol</th><th>Status</th>
+                <th>Target Qty</th><th>Current Qty</th><th>Effective Qty</th><th>Delta Qty</th>
+                <th>Live Qty</th><th>Pending Qty</th><th>Target USDT</th><th>Current USDT</th>
+                <th>Delta USDT</th><th>Live USDT</th><th>Pending USDT</th><th>Batches</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div id="empty" class="empty">Waiting for Exec state</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const STALE_MS = 5000;
+        const RECONNECT_MS = 2000;
+        const state = { exec: null, risk: null, ws: null, reconnect: null, strategy: "", symbol: "" };
+        const byId = (id) => document.getElementById(id);
+        const qtyFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
+        const usdFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const levFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+        function finite(value) { return typeof value === "number" && Number.isFinite(value); }
+        function fmt(value, formatter) { return finite(value) ? formatter.format(value) : "--"; }
+        function cls(value) { return !finite(value) ? "muted" : value > 0 ? "positive" : value < 0 ? "negative" : ""; }
+        function escapeHtml(value) {
+          return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+        function wsUrl() {
+          const override = new URLSearchParams(location.search).get("ws");
+          const url = new URL(override || "./ws", location.href);
+          url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+          return url.toString();
+        }
+        function snapshotUrl() {
+          return new URL(new URLSearchParams(location.search).get("snapshot") || "./snapshot", location.href).toString();
+        }
+        function configUrl(strategy) {
+          const configured = new URLSearchParams(location.search).get("config");
+          const url = new URL(configured || "./config/", location.href);
+          if (strategy) url.searchParams.set("strategy", strategy);
+          return url.toString();
+        }
+        function setConnection(level, text) {
+          byId("conn-dot").className = `dot ${level || ""}`.trim();
+          byId("conn-text").textContent = text;
+        }
+        function applyMessage(msg) {
+          if (!msg || !msg.entry) return;
+          const wrapped = { entry: msg.entry, namespace: msg.namespace || "", received: Date.now() };
+          if (msg.type === "exec_pre_trade_state") state.exec = wrapped;
+          if (msg.type === "exec_pre_trade_risk") state.risk = wrapped;
+          render();
+        }
+        function applySnapshot(payload) {
+          if (payload && Array.isArray(payload.entries)) payload.entries.forEach(applyMessage);
+        }
+        function loadSnapshot() {
+          fetch(snapshotUrl(), { cache: "no-store" }).then((r) => r.ok ? r.json() : Promise.reject()).then(applySnapshot).catch(() => {});
+        }
+        function refreshStrategies(rows) {
+          const names = [...new Set(rows.map((row) => String(row.strategy_name || "")).filter(Boolean))].sort();
+          const select = byId("strategy-filter");
+          const current = state.strategy;
+          select.innerHTML = '<option value="">All strategies</option>' + names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+          select.value = names.includes(current) ? current : "";
+          state.strategy = select.value;
+        }
+        function rowStatus(row, ready) {
+          if (!ready) return ["WAIT", "wait"];
+          if (Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0) return ["WORKING", "live"];
+          if (Math.abs(row.delta_usdt || 0) <= 0.01) return ["SETTLED", "done"];
+          return ["QUEUED", "wait"];
+        }
+        function renderRisk() {
+          const e = state.risk && state.risk.entry;
+          byId("equity").textContent = fmt(e && e.equity_usdt, usdFmt);
+          byId("leverage").textContent = fmt(e && e.leverage, levFmt);
+          byId("gross").textContent = fmt(e && e.gross_notional_usdt, usdFmt);
+          byId("net").textContent = fmt(e && e.net_notional_usdt, usdFmt);
+          byId("long").textContent = fmt(e && e.long_notional_usdt, usdFmt);
+          byId("short").textContent = fmt(e && e.short_notional_usdt, usdFmt);
+        }
+        function render() {
+          renderRisk();
+          const entry = state.exec && state.exec.entry;
+          const allRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
+          refreshStrategies(allRows);
+          const rows = allRows.filter((row) => !state.strategy || row.strategy_name === state.strategy)
+            .filter((row) => !state.symbol || String(row.symbol || "").toUpperCase().includes(state.symbol))
+            .sort((a, b) => String(a.strategy_name).localeCompare(String(b.strategy_name)) || Math.abs(b.delta_usdt || 0) - Math.abs(a.delta_usdt || 0));
+          const ready = !!(entry && entry.position_ready);
+          const tbody = byId("rows");
+          tbody.innerHTML = rows.map((row) => {
+            const [status, statusClass] = rowStatus(row, ready);
+            return `<tr>
+              <td>${escapeHtml(row.strategy_name)}</td><td>${escapeHtml(row.symbol)}</td>
+              <td><span class="status ${statusClass}">${status}</span></td>
+              <td class="${cls(row.target_qty)}">${fmt(row.target_qty, qtyFmt)}</td>
+              <td class="${cls(row.current_qty)}">${fmt(row.current_qty, qtyFmt)}</td>
+              <td class="${cls(row.effective_position_qty)}">${fmt(row.effective_position_qty, qtyFmt)}</td>
+              <td class="${cls(row.delta_qty)}">${fmt(row.delta_qty, qtyFmt)}</td>
+              <td class="${cls(row.live_order_qty)}">${fmt(row.live_order_qty, qtyFmt)}</td>
+              <td class="${cls(row.pending_qty)}">${fmt(row.pending_qty, qtyFmt)}</td>
+              <td>${fmt(row.target_usdt, usdFmt)}</td><td>${fmt(row.current_usdt, usdFmt)}</td>
+              <td class="${cls(row.delta_usdt)}">${fmt(row.delta_usdt, usdFmt)}</td>
+              <td>${fmt(row.live_order_usdt, usdFmt)}</td><td>${fmt(row.pending_usdt, usdFmt)}</td>
+              <td>${row.active_batches || 0}</td><td><a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">Edit</a></td>
+            </tr>`;
+          }).join("");
+          byId("empty").style.display = rows.length ? "none" : "block";
+          const sum = (key) => rows.reduce((total, row) => total + (finite(row[key]) ? row[key] : 0), 0);
+          byId("sum-target").textContent = fmt(sum("target_usdt"), usdFmt);
+          byId("sum-current").textContent = fmt(sum("current_usdt"), usdFmt);
+          byId("sum-delta").textContent = fmt(sum("delta_usdt"), usdFmt);
+          byId("sum-pending").textContent = fmt(sum("pending_usdt"), usdFmt);
+          byId("sum-live").textContent = fmt(sum("live_order_usdt"), usdFmt);
+          const latest = Math.max(state.exec ? state.exec.received : 0, state.risk ? state.risk.received : 0);
+          const namespace = (state.exec && state.exec.namespace) || (state.risk && state.risk.namespace) || "-";
+          byId("namespace").textContent = namespace;
+          byId("last-update").textContent = latest ? new Date(latest).toLocaleTimeString() : "-";
+          byId("state-meta").textContent = `${ready ? "Position ready" : "Position waiting"} · ${allRows.length} symbols`;
+          byId("state-meta").classList.toggle("stale", latest > 0 && Date.now() - latest > STALE_MS);
+          byId("config-link").href = configUrl(state.strategy);
+        }
+        function connect() {
+          if (state.ws) state.ws.close();
+          setConnection("", "Connecting");
+          const ws = new WebSocket(wsUrl());
+          state.ws = ws;
+          ws.onopen = () => { setConnection("ok", "Live"); loadSnapshot(); };
+          ws.onmessage = (event) => { try { applyMessage(JSON.parse(event.data)); } catch (_) {} };
+          ws.onerror = () => setConnection("err", "Error");
+          ws.onclose = () => {
+            setConnection("err", "Disconnected");
+            loadSnapshot();
+            clearTimeout(state.reconnect);
+            state.reconnect = setTimeout(connect, RECONNECT_MS);
+          };
+        }
+        byId("strategy-filter").onchange = (event) => { state.strategy = event.target.value; render(); };
+        byId("symbol-filter").oninput = (event) => { state.symbol = event.target.value.trim().toUpperCase(); render(); };
+        byId("refresh").onclick = () => { loadSnapshot(); connect(); };
+        setInterval(render, 1000);
+        loadSnapshot();
+        connect();
+      })();
+    </script>
+  </body>
+</html>

@@ -2,7 +2,9 @@ use anyhow::Result;
 use log::{info, warn};
 use viz_server::config::VizCfg;
 use viz_server::server::{serve_http, WsHub};
-use viz_server::subscribers::spawn_pre_trade_resample_listeners_with_cfg;
+use viz_server::subscribers::{
+    spawn_exec_pre_trade_resample_listeners_with_cfg, spawn_pre_trade_resample_listeners_with_cfg,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -21,6 +23,7 @@ async fn main() -> Result<()> {
             for server in cfg.servers {
                 let hub = WsHub::new(128);
                 let http_cfg = server.http.clone();
+                let exec_dashboard = server.exec_pre_trade.enabled;
 
                 if let Err(err) = spawn_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
                 {
@@ -29,9 +32,17 @@ async fn main() -> Result<()> {
                         http_cfg.port
                     );
                 }
+                if let Err(err) =
+                    spawn_exec_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
+                {
+                    warn!(
+                        "spawn exec_pre_trade resample listener failed (port={}): {err:#}",
+                        http_cfg.port
+                    );
+                }
 
                 tokio::task::spawn_local(async move {
-                    if let Err(err) = serve_http(http_cfg, hub).await {
+                    if let Err(err) = serve_http(http_cfg, hub, exec_dashboard).await {
                         warn!("viz http server exited: {err:#}");
                     }
                 });

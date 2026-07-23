@@ -2,6 +2,15 @@ use bytes::{BufMut, Bytes, BytesMut};
 use log::debug;
 use std::convert::TryFrom;
 
+pub const SNAPSHOT_COMPLETE_MARKER: &[u8] = b"SNAPSHOT_COMPLETE";
+
+pub fn is_snapshot_complete_body(body: &[u8]) -> bool {
+    body.starts_with(SNAPSHOT_COMPLETE_MARKER)
+        && body[SNAPSHOT_COMPLETE_MARKER.len()..]
+            .iter()
+            .all(|byte| *byte == 0)
+}
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -161,5 +170,19 @@ impl GenericQueryRequest {
         buf.put_i64_le(self.header.client_query_id);
         buf.put(self.params.clone());
         buf.freeze()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_complete_marker_allows_ipc_zero_padding() {
+        let mut body = SNAPSHOT_COMPLETE_MARKER.to_vec();
+        body.resize(64, 0);
+        assert!(is_snapshot_complete_body(&body));
+        body[63] = 1;
+        assert!(!is_snapshot_complete_body(&body));
     }
 }

@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State as AxumState;
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
@@ -21,6 +21,7 @@ use super::config::HttpCfg;
 
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const WS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+const EXEC_DASHBOARD_HTML: &str = include_str!("../../../docs/exec_pre_trade_dashboard.html");
 
 #[derive(Clone)]
 pub struct WsHub {
@@ -145,12 +146,12 @@ impl WsHub {
     }
 }
 
-pub async fn serve_http(cfg: HttpCfg, hub: WsHub) -> Result<()> {
+pub async fn serve_http(cfg: HttpCfg, hub: WsHub, exec_dashboard: bool) -> Result<()> {
     hub.spawn_flush_loop();
 
     let hub_clone = hub.clone();
     let ws_path = cfg.ws_path.clone();
-    let app = Router::new()
+    let mut app = Router::new()
         .route(
             "/healthz",
             get(|| async { Json(serde_json::json!({"ok": true, "ts": get_timestamp_us()/1000})) }),
@@ -158,6 +159,9 @@ pub async fn serve_http(cfg: HttpCfg, hub: WsHub) -> Result<()> {
         .route("/snapshot", get(snapshot_route))
         .route(&ws_path, get(ws_route))
         .with_state(hub_clone);
+    if exec_dashboard {
+        app = app.route("/", get(|| async { Html(EXEC_DASHBOARD_HTML) }));
+    }
 
     let addr: SocketAddr = format!("{}:{}", cfg.bind, cfg.port).parse()?;
     info!("viz_server listening at http://{}{}", addr, cfg.ws_path);

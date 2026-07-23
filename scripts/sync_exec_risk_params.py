@@ -5,10 +5,7 @@
 将 Exec Pre-Trade 风控参数同步到 Redis 并打印。
 
 写入 Redis Hash:
-  `<dir>:<open>:<hedge>:pre_trade_risk_params`
-
-Exec 默认 open/hedge 都使用同一个 exec venue，因此 hash key 默认形如:
-  `<env>:<venue>:<venue>:pre_trade_risk_params`
+  `<env>:<venue>:pre_trade_risk_params`
 
 同时打印 per-symbol max_pos_u 覆盖 key（不写入）:
   `<env>:<venue>:exec:max_pos_u`
@@ -41,9 +38,6 @@ def try_import_redis():
 EXCHANGE_DEFAULTS = {
     "binance": "binance-futures",
     "okex": "okex-futures",
-    "bybit": "bybit-futures",
-    "bitget": "bitget-futures",
-    "gate": "gate-futures",
 }
 
 
@@ -68,8 +62,6 @@ def infer_env_name_from_cwd() -> Optional[str]:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync Exec pre-trade risk params to Redis")
     p.add_argument("--exec-venue", default=os.environ.get("EXEC_VENUE"))
-    p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
-    p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
     p.add_argument("--env-name", default=os.environ.get("ENV_NAME"))
     args = p.parse_args()
 
@@ -83,8 +75,8 @@ def parse_args() -> argparse.Namespace:
         p.error("需要 --exec-venue，或在目录名包含 <exchange> 前缀（如 binance_exec_trade）的 exec 目录运行")
 
     args.exec_venue = exec_venue.lower()
-    args.open_venue = (args.open_venue or args.exec_venue).lower()
-    args.hedge_venue = (args.hedge_venue or args.exec_venue).lower()
+    if args.exec_venue not in ("binance-futures", "okex-futures"):
+        p.error("exec venue 只支持 binance-futures 或 okex-futures")
 
     if not args.env_name:
         args.env_name = infer_env_name_from_cwd()
@@ -118,16 +110,16 @@ PARAM_COMMENTS: Dict[str, str] = {
 PARAM_ORDER = list(RISK_PARAMS.keys())
 
 
-def build_risk_params_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
-    return f"{env_name}:{open_venue}:{hedge_venue}:pre_trade_risk_params"
+def build_risk_params_key(env_name: str, exec_venue: str) -> str:
+    return f"{env_name}:{exec_venue}:pre_trade_risk_params"
 
 
 def build_exec_max_pos_u_key(env_name: str, exec_venue: str) -> str:
     return f"{env_name}:{exec_venue}:exec:max_pos_u"
 
 
-def sync_risk_params(rds, env_name: str, open_venue: str, hedge_venue: str) -> int:
-    key = build_risk_params_key(env_name, open_venue, hedge_venue)
+def sync_risk_params(rds, env_name: str, exec_venue: str) -> int:
+    key = build_risk_params_key(env_name, exec_venue)
     rds.hset(key, mapping=RISK_PARAMS)
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")
     return len(RISK_PARAMS)
@@ -163,11 +155,11 @@ def decode_hash(data) -> Dict[str, str]:
     return kv
 
 
-def print_risk_params(rds, env_name: str, open_venue: str, hedge_venue: str) -> None:
+def print_risk_params(rds, env_name: str, exec_venue: str) -> None:
     print("\n📊 Exec pre_trade 风控参数:")
     print("-" * 80)
 
-    key = build_risk_params_key(env_name, open_venue, hedge_venue)
+    key = build_risk_params_key(env_name, exec_venue)
     print(f"🔑 Redis Hash Key: {key}")
     data = rds.hgetall(key)
 
@@ -222,10 +214,10 @@ def main() -> int:
     print("🔄 同步 Exec pre_trade 风控参数...")
     print("📍 Redis: 127.0.0.1:6379/0")
     print(f"📁 env_name: {args.env_name}")
-    print(f"📍 exec={args.exec_venue} open={args.open_venue} hedge={args.hedge_venue}")
+    print(f"📍 exec={args.exec_venue}")
 
-    sync_risk_params(rds, args.env_name, args.open_venue, args.hedge_venue)
-    print_risk_params(rds, args.env_name, args.open_venue, args.hedge_venue)
+    sync_risk_params(rds, args.env_name, args.exec_venue)
+    print_risk_params(rds, args.env_name, args.exec_venue)
     print_exec_max_pos_u_overrides(rds, args.env_name, args.exec_venue)
     print("\n✅ 同步完成！")
     return 0
