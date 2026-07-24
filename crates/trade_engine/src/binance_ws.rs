@@ -289,7 +289,8 @@ fn build_payload_json(
     params: &[(&str, &str)],
     signature: Option<&str>,
 ) -> String {
-    let id = transport_id.to_string();
+    let mut id_buffer = itoa::Buffer::new();
+    let id = id_buffer.format(transport_id);
     let params_bytes: usize = params.iter().map(|(k, v)| k.len() + v.len() + 6).sum();
     let signature_bytes = signature
         .map(|sig| "signature".len() + sig.len() + 6)
@@ -348,17 +349,18 @@ pub fn build_session_logon_payload(
     if !signer.uses_session_logon() {
         return Err(anyhow!("Binance session.logon requires an Ed25519 signer"));
     }
-    let timestamp = current_timestamp_ms_string();
+    let mut timestamp_buffer = itoa::Buffer::new();
+    let timestamp = current_timestamp_ms(&mut timestamp_buffer);
     let ordered = [
         ("apiKey", api_key),
         ("recvWindow", BINANCE_RECV_WINDOW_MS),
-        ("timestamp", timestamp.as_str()),
+        ("timestamp", timestamp),
     ];
     build_signed_payload_json(transport_id, METHOD_SESSION_LOGON, &ordered, signer)
 }
 
-fn current_timestamp_ms_string() -> String {
-    chrono::Utc::now().timestamp_millis().to_string()
+fn current_timestamp_ms(buffer: &mut itoa::Buffer) -> &str {
+    buffer.format(chrono::Utc::now().timestamp_millis())
 }
 
 fn build_new_order_payload_fast(
@@ -382,7 +384,8 @@ fn build_new_order_payload_fast(
         params.order_type.as_str()
     };
 
-    let client_order_id = client_order_id.to_string();
+    let mut client_order_id_buffer = itoa::Buffer::new();
+    let client_order_id = client_order_id_buffer.format(client_order_id);
     let quantity = QuantizedDecimal::try_from_value(params.quantity_qv)
         .ok_or_else(|| anyhow!("binance order quantity decimal exceeds inline buffer"))?;
     let price = params
@@ -393,7 +396,8 @@ fn build_new_order_payload_fast(
                 .ok_or_else(|| anyhow!("binance order price decimal exceeds inline buffer"))
         })
         .transpose()?;
-    let timestamp = current_timestamp_ms_string();
+    let mut timestamp_buffer = itoa::Buffer::new();
+    let timestamp = current_timestamp_ms(&mut timestamp_buffer);
     let reduce_only = if params.reduce_only { "true" } else { "false" };
     let new_order_resp_type = if params.ws_response_full {
         Some("FULL")
@@ -423,7 +427,7 @@ fn build_new_order_payload_fast(
         ordered[len] = ("apiKey", api_key);
         len += 1;
     }
-    ordered[len] = ("newClientOrderId", client_order_id.as_str());
+    ordered[len] = ("newClientOrderId", client_order_id);
     len += 1;
     if let Some(value) = new_order_resp_type {
         ordered[len] = ("newOrderRespType", value);
@@ -453,7 +457,7 @@ fn build_new_order_payload_fast(
         ordered[len] = ("timeInForce", value);
         len += 1;
     }
-    ordered[len] = ("timestamp", timestamp.as_str());
+    ordered[len] = ("timestamp", timestamp);
     len += 1;
     ordered[len] = ("type", order_type);
     len += 1;
@@ -467,21 +471,23 @@ fn build_cancel_order_payload_fast(
     api_key: &str,
     signer: &BinanceWsSigner,
 ) -> Result<String> {
-    let orig_client_order_id = params.orig_client_order_id.to_string();
-    let timestamp = current_timestamp_ms_string();
+    let mut orig_client_order_id_buffer = itoa::Buffer::new();
+    let orig_client_order_id = orig_client_order_id_buffer.format(params.orig_client_order_id);
+    let mut timestamp_buffer = itoa::Buffer::new();
+    let timestamp = current_timestamp_ms(&mut timestamp_buffer);
     let mut ordered = [("", ""); 5];
     let mut len = 0usize;
     if !signer.uses_session_logon() {
         ordered[len] = ("apiKey", api_key);
         len += 1;
     }
-    ordered[len] = ("origClientOrderId", orig_client_order_id.as_str());
+    ordered[len] = ("origClientOrderId", orig_client_order_id);
     len += 1;
     ordered[len] = ("recvWindow", BINANCE_RECV_WINDOW_MS);
     len += 1;
     ordered[len] = ("symbol", params.symbol);
     len += 1;
-    ordered[len] = ("timestamp", timestamp.as_str());
+    ordered[len] = ("timestamp", timestamp);
     len += 1;
     build_authorized_payload_json(transport_id, METHOD_ORDER_CANCEL, &ordered[..len], signer)
 }
@@ -574,7 +580,8 @@ fn build_order_status_payload_fast(
     let recv_window = params
         .recv_window
         .unwrap_or_else(|| RestConstants::RECV_WINDOW_MS.to_string());
-    let timestamp = current_timestamp_ms_string();
+    let mut timestamp_buffer = itoa::Buffer::new();
+    let timestamp = current_timestamp_ms(&mut timestamp_buffer);
     let symbol = params.symbol.expect("validated symbol");
 
     let mut ordered = Vec::with_capacity(6);
@@ -589,7 +596,7 @@ fn build_order_status_payload_fast(
     }
     ordered.push(("recvWindow", recv_window.as_str()));
     ordered.push(("symbol", symbol.as_str()));
-    ordered.push(("timestamp", timestamp.as_str()));
+    ordered.push(("timestamp", timestamp));
 
     build_authorized_payload_json(transport_id, METHOD_ORDER_STATUS, &ordered, signer)
 }

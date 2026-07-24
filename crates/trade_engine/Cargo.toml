@@ -33,6 +33,7 @@ reqwest = { version = "0.12.19", features = ["json", "blocking"] }
 ipc_common = { path = "../ipc_common" }
 mkt_parsers = { path = "../mkt_parsers" }
 signal_common = { path = "../signal_common" }
+itoa = "1"
 tokio-native-tls = "0.3"
 libc = "0.2"
 rtrb = "0.3"
