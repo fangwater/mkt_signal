@@ -126,6 +126,7 @@ pub struct SnapshotQueryConfig {
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
+    include_binance_spot_snapshot: bool,
 }
 
 impl SnapshotQueryConfig {
@@ -138,6 +139,16 @@ impl SnapshotQueryConfig {
             open_venue,
             hedge_venue,
             binance_account_mode,
+            include_binance_spot_snapshot: true,
+        }
+    }
+
+    pub fn new_exec(venue: TradingVenue, binance_account_mode: Option<BinanceAccountMode>) -> Self {
+        Self {
+            open_venue: venue,
+            hedge_venue: venue,
+            binance_account_mode,
+            include_binance_spot_snapshot: false,
         }
     }
 }
@@ -262,12 +273,14 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
 
     if need_binance {
         if binance_is_standard {
-            publish(
-                "binance",
-                QueryRequestType::BinanceSpotAccountSnapshotStd,
-                Bytes::new(),
-                "binance spot account snapshot (standard)",
-            );
+            if config.include_binance_spot_snapshot {
+                publish(
+                    "binance",
+                    QueryRequestType::BinanceSpotAccountSnapshotStd,
+                    Bytes::new(),
+                    "binance spot account snapshot (standard)",
+                );
+            }
             publish(
                 "binance",
                 QueryRequestType::BinanceUmBalanceSnapshotStd,
@@ -972,11 +985,12 @@ impl PreTrade {
 mod tests {
     use super::{
         drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc,
-        reactor_idle_spin_iters,
+        reactor_idle_spin_iters, SnapshotQueryConfig,
     };
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
-    use order_common::{OrderUpdate, TradeUpdate};
+    use account_common::BinanceAccountMode;
+    use order_common::{OrderUpdate, TradeUpdate, TradingVenue};
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use std::cell::{Cell, RefCell};
@@ -995,6 +1009,22 @@ mod tests {
         assert_eq!(reactor_idle_spin_iters(false), 0);
         assert_eq!(reactor_idle_spin_iters(true), 2048);
         std::env::remove_var("PRE_TRADE_REACTOR_IDLE_SPIN_ITERS");
+    }
+
+    #[test]
+    fn exec_snapshot_skips_binance_spot_but_intra_keeps_it() {
+        let exec = SnapshotQueryConfig::new_exec(
+            TradingVenue::BinanceFutures,
+            Some(BinanceAccountMode::Standard),
+        );
+        assert!(!exec.include_binance_spot_snapshot);
+
+        let intra = SnapshotQueryConfig::new(
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+            Some(BinanceAccountMode::Standard),
+        );
+        assert!(intra.include_binance_spot_snapshot);
     }
 
     struct ReentrantTickStrategy {

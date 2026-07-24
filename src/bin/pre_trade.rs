@@ -833,11 +833,11 @@ async fn main() -> Result<()> {
             }
 
             // 7.2 启动时执行一次账户快照查询（用于补齐/初始化本地风控状态）
-            let snapshot_query = SnapshotQueryConfig::new(
-                open_venue,
-                hedge_venue,
-                binance_account_mode,
-            );
+            let snapshot_query = if exec_pre_trade {
+                SnapshotQueryConfig::new_exec(open_venue, binance_account_mode)
+            } else {
+                SnapshotQueryConfig::new(open_venue, hedge_venue, binance_account_mode)
+            };
             if !fast_poll {
                 let snapshot_query = snapshot_query.clone();
                 tokio::task::spawn_local(async move {
