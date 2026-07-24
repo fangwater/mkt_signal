@@ -95,6 +95,30 @@ if [[ -f "$BASE_DIR/env.sh" ]]; then
   set -a; source "$BASE_DIR/env.sh"; set +a
 fi
 
+binance_spot_transport="${SPREAD_PBS_BINANCE_SPOT_TRANSPORT:-ws_sbe}"
+case "${binance_spot_transport,,}" in
+  ws_sbe|ws-sbe)
+    ;;
+  fix_sbe|fix-sbe)
+    if [[ "$venue" != "binance-margin" && "$venue" != "binance-both" ]]; then
+      echo "[ERROR] SPREAD_PBS_BINANCE_SPOT_TRANSPORT=fix_sbe 仅适用于 binance-margin/binance-both" >&2
+      exit 1
+    fi
+    : "${BINANCE_FIX_MD_API_KEY:=${BINANCE_ED25519_API_KEY:-}}"
+    : "${BINANCE_FIX_MD_PRIVATE_KEY_PATH:=${BINANCE_ED25519_PRIVATE_KEY_PATH:-}}"
+    : "${BINANCE_FIX_MD_API_KEY:?fix_sbe requires BINANCE_FIX_MD_API_KEY or BINANCE_ED25519_API_KEY}"
+    : "${BINANCE_FIX_MD_PRIVATE_KEY_PATH:?fix_sbe requires BINANCE_FIX_MD_PRIVATE_KEY_PATH or BINANCE_ED25519_PRIVATE_KEY_PATH}"
+    if [[ ! -r "$BINANCE_FIX_MD_PRIVATE_KEY_PATH" ]]; then
+      echo "[ERROR] Binance FIX MD private key is not readable: $BINANCE_FIX_MD_PRIVATE_KEY_PATH" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "[ERROR] invalid SPREAD_PBS_BINANCE_SPOT_TRANSPORT=$binance_spot_transport; expected ws_sbe or fix_sbe" >&2
+    exit 1
+    ;;
+esac
+
 if [[ "$venue" == "binance-futures" ]]; then
   : "${SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE:?SPREAD_PBS_BINANCE_FUTURES_MARKET_CORE is required for binance-futures split spread_pbs}"
   : "${SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE:?SPREAD_PBS_BINANCE_FUTURES_BOOKTICKER_CORE is required for binance-futures split spread_pbs}"
@@ -255,6 +279,30 @@ if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
         \"BINANCE_SBE_API_KEY\": \"${json_binance_sbe_api_key}\""
 fi
 
+binance_fix_md_env_line=""
+if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
+  json_binance_spot_transport="$(json_escape "$binance_spot_transport")"
+  binance_fix_md_env_line=",
+        \"SPREAD_PBS_BINANCE_SPOT_TRANSPORT\": \"${json_binance_spot_transport}\""
+  if [[ "${binance_spot_transport,,}" == "fix_sbe" || "${binance_spot_transport,,}" == "fix-sbe" ]]; then
+    json_binance_fix_md_api_key="$(json_escape "$BINANCE_FIX_MD_API_KEY")"
+    json_binance_fix_md_private_key_path="$(json_escape "$BINANCE_FIX_MD_PRIVATE_KEY_PATH")"
+    binance_fix_md_env_line="${binance_fix_md_env_line},
+        \"BINANCE_FIX_MD_API_KEY\": \"${json_binance_fix_md_api_key}\",
+        \"BINANCE_FIX_MD_PRIVATE_KEY_PATH\": \"${json_binance_fix_md_private_key_path}\""
+    if [[ -n "${BINANCE_FIX_MD_URL:-}" ]]; then
+      json_binance_fix_md_url="$(json_escape "$BINANCE_FIX_MD_URL")"
+      binance_fix_md_env_line="${binance_fix_md_env_line},
+        \"BINANCE_FIX_MD_URL\": \"${json_binance_fix_md_url}\""
+    fi
+    if [[ -n "${BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE:-}" ]]; then
+      json_binance_fix_md_passphrase="$(json_escape "$BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE")"
+      binance_fix_md_env_line="${binance_fix_md_env_line},
+        \"BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE\": \"${json_binance_fix_md_passphrase}\""
+    fi
+  fi
+fi
+
 binance_futures_book_ticker_env_line=""
 if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER:-}" ]]; then
   json_binance_futures_book_ticker="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER")"
@@ -336,7 +384,7 @@ if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.tom
 fi
 
 # pmdaemon args = ["-c", "<core>", "<bin>", "--venue", "<v>", "--core", "<core>"]
-common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
+common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_fix_md_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
 if [[ "$venue" == "binance-futures" ]]; then
   cat >"$cfg_file" <<JSON
 {

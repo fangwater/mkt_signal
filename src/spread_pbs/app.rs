@@ -24,6 +24,10 @@ use crate::spread_pbs::binance::{
     binance_futures_standard_ws_url, ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP,
     ENV_BINANCE_FUTURES_MM_WS_MODE,
 };
+use crate::spread_pbs::binance_fix_sbe::{
+    decode_market_frame, new_bbo_state, run_fix_sbe_md, BinanceSpotTransport, FixMdLoopParams,
+    FixMdStreamKind, FixSbeMarketEvent, ENV_BINANCE_SPOT_TRANSPORT, MAX_FIX_SBE_LEVELS,
+};
 use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
     build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
@@ -324,6 +328,14 @@ struct WsLeg {
     handle: JoinHandle<()>,
 }
 
+struct FixMdLeg {
+    label: String,
+    kind: FixMdStreamKind,
+    local_ip: String,
+    shutdown_tx: watch::Sender<bool>,
+    handle: JoinHandle<()>,
+}
+
 /// 跨 leg 共享的上下文：adapter / publisher / state / ws url 在 spread_pbs 整个生命周期不变。
 struct LegCtx {
     adapter: Rc<dyn VenueAdapter>,
@@ -454,6 +466,11 @@ impl SpreadPbsApp {
     pub async fn run_with_shutdown(self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
         let venue = self.config.venue;
         let venue_slug: &'static str = venue.data_pub_slug();
+        let binance_spot_transport = if venue == TradingVenue::BinanceMargin {
+            BinanceSpotTransport::from_env()?
+        } else {
+            BinanceSpotTransport::WsSbe
+        };
         let publish_roots = self.publish_roots.clone();
         let binance_futures_role = if venue == TradingVenue::BinanceFutures {
             self.binance_futures_role
@@ -474,13 +491,14 @@ impl SpreadPbsApp {
             ),
         };
         log::info!(
-            "spread_pbs starting venue={} adapter={} spread_root={} dat_root={} binance_futures_role={} bybit_role={}",
+            "spread_pbs starting venue={} adapter={} spread_root={} dat_root={} binance_futures_role={} bybit_role={} binance_spot_transport={:?}",
             venue_slug,
             adapter.name(),
             publish_roots.spread_root(),
             publish_roots.dat_root(),
             binance_futures_role.as_str(),
             bybit_role.as_str(),
+            binance_spot_transport,
         );
         if venue == TradingVenue::BinanceFutures
             && binance_futures_role == BinanceFuturesRole::BookTicker
@@ -696,6 +714,30 @@ impl SpreadPbsApp {
             trades_dropped_by_seq: 0,
             last_dedup_reset_us: get_timestamp_us(),
         }));
+
+        if venue == TradingVenue::BinanceMargin
+            && binance_spot_transport == BinanceSpotTransport::FixSbe
+        {
+            log::info!(
+                "spread_pbs[{}] {}=fix_sbe; replacing Binance Spot WebSocket/SBE legs with FIX/SBE market-data sessions",
+                venue_slug,
+                ENV_BINANCE_SPOT_TRANSPORT,
+            );
+            return self
+                .run_binance_spot_fix_sbe_with_shutdown(
+                    adapter,
+                    initial_symbols,
+                    primary_local_ip,
+                    secondary_local_ip,
+                    publisher.expect("BBO publisher must exist for Binance Spot"),
+                    trade_publisher,
+                    incremental_publisher,
+                    latency_publisher.expect("latency publisher must exist for Binance Spot"),
+                    state,
+                    shutdown_rx,
+                )
+                .await;
+        }
 
         let main_trade_publisher = if adapter.trade_ws_url().is_none() {
             trade_publisher.clone()
@@ -1021,6 +1063,139 @@ impl SpreadPbsApp {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn run_binance_spot_fix_sbe_with_shutdown(
+        self,
+        adapter: Rc<dyn VenueAdapter>,
+        symbols: Vec<String>,
+        primary_local_ip: String,
+        secondary_local_ip: String,
+        publisher: Rc<SpreadPublisher>,
+        trade_publisher: Option<Rc<SpreadTradePublisher>>,
+        incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+        latency_publisher: Rc<SpreadLatencyPublisher>,
+        state: Rc<RefCell<SharedState>>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let depth = self
+            .config
+            .data_types
+            .max_levels_per_msg
+            .unwrap_or(20)
+            .clamp(2, MAX_FIX_SBE_LEVELS) as u16;
+        let mut legs = Vec::with_capacity(6);
+        for (track, local_ip) in [
+            ("primary", primary_local_ip),
+            ("secondary", secondary_local_ip),
+        ] {
+            legs.push(spawn_fix_md_leg(
+                format!("{track}-bbo"),
+                local_ip.clone(),
+                symbols.clone(),
+                FixMdStreamKind::Bbo,
+                depth,
+                make_fix_md_handler(
+                    format!("{track}-bbo"),
+                    FixMdStreamKind::Bbo,
+                    adapter.clone(),
+                    Some(publisher.clone()),
+                    None,
+                    None,
+                    self.config.data_types.max_levels_per_msg,
+                    state.clone(),
+                ),
+            ));
+            if let Some(trade_publisher) = trade_publisher.as_ref() {
+                legs.push(spawn_fix_md_leg(
+                    format!("{track}-trade"),
+                    local_ip.clone(),
+                    symbols.clone(),
+                    FixMdStreamKind::Trade,
+                    depth,
+                    make_fix_md_handler(
+                        format!("{track}-trade"),
+                        FixMdStreamKind::Trade,
+                        adapter.clone(),
+                        None,
+                        Some(trade_publisher.clone()),
+                        None,
+                        self.config.data_types.max_levels_per_msg,
+                        state.clone(),
+                    ),
+                ));
+            }
+            if let Some(incremental_publisher) = incremental_publisher.as_ref() {
+                legs.push(spawn_fix_md_leg(
+                    format!("{track}-depth"),
+                    local_ip,
+                    symbols.clone(),
+                    FixMdStreamKind::Depth,
+                    depth,
+                    make_fix_md_handler(
+                        format!("{track}-depth"),
+                        FixMdStreamKind::Depth,
+                        adapter.clone(),
+                        None,
+                        None,
+                        Some(incremental_publisher.clone()),
+                        self.config.data_types.max_levels_per_msg,
+                        state.clone(),
+                    ),
+                ));
+            }
+        }
+
+        log::info!(
+            "spread_pbs[binance-margin] FIX/SBE mode started sessions={} symbols={} streams=bbo{}{}",
+            legs.len(),
+            symbols.len(),
+            if trade_publisher.is_some() { ",trade" } else { "" },
+            if incremental_publisher.is_some() {
+                ",depth"
+            } else {
+                ""
+            },
+        );
+
+        let mut stats_ticker = tokio::time::interval(Duration::from_secs(30));
+        stats_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        stats_ticker.tick().await;
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        log::info!("spread_pbs[binance-margin] FIX/SBE shutdown requested");
+                        shutdown_fix_md_legs(&mut legs).await;
+                        break;
+                    }
+                }
+                _ = stats_ticker.tick() => {
+                    let mut shared = state.borrow_mut();
+                    if let Some(msg) = take_latency_snapshot(
+                        &mut shared,
+                        TradingVenue::BinanceMargin.to_u8() as u32,
+                    ) {
+                        if let Err(err) = latency_publisher.publish(msg.into_bytes()) {
+                            log::warn!(
+                                "spread_pbs[binance-margin] FIX/SBE latency publish failed: {err:#}"
+                            );
+                        }
+                    }
+                    log::info!(
+                        "spread_pbs[binance-margin] FIX/SBE stats published={} trades_published={} incremental_published={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={}",
+                        shared.published,
+                        shared.trades_published,
+                        shared.incremental_published,
+                        shared.dropped_by_seq,
+                        shared.trades_dropped_by_seq,
+                        shared.incremental_dropped_by_seq,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn run_binance_futures_bookticker_with_shutdown(
         self,
         adapter: Rc<dyn VenueAdapter>,
@@ -1197,6 +1372,165 @@ fn spawn_leg(
         shutdown_tx: tx,
         handle,
     }
+}
+
+fn spawn_fix_md_leg(
+    label: String,
+    local_ip: String,
+    symbols: Vec<String>,
+    kind: FixMdStreamKind,
+    depth: u16,
+    handler: FrameHandler,
+) -> FixMdLeg {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = tokio::task::spawn_local(run_fix_sbe_md(
+        FixMdLoopParams {
+            label: label.clone(),
+            local_ip: local_ip.clone(),
+            symbols,
+            kind,
+            depth,
+        },
+        handler,
+        shutdown_rx,
+    ));
+    FixMdLeg {
+        label,
+        kind,
+        local_ip,
+        shutdown_tx,
+        handle,
+    }
+}
+
+async fn shutdown_fix_md_legs(legs: &mut [FixMdLeg]) {
+    for leg in legs.iter() {
+        log::info!(
+            "spread_pbs fix-md[{}] stopping kind={:?} local_ip={}",
+            leg.label,
+            leg.kind,
+            leg.local_ip,
+        );
+        let _ = leg.shutdown_tx.send(true);
+    }
+    for leg in legs.iter_mut() {
+        let _ = (&mut leg.handle).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_fix_md_handler(
+    label: String,
+    kind: FixMdStreamKind,
+    adapter: Rc<dyn VenueAdapter>,
+    publisher: Option<Rc<SpreadPublisher>>,
+    trade_publisher: Option<Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
+    incremental_max_levels: Option<usize>,
+    state: Rc<RefCell<SharedState>>,
+) -> FrameHandler {
+    let bbo_state = Rc::new(RefCell::new(new_bbo_state()));
+    Rc::new(move |recv_us, raw| {
+        let mut decoded_bbo_state = bbo_state.borrow_mut();
+        let result = decode_market_frame(
+            raw,
+            kind,
+            &mut decoded_bbo_state,
+            &mut |event| match event {
+                FixSbeMarketEvent::Bbo {
+                    symbol,
+                    timestamp_us,
+                    seq_id,
+                    bid_price,
+                    bid_amount,
+                    ask_price,
+                    ask_amount,
+                } => {
+                    let Some(publisher) = publisher.as_ref() else {
+                        return;
+                    };
+                    let accepted_us = get_timestamp_us();
+                    let slot_index = adapter.symbol_slot_index(symbol);
+                    process_bbo_fields(
+                        &mut state.borrow_mut(),
+                        publisher,
+                        slot_index,
+                        recv_us,
+                        accepted_us,
+                        symbol,
+                        timestamp_us,
+                        seq_id,
+                        false,
+                        bid_price,
+                        bid_amount,
+                        ask_price,
+                        ask_amount,
+                        MarketSource::Other,
+                    );
+                }
+                FixSbeMarketEvent::Trade {
+                    symbol,
+                    timestamp_us,
+                    seq_id,
+                    trade_id,
+                    side,
+                    price,
+                    amount,
+                } => {
+                    let Some(trade_publisher) = trade_publisher.as_ref() else {
+                        return;
+                    };
+                    let slot_index = adapter.symbol_slot_index(symbol);
+                    process_trade_fields(
+                        &mut state.borrow_mut(),
+                        trade_publisher,
+                        slot_index,
+                        symbol,
+                        seq_id,
+                        trade_id,
+                        timestamp_us,
+                        side,
+                        price,
+                        amount,
+                    );
+                }
+                FixSbeMarketEvent::Book {
+                    symbol,
+                    timestamp_us,
+                    seq_id,
+                    first_update_id,
+                    final_update_id,
+                    is_snapshot,
+                    bids,
+                    asks,
+                } => {
+                    let Some(incremental_publisher) = incremental_publisher.as_ref() else {
+                        return;
+                    };
+                    let slot_index = adapter.symbol_slot_index(symbol);
+                    process_incremental_fields(
+                        &mut state.borrow_mut(),
+                        incremental_publisher,
+                        slot_index,
+                        symbol,
+                        timestamp_us,
+                        seq_id,
+                        first_update_id.saturating_sub(1),
+                        first_update_id,
+                        final_update_id,
+                        false,
+                        is_snapshot,
+                        bids,
+                        asks,
+                        incremental_max_levels,
+                    );
+                }
+            },
+        );
+        if let Err(err) = result {
+            log::warn!("spread_pbs fix-md[{}] decode failed: {err:#}", label);
+        }
+    })
 }
 
 fn spawn_replacement_leg_on_main_ws(

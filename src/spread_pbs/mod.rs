@@ -10,6 +10,7 @@
 pub mod adapter;
 pub mod app;
 pub mod binance;
+pub mod binance_fix_sbe;
 pub mod bitget;
 pub mod bybit;
 pub mod gate;
