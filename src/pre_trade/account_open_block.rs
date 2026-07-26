@@ -632,6 +632,25 @@ fn ensure_account_open_block_from_capacity_low(venue: CapacityVenue, now_us: i64
     })
 }
 
+fn cancel_all_arb_open_orders_for_capacity_low(now_us: i64) -> usize {
+    let Some(strategy_mgr) = MonitorChannel::try_strategy_mgr() else {
+        return 0;
+    };
+    let ids_and_sides = strategy_mgr.borrow().all_arb_open_strategy_ids_and_sides();
+    let mut cancelled = 0usize;
+    for (strategy_id, side) in ids_and_sides {
+        if strategy_mgr.borrow_mut().cancel_arb_open_by_id(
+            strategy_id,
+            side,
+            "account_capacity_low_open_block",
+            now_us,
+        ) {
+            cancelled = cancelled.saturating_add(1);
+        }
+    }
+    cancelled
+}
+
 fn check_account_open_block_at() -> Option<AccountOpenBlockHit> {
     check_account_open_block_at_ts(get_timestamp_us())
 }
@@ -807,9 +826,14 @@ fn evaluate_capacity(
         );
     } else {
         let inserted = ensure_account_open_block_from_capacity_low(venue, now_us);
+        let cancelled = if inserted && venue == CapacityVenue::BinancePm {
+            cancel_all_arb_open_orders_for_capacity_low(now_us)
+        } else {
+            0
+        };
         let state = if inserted { "lock" } else { "stay_locked" };
         warn!(
-            "AccountOpenBlock: {} capacity {}={:.8} max_borrowable={:.8} capacity={:.8} threshold={:.8} query_latency_us={} state={}",
+            "AccountOpenBlock: {} capacity {}={:.8} max_borrowable={:.8} capacity={:.8} threshold={:.8} query_latency_us={} state={} cancel_open_count={}",
             venue.label(),
             venue.available_label(),
             available,
@@ -817,7 +841,8 @@ fn evaluate_capacity(
             capacity,
             venue.threshold(),
             query_latency_us,
-            state
+            state,
+            cancelled
         );
     }
 }
