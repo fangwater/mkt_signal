@@ -1095,6 +1095,8 @@ struct BasicState {
     exposure_usdt_by_asset: HashMap<String, f64>,
     // asset -> mark price in USDT at cache-refresh time.
     mark_usdt_by_asset: HashMap<String, f64>,
+    // asset -> gross position (|open_qty| + |hedge_qty|) valued in USDT.
+    position_usdt_by_asset: HashMap<String, f64>,
     total_equity_usdt: f64,
     abs_total_exposure_usdt: f64,
     total_position_usdt: f64,
@@ -1104,6 +1106,7 @@ struct BasicState {
 struct BasicStatePriceUpdate {
     exposure_usdt_by_asset: HashMap<String, f64>,
     mark_usdt_by_asset: HashMap<String, f64>,
+    position_usdt_by_asset: HashMap<String, f64>,
     total_equity_usdt: f64,
     abs_total_exposure_usdt: f64,
     total_position_usdt: f64,
@@ -1113,6 +1116,7 @@ impl BasicState {
     fn apply_price_update(&mut self, update: BasicStatePriceUpdate) {
         self.exposure_usdt_by_asset = update.exposure_usdt_by_asset;
         self.mark_usdt_by_asset = update.mark_usdt_by_asset;
+        self.position_usdt_by_asset = update.position_usdt_by_asset;
         self.total_equity_usdt = update.total_equity_usdt;
         self.abs_total_exposure_usdt = update.abs_total_exposure_usdt;
         self.total_position_usdt = update.total_position_usdt;
@@ -2510,6 +2514,15 @@ impl MonitorChannel {
         })
     }
 
+    /// Returns gross per-asset positions and their total using the same cached
+    /// valuation as `total_position_usdt`.
+    pub fn gross_position_usdt_snapshot(&self) -> (HashMap<String, f64>, f64) {
+        Self::with_inner(|_inner| {
+            let state = Self::basic_state_cached();
+            (state.position_usdt_by_asset, state.total_position_usdt)
+        })
+    }
+
     /// 获取 strategy_mgr 的引用
     pub fn strategy_mgr(&self) -> Rc<RefCell<crate::strategy::StrategyManager>> {
         Self::with_inner(|inner| inner.strategy_mgr.clone())
@@ -3004,6 +3017,7 @@ impl MonitorChannel {
             account_risk_equity_override,
             exposure_usdt_by_asset: price_update.exposure_usdt_by_asset,
             mark_usdt_by_asset: price_update.mark_usdt_by_asset,
+            position_usdt_by_asset: price_update.position_usdt_by_asset,
             total_equity_usdt: price_update.total_equity_usdt,
             abs_total_exposure_usdt: price_update.abs_total_exposure_usdt,
             total_position_usdt: price_update.total_position_usdt,
@@ -3168,6 +3182,7 @@ impl MonitorChannel {
 
         let mut total_position_usdt = 0.0;
         let mut abs_total_exposure_usdt = 0.0;
+        let mut position_usdt_by_asset = HashMap::new();
         for (asset, (open_qty, hedge_qty)) in exposures {
             if asset == "USDT" {
                 continue;
@@ -3179,13 +3194,16 @@ impl MonitorChannel {
             let net_exposure_usdt = (open_qty + hedge_qty) * mark;
             mark_usdt_by_asset.insert(asset.clone(), mark);
             exposure_usdt_by_asset.insert(asset.clone(), net_exposure_usdt);
-            total_position_usdt += (open_qty.abs() + hedge_qty.abs()) * mark;
+            let position_usdt = (open_qty.abs() + hedge_qty.abs()) * mark;
+            position_usdt_by_asset.insert(asset.clone(), position_usdt);
+            total_position_usdt += position_usdt;
             abs_total_exposure_usdt += net_exposure_usdt.abs();
         }
 
         BasicStatePriceUpdate {
             exposure_usdt_by_asset,
             mark_usdt_by_asset,
+            position_usdt_by_asset,
             total_equity_usdt,
             abs_total_exposure_usdt,
             total_position_usdt,

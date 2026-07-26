@@ -11,6 +11,7 @@ use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use mkt_signal::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
+use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
@@ -721,6 +722,17 @@ async fn main() -> Result<()> {
             )
             .await?;
             info!("Binance FR position-limit guard initialized");
+
+            info!("Initializing FR position concentration guard...");
+            FrPositionConcentrationGuard::initialize(
+                &leverage_guard_redis,
+                dir_prefix.clone(),
+                arb_mode,
+                open_venue,
+                hedge_venue,
+            )
+            .await?;
+            info!("FR position concentration guard initialized");
 
             info!("Initializing Gate risk-limit guard...");
             GateFrRiskLimitGuard::initialize(

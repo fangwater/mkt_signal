@@ -11,6 +11,8 @@ use runtime_common::fast_hash::{fast_hash_map, fast_hash_map_with_capacity, Fast
 use runtime_common::redis_client::{BlockingRedisClient, RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 
+use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
+
 /// Redis Key 配置
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 
@@ -21,6 +23,8 @@ const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
 const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 const DEFAULT_ARB_ORDER_AMOUNT_U: f64 = 100.0;
+const DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO: f64 = 0.10;
+const DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO: f64 = 0.12;
 
 type MaxPosUOverrideTable = FastHashMap<String, f64>;
 type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
@@ -40,6 +44,8 @@ struct PreTradeParamsData {
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
+    fr_position_concentration_alert_ratio: f64,
+    fr_position_concentration_dump_ratio: f64,
     min_non_trading_position_usdt: f64,
     exec_max_position_imbalance_ratio: f64,
     unimmr_trigger_line: f64,
@@ -73,6 +79,8 @@ impl Default for PreTradeParamsData {
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
+            fr_position_concentration_alert_ratio: DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO,
+            fr_position_concentration_dump_ratio: DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO,
             min_non_trading_position_usdt: DEFAULT_MIN_NON_TRADING_POSITION_USDT,
             exec_max_position_imbalance_ratio: 0.0,
             unimmr_trigger_line: DEFAULT_UNIMMR_TRIGGER_LINE,
@@ -317,6 +325,22 @@ fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Optio
     }
 }
 
+fn normalize_fr_position_concentration_ratios(
+    alert_ratio: f64,
+    dump_ratio: f64,
+) -> Option<(f64, f64)> {
+    if alert_ratio.is_finite()
+        && dump_ratio.is_finite()
+        && alert_ratio > 0.0
+        && alert_ratio < dump_ratio
+        && dump_ratio <= 1.0
+    {
+        Some((alert_ratio, dump_ratio))
+    } else {
+        None
+    }
+}
+
 impl PreTradeParamsLoader {
     /// 获取全局单例实例
     pub fn instance() -> Self {
@@ -547,6 +571,34 @@ impl PreTradeParamsLoader {
                 }
             }
 
+            let raw_concentration_alert_ratio = parse_f64(
+                "fr_position_concentration_alert_ratio",
+            )
+            .unwrap_or(data.fr_position_concentration_alert_ratio);
+            let raw_concentration_dump_ratio = parse_f64(
+                "fr_position_concentration_dump_ratio",
+            )
+            .unwrap_or(data.fr_position_concentration_dump_ratio);
+            if let Some((alert_ratio, dump_ratio)) = normalize_fr_position_concentration_ratios(
+                raw_concentration_alert_ratio,
+                raw_concentration_dump_ratio,
+            ) {
+                data.fr_position_concentration_alert_ratio = alert_ratio;
+                data.fr_position_concentration_dump_ratio = dump_ratio;
+            } else {
+                warn!(
+                    "FR position concentration ratios invalid alert={} dump={}，要求 0 < alert < dump <= 1，回退默认 alert={:.4} dump={:.4}",
+                    raw_concentration_alert_ratio,
+                    raw_concentration_dump_ratio,
+                    DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO,
+                    DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO
+                );
+                data.fr_position_concentration_alert_ratio =
+                    DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO;
+                data.fr_position_concentration_dump_ratio =
+                    DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO;
+            }
+
             if let Some(v) = parse_f64("min_non_trading_position_usdt") {
                 if v.is_finite() && v >= 0.0 {
                     data.min_non_trading_position_usdt = v;
@@ -723,6 +775,9 @@ impl PreTradeParamsLoader {
                         warn!("风控参数后台刷新失败: {:#}", e);
                     }
                 }
+                if let Err(err) = FrPositionConcentrationGuard::refresh().await {
+                    warn!("FR 仓位集中度风控配置窗口刷新失败: {err:#}");
+                }
             }
         });
 
@@ -758,6 +813,14 @@ impl PreTradeParamsLoader {
             "max_total_exposure_ratio", data.max_total_exposure_ratio
         );
         println!("{:<40} {:>18.2}", "max_leverage", data.max_leverage);
+        println!(
+            "{:<40} {:>18.4}",
+            "fr_position_concentration_alert_ratio", data.fr_position_concentration_alert_ratio
+        );
+        println!(
+            "{:<40} {:>18.4}",
+            "fr_position_concentration_dump_ratio", data.fr_position_concentration_dump_ratio
+        );
         println!(
             "{:<40} {:>18.2}",
             "min_non_trading_position_usdt", data.min_non_trading_position_usdt
@@ -890,6 +953,14 @@ impl PreTradeParamsLoader {
     /// 获取 max_leverage
     pub fn max_leverage(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().max_leverage)
+    }
+
+    pub fn fr_position_concentration_alert_ratio(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().fr_position_concentration_alert_ratio)
+    }
+
+    pub fn fr_position_concentration_dump_ratio(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().fr_position_concentration_dump_ratio)
     }
 
     pub fn exec_max_position_imbalance_ratio(&self) -> f64 {
@@ -1051,6 +1122,8 @@ impl PreTradeParamsLoader {
                 max_symbol_exposure_ratio: data.max_symbol_exposure_ratio,
                 max_total_exposure_ratio: data.max_total_exposure_ratio,
                 max_leverage: data.max_leverage,
+                fr_position_concentration_alert_ratio: data.fr_position_concentration_alert_ratio,
+                fr_position_concentration_dump_ratio: data.fr_position_concentration_dump_ratio,
                 min_non_trading_position_usdt: data.min_non_trading_position_usdt,
                 exec_max_position_imbalance_ratio: data.exec_max_position_imbalance_ratio,
                 unimmr_trigger_line: data.unimmr_trigger_line,
@@ -1085,6 +1158,8 @@ pub struct PreTradeParamsSnapshot {
     pub max_symbol_exposure_ratio: f64,
     pub max_total_exposure_ratio: f64,
     pub max_leverage: f64,
+    pub fr_position_concentration_alert_ratio: f64,
+    pub fr_position_concentration_dump_ratio: f64,
     pub min_non_trading_position_usdt: f64,
     pub exec_max_position_imbalance_ratio: f64,
     pub unimmr_trigger_line: f64,
@@ -1178,6 +1253,16 @@ mod tests {
         assert_eq!(snapshot.arb_hedge_order_rate_limit_10s, 0);
         assert_eq!(snapshot.exec_order_rate_limit_per_min, 0);
         assert_eq!(snapshot.exec_order_rate_limit_10s, 0);
+    }
+
+    #[test]
+    fn test_normalize_fr_position_concentration_ratios() {
+        assert_eq!(
+            normalize_fr_position_concentration_ratios(0.10, 0.12),
+            Some((0.10, 0.12))
+        );
+        assert_eq!(normalize_fr_position_concentration_ratios(0.12, 0.10), None);
+        assert_eq!(normalize_fr_position_concentration_ratios(0.10, 1.01), None);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::{check_account_open_block, AccountOpen
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
+use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
 use crate::pre_trade::leverage_guard::LeverageGuard;
@@ -977,6 +978,10 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 side,
                 open_ctx.amount_value(),
             );
+            if FrPositionConcentrationGuard::should_block_arb_open(&symbol, leverage_guard_reducing)
+            {
+                return;
+            }
             if !leverage_guard_reducing
                 && LeverageGuard::should_block_arb_open(
                     &symbol,

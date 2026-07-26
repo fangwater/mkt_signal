@@ -39,6 +39,9 @@ struct SymbolListInner {
     /// 平仓列表
     dump_symbols: FastHashSet<String>,
 
+    /// FR 仓位集中度风控维护的隐式平仓列表。
+    pos_dump_symbols: FastHashSet<String>,
+
     /// 正套建仓列表
     fwd_trade_symbols: FastHashSet<String>,
 
@@ -88,6 +91,7 @@ impl SymbolList {
         let inner = SymbolListInner {
             current_exchange: None,
             dump_symbols: fast_hash_set(),
+            pos_dump_symbols: fast_hash_set(),
             fwd_trade_symbols: fast_hash_set(),
             bwd_trade_symbols: fast_hash_set(),
             unimmr_close_symbols: fast_hash_set(),
@@ -264,6 +268,14 @@ impl SymbolList {
                     );
                 }
             }
+            if let Err(err) = self
+                .reload_fr_pos_dump_from_redis(client, &key_suffix, key_prefix.as_deref())
+                .await
+            {
+                warn!("FR pos dump 列表刷新失败: {err:#}（保留旧缓存）");
+            }
+        } else {
+            Self::with_inner_mut(|inner| inner.pos_dump_symbols.clear());
         }
 
         if ns == "intra" {
@@ -345,6 +357,9 @@ impl SymbolList {
             if Self::contains_normalized(&inner.dump_symbols, symbol) {
                 return true;
             }
+            if Self::contains_normalized(&inner.pos_dump_symbols, symbol) {
+                return true;
+            }
             if super::unimmr_close_gate::UnimmrCloseGate::instance().any_close_allowed()
                 && Self::contains_normalized(&inner.unimmr_close_symbols, symbol)
             {
@@ -372,6 +387,11 @@ impl SymbolList {
     /// 获取平仓列表
     pub fn get_dump_symbols(&self) -> Vec<String> {
         Self::with_inner(|inner| inner.dump_symbols.iter().cloned().collect())
+    }
+
+    /// 获取 FR 仓位集中度风控维护的隐式平仓列表。
+    pub fn get_pos_dump_symbols(&self) -> Vec<String> {
+        Self::with_inner(|inner| inner.pos_dump_symbols.iter().cloned().collect())
     }
 
     /// 获取正套建仓列表
@@ -413,12 +433,54 @@ impl SymbolList {
         })
     }
 
+    pub async fn reload_fr_pos_dump_from_redis(
+        &self,
+        client: &mut RedisClient,
+        key_suffix: &str,
+        key_prefix: Option<&str>,
+    ) -> Result<()> {
+        let suffix = key_suffix.trim().to_ascii_lowercase();
+        let prefix = normalize_symbol_list_key_prefix(key_prefix);
+        let key = symbol_list_redis_key(
+            prefix.as_deref(),
+            DEFAULT_SYMBOL_NAMESPACE,
+            "pos_dump_symbols",
+            &suffix,
+        );
+        match client.get_string(&key).await? {
+            Some(value) => match serde_json::from_str::<Vec<String>>(&value) {
+                Ok(symbols) => {
+                    Self::with_inner_mut(|inner| {
+                        inner.pos_dump_symbols =
+                            symbols.iter().map(|symbol| symbol.to_uppercase()).collect();
+                        info!(
+                            "更新 FR pos dump 列表 key={} count={}",
+                            key,
+                            inner.pos_dump_symbols.len()
+                        );
+                    });
+                }
+                Err(err) => {
+                    warn!(
+                        "FR pos dump 列表解析失败 key={} raw={} err={:#}，保留旧缓存",
+                        key, value, err
+                    );
+                }
+            },
+            None => {
+                Self::with_inner_mut(|inner| inner.pos_dump_symbols.clear());
+            }
+        }
+        Ok(())
+    }
+
     // ==================== 内部辅助方法 ====================
 
     /// 汇总 online symbols（平仓 ∪ 正套/反套建仓 ∪ UniMMR 算法平仓）
     fn collect_online(inner: &SymbolListInner) -> Vec<String> {
         let mut online_set = fast_hash_set();
         online_set.extend(inner.dump_symbols.iter().cloned());
+        online_set.extend(inner.pos_dump_symbols.iter().cloned());
         online_set.extend(inner.fwd_trade_symbols.iter().cloned());
         online_set.extend(inner.bwd_trade_symbols.iter().cloned());
         online_set.extend(inner.unimmr_close_symbols.iter().cloned());
@@ -502,7 +564,7 @@ fn exchange_from_key_suffix(key_suffix: &str) -> Option<Exchange> {
 
 #[cfg(test)]
 mod tests {
-    use super::symbol_list_redis_key;
+    use super::{symbol_list_redis_key, SymbolList};
 
     #[test]
     fn symbol_list_redis_key_without_prefix_matches_legacy_shape() {
@@ -528,5 +590,30 @@ mod tests {
             ),
             "binance_fr_trade01:fr_bwd_trade_symbols:binance-margin_binance-futures"
         );
+    }
+
+    #[test]
+    fn pos_dump_key_is_env_scoped() {
+        assert_eq!(
+            symbol_list_redis_key(
+                Some("binance_fr_arb02"),
+                "fr",
+                "pos_dump_symbols",
+                "binance-margin_binance-futures"
+            ),
+            "binance_fr_arb02:fr_pos_dump_symbols:binance-margin_binance-futures"
+        );
+    }
+
+    #[test]
+    fn pos_dump_is_implicitly_part_of_dump_and_online_lists() {
+        SymbolList::init_singleton().unwrap();
+        SymbolList::with_inner_mut(|inner| {
+            inner.pos_dump_symbols.insert("ETHUSDT".to_string());
+        });
+
+        let list = SymbolList::instance();
+        assert!(list.is_in_dump_list("ETH-USDT-SWAP"));
+        assert!(list.get_online_symbols().contains(&"ETHUSDT".to_string()));
     }
 }

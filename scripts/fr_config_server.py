@@ -1275,6 +1275,35 @@ def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
     return normalized
 
 
+def normalize_fr_position_concentration_ratios(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    alert_field = "fr_position_concentration_alert_ratio"
+    dump_field = "fr_position_concentration_dump_ratio"
+    if alert_field not in normalized and dump_field not in normalized:
+        return normalized
+    if alert_field not in normalized or dump_field not in normalized:
+        raise ValueError(
+            "fr_position_concentration_alert_ratio and fr_position_concentration_dump_ratio must be provided together"
+        )
+    try:
+        alert_ratio = float(str(normalized[alert_field]).strip())
+        dump_ratio = float(str(normalized[dump_field]).strip())
+    except Exception as exc:
+        raise ValueError("FR position concentration ratios must be numbers") from exc
+
+    if not (
+        math.isfinite(alert_ratio)
+        and math.isfinite(dump_ratio)
+        and 0 < alert_ratio < dump_ratio <= 1
+    ):
+        raise ValueError(
+            "FR position concentration ratios must satisfy 0 < alert_ratio < dump_ratio <= 1"
+        )
+    normalized[alert_field] = f"{alert_ratio:g}"
+    normalized[dump_field] = f"{dump_ratio:g}"
+    return normalized
+
+
 def sanitize_mapping_by_schema(
     values: Any,
     defaults: Dict[str, Any],
@@ -2035,6 +2064,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
                 )
                 mapping = normalize_unimmr_control_lines(mapping)
+                mapping = normalize_fr_position_concentration_ratios(mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return

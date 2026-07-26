@@ -99,6 +99,11 @@ RISK_PARAMS = {
     # 最大杠杆倍数（>0）
     "max_leverage": "1.75",
 
+    # 单币仓位占总仓位比例：告警/ArbOpen reduce-only 硬锁，以及隐式 dump 触发线
+    # 要求 0 < alert < dump <= 1；低于 alert 时解除硬锁并移除隐式 dump。
+    "fr_position_concentration_alert_ratio": "0.10",
+    "fr_position_concentration_dump_ratio": "0.12",
+
     # UniMMR 算法平仓触发/恢复线（固定交易所 warning 上沿 1.5；要求 1.5 < trigger < recover）
     "unimmr_trigger_line": "2.0",
     "unimmr_recover_line": "2.2",
@@ -130,6 +135,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_symbol_exposure_ratio": "单币种最大敞口比例",
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
+    "fr_position_concentration_alert_ratio": "单币仓位集中度告警/ArbOpen硬锁线",
+    "fr_position_concentration_dump_ratio": "单币仓位集中度隐式dump触发线",
     "unimmr_trigger_line": "UniMMR 算法平仓触发线（>1.5 且 < recover）",
     "unimmr_recover_line": "UniMMR 算法平仓恢复线（> trigger）",
     "max_pending_limit_orders": "最大挂单数",
