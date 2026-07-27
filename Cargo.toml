@@ -9,6 +9,7 @@ members = [
     "crates/ipc_common",
     "crates/mkt_model_runtime",
     "crates/mkt_parsers",
+    "crates/notification_server",
     "crates/order_common",
     "crates/period_pbs",
     "crates/spread_pbs_btc_inc_raw",

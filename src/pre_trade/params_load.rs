@@ -4,20 +4,15 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use order_common::TradingVenue;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_map_with_capacity, FastHashMap};
 use runtime_common::redis_client::{BlockingRedisClient, RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 
-use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
-
 /// Redis Key 配置
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 
-/// 后台刷新间隔（固定 60 秒）
-const REFRESH_INTERVAL_SECS: u64 = 60;
 const EXCHANGE_WARNING_MODE_UPPER_UNIMMR: f64 = 1.5;
 const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
@@ -748,40 +743,6 @@ impl PreTradeParamsLoader {
                 data.exec_order_rate_limit_10s
             );
         });
-    }
-
-    /// 启动后台刷新任务（固定 60 秒间隔）
-    pub fn start_background_refresh(
-        redis: RedisSettings,
-        env_name: Option<String>,
-        open_venue: TradingVenue,
-        hedge_venue: TradingVenue,
-    ) {
-        tokio::task::spawn_local(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
-            let loader = PreTradeParamsLoader::instance();
-
-            loop {
-                interval.tick().await;
-
-                match loader
-                    .load_from_redis(&redis, env_name.as_deref(), open_venue, hedge_venue)
-                    .await
-                {
-                    Ok(_) => {
-                        debug!("风控参数后台刷新成功");
-                    }
-                    Err(e) => {
-                        warn!("风控参数后台刷新失败: {:#}", e);
-                    }
-                }
-                if let Err(err) = FrPositionConcentrationGuard::refresh().await {
-                    warn!("FR 仓位集中度风控配置窗口刷新失败: {err:#}");
-                }
-            }
-        });
-
-        info!("后台参数刷新任务已启动 (间隔: {}s)", REFRESH_INTERVAL_SECS);
     }
 
     /// 打印参数三线表

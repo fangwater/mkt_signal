@@ -1,6 +1,7 @@
 use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll;
 use crate::pre_trade::auto_collection_service::AutoCollectionService;
 use crate::pre_trade::auto_repay_service::AutoRepayService;
+use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
@@ -13,6 +14,7 @@ use crate::pre_trade::signal_channel::{OpenSignalDropReason, SignalChannel};
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
 use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use crate::pre_trade::trade_eng_channel::TradeEngHub;
+use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use account_common::BinanceAccountMode;
 use anyhow::Result;
@@ -490,16 +492,9 @@ impl PreTrade {
         let account_open_block_poll_interval = std::time::Duration::from_secs(60);
         let mut next_account_open_block_poll =
             std::time::Instant::now() + account_open_block_poll_interval;
+        let mut next_param_refresh = Instant::now();
         let fast_poll = enable_ipc_fast_poll();
         let fast_poll_budgets = FastPollDispatchBudgets::from_env();
-        if let Some(refresh_cfg) = param_refresh.as_ref() {
-            PreTradeParamsLoader::start_background_refresh(
-                refresh_cfg.redis.clone(),
-                refresh_cfg.env_name.clone(),
-                refresh_cfg.open_venue,
-                refresh_cfg.hedge_venue,
-            );
-        }
         if let Some(refresh_cfg) = intra_bwd_refresh.as_ref() {
             IntraBwdSymbolList::start_background_refresh(
                 refresh_cfg.redis.clone(),
@@ -530,7 +525,7 @@ impl PreTrade {
         );
         info!("pre_trade MM open order rate cleanup started (interval=10s window=60s)");
         info!(
-            "pre_trade param refresh configured (enable_ipc_fast_poll={} async_background_refresh={} taker_model_refresh={} interval_s={})",
+            "pre_trade param refresh configured (enable_ipc_fast_poll={} synchronous_main_loop_refresh={} taker_model_refresh={} interval_s={})",
             fast_poll,
             param_refresh.is_some(),
             taker_decision_model_refresh.is_some(),
@@ -575,7 +570,74 @@ impl PreTrade {
 
         loop {
             let loop_start_us = get_timestamp_us();
+            let param_refresh_due = param_refresh
+                .as_ref()
+                .is_some_and(|_| Instant::now() >= next_param_refresh);
             let open_drop_reason = pending_maintenance_open_drop_reason.take();
+            if param_refresh_due {
+                let maintenance_start_us = get_timestamp_us();
+                let pre_refresh_drop_reason = select_slower_open_drop_reason(
+                    open_drop_reason,
+                    Some(OpenSignalDropReason {
+                        source: "synchronous_param_refresh",
+                        elapsed_us: 0,
+                        threshold_us: 0,
+                    }),
+                );
+                MonitorChannel::drain_pending_state_updates_with_refresh();
+                SignalChannel::drain_pending_with_open_drop(pre_refresh_drop_reason);
+
+                let refresh_cfg = param_refresh
+                    .as_ref()
+                    .expect("param refresh config exists when refresh is due");
+                let loader = PreTradeParamsLoader::instance();
+                match loader.load_from_redis_blocking(
+                    &refresh_cfg.redis,
+                    refresh_cfg.env_name.as_deref(),
+                    refresh_cfg.open_venue,
+                    refresh_cfg.hedge_venue,
+                ) {
+                    Ok(()) => info!("pre_trade risk parameters synchronous refresh succeeded"),
+                    Err(err) => {
+                        warn!("pre_trade risk parameters synchronous refresh failed: {err:#}")
+                    }
+                }
+                if let Err(err) = FrPositionConcentrationGuard::refresh_blocking() {
+                    warn!("FR position concentration synchronous refresh failed: {err:#}");
+                }
+                let unimmr_cancelled = UnimmrOpenLock::cancel_recovered_fr_closes();
+                if unimmr_cancelled > 0 {
+                    info!(
+                        "UniMMR recover close cancel submitted: strategies={}",
+                        unimmr_cancelled
+                    );
+                }
+                if let Err(err) = UnimmrOpenLock::flush_notification_blocking() {
+                    warn!("UniMMR risk notification failed: {err:#}");
+                }
+
+                let maintenance_finished = Instant::now();
+                while maintenance_finished >= next_param_refresh {
+                    next_param_refresh += PARAM_REFRESH_INTERVAL;
+                }
+                let maintenance_elapsed_us =
+                    get_timestamp_us().saturating_sub(maintenance_start_us);
+                let refresh_drop_reason = select_slower_open_drop_reason(
+                    pre_refresh_drop_reason,
+                    Some(OpenSignalDropReason {
+                        source: "synchronous_param_refresh",
+                        elapsed_us: maintenance_elapsed_us,
+                        threshold_us: 0,
+                    }),
+                );
+                info!(
+                    "pre_trade synchronous maintenance round finished: elapsed_us={} open_signals=drop close_signals=preserve",
+                    maintenance_elapsed_us
+                );
+                pending_maintenance_open_drop_reason = refresh_drop_reason;
+                last_loop_end_us = get_timestamp_us();
+                continue;
+            }
             let mut next_loop_open_drop_reason = None;
 
             let mut has_work = false;
@@ -710,7 +772,7 @@ impl PreTrade {
                     finish_fast_poll_work!(None);
                 }
             } else {
-                has_work |= SignalChannel::drain_pending();
+                has_work |= SignalChannel::drain_pending_with_open_drop(open_drop_reason);
             }
 
             if let Some(transition) = PreTradeTakerDecisionModel::take_transition_global() {

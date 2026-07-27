@@ -751,7 +751,7 @@ impl BasicAccountListener {
                 Ok(msg) => {
                     crate::pre_trade::account_open_block::apply_bitget_unified_account_risk(&msg);
                     crate::pre_trade::account_open_block::apply_bybit_unified_account_risk(&msg);
-                    crate::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock::apply_account_risk(
+                    crate::pre_trade::unimmr_open_lock::UnimmrOpenLock::apply_account_risk(
                         account_scope,
                         &msg,
                     );

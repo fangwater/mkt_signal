@@ -14,7 +14,6 @@ use mkt_signal::pre_trade::exec_resample_channel::ExecResampleChannel;
 use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
-use mkt_signal::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
@@ -27,6 +26,7 @@ use mkt_signal::pre_trade::signal_channel::{
     SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
 use mkt_signal::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
+use mkt_signal::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::pre_trade::{
@@ -562,7 +562,7 @@ async fn main() -> Result<()> {
                     open_venue.data_pub_slug()
                 );
             }
-            IntraUnimmrOpenLock::initialize(arb_mode, binance_account_mode);
+            UnimmrOpenLock::initialize(dir_prefix.clone(), arb_mode, binance_account_mode)?;
 
             if exec_pre_trade {
                 let mut batch_redis = RedisSettings::default();
@@ -730,8 +730,7 @@ async fn main() -> Result<()> {
                 arb_mode,
                 open_venue,
                 hedge_venue,
-            )
-            .await?;
+            )?;
             info!("FR position concentration guard initialized");
 
             info!("Initializing Gate risk-limit guard...");

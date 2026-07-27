@@ -6,7 +6,7 @@ use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::PersistChannel;
 use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
-    OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
+    OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
 use log::{debug, info, warn};
 use order_common::OrderUpdate;
@@ -70,6 +70,23 @@ impl ArbCloseStrategy {
 
     pub fn close_side(&self) -> Option<Side> {
         self.open_side()
+    }
+
+    pub fn handle_unimmr_recover_cancel(&mut self, trigger_ts: i64) -> bool {
+        let Some(cancel_side) = self.close_side() else {
+            return false;
+        };
+        self.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "UniMMRRecoverCloseCancel",
+            target_strategy_id: self.strategy_id(),
+            target_client_order_id: 0,
+            cancel_side,
+            cancel_reason: "unimmr_recover",
+            trigger_ts,
+            from_key: b"unimmr_recover".to_vec(),
+            mkt_ts: 0,
+        });
+        true
     }
 
     pub fn handle_arb_close_ctx(&mut self, ctx: ArbOpenCtx) {

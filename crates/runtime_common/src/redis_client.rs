@@ -234,4 +234,18 @@ impl BlockingRedisClient {
         let map: HashMap<String, String> = self.connection.hgetall(full_key)?;
         Ok(map)
     }
+
+    pub fn set_string(&mut self, key: &str, value: &str) -> Result<()> {
+        let full_key = self.key(key);
+        self.connection.set::<_, _, ()>(full_key, value)?;
+        Ok(())
+    }
+
+    pub fn set_json<T>(&mut self, key: &str, value: &T) -> Result<()>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        let text = serde_json::to_string(value)?;
+        self.set_string(key, &text)
+    }
 }

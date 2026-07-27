@@ -1,15 +1,19 @@
 use anyhow::{bail, Context, Result};
-use log::{debug, info};
+use log::{debug, info, warn};
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
-use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::redis_client::{BlockingRedisClient, RedisSettings};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use trade_signal::ArbMode;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::notification_client::{
+    LocalNotificationClient, NotificationRequest, NotificationSeverity,
+};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 
 const POSITION_EPSILON_USDT: f64 = 1e-6;
 
@@ -18,6 +22,9 @@ struct GuardConfig {
     redis: RedisSettings,
     dump_key: String,
     pos_dump_key: String,
+    unimmr_key: String,
+    env_name: String,
+    notification: LocalNotificationClient,
 }
 
 #[derive(Debug)]
@@ -55,6 +62,12 @@ impl DumpAction {
             Self::None => "no_dump_change",
         }
     }
+    fn close_active(self) -> bool {
+        matches!(
+            self,
+            Self::AddPosDump | Self::HoldPosDump | Self::ExistingDump
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -71,7 +84,7 @@ struct ConcentrationEvent {
 pub struct FrPositionConcentrationGuard;
 
 impl FrPositionConcentrationGuard {
-    pub async fn initialize(
+    pub fn initialize(
         redis: &RedisSettings,
         env_name: Option<String>,
         arb_mode: ArbMode,
@@ -102,28 +115,40 @@ impl FrPositionConcentrationGuard {
         );
         let mut settings = redis.clone();
         settings.prefix = None;
+        let notification = LocalNotificationClient::from_env()
+            .context("initialize local notification client for FR concentration guard")?;
         let config = GuardConfig {
             redis: settings.clone(),
             dump_key: format!("{env_name}:fr_dump_symbols:{suffix}"),
             pos_dump_key: format!("{env_name}:fr_pos_dump_symbols:{suffix}"),
+            unimmr_key: format!("{env_name}:fr_unimmr_close_symbols:{suffix}"),
+            env_name,
+            notification,
         };
 
-        let mut client = RedisClient::connect(settings)
-            .await
+        let mut client = BlockingRedisClient::connect(settings)
             .context("connect Redis for FR position concentration guard")?;
-        load_symbol_list(&mut client, &config.dump_key).await?;
-        load_symbol_list(&mut client, &config.pos_dump_key).await?;
+        let dump_values = load_symbol_list(&mut client, &config.dump_key)?;
+        let pos_dump_values = load_symbol_list(&mut client, &config.pos_dump_key)?;
+        let unimmr_values = load_symbol_list(&mut client, &config.unimmr_key)?;
+        UnimmrOpenLock::replace_fr_close_symbol_lists(
+            &normalized_set(dump_values.iter().map(String::as_str)),
+            &normalized_set(pos_dump_values.iter().map(String::as_str)),
+            &normalized_set(unimmr_values.iter().map(String::as_str)),
+        );
 
         let params = PreTradeParamsLoader::instance();
         let alert_ratio = params.fr_position_concentration_alert_ratio();
         let dump_ratio = params.fr_position_concentration_dump_ratio();
         info!(
-            "FR position concentration guard enabled: alert_lock={:.2}% dump={:.2}% recover_below={:.2}% thresholds=dynamic schedule=config_refresh dump_key={} pos_dump_key={}",
+            "FR position concentration guard enabled: alert_lock={:.2}% dump={:.2}% recover_below={:.2}% thresholds=dynamic schedule=synchronous_config_refresh dump_key={} pos_dump_key={} unimmr_key={} notification={:?}",
             alert_ratio * 100.0,
             dump_ratio * 100.0,
             alert_ratio * 100.0,
             config.dump_key,
-            config.pos_dump_key
+            config.pos_dump_key,
+            config.unimmr_key,
+            config.notification
         );
         GUARD_STATE.with(|state| {
             *state.borrow_mut() = Some(GuardState {
@@ -134,7 +159,7 @@ impl FrPositionConcentrationGuard {
         Ok(())
     }
 
-    pub async fn refresh() -> Result<()> {
+    pub fn refresh_blocking() -> Result<()> {
         let Some((config, mut alerting_symbols)) = GUARD_STATE.with(|state| {
             state
                 .borrow()
@@ -152,13 +177,14 @@ impl FrPositionConcentrationGuard {
             return Ok(());
         }
 
-        let mut client = RedisClient::connect(config.redis.clone())
-            .await
+        let mut client = BlockingRedisClient::connect(config.redis.clone())
             .context("connect Redis for FR position concentration refresh")?;
-        let dump_values = load_symbol_list(&mut client, &config.dump_key).await?;
-        let pos_dump_values = load_symbol_list(&mut client, &config.pos_dump_key).await?;
+        let dump_values = load_symbol_list(&mut client, &config.dump_key)?;
+        let pos_dump_values = load_symbol_list(&mut client, &config.pos_dump_key)?;
+        let unimmr_values = load_symbol_list(&mut client, &config.unimmr_key)?;
         let dump_symbols = normalized_set(dump_values.iter().map(String::as_str));
         let mut pos_dump_symbols = normalized_set(pos_dump_values.iter().map(String::as_str));
+        let unimmr_symbols = normalized_set(unimmr_values.iter().map(String::as_str));
         let params = PreTradeParamsLoader::instance();
         let alert_ratio = params.fr_position_concentration_alert_ratio();
         let dump_ratio = params.fr_position_concentration_dump_ratio();
@@ -170,8 +196,12 @@ impl FrPositionConcentrationGuard {
             &mut alerting_symbols,
             alert_ratio,
             dump_ratio,
-        )
-        .await;
+        );
+        UnimmrOpenLock::replace_fr_close_symbol_lists(
+            &dump_symbols,
+            &pos_dump_symbols,
+            &unimmr_symbols,
+        );
         GUARD_STATE.with(|state| {
             if let Some(state) = state.borrow_mut().as_mut() {
                 state.alerting_symbols = alerting_symbols;
@@ -208,8 +238,8 @@ impl FrPositionConcentrationGuard {
     }
 }
 
-async fn evaluate_and_sync(
-    client: &mut RedisClient,
+fn evaluate_and_sync(
+    client: &mut BlockingRedisClient,
     config: &GuardConfig,
     dump_symbols: &BTreeSet<String>,
     pos_dump_symbols: &mut BTreeSet<String>,
@@ -293,7 +323,6 @@ async fn evaluate_and_sync(
         let values = pos_dump_symbols.iter().cloned().collect::<Vec<_>>();
         client
             .set_json(&config.pos_dump_key, &values)
-            .await
             .with_context(|| format!("write pos dump key={}", config.pos_dump_key))
     } else {
         Ok(())
@@ -303,7 +332,7 @@ async fn evaluate_and_sync(
         *pos_dump_symbols = original_pos_dump_symbols;
     }
 
-    for event in events {
+    for event in &events {
         if event.recovered {
             info!(
                 "FR position concentration recovered: symbol={} symbol_position_usdt={:.2} total_position_usdt={:.2} ratio={:.4}% recover_below={:.2}% action={} sync={}",
@@ -331,7 +360,102 @@ async fn evaluate_and_sync(
         }
     }
 
+    if let Some(notification) =
+        build_aggregate_notification(config, &events, alert_ratio, dump_ratio, sync_label)
+    {
+        if let Err(err) = config.notification.send(&notification) {
+            warn!(
+                "FR position concentration aggregate notification failed: event_count={} error={err:#}",
+                events.len()
+            );
+        }
+    }
+
     sync_result
+}
+
+fn build_aggregate_notification(
+    config: &GuardConfig,
+    events: &[ConcentrationEvent],
+    _alert_ratio: f64,
+    _dump_ratio: f64,
+    sync_label: &str,
+) -> Option<NotificationRequest> {
+    if events.is_empty() {
+        return None;
+    }
+
+    let mut warning_count = 0usize;
+    let mut close_count = 0usize;
+    let mut recovered_count = 0usize;
+    let mut sync_failure_count = 0usize;
+    let mut lines = Vec::with_capacity(events.len());
+    for event in events {
+        let sync_failed_add = sync_label == "failed" && event.action == DumpAction::AddPosDump;
+        let sync_failed_remove =
+            sync_label == "failed" && event.action == DumpAction::RemovePosDump;
+        let state = if sync_failed_add {
+            sync_failure_count += 1;
+            "强平写入失败"
+        } else if sync_failed_remove {
+            sync_failure_count += 1;
+            "强平移除失败"
+        } else if event.recovered {
+            recovered_count += 1;
+            "恢复"
+        } else if event.action.close_active() {
+            close_count += 1;
+            "强平中"
+        } else {
+            warning_count += 1;
+            "告警"
+        };
+        lines.push(format!(
+            "{} {:.2}% {}",
+            event.symbol,
+            event.ratio * 100.0,
+            state
+        ));
+    }
+
+    let severity = if sync_failure_count > 0 || close_count > 0 {
+        NotificationSeverity::Critical
+    } else if warning_count > 0 {
+        NotificationSeverity::Warning
+    } else {
+        NotificationSeverity::Info
+    };
+    let mut summary = Vec::with_capacity(4);
+    if warning_count > 0 {
+        summary.push(format!("告警{warning_count}"));
+    }
+    if close_count > 0 {
+        summary.push(format!("强平{close_count}"));
+    }
+    if recovered_count > 0 {
+        summary.push(format!("恢复{recovered_count}"));
+    }
+    if sync_failure_count > 0 {
+        summary.push(format!("失败{sync_failure_count}"));
+    }
+    let message = format!(
+        "{}｜{}\n{}",
+        config.env_name,
+        summary.join("｜"),
+        lines.join("\n")
+    );
+
+    Some(NotificationRequest {
+        source: "fr_pre_trade".to_string(),
+        title: "FR仓位风控".to_string(),
+        message,
+        severity,
+        fields: BTreeMap::new(),
+        dedup_key: Some(format!(
+            "{}:fr_position_concentration:summary",
+            config.env_name
+        )),
+    })
 }
 
 fn decide_dump_action(
@@ -364,8 +488,8 @@ fn decide_dump_action(
     }
 }
 
-async fn load_symbol_list(client: &mut RedisClient, key: &str) -> Result<Vec<String>> {
-    let Some(raw) = client.get_string(key).await? else {
+fn load_symbol_list(client: &mut BlockingRedisClient, key: &str) -> Result<Vec<String>> {
+    let Some(raw) = client.get_string(key)? else {
         return Ok(Vec::new());
     };
     let value: Value =
@@ -409,6 +533,22 @@ mod tests {
 
     const ALERT_RATIO: f64 = 0.10;
     const DUMP_RATIO: f64 = 0.12;
+
+    fn test_config() -> GuardConfig {
+        GuardConfig {
+            redis: RedisSettings::default(),
+            dump_key: String::new(),
+            pos_dump_key: String::new(),
+            unimmr_key: String::new(),
+            env_name: "test-fr".to_string(),
+            notification: LocalNotificationClient::new(
+                "http://127.0.0.1:18100/v1/notify",
+                None,
+                std::time::Duration::from_millis(10),
+            )
+            .unwrap(),
+        }
+    }
 
     #[test]
     fn alerts_at_ten_percent_without_dumping() {
@@ -459,14 +599,85 @@ mod tests {
     }
 
     #[test]
+    fn builds_one_aggregate_notification_with_highest_severity() {
+        let config = test_config();
+        let make_event = |symbol: &str, action, ratio, recovered| ConcentrationEvent {
+            symbol: symbol.to_string(),
+            position_usdt: ratio * 100_000.0,
+            total_position_usdt: 100_000.0,
+            ratio,
+            action,
+            in_dump: false,
+            recovered,
+        };
+        let events = vec![
+            make_event("BTCUSDT", DumpAction::AlertOnly, 0.11, false),
+            make_event("ETHUSDT", DumpAction::HoldPosDump, 0.13, false),
+            make_event("XRPUSDT", DumpAction::RemovePosDump, 0.09, true),
+        ];
+
+        let notification =
+            build_aggregate_notification(&config, &events, ALERT_RATIO, DUMP_RATIO, "ok").unwrap();
+        assert_eq!(notification.severity, NotificationSeverity::Critical);
+        assert_eq!(notification.title, "FR仓位风控");
+        assert!(notification.fields.is_empty());
+        assert_eq!(
+            notification.message,
+            "test-fr｜告警1｜强平1｜恢复1\nBTCUSDT 11.00% 告警\nETHUSDT 13.00% 强平中\nXRPUSDT 9.00% 恢复"
+        );
+    }
+
+    #[test]
+    fn aggregate_notification_uses_warning_info_and_sync_failure_severity() {
+        let config = test_config();
+        let event = |action, ratio, recovered| ConcentrationEvent {
+            symbol: "BTCUSDT".to_string(),
+            position_usdt: ratio * 100_000.0,
+            total_position_usdt: 100_000.0,
+            ratio,
+            action,
+            in_dump: false,
+            recovered,
+        };
+
+        let warning = build_aggregate_notification(
+            &config,
+            &[event(DumpAction::AlertOnly, 0.11, false)],
+            ALERT_RATIO,
+            DUMP_RATIO,
+            "ok",
+        )
+        .unwrap();
+        assert_eq!(warning.severity, NotificationSeverity::Warning);
+
+        let recovered = build_aggregate_notification(
+            &config,
+            &[event(DumpAction::RemovePosDump, 0.09, true)],
+            ALERT_RATIO,
+            DUMP_RATIO,
+            "ok",
+        )
+        .unwrap();
+        assert_eq!(recovered.severity, NotificationSeverity::Info);
+
+        let failed = build_aggregate_notification(
+            &config,
+            &[event(DumpAction::AddPosDump, 0.13, false)],
+            ALERT_RATIO,
+            DUMP_RATIO,
+            "failed",
+        )
+        .unwrap();
+        assert_eq!(failed.severity, NotificationSeverity::Critical);
+        assert!(failed.message.contains("强平写入失败"));
+        assert!(failed.fields.is_empty());
+    }
+
+    #[test]
     fn concentration_lock_blocks_only_non_reducing_arb_open() {
         GUARD_STATE.with(|state| {
             *state.borrow_mut() = Some(GuardState {
-                config: GuardConfig {
-                    redis: RedisSettings::default(),
-                    dump_key: String::new(),
-                    pos_dump_key: String::new(),
-                },
+                config: test_config(),
                 alerting_symbols: BTreeSet::from(["BTCUSDT".to_string()]),
             });
         });

@@ -1,6 +1,7 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use crate::pre_trade::taker_decision_model::{PreTradeTakerDecisionModel, TakerDecisionOpenCancel};
+use crate::strategy::arb_close_strategy::ArbCloseStrategy;
 use crate::strategy::arb_hedge_strategy::{ArbHedgeSnapshot, ArbHedgeStrategy};
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
 use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecSnapshot, BatchExecStrategy};
@@ -751,6 +752,21 @@ impl StrategyManager {
             .iter()
             .map(|(id, entry)| (*id, entry.side))
             .collect()
+    }
+
+    /// UniMMR recover 专用：给指定 ArbClose 策略走 common cancel 生命周期。
+    pub fn cancel_arb_close_for_unimmr_recover_by_id(
+        &mut self,
+        strategy_id: i32,
+        trigger_ts: i64,
+    ) -> bool {
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
+        let Some(arb_close) = strategy.as_any_mut().downcast_mut::<ArbCloseStrategy>() else {
+            return false;
+        };
+        arb_close.handle_unimmr_recover_cancel(trigger_ts)
     }
 
     /// 应急撤单入口：给指定 ArbOpen 策略走一次 handle_open_cancel_signal_common。

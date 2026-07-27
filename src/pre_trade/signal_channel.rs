@@ -4,7 +4,6 @@ use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
 use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
-use crate::pre_trade::intra_unimmr_open_lock::IntraUnimmrOpenLock;
 use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::{log_pending_limit_summary, log_strategy_inactive_summary};
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -16,6 +15,7 @@ use crate::pre_trade::signal_throttle::{
 use crate::pre_trade::taker_decision_model::{
     PreTradeTakerDecisionModel, TakerDecisionOpenGateSnapshot,
 };
+use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 use crate::strategy::arb_close_strategy::ArbCloseStrategy;
 use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
 use crate::strategy::arb_open_strategy::ArbOpenStrategy;
@@ -933,7 +933,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
 
-            if IntraUnimmrOpenLock::is_locked()
+            if UnimmrOpenLock::is_locked()
                 && !arb_open_is_account_throttle_reducing(
                     &symbol,
                     opening_venue,
@@ -944,7 +944,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 )
             {
                 info!(
-                    "ArbOpen blocked by intra UniMMR reduce-only lock: symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8}",
+                    "ArbOpen blocked by UniMMR reduce-only lock: symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8}",
                     symbol,
                     side.as_str(),
                     opening_venue,
