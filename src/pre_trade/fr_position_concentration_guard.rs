@@ -31,6 +31,7 @@ struct GuardConfig {
 struct GuardState {
     config: GuardConfig,
     alerting_symbols: BTreeSet<String>,
+    continuous_symbols: BTreeSet<String>,
 }
 
 thread_local! {
@@ -62,11 +63,40 @@ impl DumpAction {
             Self::None => "no_dump_change",
         }
     }
-    fn close_active(self) -> bool {
-        matches!(
-            self,
-            Self::AddPosDump | Self::HoldPosDump | Self::ExistingDump
-        )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotificationTransition {
+    alerting: bool,
+    continuous: bool,
+    emit: bool,
+}
+
+fn decide_notification_transition(
+    ratio: f64,
+    alert_ratio: f64,
+    dump_ratio: f64,
+    was_alerting: bool,
+    was_continuous: bool,
+) -> NotificationTransition {
+    if ratio >= dump_ratio {
+        NotificationTransition {
+            alerting: true,
+            continuous: true,
+            emit: true,
+        }
+    } else if ratio >= alert_ratio {
+        NotificationTransition {
+            alerting: true,
+            continuous: was_continuous,
+            emit: was_continuous || !was_alerting,
+        }
+    } else {
+        NotificationTransition {
+            alerting: false,
+            continuous: false,
+            emit: was_alerting || was_continuous,
+        }
     }
 }
 
@@ -78,6 +108,7 @@ struct ConcentrationEvent {
     ratio: f64,
     action: DumpAction,
     in_dump: bool,
+    continuous: bool,
     recovered: bool,
 }
 
@@ -130,10 +161,11 @@ impl FrPositionConcentrationGuard {
             .context("connect Redis for FR position concentration guard")?;
         let dump_values = load_symbol_list(&mut client, &config.dump_key)?;
         let pos_dump_values = load_symbol_list(&mut client, &config.pos_dump_key)?;
+        let pos_dump_symbols = normalized_set(pos_dump_values.iter().map(String::as_str));
         let unimmr_values = load_symbol_list(&mut client, &config.unimmr_key)?;
         UnimmrOpenLock::replace_fr_close_symbol_lists(
             &normalized_set(dump_values.iter().map(String::as_str)),
-            &normalized_set(pos_dump_values.iter().map(String::as_str)),
+            &pos_dump_symbols,
             &normalized_set(unimmr_values.iter().map(String::as_str)),
         );
 
@@ -154,18 +186,24 @@ impl FrPositionConcentrationGuard {
             *state.borrow_mut() = Some(GuardState {
                 config,
                 alerting_symbols: BTreeSet::new(),
+                continuous_symbols: pos_dump_symbols,
             });
         });
         Ok(())
     }
 
     pub fn refresh_blocking() -> Result<()> {
-        let Some((config, mut alerting_symbols)) = GUARD_STATE.with(|state| {
-            state
-                .borrow()
-                .as_ref()
-                .map(|state| (state.config.clone(), state.alerting_symbols.clone()))
-        }) else {
+        let Some((config, mut alerting_symbols, mut continuous_symbols)) =
+            GUARD_STATE.with(|state| {
+                state.borrow().as_ref().map(|state| {
+                    (
+                        state.config.clone(),
+                        state.alerting_symbols.clone(),
+                        state.continuous_symbols.clone(),
+                    )
+                })
+            })
+        else {
             return Ok(());
         };
         let status = MonitorChannel::instance().arb_startup_net_gate_status();
@@ -194,6 +232,7 @@ impl FrPositionConcentrationGuard {
             &dump_symbols,
             &mut pos_dump_symbols,
             &mut alerting_symbols,
+            &mut continuous_symbols,
             alert_ratio,
             dump_ratio,
         );
@@ -205,6 +244,7 @@ impl FrPositionConcentrationGuard {
         GUARD_STATE.with(|state| {
             if let Some(state) = state.borrow_mut().as_mut() {
                 state.alerting_symbols = alerting_symbols;
+                state.continuous_symbols = continuous_symbols;
             }
         });
         result
@@ -244,6 +284,7 @@ fn evaluate_and_sync(
     dump_symbols: &BTreeSet<String>,
     pos_dump_symbols: &mut BTreeSet<String>,
     alerting_symbols: &mut BTreeSet<String>,
+    continuous_symbols: &mut BTreeSet<String>,
     alert_ratio: f64,
     dump_ratio: f64,
 ) -> Result<()> {
@@ -265,6 +306,7 @@ fn evaluate_and_sync(
     let mut symbols: BTreeSet<String> = positions_by_symbol.keys().cloned().collect();
     symbols.extend(pos_dump_symbols.iter().cloned());
     symbols.extend(alerting_symbols.iter().cloned());
+    symbols.extend(continuous_symbols.iter().cloned());
 
     let total_is_valid =
         total_position_usdt.is_finite() && total_position_usdt > POSITION_EPSILON_USDT;
@@ -279,6 +321,7 @@ fn evaluate_and_sync(
         let in_dump = dump_symbols.contains(&symbol);
         let in_pos_dump = pos_dump_symbols.contains(&symbol);
         let was_alerting = alerting_symbols.contains(&symbol);
+        let was_continuous = continuous_symbols.contains(&symbol);
         let action = decide_dump_action(ratio, alert_ratio, dump_ratio, in_dump, in_pos_dump);
 
         match action {
@@ -291,8 +334,24 @@ fn evaluate_and_sync(
             _ => {}
         }
 
-        if ratio >= alert_ratio {
+        let transition = decide_notification_transition(
+            ratio,
+            alert_ratio,
+            dump_ratio,
+            was_alerting,
+            was_continuous,
+        );
+        if transition.alerting {
             alerting_symbols.insert(symbol.clone());
+        } else {
+            alerting_symbols.remove(&symbol);
+        }
+        if transition.continuous {
+            continuous_symbols.insert(symbol.clone());
+        } else {
+            continuous_symbols.remove(&symbol);
+        }
+        if transition.emit || action == DumpAction::RemovePosDump {
             events.push(ConcentrationEvent {
                 symbol,
                 position_usdt,
@@ -300,21 +359,9 @@ fn evaluate_and_sync(
                 ratio,
                 action,
                 in_dump,
-                recovered: false,
+                continuous: transition.continuous,
+                recovered: ratio < alert_ratio,
             });
-        } else {
-            alerting_symbols.remove(&symbol);
-            if was_alerting || action == DumpAction::RemovePosDump {
-                events.push(ConcentrationEvent {
-                    symbol,
-                    position_usdt,
-                    total_position_usdt,
-                    ratio,
-                    action,
-                    in_dump,
-                    recovered: true,
-                });
-            }
         }
     }
 
@@ -403,7 +450,7 @@ fn build_aggregate_notification(
         } else if event.recovered {
             recovered_count += 1;
             "恢复"
-        } else if event.action.close_active() {
+        } else if event.continuous {
             close_count += 1;
             "强平中"
         } else {
@@ -531,8 +578,8 @@ fn normalize_symbol(symbol: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const ALERT_RATIO: f64 = 0.10;
-    const DUMP_RATIO: f64 = 0.12;
+    const ALERT_RATIO: f64 = 0.12;
+    const DUMP_RATIO: f64 = 0.15;
 
     fn test_config() -> GuardConfig {
         GuardConfig {
@@ -551,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn alerts_at_ten_percent_without_dumping() {
+    fn alerts_at_twelve_percent_without_dumping() {
         assert_eq!(
             decide_dump_action(ALERT_RATIO, ALERT_RATIO, DUMP_RATIO, false, false),
             DumpAction::AlertOnly
@@ -559,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn adds_pos_dump_at_twelve_percent() {
+    fn adds_pos_dump_at_fifteen_percent() {
         assert_eq!(
             decide_dump_action(DUMP_RATIO, ALERT_RATIO, DUMP_RATIO, false, false),
             DumpAction::AddPosDump
@@ -577,7 +624,7 @@ mod tests {
     #[test]
     fn pos_dump_is_held_until_below_recover_threshold() {
         assert_eq!(
-            decide_dump_action(0.11, ALERT_RATIO, DUMP_RATIO, false, true),
+            decide_dump_action(0.14, ALERT_RATIO, DUMP_RATIO, false, true),
             DumpAction::HoldPosDump
         );
         assert_eq!(
@@ -593,27 +640,60 @@ mod tests {
     #[test]
     fn normal_dump_is_preserved_on_recovery() {
         assert_eq!(
-            decide_dump_action(0.08, ALERT_RATIO, DUMP_RATIO, true, false),
+            decide_dump_action(0.11, ALERT_RATIO, DUMP_RATIO, true, false),
             DumpAction::None
         );
     }
 
     #[test]
+    fn notification_transitions_are_one_shot_then_continuous_until_recovery() {
+        let entered = decide_notification_transition(0.13, ALERT_RATIO, DUMP_RATIO, false, false);
+        assert_eq!(
+            entered,
+            NotificationTransition {
+                alerting: true,
+                continuous: false,
+                emit: true,
+            }
+        );
+
+        let repeated = decide_notification_transition(0.14, ALERT_RATIO, DUMP_RATIO, true, false);
+        assert!(!repeated.emit);
+
+        let escalated = decide_notification_transition(0.15, ALERT_RATIO, DUMP_RATIO, true, false);
+        assert!(escalated.continuous);
+        assert!(escalated.emit);
+
+        let held = decide_notification_transition(0.13, ALERT_RATIO, DUMP_RATIO, true, true);
+        assert!(held.continuous);
+        assert!(held.emit);
+
+        let recovered = decide_notification_transition(0.119, ALERT_RATIO, DUMP_RATIO, true, true);
+        assert!(!recovered.alerting);
+        assert!(!recovered.continuous);
+        assert!(recovered.emit);
+
+        let normal = decide_notification_transition(0.11, ALERT_RATIO, DUMP_RATIO, false, false);
+        assert!(!normal.emit);
+    }
+
+    #[test]
     fn builds_one_aggregate_notification_with_highest_severity() {
         let config = test_config();
-        let make_event = |symbol: &str, action, ratio, recovered| ConcentrationEvent {
+        let make_event = |symbol: &str, action, ratio, continuous, recovered| ConcentrationEvent {
             symbol: symbol.to_string(),
             position_usdt: ratio * 100_000.0,
             total_position_usdt: 100_000.0,
             ratio,
             action,
             in_dump: false,
+            continuous,
             recovered,
         };
         let events = vec![
-            make_event("BTCUSDT", DumpAction::AlertOnly, 0.11, false),
-            make_event("ETHUSDT", DumpAction::HoldPosDump, 0.13, false),
-            make_event("XRPUSDT", DumpAction::RemovePosDump, 0.09, true),
+            make_event("BTCUSDT", DumpAction::AlertOnly, 0.14, false, false),
+            make_event("ETHUSDT", DumpAction::HoldPosDump, 0.16, true, false),
+            make_event("XRPUSDT", DumpAction::RemovePosDump, 0.11, false, true),
         ];
 
         let notification =
@@ -623,26 +703,27 @@ mod tests {
         assert!(notification.fields.is_empty());
         assert_eq!(
             notification.message,
-            "test-fr｜告警1｜强平1｜恢复1\nBTCUSDT 11.00% 告警\nETHUSDT 13.00% 强平中\nXRPUSDT 9.00% 恢复"
+            "test-fr｜告警1｜强平1｜恢复1\nBTCUSDT 14.00% 告警\nETHUSDT 16.00% 强平中\nXRPUSDT 11.00% 恢复"
         );
     }
 
     #[test]
     fn aggregate_notification_uses_warning_info_and_sync_failure_severity() {
         let config = test_config();
-        let event = |action, ratio, recovered| ConcentrationEvent {
+        let event = |action, ratio, continuous, recovered| ConcentrationEvent {
             symbol: "BTCUSDT".to_string(),
             position_usdt: ratio * 100_000.0,
             total_position_usdt: 100_000.0,
             ratio,
             action,
             in_dump: false,
+            continuous,
             recovered,
         };
 
         let warning = build_aggregate_notification(
             &config,
-            &[event(DumpAction::AlertOnly, 0.11, false)],
+            &[event(DumpAction::AlertOnly, 0.14, false, false)],
             ALERT_RATIO,
             DUMP_RATIO,
             "ok",
@@ -652,7 +733,7 @@ mod tests {
 
         let recovered = build_aggregate_notification(
             &config,
-            &[event(DumpAction::RemovePosDump, 0.09, true)],
+            &[event(DumpAction::RemovePosDump, 0.11, false, true)],
             ALERT_RATIO,
             DUMP_RATIO,
             "ok",
@@ -662,7 +743,7 @@ mod tests {
 
         let failed = build_aggregate_notification(
             &config,
-            &[event(DumpAction::AddPosDump, 0.13, false)],
+            &[event(DumpAction::AddPosDump, 0.16, true, false)],
             ALERT_RATIO,
             DUMP_RATIO,
             "failed",
@@ -679,6 +760,7 @@ mod tests {
             *state.borrow_mut() = Some(GuardState {
                 config: test_config(),
                 alerting_symbols: BTreeSet::from(["BTCUSDT".to_string()]),
+                continuous_symbols: BTreeSet::new(),
             });
         });
 

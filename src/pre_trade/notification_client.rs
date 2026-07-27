@@ -7,7 +7,6 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use url::Url;
 
-const DEFAULT_NOTIFICATION_URL: &str = "http://127.0.0.1:18100/v1/notify";
 const DEFAULT_TIMEOUT_MS: u64 = 250;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -55,7 +54,11 @@ impl fmt::Debug for LocalNotificationClient {
 impl LocalNotificationClient {
     pub fn from_env() -> Result<Self> {
         let url = std::env::var("PRE_TRADE_NOTIFICATION_URL")
-            .unwrap_or_else(|_| DEFAULT_NOTIFICATION_URL.to_string());
+            .context("PRE_TRADE_NOTIFICATION_URL is required")?;
+        let url = url.trim();
+        if url.is_empty() {
+            bail!("PRE_TRADE_NOTIFICATION_URL must not be empty");
+        }
         let api_token = std::env::var("NOTIFICATION_API_TOKEN")
             .ok()
             .map(|value| value.trim().to_string())
@@ -65,7 +68,7 @@ impl LocalNotificationClient {
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_TIMEOUT_MS);
-        Self::new(&url, api_token, Duration::from_millis(timeout_ms))
+        Self::new(url, api_token, Duration::from_millis(timeout_ms))
     }
 
     pub(crate) fn new(url: &str, api_token: Option<String>, timeout: Duration) -> Result<Self> {

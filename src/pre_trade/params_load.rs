@@ -18,8 +18,8 @@ const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
 const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 const DEFAULT_ARB_ORDER_AMOUNT_U: f64 = 100.0;
-const DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO: f64 = 0.10;
-const DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO: f64 = 0.12;
+const DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO: f64 = 0.12;
+const DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO: f64 = 0.15;
 
 type MaxPosUOverrideTable = FastHashMap<String, f64>;
 type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
@@ -1161,6 +1161,14 @@ mod tests {
         assert_eq!(loader.max_total_exposure_ratio(), 1.0);
         assert_eq!(loader.max_leverage(), 3.0);
         assert_eq!(
+            loader.fr_position_concentration_alert_ratio(),
+            DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO
+        );
+        assert_eq!(
+            loader.fr_position_concentration_dump_ratio(),
+            DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO
+        );
+        assert_eq!(
             loader.min_non_trading_position_usdt(),
             DEFAULT_MIN_NON_TRADING_POSITION_USDT
         );
@@ -1192,6 +1200,14 @@ mod tests {
         let snapshot = loader.snapshot();
         assert_eq!(snapshot.max_pos_u, 1000.0);
         assert_eq!(snapshot.max_leverage, 3.0);
+        assert_eq!(
+            snapshot.fr_position_concentration_alert_ratio,
+            DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO
+        );
+        assert_eq!(
+            snapshot.fr_position_concentration_dump_ratio,
+            DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO
+        );
         assert_eq!(
             snapshot.min_non_trading_position_usdt,
             DEFAULT_MIN_NON_TRADING_POSITION_USDT

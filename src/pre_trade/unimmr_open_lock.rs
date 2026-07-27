@@ -353,6 +353,22 @@ fn scope_label(scope: BasicAccountScope) -> &'static str {
 mod tests {
     use super::*;
     use mkt_parsers::msg::basic_account_msg::BasicAccountEventType;
+    use std::sync::Once;
+
+    fn initialize_test(
+        env_name: Option<String>,
+        arb_mode: ArbMode,
+        binance_account_mode: Option<BinanceAccountMode>,
+    ) -> Result<()> {
+        static NOTIFICATION_ENV: Once = Once::new();
+        NOTIFICATION_ENV.call_once(|| {
+            std::env::set_var(
+                "PRE_TRADE_NOTIFICATION_URL",
+                "http://127.0.0.1:18100/v1/notify",
+            );
+        });
+        UnimmrOpenLock::initialize(env_name, arb_mode, binance_account_mode)
+    }
 
     fn risk_msg(margin_ratio: f64) -> BasicAccountRiskMsg {
         BasicAccountRiskMsg {
@@ -370,8 +386,7 @@ mod tests {
 
     #[test]
     fn unified_account_lock_honors_trigger_and_recovery_hysteresis() {
-        UnimmrOpenLock::initialize(Some("test-intra".to_string()), ArbMode::IntraArb, None)
-            .unwrap();
+        initialize_test(Some("test-intra".to_string()), ArbMode::IntraArb, None).unwrap();
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(1.9));
         assert!(UnimmrOpenLock::is_locked());
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(2.1));
@@ -382,8 +397,7 @@ mod tests {
 
     #[test]
     fn infinite_margin_ratio_recovers_locked_account() {
-        UnimmrOpenLock::initialize(Some("test-intra".to_string()), ArbMode::IntraArb, None)
-            .unwrap();
+        initialize_test(Some("test-intra".to_string()), ArbMode::IntraArb, None).unwrap();
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(1.0));
         assert!(UnimmrOpenLock::is_locked());
         UnimmrOpenLock::apply_account_risk(
@@ -395,7 +409,7 @@ mod tests {
 
     #[test]
     fn binance_standard_is_disabled() {
-        UnimmrOpenLock::initialize(
+        initialize_test(
             Some("test-intra".to_string()),
             ArbMode::IntraArb,
             Some(BinanceAccountMode::Standard),
@@ -407,7 +421,7 @@ mod tests {
 
     #[test]
     fn funding_arb_uses_the_same_unimmr_open_lock() {
-        UnimmrOpenLock::initialize(
+        initialize_test(
             Some("binance-fr-arb01".to_string()),
             ArbMode::FundingArb,
             None,
@@ -419,7 +433,7 @@ mod tests {
 
     #[test]
     fn healthy_scope_does_not_unlock_another_risk_scope() {
-        UnimmrOpenLock::initialize(Some("test-fr".to_string()), ArbMode::FundingArb, None).unwrap();
+        initialize_test(Some("test-fr".to_string()), ArbMode::FundingArb, None).unwrap();
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BinanceUnified, &risk_msg(1.8));
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::GateUnified, &risk_msg(3.0));
         assert!(UnimmrOpenLock::is_locked());
@@ -430,7 +444,7 @@ mod tests {
 
     #[test]
     fn recover_cancel_waits_until_all_scopes_are_safe() {
-        UnimmrOpenLock::initialize(Some("test-fr".to_string()), ArbMode::FundingArb, None).unwrap();
+        initialize_test(Some("test-fr".to_string()), ArbMode::FundingArb, None).unwrap();
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BinanceUnified, &risk_msg(1.8));
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::GateUnified, &risk_msg(1.9));
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BinanceUnified, &risk_msg(2.3));
@@ -497,5 +511,19 @@ mod tests {
         assert_eq!(notification.severity, NotificationSeverity::Critical);
         assert!(notification.fields.is_empty());
         assert_eq!(recovered, vec![BasicAccountScope::GateUnified]);
+
+        let (repeated, repeated_recovered) = build_notification(&state, 2.0, 2.2).unwrap();
+        assert_eq!(repeated, notification);
+        assert_eq!(repeated_recovered, recovered);
+
+        for scope in repeated_recovered {
+            state.scopes.get_mut(&scope).unwrap().recovery_pending = false;
+        }
+        let active = state
+            .scopes
+            .get_mut(&BasicAccountScope::BinanceUnified)
+            .unwrap();
+        active.locked = false;
+        assert!(build_notification(&state, 2.0, 2.2).is_none());
     }
 }

@@ -101,8 +101,8 @@ RISK_PARAMS = {
 
     # 单币仓位占总仓位比例：告警/ArbOpen reduce-only 硬锁，以及隐式 dump 触发线
     # 要求 0 < alert < dump <= 1；低于 alert 时解除硬锁并移除隐式 dump。
-    "fr_position_concentration_alert_ratio": "0.10",
-    "fr_position_concentration_dump_ratio": "0.12",
+    "fr_position_concentration_alert_ratio": "0.12",
+    "fr_position_concentration_dump_ratio": "0.15",
 
     # UniMMR 算法平仓触发/恢复线（固定交易所 warning 上沿 1.5；要求 1.5 < trigger < recover）
     "unimmr_trigger_line": "2.0",

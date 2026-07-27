@@ -56,13 +56,13 @@ then drops open signals that accumulated during the round; close signals are pre
 A successful request means the local daemon returned `202 Accepted`. Telegram delivery and
 retry remain asynchronous inside `notification_server`.
 
-The producer defaults to `http://127.0.0.1:18100/v1/notify` with a 250 ms socket timeout.
-Optional pre-trade environment variables are:
+The producer requires `PRE_TRADE_NOTIFICATION_URL`; there is no compiled-in endpoint. The socket
+timeout still defaults to 250 ms. Configure the pre-trade environment with:
 
 ```bash
-PRE_TRADE_NOTIFICATION_URL=http://127.0.0.1:18100/v1/notify
-PRE_TRADE_NOTIFICATION_TIMEOUT_MS=250
-NOTIFICATION_API_TOKEN=
+PRE_TRADE_NOTIFICATION_URL=http://127.0.0.1:18100/v1/notify  # required
+PRE_TRADE_NOTIFICATION_TIMEOUT_MS=250                         # optional
+NOTIFICATION_API_TOKEN=                                       # optional
 ```
 
 The URL must resolve only to loopback addresses. If API authentication is enabled on the
@@ -70,18 +70,19 @@ daemon, configure the same `NOTIFICATION_API_TOKEN` in the pre-trade environment
 notification failure is logged but never rolls back or interrupts the position lock or dump
 update.
 
-Each 60-second FR scan produces at most one aggregate notification. Its body lists every active
-warning, active close entry, and recovery observed in that round. Severity is the highest state in
-the batch: critical for close or Redis sync failure, warning for warning-only batches, and info for
-recovery-only batches. Active states are included every round; recovery is included once on its
-state edge. The Telegram body is intentionally concise:
+Each 60-second FR scan produces at most one aggregate notification. Crossing 12% emits one
+warning and enables the reduce-only ArbOpen lock; subsequent 12%-15% rounds remain silent.
+Reaching 15% adds the position dump and starts a notification every round. That continuous state
+is retained while the ratio remains at or above 12%. Falling below 12% removes the position dump,
+emits one recovery, and returns to silence. Severity is critical for continuous close or Redis sync
+failure, warning for the initial 12% edge, and info for recovery. The Telegram body is intentionally concise:
 
 ```text
 FR仓位风控
 gate-fr-arb01｜告警1｜强平1｜恢复1
-BTCUSDT 11.20% 告警
-ETHUSDT 13.10% 强平中
-XRPUSDT 9.30% 恢复
+BTCUSDT 12.20% 告警
+ETHUSDT 15.10% 强平中
+XRPUSDT 11.90% 恢复
 ```
 
 A Redis synchronization error replaces the affected symbol state with `强平写入失败` or
