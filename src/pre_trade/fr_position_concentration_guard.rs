@@ -85,10 +85,9 @@ enum DumpAction {
 }
 
 impl DumpAction {
-    fn label(self, ratio: f64, dump_ratio: f64, in_dump: bool) -> &'static str {
+    fn label(self, in_dump: bool) -> &'static str {
         match self {
             Self::AddPosDump => "added_pos_dump",
-            Self::HoldPosDump if ratio < dump_ratio => "held_pos_dump_until_recover",
             Self::HoldPosDump => "held_pos_dump",
             Self::ExistingDump => "existing_dump_preserved",
             Self::AlertOnly if in_dump => "existing_dump_alert_only",
@@ -124,7 +123,7 @@ fn decide_notification_transition(
     } else if ratio >= alert_ratio {
         NotificationTransition {
             alerting: true,
-            continuous: was_continuous,
+            continuous: false,
             emit: was_continuous || !was_alerting,
         }
     } else {
@@ -209,10 +208,11 @@ impl FrPositionConcentrationGuard {
         let alert_ratio = params.fr_position_concentration_alert_ratio();
         let dump_ratio = params.fr_position_concentration_dump_ratio();
         info!(
-            "FR position concentration guard enabled: alert_lock={:.2}% dump={:.2}% recover_below={:.2}% thresholds=dynamic schedule=synchronous_config_refresh dump_key={} pos_dump_key={} unimmr_key={} notification={:?}",
+            "FR position concentration guard enabled: alert_lock={:.2}% alert_recover_below={:.2}% dump={:.2}% dump_stop_below={:.2}% thresholds=dynamic schedule=synchronous_config_refresh dump_key={} pos_dump_key={} unimmr_key={} notification={:?}",
+            alert_ratio * 100.0,
             alert_ratio * 100.0,
             dump_ratio * 100.0,
-            alert_ratio * 100.0,
+            dump_ratio * 100.0,
             config.dump_key,
             config.pos_dump_key,
             config.unimmr_key,
@@ -445,20 +445,21 @@ fn evaluate_and_sync(
                 event.total_position_usdt,
                 event.ratio * 100.0,
                 alert_ratio * 100.0,
-                event.action.label(event.ratio, dump_ratio, event.in_dump),
+                event.action.label(event.in_dump),
                 sync_label
             );
         } else {
             info!(
-                "FR position concentration warning: symbol={} symbol_position_usdt={:.2} total_position_usdt={:.2} ratio={:.4}% alert={:.2}% dump={:.2}% recover_below={:.2}% action={} sync={}",
+                "FR position concentration warning: symbol={} symbol_position_usdt={:.2} total_position_usdt={:.2} ratio={:.4}% alert={:.2}% alert_recover_below={:.2}% dump={:.2}% dump_stop_below={:.2}% action={} sync={}",
                 event.symbol,
                 event.position_usdt,
                 event.total_position_usdt,
                 event.ratio * 100.0,
                 alert_ratio * 100.0,
-                dump_ratio * 100.0,
                 alert_ratio * 100.0,
-                event.action.label(event.ratio, dump_ratio, event.in_dump),
+                dump_ratio * 100.0,
+                dump_ratio * 100.0,
+                event.action.label(event.in_dump),
                 sync_label
             );
         }
@@ -623,16 +624,14 @@ fn decide_dump_action(
         } else {
             DumpAction::AddPosDump
         }
+    } else if in_pos_dump {
+        DumpAction::RemovePosDump
     } else if ratio >= alert_ratio {
-        if in_pos_dump {
-            DumpAction::HoldPosDump
-        } else if in_dump {
+        if in_dump {
             DumpAction::ExistingDump
         } else {
             DumpAction::AlertOnly
         }
-    } else if in_pos_dump {
-        DumpAction::RemovePosDump
     } else {
         DumpAction::None
     }
@@ -725,14 +724,14 @@ mod tests {
     }
 
     #[test]
-    fn pos_dump_is_held_until_below_recover_threshold() {
+    fn pos_dump_is_removed_below_dump_threshold() {
         assert_eq!(
-            decide_dump_action(0.14, ALERT_RATIO, DUMP_RATIO, false, true),
-            DumpAction::HoldPosDump
+            decide_dump_action(0.1499, ALERT_RATIO, DUMP_RATIO, false, true),
+            DumpAction::RemovePosDump
         );
         assert_eq!(
             decide_dump_action(ALERT_RATIO, ALERT_RATIO, DUMP_RATIO, false, true),
-            DumpAction::HoldPosDump
+            DumpAction::RemovePosDump
         );
         assert_eq!(
             decide_dump_action(ALERT_RATIO - 0.0001, ALERT_RATIO, DUMP_RATIO, false, true),
@@ -749,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_transitions_are_one_shot_then_continuous_until_recovery() {
+    fn notification_transitions_keep_alert_and_closing_lines_independent() {
         let entered = decide_notification_transition(0.13, ALERT_RATIO, DUMP_RATIO, false, false);
         assert_eq!(
             entered,
@@ -768,7 +767,8 @@ mod tests {
         assert!(escalated.emit);
 
         let held = decide_notification_transition(0.13, ALERT_RATIO, DUMP_RATIO, true, true);
-        assert!(held.continuous);
+        assert!(held.alerting);
+        assert!(!held.continuous);
         assert!(held.emit);
 
         let recovered = decide_notification_transition(0.119, ALERT_RATIO, DUMP_RATIO, true, true);
