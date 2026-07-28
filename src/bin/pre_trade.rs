@@ -16,6 +16,9 @@ use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
+use mkt_signal::pre_trade::notification_client::{
+    LocalNotificationClient, NotificationRequest, NotificationSeverity,
+};
 use mkt_signal::pre_trade::params_load::PreTradeParamsLoader;
 use mkt_signal::pre_trade::persist_channel::PersistChannel;
 use mkt_signal::pre_trade::publish_snapshot_queries;
@@ -85,6 +88,25 @@ impl From<ExecVenue> for TradingVenue {
             ExecVenue::BinanceFutures => Self::BinanceFutures,
             ExecVenue::OkexFutures => Self::OkexFutures,
         }
+    }
+}
+
+fn build_fr_startup_notification(
+    env_name: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> NotificationRequest {
+    NotificationRequest {
+        source: "fr_pre_trade".to_string(),
+        title: "FR Pre-Trade启动".to_string(),
+        message: format!(
+            "{env_name}｜启动成功\n{} → {}",
+            open_venue.data_pub_slug(),
+            hedge_venue.data_pub_slug()
+        ),
+        severity: NotificationSeverity::Info,
+        fields: Default::default(),
+        dedup_key: None,
     }
 }
 
@@ -875,6 +897,17 @@ async fn main() -> Result<()> {
             });
 
             info!("All singletons initialized, starting pre_trade main loop...");
+            if arb_mode == ArbMode::FundingArb {
+                let env_name = dir_prefix.as_deref().unwrap_or("pre-trade");
+                let notification =
+                    build_fr_startup_notification(env_name, open_venue, hedge_venue);
+                match LocalNotificationClient::from_env()
+                    .and_then(|client| client.send(&notification))
+                {
+                    Ok(()) => info!("FR pre_trade startup notification accepted"),
+                    Err(err) => warn!("FR pre_trade startup notification failed: {err:#}"),
+                }
+            }
 
             // 8. 运行主循环
             let mut pre_trade = PreTrade::new()
@@ -922,5 +955,22 @@ mod tests {
             infer_arb_mode_from_dir_name("binance-intra-arb03"),
             Some(ArbMode::IntraArb)
         );
+    }
+
+    #[test]
+    fn builds_concise_fr_startup_notification() {
+        let notification = build_fr_startup_notification(
+            "binance_fr_arb04",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        assert_eq!(notification.title, "FR Pre-Trade启动");
+        assert_eq!(
+            notification.message,
+            "binance_fr_arb04｜启动成功\nbinance-margin → binance-futures"
+        );
+        assert_eq!(notification.severity, NotificationSeverity::Info);
+        assert!(notification.fields.is_empty());
+        assert!(notification.dedup_key.is_none());
     }
 }
