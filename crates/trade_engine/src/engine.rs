@@ -60,7 +60,9 @@ use anyhow::{anyhow, Context, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
+use ipc_common::iceoryx_publisher::{
+    QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD, QUERY_SUBSCRIBER_MAX_BUFFER_SIZE,
+};
 use log::{debug, info, warn};
 use rolling_common::health_snapshot::{
     HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_MARKET_FUTURES, HEALTH_MARKET_SPOT,
@@ -1065,7 +1067,7 @@ fn run_te_ipc_thread(
     let query_service = node
         .service_builder(&ServiceName::new(query_req_service)?)
         .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-        .subscriber_max_buffer_size(256)
+        .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
         .open_or_create()?;
     let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
         query_service.subscriber_builder().create()?;
@@ -1639,7 +1641,7 @@ impl TradeEngine {
         let query_resp_service_obj = node
             .service_builder(&ServiceName::new(&query_resp_service)?)
             .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
-            .subscriber_max_buffer_size(256)
+            .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
         let query_resp_publisher: Publisher<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
             query_resp_service_obj.publisher_builder().create()?;
@@ -1702,7 +1704,7 @@ impl TradeEngine {
                 let query_service = node
                     .service_builder(&ServiceName::new(&query_req_service)?)
                     .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-                    .subscriber_max_buffer_size(256)
+                    .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
                     .open_or_create()?;
                 let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
                     query_service.subscriber_builder().create()?;

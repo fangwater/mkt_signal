@@ -16,6 +16,7 @@ pub const RESAMPLE_PAYLOAD: usize = 32 * 1024;
 pub const BINANCE_MARGIN_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const BINANCE_UM_UPDATE_PAYLOAD: usize = SIGNAL_PAYLOAD;
 pub const QUERY_REQ_PAYLOAD: usize = 256;
+pub const QUERY_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 4_096;
 // Query responses now also carry standard-account snapshot events, which are
 // materially larger than compact order-query payloads.
 pub const QUERY_RESP_PAYLOAD: usize = 4_096;

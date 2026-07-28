@@ -3,7 +3,7 @@ use account_common::gate_auth::GateCredentials;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use log::{info, warn};
+use log::{error, info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
@@ -41,9 +41,12 @@ use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
 use runtime_common::redis_client::RedisSettings;
 use std::cell::RefCell;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use trade_engine::config::RestConstants;
@@ -82,6 +85,15 @@ enum ExecVenue {
     OkexFutures,
 }
 
+const FR_STARTUP_STABILITY_DELAY: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone)]
+struct FrStartupContext {
+    env_name: String,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+}
+
 impl From<ExecVenue> for TradingVenue {
     fn from(value: ExecVenue) -> Self {
         match value {
@@ -107,6 +119,77 @@ fn build_fr_startup_notification(
         severity: NotificationSeverity::Info,
         fields: Default::default(),
         dedup_key: None,
+    }
+}
+
+fn build_fr_failure_notification(
+    context: &FrStartupContext,
+    reason: &str,
+    startup_stable: bool,
+) -> NotificationRequest {
+    let (title, state) = if startup_stable {
+        ("FR Pre-Trade异常退出", "运行异常退出")
+    } else {
+        ("FR Pre-Trade启动失败", "启动失败")
+    };
+    NotificationRequest {
+        source: "fr_pre_trade".to_string(),
+        title: title.to_string(),
+        message: format!(
+            "{}｜{}\n{} → {}\n原因：{}",
+            context.env_name,
+            state,
+            context.open_venue.data_pub_slug(),
+            context.hedge_venue.data_pub_slug(),
+            concise_failure_reason(reason)
+        ),
+        severity: NotificationSeverity::Critical,
+        fields: Default::default(),
+        dedup_key: None,
+    }
+}
+
+fn concise_failure_reason(reason: &str) -> String {
+    let first_line = reason.lines().next().unwrap_or("unknown error").trim();
+    let mut concise = first_line.chars().take(300).collect::<String>();
+    if first_line.chars().count() > 300 {
+        concise.push_str("...");
+    }
+    if concise.is_empty() {
+        "unknown error".to_string()
+    } else {
+        concise
+    }
+}
+
+fn fr_startup_context_from_cwd() -> Option<FrStartupContext> {
+    let cwd = std::env::current_dir().ok()?;
+    let env_name = cwd.file_name()?.to_string_lossy().trim().to_string();
+    if infer_arb_mode_from_dir_name(&env_name) != Some(ArbMode::FundingArb) {
+        return None;
+    }
+    let (open_venue, hedge_venue) = infer_venues_from_dir_name(&env_name)?;
+    Some(FrStartupContext {
+        env_name,
+        open_venue,
+        hedge_venue,
+    })
+}
+
+fn send_fr_notification(notification: &NotificationRequest, description: &str) {
+    match LocalNotificationClient::from_env().and_then(|client| client.send(notification)) {
+        Ok(()) => info!("FR pre_trade {description} notification accepted"),
+        Err(err) => warn!("FR pre_trade {description} notification failed: {err:#}"),
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic without message".to_string()
     }
 }
 
@@ -323,11 +406,52 @@ async fn cancel_all_exec_orders_on_startup(
     Ok(())
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let log_env = env_logger::Env::default().default_filter_or("info");
     env_logger::Builder::from_env(log_env).init();
 
+    let startup_context = fr_startup_context_from_cwd();
+    let startup_stable = Arc::new(AtomicBool::new(false));
+    let run_stable = Arc::clone(&startup_stable);
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build pre_trade Tokio runtime")?;
+        runtime.block_on(run_pre_trade(run_stable))
+    }));
+
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => {
+            error!("pre_trade exited with error: {err:#}");
+            if let Some(context) = startup_context.as_ref() {
+                let notification = build_fr_failure_notification(
+                    context,
+                    &format!("{err:#}"),
+                    startup_stable.load(Ordering::Acquire),
+                );
+                send_fr_notification(&notification, "failure");
+            }
+            Err(err)
+        }
+        Err(payload) => {
+            let reason = panic_message(payload.as_ref());
+            error!("pre_trade panicked: {reason}");
+            if let Some(context) = startup_context.as_ref() {
+                let notification = build_fr_failure_notification(
+                    context,
+                    &reason,
+                    startup_stable.load(Ordering::Acquire),
+                );
+                send_fr_notification(&notification, "panic");
+            }
+            std::panic::resume_unwind(payload)
+        }
+    }
+}
+
+async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     // 解析命令行参数
     let args = Args::parse();
     let exec_pre_trade = env!("CARGO_BIN_NAME") == "exec-pre-trade";
@@ -899,14 +1023,14 @@ async fn main() -> Result<()> {
             info!("All singletons initialized, starting pre_trade main loop...");
             if arb_mode == ArbMode::FundingArb {
                 let env_name = dir_prefix.as_deref().unwrap_or("pre-trade");
+                let startup_stable = Arc::clone(&startup_stable);
                 let notification =
                     build_fr_startup_notification(env_name, open_venue, hedge_venue);
-                match LocalNotificationClient::from_env()
-                    .and_then(|client| client.send(&notification))
-                {
-                    Ok(()) => info!("FR pre_trade startup notification accepted"),
-                    Err(err) => warn!("FR pre_trade startup notification failed: {err:#}"),
-                }
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(FR_STARTUP_STABILITY_DELAY).await;
+                    startup_stable.store(true, Ordering::Release);
+                    send_fr_notification(&notification, "startup");
+                });
             }
 
             // 8. 运行主循环
@@ -972,5 +1096,26 @@ mod tests {
         assert_eq!(notification.severity, NotificationSeverity::Info);
         assert!(notification.fields.is_empty());
         assert!(notification.dedup_key.is_none());
+    }
+
+    #[test]
+    fn builds_concise_fr_failure_notifications() {
+        let context = FrStartupContext {
+            env_name: "binance_fr_arb04".to_string(),
+            open_venue: TradingVenue::BinanceMargin,
+            hedge_venue: TradingVenue::BinanceFutures,
+        };
+
+        let startup = build_fr_failure_notification(&context, "IPC already exists\ndetail", false);
+        assert_eq!(startup.title, "FR Pre-Trade启动失败");
+        assert_eq!(
+            startup.message,
+            "binance_fr_arb04｜启动失败\nbinance-margin → binance-futures\n原因：IPC already exists"
+        );
+        assert_eq!(startup.severity, NotificationSeverity::Critical);
+
+        let runtime = build_fr_failure_notification(&context, "reactor panic", true);
+        assert_eq!(runtime.title, "FR Pre-Trade异常退出");
+        assert!(runtime.message.contains("运行异常退出"));
     }
 }

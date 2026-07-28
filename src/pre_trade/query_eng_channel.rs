@@ -15,7 +15,9 @@ use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
 use crate::pre_trade::PersistChannel;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
-use ipc_common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
+use ipc_common::iceoryx_publisher::{
+    QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD, QUERY_SUBSCRIBER_MAX_BUFFER_SIZE,
+};
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
@@ -33,7 +35,6 @@ thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = const { OnceCell::new() };
 }
 
-const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 4096;
 const QUERY_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
 
 fn query_request_create_time_us(bytes: &Bytes) -> Option<i64> {
@@ -323,7 +324,7 @@ impl QueryEngChannel {
         let req_service = req_node
             .service_builder(&ServiceName::new(&query_req_service)?)
             .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-            .subscriber_max_buffer_size(QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
+            .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let query_req_publisher = req_service.publisher_builder().create()?;
@@ -386,7 +387,7 @@ impl QueryEngChannel {
         let service = node
             .service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
-            .subscriber_max_buffer_size(QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
+            .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let subscriber: Subscriber<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
