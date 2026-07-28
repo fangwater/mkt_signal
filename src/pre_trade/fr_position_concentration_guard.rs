@@ -6,6 +6,7 @@ use runtime_common::redis_client::{BlockingRedisClient, RedisSettings};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 use trade_signal::ArbMode;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -16,6 +17,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 
 const POSITION_EPSILON_USDT: f64 = 1e-6;
+const UNCHANGED_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 struct GuardConfig {
@@ -32,6 +34,40 @@ struct GuardState {
     config: GuardConfig,
     alerting_symbols: BTreeSet<String>,
     continuous_symbols: BTreeSet<String>,
+    notification_throttle: NotificationThrottle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NotificationSemanticStatus {
+    Warning,
+    Closing,
+    AddSyncFailed,
+    RemoveSyncFailed,
+}
+
+type NotificationSemanticState = BTreeMap<String, NotificationSemanticStatus>;
+
+#[derive(Debug, Clone, Default)]
+struct NotificationThrottle {
+    last_sent_state: Option<NotificationSemanticState>,
+    last_sent_at: Option<Instant>,
+}
+
+impl NotificationThrottle {
+    fn should_emit(&self, state: &NotificationSemanticState, now: Instant) -> bool {
+        if self.last_sent_state.as_ref() != Some(state) {
+            return true;
+        }
+
+        self.last_sent_at.map_or(true, |last_sent_at| {
+            now.saturating_duration_since(last_sent_at) >= UNCHANGED_NOTIFICATION_INTERVAL
+        })
+    }
+
+    fn record_sent(&mut self, state: NotificationSemanticState, now: Instant) {
+        self.last_sent_state = Some(state);
+        self.last_sent_at = Some(now);
+    }
 }
 
 thread_local! {
@@ -187,19 +223,21 @@ impl FrPositionConcentrationGuard {
                 config,
                 alerting_symbols: BTreeSet::new(),
                 continuous_symbols: pos_dump_symbols,
+                notification_throttle: NotificationThrottle::default(),
             });
         });
         Ok(())
     }
 
     pub fn refresh_blocking() -> Result<()> {
-        let Some((config, mut alerting_symbols, mut continuous_symbols)) =
+        let Some((config, mut alerting_symbols, mut continuous_symbols, mut notification_throttle)) =
             GUARD_STATE.with(|state| {
                 state.borrow().as_ref().map(|state| {
                     (
                         state.config.clone(),
                         state.alerting_symbols.clone(),
                         state.continuous_symbols.clone(),
+                        state.notification_throttle.clone(),
                     )
                 })
             })
@@ -233,6 +271,7 @@ impl FrPositionConcentrationGuard {
             &mut pos_dump_symbols,
             &mut alerting_symbols,
             &mut continuous_symbols,
+            &mut notification_throttle,
             alert_ratio,
             dump_ratio,
         );
@@ -245,6 +284,7 @@ impl FrPositionConcentrationGuard {
             if let Some(state) = state.borrow_mut().as_mut() {
                 state.alerting_symbols = alerting_symbols;
                 state.continuous_symbols = continuous_symbols;
+                state.notification_throttle = notification_throttle;
             }
         });
         result
@@ -285,10 +325,27 @@ fn evaluate_and_sync(
     pos_dump_symbols: &mut BTreeSet<String>,
     alerting_symbols: &mut BTreeSet<String>,
     continuous_symbols: &mut BTreeSet<String>,
+    notification_throttle: &mut NotificationThrottle,
     alert_ratio: f64,
     dump_ratio: f64,
 ) -> Result<()> {
     let original_pos_dump_symbols = pos_dump_symbols.clone();
+
+    let missing_mark_assets = MonitorChannel::instance().missing_gross_position_mark_assets();
+    if !missing_mark_assets.is_empty() {
+        let sample = missing_mark_assets
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
+        warn!(
+            "FR position concentration skipped: missing mark prices count={} samples=[{}] action=preserve_pos_dump_and_alert_state",
+            missing_mark_assets.len(),
+            sample
+        );
+        return Ok(());
+    }
 
     let (positions_by_asset, total_position_usdt) =
         MonitorChannel::instance().gross_position_usdt_snapshot();
@@ -410,15 +467,61 @@ fn evaluate_and_sync(
     if let Some(notification) =
         build_aggregate_notification(config, &events, alert_ratio, dump_ratio, sync_label)
     {
-        if let Err(err) = config.notification.send(&notification) {
+        let semantic_state = build_notification_semantic_state(
+            alerting_symbols,
+            continuous_symbols,
+            &events,
+            sync_label,
+        );
+        let now = Instant::now();
+        if !notification_throttle.should_emit(&semantic_state, now) {
+            debug!(
+                "FR position concentration aggregate notification throttled: unchanged_state=true interval_secs={}",
+                UNCHANGED_NOTIFICATION_INTERVAL.as_secs()
+            );
+        } else if let Err(err) = config.notification.send(&notification) {
             warn!(
                 "FR position concentration aggregate notification failed: event_count={} error={err:#}",
                 events.len()
             );
+        } else {
+            notification_throttle.record_sent(semantic_state, now);
         }
     }
 
     sync_result
+}
+
+fn build_notification_semantic_state(
+    alerting_symbols: &BTreeSet<String>,
+    continuous_symbols: &BTreeSet<String>,
+    events: &[ConcentrationEvent],
+    sync_label: &str,
+) -> NotificationSemanticState {
+    let mut state = alerting_symbols
+        .iter()
+        .map(|symbol| {
+            let status = if continuous_symbols.contains(symbol) {
+                NotificationSemanticStatus::Closing
+            } else {
+                NotificationSemanticStatus::Warning
+            };
+            (symbol.clone(), status)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    if sync_label == "failed" {
+        for event in events {
+            let status = match event.action {
+                DumpAction::AddPosDump => NotificationSemanticStatus::AddSyncFailed,
+                DumpAction::RemovePosDump => NotificationSemanticStatus::RemoveSyncFailed,
+                _ => continue,
+            };
+            state.insert(event.symbol.clone(), status);
+        }
+    }
+
+    state
 }
 
 fn build_aggregate_notification(
@@ -761,6 +864,7 @@ mod tests {
                 config: test_config(),
                 alerting_symbols: BTreeSet::from(["BTCUSDT".to_string()]),
                 continuous_symbols: BTreeSet::new(),
+                notification_throttle: NotificationThrottle::default(),
             });
         });
 
@@ -774,6 +878,43 @@ mod tests {
             "ETHUSDT", false
         ));
         GUARD_STATE.with(|state| *state.borrow_mut() = None);
+    }
+
+    #[test]
+    fn notification_throttle_ignores_values_and_repeats_after_five_minutes() {
+        let state = BTreeMap::from([("BTCUSDT".to_string(), NotificationSemanticStatus::Closing)]);
+        let start = Instant::now();
+        let mut throttle = NotificationThrottle::default();
+
+        assert!(throttle.should_emit(&state, start));
+        throttle.record_sent(state.clone(), start);
+        assert!(!throttle.should_emit(&state, start + Duration::from_secs(299)));
+        assert!(throttle.should_emit(&state, start + Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn notification_throttle_sends_semantic_changes_immediately() {
+        let start = Instant::now();
+        let closing_with_warning = BTreeMap::from([
+            (
+                "PIPPINUSDT".to_string(),
+                NotificationSemanticStatus::Closing,
+            ),
+            ("TAGUSDT".to_string(), NotificationSemanticStatus::Warning),
+        ]);
+        let closing_after_recovery = BTreeMap::from([(
+            "PIPPINUSDT".to_string(),
+            NotificationSemanticStatus::Closing,
+        )]);
+        let mut throttle = NotificationThrottle::default();
+        throttle.record_sent(closing_with_warning, start);
+
+        assert!(throttle.should_emit(&closing_after_recovery, start + Duration::from_secs(60)));
+        throttle.record_sent(
+            closing_after_recovery.clone(),
+            start + Duration::from_secs(60),
+        );
+        assert!(!throttle.should_emit(&closing_after_recovery, start + Duration::from_secs(120)));
     }
 
     #[test]

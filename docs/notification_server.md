@@ -72,10 +72,12 @@ update.
 
 Each 60-second FR scan produces at most one aggregate notification. Crossing 12% emits one
 warning and enables the reduce-only ArbOpen lock; subsequent 12%-15% rounds remain silent.
-Reaching 15% adds the position dump and starts a notification every round. That continuous state
-is retained while the ratio remains at or above 12%. Falling below 12% removes the position dump,
-emits one recovery, and returns to silence. Severity is critical for continuous close or Redis sync
-failure, warning for the initial 12% edge, and info for recovery. The Telegram body is intentionally concise:
+Reaching 15% adds the position dump and starts continuous-close notifications. Notifications are
+sent immediately when the symbol set or semantic status changes; percentage-only changes for the
+same state are throttled to once every five minutes. That continuous state is retained while the
+ratio remains at or above 12%. Falling below 12% removes the position dump, emits one recovery,
+and returns to silence. Severity is critical for continuous close or Redis sync failure, warning
+for the initial 12% edge, and info for recovery. The Telegram body is intentionally concise:
 
 ```text
 FR仓位风控
