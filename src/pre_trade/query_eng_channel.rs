@@ -8,7 +8,6 @@ use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
-use crate::common::msg_parser::parse_mark_price;
 use crate::pre_trade::account_open_block::handle_account_open_block_query_response;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
@@ -458,45 +457,6 @@ impl QueryEngChannel {
                                 ) {
                                     continue;
                                 }
-                            }
-                            if matches!(
-                                req_type,
-                                Some(QueryRequestType::GateFuturesMarkPriceSnapshot)
-                            ) {
-                                if is_snapshot_complete_body(body) {
-                                    info!(
-                                        "Gate futures mark price snapshot complete: client_query_id={}",
-                                        resp.client_query_id()
-                                    );
-                                    continue;
-                                }
-                                if actual_len == 0
-                                    || (actual_len == 1 && body.first() == Some(&b'E'))
-                                {
-                                    warn!(
-                                        "Gate futures mark price snapshot failed: client_query_id={} body_len={}",
-                                        resp.client_query_id(),
-                                        actual_len
-                                    );
-                                    continue;
-                                }
-                                match parse_mark_price(body) {
-                                    Ok(mark) => {
-                                        MonitorChannel::instance()
-                                            .price_table()
-                                            .borrow_mut()
-                                            .update_mark_price(
-                                                &mark.symbol,
-                                                mark.mark_price,
-                                                mark.timestamp,
-                                            );
-                                    }
-                                    Err(err) => warn!(
-                                        "Gate futures mark price snapshot message decode failed: client_query_id={} err={err:#}",
-                                        resp.client_query_id()
-                                    ),
-                                }
-                                continue;
                             }
 
                             // Snapshot queries return basic account messages (no huge JSON body).

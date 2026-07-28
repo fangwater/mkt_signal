@@ -337,12 +337,6 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
             Bytes::new(),
             "gate futures positions snapshot (includes upl)",
         );
-        publish(
-            "gate",
-            QueryRequestType::GateFuturesMarkPriceSnapshot,
-            Bytes::new(),
-            "gate futures mark price snapshot",
-        );
     }
     if need_bybit {
         publish(
