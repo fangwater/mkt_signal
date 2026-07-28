@@ -139,7 +139,7 @@ fn decide_notification_transition(
 struct ConcentrationEvent {
     symbol: String,
     position_usdt: f64,
-    total_position_usdt: f64,
+    position_capacity_usdt: f64,
     ratio: f64,
     action: DumpAction,
     in_dump: bool,
@@ -207,12 +207,14 @@ impl FrPositionConcentrationGuard {
         let params = PreTradeParamsLoader::instance();
         let alert_ratio = params.fr_position_concentration_alert_ratio();
         let dump_ratio = params.fr_position_concentration_dump_ratio();
+        let max_leverage = params.max_leverage();
         info!(
-            "FR position concentration guard enabled: alert_lock={:.2}% alert_recover_below={:.2}% dump={:.2}% dump_stop_below={:.2}% thresholds=dynamic schedule=synchronous_config_refresh dump_key={} pos_dump_key={} unimmr_key={} notification={:?}",
+            "FR position concentration guard enabled: alert_lock={:.2}% alert_recover_below={:.2}% dump={:.2}% dump_stop_below={:.2}% denominator=max_leverage_x_total_equity max_leverage={:.4} thresholds=dynamic schedule=synchronous_config_refresh dump_key={} pos_dump_key={} unimmr_key={} notification={:?}",
             alert_ratio * 100.0,
             alert_ratio * 100.0,
             dump_ratio * 100.0,
             dump_ratio * 100.0,
+            max_leverage,
             config.dump_key,
             config.pos_dump_key,
             config.unimmr_key,
@@ -264,6 +266,7 @@ impl FrPositionConcentrationGuard {
         let params = PreTradeParamsLoader::instance();
         let alert_ratio = params.fr_position_concentration_alert_ratio();
         let dump_ratio = params.fr_position_concentration_dump_ratio();
+        let max_leverage = params.max_leverage();
         let result = evaluate_and_sync(
             &mut client,
             &config,
@@ -274,6 +277,7 @@ impl FrPositionConcentrationGuard {
             &mut notification_throttle,
             alert_ratio,
             dump_ratio,
+            max_leverage,
         );
         UnimmrOpenLock::replace_fr_close_symbol_lists(
             &dump_symbols,
@@ -328,6 +332,7 @@ fn evaluate_and_sync(
     notification_throttle: &mut NotificationThrottle,
     alert_ratio: f64,
     dump_ratio: f64,
+    max_leverage: f64,
 ) -> Result<()> {
     let original_pos_dump_symbols = pos_dump_symbols.clone();
 
@@ -347,8 +352,17 @@ fn evaluate_and_sync(
         return Ok(());
     }
 
-    let (positions_by_asset, total_position_usdt) =
-        MonitorChannel::instance().gross_position_usdt_snapshot();
+    let (positions_by_asset, _) = MonitorChannel::instance().gross_position_usdt_snapshot();
+    let (_, total_equity_usdt, _, _, _) = MonitorChannel::instance().basic_state_snapshot();
+    let Some(position_capacity_usdt) =
+        calculate_position_capacity_usdt(total_equity_usdt, max_leverage)
+    else {
+        warn!(
+            "FR position concentration skipped: invalid denominator total_equity_usdt={:.6} max_leverage={:.6} action=preserve_pos_dump_and_alert_state",
+            total_equity_usdt, max_leverage
+        );
+        return Ok(());
+    };
     let mut positions_by_symbol = BTreeMap::new();
     for (asset, position_usdt) in positions_by_asset {
         if !(position_usdt.is_finite() && position_usdt > POSITION_EPSILON_USDT) {
@@ -365,16 +379,10 @@ fn evaluate_and_sync(
     symbols.extend(alerting_symbols.iter().cloned());
     symbols.extend(continuous_symbols.iter().cloned());
 
-    let total_is_valid =
-        total_position_usdt.is_finite() && total_position_usdt > POSITION_EPSILON_USDT;
     let mut events = Vec::new();
     for symbol in symbols {
         let position_usdt = positions_by_symbol.get(&symbol).copied().unwrap_or(0.0);
-        let ratio = if total_is_valid {
-            (position_usdt / total_position_usdt).max(0.0)
-        } else {
-            0.0
-        };
+        let ratio = (position_usdt / position_capacity_usdt).max(0.0);
         let in_dump = dump_symbols.contains(&symbol);
         let in_pos_dump = pos_dump_symbols.contains(&symbol);
         let was_alerting = alerting_symbols.contains(&symbol);
@@ -412,7 +420,7 @@ fn evaluate_and_sync(
             events.push(ConcentrationEvent {
                 symbol,
                 position_usdt,
-                total_position_usdt,
+                position_capacity_usdt,
                 ratio,
                 action,
                 in_dump,
@@ -439,10 +447,12 @@ fn evaluate_and_sync(
     for event in &events {
         if event.recovered {
             info!(
-                "FR position concentration recovered: symbol={} symbol_position_usdt={:.2} total_position_usdt={:.2} ratio={:.4}% recover_below={:.2}% action={} sync={}",
+                "FR position concentration recovered: symbol={} symbol_position_usdt={:.2} total_equity_usdt={:.2} max_leverage={:.4} position_capacity_usdt={:.2} ratio={:.4}% recover_below={:.2}% action={} sync={}",
                 event.symbol,
                 event.position_usdt,
-                event.total_position_usdt,
+                total_equity_usdt,
+                max_leverage,
+                event.position_capacity_usdt,
                 event.ratio * 100.0,
                 alert_ratio * 100.0,
                 event.action.label(event.in_dump),
@@ -450,10 +460,12 @@ fn evaluate_and_sync(
             );
         } else {
             info!(
-                "FR position concentration warning: symbol={} symbol_position_usdt={:.2} total_position_usdt={:.2} ratio={:.4}% alert={:.2}% alert_recover_below={:.2}% dump={:.2}% dump_stop_below={:.2}% action={} sync={}",
+                "FR position concentration warning: symbol={} symbol_position_usdt={:.2} total_equity_usdt={:.2} max_leverage={:.4} position_capacity_usdt={:.2} ratio={:.4}% alert={:.2}% alert_recover_below={:.2}% dump={:.2}% dump_stop_below={:.2}% action={} sync={}",
                 event.symbol,
                 event.position_usdt,
-                event.total_position_usdt,
+                total_equity_usdt,
+                max_leverage,
+                event.position_capacity_usdt,
                 event.ratio * 100.0,
                 alert_ratio * 100.0,
                 alert_ratio * 100.0,
@@ -637,6 +649,19 @@ fn decide_dump_action(
     }
 }
 
+fn calculate_position_capacity_usdt(total_equity_usdt: f64, max_leverage: f64) -> Option<f64> {
+    if !(total_equity_usdt.is_finite()
+        && total_equity_usdt > POSITION_EPSILON_USDT
+        && max_leverage.is_finite()
+        && max_leverage > 0.0)
+    {
+        return None;
+    }
+
+    let capacity = total_equity_usdt * max_leverage;
+    (capacity.is_finite() && capacity > POSITION_EPSILON_USDT).then_some(capacity)
+}
+
 fn load_symbol_list(client: &mut BlockingRedisClient, key: &str) -> Result<Vec<String>> {
     let Some(raw) = client.get_string(key)? else {
         return Ok(Vec::new());
@@ -724,6 +749,18 @@ mod tests {
     }
 
     #[test]
+    fn position_capacity_uses_configured_max_leverage_times_equity() {
+        assert_eq!(
+            calculate_position_capacity_usdt(100_000.0, 1.75),
+            Some(175_000.0)
+        );
+        assert_eq!(calculate_position_capacity_usdt(0.0, 1.75), None);
+        assert_eq!(calculate_position_capacity_usdt(100_000.0, 0.0), None);
+        assert_eq!(calculate_position_capacity_usdt(f64::NAN, 1.75), None);
+        assert_eq!(calculate_position_capacity_usdt(f64::MAX, 2.0), None);
+    }
+
+    #[test]
     fn pos_dump_is_removed_below_dump_threshold() {
         assert_eq!(
             decide_dump_action(0.1499, ALERT_RATIO, DUMP_RATIO, false, true),
@@ -786,7 +823,7 @@ mod tests {
         let make_event = |symbol: &str, action, ratio, continuous, recovered| ConcentrationEvent {
             symbol: symbol.to_string(),
             position_usdt: ratio * 100_000.0,
-            total_position_usdt: 100_000.0,
+            position_capacity_usdt: 100_000.0,
             ratio,
             action,
             in_dump: false,
@@ -816,7 +853,7 @@ mod tests {
         let event = |action, ratio, continuous, recovered| ConcentrationEvent {
             symbol: "BTCUSDT".to_string(),
             position_usdt: ratio * 100_000.0,
-            total_position_usdt: 100_000.0,
+            position_capacity_usdt: 100_000.0,
             ratio,
             action,
             in_dump: false,
