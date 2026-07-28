@@ -24,8 +24,6 @@ const BINANCE_FUTURES_DERIVATIVES_WS_URL: &str = "wss://fstream.binance.com/mark
 const BINANCE_FUTURES_MM_DERIVATIVES_WS_URL: &str = "wss://fstream-mm.binance.com/market/ws";
 const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
 const SYMBOL_SLOT_CACHE_SIZE: usize = 128;
-const ENV_BINANCE_FUTURES_BBO_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_BBO_MODE";
-const ENV_BINANCE_FUTURES_BOOK_TICKER: &str = "SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER";
 pub(crate) const ENV_BINANCE_FUTURES_MM_WS_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE";
 pub(crate) const ENV_BINANCE_FUTURES_MM_WS_LOCAL_IP: &str =
     "SPREAD_PBS_BINANCE_FUTURES_MM_WS_LOCAL_IP";
@@ -149,16 +147,7 @@ impl VenueAdapter for BinanceAdapter {
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
         match self.venue {
-            TradingVenue::BinanceFutures => match binance_futures_bbo_mode() {
-                BinanceFuturesBboMode::Race => {
-                    build_multi_stream_subscribe(symbols.iter().flat_map(|sym| {
-                        let sym = sym.to_ascii_lowercase();
-                        [format!("{}@bookTicker", sym), format!("{}@depth5@0ms", sym)]
-                    }))
-                }
-                BinanceFuturesBboMode::BookTicker => build_stream_subscribe(symbols, "bookTicker"),
-                BinanceFuturesBboMode::Depth5 => build_stream_subscribe(symbols, "depth5@0ms"),
-            },
+            TradingVenue::BinanceFutures => build_stream_subscribe(symbols, "bookTicker"),
             TradingVenue::BinanceMargin => build_stream_subscribe(symbols, "bestBidAsk"),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
@@ -390,42 +379,6 @@ fn build_stream_subscribe(symbols: &[String], channel: &str) -> Vec<Value> {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BinanceFuturesBboMode {
-    Race,
-    BookTicker,
-    Depth5,
-}
-
-fn binance_futures_bbo_mode() -> BinanceFuturesBboMode {
-    if let Ok(raw) = std::env::var(ENV_BINANCE_FUTURES_BBO_MODE) {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "race" | "both" | "bookticker+depth5" | "book_ticker+depth5" => {
-                return BinanceFuturesBboMode::Race
-            }
-            "bookticker" | "book_ticker" | "ticker" => return BinanceFuturesBboMode::BookTicker,
-            "depth5" | "book" | "books" => return BinanceFuturesBboMode::Depth5,
-            other => log::warn!(
-                "invalid {}={:?}; using race mode",
-                ENV_BINANCE_FUTURES_BBO_MODE,
-                other
-            ),
-        }
-    }
-    if binance_futures_book_ticker_enabled() {
-        BinanceFuturesBboMode::Race
-    } else {
-        BinanceFuturesBboMode::Depth5
-    }
-}
-
-fn binance_futures_book_ticker_enabled() -> bool {
-    match std::env::var(ENV_BINANCE_FUTURES_BOOK_TICKER) {
-        Ok(raw) => parse_env_bool(&raw).unwrap_or(true),
-        Err(_) => true,
-    }
-}
-
 pub(crate) fn binance_futures_mm_ws_enabled() -> bool {
     match std::env::var(ENV_BINANCE_FUTURES_MM_WS_MODE) {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -454,14 +407,6 @@ fn binance_futures_derivatives_ws_url() -> &'static str {
         BINANCE_FUTURES_MM_DERIVATIVES_WS_URL
     } else {
         BINANCE_FUTURES_DERIVATIVES_WS_URL
-    }
-}
-
-fn parse_env_bool(raw: &str) -> Option<bool> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "t" | "yes" | "y" | "on" | "enable" | "enabled" => Some(true),
-        "0" | "false" | "f" | "no" | "n" | "off" | "disable" | "disabled" => Some(false),
-        _ => None,
     }
 }
 
@@ -718,23 +663,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_depth5_top_of_book_prefers_e_field() {
-        let raw = r#"{
-            "stream":"btcusdt@depth5@0ms",
-            "data":{"e":"depthUpdate","E":1700000000001,"T":1700000000000,"s":"BTCUSDT","U":12300,"u":12345,
-                "b":[["25.0","100"],["24.9","2"]],"a":[["25.1","50"],["25.2","3"]]}
-        }"#;
-        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let frames = a.collect_frame(&v(raw)).unwrap();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].symbol, "BTCUSDT");
-        assert_eq!(frames[0].seq_id, 12345);
-        assert_eq!(frames[0].ts_us, 1_700_000_000_001_000);
-        assert!((frames[0].bid_price - 25.0).abs() < 1e-9);
-        assert!((frames[0].ask_amount - 50.0).abs() < 1e-9);
-    }
-
-    #[test]
     fn parses_book_ticker_top_of_book() {
         let raw = r#"{
             "stream":"btcusdt@bookTicker",
@@ -758,52 +686,21 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_chunks() {
-        let _guard = env_lock().lock().unwrap();
-        std::env::remove_var(ENV_BINANCE_FUTURES_BBO_MODE);
-        std::env::remove_var(ENV_BINANCE_FUTURES_BOOK_TICKER);
+    fn futures_subscribe_chunks_bookticker_only() {
         let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
         let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
         let msgs = a.build_subscribe(&symbols);
-        assert_eq!(msgs.len(), 5);
-        assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
-        assert_eq!(msgs[4]["params"].as_array().unwrap().len(), 100);
-        assert_eq!(msgs[0]["params"][0], "sym0usdt@bookTicker");
-        assert_eq!(msgs[0]["params"][1], "sym0usdt@depth5@0ms");
-        assert_eq!(msgs[0]["params"][2], "sym1usdt@bookTicker");
-    }
-
-    #[test]
-    fn binance_futures_book_ticker_can_be_disabled_by_env() {
-        let _guard = env_lock().lock().unwrap();
-        std::env::remove_var(ENV_BINANCE_FUTURES_BBO_MODE);
-        std::env::set_var(ENV_BINANCE_FUTURES_BOOK_TICKER, "0");
-        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
-        let msgs = a.build_subscribe(&symbols);
-        std::env::remove_var(ENV_BINANCE_FUTURES_BOOK_TICKER);
-
-        assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
-        assert_eq!(msgs[2]["params"].as_array().unwrap().len(), 50);
-        assert_eq!(msgs[0]["params"][0], "sym0usdt@depth5@0ms");
-        assert_eq!(msgs[0]["params"][1], "sym1usdt@depth5@0ms");
-    }
-
-    #[test]
-    fn binance_futures_bbo_mode_can_select_bookticker_only() {
-        let _guard = env_lock().lock().unwrap();
-        std::env::set_var(ENV_BINANCE_FUTURES_BBO_MODE, "bookticker");
-        let a = BinanceAdapter::new(TradingVenue::BinanceFutures);
-        let symbols: Vec<String> = (0..450).map(|i| format!("SYM{}USDT", i)).collect();
-        let msgs = a.build_subscribe(&symbols);
-        std::env::remove_var(ENV_BINANCE_FUTURES_BBO_MODE);
-
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
         assert_eq!(msgs[2]["params"].as_array().unwrap().len(), 50);
         assert_eq!(msgs[0]["params"][0], "sym0usdt@bookTicker");
         assert_eq!(msgs[0]["params"][1], "sym1usdt@bookTicker");
+        assert!(msgs
+            .iter()
+            .flat_map(|msg| msg["params"].as_array().unwrap())
+            .all(|stream| stream
+                .as_str()
+                .is_some_and(|stream| stream.ends_with("@bookTicker"))));
     }
 
     #[test]

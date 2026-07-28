@@ -303,20 +303,6 @@ if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
   fi
 fi
 
-binance_futures_book_ticker_env_line=""
-if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER:-}" ]]; then
-  json_binance_futures_book_ticker="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER")"
-  binance_futures_book_ticker_env_line=",
-        \"SPREAD_PBS_BINANCE_FUTURES_BOOK_TICKER\": \"${json_binance_futures_book_ticker}\""
-fi
-
-binance_futures_bbo_mode_env_line=""
-if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_BBO_MODE:-}" ]]; then
-  json_binance_futures_bbo_mode="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_BBO_MODE")"
-  binance_futures_bbo_mode_env_line=",
-        \"SPREAD_PBS_BINANCE_FUTURES_BBO_MODE\": \"${json_binance_futures_bbo_mode}\""
-fi
-
 binance_futures_mm_ws_env_line=""
 if [[ -n "${SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE:-}" ]]; then
   json_binance_futures_mm_ws_mode="$(json_escape "$SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE")"
@@ -384,7 +370,7 @@ if [[ ! -f "$BASE_DIR/config/iceoryx2.toml" && -f "$ROOT_DIR/config/iceoryx2.tom
 fi
 
 # pmdaemon args = ["-c", "<core>", "<bin>", "--venue", "<v>", "--core", "<core>"]
-common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_fix_md_env_line}${binance_futures_book_ticker_env_line}${binance_futures_bbo_mode_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
+common_env="\"RUST_LOG\": \"${json_rust_log}\"${binance_sbe_env_line}${binance_fix_md_env_line}${binance_futures_mm_ws_env_line}${spread_pbs_symbols_env_line}${binance_futures_split_env_line}${bybit_split_env_line}${okex_sbe_env_line}"
 if [[ "$venue" == "binance-futures" ]]; then
   cat >"$cfg_file" <<JSON
 {
