@@ -55,6 +55,7 @@ const GATE_DERIVATIVES_SERVICE: &str = "dat_pbs/gate-futures/derivatives";
 const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
 const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 5_000_000;
+const POSITION_MARK_QTY_EPSILON: f64 = 1e-6;
 
 // ==================== Helper Functions ====================
 
@@ -1112,6 +1113,28 @@ struct BasicStatePriceUpdate {
     total_position_usdt: f64,
 }
 
+fn missing_position_mark_assets(
+    exposures: &HashMap<String, (f64, f64)>,
+    mark_usdt_by_asset: &HashMap<String, f64>,
+) -> Vec<String> {
+    let mut missing = exposures
+        .iter()
+        .filter_map(|(asset, (open_qty, hedge_qty))| {
+            if asset.eq_ignore_ascii_case("USDT")
+                || open_qty.abs() + hedge_qty.abs() <= POSITION_MARK_QTY_EPSILON
+            {
+                return None;
+            }
+            let has_mark = mark_usdt_by_asset
+                .get(asset)
+                .is_some_and(|mark| mark.is_finite() && *mark > 0.0);
+            (!has_mark).then(|| asset.clone())
+        })
+        .collect::<Vec<_>>();
+    missing.sort_unstable();
+    missing
+}
+
 impl BasicState {
     fn apply_price_update(&mut self, update: BasicStatePriceUpdate) {
         self.exposure_usdt_by_asset = update.exposure_usdt_by_asset;
@@ -1625,6 +1648,7 @@ impl MonitorChannel {
                     ARB_STARTUP_NET_EXPOSURE_WARN_USDT,
                     ready_ts
                 );
+                continue;
             }
             let exposure_usdt = net_qty.abs() * price;
             if exposure_usdt > ARB_STARTUP_NET_EXPOSURE_WARN_USDT {
@@ -2520,6 +2544,15 @@ impl MonitorChannel {
         Self::with_inner(|_inner| {
             let state = Self::basic_state_cached();
             (state.position_usdt_by_asset, state.total_position_usdt)
+        })
+    }
+
+    /// Returns materially non-zero position assets that are still missing a
+    /// usable mark price from the derivatives stream.
+    pub fn missing_gross_position_mark_assets(&self) -> Vec<String> {
+        Self::with_inner(|_inner| {
+            let state = Self::basic_state_cached();
+            missing_position_mark_assets(&state.exposures, &state.mark_usdt_by_asset)
         })
     }
 
@@ -4678,6 +4711,22 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    #[test]
+    fn missing_position_marks_ignore_cash_and_dust() {
+        let exposures = HashMap::from([
+            ("USDT".to_string(), (10_000.0, 0.0)),
+            ("DUST".to_string(), (0.0000004, 0.0000004)),
+            ("BTC".to_string(), (0.1, -0.1)),
+            ("ETH".to_string(), (10.0, -10.0)),
+        ]);
+        let mut marks = HashMap::from([("ETH".to_string(), 3_000.0)]);
+        assert_eq!(
+            missing_position_mark_assets(&exposures, &marks),
+            vec!["BTC".to_string()]
+        );
+        marks.insert("BTC".to_string(), 100_000.0);
+        assert!(missing_position_mark_assets(&exposures, &marks).is_empty());
+    }
     #[test]
     fn monitor_fast_poll_budget_maps_messages_to_tokens() {
         assert_eq!(
