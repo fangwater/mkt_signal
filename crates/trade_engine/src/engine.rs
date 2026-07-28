@@ -32,6 +32,7 @@ use crate::query_parsers::bybit_order::{
 };
 use crate::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
 use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
+use crate::query_parsers::gate_mark_price_snapshot::parse_gate_mark_price_snapshot;
 use crate::query_parsers::gate_positions_snapshot::parse_gate_positions_snapshot_with_meta;
 use crate::query_parsers::gate_unified_balance_snapshot::parse_gate_unified_balance_snapshot;
 use crate::query_parsers::okex_account_balance_snapshot::parse_okex_account_balance_snapshot;
@@ -3790,6 +3791,63 @@ impl TradeEngine {
                             {
                                 Ok((status, body)) => {
                                     let body_bytes = match msg.req_type {
+                                        crate::query_request::QueryRequestType::GateFuturesMarkPriceSnapshot
+                                            if status == 200 =>
+                                        {
+                                            match parse_gate_mark_price_snapshot(
+                                                &body,
+                                                get_timestamp_us(),
+                                            ) {
+                                                Ok(parsed) if !parsed.msgs.is_empty() => {
+                                                    let msg_count = parsed.msgs.len();
+                                                    for payload in parsed.msgs {
+                                                        let _ = query_resp_sink.send(QueryExecOutcome {
+                                                            req_type: msg.req_type,
+                                                            client_query_id: msg.client_query_id,
+                                                            status,
+                                                            body: payload,
+                                                            exchange: exchange_copy,
+                                                            ip_used_weight_1m: None,
+                                                            query_count_1m: None,
+                                                        });
+                                                    }
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status,
+                                                        body: bytes::Bytes::from_static(
+                                                            crate::query_request::SNAPSHOT_COMPLETE_MARKER,
+                                                        ),
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: None,
+                                                        query_count_1m: None,
+                                                    });
+                                                    info!(
+                                                        "gate futures mark price snapshot published: client_query_id={} rows_total={} msgs={} rows_invalid={}",
+                                                        msg.client_query_id,
+                                                        parsed.rows_total,
+                                                        msg_count,
+                                                        parsed.rows_invalid
+                                                    );
+                                                    continue;
+                                                }
+                                                Ok(parsed) => {
+                                                    warn!(
+                                                        "gate futures mark price snapshot produced no messages: rows_total={} rows_invalid={}",
+                                                        parsed.rows_total,
+                                                        parsed.rows_invalid
+                                                    );
+                                                    bytes::Bytes::from_static(b"E")
+                                                }
+                                                Err(err) => {
+                                                    warn!(
+                                                        "gate futures mark price snapshot parse failed: body_len={} err={err:#}",
+                                                        body.len()
+                                                    );
+                                                    bytes::Bytes::from_static(b"E")
+                                                }
+                                            }
+                                        }
                                         crate::query_request::QueryRequestType::GateUnifiedBalanceSnapshot
                                             if status == 200 =>
                                         {

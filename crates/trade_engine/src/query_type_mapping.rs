@@ -37,6 +37,7 @@ impl QueryTypeMapping {
                 | QueryRequestType::GateUnifiedPositionsSnapshot
                 | QueryRequestType::GateUnifiedUsdtAvailableSnapshot
                 | QueryRequestType::GateUnifiedUsdtMaxBorrowable
+                | QueryRequestType::GateFuturesMarkPriceSnapshot
         )
     }
 
@@ -86,6 +87,7 @@ impl QueryTypeMapping {
             QueryRequestType::GateUnifiedPositionsSnapshot => "/api/v4/futures/usdt/positions",
             QueryRequestType::GateUnifiedUsdtAvailableSnapshot => "/api/v4/unified/accounts",
             QueryRequestType::GateUnifiedUsdtMaxBorrowable => "/api/v4/unified/borrowable",
+            QueryRequestType::GateFuturesMarkPriceSnapshot => "/api/v4/futures/usdt/tickers",
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
@@ -124,6 +126,7 @@ impl QueryTypeMapping {
             | QueryRequestType::GateUnifiedPositionsSnapshot
             | QueryRequestType::GateUnifiedUsdtAvailableSnapshot
             | QueryRequestType::GateUnifiedUsdtMaxBorrowable
+            | QueryRequestType::GateFuturesMarkPriceSnapshot
             | QueryRequestType::BybitMarginQuery
             | QueryRequestType::BybitUMQuery
             | QueryRequestType::BybitAccountBalanceSnapshot
@@ -165,6 +168,7 @@ impl QueryTypeMapping {
             QueryRequestType::GateUnifiedPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedUsdtAvailableSnapshot => 1,
             QueryRequestType::GateUnifiedUsdtMaxBorrowable => 1,
+            QueryRequestType::GateFuturesMarkPriceSnapshot => 1,
             QueryRequestType::BybitMarginQuery => 1,
             QueryRequestType::BybitUMQuery => 1,
             QueryRequestType::BybitAccountBalanceSnapshot => 1,

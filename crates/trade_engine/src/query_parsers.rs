@@ -14,6 +14,7 @@ pub mod bybit_account_balance_snapshot;
 pub mod bybit_order;
 pub mod bybit_positions_snapshot;
 pub mod compact_order;
+pub mod gate_mark_price_snapshot;
 pub mod gate_order_status;
 pub mod gate_positions_snapshot;
 pub mod gate_unified_balance_snapshot;
