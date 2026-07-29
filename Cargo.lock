@@ -2708,6 +2708,7 @@ dependencies = [
  "chrono",
  "clap",
  "crc32fast",
+ "csv",
  "env_logger",
  "flate2",
  "hex",
