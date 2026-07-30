@@ -37,11 +37,15 @@ if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]fr([_-](.+))?$ ]]; then
   MODE="fr"
   EXCHANGE="${BASH_REMATCH[1]}"
   ENV_TAG="$(echo "${BASH_REMATCH[3]:-fr}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]exec([_-](.+))?$ ]]; then
+  MODE="exec"
+  EXCHANGE="${BASH_REMATCH[1]}"
+  ENV_TAG="$(echo "${BASH_REMATCH[3]:-exec}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
 elif type mm_parse_deploy_dir >/dev/null 2>&1 && read -r EXCHANGE ENV_TAG < <(mm_parse_deploy_dir "$dir_lc"); then
   MODE="mm"
 else
   echo "[ERROR] 无法从部署目录名推断 account_monitor 环境: ${dir_name}" >&2
-  echo "[ERROR] 期望如 okex_fr_trade / binance_mm_alpha" >&2
+  echo "[ERROR] 期望如 okex_fr_trade / binance_exec_trade / binance_mm_alpha" >&2
   exit 1
 fi
 
@@ -71,7 +75,11 @@ else
         ;;
     esac
   }
-  DEFAULT_PROC_NAME="fr_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  if [[ "$MODE" == "exec" ]]; then
+    DEFAULT_PROC_NAME="exec_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  else
+    DEFAULT_PROC_NAME="fr_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  fi
 fi
 
 PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"

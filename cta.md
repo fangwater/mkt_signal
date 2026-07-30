@@ -213,13 +213,25 @@ http://<viz-host>:10041/?config=http://<config-host>:18161/
 ## 7. 部署与启停
 
 ```bash
-./scripts/deploy_exec.sh --env-name binance_exec_trade --venue binance-futures
-cd ~/binance_exec_trade
+./scripts/deploy_exec.sh --env-name binance_exec_trade01 --venue binance-futures
+cd ~/binance_exec_trade01
 python scripts/sync_exec_risk_params.py
+./scripts/start_exec_persist_manager.sh
+./scripts/start_exec_trade_engine.sh
+./scripts/start_account_monitor.sh
 ./scripts/start_exec_pre_trade.sh --venue binance-futures
 ./scripts/start_exec_viz_server.sh
 ./scripts/start_exec_config_server.sh
 ```
 
-对应停止脚本为 `stop_exec_pre_trade.sh`、`stop_exec_viz_server.sh` 和
-`stop_exec_config_server.sh`。部署脚本不会自动启动进程。
+`deploy_exec.sh` 会同时部署 `trade_engine`、对应交易所的 `account_monitor`、
+`persist_manager`，以及 `~/spread_pbs/<venue>` 下的行情发布进程。对应停止脚本为
+`stop_exec_persist_manager.sh`、`stop_exec_trade_engine.sh`、
+`stop_account_monitor.sh`、`stop_exec_pre_trade.sh`、`stop_exec_viz_server.sh` 和
+`stop_exec_config_server.sh`。部署脚本不会自动启动进程；启动 `exec-pre-trade`
+会先撤销该账户在目标 futures venue 上的全部未完成订单。
+
+Exec 环境名必须以实例号结尾。默认端口按实例号自动错开：`trade01` 使用
+viz/config `10041/18161`，`trade02` 使用 `10042/18162`，依此类推；可用
+`--viz-port` 和 `--config-port` 显式覆盖。`IPC_NAMESPACE` 和 Redis key prefix
+始终使用完整环境名，例如 `binance_exec_trade01`。

@@ -20,6 +20,7 @@ pub mod okex;
 pub mod okex_derivatives;
 pub mod publisher;
 pub mod ws;
+pub mod zmq_forward;
 
 pub use adapter::{
     create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,

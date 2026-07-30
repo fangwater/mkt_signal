@@ -55,6 +55,14 @@ name = "spread_pbs"
 path = "src/bin/spread_pbs.rs"
 
 [[bin]]
+name = "spread_bbo_zmq_pub"
+path = "src/bin/spread_bbo_zmq_pub.rs"
+
+[[bin]]
+name = "spread_bbo_zmq_sub"
+path = "src/bin/spread_bbo_zmq_sub.rs"
+
+[[bin]]
 name = "spread_pbs_compare"
 path = "src/bin/spread_pbs_compare.rs"
 
