@@ -18,8 +18,9 @@ const UNMATCHED_FILE: &str = "trade_updates_unmatched.parquet";
     name = "trade_history_reconcile",
     about = "Compare local persisted Binance fills with exchange trades exported from PostgreSQL",
     long_about = "Compare a UTC millisecond interval from crypto_nav_manager trade CSV exports with \
-local order_export parquet files. Local quantity is sum(uniform_orders.amount_update) plus \
-the cumulative-delta quantity derived from trade_updates_unmatched."
+local order_export parquet files. Local quantity is uniform_orders.amount_update plus only the \
+cumulative-delta fills from trade_updates_unmatched whose client_order_id is not already represented \
+in uniform_orders."
 )]
 struct Args {
     /// Directory containing uniform_orders.parquet and trade_updates_unmatched.parquet.
