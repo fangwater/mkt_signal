@@ -3642,13 +3642,18 @@ impl MonitorChannel {
         Self::check_pending_arb_close_limit_order_with_side_limit(symbol, side, side_limit)
     }
 
-    /// 检查当前 symbol 的限价挂单数量（Exec 路径，仅使用 max_pending_limit_orders）
+    /// 检查当前 symbol 的限价挂单数量（Exec 路径，使用总上限和独立方向上限）
     pub fn check_pending_limit_order_for_exec(
         &self,
         symbol: &str,
         side: Side,
     ) -> Result<(), String> {
-        Self::check_pending_limit_order_with_side_limit(symbol, side, 0)
+        let params = PreTradeParamsLoader::instance();
+        let side_limit = match side {
+            Side::Buy => params.exec_max_pending_limit_buy_orders(),
+            Side::Sell => params.exec_max_pending_limit_sell_orders(),
+        };
+        Self::check_pending_limit_order_with_side_limit(symbol, side, side_limit)
     }
 
     fn check_pending_limit_order_with_side_limit(

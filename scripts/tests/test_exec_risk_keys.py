@@ -29,6 +29,19 @@ class ExecRiskKeyTests(unittest.TestCase):
             expected,
         )
 
+    def test_exec_side_pending_limits_are_synced_and_printed(self):
+        sync = load_script("sync_exec_risk_params.py")
+        printer = load_script("print_exec_risk_params.py")
+        expected = {
+            "exec_max_pending_limit_buy_orders": "10",
+            "exec_max_pending_limit_sell_orders": "10",
+        }
+
+        for key, value in expected.items():
+            self.assertEqual(sync.RISK_PARAMS[key], value)
+            self.assertIn(key, sync.PARAM_ORDER)
+            self.assertIn(key, printer.PARAM_ORDER)
+
 
 if __name__ == "__main__":
     unittest.main()

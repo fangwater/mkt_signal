@@ -91,6 +91,8 @@ RISK_PARAMS = {
     "max_pos_u": "100000.0",  # 默认单币最大持仓(USDT)，可被 exec:max_pos_u per-symbol 覆盖
     "max_leverage": "1.75",  # 最大杠杆倍数（>0）
     "max_pending_limit_orders": "10",  # 最大 live exec 限价挂单数（>=0）
+    "exec_max_pending_limit_buy_orders": "10",  # Exec 买侧最大限价挂单数（>=0, 0=关闭）
+    "exec_max_pending_limit_sell_orders": "10",  # Exec 卖侧最大限价挂单数（>=0, 0=关闭）
     "exec_order_rate_limit_per_min": "0",  # Exec 60s 下单频率上限（0=关闭）
     "exec_order_rate_limit_10s": "0",  # Exec 10s 下单频率上限（0=关闭）
     "exec_max_position_imbalance_ratio": "0.0",  # 截面持仓失衡比例上限，0=关闭
@@ -101,6 +103,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_pos_u": "默认单币最大持仓(USDT)，可被 exec:max_pos_u 覆盖",
     "max_leverage": "最大杠杆倍数",
     "max_pending_limit_orders": "最大 live exec 限价挂单数",
+    "exec_max_pending_limit_buy_orders": "Exec 买侧最大限价挂单数（0=关闭）",
+    "exec_max_pending_limit_sell_orders": "Exec 卖侧最大限价挂单数（0=关闭）",
     "exec_order_rate_limit_per_min": "Exec 60s 下单频率上限（0=关闭）",
     "exec_order_rate_limit_10s": "Exec 10s 下单频率上限（0=关闭）",
     "exec_max_position_imbalance_ratio": "abs(long_u-short_u)/(long_u+short_u)，0=关闭",
