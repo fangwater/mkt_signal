@@ -1,15 +1,38 @@
 use anyhow::{ensure, Result};
 use mkt_parsers::msg::mkt_msg::MktMsgType;
 
-use super::publisher::SPREAD_PAYLOAD_BYTES;
+use super::publisher::{DERIVATIVES_PAYLOAD_BYTES, SPREAD_PAYLOAD_BYTES};
 
 pub const DEFAULT_ZMQ_PORT: u16 = 6320;
 pub const DEFAULT_COLO_HOST: &str = "13.115.227.29";
 pub const DEFAULT_ZMQ_HWM: i32 = 128;
 pub const DEFAULT_ZMQ_SOCKET_BUFFER_BYTES: i32 = 65_536;
 
-const WIRE_MAGIC: [u8; 4] = *b"BBO1";
+const BBO_WIRE_MAGIC: [u8; 4] = *b"BBO1";
+const DERIVATIVES_WIRE_MAGIC: [u8; 4] = *b"DRV1";
 pub const WIRE_HEADER_BYTES: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WirePayloadKind {
+    Bbo,
+    Derivatives,
+}
+
+impl WirePayloadKind {
+    fn magic(self) -> [u8; 4] {
+        match self {
+            Self::Bbo => BBO_WIRE_MAGIC,
+            Self::Derivatives => DERIVATIVES_WIRE_MAGIC,
+        }
+    }
+
+    pub fn payload_len(self) -> usize {
+        match self {
+            Self::Bbo => SPREAD_PAYLOAD_BYTES,
+            Self::Derivatives => DERIVATIVES_PAYLOAD_BYTES,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireHeader {
@@ -20,9 +43,13 @@ pub struct WireHeader {
 
 impl WireHeader {
     pub fn encode(self) -> [u8; WIRE_HEADER_BYTES] {
+        self.encode_for(WirePayloadKind::Bbo)
+    }
+
+    pub fn encode_for(self, kind: WirePayloadKind) -> [u8; WIRE_HEADER_BYTES] {
         let mut out = [0_u8; WIRE_HEADER_BYTES];
-        out[..4].copy_from_slice(&WIRE_MAGIC);
-        out[4..8].copy_from_slice(&(SPREAD_PAYLOAD_BYTES as u32).to_le_bytes());
+        out[..4].copy_from_slice(&kind.magic());
+        out[4..8].copy_from_slice(&(kind.payload_len() as u32).to_le_bytes());
         out[8..16].copy_from_slice(&self.session_id.to_le_bytes());
         out[16..24].copy_from_slice(&self.sequence.to_le_bytes());
         out[24..32].copy_from_slice(&self.sent_ts_us.to_le_bytes());
@@ -30,20 +57,24 @@ impl WireHeader {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
+        Self::decode_for(bytes, WirePayloadKind::Bbo)
+    }
+
+    pub fn decode_for(bytes: &[u8], kind: WirePayloadKind) -> Result<Self> {
         ensure!(
             bytes.len() == WIRE_HEADER_BYTES,
-            "invalid BBO ZMQ header length: got={} expected={}",
+            "invalid ZMQ header length: got={} expected={}",
             bytes.len(),
             WIRE_HEADER_BYTES
         );
-        ensure!(bytes[..4] == WIRE_MAGIC, "invalid BBO ZMQ header magic");
+        ensure!(bytes[..4] == kind.magic(), "invalid ZMQ header magic");
 
         let payload_len = u32::from_le_bytes(bytes[4..8].try_into().expect("checked header size"));
         ensure!(
-            payload_len as usize == SPREAD_PAYLOAD_BYTES,
-            "invalid BBO ZMQ payload length in header: got={} expected={}",
+            payload_len as usize == kind.payload_len(),
+            "invalid ZMQ payload length in header: got={} expected={}",
             payload_len,
-            SPREAD_PAYLOAD_BYTES
+            kind.payload_len()
         );
 
         Ok(Self {
@@ -115,6 +146,32 @@ pub fn bbo_service_name(service_root: &str, venue: &str) -> Result<String> {
 }
 
 pub fn bbo_topic(venue: &str) -> Result<String> {
+    topic("spread_bbo", venue)
+}
+
+pub fn derivatives_service_name(service_root: &str, venue: &str) -> Result<String> {
+    let root = service_root.trim().trim_matches('/');
+    let venue = venue.trim().trim_matches('/');
+    ensure!(!root.is_empty(), "service root cannot be empty");
+    ensure!(!venue.is_empty(), "venue cannot be empty");
+    ensure!(
+        !root.contains('/'),
+        "service root must be one path component: {}",
+        root
+    );
+    ensure!(
+        !venue.contains('/'),
+        "venue must be one path component: {}",
+        venue
+    );
+    Ok(format!("{root}/{venue}/derivatives"))
+}
+
+pub fn derivatives_topic(venue: &str) -> Result<String> {
+    topic("spread_derivatives", venue)
+}
+
+fn topic(prefix: &str, venue: &str) -> Result<String> {
     let venue = venue.trim().trim_matches('/');
     ensure!(!venue.is_empty(), "venue cannot be empty");
     ensure!(
@@ -122,7 +179,7 @@ pub fn bbo_topic(venue: &str) -> Result<String> {
         "venue must be one path component: {}",
         venue
     );
-    Ok(format!("spread_bbo/{venue}"))
+    Ok(format!("{prefix}/{venue}"))
 }
 
 pub fn tcp_endpoint(host: &str, port: u16) -> Result<String> {
@@ -173,6 +230,22 @@ mod tests {
     }
 
     #[test]
+    fn derivatives_wire_header_round_trip_is_distinct_from_bbo() {
+        let expected = WireHeader {
+            session_id: 10,
+            sequence: 20,
+            sent_ts_us: 30,
+        };
+        let encoded = expected.encode_for(WirePayloadKind::Derivatives);
+
+        assert_eq!(
+            WireHeader::decode_for(&encoded, WirePayloadKind::Derivatives).unwrap(),
+            expected
+        );
+        assert!(WireHeader::decode(&encoded).is_err());
+    }
+
+    #[test]
     fn decodes_padded_bbo_metadata() {
         let msg = AskBidSpreadMsg::create(
             "BTCUSDT".to_string(),
@@ -204,6 +277,14 @@ mod tests {
         assert_eq!(
             bbo_topic("binance-futures").unwrap(),
             "spread_bbo/binance-futures"
+        );
+        assert_eq!(
+            derivatives_service_name("dat_pbs", "binance-futures").unwrap(),
+            "dat_pbs/binance-futures/derivatives"
+        );
+        assert_eq!(
+            derivatives_topic("binance-futures").unwrap(),
+            "spread_derivatives/binance-futures"
         );
         assert_eq!(
             tcp_endpoint(DEFAULT_COLO_HOST, DEFAULT_ZMQ_PORT).unwrap(),
