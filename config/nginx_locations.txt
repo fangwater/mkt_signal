@@ -15,3 +15,6 @@
 /cross/okex-binance/ static:$HOME/okex-binance-cross-trade/www/
 /cross/okex-binance/ws http://127.0.0.1:10111/ws
 /cross/okex-binance/healthz http://127.0.0.1:10111/healthz
+
+# centralized order persistence read API
+/persist/ http://127.0.0.1:8822/
