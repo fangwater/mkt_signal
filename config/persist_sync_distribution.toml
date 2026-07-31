@@ -85,6 +85,17 @@ public_url = "http://47.131.162.78:6351"
 bind = "127.0.0.1:50051"
 status = "fixed"
 
+# Fixed Bybit MM source on SG.
+[[allocations]]
+port = 6352
+region = "sg"
+strategy = "mm"
+env = "bybit_mm_alpha"
+source_id = "bybit_mm_alpha"
+public_url = "http://47.131.162.78:6352"
+bind = "127.0.0.1:50052"
+status = "fixed"
+
 # Requested OKEX intra source on HK.
 [[allocations]]
 port = 6354

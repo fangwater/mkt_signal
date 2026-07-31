@@ -39,6 +39,10 @@ url = "http://127.0.0.1:6344"
 id = "bybit-intra-arb01"
 url = "http://47.131.162.78:6351"
 
+[[sources]]
+id = "bybit_mm_alpha"
+url = "http://47.131.162.78:6352"
+
 [read_server]
 enabled = true
 bind = "0.0.0.0:8822"
