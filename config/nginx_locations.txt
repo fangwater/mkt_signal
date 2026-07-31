@@ -18,3 +18,6 @@
 
 # centralized order persistence read API
 /persist/ http://127.0.0.1:8822/
+# Crypto NAV manager (canonical path)
+/nav-api/ http://127.0.0.1:4200/api/
+/nav/ static:$HOME/crypto_nav_manager/frontend/dist/
