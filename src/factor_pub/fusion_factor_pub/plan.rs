@@ -58,6 +58,10 @@ pub enum ExtraFactorId {
     NetBuyPct,
     NetBuyMedium,
     NetBuySmall,
+    Bid0Price1,
+    Bid0Volume1,
+    Ask0Price1,
+    Ask0Volume1,
 }
 
 impl ExtraFactorId {
@@ -98,6 +102,10 @@ impl ExtraFactorId {
             "net_buy_pct" => Some(Self::NetBuyPct),
             "net_buy_medium" => Some(Self::NetBuyMedium),
             "net_buy_small" => Some(Self::NetBuySmall),
+            "bid0p_1" => Some(Self::Bid0Price1),
+            "bid0v_1" => Some(Self::Bid0Volume1),
+            "ask0p_1" => Some(Self::Ask0Price1),
+            "ask0v_1" => Some(Self::Ask0Volume1),
             _ => None,
         }
     }
@@ -140,6 +148,10 @@ impl ExtraFactorId {
             Self::NetBuyPct => EXTRA_FACTOR_BASE + 32,
             Self::NetBuyMedium => EXTRA_FACTOR_BASE + 33,
             Self::NetBuySmall => EXTRA_FACTOR_BASE + 34,
+            Self::Bid0Price1 => EXTRA_FACTOR_BASE + 35,
+            Self::Bid0Volume1 => EXTRA_FACTOR_BASE + 36,
+            Self::Ask0Price1 => EXTRA_FACTOR_BASE + 37,
+            Self::Ask0Volume1 => EXTRA_FACTOR_BASE + 38,
         }
     }
 
@@ -181,6 +193,10 @@ impl ExtraFactorId {
             x if x == EXTRA_FACTOR_BASE + 32 => Some(Self::NetBuyPct),
             x if x == EXTRA_FACTOR_BASE + 33 => Some(Self::NetBuyMedium),
             x if x == EXTRA_FACTOR_BASE + 34 => Some(Self::NetBuySmall),
+            x if x == EXTRA_FACTOR_BASE + 35 => Some(Self::Bid0Price1),
+            x if x == EXTRA_FACTOR_BASE + 36 => Some(Self::Bid0Volume1),
+            x if x == EXTRA_FACTOR_BASE + 37 => Some(Self::Ask0Price1),
+            x if x == EXTRA_FACTOR_BASE + 38 => Some(Self::Ask0Volume1),
             _ => None,
         }
     }
@@ -222,6 +238,10 @@ impl ExtraFactorId {
             Self::NetBuyPct => "net_buy_pct",
             Self::NetBuyMedium => "net_buy_medium",
             Self::NetBuySmall => "net_buy_small",
+            Self::Bid0Price1 => "bid0p_1",
+            Self::Bid0Volume1 => "bid0v_1",
+            Self::Ask0Price1 => "ask0p_1",
+            Self::Ask0Volume1 => "ask0v_1",
         })
     }
 }
@@ -358,6 +378,24 @@ mod tests {
                 ExtraFactorId::from_name(name).is_some(),
                 "missing ExtraFactorId mapping for {}",
                 name
+            );
+        }
+    }
+
+    #[test]
+    fn level_one_depth_fields_have_stable_extra_factor_ids() {
+        let expected = [
+            ("bid0p_1", ExtraFactorId::Bid0Price1),
+            ("bid0v_1", ExtraFactorId::Bid0Volume1),
+            ("ask0p_1", ExtraFactorId::Ask0Price1),
+            ("ask0v_1", ExtraFactorId::Ask0Volume1),
+        ];
+
+        for (name, factor_id) in expected {
+            assert_eq!(ExtraFactorId::from_name(name), Some(factor_id));
+            assert_eq!(
+                ExtraFactorId::index_to_name(factor_id.as_index()),
+                Some(name)
             );
         }
     }

@@ -2959,6 +2959,7 @@ impl FusionFactorPubApp {
         if let Some(extra_factor_id) = binding.extra_factor_id {
             return Some(Self::wrap_factor_value(Self::compute_extra_factor(
                 series,
+                depth,
                 extra_factor_id,
             )));
         }
@@ -2967,8 +2968,25 @@ impl FusionFactorPubApp {
 
     fn compute_extra_factor(
         series: Option<&SymbolSeries<'_>>,
+        depth: Option<&DepthDerived>,
         extra_factor_id: ExtraFactorId,
     ) -> Option<f64> {
+        match extra_factor_id {
+            ExtraFactorId::Bid0Price1 => {
+                return depth.and_then(|value| finite_opt(Some(depth_best_bid(value).0)));
+            }
+            ExtraFactorId::Bid0Volume1 => {
+                return depth.and_then(|value| finite_opt(Some(depth_best_bid(value).1)));
+            }
+            ExtraFactorId::Ask0Price1 => {
+                return depth.and_then(|value| finite_opt(Some(depth_best_ask(value).0)));
+            }
+            ExtraFactorId::Ask0Volume1 => {
+                return depth.and_then(|value| finite_opt(Some(depth_best_ask(value).1)));
+            }
+            _ => {}
+        }
+
         let series = series?;
         match extra_factor_id {
             ExtraFactorId::AvgPrice => rolling_kurt_last(&series.vwap, 250, true, false)
@@ -3019,6 +3037,10 @@ impl FusionFactorPubApp {
             ExtraFactorId::NetBuyPct => finite_opt(series.net_buy_pct.last().copied()),
             ExtraFactorId::NetBuyMedium => finite_opt(series.net_buy_medium.last().copied()),
             ExtraFactorId::NetBuySmall => finite_opt(series.net_buy_small.last().copied()),
+            ExtraFactorId::Bid0Price1
+            | ExtraFactorId::Bid0Volume1
+            | ExtraFactorId::Ask0Price1
+            | ExtraFactorId::Ask0Volume1 => unreachable!("handled before series lookup"),
         }
     }
 
@@ -6610,6 +6632,30 @@ mod tests {
         assert!(FusionFactorPubApp::compute_factor_134(&series)
             .unwrap()
             .is_nan());
+    }
+
+    #[test]
+    fn level_one_depth_extra_factors_are_wired() {
+        let depth = flat_depth();
+        let expected = [
+            ("bid0p_1", ExtraFactorId::Bid0Price1, 100.0),
+            ("bid0v_1", ExtraFactorId::Bid0Volume1, 10.0),
+            ("ask0p_1", ExtraFactorId::Ask0Price1, 100.1),
+            ("ask0v_1", ExtraFactorId::Ask0Volume1, 10.0),
+        ];
+
+        for (name, extra_factor_id, expected_value) in expected {
+            let binding = FactorBinding {
+                name: name.to_string(),
+                factor_id: None,
+                extra_factor_id: Some(extra_factor_id),
+            };
+            let (value, ready, status) =
+                FusionFactorPubApp::compute_supported_factor(&binding, None, Some(&depth), None)
+                    .expect("level-one depth factor should be supported");
+            assert!(ready, "{name} status={status}");
+            assert!((value - expected_value).abs() < 1e-12, "{name}");
+        }
     }
 
     #[test]
