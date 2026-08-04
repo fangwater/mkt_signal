@@ -6,7 +6,9 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
-use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy};
+use crate::strategy::manager::{
+    ExecOrphanTerminal, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
+};
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -30,6 +32,7 @@ use trade_signal::MktChannel;
 
 const QTY_EPS: f64 = 1e-12;
 const BBO_MAX_AGE_US: i64 = 2_000_000;
+const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
 const BATCH_EXEC_SIGNAL_KIND: u8 = 0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,7 +83,6 @@ enum BatchPhase {
     CancellingForRequote,
     CancellingForTarget,
     ReadyToSubmit,
-    Orphaned,
 }
 
 #[derive(Debug, Clone)]
@@ -115,8 +117,6 @@ struct ChildOrderMeta {
 struct ActiveTarget {
     target_qty: f64,
     generation_time: i64,
-    anchor_position_qty: f64,
-    local_filled_qty: f64,
     from_key: Vec<u8>,
 }
 
@@ -132,8 +132,12 @@ pub struct BatchExecSnapshot {
     pub strategy_name: String,
     pub symbol: String,
     pub exec_venue: TradingVenue,
+    /// Physical net position shared by every BatchExec strategy on this symbol.
+    pub account_position_qty: f64,
+    /// Position allocated to this strategy in the internal ledger.
     pub position_qty: f64,
     pub effective_position_qty: f64,
+    pub position_allocated: bool,
     pub target_qty: Option<f64>,
     pub pending_qty: f64,
     pub live_order_qty: f64,
@@ -316,10 +320,14 @@ pub struct BatchExecStrategy {
     symbol: String,
     exec_venue: TradingVenue,
     config: BatchExecConfig,
+    virtual_position_qty: Option<f64>,
+    position_allocation_ready: bool,
+    last_position_fill_at_us: i64,
     active_target: Option<ActiveTarget>,
     pending_target: Option<PendingTarget>,
     batches: BTreeMap<u64, BatchState>,
     child_orders: FastHashMap<i64, ChildOrderMeta>,
+    orphaned_child_orders: FastHashMap<i64, ChildOrderMeta>,
     batch_seq: u64,
     order_seq: u32,
     next_batch_at_us: i64,
@@ -341,10 +349,14 @@ impl BatchExecStrategy {
             symbol: normalize_symbol_for_internal(&symbol.into()),
             exec_venue,
             config,
+            virtual_position_qty: None,
+            position_allocation_ready: false,
+            last_position_fill_at_us: 0,
             active_target: None,
             pending_target: None,
             batches: BTreeMap::new(),
             child_orders: fast_hash_map(),
+            orphaned_child_orders: fast_hash_map(),
             batch_seq: 0,
             order_seq: 0,
             next_batch_at_us: 0,
@@ -361,15 +373,87 @@ impl BatchExecStrategy {
         &self.strategy_name
     }
 
-    pub fn snapshot(&self, _now_ts: i64) -> BatchExecSnapshot {
-        let position_qty =
-            MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-        let effective_position_qty = self.effective_position_qty(position_qty);
-        let target_qty = self
-            .pending_target
+    pub fn exec_symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    pub fn target_qty(&self) -> Option<f64> {
+        self.pending_target
             .as_ref()
             .map(|target| target.target_qty)
-            .or_else(|| self.active_target.as_ref().map(|target| target.target_qty));
+            .or_else(|| self.active_target.as_ref().map(|target| target.target_qty))
+    }
+
+    pub fn virtual_position_qty(&self) -> Option<f64> {
+        self.virtual_position_qty
+    }
+
+    pub fn position_allocation_ready(&self) -> bool {
+        self.position_allocation_ready && self.virtual_position_qty.is_some()
+    }
+
+    pub fn has_execution_in_flight(&self) -> bool {
+        !self.child_orders.is_empty()
+            || !self.orphaned_child_orders.is_empty()
+            || !self.batches.is_empty()
+    }
+
+    pub fn pause_position_allocation(&mut self) {
+        self.position_allocation_ready = false;
+    }
+
+    pub fn position_reconciliation_settled(&self, now_ts: i64) -> bool {
+        !self.has_execution_in_flight()
+            && (self.last_position_fill_at_us == 0
+                || now_ts.saturating_sub(self.last_position_fill_at_us)
+                    >= POSITION_RECONCILE_SETTLE_US)
+    }
+
+    pub fn position_reconciliation_ready(&self, now_ts: i64) -> bool {
+        self.position_allocation_ready() && self.position_reconciliation_settled(now_ts)
+    }
+
+    pub fn suspend_position_allocation(&mut self) -> Result<(), String> {
+        if self.has_execution_in_flight() {
+            return Err("cannot suspend position allocation with orders in flight".to_string());
+        }
+        self.pause_position_allocation();
+        Ok(())
+    }
+
+    pub fn apply_position_allocation(
+        &mut self,
+        position_qty: f64,
+        now_ts: i64,
+    ) -> Result<(), String> {
+        if !position_qty.is_finite() {
+            return Err("position allocation must be finite".to_string());
+        }
+        if self.has_execution_in_flight() {
+            return Err("cannot apply position allocation with orders in flight".to_string());
+        }
+        let previous = self.virtual_position_qty;
+        self.virtual_position_qty = Some(position_qty);
+        self.position_allocation_ready = true;
+        self.next_batch_at_us = now_ts;
+        info!(
+            "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} position allocation applied previous={:?} current={:.8}",
+            self.strategy_id,
+            self.strategy_name,
+            self.symbol,
+            previous,
+            position_qty
+        );
+        self.process_pending_target(now_ts);
+        Ok(())
+    }
+
+    pub fn snapshot(&self, _now_ts: i64) -> BatchExecSnapshot {
+        let account_position_qty =
+            MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
+        let position_qty = self.virtual_position_qty.unwrap_or(0.0);
+        let effective_position_qty = position_qty;
+        let target_qty = self.target_qty();
         let live_order_qty = self.live_order_signed_qty();
         let pending_qty = target_qty
             .map(|target| target - effective_position_qty - live_order_qty)
@@ -378,8 +462,10 @@ impl BatchExecStrategy {
             strategy_name: self.strategy_name.clone(),
             symbol: self.symbol.clone(),
             exec_venue: self.exec_venue,
+            account_position_qty,
             position_qty,
             effective_position_qty,
+            position_allocated: self.position_allocation_ready(),
             target_qty,
             pending_qty,
             live_order_qty,
@@ -401,21 +487,10 @@ impl BatchExecStrategy {
         (order_id >> 32) as i32
     }
 
-    fn effective_position_qty(&self, account_position_qty: f64) -> f64 {
-        let Some(target) = self.active_target.as_ref() else {
-            return account_position_qty;
-        };
-        let local_position_qty = target.anchor_position_qty + target.local_filled_qty;
-        if target.target_qty >= target.anchor_position_qty {
-            account_position_qty.max(local_position_qty)
-        } else {
-            account_position_qty.min(local_position_qty)
-        }
-    }
-
     fn live_order_signed_qty(&self) -> f64 {
         self.child_orders
             .values()
+            .chain(self.orphaned_child_orders.values())
             .map(|meta| {
                 let remaining = (meta.order_base_qty - meta.accounted_fill_base_qty).max(0.0);
                 self.batches
@@ -498,19 +573,21 @@ impl BatchExecStrategy {
         if self.pending_target.is_none() {
             return;
         }
-        if !MonitorChannel::instance().exec_position_snapshot_ready() {
+        if !self.child_orders.is_empty() || !self.orphaned_child_orders.is_empty() {
             return;
         }
-        if !self.child_orders.is_empty() {
+        if !MonitorChannel::instance().exec_position_snapshot_ready()
+            || !self.position_allocation_ready()
+        {
             return;
         }
         self.batches.clear();
         let pending = self.pending_target.take().expect("checked above");
-        let position_qty =
-            MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
+        let position_qty = self.virtual_position_qty.expect("allocation checked above");
         info!(
-            "BatchExecStrategy: strategy_id={} symbol={} target activated target_qty={:.8} position_qty={:.8} generation={}",
+            "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} allocated_position_qty={:.8} generation={}",
             self.strategy_id,
+            self.strategy_name,
             self.symbol,
             pending.target_qty,
             position_qty,
@@ -519,8 +596,6 @@ impl BatchExecStrategy {
         self.active_target = Some(ActiveTarget {
             target_qty: pending.target_qty,
             generation_time: pending.generation_time,
-            anchor_position_qty: position_qty,
-            local_filled_qty: 0.0,
             from_key: pending.from_key,
         });
         self.next_batch_at_us = now_ts;
@@ -528,7 +603,9 @@ impl BatchExecStrategy {
 
     fn maybe_start_or_requote_batch(&mut self, now_ts: i64) {
         if self.pending_target.is_some()
+            || !self.orphaned_child_orders.is_empty()
             || !MonitorChannel::instance().exec_position_snapshot_ready()
+            || !self.position_allocation_ready()
         {
             return;
         }
@@ -561,10 +638,8 @@ impl BatchExecStrategy {
         if !Self::quote_is_fresh(quote.ts, now_ts) {
             return;
         }
-        let account_position =
-            MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-        let effective_position = self.effective_position_qty(account_position);
-        let unallocated_qty = target_qty - effective_position - self.committed_batch_signed_qty();
+        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let unallocated_qty = target_qty - position_qty - self.committed_batch_signed_qty();
         let side = if unallocated_qty > 0.0 {
             Side::Buy
         } else {
@@ -978,15 +1053,17 @@ impl BatchExecStrategy {
     }
 
     fn cancel_batches_when_target_no_longer_needs_them(&mut self) {
-        if self.pending_target.is_some() || self.batches.is_empty() {
+        if self.pending_target.is_some()
+            || self.batches.is_empty()
+            || !self.position_allocation_ready()
+        {
             return;
         }
         let Some(target_qty) = self.active_target.as_ref().map(|target| target.target_qty) else {
             return;
         };
-        let account_position =
-            MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-        let remaining_qty = target_qty - self.effective_position_qty(account_position);
+        let position_qty = self.virtual_position_qty.expect("allocation checked above");
+        let remaining_qty = target_qty - position_qty;
         let committed_qty = self.committed_batch_signed_qty();
 
         let direction_changed = committed_qty.abs() > QTY_EPS
@@ -1014,21 +1091,43 @@ impl BatchExecStrategy {
     }
 
     fn account_fill_progress(&mut self, client_order_id: i64, cumulative_venue_qty: f64) {
-        let Some(meta) = self.child_orders.get_mut(&client_order_id) else {
-            return;
-        };
         let cumulative_base_qty = MonitorChannel::instance().qty_to_base(
             self.exec_venue,
             &self.symbol,
             cumulative_venue_qty,
         );
-        let delta_base_qty = (cumulative_base_qty - meta.accounted_fill_base_qty).max(0.0);
+        if !cumulative_base_qty.is_finite() || cumulative_base_qty < 0.0 {
+            warn!(
+                "BatchExecStrategy: strategy_id={} invalid cumulative fill order_id={} cumulative_base_qty={}",
+                self.strategy_id, client_order_id, cumulative_base_qty
+            );
+            return;
+        }
+        let Some((batch_seq, level_index, delta_base_qty)) =
+            self.child_orders.get_mut(&client_order_id).map(|meta| {
+                let next_accounted = cumulative_base_qty
+                    .max(meta.accounted_fill_base_qty)
+                    .min(meta.order_base_qty);
+                let delta_base_qty = next_accounted - meta.accounted_fill_base_qty;
+                meta.accounted_fill_base_qty = next_accounted;
+                (meta.batch_seq, meta.level_index, delta_base_qty)
+            })
+        else {
+            return;
+        };
+        self.apply_fill_delta(client_order_id, batch_seq, level_index, delta_base_qty);
+    }
+
+    fn apply_fill_delta(
+        &mut self,
+        client_order_id: i64,
+        batch_seq: u64,
+        level_index: u32,
+        delta_base_qty: f64,
+    ) {
         if delta_base_qty <= QTY_EPS {
             return;
         }
-        meta.accounted_fill_base_qty = cumulative_base_qty.min(meta.order_base_qty);
-        let batch_seq = meta.batch_seq;
-        let level_index = meta.level_index;
         let Some(batch) = self.batches.get_mut(&batch_seq) else {
             return;
         };
@@ -1039,8 +1138,19 @@ impl BatchExecStrategy {
                 batch.remaining_qty_by_level.remove(&level_index);
             }
         }
-        if let Some(target) = self.active_target.as_mut() {
-            target.local_filled_qty += signed_qty_from_side(batch.side, delta_base_qty);
+        let signed_fill_qty = signed_qty_from_side(batch.side, delta_base_qty);
+        if let Some(position_qty) = self.virtual_position_qty.as_mut() {
+            *position_qty += signed_fill_qty;
+            self.last_position_fill_at_us = get_timestamp_us();
+        } else {
+            warn!(
+                "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} fill arrived before position allocation order_id={} signed_fill_qty={:.8}",
+                self.strategy_id,
+                self.strategy_name,
+                self.symbol,
+                client_order_id,
+                signed_fill_qty
+            );
         }
     }
 
@@ -1049,7 +1159,15 @@ impl BatchExecStrategy {
         let Some(meta) = self.child_orders.remove(&client_order_id) else {
             return;
         };
+        self.finish_child_order_meta(client_order_id, meta);
+    }
+
+    fn finish_child_order_meta(&mut self, client_order_id: i64, meta: ChildOrderMeta) {
         let batch_seq = meta.batch_seq;
+        let has_orphaned_sibling = self
+            .orphaned_child_orders
+            .values()
+            .any(|orphaned| orphaned.batch_seq == batch_seq);
         let mut remove_batch = false;
         let mut cancel_siblings_for_requote = false;
         if let Some(batch) = self.batches.get_mut(&batch_seq) {
@@ -1060,12 +1178,12 @@ impl BatchExecStrategy {
                 batch.require_new_quote = true;
                 cancel_siblings_for_requote = !batch.child_order_ids.is_empty();
             }
-            if batch.child_order_ids.is_empty() {
+            if batch.child_order_ids.is_empty() && !has_orphaned_sibling {
                 if batch.phase == BatchPhase::CancellingForTarget
                     || batch.remaining_base_qty <= QTY_EPS
                 {
                     remove_batch = true;
-                } else if batch.phase != BatchPhase::Orphaned {
+                } else {
                     if batch.phase == BatchPhase::CancellingForRequote && !batch.use_taker {
                         batch.maker_requotes = batch.maker_requotes.saturating_add(1);
                     }
@@ -1286,9 +1404,9 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         client_order_id: i64,
         reason: &str,
     ) -> bool {
-        let Some(meta) = self.child_orders.get(&client_order_id).cloned() else {
+        if !self.child_orders.contains_key(&client_order_id) {
             return false;
-        };
+        }
         let handoff = OrphanHandoff {
             client_order_id,
             source_strategy_id: self.strategy_id,
@@ -1306,11 +1424,14 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
             return false;
         }
         self.clear_order_query_state(client_order_id);
-        self.child_orders.remove(&client_order_id);
+        let meta = self
+            .child_orders
+            .remove(&client_order_id)
+            .expect("child order checked before synchronous orphan adoption");
         if let Some(batch) = self.batches.get_mut(&meta.batch_seq) {
             batch.child_order_ids.remove(&client_order_id);
-            batch.phase = BatchPhase::Orphaned;
         }
+        self.orphaned_child_orders.insert(client_order_id, meta);
         true
     }
 
@@ -1345,6 +1466,81 @@ impl Strategy for BatchExecStrategy {
 
     fn get_id(&self) -> i32 {
         self.strategy_id
+    }
+
+    fn apply_exec_orphan_terminal(&mut self, terminal: &ExecOrphanTerminal) -> bool {
+        if terminal.source_kind != OrphanSourceKind::Hedge {
+            warn!(
+                "BatchExecStrategy: strategy_id={} reject orphan terminal order_id={} source_kind={:?}",
+                self.strategy_id, terminal.client_order_id, terminal.source_kind
+            );
+            return false;
+        }
+        let Some(existing_meta) = self
+            .orphaned_child_orders
+            .get(&terminal.client_order_id)
+            .cloned()
+        else {
+            warn!(
+                "BatchExecStrategy: strategy_id={} missing orphan metadata order_id={}",
+                self.strategy_id, terminal.client_order_id
+            );
+            return false;
+        };
+        let Some(batch) = self.batches.get(&existing_meta.batch_seq) else {
+            warn!(
+                "BatchExecStrategy: strategy_id={} missing orphan batch order_id={} batch_seq={}",
+                self.strategy_id, terminal.client_order_id, existing_meta.batch_seq
+            );
+            return false;
+        };
+        if batch.side != terminal.side {
+            warn!(
+                "BatchExecStrategy: strategy_id={} reject orphan terminal side mismatch order_id={} expected={:?} actual={:?}",
+                self.strategy_id, terminal.client_order_id, batch.side, terminal.side
+            );
+            return false;
+        }
+        if !terminal.filled_base_qty.is_finite() || terminal.filled_base_qty < 0.0 {
+            warn!(
+                "BatchExecStrategy: strategy_id={} reject invalid orphan terminal fill order_id={} filled_base_qty={}",
+                self.strategy_id, terminal.client_order_id, terminal.filled_base_qty
+            );
+            return false;
+        }
+
+        let mut meta = self
+            .orphaned_child_orders
+            .remove(&terminal.client_order_id)
+            .expect("orphan metadata checked above");
+        let previous_accounted = meta.accounted_fill_base_qty;
+        let next_accounted = terminal
+            .filled_base_qty
+            .max(previous_accounted)
+            .min(meta.order_base_qty);
+        meta.accounted_fill_base_qty = next_accounted;
+        self.apply_fill_delta(
+            terminal.client_order_id,
+            meta.batch_seq,
+            meta.level_index,
+            next_accounted - previous_accounted,
+        );
+        let batch_seq = meta.batch_seq;
+        self.finish_child_order_meta(terminal.client_order_id, meta);
+        info!(
+            "BatchExecStrategy: strategy_id={} applied orphan terminal order_id={} batch_seq={} terminal_ts={} side={:?} source_order_base_qty={:.8} tracked_order_base_qty={:.8} cumulative_filled_base_qty={:.8} newly_accounted_base_qty={:.8} price={:.8}",
+            self.strategy_id,
+            terminal.client_order_id,
+            batch_seq,
+            terminal.terminal_ts,
+            terminal.side,
+            terminal.order_base_qty,
+            existing_meta.order_base_qty,
+            terminal.filled_base_qty,
+            next_accounted - previous_accounted,
+            terminal.price
+        );
+        true
     }
 
     fn is_strategy_order(&self, order_id: i64) -> bool {
@@ -1412,6 +1608,178 @@ mod tests {
             max_maker_requotes: 2,
             target_tolerance_usdt: 10.0,
         }
+    }
+
+    fn strategy_with_orphan_batch(entries: &[(i64, u32, f64, f64)]) -> BatchExecStrategy {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        let remaining_base_qty: f64 = entries
+            .iter()
+            .map(|(_, _, order_qty, accounted)| order_qty - accounted)
+            .sum();
+        let accounted_base_qty: f64 = entries.iter().map(|(_, _, _, accounted)| accounted).sum();
+        let remaining_qty_by_level = entries
+            .iter()
+            .map(|(_, level, order_qty, accounted)| (*level, order_qty - accounted))
+            .collect();
+        strategy.virtual_position_qty = Some(accounted_base_qty);
+        strategy.position_allocation_ready = true;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 1,
+                side: Side::Buy,
+                remaining_base_qty,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::Live,
+                child_order_ids: BTreeSet::new(),
+                remaining_qty_by_level,
+                last_quote_ts: 10,
+                require_new_quote: false,
+                expires_at_us: 100,
+                from_key: b"cta_alpha".to_vec(),
+            },
+        );
+        for (client_order_id, level_index, order_base_qty, accounted_fill_base_qty) in entries {
+            strategy.orphaned_child_orders.insert(
+                *client_order_id,
+                ChildOrderMeta {
+                    batch_seq: 1,
+                    level_index: *level_index,
+                    order_base_qty: *order_base_qty,
+                    accounted_fill_base_qty: *accounted_fill_base_qty,
+                    signal_ts: 1,
+                    price_offset: f64::from(*level_index),
+                    from_key: b"cta_alpha".to_vec(),
+                    cancel_requested: false,
+                },
+            );
+        }
+        strategy
+    }
+
+    fn orphan_terminal(client_order_id: i64, filled_base_qty: f64) -> ExecOrphanTerminal {
+        ExecOrphanTerminal {
+            client_order_id,
+            source_kind: OrphanSourceKind::Hedge,
+            terminal_ts: 1_000,
+            side: Side::Buy,
+            order_base_qty: 1.0,
+            filled_base_qty,
+            price: 100.0,
+        }
+    }
+
+    #[test]
+    fn orphan_partial_fill_accounts_only_delta_and_requotes() {
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 1.0, 0.25)]);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.6)));
+
+        assert!((strategy.virtual_position_qty().unwrap() - 0.6).abs() < QTY_EPS);
+        assert!(strategy.orphaned_child_orders.is_empty());
+        let batch = strategy.batches.get(&1).unwrap();
+        assert!((batch.remaining_base_qty - 0.4).abs() < QTY_EPS);
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 1);
+        assert!(batch.require_new_quote);
+
+        assert!(!strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.6)));
+        assert!((strategy.virtual_position_qty().unwrap() - 0.6).abs() < QTY_EPS);
+    }
+
+    #[test]
+    fn zero_fill_orphan_terminal_releases_batch_for_requote() {
+        let mut strategy = strategy_with_orphan_batch(&[(102, 0, 1.0, 0.0)]);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(102, 0.0)));
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert!((batch.remaining_base_qty - 1.0).abs() < QTY_EPS);
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 1);
+    }
+
+    #[test]
+    fn fully_filled_orphan_terminal_finishes_batch() {
+        let mut strategy = strategy_with_orphan_batch(&[(106, 0, 1.0, 0.0)]);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(106, 1.0)));
+
+        assert!((strategy.virtual_position_qty().unwrap() - 1.0).abs() < QTY_EPS);
+        assert!(strategy.batches.is_empty());
+        assert!(!strategy.has_execution_in_flight());
+    }
+
+    #[test]
+    fn batch_waits_for_every_orphan_terminal() {
+        let mut strategy = strategy_with_orphan_batch(&[(103, 0, 0.5, 0.0), (104, 1, 0.5, 0.0)]);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(103, 0.0)));
+        assert_eq!(
+            strategy.batches.get(&1).unwrap().phase,
+            BatchPhase::CancellingForRequote
+        );
+        assert_eq!(strategy.batches.get(&1).unwrap().maker_requotes, 0);
+        assert_eq!(strategy.orphaned_child_orders.len(), 1);
+
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(104, 0.0)));
+        assert_eq!(
+            strategy.batches.get(&1).unwrap().phase,
+            BatchPhase::ReadyToSubmit
+        );
+        assert_eq!(strategy.batches.get(&1).unwrap().maker_requotes, 1);
+    }
+
+    #[test]
+    fn pending_target_stays_blocked_while_orphan_is_unresolved() {
+        let mut strategy = strategy_with_orphan_batch(&[(105, 0, 1.0, 0.0)]);
+        strategy.pending_target = Some(PendingTarget {
+            target_qty: 2.0,
+            generation_time: 2,
+            from_key: b"cta_alpha".to_vec(),
+        });
+
+        strategy.process_pending_target(2);
+
+        assert!(strategy.pending_target.is_some());
+        assert!(strategy.active_target.is_none());
+        assert!(strategy.batches.contains_key(&1));
+    }
+
+    #[test]
+    fn position_allocation_gates_execution_and_can_be_reapplied() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        assert!(!strategy.position_allocation_ready());
+        assert_eq!(strategy.virtual_position_qty(), None);
+
+        strategy.apply_position_allocation(0.6, 100).unwrap();
+        assert!(strategy.position_allocation_ready());
+        assert_eq!(strategy.virtual_position_qty(), Some(0.6));
+
+        strategy.suspend_position_allocation().unwrap();
+        assert!(!strategy.position_allocation_ready());
+        assert_eq!(strategy.virtual_position_qty(), Some(0.6));
+        strategy.last_position_fill_at_us = 1_000;
+        assert!(!strategy.position_reconciliation_settled(1_000 + POSITION_RECONCILE_SETTLE_US - 1));
+        assert!(strategy.position_reconciliation_settled(1_000 + POSITION_RECONCILE_SETTLE_US));
+        assert!(!strategy.position_reconciliation_ready(1_000 + POSITION_RECONCILE_SETTLE_US));
+
+        strategy.apply_position_allocation(-0.2, 200).unwrap();
+        assert!(strategy.position_allocation_ready());
+        assert_eq!(strategy.virtual_position_qty(), Some(-0.2));
     }
 
     #[test]

@@ -162,6 +162,9 @@ pub trait Strategy {
     fn order_terminal_recorder_mut(&mut self) -> Option<&mut dyn OrderTerminalRecorder> {
         None
     }
+    fn apply_exec_orphan_terminal(&mut self, _terminal: &ExecOrphanTerminal) -> bool {
+        false
+    }
 }
 
 pub trait OrderTerminalRecorder {
@@ -200,6 +203,17 @@ pub enum OrphanStrategyRole {
     Hedge,
     Arb,
     Exec,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecOrphanTerminal {
+    pub client_order_id: i64,
+    pub source_kind: OrphanSourceKind,
+    pub terminal_ts: i64,
+    pub side: Side,
+    pub order_base_qty: f64,
+    pub filled_base_qty: f64,
+    pub price: f64,
 }
 
 impl OrphanStrategyRole {
@@ -1180,6 +1194,16 @@ impl StrategyManager {
         )
     }
 
+    pub fn apply_exec_orphan_terminal(
+        &mut self,
+        source_strategy_id: i32,
+        terminal: &ExecOrphanTerminal,
+    ) -> bool {
+        self.strategies
+            .get_mut(&source_strategy_id)
+            .is_some_and(|strategy| strategy.apply_exec_orphan_terminal(terminal))
+    }
+
     pub fn arb_hedge_snapshots(&self, now_ts: i64) -> Vec<ArbHedgeSnapshot> {
         let mut snapshots = Vec::new();
         for strategy in self.strategies.values() {
@@ -1316,8 +1340,8 @@ impl StrategyManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        next_strategy_id_state, OpenPriceMapEntry, OpenPriceMapKey, QuantizedValueKey, Strategy,
-        StrategyManager, STRATEGY_ID_MASK,
+        next_strategy_id_state, ExecOrphanTerminal, OpenPriceMapEntry, OpenPriceMapKey,
+        OrphanSourceKind, QuantizedValueKey, Strategy, StrategyManager, STRATEGY_ID_MASK,
     };
     use crate::strategy::arb_hedge_strategy::ArbHedgeStrategy;
     use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecStrategy};
@@ -1386,6 +1410,92 @@ mod tests {
                 price_qv: self.price_qv.into(),
             })
         }
+    }
+
+    struct DummyExecStrategy {
+        id: i32,
+        symbol: String,
+        terminal_ids: Vec<i64>,
+    }
+
+    impl Strategy for DummyExecStrategy {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn get_id(&self) -> i32 {
+            self.id
+        }
+
+        fn is_strategy_order(&self, _order_id: i64) -> bool {
+            false
+        }
+
+        fn handle_signal(&mut self, _signal: &TradeSignal) {}
+
+        fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {}
+
+        fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {}
+
+        fn handle_period_clock(&mut self, _current_tp: i64) {}
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn symbol(&self) -> Option<&str> {
+            Some(&self.symbol)
+        }
+
+        fn apply_exec_orphan_terminal(&mut self, terminal: &ExecOrphanTerminal) -> bool {
+            self.terminal_ids.push(terminal.client_order_id);
+            true
+        }
+    }
+
+    #[test]
+    fn exec_orphan_terminal_routes_to_exact_source_strategy_id() {
+        let mut manager = StrategyManager::new();
+        for id in [31, 32] {
+            manager.insert(Box::new(DummyExecStrategy {
+                id,
+                symbol: "BTCUSDT".to_string(),
+                terminal_ids: Vec::new(),
+            }));
+        }
+        let terminal = ExecOrphanTerminal {
+            client_order_id: 99,
+            source_kind: OrphanSourceKind::Hedge,
+            terminal_ts: 1_000,
+            side: Side::Buy,
+            order_base_qty: 1.0,
+            filled_base_qty: 0.25,
+            price: 100.0,
+        };
+
+        assert!(manager.apply_exec_orphan_terminal(32, &terminal));
+        assert!(!manager.apply_exec_orphan_terminal(33, &terminal));
+
+        let first = manager
+            .strategies
+            .get(&31)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DummyExecStrategy>()
+            .unwrap();
+        let second = manager
+            .strategies
+            .get(&32)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<DummyExecStrategy>()
+            .unwrap();
+        assert!(first.terminal_ids.is_empty());
+        assert_eq!(second.terminal_ids, vec![99]);
     }
 
     #[test]
@@ -1545,6 +1655,16 @@ mod tests {
     #[test]
     fn hedge_and_batch_exec_strategy_indexes_follow_lifecycle() {
         let mut manager = StrategyManager::new();
+        let batch_exec_config = BatchExecConfig {
+            single_order_usdt: 100.0,
+            orders_per_batch: 3,
+            maker_price_anchor: crate::strategy::batch_exec_strategy::MakerPriceAnchor::OwnBest,
+            tick_spacing: 2,
+            batch_interval_ms: 500,
+            maker_timeout_ms: 1_000,
+            max_maker_requotes: 2,
+            target_tolerance_usdt: 10.0,
+        };
 
         manager.insert(Box::new(MarketMakerHedgeStrategy::new(
             51,
@@ -1561,16 +1681,14 @@ mod tests {
             "cta_alpha",
             "SOLUSDT",
             TradingVenue::GateFutures,
-            BatchExecConfig {
-                single_order_usdt: 100.0,
-                orders_per_batch: 3,
-                maker_price_anchor: crate::strategy::batch_exec_strategy::MakerPriceAnchor::OwnBest,
-                tick_spacing: 2,
-                batch_interval_ms: 500,
-                maker_timeout_ms: 1_000,
-                max_maker_requotes: 2,
-                target_tolerance_usdt: 10.0,
-            },
+            batch_exec_config.clone(),
+        )));
+        manager.insert(Box::new(BatchExecStrategy::new(
+            54,
+            "cta_beta",
+            "SOLUSDT",
+            TradingVenue::GateFutures,
+            batch_exec_config,
         )));
 
         assert_eq!(
@@ -1587,13 +1705,17 @@ mod tests {
         );
         assert_eq!(
             manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_beta", "SOLUSDT"),
-            None
+            Some(54)
         );
 
         let exec = manager.take(53).expect("batch exec strategy should exist");
         assert_eq!(
             manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_alpha", "SOLUSDT"),
             None
+        );
+        assert_eq!(
+            manager.find_batch_exec_strategy_id_for_normalized_symbol("cta_beta", "SOLUSDT"),
+            Some(54)
         );
         manager.insert(exec);
         assert_eq!(

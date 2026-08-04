@@ -72,16 +72,17 @@ class ExecConfigServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid symbol"):
             MODULE.normalize_exec_config(config)
 
-    def test_symbol_cannot_be_owned_by_two_strategy_names(self):
+    def test_symbol_can_be_split_across_strategy_names(self):
         store = fake_store()
         first = dict(MODULE.DEFAULT_CONFIG)
         first["targets"] = {"BTCUSDT": 0.2}
         second = dict(MODULE.DEFAULT_CONFIG)
         second["targets"] = {"BTCUSDT": -0.1}
         store.save("trend_a", first)
+        store.save("trend_b", second)
 
-        with self.assertRaisesRegex(ValueError, "already owned by strategy trend_a"):
-            store.save("trend_b", second)
+        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
+        self.assertEqual(store.load("trend_b")["targets"], {"BTCUSDT": -0.1})
 
 
 if __name__ == "__main__":

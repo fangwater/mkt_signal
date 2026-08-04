@@ -1,7 +1,7 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::strategy::manager::OrphanSourceKind;
+use crate::strategy::manager::{ExecOrphanTerminal, OrphanSourceKind, OrphanStrategyRole};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -78,6 +78,7 @@ pub(crate) const fn standard_commit_query_policy() -> CommitQueryPolicy {
 pub struct OrphanOrderOwner {
     pub source_strategy_id: i32,
     pub source_kind: OrphanSourceKind,
+    pub source_role: OrphanStrategyRole,
     pub uniform_ctx: UniformPublishCtx,
 }
 
@@ -221,6 +222,10 @@ impl OrphanOrderTracker {
     fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
         let policy = self.commit_query_policy_for_order(client_order_id);
         let query_max_ticks = self.query_max_ticks;
+        let keep_querying_when_unresolved = self
+            .order_owners
+            .get(&client_order_id)
+            .is_some_and(|owner| owner.source_role == OrphanStrategyRole::Exec);
         let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
             return None;
         };
@@ -232,7 +237,8 @@ impl OrphanOrderTracker {
             query_state.ticks_until_next_query -= 1;
             return None;
         }
-        if query_state.query_count >= policy.max_attempts {
+        let budget_exhausted = query_state.query_count >= policy.max_attempts;
+        if budget_exhausted && !keep_querying_when_unresolved {
             return Some(CommitQueryAction::Close);
         }
 
@@ -241,6 +247,7 @@ impl OrphanOrderTracker {
             Self::next_query_ticks(policy.base_ticks, query_max_ticks, query_state.query_count);
         Some(CommitQueryAction::Query {
             query_count: query_state.query_count,
+            budget_exhausted,
         })
     }
 
@@ -678,8 +685,20 @@ impl OrphanOrderTracker {
         reason: &str,
         eps: f64,
     ) {
+        let owner = self.owner(client_order_id);
+        let had_owner = owner.is_some();
+        let retain_until_source_applies = owner
+            .as_ref()
+            .is_some_and(|owner| owner.source_role == OrphanStrategyRole::Exec);
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
-            self.forget_order_id(strategy_role, strategy_id, client_order_id, reason);
+            if retain_until_source_applies {
+                warn!(
+                    "{}: strategy_id={} retain Exec orphan without order manager client_order_id={} reason={}",
+                    strategy_role, strategy_id, client_order_id, reason
+                );
+            } else {
+                self.forget_order_id(strategy_role, strategy_id, client_order_id, reason);
+            }
             return;
         };
         let snapshot = {
@@ -696,62 +715,92 @@ impl OrphanOrderTracker {
             })
         };
         let Some((venue, symbol, side, order_qty, cumulative_qty, price)) = snapshot else {
-            self.forget_order_id(strategy_role, strategy_id, client_order_id, reason);
+            if retain_until_source_applies {
+                warn!(
+                    "{}: strategy_id={} retain Exec orphan with missing local order client_order_id={} reason={}",
+                    strategy_role, strategy_id, client_order_id, reason
+                );
+            } else {
+                self.forget_order_id(strategy_role, strategy_id, client_order_id, reason);
+            }
             return;
         };
 
-        let had_owner = if let Some(owner) = self.owner(client_order_id) {
+        let source_applied = if let Some(owner) = owner {
             let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, order_qty);
             let cumulative_base_qty =
                 MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
-            let should_record = match owner.source_kind {
-                OrphanSourceKind::Open => cumulative_base_qty > eps,
-                OrphanSourceKind::Hedge => order_base_qty > eps || cumulative_base_qty > eps,
-            };
-            if should_record {
+            let should_record = owner.source_role == OrphanStrategyRole::Exec
+                || match owner.source_kind {
+                    OrphanSourceKind::Open => cumulative_base_qty > eps,
+                    OrphanSourceKind::Hedge => order_base_qty > eps || cumulative_base_qty > eps,
+                };
+            let recorded = if should_record {
                 let strategy_mgr = MonitorChannel::instance().strategy_mgr();
                 let mut strategy_mgr = strategy_mgr.borrow_mut();
                 let normalized_symbol = normalize_symbol_for_internal(&symbol);
-                let recorded = match owner.source_kind {
-                    OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
-                        &normalized_symbol,
-                        side,
-                        order_base_qty,
-                        cumulative_base_qty,
-                        event_time,
-                        price,
-                        0,
-                        client_order_id,
-                    ),
-                    OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
-                        &normalized_symbol,
-                        side,
-                        order_base_qty,
-                        cumulative_base_qty,
-                        event_time,
-                        price,
-                        0,
-                        client_order_id,
-                    ),
+                let recorded = if owner.source_role == OrphanStrategyRole::Exec {
+                    strategy_mgr.apply_exec_orphan_terminal(
+                        owner.source_strategy_id,
+                        &ExecOrphanTerminal {
+                            client_order_id,
+                            source_kind: owner.source_kind,
+                            terminal_ts: event_time,
+                            side,
+                            order_base_qty,
+                            filled_base_qty: cumulative_base_qty,
+                            price,
+                        },
+                    )
+                } else {
+                    match owner.source_kind {
+                        OrphanSourceKind::Open => strategy_mgr.record_open_order_terminal(
+                            &normalized_symbol,
+                            side,
+                            order_base_qty,
+                            cumulative_base_qty,
+                            event_time,
+                            price,
+                            0,
+                            client_order_id,
+                        ),
+                        OrphanSourceKind::Hedge => strategy_mgr.record_hedge_order_terminal(
+                            &normalized_symbol,
+                            side,
+                            order_base_qty,
+                            cumulative_base_qty,
+                            event_time,
+                            price,
+                            0,
+                            client_order_id,
+                        ),
+                    }
                 };
                 if !recorded {
                     warn!(
-                        "{}: strategy_id={} record order terminal failed client_order_id={} symbol={} source_kind={:?} cumulative_base_qty={:.8} reason={}",
+                        "{}: strategy_id={} record order terminal failed client_order_id={} symbol={} source_strategy_id={} source_role={:?} source_kind={:?} cumulative_base_qty={:.8} reason={}",
                         strategy_role,
                         strategy_id,
                         client_order_id,
                         normalized_symbol,
+                        owner.source_strategy_id,
+                        owner.source_role,
                         owner.source_kind,
                         cumulative_base_qty,
                         reason
                     );
                 }
-            }
+                recorded
+            } else {
+                true
+            };
             info!(
-                "{}: strategy_id={} finalized order client_order_id={} source_kind={:?} symbol={} venue={:?} side={:?} order_qty={:.8} cumulative_qty={:.8} order_base_qty={:.8} cumulative_base_qty={:.8} reason={}",
+                "{}: strategy_id={} finalized order client_order_id={} source_strategy_id={} source_role={:?} source_kind={:?} symbol={} venue={:?} side={:?} order_qty={:.8} cumulative_qty={:.8} order_base_qty={:.8} cumulative_base_qty={:.8} reason={}",
                 strategy_role,
                 strategy_id,
                 client_order_id,
+                owner.source_strategy_id,
+                owner.source_role,
                 owner.source_kind,
                 symbol,
                 venue,
@@ -762,7 +811,7 @@ impl OrphanOrderTracker {
                 cumulative_base_qty,
                 reason
             );
-            true
+            recorded
         } else {
             warn!(
                 "{}: strategy_id={} finalize terminal order missing owner client_order_id={} reason={}",
@@ -771,6 +820,9 @@ impl OrphanOrderTracker {
             false
         };
 
+        if retain_until_source_applies && !source_applied {
+            return;
+        }
         if had_owner {
             let _ = order_mgr.borrow_mut().remove(client_order_id);
         }
@@ -786,12 +838,28 @@ impl OrphanOrderTracker {
         for client_order_id in tracked_order_ids {
             let order_opt = order_mgr.borrow().get(client_order_id);
             let Some(order) = order_opt else {
-                self.forget_order_id(
-                    strategy_role,
-                    strategy_id,
-                    client_order_id,
-                    "missing local order on period clock",
-                );
+                if self
+                    .order_owners
+                    .get(&client_order_id)
+                    .is_some_and(|owner| owner.source_role == OrphanStrategyRole::Exec)
+                {
+                    if self.query_due_now(client_order_id) {
+                        warn!(
+                            "{}: strategy_id={} retain unresolved Exec orphan with missing local order client_order_id={} query_count={}",
+                            strategy_role,
+                            strategy_id,
+                            client_order_id,
+                            self.query_count(client_order_id).unwrap_or_default()
+                        );
+                    }
+                } else {
+                    self.forget_order_id(
+                        strategy_role,
+                        strategy_id,
+                        client_order_id,
+                        "missing local order on period clock",
+                    );
+                }
                 continue;
             };
             if order.status.is_terminal() {
@@ -810,7 +878,16 @@ impl OrphanOrderTracker {
             if order.status == OrderExecutionStatus::Commit {
                 drop(order);
                 match self.commit_query_due_now(client_order_id) {
-                    Some(CommitQueryAction::Query { query_count }) => {
+                    Some(CommitQueryAction::Query {
+                        query_count,
+                        budget_exhausted,
+                    }) => {
+                        if budget_exhausted {
+                            warn!(
+                                "{}: strategy_id={} Exec orphan commit state remains unknown after query budget; keeping source blocked client_order_id={} query_count={}",
+                                strategy_role, strategy_id, client_order_id, query_count
+                            );
+                        }
                         let _ = self.send_order_query(strategy_role, strategy_id, client_order_id);
                         if query_count > ORPHAN_QUERY_LOG_THRESHOLD {
                             self.log_orders_over_query_threshold(strategy_role, strategy_id);
@@ -855,6 +932,17 @@ impl OrphanOrderTracker {
         strategy_id: i32,
         client_order_id: i64,
     ) {
+        if self
+            .order_owners
+            .get(&client_order_id)
+            .is_some_and(|owner| owner.source_role == OrphanStrategyRole::Exec)
+        {
+            warn!(
+                "{}: strategy_id={} refusing to synthesize terminal state for unresolved Exec orphan client_order_id={}",
+                strategy_role, strategy_id, client_order_id
+            );
+            return;
+        }
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             self.forget_order_id(
                 strategy_role,
@@ -906,7 +994,10 @@ impl OrphanOrderTracker {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommitQueryAction {
-    Query { query_count: u8 },
+    Query {
+        query_count: u8,
+        budget_exhausted: bool,
+    },
     Close,
 }
 
@@ -1007,10 +1098,12 @@ fn normalize_epoch_to_us(ts: i64) -> i64 {
 mod tests {
     use super::{
         commit_query_policy_for, format_orphan_query_table, orphan_initial_query_ticks_for,
-        CommitQueryAction, OrphanOrderTracker, BINANCE_PM_COMMIT_QUERY_BASE_TICKS,
-        BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS, BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS,
-        COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
+        CommitQueryAction, OrphanOrderOwner, OrphanOrderTracker,
+        BINANCE_PM_COMMIT_QUERY_BASE_TICKS, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
+        BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS, COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
     };
+    use crate::strategy::manager::{OrphanSourceKind, OrphanStrategyRole};
+    use crate::strategy::uniform_order_helper::UniformPublishCtx;
     use order_common::TradingVenue;
 
     #[test]
@@ -1052,7 +1145,8 @@ mod tests {
             assert_eq!(
                 tracker.commit_query_due_now(client_order_id),
                 Some(CommitQueryAction::Query {
-                    query_count: expected_query_count
+                    query_count: expected_query_count,
+                    budget_exhausted: false,
                 })
             );
         }
@@ -1064,6 +1158,57 @@ mod tests {
             tracker.commit_query_due_now(client_order_id),
             Some(CommitQueryAction::Close)
         );
+    }
+
+    #[test]
+    fn exec_commit_order_keeps_querying_after_budget_instead_of_closing() {
+        let client_order_id = 43;
+        let mut tracker =
+            OrphanOrderTracker::new(COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_BASE_TICKS, 3_200);
+        tracker.adopt_order_owner(
+            client_order_id,
+            OrphanOrderOwner {
+                source_strategy_id: 7,
+                source_kind: OrphanSourceKind::Hedge,
+                source_role: OrphanStrategyRole::Exec,
+                uniform_ctx: UniformPublishCtx {
+                    signal_ts: 1,
+                    from_key: b"cta_alpha".to_vec(),
+                    price_offset: 0.0,
+                },
+            },
+        );
+
+        let waits = [
+            COMMIT_QUERY_BASE_TICKS,
+            COMMIT_QUERY_BASE_TICKS * 2,
+            COMMIT_QUERY_BASE_TICKS * 4,
+        ];
+        for (expected_query_count, wait_ticks) in (1..=COMMIT_QUERY_MAX_ATTEMPTS).zip(waits) {
+            for _ in 0..wait_ticks {
+                assert_eq!(tracker.commit_query_due_now(client_order_id), None);
+            }
+            assert_eq!(
+                tracker.commit_query_due_now(client_order_id),
+                Some(CommitQueryAction::Query {
+                    query_count: expected_query_count,
+                    budget_exhausted: false,
+                })
+            );
+        }
+
+        for _ in 0..COMMIT_QUERY_BASE_TICKS * 8 {
+            assert_eq!(tracker.commit_query_due_now(client_order_id), None);
+        }
+        assert_eq!(
+            tracker.commit_query_due_now(client_order_id),
+            Some(CommitQueryAction::Query {
+                query_count: COMMIT_QUERY_MAX_ATTEMPTS + 1,
+                budget_exhausted: true,
+            })
+        );
+        tracker.close_commit_order_after_query_budget("test", 1, client_order_id);
+        assert!(tracker.contains(client_order_id));
     }
 
     #[test]

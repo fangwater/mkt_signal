@@ -79,6 +79,8 @@ impl ExecResampleChannel {
                 .strategy_mgr()
                 .borrow()
                 .batch_exec_snapshots(ts_ms * 1_000);
+            let position_ready = mon.exec_position_snapshot_ready()
+                && snapshots.iter().all(|snapshot| snapshot.position_allocated);
             let mut rows = Vec::with_capacity(snapshots.len());
             for snapshot in snapshots {
                 let price = MktChannel::instance()
@@ -90,12 +92,15 @@ impl ExecResampleChannel {
                 rows.push(ExecStrategyStateRow {
                     strategy_name: snapshot.strategy_name,
                     symbol: snapshot.symbol,
+                    position_allocated: snapshot.position_allocated,
+                    account_position_qty: snapshot.account_position_qty,
                     target_qty,
                     current_qty: snapshot.position_qty,
                     effective_position_qty: snapshot.effective_position_qty,
                     delta_qty,
                     live_order_qty: snapshot.live_order_qty,
                     pending_qty: snapshot.pending_qty,
+                    account_position_usdt: snapshot.account_position_qty * price,
                     target_usdt: target_qty * price,
                     current_usdt: snapshot.position_qty * price,
                     delta_usdt: delta_qty * price,
@@ -109,7 +114,7 @@ impl ExecResampleChannel {
             });
             let entry = ExecStrategyStateResampleEntry {
                 ts_ms,
-                position_ready: mon.exec_position_snapshot_ready(),
+                position_ready,
                 rows,
             };
             if Self::publish_encoded(entry.to_bytes()?, publisher, EXEC_STATE_CHANNEL)? {

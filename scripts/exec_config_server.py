@@ -189,18 +189,6 @@ class ExecConfigStore:
         normalized = normalize_exec_config(config)
         with self._save_lock:
             strategy_names = self.list_strategy_names()
-            target_symbols = set(normalized["targets"])
-            for other_name in strategy_names:
-                if other_name == name:
-                    continue
-                other = self.load(other_name)
-                if other is None:
-                    continue
-                overlap = sorted(target_symbols.intersection(other["targets"]))
-                if overlap:
-                    raise ValueError(
-                        f"symbol {overlap[0]} is already owned by strategy {other_name}"
-                    )
             self.client.set(
                 self.key(name),
                 json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),

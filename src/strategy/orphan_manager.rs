@@ -189,7 +189,7 @@ impl OrphanStrategyManager {
             OrphanStrategyRole::Mm | OrphanStrategyRole::Arb | OrphanStrategyRole::Exec => strategy
                 .as_any_mut()
                 .downcast_mut::<OrphanOrderStrategy>()
-                .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
+                .is_some_and(|strategy| strategy.adopt_orphan_order_id(role, handoff)),
         }
     }
 

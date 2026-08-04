@@ -88,7 +88,7 @@
       .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
       .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
       .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-      table { width: 100%; min-width: 1420px; border-collapse: collapse; }
+      table { width: 100%; min-width: 1380px; border-collapse: collapse; }
       thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
       th, td {
         height: 40px;
@@ -103,6 +103,20 @@
       th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
       tbody tr:last-child td { border-bottom: 0; }
       tbody tr:hover { background: #18212b; }
+      .aggregate-row { background: #151e27; font-weight: 600; }
+      .aggregate-row td { border-top: 1px solid #3b4857; }
+      .strategy-row td:first-child { padding-left: 28px; position: relative; }
+      .strategy-row td:first-child::before {
+        content: "";
+        position: absolute;
+        left: 14px;
+        top: 12px;
+        width: 6px;
+        height: 12px;
+        border-left: 1px solid #526174;
+        border-bottom: 1px solid #526174;
+      }
+      .scope-label { color: var(--cyan); }
       .positive { color: var(--green); }
       .negative { color: var(--red); }
       .muted { color: var(--muted); }
@@ -182,8 +196,8 @@
           <table>
             <thead>
               <tr>
-                <th>Strategy</th><th>Symbol</th><th>Status</th>
-                <th>Target Qty</th><th>Current Qty</th><th>Effective Qty</th><th>Delta Qty</th>
+                <th>Scope / Strategy</th><th>Symbol</th><th>Status</th>
+                <th>Target Qty</th><th>Position Qty</th><th>Allocated Qty</th><th>Delta Qty</th>
                 <th>Live Qty</th><th>Pending Qty</th><th>Target USDT</th><th>Current USDT</th>
                 <th>Delta USDT</th><th>Live USDT</th><th>Pending USDT</th><th>Batches</th><th></th>
               </tr>
@@ -252,10 +266,79 @@
           state.strategy = select.value;
         }
         function rowStatus(row, ready) {
-          if (!ready) return ["WAIT", "wait"];
+          if (!ready || row.position_allocated === false) return ["WAIT", "wait"];
           if (Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0) return ["WORKING", "live"];
           if (Math.abs(row.delta_usdt || 0) <= 0.01) return ["SETTLED", "done"];
           return ["QUEUED", "wait"];
+        }
+        function sumField(rows, key) {
+          return rows.reduce((total, row) => total + (finite(row[key]) ? row[key] : 0), 0);
+        }
+        function aggregateSymbolRows(rows) {
+          const grouped = new Map();
+          rows.forEach((row) => {
+            const symbol = String(row.symbol || "");
+            if (!grouped.has(symbol)) grouped.set(symbol, []);
+            grouped.get(symbol).push(row);
+          });
+          return [...grouped.entries()].map(([symbol, strategies]) => {
+            strategies.sort((a, b) => String(a.strategy_name).localeCompare(String(b.strategy_name)));
+            const first = strategies[0] || {};
+            const targetQty = sumField(strategies, "target_qty");
+            const targetUsdt = sumField(strategies, "target_usdt");
+            const liveQty = sumField(strategies, "live_order_qty");
+            const liveUsdt = sumField(strategies, "live_order_usdt");
+            const accountQty = finite(first.account_position_qty)
+              ? first.account_position_qty
+              : sumField(strategies, "current_qty");
+            const accountUsdt = finite(first.account_position_usdt)
+              ? first.account_position_usdt
+              : sumField(strategies, "current_usdt");
+            const aggregate = {
+              aggregate: true,
+              strategy_name: "Aggregate",
+              symbol,
+              position_allocated: strategies.every((row) => row.position_allocated !== false),
+              target_qty: targetQty,
+              current_qty: accountQty,
+              effective_position_qty: sumField(strategies, "effective_position_qty"),
+              delta_qty: targetQty - accountQty,
+              live_order_qty: liveQty,
+              pending_qty: targetQty - accountQty - liveQty,
+              target_usdt: targetUsdt,
+              current_usdt: accountUsdt,
+              delta_usdt: targetUsdt - accountUsdt,
+              live_order_usdt: liveUsdt,
+              pending_usdt: targetUsdt - accountUsdt - liveUsdt,
+              active_batches: sumField(strategies, "active_batches"),
+            };
+            return { aggregate, strategies };
+          }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.symbol.localeCompare(b.aggregate.symbol));
+        }
+        function renderTableRow(row, ready) {
+          const [status, statusClass] = rowStatus(row, ready);
+          const rowClass = row.aggregate ? "aggregate-row" : "strategy-row";
+          const strategy = row.aggregate
+            ? '<span class="scope-label">Aggregate</span>'
+            : escapeHtml(row.strategy_name);
+          const positionTitle = row.aggregate ? "Exchange account position" : "Strategy allocated position";
+          const action = row.aggregate
+            ? ""
+            : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">Edit</a>`;
+          return `<tr class="${rowClass}">
+            <td>${strategy}</td><td>${escapeHtml(row.symbol)}</td>
+            <td><span class="status ${statusClass}">${status}</span></td>
+            <td class="${cls(row.target_qty)}">${fmt(row.target_qty, qtyFmt)}</td>
+            <td class="${cls(row.current_qty)}" title="${positionTitle}">${fmt(row.current_qty, qtyFmt)}</td>
+            <td class="${cls(row.effective_position_qty)}">${fmt(row.effective_position_qty, qtyFmt)}</td>
+            <td class="${cls(row.delta_qty)}">${fmt(row.delta_qty, qtyFmt)}</td>
+            <td class="${cls(row.live_order_qty)}">${fmt(row.live_order_qty, qtyFmt)}</td>
+            <td class="${cls(row.pending_qty)}">${fmt(row.pending_qty, qtyFmt)}</td>
+            <td>${fmt(row.target_usdt, usdFmt)}</td><td>${fmt(row.current_usdt, usdFmt)}</td>
+            <td class="${cls(row.delta_usdt)}">${fmt(row.delta_usdt, usdFmt)}</td>
+            <td>${fmt(row.live_order_usdt, usdFmt)}</td><td>${fmt(row.pending_usdt, usdFmt)}</td>
+            <td>${row.active_batches || 0}</td><td>${action}</td>
+          </tr>`;
         }
         function renderRisk() {
           const e = state.risk && state.risk.entry;
@@ -271,30 +354,28 @@
           const entry = state.exec && state.exec.entry;
           const allRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
           refreshStrategies(allRows);
-          const rows = allRows.filter((row) => !state.strategy || row.strategy_name === state.strategy)
-            .filter((row) => !state.symbol || String(row.symbol || "").toUpperCase().includes(state.symbol))
-            .sort((a, b) => String(a.strategy_name).localeCompare(String(b.strategy_name)) || Math.abs(b.delta_usdt || 0) - Math.abs(a.delta_usdt || 0));
+          const rows = allRows
+            .filter((row) => !state.strategy || row.strategy_name === state.strategy)
+            .filter((row) => !state.symbol || String(row.symbol || "").toUpperCase().includes(state.symbol));
           const ready = !!(entry && entry.position_ready);
+          let displayRows;
+          let summaryRows;
+          if (state.strategy) {
+            displayRows = rows.sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)) || Math.abs(b.delta_usdt || 0) - Math.abs(a.delta_usdt || 0));
+            summaryRows = displayRows;
+          } else {
+            const groups = aggregateSymbolRows(rows);
+            displayRows = [];
+            groups.forEach((group) => {
+              displayRows.push(group.aggregate);
+              displayRows.push(...group.strategies);
+            });
+            summaryRows = groups.map((group) => group.aggregate);
+          }
           const tbody = byId("rows");
-          tbody.innerHTML = rows.map((row) => {
-            const [status, statusClass] = rowStatus(row, ready);
-            return `<tr>
-              <td>${escapeHtml(row.strategy_name)}</td><td>${escapeHtml(row.symbol)}</td>
-              <td><span class="status ${statusClass}">${status}</span></td>
-              <td class="${cls(row.target_qty)}">${fmt(row.target_qty, qtyFmt)}</td>
-              <td class="${cls(row.current_qty)}">${fmt(row.current_qty, qtyFmt)}</td>
-              <td class="${cls(row.effective_position_qty)}">${fmt(row.effective_position_qty, qtyFmt)}</td>
-              <td class="${cls(row.delta_qty)}">${fmt(row.delta_qty, qtyFmt)}</td>
-              <td class="${cls(row.live_order_qty)}">${fmt(row.live_order_qty, qtyFmt)}</td>
-              <td class="${cls(row.pending_qty)}">${fmt(row.pending_qty, qtyFmt)}</td>
-              <td>${fmt(row.target_usdt, usdFmt)}</td><td>${fmt(row.current_usdt, usdFmt)}</td>
-              <td class="${cls(row.delta_usdt)}">${fmt(row.delta_usdt, usdFmt)}</td>
-              <td>${fmt(row.live_order_usdt, usdFmt)}</td><td>${fmt(row.pending_usdt, usdFmt)}</td>
-              <td>${row.active_batches || 0}</td><td><a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">Edit</a></td>
-            </tr>`;
-          }).join("");
-          byId("empty").style.display = rows.length ? "none" : "block";
-          const sum = (key) => rows.reduce((total, row) => total + (finite(row[key]) ? row[key] : 0), 0);
+          tbody.innerHTML = displayRows.map((row) => renderTableRow(row, ready)).join("");
+          byId("empty").style.display = displayRows.length ? "none" : "block";
+          const sum = (key) => sumField(summaryRows, key);
           byId("sum-target").textContent = fmt(sum("target_usdt"), usdFmt);
           byId("sum-current").textContent = fmt(sum("current_usdt"), usdFmt);
           byId("sum-delta").textContent = fmt(sum("delta_usdt"), usdFmt);
@@ -304,7 +385,8 @@
           const namespace = (state.exec && state.exec.namespace) || (state.risk && state.risk.namespace) || "-";
           byId("namespace").textContent = namespace;
           byId("last-update").textContent = latest ? new Date(latest).toLocaleTimeString() : "-";
-          byId("state-meta").textContent = `${ready ? "Position ready" : "Position waiting"} · ${allRows.length} symbols`;
+          const symbolCount = new Set(allRows.map((row) => String(row.symbol || ""))).size;
+          byId("state-meta").textContent = `${ready ? "Position ready" : "Position waiting"} / ${allRows.length} allocations / ${symbolCount} symbols`;
           byId("state-meta").classList.toggle("stale", latest > 0 && Date.now() - latest > STALE_MS);
           byId("config-link").href = configUrl(state.strategy);
         }

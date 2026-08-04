@@ -724,7 +724,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     Duration::from_millis(args.config_reload_ms.max(100)),
                 );
                 info!(
-                    "BatchExec Redis reload started: interval_ms={} index_key=batch_exec:strategy_names",
+                    "BatchExec Redis reload started: interval_ms={} index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations",
                     args.config_reload_ms.max(100)
                 );
             }

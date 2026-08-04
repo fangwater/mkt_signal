@@ -1,5 +1,5 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::strategy::manager::{OrphanHandoff, Strategy};
+use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
 use log::{info, warn};
 use order_common::OrderUpdate;
@@ -39,7 +39,11 @@ impl OrphanOrderStrategy {
         }
     }
 
-    pub(crate) fn adopt_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
+    pub(crate) fn adopt_orphan_order_id(
+        &mut self,
+        source_role: OrphanStrategyRole,
+        handoff: &OrphanHandoff,
+    ) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -66,6 +70,7 @@ impl OrphanOrderStrategy {
             OrphanOrderOwner {
                 source_strategy_id: handoff.source_strategy_id,
                 source_kind: handoff.source_kind,
+                source_role,
                 uniform_ctx: handoff.uniform_ctx.clone(),
             },
         );

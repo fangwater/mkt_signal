@@ -142,9 +142,15 @@
 
 - **触发来源**：Exec namespace 下的 `viz_pubs/exec_pre_trade_state`。
 - **判别方式**：`type` 为 `exec_pre_trade_state`。
-- `entry.position_ready` 表示首次账户仓位快照是否完成。
-- `entry.rows[]` 按 `strategy_name + symbol` 输出目标仓位、当前仓位、差额、
-  live/pending 数量和金额以及 active batch 数量。
+- `entry.position_ready` 表示首次账户仓位快照已完成，且所有策略仓位分账已恢复。
+- `entry.rows[]` 按 `strategy_name + symbol` 输出；同一个 symbol 可以同时出现在多个
+  strategy 中。
+- `current_qty` / `current_usdt` 是该 strategy 的分配仓位，成交按订单所属
+  `strategy_name` 更新。
+- `account_position_qty` / `account_position_usdt` 是交易所综合实仓，会在同 symbol 的
+  多条 strategy row 中重复，聚合时只能取一份，不能逐行求和。
+- `position_allocated` 表示该 strategy 的分账已经完成启动恢复；未完成时不会发单。
+- 其余字段包含目标、差额、live/pending 数量和金额以及 active batch 数量。
 
 ### 5. Exec 账户风险 `exec_pre_trade_risk`
 
