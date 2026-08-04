@@ -1,19 +1,32 @@
 ---
 name: binance-intra-account-align
-description: Align Binance same-exchange intra-arb account settings. Use when Codex needs to verify or set online-symbol UM futures leverage for binance-intra-* environments, check Binance spot versus USD-M futures account allocation, or move USDT between Spot MAIN and UMFUTURE to target a requested ratio such as 70/30.
+description: Align Binance account settings and wallet allocation for intra-arb and funding-rate deployments. Use when Codex needs to verify or set online-symbol UM futures leverage, distinguish standard Spot, standard UM, and Portfolio Margin balances, compare Spot versus futures allocation, or transfer USDT between Spot MAIN and UMFUTURE or Portfolio Margin, including moving all remaining Spot USDT.
 ---
 
-# Binance Intra Account Align
+# Binance Account Align
 
-Use this for Binance same-exchange intra environments such as `binance-intra-arb01`. The workflow is live-account sensitive: leverage updates and wallet transfers mutate the exchange account.
+Use this for Binance same-exchange intra environments such as `binance-intra-arb01` and Binance Portfolio Margin FR environments such as `binance_fr_arb04`. The workflow is live-account sensitive: leverage updates and wallet transfers mutate the exchange account.
 
 ## Safety
 
 - State the target host, env path, exchange, symbols scope, and whether the next command is read-only or mutating.
 - Run dry-run/read-only checks first whenever possible.
 - Do not execute `--execute` leverage updates or wallet transfers unless the user has explicitly confirmed the mutation and amount.
+- Interpret shorthand amounts such as `10w 156.48` explicitly as `100156.48` and state that interpretation before execution.
+- Treat `all` as all currently free units of the named asset, not all account assets. Resolve the exact free balance immediately before submitting.
 - Do not print API keys, secrets, or full env files.
 - Use the environment-local `env.sh` from the target deployment directory.
+- Submit a transfer at most once. If the POST times out or returns an unknown transport result, query balances and transfer history before considering a retry.
+
+## Balance Scopes
+
+Do not infer standard Spot balance from Portfolio Margin data. Query each requested wallet explicitly:
+
+- Standard Spot MAIN: `GET /api/v3/account`; use the asset row's `free` and `locked` fields.
+- Portfolio Margin: `GET /papi/v1/balance`; inspect `crossMarginFree`, `crossMarginLocked`, `crossMarginBorrowed`, `crossMarginInterest`, `umWalletBalance`, `umUnrealizedPNL`, and `totalWalletBalance`.
+- Standard UM: `GET /fapi/v2/account`; use `totalWalletBalance`, `totalUnrealizedProfit`, and `totalMarginBalance`.
+
+In a Portfolio Margin account, `/papi/v1/balance` and `/api/v3/account` can show separate USDT balances for the same API key. Always query both before saying that standard Spot is empty.
 
 ## Online Symbols And Leverage
 
@@ -68,7 +81,7 @@ Interpret `transfer_delta`:
 
 When spot contains non-USDT assets, transferring USDT changes wallet allocation but does not rebalance spot holdings. Recheck prices and balances immediately before execution.
 
-## Wallet Transfer
+## Standard Spot And UM Transfer
 
 Use the existing transfer script where available. It is dry-run unless `--execute` is passed:
 
@@ -92,6 +105,37 @@ After any transfer, run a read-only balance check again and report:
 - Futures unrealized PnL.
 - Futures `totalMarginBalance`.
 - Combined estimated total and spot/futures percentages.
+
+## Standard Spot And Portfolio Margin Transfer
+
+Use the bundled script for Spot MAIN and Portfolio Margin transfers. It is dry-run by default, performs a read-only source-balance precheck, never retries, and performs a post-transfer balance check after success.
+
+```bash
+cd /home/ubuntu/binance_fr_arb04
+set -a
+source env.sh >/dev/null 2>&1
+set +a
+python3 /home/ubuntu/mkt_signal/.codex/skills/binance-intra-account-align/scripts/binance_pm_transfer.py \
+  --type MAIN_PORTFOLIO_MARGIN --asset USDT --amount 100156.48
+```
+
+Only add `--execute` after the user confirms the exact amount and direction:
+
+```bash
+python3 /home/ubuntu/mkt_signal/.codex/skills/binance-intra-account-align/scripts/binance_pm_transfer.py \
+  --type MAIN_PORTFOLIO_MARGIN --asset USDT --amount 100156.48 --execute
+```
+
+For an explicit request to move all remaining standard Spot USDT, let the script resolve Spot `free` immediately before submission:
+
+```bash
+python3 /home/ubuntu/mkt_signal/.codex/skills/binance-intra-account-align/scripts/binance_pm_transfer.py \
+  --type MAIN_PORTFOLIO_MARGIN --asset USDT --all --execute
+```
+
+Use `PORTFOLIO_MARGIN_MAIN` for the reverse direction. Do not substitute `MAIN_UMFUTURE`; that moves funds to a standard UM wallet, not Portfolio Margin.
+
+Record every successful `tranId`. In an actively trading FR environment, destination `crossMarginFree` may not rise by the exact transfer amount because orders and fills can immediately move funds between free, locked, and other assets. Confirm the source decrease, report destination `totalWalletBalance`, `crossMarginFree`, and `crossMarginLocked`, and avoid treating a dynamic free-balance delta as transfer failure when Binance returned a successful `tranId`.
 
 ## Known Pitfall
 
