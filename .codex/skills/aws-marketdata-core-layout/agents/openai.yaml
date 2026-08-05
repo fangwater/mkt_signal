@@ -1,4 +1,4 @@
 interface:
   display_name: "AWS Marketdata Core Layout"
-  short_description: "Pin AWS market-data publishers to CPU8-15"
-  default_prompt: "Use $aws-marketdata-core-layout to deploy AWS market-data spread_pbs/depth_pub processes on the CPU8-15 core layout."
+  short_description: "Pin market-data cores and split dual-ENI traffic"
+  default_prompt: "Use $aws-marketdata-core-layout to operate market-data publishers with the host's CPU and dual-ENI lane assignments."

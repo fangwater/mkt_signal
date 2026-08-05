@@ -2,7 +2,7 @@
 
 This document records the current CPU affinity plan for the local 48-online-core
 host. It was refreshed against live `/proc` affinity and runtime `env.sh` files
-on 2026-07-03.
+on 2026-08-04.
 
 ## Kernel Layout
 
@@ -11,7 +11,8 @@ online CPUs      0-47
 offline CPUs     48-95
 housekeeping     0-5
 isolated/nohz    6-47
-irq/kthread      0-5
+default IRQ      0-5
+ENA IRQ override ens41=45, ens42=46
 ```
 
 Many helper processes show `Cpus_allowed_list=0-5,48-95`. Because `48-95` are
@@ -61,8 +62,8 @@ offline, those processes effectively run on housekeeping cores `0-5`.
 42     bitget-gate-cross-arb01 open trade_engine IPC/other thread, persisted
 43     bitget-gate-cross-arb01 hedge trade_engine main thread, persisted
 44     bitget-gate-cross-arb01 hedge trade_engine IPC/other thread, persisted
-45     spare
-46     spare
+45     ens41 ENA Tx/Rx IRQs: order/control and constrained-feed lane
+46     ens42 ENA Tx/Rx IRQs: eligible public-market-data lane
 47     model_pub for all deployed binance-futures and okex-swap model services
 ```
 
@@ -151,6 +152,12 @@ this document was refreshed; they were running on the housekeeping set.
 - Core `15` is the pinned persist-manager pool for active FR/intra/MM
   environments and bitget-gate-cross-arb01. The cross hot path is a `38-44`
   block, with its manager on core `15`.
+- Cores `45` and `46` are dedicated to ENA interrupts. Do not pin user-space
+  processes there. All 16 Tx/Rx IRQs for `ens41` use core `45`; all 16 for
+  `ens42` use core `46`.
+- The persistent units are `pin-aws-ena-irq@ens41.service` and
+  `pin-aws-ena-irq@ens42.service`. Their per-interface defaults live under
+  `/etc/default/pin-aws-ena-irq-ens41` and `-ens42`.
 - Keep unpinned helpers on housekeeping `0-5` unless they are intentionally
   assigned into one of the spare isolated cores.
 
@@ -178,4 +185,18 @@ for d in /proc/[0-9]*; do
       ;;
   esac
 done | sort -V
+```
+
+Check persistent ENA IRQ ownership:
+
+```bash
+systemctl is-enabled pin-aws-ena-irq@ens41.service pin-aws-ena-irq@ens42.service
+systemctl is-active pin-aws-ena-irq@ens41.service pin-aws-ena-irq@ens42.service
+for iface in ens41 ens42; do
+  awk -v iface="$iface" 'index($0, iface "-Tx-Rx-") {gsub(":", "", $1); print $1}' /proc/interrupts |
+    while read -r irq; do
+      printf '%s irq=%s configured=%s effective=%s\n' "$iface" "$irq" \
+        "$(cat /proc/irq/$irq/smp_affinity_list)" "$(cat /proc/irq/$irq/effective_affinity_list)"
+    done
+done
 ```
