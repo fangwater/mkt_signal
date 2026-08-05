@@ -237,8 +237,8 @@ find_running_pids_for_venue() {
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v venue_arg="$venue_arg" '
-      index($0, "spread_pbs") > 0 &&
+    ps -eo pid=,comm=,args= | awk -v venue_arg="$venue_arg" '
+      $2 == "spread_pbs" &&
       index($0, venue_arg) > 0 &&
       index($0, "awk -v ") == 0 &&
       index($0, "start_spread_pbs.sh") == 0 &&

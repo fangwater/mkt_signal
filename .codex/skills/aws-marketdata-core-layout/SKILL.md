@@ -1,6 +1,6 @@
 ---
 name: aws-marketdata-core-layout
-description: AWS market-data deployment layout for mkt_signal. Use when operating or documenting spread_pbs, depth_pub, and model-input processes directly on the current market-data host, especially Binance/Gate/OKEx/Bitget publishers and their CPU bindings.
+description: AWS market-data deployment and dual-ENI layout for mkt_signal. Use when operating or documenting spread_pbs, depth_pub, and model-input processes on the current market-data host, especially publisher CPU bindings or market-data versus order-traffic separation across ens42 and ens41.
 ---
 
 # AWS Marketdata Core Layout
@@ -51,6 +51,106 @@ explicit per-process bindings.
 Treat the table as authoritative for the current market-data host unless the user explicitly
 updates the topology. Do not assume CPU13 is Bitget depth on this host; it is
 currently OKEx `depth_pub`.
+
+## Dual ENI Network Lanes
+
+Use these lanes on the current host:
+
+| Lane | Interface / ENI | Purpose | Routing |
+| --- | --- | --- | --- |
+| Order/control | `ens41` / `eni-046788fa6ed28d9ab` | All `trade_engine`, account/user streams, and constrained market-data feeds | Source-policy table 100; DHCP main route metric 100 |
+| Market data | `ens42` / `eni-06e24eee2c44d856e` | Eligible public `spread_pbs` feeds | Source-policy table 101, metric 200 |
+
+The following public/private mappings were verified through IMDSv2 and outbound
+source tests on 2026-08-04. Re-read IMDS before changing them; bind private IPs
+to Linux, never public/EIP addresses directly.
+
+| Interface | Private IPv4 | Public IPv4 |
+| --- | --- | --- |
+| `ens41` | `172.31.35.228` | `13.115.227.29` |
+| `ens41` | `172.31.35.229` | `52.193.90.33` |
+| `ens41` | `172.31.35.230` | `54.238.72.43` |
+| `ens41` | `172.31.35.231` | `52.69.78.134` |
+| `ens41` | `172.31.35.232` | `54.238.97.67` |
+| `ens41` | `172.31.35.233` | `54.64.165.84` |
+| `ens41` | `172.31.35.234` | `54.64.228.233` |
+| `ens42` | `172.31.46.90` | `52.69.209.108` |
+| `ens42` | `172.31.46.91` | `54.199.82.56` |
+| `ens42` | `172.31.46.92` | `52.192.54.88` |
+| `ens42` | `172.31.46.93` | `18.181.48.65` |
+
+Keep the current `spread_pbs` source assignments explicit:
+
+| Venue directory | Primary IP | Secondary IP | Lane |
+| --- | --- | --- | --- |
+| `binance-futures` | `172.31.46.90` | `172.31.46.91` | Market data |
+| `gate-both` | `172.31.46.90` | `172.31.46.91` | Market data |
+| `bitget-both` | `172.31.46.90` | `172.31.46.91` | Market data |
+| `binance-margin` | `172.31.35.228` | `172.31.35.228` | Order/control ENI exception |
+| `okex-both` | `172.31.35.228` | `172.31.35.228` | Order/control ENI exception |
+
+Do not leave these values at `0.0.0.0`. The current default route selects
+`ens41`, but that is an implicit dependency on route metrics. The deployed
+`spread_pbs` must prefer `./config/mkt_cfg.yaml` from its venue CWD before
+the shared `~/spread_pbs/config/mkt_cfg.yaml` fallback.
+
+Keep table 100 populated with a connected `172.31.32.0/20` route, an
+`ens41` default route via `172.31.32.1` with `on-link: true`, and source
+rules for `172.31.35.228` through `.234`. Keep table 101 populated with the
+same connected route, an `ens42` default route, and source rules for
+`172.31.46.90` through `.93`. Keep reverse-path filtering in loose mode
+(`rp_filter=2`) for this multihomed, same-subnet layout. Verify every source
+with `ip route get <remote> from <private-ip>`; when external observation is
+authorized, also use
+`curl --interface <private-ip> https://checkip.amazonaws.com`.
+
+Restart one publisher at a time and verify its PID, CPU, and established socket
+source addresses before continuing. The start-script process matcher must use
+the exact `comm` value `spread_pbs`; matching any command line containing
+the string would also stop the Binance Futures `spread_bbo_zmq_pub` sidecar.
+After restarting Binance Futures, confirm the sidecar still runs on CPU5 and
+listens on port 6320.
+
+Both ENA devices expose 16 combined queues on NUMA node 0. The current
+dedicated IRQ layout is:
+
+| Interface | Traffic lane | ENA Tx/Rx IRQ CPU | Persistent unit |
+| --- | --- | --- | --- |
+| `ens41` | Order/control plus Binance Margin and OKEx feed exceptions | `45` | `pin-aws-ena-irq@ens41.service` |
+| `ens42` | Eligible public market data | `46` | `pin-aws-ena-irq@ens42.service` |
+
+All 16 Tx/Rx IRQs of an interface intentionally share its one dedicated CPU.
+Do not pin user-space processes to cores 45 or 46. The kernel default IRQ set
+remains `0-5`; these two explicit ENA overrides are persisted by systemd, and
+`irqbalance` must remain inactive.
+
+The tracked deployment resources are:
+
+- `scripts/pin_aws_ena_irq_affinity.sh`
+- `scripts/systemd/pin-aws-ena-irq@.service`
+- `scripts/systemd/pin-aws-ena-irq-ens41.default`
+- `scripts/systemd/pin-aws-ena-irq-ens42.default`
+
+Deploy them without restarting application processes:
+
+```bash
+sudo install -m 0755 scripts/pin_aws_ena_irq_affinity.sh /usr/local/sbin/
+sudo install -m 0644 scripts/systemd/pin-aws-ena-irq@.service /etc/systemd/system/
+sudo install -m 0644 scripts/systemd/pin-aws-ena-irq-ens41.default /etc/default/pin-aws-ena-irq-ens41
+sudo install -m 0644 scripts/systemd/pin-aws-ena-irq-ens42.default /etc/default/pin-aws-ena-irq-ens42
+sudo systemctl daemon-reload
+sudo systemctl enable --now pin-aws-ena-irq@ens41.service pin-aws-ena-irq@ens42.service
+```
+
+Verify every IRQ's configured and effective affinity in `/proc/irq/<irq>/`;
+for this layout both values must be 45 for `ens41` and 46 for `ens42`.
+To roll back to the kernel housekeeping set, disable both units and run the
+deployed script for each interface with `--cpus 0-5 --execute`.
+
+Check `ethtool -c` on both interfaces independently; a newly attached ENI
+does not inherit the existing interface's interrupt-coalescing settings.
+Coalescing is deliberately unchanged by the IRQ operation and must be tuned
+only as a separate measured HFT change.
 
 ## Model Input Auxiliaries
 

@@ -1,0 +1,2 @@
+# Dedicated order/control ENA IRQ CPU on the current market-data host.
+IRQ_CPUS=45
