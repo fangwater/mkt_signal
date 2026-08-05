@@ -813,7 +813,7 @@ fn evaluate_capacity(
     if capacity > venue.threshold() {
         let cleared = clear_account_open_block(venue.block_reason());
         let state = if cleared { "unlock" } else { "unlocked" };
-        warn!(
+        info!(
             "AccountOpenBlock: {} capacity {}={:.8} max_borrowable={:.8} capacity={:.8} threshold={:.8} query_latency_us={} state={}",
             venue.label(),
             venue.available_label(),
