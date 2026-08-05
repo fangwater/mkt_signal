@@ -20,6 +20,7 @@ const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 const DEFAULT_ARB_ORDER_AMOUNT_U: f64 = 100.0;
 const DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO: f64 = 0.12;
 const DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO: f64 = 0.15;
+const DEFAULT_EXEC_MAX_POSITION_IMBALANCE_RATIO: f64 = 0.8;
 
 type MaxPosUOverrideTable = FastHashMap<String, f64>;
 type MaxPosUOverrides = FastHashMap<TradingVenue, MaxPosUOverrideTable>;
@@ -79,7 +80,7 @@ impl Default for PreTradeParamsData {
             fr_position_concentration_alert_ratio: DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO,
             fr_position_concentration_dump_ratio: DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO,
             min_non_trading_position_usdt: DEFAULT_MIN_NON_TRADING_POSITION_USDT,
-            exec_max_position_imbalance_ratio: 0.0,
+            exec_max_position_imbalance_ratio: DEFAULT_EXEC_MAX_POSITION_IMBALANCE_RATIO,
             unimmr_trigger_line: DEFAULT_UNIMMR_TRIGGER_LINE,
             unimmr_recover_line: DEFAULT_UNIMMR_RECOVER_LINE,
             max_pending_limit_orders: 3,
@@ -1206,7 +1207,10 @@ mod tests {
             loader.min_non_trading_position_usdt(),
             DEFAULT_MIN_NON_TRADING_POSITION_USDT
         );
-        assert_eq!(loader.exec_max_position_imbalance_ratio(), 0.0);
+        assert_eq!(
+            loader.exec_max_position_imbalance_ratio(),
+            DEFAULT_EXEC_MAX_POSITION_IMBALANCE_RATIO
+        );
         assert_eq!(loader.unimmr_trigger_line(), DEFAULT_UNIMMR_TRIGGER_LINE);
         assert_eq!(loader.unimmr_recover_line(), DEFAULT_UNIMMR_RECOVER_LINE);
         assert_eq!(loader.max_pending_limit_orders(), 3);

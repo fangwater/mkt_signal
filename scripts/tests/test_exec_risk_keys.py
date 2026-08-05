@@ -42,6 +42,10 @@ class ExecRiskKeyTests(unittest.TestCase):
             self.assertIn(key, sync.PARAM_ORDER)
             self.assertIn(key, printer.PARAM_ORDER)
 
+    def test_exec_position_imbalance_fallback_is_enabled(self):
+        sync = load_script("sync_exec_risk_params.py")
+        self.assertEqual(sync.RISK_PARAMS["exec_max_position_imbalance_ratio"], "0.8")
+
 
 if __name__ == "__main__":
     unittest.main()

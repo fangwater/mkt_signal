@@ -272,6 +272,7 @@ impl OrphanHandoff {
 pub struct StrategyManager {
     strategies: FastHashMap<i32, Box<dyn Strategy>>,
     strategy_queue: VecDeque<i32>,
+    queued_strategy_ids: FastHashSet<i32>,
     known_ids: FastHashSet<i32>,
     symbol_index: FastHashMap<String, BTreeSet<i32>>,
     mm_hedge_index: FastHashMap<String, i32>,
@@ -296,6 +297,7 @@ impl StrategyManager {
         Self {
             strategies: fast_hash_map(),
             strategy_queue: VecDeque::new(),
+            queued_strategy_ids: fast_hash_set(),
             known_ids: fast_hash_set(),
             symbol_index: fast_hash_map(),
             mm_hedge_index: fast_hash_map(),
@@ -532,6 +534,23 @@ impl StrategyManager {
         self.strategies.contains_key(&strategy_id)
     }
 
+    fn enqueue_strategy(&mut self, strategy_id: i32) {
+        if self.queued_strategy_ids.insert(strategy_id) {
+            self.strategy_queue.push_back(strategy_id);
+        }
+    }
+
+    fn pop_queued_strategy_id(&mut self) -> Option<i32> {
+        let strategy_id = self.strategy_queue.pop_front()?;
+        self.queued_strategy_ids.remove(&strategy_id);
+        Some(strategy_id)
+    }
+
+    fn remove_strategy_from_queue(&mut self, strategy_id: i32) {
+        self.queued_strategy_ids.remove(&strategy_id);
+        self.strategy_queue.retain(|id| *id != strategy_id);
+    }
+
     /// 插入策略，如果已有同 id 策略则返回旧值
     pub fn insert(&mut self, strategy: Box<dyn Strategy>) -> Option<Box<dyn Strategy>> {
         let id = strategy.get_id();
@@ -570,9 +589,7 @@ impl StrategyManager {
             self.register_kind_indexes_for_symbol(id, &symbol, new_kind_flags);
             self.symbol_index.entry(symbol).or_default().insert(id);
         }
-        if old.is_none() {
-            self.strategy_queue.push_back(id);
-        }
+        self.enqueue_strategy(id);
         if !is_known {
             self.known_ids.insert(id);
             if !suppress_pre_submit_hot_path_logs() {
@@ -598,6 +615,7 @@ impl StrategyManager {
     /// 移除策略
     pub fn remove(&mut self, strategy_id: i32) -> Option<Box<dyn Strategy>> {
         let removed = self.strategies.remove(&strategy_id);
+        self.remove_strategy_from_queue(strategy_id);
         if let Some(strategy) = removed.as_ref() {
             self.unregister_mm_open_price_entry(strategy_id);
             self.unregister_arb_open_price_entry(strategy_id);
@@ -652,7 +670,7 @@ impl StrategyManager {
 
     /// 按当前调度队列顺序取出下一个策略，调用方处理后可重新插入。
     pub fn take_next_queued(&mut self) -> Option<Box<dyn Strategy>> {
-        while let Some(strategy_id) = self.strategy_queue.pop_front() {
+        while let Some(strategy_id) = self.pop_queued_strategy_id() {
             if let Some(strategy) = self.take(strategy_id) {
                 return Some(strategy);
             }
@@ -1305,7 +1323,7 @@ impl StrategyManager {
         let iterations = self.strategy_queue.len();
         let mut inspected: usize = 0usize;
         for _ in 0..iterations {
-            let Some(strategy_id) = self.strategy_queue.pop_front() else {
+            let Some(strategy_id) = self.pop_queued_strategy_id() else {
                 break;
             };
 
@@ -1319,7 +1337,7 @@ impl StrategyManager {
             if remove {
                 let _ = self.remove(strategy_id);
             } else {
-                self.strategy_queue.push_back(strategy_id);
+                self.enqueue_strategy(strategy_id);
             }
         }
         inspected
@@ -1457,15 +1475,79 @@ mod tests {
         }
     }
 
+    fn dummy_exec_strategy(id: i32) -> Box<dyn Strategy> {
+        Box::new(DummyExecStrategy {
+            id,
+            symbol: "BTCUSDT".to_string(),
+            terminal_ids: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn take_and_reinsert_does_not_duplicate_strategy_queue() {
+        let mut manager = StrategyManager::new();
+        manager.insert(dummy_exec_strategy(31));
+        manager.insert(dummy_exec_strategy(32));
+
+        for _ in 0..100 {
+            let strategy = manager.take(31).expect("strategy should exist");
+            manager.insert(strategy);
+        }
+
+        assert_eq!(
+            manager.strategy_queue.iter().copied().collect::<Vec<_>>(),
+            vec![31, 32]
+        );
+        assert_eq!(manager.queued_strategy_ids.len(), 2);
+
+        let first = manager
+            .take_next_queued()
+            .expect("first queued strategy should exist");
+        let first_id = first.get_id();
+        manager.insert(first);
+        let second = manager
+            .take_next_queued()
+            .expect("second queued strategy should exist");
+        let second_id = second.get_id();
+        manager.insert(second);
+
+        assert_eq!((first_id, second_id), (31, 32));
+        assert_eq!(
+            manager.strategy_queue.iter().copied().collect::<Vec<_>>(),
+            vec![31, 32]
+        );
+        assert_eq!(manager.queued_strategy_ids.len(), 2);
+
+        assert_eq!(manager.handle_period_clock(1_000), 2);
+        assert_eq!(
+            manager.strategy_queue.iter().copied().collect::<Vec<_>>(),
+            vec![31, 32]
+        );
+        assert_eq!(manager.queued_strategy_ids.len(), 2);
+    }
+
+    #[test]
+    fn remove_clears_strategy_queue_membership() {
+        let mut manager = StrategyManager::new();
+        manager.insert(dummy_exec_strategy(31));
+
+        assert!(manager.remove(31).is_some());
+        assert!(manager.strategy_queue.is_empty());
+        assert!(manager.queued_strategy_ids.is_empty());
+
+        manager.insert(dummy_exec_strategy(31));
+        assert_eq!(
+            manager.strategy_queue.iter().copied().collect::<Vec<_>>(),
+            vec![31]
+        );
+        assert_eq!(manager.queued_strategy_ids.len(), 1);
+    }
+
     #[test]
     fn exec_orphan_terminal_routes_to_exact_source_strategy_id() {
         let mut manager = StrategyManager::new();
         for id in [31, 32] {
-            manager.insert(Box::new(DummyExecStrategy {
-                id,
-                symbol: "BTCUSDT".to_string(),
-                terminal_ids: Vec::new(),
-            }));
+            manager.insert(dummy_exec_strategy(id));
         }
         let terminal = ExecOrphanTerminal {
             client_order_id: 99,
