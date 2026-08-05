@@ -1,7 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
@@ -298,9 +298,20 @@ async fn run_selected(
 }
 
 /// 配置文件路径优先级：
-/// 1) `$HOME/spread_pbs/config/mkt_cfg.yaml`（spread_pbs 自己的部署目录）
-/// 2) `$HOME/dat_pbs/config/mkt_cfg.yaml`（兜底，复用 dat_pbs 那份）
+/// 1) `./config/mkt_cfg.yaml`（当前 venue 部署目录）
+/// 2) `$HOME/spread_pbs/config/mkt_cfg.yaml`（共享部署配置）
+/// 3) `$HOME/dat_pbs/config/mkt_cfg.yaml`（兜底，复用 dat_pbs 那份）
 fn resolve_cfg_path() -> Result<PathBuf> {
+    let current_dir = std::env::current_dir().context("resolve spread_pbs current directory")?;
+    resolve_cfg_path_from(&current_dir)
+}
+
+fn resolve_cfg_path_from(current_dir: &Path) -> Result<PathBuf> {
+    let venue_config = current_dir.join("config/mkt_cfg.yaml");
+    if venue_config.exists() {
+        return Ok(venue_config);
+    }
+
     let home = std::env::var("HOME")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -318,7 +329,8 @@ fn resolve_cfg_path() -> Result<PathBuf> {
         return Ok(fallback);
     }
     bail!(
-        "mkt_cfg.yaml not found at {} or {}",
+        "mkt_cfg.yaml not found at {}, {}, or {}",
+        venue_config.display(),
         primary.display(),
         fallback.display()
     );
@@ -327,6 +339,14 @@ fn resolve_cfg_path() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_config_from_current_venue_directory() {
+        let repo_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let resolved = resolve_cfg_path_from(&repo_dir).unwrap();
+
+        assert_eq!(resolved, repo_dir.join("config/mkt_cfg.yaml"));
+    }
 
     #[test]
     fn parses_single_venue() {
