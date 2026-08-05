@@ -5,6 +5,9 @@
 #
 # SG receiver listens on tcp://0.0.0.0:6360 in /home/ubuntu/bridge_sg_public.
 
+# Use the secondary address whose EIP belongs to the market-data interface.
+zmq_source_ip: "172.31.46.90"
+
 routes:
   - id: public_binance_futures_mid_re_30s_model_output_sg
     from:

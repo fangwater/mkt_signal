@@ -117,6 +117,12 @@ impl BridgeApp {
             || !outgoing_redis.is_empty()
             || !incoming_redis.is_empty();
         let zmq_ctx = needs_zmq.then(|| Arc::new(zmq::Context::new()));
+        let zmq_source_ip = self
+            .cfg
+            .zmq_source_ip
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_owned);
         let mut route_counters = Vec::<RouteCounter>::new();
 
         let mut publishers = HashMap::<String, (PublisherEnum, RouteCounter)>::new();
@@ -234,6 +240,7 @@ impl BridgeApp {
                 zmq_ctx.as_ref().expect("ZMQ context required").clone(),
                 route_id.clone(),
                 remote_addr.clone(),
+                zmq_source_ip.clone(),
             );
 
             tokio::task::spawn_local(async move {
@@ -313,6 +320,7 @@ impl BridgeApp {
                 zmq_ctx.as_ref().expect("ZMQ context required").clone(),
                 route_id.clone(),
                 remote_addr.clone(),
+                zmq_source_ip.clone(),
             );
 
             tokio::task::spawn_local(async move {
@@ -456,17 +464,21 @@ fn spawn_zmq_sender(
     ctx: Arc<zmq::Context>,
     route_id: String,
     remote_addr: String,
+    source_ip: Option<String>,
 ) -> mpsc::UnboundedSender<Vec<u8>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     tokio::task::spawn_blocking(move || {
+        let connect_addr = zmq_connect_addr(&remote_addr, source_ip.as_deref())?;
         let push = ctx
             .socket(zmq::PUSH)
             .map_err(|err| anyhow!("failed to create PUSH socket: {err}"))?;
-        push.connect(&remote_addr)
-            .map_err(|err| anyhow!("failed to connect PUSH to {remote_addr}: {err}"))?;
+        push.connect(&connect_addr)
+            .map_err(|err| anyhow!("failed to connect PUSH to {connect_addr}: {err}"))?;
         info!(
-            "ZMQ PUSH connected: route='{}' -> {}",
-            route_id, remote_addr
+            "ZMQ PUSH connected: route='{}' -> {} source_ip='{}'",
+            route_id,
+            remote_addr,
+            source_ip.as_deref().unwrap_or("default")
         );
         while let Some(payload) = rx.blocking_recv() {
             if let Err(err) = push.send_multipart([route_id.as_bytes(), &payload], 0) {
@@ -480,6 +492,21 @@ fn spawn_zmq_sender(
         Ok::<(), anyhow::Error>(())
     });
     tx
+}
+
+fn zmq_connect_addr(remote_addr: &str, source_ip: Option<&str>) -> Result<String> {
+    let Some(source_ip) = source_ip else {
+        return Ok(remote_addr.to_owned());
+    };
+    let destination = remote_addr.strip_prefix("tcp://").ok_or_else(|| {
+        anyhow!("zmq_source_ip requires a tcp:// destination, got '{remote_addr}'")
+    })?;
+    if destination.contains(';') {
+        return Err(anyhow!(
+            "ZMQ destination already contains a source address: '{remote_addr}'"
+        ));
+    }
+    Ok(format!("tcp://{source_ip}:0;{destination}"))
 }
 
 async fn wait_shutdown_signal() -> Result<&'static str> {
@@ -523,4 +550,33 @@ fn create_route_node(prefix: &str, route_id: &str, pid: u32) -> Result<Node<ipc:
     Ok(NodeBuilder::new()
         .name(&NodeName::new(&node_name)?)
         .create::<ipc::Service>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zmq_connect_addr;
+
+    #[test]
+    fn adds_zmq_tcp_source_ip() {
+        assert_eq!(
+            zmq_connect_addr("tcp://47.131.162.78:6360", Some("172.31.46.90")).unwrap(),
+            "tcp://172.31.46.90:0;47.131.162.78:6360"
+        );
+    }
+
+    #[test]
+    fn keeps_zmq_endpoint_without_source_ip() {
+        assert_eq!(
+            zmq_connect_addr("ipc:///tmp/test", None).unwrap(),
+            "ipc:///tmp/test"
+        );
+    }
+
+    #[test]
+    fn rejects_non_tcp_endpoint_with_source_ip() {
+        assert!(zmq_connect_addr("ipc:///tmp/test", Some("172.31.46.90"))
+            .expect_err("source IP requires TCP")
+            .to_string()
+            .contains("requires a tcp:// destination"));
+    }
 }

@@ -15,6 +15,9 @@ use std::path::Path;
 /// - `zmq -> redis`
 #[derive(Debug, Clone, Deserialize)]
 pub struct BridgeConfig {
+    /// Optional IPv4 source address used by outgoing ZMQ TCP sockets.
+    #[serde(default)]
+    pub zmq_source_ip: Option<String>,
     /// Forwarding routes.
     pub routes: Vec<RouteConfig>,
 }
@@ -88,6 +91,15 @@ impl BridgeConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        if let Some(source_ip) = &self.zmq_source_ip {
+            let source_ip = source_ip.trim();
+            if source_ip.parse::<std::net::Ipv4Addr>().is_err() {
+                return Err(anyhow!(
+                    "zmq_source_ip must be a valid IPv4 address: '{source_ip}'"
+                ));
+            }
+        }
+
         let mut route_ids: HashSet<&str> = HashSet::new();
 
         for r in &self.routes {
@@ -247,6 +259,29 @@ routes:
 
         let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn parses_zmq_source_ip() {
+        let yaml = r#"
+zmq_source_ip: 172.31.46.90
+routes: []
+"#;
+
+        let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.zmq_source_ip.as_deref(), Some("172.31.46.90"));
+    }
+
+    #[test]
+    fn rejects_invalid_zmq_source_ip() {
+        let yaml = r#"
+zmq_source_ip: ens42
+routes: []
+"#;
+
+        let cfg: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

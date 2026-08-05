@@ -86,8 +86,25 @@ Keep the current `spread_pbs` source assignments explicit:
 | `binance-futures` | `172.31.46.90` | `172.31.46.91` | Market data |
 | `gate-both` | `172.31.46.90` | `172.31.46.91` | Market data |
 | `bitget-both` | `172.31.46.90` | `172.31.46.91` | Market data |
-| `binance-margin` | `172.31.35.228` | `172.31.35.228` | Order/control ENI exception |
-| `okex-both` | `172.31.35.228` | `172.31.35.228` | Order/control ENI exception |
+| `binance-margin` | `172.31.46.90` | `172.31.46.91` | Market data |
+| `okex-both` | `172.31.46.90` | `172.31.46.91` | Market data |
+
+OKEx `depth_pub` does not open exchange network connections. It consumes the
+local `dat_pbs/okex-{margin,futures}` IPC services, so it has no ENI source-IP
+assignment to migrate.
+
+Other market-data egress and relay processes use the following assignments:
+
+| Process | Network assignment | Runtime management |
+| --- | --- | --- |
+| `bridge_sg_model_sender/ipc_bridge` | Outgoing ZMQ TCP source `172.31.46.90` via top-level `zmq_source_ip` | `pmdaemon` process `bridge_sg_model_sender` |
+| `spread_bbo_zmq_pub` (`binance-futures`) | Listen on `172.31.46.90:6320`; peers connect through the EIP associated with that private address | PM2 process `sbbzp_bn_fu` in namespace `spread_bbo_zmq_pub`, CPU `5` |
+
+Manage the BBO relay with the deployed
+`scripts/start_spread_bbo_zmq_pub.sh` and
+`scripts/stop_spread_bbo_zmq_pub.sh`. The scripts source the deployment
+`env.sh`, clean up legacy `pmdaemon` or leaked processes, and never require a
+hand-written PM2 JSON file.
 
 Do not leave these values at `0.0.0.0`. The current default route selects
 `ens41`, but that is an implicit dependency on route metrics. The deployed
@@ -116,7 +133,7 @@ dedicated IRQ layout is:
 
 | Interface | Traffic lane | ENA Tx/Rx IRQ CPU | Persistent unit |
 | --- | --- | --- | --- |
-| `ens41` | Order/control plus Binance Margin and OKEx feed exceptions | `45` | `pin-aws-ena-irq@ens41.service` |
+| `ens41` | Order/control and non-exchange service traffic | `45` | `pin-aws-ena-irq@ens41.service` |
 | `ens42` | Eligible public market data | `46` | `pin-aws-ena-irq@ens42.service` |
 
 All 16 Tx/Rx IRQs of an interface intentionally share its one dedicated CPU.
