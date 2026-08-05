@@ -1173,6 +1173,7 @@ mod tests {
                 source_role: OrphanStrategyRole::Exec,
                 uniform_ctx: UniformPublishCtx {
                     signal_ts: 1,
+                    signal_bbo: None,
                     from_key: b"cta_alpha".to_vec(),
                     price_offset: 0.0,
                 },

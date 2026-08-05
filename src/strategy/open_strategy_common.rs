@@ -35,6 +35,7 @@ use order_common::TradeUpdateLite;
 use order_common::{OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side};
 use order_common::{OrderStatus, TradingVenue};
 use order_common::{TradeEngineResponse, TradeRequestKind};
+use persist_common::SignalBbo;
 use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::{
@@ -355,6 +356,7 @@ pub struct OpenStrategyState {
     pub order: OpenOrderState,
     pub signal_ts: i64,
     pub from_key: Vec<u8>,
+    pub signal_bbo: Option<SignalBbo>,
     pub price_qv: QuantizedValue,
     pub price_offset: f64,
     pub alive: bool,
@@ -378,6 +380,7 @@ pub struct OpenSignalInput<'a> {
     pub create_ts: i64,
     pub from_key_len: u32,
     pub from_key: Cow<'a, [u8]>,
+    pub signal_bbo: Option<SignalBbo>,
     pub price_qv: QuantizedValue,
     pub order_qty_qv: Option<QuantizedValue>,
     pub order_price_qv: Option<QuantizedValue>,
@@ -427,6 +430,7 @@ impl OpenStrategyState {
             order: OpenOrderState::default(),
             signal_ts: 0,
             from_key: Vec::new(),
+            signal_bbo: None,
             price_qv: QuantizedValue::zero(),
             price_offset: 0.0,
             alive: true,
@@ -911,6 +915,7 @@ pub trait OpenStrategyCommon {
         UniformPublishCtx {
             signal_ts: open_state.signal_ts,
             from_key,
+            signal_bbo: open_state.signal_bbo,
             price_offset: open_state.price_offset,
         }
     }
@@ -1598,6 +1603,7 @@ pub trait OpenStrategyCommon {
             state.open_symbol = symbol.into_owned();
             state.signal_ts = input.create_ts;
             state.from_key = input.from_key.into_owned();
+            state.signal_bbo = input.signal_bbo;
             state.price_qv = input.price_qv;
             state.price_offset = input.price_offset;
         }

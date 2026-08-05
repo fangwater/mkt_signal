@@ -6,6 +6,7 @@ use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
+use crate::strategy::uniform_order_helper::signal_bbo_from_legs;
 use log::{debug, warn};
 use order_common::OrderUpdate;
 use order_common::TradeEngineResponse;
@@ -51,6 +52,7 @@ impl MarketMakerOpenStrategy {
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
             from_key: Cow::Borrowed(ctx.from_key),
+            signal_bbo: signal_bbo_from_legs(Some(&ctx.opening_leg), None),
             price_qv: ctx.price_qv,
             order_qty_qv: Some(ctx.amount_qv),
             order_price_qv: Some(ctx.price_qv),

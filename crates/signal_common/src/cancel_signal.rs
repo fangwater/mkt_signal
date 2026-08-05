@@ -138,14 +138,18 @@ impl ArbCancelCtx {
             opening_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
             hedging_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             hedging_symbol: [0u8; 32],
@@ -218,7 +222,9 @@ impl MmCancelCtx {
             opening_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             opening_symbol: [0u8; 32],

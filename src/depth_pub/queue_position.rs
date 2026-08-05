@@ -1,4 +1,4 @@
-use runtime_common::fast_hash::{fast_hash_map, fast_hash_map_from_iter, FastHashMap, FastHashSet};
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap, FastHashSet};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
@@ -99,12 +99,6 @@ pub struct QueuePositionState {
     order_first_seen_ms: FastHashMap<i64, i64>,
     order_create_tp: FastHashMap<i64, i64>,
     stats: QueuePositionStats,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum QueuePositionEventSource {
-    Cancel,
-    Trade,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -217,19 +211,13 @@ impl QueuePositionState {
         side: BookSide,
         price_key: i64,
         qty: f64,
-        update_tp: i64,
-        local_tp: i64,
+        _update_tp: i64,
+        _local_tp: i64,
     ) -> Vec<QueuePositionPublishEvent> {
-        let before = self.snapshot_map();
         let qty = self.scale_qty(qty);
         self.engine.apply_level_qty(symbol, side, price_key, qty);
         self.stats.level_update_count = self.stats.level_update_count.saturating_add(1);
-        self.diff_events(
-            before,
-            QueuePositionEventSource::Cancel,
-            update_tp,
-            local_tp,
-        )
+        Vec::new()
     }
 
     pub fn apply_public_trade(
@@ -238,14 +226,13 @@ impl QueuePositionState {
         side: Side,
         price_key: i64,
         qty: f64,
-        update_tp: i64,
-        local_tp: i64,
+        _update_tp: i64,
+        _local_tp: i64,
     ) -> Vec<QueuePositionPublishEvent> {
         let symbol = normalize_symbol_for_internal(symbol);
         if symbol.is_empty() {
             return Vec::new();
         }
-        let before = self.snapshot_map();
         self.engine.apply_public_trade(PublicTrade {
             symbol,
             side,
@@ -253,7 +240,7 @@ impl QueuePositionState {
             qty: self.scale_qty(qty),
         });
         self.stats.public_trade_count = self.stats.public_trade_count.saturating_add(1);
-        self.diff_events(before, QueuePositionEventSource::Trade, update_tp, local_tp)
+        Vec::new()
     }
 
     pub fn process_account_payload(
@@ -325,9 +312,14 @@ impl QueuePositionState {
             return Vec::new();
         }
 
-        match update.execution_type() {
-            ExecutionType::Trade => self.apply_trade_update(&update, local_tp),
-            _ => self.apply_order_update(&update, now_ms, local_tp),
+        if matches!(
+            update.status(),
+            OrderStatus::PartiallyFilled | OrderStatus::Filled
+        ) || update.execution_type() == ExecutionType::Trade
+        {
+            self.apply_trade_update(&update, now_ms, local_tp)
+        } else {
+            self.apply_order_update(&update, now_ms, local_tp)
         }
     }
 
@@ -337,7 +329,6 @@ impl QueuePositionState {
         now_ms: i64,
         local_tp: i64,
     ) -> Vec<QueuePositionPublishEvent> {
-        let before = self.snapshot_map();
         let update_tp = valid_timestamp_us(OrderUpdate::event_time(update), local_tp);
         self.stats.order_update_count = self.stats.order_update_count.saturating_add(1);
         let client_order_id = update.client_order_id();
@@ -346,37 +337,132 @@ impl QueuePositionState {
         }
 
         if is_terminal_order_update(update) {
+            let snapshot = self.order_snapshot(client_order_id);
             if self.engine.remove_order(client_order_id).is_some() {
-                self.order_symbols.remove(&client_order_id);
-                self.order_first_seen_ms.remove(&client_order_id);
-                self.stats.remove_order_count = self.stats.remove_order_count.saturating_add(1);
+                self.remove_order_tracking(client_order_id);
             }
-            let events = self.diff_events(
-                before,
-                QueuePositionEventSource::Cancel,
-                update_tp,
-                local_tp,
-            );
+            let action =
+                lifecycle_terminal_action(update).unwrap_or(OrderQueuePositionAction::Canceled);
+            let event = snapshot.map(|snapshot| {
+                queue_position_msg_from_snapshot(action, update_tp, local_tp, &snapshot)
+            });
             self.order_create_tp.remove(&client_order_id);
-            return events;
+            return event.into_iter().collect();
         }
 
-        if self.engine.contains_order(client_order_id) {
+        let action = if update.execution_type() == ExecutionType::Replaced {
+            if self.engine.remove_order(client_order_id).is_some() {
+                self.remove_order_tracking(client_order_id);
+                self.order_create_tp.remove(&client_order_id);
+            }
+            OrderQueuePositionAction::Replaced
+        } else {
+            if self.engine.contains_order(client_order_id) {
+                return Vec::new();
+            }
+            OrderQueuePositionAction::New
+        };
+
+        if !self.add_trackable_order(update, now_ms, update_tp) {
             return Vec::new();
         }
-        if !is_trackable_new_order(update) {
+        self.order_snapshot(client_order_id)
+            .map(|snapshot| {
+                queue_position_msg_from_snapshot(action, update_tp, local_tp, &snapshot)
+            })
+            .into_iter()
+            .collect()
+    }
+
+    fn apply_trade_update<T>(
+        &mut self,
+        trade: &T,
+        now_ms: i64,
+        local_tp: i64,
+    ) -> Vec<QueuePositionPublishEvent>
+    where
+        T: OrderUpdate + TradeUpdate,
+    {
+        let update_tp = valid_timestamp_us(OrderUpdate::event_time(trade), local_tp);
+        self.stats.trade_update_count = self.stats.trade_update_count.saturating_add(1);
+        let client_order_id = OrderUpdate::client_order_id(trade);
+        if client_order_id <= 0 {
             return Vec::new();
+        }
+
+        let terminal_action = lifecycle_terminal_action(trade);
+        let terminal = terminal_action.is_some();
+        if !self.engine.contains_order(client_order_id)
+            && !terminal
+            && !self.add_trackable_order(trade, now_ms, update_tp)
+        {
+            return Vec::new();
+        }
+
+        let before_fill = self.order_snapshot(client_order_id);
+        let Some(_) = before_fill else {
+            return Vec::new();
+        };
+        let cumulative = self.scale_qty(OrderUpdate::cumulative_filled_quantity(trade));
+        if !cumulative.is_finite() || cumulative < 0.0 {
+            return Vec::new();
+        }
+
+        let removed_by_fill = self
+            .engine
+            .apply_fill_update(FillUpdate {
+                order_id: client_order_id,
+                cumulative_filled_qty: cumulative,
+            })
+            .is_some();
+        self.stats.fill_update_count = self.stats.fill_update_count.saturating_add(1);
+        if removed_by_fill {
+            self.remove_order_tracking(client_order_id);
+        }
+
+        if terminal && self.engine.remove_order(client_order_id).is_some() {
+            self.remove_order_tracking(client_order_id);
+        }
+
+        let action = if terminal || removed_by_fill {
+            terminal_action.unwrap_or(OrderQueuePositionAction::Filled)
+        } else {
+            OrderQueuePositionAction::PartiallyFilled
+        };
+        let snapshot = if self.engine.contains_order(client_order_id) {
+            self.order_snapshot(client_order_id)
+        } else {
+            before_fill
+        };
+        let event = snapshot.map(|snapshot| {
+            queue_position_msg_from_snapshot(action, update_tp, local_tp, &snapshot)
+        });
+        if !self.engine.contains_order(client_order_id) {
+            self.order_create_tp.remove(&client_order_id);
+        }
+        event.into_iter().collect()
+    }
+
+    fn add_trackable_order(
+        &mut self,
+        update: &dyn OrderUpdate,
+        now_ms: i64,
+        create_tp: i64,
+    ) -> bool {
+        if self.engine.contains_order(update.client_order_id()) || !is_trackable_live_order(update)
+        {
+            return false;
         }
 
         let symbol = normalize_symbol_for_internal(update.symbol());
         if symbol.is_empty() || update.price() <= 0.0 || update.quantity() <= 0.0 {
-            return Vec::new();
+            return false;
         }
+        let client_order_id = update.client_order_id();
         let side = side_from_order_side(update.side());
         let price_key = crate::depth_pub::orderbook::price_to_key(update.price());
         let level = LevelKey::from_order(symbol.clone(), side, price_key);
         let visible_level_qty = self.engine.level_qty(&level);
-
         let added = self.engine.add_order(AddOrder {
             order_id: client_order_id,
             symbol: symbol.clone(),
@@ -389,70 +475,16 @@ impl QueuePositionState {
         if added {
             self.order_symbols.insert(client_order_id, symbol);
             self.order_first_seen_ms.insert(client_order_id, now_ms);
-            self.order_create_tp.insert(client_order_id, update_tp);
+            self.order_create_tp.insert(client_order_id, create_tp);
             self.stats.add_order_count = self.stats.add_order_count.saturating_add(1);
         }
-        self.diff_events(
-            before,
-            QueuePositionEventSource::Cancel,
-            update_tp,
-            local_tp,
-        )
+        added
     }
 
-    fn apply_trade_update(
-        &mut self,
-        trade: &dyn TradeUpdate,
-        local_tp: i64,
-    ) -> Vec<QueuePositionPublishEvent> {
-        let before = self.snapshot_map();
-        let update_tp = valid_timestamp_us(TradeUpdate::event_time(trade), local_tp);
-        self.stats.trade_update_count = self.stats.trade_update_count.saturating_add(1);
-        let client_order_id = trade.client_order_id();
-        if client_order_id <= 0 {
-            return Vec::new();
-        }
-        let cumulative = self.scale_qty(trade.cumulative_filled_quantity());
-        if cumulative < 0.0 {
-            return Vec::new();
-        }
-        if self
-            .engine
-            .apply_fill_update(FillUpdate {
-                order_id: client_order_id,
-                cumulative_filled_qty: cumulative,
-            })
-            .is_some()
-        {
-            self.order_symbols.remove(&client_order_id);
-            self.order_first_seen_ms.remove(&client_order_id);
-            self.stats.remove_order_count = self.stats.remove_order_count.saturating_add(1);
-        }
-        self.stats.fill_update_count = self.stats.fill_update_count.saturating_add(1);
-
-        if is_terminal_trade_update(trade) {
-            if self.engine.remove_order(client_order_id).is_some() {
-                self.order_symbols.remove(&client_order_id);
-                self.order_first_seen_ms.remove(&client_order_id);
-                self.stats.remove_order_count = self.stats.remove_order_count.saturating_add(1);
-            }
-        }
-        let events = self.diff_events(before, QueuePositionEventSource::Trade, update_tp, local_tp);
-        if self.engine.contains_order(client_order_id) {
-            events
-        } else {
-            self.order_create_tp.remove(&client_order_id);
-            events
-        }
-    }
-
-    fn snapshot_map(&self) -> FastHashMap<i64, QueuePositionSnapshot> {
-        fast_hash_map_from_iter(self.engine.order_snapshots().into_iter().map(|snapshot| {
-            (
-                snapshot.order_id,
-                self.snapshot_from_order_snapshot(snapshot),
-            )
-        }))
+    fn remove_order_tracking(&mut self, client_order_id: i64) {
+        self.order_symbols.remove(&client_order_id);
+        self.order_first_seen_ms.remove(&client_order_id);
+        self.stats.remove_order_count = self.stats.remove_order_count.saturating_add(1);
     }
 
     fn snapshot_from_order_snapshot(&self, snapshot: OrderSnapshot) -> QueuePositionSnapshot {
@@ -462,50 +494,6 @@ impl QueuePositionState {
             .copied()
             .unwrap_or(0);
         QueuePositionSnapshot::from_order_snapshot(&self.account_id, create_tp, snapshot)
-    }
-
-    fn diff_events(
-        &self,
-        before: FastHashMap<i64, QueuePositionSnapshot>,
-        source: QueuePositionEventSource,
-        update_tp: i64,
-        local_tp: i64,
-    ) -> Vec<QueuePositionPublishEvent> {
-        let after = self.snapshot_map();
-        let mut events = Vec::new();
-
-        for (order_id, snapshot) in &after {
-            if let Some(prev) = before.get(order_id) {
-                if !queue_snapshot_changed(prev, snapshot) {
-                    continue;
-                }
-                events.push(queue_position_msg_from_snapshot(
-                    action_for_source(source),
-                    update_tp,
-                    local_tp,
-                    snapshot,
-                ));
-            } else {
-                events.push(queue_position_msg_from_snapshot(
-                    OrderQueuePositionAction::New,
-                    update_tp,
-                    local_tp,
-                    snapshot,
-                ));
-            }
-        }
-
-        for (order_id, snapshot) in before {
-            if !after.contains_key(&order_id) {
-                events.push(queue_position_msg_from_snapshot(
-                    OrderQueuePositionAction::Del,
-                    update_tp,
-                    local_tp,
-                    &snapshot,
-                ));
-            }
-        }
-        events
     }
 
     fn scale_qty(&self, qty: f64) -> f64 {
@@ -655,22 +643,6 @@ fn side_from_order_side(side: OrderSide) -> Side {
     }
 }
 
-fn action_for_source(source: QueuePositionEventSource) -> OrderQueuePositionAction {
-    match source {
-        QueuePositionEventSource::Cancel => OrderQueuePositionAction::UpdateByCancel,
-        QueuePositionEventSource::Trade => OrderQueuePositionAction::UpdateByTrade,
-    }
-}
-
-fn queue_snapshot_changed(prev: &QueuePositionSnapshot, next: &QueuePositionSnapshot) -> bool {
-    (prev.inpos - next.inpos).abs() > f64::EPSILON
-        || (prev.backlen - next.backlen).abs() > f64::EPSILON
-        || (prev.tlen - next.tlen).abs() > f64::EPSILON
-        || (prev.remaining_qty - next.remaining_qty).abs() > f64::EPSILON
-        || (prev.queue_remaining_qty - next.queue_remaining_qty).abs() > f64::EPSILON
-        || (prev.public_consumed_own_qty - next.public_consumed_own_qty).abs() > f64::EPSILON
-}
-
 fn queue_position_msg_from_snapshot(
     action: OrderQueuePositionAction,
     update_tp: i64,
@@ -708,24 +680,30 @@ pub fn book_side_from_orderbook(is_bid: bool) -> BookSide {
     }
 }
 
-fn is_trackable_new_order(update: &dyn OrderUpdate) -> bool {
-    matches!(update.order_type(), OrderType::Limit)
-        && matches!(
-            update.execution_type(),
-            ExecutionType::New | ExecutionType::Replaced
-        )
-        && !matches!(
-            update.status(),
-            OrderStatus::Canceled | OrderStatus::Expired
-        )
+fn is_trackable_live_order(update: &dyn OrderUpdate) -> bool {
+    matches!(update.order_type(), OrderType::Limit) && !is_terminal_order_update(update)
 }
 
 fn is_terminal_order_update(update: &dyn OrderUpdate) -> bool {
     update.status().is_finished() || update.execution_type().is_terminal()
 }
 
-fn is_terminal_trade_update(trade: &dyn TradeUpdate) -> bool {
-    matches!(trade.order_status(), Some(status) if status.is_finished())
+fn lifecycle_terminal_action(update: &dyn OrderUpdate) -> Option<OrderQueuePositionAction> {
+    match update.status() {
+        OrderStatus::Filled => Some(OrderQueuePositionAction::Filled),
+        OrderStatus::Canceled => Some(OrderQueuePositionAction::Canceled),
+        OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+            Some(OrderQueuePositionAction::Expired)
+        }
+        _ => match update.execution_type() {
+            ExecutionType::Rejected => Some(OrderQueuePositionAction::Rejected),
+            ExecutionType::Canceled | ExecutionType::TradePrevention => {
+                Some(OrderQueuePositionAction::Canceled)
+            }
+            ExecutionType::Expired => Some(OrderQueuePositionAction::Expired),
+            _ => None,
+        },
+    }
 }
 
 fn valid_amount_scale(value: f64) -> f64 {
@@ -830,14 +808,7 @@ mod tests {
             10_000_500,
             10_000_600,
         );
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0].msg.action,
-            OrderQueuePositionAction::UpdateByTrade
-        );
-        assert_eq!(events[0].msg.create_tp, 1_000_000);
-        assert_eq!(events[0].msg.update_tp, 10_000_500);
-        assert_eq!(events[0].msg.local_tp, 10_000_600);
+        assert!(events.is_empty());
         let snapshot = state.order_snapshot(42).expect("tracked");
         assert_eq!(snapshot.inpos, 7.0);
 
@@ -857,7 +828,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].msg.action,
-            OrderQueuePositionAction::UpdateByTrade
+            OrderQueuePositionAction::PartiallyFilled
         );
         assert_eq!(events[0].msg.create_tp, 1_000_000);
         assert_eq!(events[0].msg.update_tp, 1_001_000);
@@ -878,12 +849,44 @@ mod tests {
         );
         let events = state.process_account_payload(&event.to_bytes(), 10_002, 10_002_000);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].msg.action, OrderQueuePositionAction::Del);
+        assert_eq!(events[0].msg.action, OrderQueuePositionAction::Filled);
         assert_eq!(events[0].msg.create_tp, 1_000_000);
         assert_eq!(events[0].msg.update_tp, 1_002_000);
         assert_eq!(events[0].msg.local_tp, 10_002_000);
 
         assert!(state.order_snapshot(42).is_none());
+    }
+
+    #[test]
+    fn first_seen_partial_fill_registers_lifecycle_snapshot() {
+        let mut state = QueuePositionState::new(TradingVenue::BinanceFutures, 1.0).unwrap();
+        let price_key = crate::depth_pub::orderbook::price_to_key(100.0);
+        state.apply_level_qty("BTCUSDT", BookSide::Bid, price_key, 10.0, 9_000, 9_100);
+
+        let partial = test_binance_order(
+            1_001,
+            1,
+            ExecutionType::Trade,
+            OrderStatus::PartiallyFilled,
+            0.5,
+        );
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::OrderUpdate,
+            BasicAccountScope::BinanceUnified,
+            partial.to_bytes(),
+        );
+        let events = state.process_account_payload(&event.to_bytes(), 10_001, 10_001_000);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].msg.action,
+            OrderQueuePositionAction::PartiallyFilled
+        );
+        assert_eq!(events[0].msg.create_tp, 1_001_000);
+        assert_eq!(events[0].msg.tlen, 10.0);
+        let snapshot = state.order_snapshot(42).expect("fallback tracked");
+        assert_eq!(snapshot.remaining_qty, 1.5);
+        assert_eq!(state.stats().add_order_count, 1);
     }
 
     #[test]
@@ -917,7 +920,7 @@ mod tests {
         let events = state.process_account_payload(&event.to_bytes(), 10_001, 10_001_000);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].account_id, "acct");
-        assert_eq!(events[0].msg.action, OrderQueuePositionAction::Del);
+        assert_eq!(events[0].msg.action, OrderQueuePositionAction::Canceled);
         assert_eq!(events[0].msg.create_tp, 1_000_000);
 
         assert!(state.order_snapshot(42).is_none());

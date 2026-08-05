@@ -3,13 +3,32 @@ use log::warn;
 use order_common::OrderStatus;
 use order_common::{Order, OrderManager};
 use order_common::{OrderUpdate, TradeUpdate};
-use persist_common::UnifiedOrderRecord;
+use persist_common::{SignalBbo, SignalBboLeg, UnifiedOrderRecord};
+use signal_common::common::TradingLeg;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UniformPublishCtx {
     pub signal_ts: i64,
     pub from_key: Vec<u8>,
+    pub signal_bbo: Option<SignalBbo>,
     pub price_offset: f64,
+}
+
+pub fn signal_bbo_from_legs(
+    open: Option<&TradingLeg>,
+    hedge: Option<&TradingLeg>,
+) -> Option<SignalBbo> {
+    let to_bbo = |leg: &TradingLeg| {
+        SignalBboLeg::checked(
+            leg.venue,
+            leg.ts,
+            leg.bid0,
+            leg.bid_qty0,
+            leg.ask0,
+            leg.ask_qty0,
+        )
+    };
+    SignalBbo::new(open.and_then(to_bbo), hedge.and_then(to_bbo))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +73,7 @@ pub fn build_uniform_order_record(
     status: OrderStatus,
     signal_ts: i64,
     from_key: Vec<u8>,
+    signal_bbo: Option<SignalBbo>,
     price: f64,
     price_offset: f64,
     amount_update: f64,
@@ -78,6 +98,7 @@ pub fn build_uniform_order_record(
         status: status.to_u8(),
         from_key_len: 0,
         from_key,
+        signal_bbo,
     };
     record.refresh_lengths();
     record
@@ -90,6 +111,7 @@ pub fn publish_uniform_order_event(
     status: OrderStatus,
     signal_ts: i64,
     from_key: Vec<u8>,
+    signal_bbo: Option<SignalBbo>,
     price_override: Option<f64>,
     price_offset: f64,
     amount_update: f64,
@@ -114,6 +136,7 @@ pub fn publish_uniform_order_event(
         status,
         signal_ts,
         from_key,
+        signal_bbo,
         price,
         price_offset,
         amount_update,
@@ -146,6 +169,7 @@ pub fn publish_uniform_new_order(
         order_update.status(),
         ctx.signal_ts,
         ctx.from_key.clone(),
+        ctx.signal_bbo,
         None,
         ctx.price_offset,
         amount_update,
@@ -176,6 +200,7 @@ pub fn publish_uniform_terminal_order(
         order_update.status(),
         ctx.signal_ts,
         ctx.from_key.clone(),
+        ctx.signal_bbo,
         None,
         ctx.price_offset,
         amount_update,
@@ -211,6 +236,7 @@ pub fn publish_uniform_trade_order(
         status,
         ctx.signal_ts,
         ctx.from_key.clone(),
+        ctx.signal_bbo,
         Some(trade.price()),
         ctx.price_offset,
         amount_update,
@@ -246,8 +272,36 @@ pub fn publish_uniform_trade_order_from_order_update(
         status,
         ctx.signal_ts,
         ctx.from_key.clone(),
+        ctx.signal_bbo,
         None,
         ctx.price_offset,
         amount_update,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use order_common::TradingVenue;
+
+    #[test]
+    fn signal_bbo_from_legs_preserves_slots_and_quantities() {
+        let open =
+            TradingLeg::new_with_qty(TradingVenue::BinanceMargin, 100.0, 2.0, 100.1, 3.0, 11);
+        let hedge =
+            TradingLeg::new_with_qty(TradingVenue::BinanceFutures, 99.9, 4.0, 100.0, 5.0, 12);
+
+        let dual = signal_bbo_from_legs(Some(&open), Some(&hedge)).unwrap();
+        assert_eq!(dual.open.unwrap().bid_qty, 2.0);
+        assert_eq!(dual.open.unwrap().ask_qty, 3.0);
+        assert_eq!(dual.hedge.unwrap().bid_qty, 4.0);
+        assert_eq!(dual.hedge.unwrap().ask_qty, 5.0);
+
+        let hedge_only = signal_bbo_from_legs(None, Some(&hedge)).unwrap();
+        assert!(hedge_only.open.is_none());
+        assert_eq!(hedge_only.hedge.unwrap().ts, 12);
+
+        let missing_qty = TradingLeg::new(TradingVenue::BinanceMargin, 100.0, 100.1, 13);
+        assert!(signal_bbo_from_legs(Some(&missing_qty), None).is_none());
+    }
 }

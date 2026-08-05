@@ -15,6 +15,7 @@ use tonic::{Request, Response, Status};
 
 use crate::runtime_common::get_timestamp_us;
 
+use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::CF_ORDER_UPDATE_UNMATCHED;
 use super::storage::RocksDbStore;
 use super::trade_update::CF_TRADE_UPDATE_UNMATCHED;
@@ -96,6 +97,7 @@ pub fn order_export_sync_column_families() -> &'static [&'static str] {
     &[
         CF_ORDER_UPDATE_UNMATCHED,
         CF_TRADE_UPDATE_UNMATCHED,
+        CF_ORDER_QUEUE_POSITION,
         CF_UNIFORM_ORDER,
     ]
 }

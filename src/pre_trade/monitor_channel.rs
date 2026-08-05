@@ -2007,7 +2007,9 @@ impl MonitorChannel {
             cancel_ctx.opening_leg = TradingLeg {
                 venue: open_venue.to_u8(),
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: e_ts,
             };
             cancel_ctx.set_opening_symbol(&normalized_symbol);
@@ -2126,14 +2128,18 @@ impl MonitorChannel {
             cancel_ctx.opening_leg = TradingLeg {
                 venue: open_venue.to_u8(),
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: e_ts,
             };
             cancel_ctx.set_opening_symbol(&normalized_symbol);
             cancel_ctx.hedging_leg = TradingLeg {
                 venue: hedge_venue.to_u8(),
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: e_ts,
             };
             cancel_ctx.set_hedging_symbol(&normalized_symbol);

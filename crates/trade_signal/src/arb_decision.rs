@@ -2265,7 +2265,14 @@ fn emit_arb_taker_hedge_fast(
     let mut ctx = ArbHedgeCtx::new();
     ctx.strategy_id = query.strategy_id;
     ctx.set_side(hedge_side);
-    ctx.hedging_leg = TradingLeg::new(hedge_venue, quote.bid, quote.ask, quote.ts);
+    ctx.hedging_leg = TradingLeg::new_with_qty(
+        hedge_venue,
+        quote.bid,
+        quote.bid_qty,
+        quote.ask,
+        quote.ask_qty,
+        quote.ts,
+    );
     ctx.set_hedging_symbol(symbol);
     ctx.price_qv = QuantizedValue::zero();
     ctx.amount_qv = amount_qv;
@@ -2470,7 +2477,14 @@ fn drive_shared_arb_hedge_query(
     let mut ctx = ArbHedgeCtx::new();
     ctx.strategy_id = query.strategy_id;
     ctx.set_side(hedge_side);
-    ctx.hedging_leg = TradingLeg::new(hedge_venue, quote.bid, quote.ask, quote.ts);
+    ctx.hedging_leg = TradingLeg::new_with_qty(
+        hedge_venue,
+        quote.bid,
+        quote.bid_qty,
+        quote.ask,
+        quote.ask_qty,
+        quote.ts,
+    );
     ctx.set_hedging_symbol(&symbol);
     ctx.price_qv = if use_taker {
         signal_common::tick_math::QuantizedValue::zero()
@@ -2856,10 +2870,6 @@ fn emit_funding_precise_tlen_cancel(
         snapshot.vol_band_scale,
         snapshot.env_score,
         snapshot.env_threshold,
-        open_quote.bid,
-        open_quote.ask,
-        hedge_quote.bid,
-        hedge_quote.ask,
         premium_rate,
         tlen,
         threshold,
@@ -2927,10 +2937,6 @@ fn emit_spread_arb_precise_tlen_cancel(
         environment_signal.threshold,
         volatility,
         ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
-        open_quote.bid,
-        open_quote.ask,
-        hedge_quote.bid,
-        hedge_quote.ask,
         super::arb_open_filter::lookup_realtime_open_filter_value(
             open_symbol,
             hedge_symbol,
@@ -3001,10 +3007,6 @@ fn emit_spread_arb_spread_cancel(
         environment_signal.threshold,
         volatility,
         ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
-        open_quote.bid,
-        open_quote.ask,
-        hedge_quote.bid,
-        hedge_quote.ask,
         super::arb_open_filter::lookup_realtime_open_filter_value(
             open_symbol,
             hedge_symbol,
@@ -3117,10 +3119,6 @@ fn emit_spread_arb_open_signals(
         Some(vol_band_scale),
         Some(environment_score),
         environment_threshold,
-        open_quote.bid,
-        open_quote.ask,
-        hedge_quote.bid,
-        hedge_quote.ask,
     );
     let from_key = super::common::append_key_value_fields(
         base_from_key,
@@ -3370,10 +3368,6 @@ fn emit_spread_arb_close_signals(
             snapshot.vol_band_scale,
             snapshot.env_score,
             snapshot.env_threshold,
-            open_quote.bid,
-            open_quote.ask,
-            hedge_quote.bid,
-            hedge_quote.ask,
         ),
         &[(
             "spread_fr",
@@ -3607,10 +3601,6 @@ fn emit_funding_open_close_signals(
             batch_ts,
             futures_symbol,
             futures_venue,
-            spot_quote.bid,
-            spot_quote.ask,
-            futures_quote.bid,
-            futures_quote.ask,
             gate.and_then(|v| v.return_qtl),
             gate.and_then(|v| v.return_threshold),
             gate.map(|v| v.open_volatility_factor),
@@ -3624,10 +3614,6 @@ fn emit_funding_open_close_signals(
             batch_ts,
             futures_symbol,
             futures_venue,
-            spot_quote.bid,
-            spot_quote.ask,
-            futures_quote.bid,
-            futures_quote.ask,
             premium_rate,
         )
         .to_vec()
@@ -3654,10 +3640,6 @@ fn emit_funding_open_close_signals(
                 snapshot.env_threshold,
                 futures_symbol,
                 futures_venue,
-                spot_quote.bid,
-                spot_quote.ask,
-                futures_quote.bid,
-                futures_quote.ask,
                 premium_rate,
             ),
         )
@@ -3915,10 +3897,6 @@ fn emit_funding_spread_cancel(
         snapshot.env_threshold,
         futures_symbol,
         futures_venue,
-        spot_quote.bid,
-        spot_quote.ask,
-        futures_quote.bid,
-        futures_quote.ask,
         premium_rate,
     );
     super::arb_cancel_emit::emit_precise_arb_cancel(super::arb_cancel_emit::ArbCancelEmitInput {

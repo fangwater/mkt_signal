@@ -6,6 +6,7 @@ use polars::prelude::*;
 
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderType, Side};
+use persist_common::{OrderQueuePositionRecord, SignalBbo, SIGNAL_BBO_BINARY_LEN};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RangeFilter {
@@ -41,6 +42,82 @@ impl RangeFilter {
         }
         true
     }
+}
+
+pub fn build_order_queue_positions_df(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<DataFrame> {
+    let mut key_col = Vec::with_capacity(entries.len());
+    let mut ts_col = Vec::with_capacity(entries.len());
+    let mut recv_ts_col = Vec::with_capacity(entries.len());
+    let mut account_id_col = Vec::with_capacity(entries.len());
+    let mut venue_col = Vec::with_capacity(entries.len());
+    let mut action_col = Vec::with_capacity(entries.len());
+    let mut create_tp_col = Vec::with_capacity(entries.len());
+    let mut update_tp_col = Vec::with_capacity(entries.len());
+    let mut local_tp_col = Vec::with_capacity(entries.len());
+    let mut client_order_id_col = Vec::with_capacity(entries.len());
+    let mut tlen_col = Vec::with_capacity(entries.len());
+    let mut backlen_col = Vec::with_capacity(entries.len());
+    let mut inpos_col = Vec::with_capacity(entries.len());
+    let mut dropped = 0usize;
+
+    for (key_bytes, value_bytes) in entries {
+        let key = String::from_utf8(key_bytes)?;
+        let ts_us = parse_prefixed_key(&key)?;
+        if !range.contains(ts_us) {
+            continue;
+        }
+        let record = match OrderQueuePositionRecord::from_bytes(&value_bytes) {
+            Ok(record) => record,
+            Err(_) => {
+                dropped += 1;
+                continue;
+            }
+        };
+        key_col.push(key);
+        ts_col.push(ts_us as i64);
+        recv_ts_col.push(record.recv_ts_us);
+        account_id_col.push(record.account_id);
+        venue_col.push(venue_name(record.venue));
+        action_col.push(record.action.as_str().to_string());
+        create_tp_col.push(record.create_tp);
+        update_tp_col.push(record.update_tp);
+        local_tp_col.push(record.local_tp);
+        client_order_id_col.push(record.client_order_id);
+        tlen_col.push(record.tlen);
+        backlen_col.push(record.backlen);
+        inpos_col.push(record.inpos);
+    }
+
+    if dropped > 0 {
+        warn!("order queue position: dropped {dropped} undecodable records");
+    }
+
+    Ok(DataFrame::new(vec![
+        Series::new("key".into(), key_col),
+        Series::new("ts_us".into(), ts_col),
+        Series::new("recv_ts_us".into(), recv_ts_col),
+        Series::new("account_id".into(), account_id_col),
+        Series::new("trading_venue".into(), venue_col),
+        Series::new("action".into(), action_col),
+        Series::new("create_tp".into(), create_tp_col),
+        Series::new("update_tp".into(), update_tp_col),
+        Series::new("local_tp".into(), local_tp_col),
+        Series::new("client_order_id".into(), client_order_id_col),
+        Series::new("tlen".into(), tlen_col),
+        Series::new("backlen".into(), backlen_col),
+        Series::new("inpos".into(), inpos_col),
+    ])?)
+}
+
+pub fn build_parquet_order_queue_positions(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+) -> Result<Vec<u8>> {
+    let mut df = build_order_queue_positions_df(entries, range)?;
+    dataframe_to_parquet_bytes(&mut df)
 }
 
 pub fn build_trade_updates_df(
@@ -247,6 +324,18 @@ pub fn build_uniform_orders_df(
     let mut status_col = Vec::with_capacity(entries.len());
     let mut from_key_col = Vec::with_capacity(entries.len());
     let mut from_key_hex_col = Vec::with_capacity(entries.len());
+    let mut signal_open_venue_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
+    let mut signal_open_ts_col = Vec::with_capacity(entries.len());
+    let mut signal_open_bid_price_col = Vec::with_capacity(entries.len());
+    let mut signal_open_bid_qty_col = Vec::with_capacity(entries.len());
+    let mut signal_open_ask_price_col = Vec::with_capacity(entries.len());
+    let mut signal_open_ask_qty_col = Vec::with_capacity(entries.len());
+    let mut signal_hedge_venue_col: Vec<Option<String>> = Vec::with_capacity(entries.len());
+    let mut signal_hedge_ts_col = Vec::with_capacity(entries.len());
+    let mut signal_hedge_bid_price_col = Vec::with_capacity(entries.len());
+    let mut signal_hedge_bid_qty_col = Vec::with_capacity(entries.len());
+    let mut signal_hedge_ask_price_col = Vec::with_capacity(entries.len());
+    let mut signal_hedge_ask_qty_col = Vec::with_capacity(entries.len());
     let mut bbo_spread_col = Vec::with_capacity(entries.len());
 
     let mut dropped = 0usize;
@@ -302,6 +391,7 @@ pub fn build_uniform_orders_df(
             status,
             from_key,
             from_key_hex,
+            signal_bbo,
             bbo_spread,
         } = record;
 
@@ -326,6 +416,21 @@ pub fn build_uniform_orders_df(
         status_col.push(status);
         from_key_col.push(from_key);
         from_key_hex_col.push(from_key_hex);
+        let signal_open = signal_bbo.and_then(|value| value.open);
+        signal_open_venue_col.push(signal_open.map(|leg| venue_name(leg.venue)));
+        signal_open_ts_col.push(signal_open.map(|leg| leg.ts));
+        signal_open_bid_price_col.push(signal_open.map(|leg| leg.bid_price));
+        signal_open_bid_qty_col.push(signal_open.map(|leg| leg.bid_qty));
+        signal_open_ask_price_col.push(signal_open.map(|leg| leg.ask_price));
+        signal_open_ask_qty_col.push(signal_open.map(|leg| leg.ask_qty));
+
+        let signal_hedge = signal_bbo.and_then(|value| value.hedge);
+        signal_hedge_venue_col.push(signal_hedge.map(|leg| venue_name(leg.venue)));
+        signal_hedge_ts_col.push(signal_hedge.map(|leg| leg.ts));
+        signal_hedge_bid_price_col.push(signal_hedge.map(|leg| leg.bid_price));
+        signal_hedge_bid_qty_col.push(signal_hedge.map(|leg| leg.bid_qty));
+        signal_hedge_ask_price_col.push(signal_hedge.map(|leg| leg.ask_price));
+        signal_hedge_ask_qty_col.push(signal_hedge.map(|leg| leg.ask_qty));
         bbo_spread_col.push(bbo_spread);
     }
 
@@ -356,6 +461,45 @@ pub fn build_uniform_orders_df(
         Series::new("from_key".into(), from_key_col),
         Series::new("from_key_hex".into(), from_key_hex_col),
         Series::new("bbo_spread".into(), bbo_spread_col),
+        Series::new("signal_open_venue".into(), signal_open_venue_col.as_slice()),
+        Series::new("signal_open_ts".into(), signal_open_ts_col.as_slice()),
+        Series::new(
+            "signal_open_bid_price".into(),
+            signal_open_bid_price_col.as_slice(),
+        ),
+        Series::new(
+            "signal_open_bid_qty".into(),
+            signal_open_bid_qty_col.as_slice(),
+        ),
+        Series::new(
+            "signal_open_ask_price".into(),
+            signal_open_ask_price_col.as_slice(),
+        ),
+        Series::new(
+            "signal_open_ask_qty".into(),
+            signal_open_ask_qty_col.as_slice(),
+        ),
+        Series::new(
+            "signal_hedge_venue".into(),
+            signal_hedge_venue_col.as_slice(),
+        ),
+        Series::new("signal_hedge_ts".into(), signal_hedge_ts_col.as_slice()),
+        Series::new(
+            "signal_hedge_bid_price".into(),
+            signal_hedge_bid_price_col.as_slice(),
+        ),
+        Series::new(
+            "signal_hedge_bid_qty".into(),
+            signal_hedge_bid_qty_col.as_slice(),
+        ),
+        Series::new(
+            "signal_hedge_ask_price".into(),
+            signal_hedge_ask_price_col.as_slice(),
+        ),
+        Series::new(
+            "signal_hedge_ask_qty".into(),
+            signal_hedge_ask_qty_col.as_slice(),
+        ),
     ])?)
 }
 
@@ -429,6 +573,7 @@ struct DecodedUniformOrderRecord {
     status: String,
     from_key: String,
     from_key_hex: String,
+    signal_bbo: Option<SignalBbo>,
     bbo_spread: String,
 }
 
@@ -582,6 +727,19 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
         String::new()
     };
 
+    let signal_bbo = if cursor.has_remaining() {
+        if cursor.remaining() != SIGNAL_BBO_BINARY_LEN {
+            return Err(anyhow!(
+                "uniform order signal_bbo must be {SIGNAL_BBO_BINARY_LEN} bytes, got {}",
+                cursor.remaining()
+            ));
+        }
+        let bytes = cursor.copy_to_bytes(SIGNAL_BBO_BINARY_LEN);
+        SignalBbo::decode_optional(bytes.as_ref()).map_err(|err| anyhow!(err))?
+    } else {
+        None
+    };
+
     if cursor.has_remaining() {
         return Err(anyhow!(
             "uniform order payload has {} trailing bytes",
@@ -622,6 +780,7 @@ fn decode_uniform_order_record(bytes: &[u8]) -> Result<DecodedUniformOrderRecord
         status,
         from_key,
         from_key_hex,
+        signal_bbo,
         bbo_spread,
     })
 }
@@ -636,6 +795,12 @@ fn read_bytes_as_string(cursor: &mut Bytes, len: usize, field: &str) -> Result<S
 
     let bytes = cursor.copy_to_bytes(len);
     Ok(String::from_utf8_lossy(bytes.as_ref()).into_owned())
+}
+
+fn venue_name(raw: u8) -> String {
+    TradingVenue::from_u8(raw)
+        .map(|venue| venue.as_str().to_string())
+        .unwrap_or_else(|| format!("Venue({raw})"))
 }
 
 fn read_string(cursor: &mut Bytes) -> Result<String> {
@@ -704,6 +869,14 @@ fn parse_simple_key(key: &str) -> Result<u64> {
         .with_context(|| format!("invalid key format: {}", key))
 }
 
+fn parse_prefixed_key(key: &str) -> Result<u64> {
+    key.split(':')
+        .next()
+        .unwrap_or_default()
+        .parse::<u64>()
+        .with_context(|| format!("invalid timestamp-prefixed key: {key}"))
+}
+
 fn time_in_force_from_u8(value: u8) -> Option<TimeInForce> {
     match value {
         0 => Some(TimeInForce::GTC),
@@ -736,5 +909,145 @@ fn order_status_from_u8(value: u8) -> Option<OrderStatus> {
         4 => Some(OrderStatus::Expired),
         5 => Some(OrderStatus::ExpiredInMatch),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+    use persist_common::{OrderQueuePositionAction, SignalBboLeg};
+
+    #[test]
+    fn order_queue_positions_df_decodes_lifecycle_snapshot() {
+        let venue = TradingVenue::BinanceFutures;
+        let record = OrderQueuePositionRecord {
+            recv_ts_us: 1_005,
+            account_id: "binance-intra-arb01".to_string(),
+            venue: venue.to_u8(),
+            action: OrderQueuePositionAction::PartiallyFilled,
+            create_tp: 900,
+            update_tp: 1_000,
+            local_tp: 1_002,
+            client_order_id: 42,
+            tlen: 12.5,
+            backlen: 4.0,
+            inpos: 8.5,
+        };
+        let df = build_order_queue_positions_df(
+            vec![(
+                b"00000000000000001000:02:000000000000002a:00000000000003e8:02".to_vec(),
+                record.to_bytes().unwrap(),
+            )],
+            &RangeFilter::all(),
+        )
+        .unwrap();
+
+        assert_eq!(df.height(), 1);
+        assert_eq!(
+            df.column("ts_us").unwrap().i64().unwrap().get(0),
+            Some(1_000)
+        );
+        assert_eq!(
+            df.column("account_id").unwrap().str().unwrap().get(0),
+            Some("binance-intra-arb01")
+        );
+        assert_eq!(
+            df.column("trading_venue").unwrap().str().unwrap().get(0),
+            Some(venue.as_str())
+        );
+        assert_eq!(
+            df.column("action").unwrap().str().unwrap().get(0),
+            Some("partially_filled")
+        );
+        assert_eq!(
+            df.column("client_order_id").unwrap().i64().unwrap().get(0),
+            Some(42)
+        );
+        assert_eq!(df.column("tlen").unwrap().f64().unwrap().get(0), Some(12.5));
+        assert_eq!(
+            df.column("backlen").unwrap().f64().unwrap().get(0),
+            Some(4.0)
+        );
+        assert_eq!(df.column("inpos").unwrap().f64().unwrap().get(0), Some(8.5));
+    }
+
+    fn uniform_payload(signal_tail: Option<Option<SignalBbo>>) -> Vec<u8> {
+        let symbol = b"BTCUSDT";
+        let from_key = b"decision";
+        let bbo_spread = b"event-bbo";
+        let mut buf = BytesMut::new();
+        buf.put_i64_le(10);
+        buf.put_u16_le(symbol.len() as u16);
+        buf.put_slice(symbol);
+        buf.put_i64_le(11);
+        buf.put_i64_le(12);
+        buf.put_i64_le(13);
+        buf.put_i64_le(14);
+        buf.put_i64_le(15);
+        buf.put_i64_le(16);
+        buf.put_i64_le(17);
+        buf.put_u8(TradingVenue::BinanceMargin.to_u8());
+        buf.put_u8(OrderType::Limit.to_u8());
+        buf.put_u8(Side::Buy.to_u8());
+        buf.put_f64_le(100.0);
+        buf.put_f64_le(0.25);
+        buf.put_f64_le(2.0);
+        buf.put_f64_le(1.0);
+        buf.put_u8(OrderStatus::New.to_u8());
+        buf.put_u32_le(from_key.len() as u32);
+        buf.put_slice(from_key);
+        buf.put_u16_le(bbo_spread.len() as u16);
+        buf.put_slice(bbo_spread);
+        if let Some(signal_bbo) = signal_tail {
+            buf.put_slice(&SignalBbo::encode_optional(signal_bbo));
+        }
+        buf.to_vec()
+    }
+
+    #[test]
+    fn uniform_orders_df_decodes_signal_bbo_and_falls_back_to_null() {
+        let open_venue = TradingVenue::BinanceMargin;
+        let hedge_venue = TradingVenue::BinanceFutures;
+        let signal_bbo = SignalBbo::new(
+            Some(SignalBboLeg::new(
+                open_venue.to_u8(),
+                101,
+                100.0,
+                2.5,
+                100.1,
+                3.5,
+            )),
+            Some(SignalBboLeg::new(
+                hedge_venue.to_u8(),
+                102,
+                99.9,
+                4.5,
+                100.0,
+                5.5,
+            )),
+        );
+        let df = build_uniform_orders_df(
+            vec![
+                (b"1000".to_vec(), uniform_payload(None)),
+                (b"1001".to_vec(), uniform_payload(Some(signal_bbo))),
+            ],
+            &RangeFilter::all(),
+        )
+        .unwrap();
+
+        assert_eq!(df.height(), 2);
+        let open_venue_col = df.column("signal_open_venue").unwrap().str().unwrap();
+        let open_bid_qty_col = df.column("signal_open_bid_qty").unwrap().f64().unwrap();
+        let hedge_ts_col = df.column("signal_hedge_ts").unwrap().i64().unwrap();
+        let hedge_ask_qty_col = df.column("signal_hedge_ask_qty").unwrap().f64().unwrap();
+
+        assert_eq!(open_venue_col.get(0), None);
+        assert_eq!(open_bid_qty_col.get(0), None);
+        assert_eq!(hedge_ts_col.get(0), None);
+        assert_eq!(open_venue_col.get(1), Some(open_venue.as_str()));
+        assert_eq!(open_bid_qty_col.get(1), Some(2.5));
+        assert_eq!(hedge_ts_col.get(1), Some(102));
+        assert_eq!(hedge_ask_qty_col.get(1), Some(5.5));
     }
 }

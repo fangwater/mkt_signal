@@ -4,10 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::info;
 
+use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::{CF_ORDER_UPDATE, CF_ORDER_UPDATE_UNMATCHED};
 use super::parquet::{
-    build_parquet_order_updates, build_parquet_trade_updates, build_parquet_uniform_orders,
-    RangeFilter,
+    build_parquet_order_queue_positions, build_parquet_order_updates, build_parquet_trade_updates,
+    build_parquet_uniform_orders, RangeFilter,
 };
 use super::storage::RocksDbStore;
 use super::trade_update::{CF_TRADE_UPDATE, CF_TRADE_UPDATE_UNMATCHED};
@@ -41,6 +42,10 @@ pub fn export_all_to_dir(store: &RocksDbStore, output_dir: &Path) -> Result<()> 
     let entries = store.scan(CF_TRADE_UPDATE_UNMATCHED, None, false, None)?;
     let parquet = build_parquet_trade_updates(entries, &range)?;
     write_parquet(output_dir, "trade_updates_unmatched.parquet", parquet)?;
+
+    let entries = store.scan(CF_ORDER_QUEUE_POSITION, None, false, None)?;
+    let parquet = build_parquet_order_queue_positions(entries, &range)?;
+    write_parquet(output_dir, "order_queue_positions.parquet", parquet)?;
 
     Ok(())
 }
@@ -89,6 +94,15 @@ pub fn export_window_to_dir(
     )?;
     let parquet = build_parquet_uniform_orders(entries, &range)?;
     write_parquet(output_dir, "uniform_orders.parquet", parquet)?;
+
+    let entries = store.scan_range(
+        CF_ORDER_QUEUE_POSITION,
+        start_key.as_bytes(),
+        end_key.as_bytes(),
+        None,
+    )?;
+    let parquet = build_parquet_order_queue_positions(entries, &range)?;
+    write_parquet(output_dir, "order_queue_positions.parquet", parquet)?;
 
     Ok(())
 }

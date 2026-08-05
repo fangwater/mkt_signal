@@ -5,6 +5,7 @@ use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGu
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
+use crate::pre_trade::order_queue_position_channel::OrderQueuePositionChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::query_eng_channel::QueryEngHub;
 use crate::pre_trade::reactor_latency::{record_stage_latency, ReactorStage};
@@ -32,6 +33,8 @@ const PARAM_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SNAPSHOT_QUERY_INTERVAL: Duration = Duration::from_secs(60);
 const EXPOSURE_TABLE_PRINT_INTERVAL: Duration = Duration::from_secs(10);
 const NON_FAST_POLL_IDLE_SLEEP: Duration = Duration::from_millis(1);
+const ORDER_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const ORDER_POSITION_DRAIN_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug)]
 struct FastPollDispatchBudgets {
@@ -160,6 +163,7 @@ pub struct PreTrade {
     intra_bwd_refresh: Option<IntraBwdRefreshConfig>,
     taker_decision_model_refresh: Option<TakerDecisionModelRefreshConfig>,
     snapshot_query: Option<SnapshotQueryConfig>,
+    order_queue_position: Option<OrderQueuePositionChannel>,
     auto_repay: Option<AutoRepayService>,
     auto_collection: Option<AutoCollectionService>,
     publish_legacy_resample: bool,
@@ -418,6 +422,7 @@ impl PreTrade {
             intra_bwd_refresh: None,
             taker_decision_model_refresh: None,
             snapshot_query: None,
+            order_queue_position: None,
             auto_repay: None,
             auto_collection: None,
             publish_legacy_resample: true,
@@ -447,6 +452,11 @@ impl PreTrade {
         self
     }
 
+    pub fn with_order_queue_position(mut self, channel: OrderQueuePositionChannel) -> Self {
+        self.order_queue_position = Some(channel);
+        self
+    }
+
     pub fn with_auto_repay(mut self, service: AutoRepayService) -> Self {
         self.auto_repay = Some(service);
         self
@@ -468,6 +478,7 @@ impl PreTrade {
         let intra_bwd_refresh = self.intra_bwd_refresh;
         let taker_decision_model_refresh = self.taker_decision_model_refresh;
         let snapshot_query = self.snapshot_query;
+        let mut order_queue_position = self.order_queue_position;
         let mut auto_repay = self.auto_repay;
         let mut auto_collection = self.auto_collection;
         let publish_legacy_resample = self.publish_legacy_resample;
@@ -477,6 +488,7 @@ impl PreTrade {
         let mut next_resample = std::time::Instant::now() + resample_interval;
         let mut next_exposure_table_print =
             std::time::Instant::now() + EXPOSURE_TABLE_PRINT_INTERVAL;
+        let mut next_order_position_poll = std::time::Instant::now() + ORDER_POSITION_POLL_INTERVAL;
         let throttle_log_interval_secs =
             std::env::var("PRE_TRADE_SIGNAL_THROTTLE_LOG_INTERVAL_SECS")
                 .ok()
@@ -998,6 +1010,19 @@ impl PreTrade {
                         );
                     }
                     next_arb_startup_net_log += arb_startup_net_log_interval;
+                }
+            }
+
+            if instant_now >= next_order_position_poll {
+                let order_position_has_work = order_queue_position
+                    .as_mut()
+                    .is_some_and(|channel| channel.drain_pending_limit(ORDER_POSITION_DRAIN_LIMIT));
+                has_work |= order_position_has_work;
+                while instant_now >= next_order_position_poll {
+                    next_order_position_poll += ORDER_POSITION_POLL_INTERVAL;
+                }
+                if fast_poll && order_position_has_work {
+                    finish_fast_poll_work!(next_loop_open_drop_reason);
                 }
             }
 

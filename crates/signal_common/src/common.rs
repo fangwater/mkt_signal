@@ -60,7 +60,9 @@ pub fn align_price_ceil(price: f64, tick: f64) -> f64 {
 pub struct TradingLeg {
     pub venue: u8, // TradingVenue as u8
     pub bid0: f64,
+    pub bid_qty0: f64,
     pub ask0: f64,
+    pub ask_qty0: f64,
     pub ts: i64, // last quote event time (µs)
 }
 
@@ -69,7 +71,27 @@ impl TradingLeg {
         Self {
             venue: venue.to_u8(),
             bid0,
+            bid_qty0: 0.0,
             ask0,
+            ask_qty0: 0.0,
+            ts,
+        }
+    }
+
+    pub fn new_with_qty(
+        venue: TradingVenue,
+        bid0: f64,
+        bid_qty0: f64,
+        ask0: f64,
+        ask_qty0: f64,
+        ts: i64,
+    ) -> Self {
+        Self {
+            venue: venue.to_u8(),
+            bid0,
+            bid_qty0,
+            ask0,
+            ask_qty0,
             ts,
         }
     }
@@ -216,7 +238,30 @@ impl<'a> SignalSliceReader<'a> {
             TradingLeg {
                 venue,
                 bid0,
+                bid_qty0: 0.0,
                 ask0,
+                ask_qty0: 0.0,
+                ts,
+            },
+            symbol,
+        ))
+    }
+
+    pub fn read_bbo_trading_leg(&mut self, label: &str) -> Result<(TradingLeg, [u8; 32]), String> {
+        let venue = self.read_u8(label)?;
+        let bid0 = self.read_f64_le(label)?;
+        let bid_qty0 = self.read_f64_le(label)?;
+        let ask0 = self.read_f64_le(label)?;
+        let ask_qty0 = self.read_f64_le(label)?;
+        let ts = self.read_i64_le(label)?;
+        let symbol = self.read_fixed_bytes(label)?;
+        Ok((
+            TradingLeg {
+                venue,
+                bid0,
+                bid_qty0,
+                ask0,
+                ask_qty0,
                 ts,
             },
             symbol,

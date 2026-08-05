@@ -5,7 +5,7 @@ use crate::strategy::manager::{OpenPriceMapEntry, OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
-use crate::strategy::uniform_order_helper::UniformPublishCtx;
+use crate::strategy::uniform_order_helper::{signal_bbo_from_legs, UniformPublishCtx};
 use log::{debug, warn};
 use order_common::OrderUpdate;
 use order_common::TradeEngineResponse;
@@ -80,6 +80,7 @@ impl ArbOpenStrategy {
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
             from_key: Cow::Borrowed(ctx.from_key),
+            signal_bbo: signal_bbo_from_legs(Some(&ctx.opening_leg), Some(&ctx.hedging_leg)),
             price_qv: ctx.price_qv,
             order_qty_qv: Some(ctx.amount_qv),
             order_price_qv: Some(ctx.price_qv),
@@ -228,8 +229,8 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     /// arb open 的 uniform from_key = "{open client_order_id}|{开仓信号 rich from_key}"：
     /// 前缀 id 与配对 hedge 单一致 —— 下游按第一个 '|' 切分取 id 即可 JOIN open/hedge；
-    /// 后缀带上整条 rich from_key（含开仓四档盘口价 open_bid/open_ask/hedge_bid/hedge_ask），
-    /// 便于事后用信号时刻盘口和成交对齐分析。
+    /// 后缀保留决策参数；信号时刻盘口由独立的 signal_bbo 字段承载，
+    /// 避免在 from_key 中重复编码结构化行情。
     fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
         let open_state = self.open_state();
         let order_id = open_state.order.open_order_id.to_string();
@@ -240,6 +241,7 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         UniformPublishCtx {
             signal_ts: open_state.signal_ts,
             from_key,
+            signal_bbo: open_state.signal_bbo,
             price_offset: open_state.price_offset,
         }
     }

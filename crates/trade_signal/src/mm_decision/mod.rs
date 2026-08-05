@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
-use super::common::normalize_tlens_for_compare;
+use super::common::{normalize_tlens_for_compare, query_batch_tlens_or_zero};
 use super::mkt_channel::MktChannel;
 use super::tlen_threshold_loader;
 use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
@@ -59,10 +59,12 @@ fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
 
 fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
     let mut ctx = MmHedgeCtx::new();
-    ctx.opening_leg = TradingLeg::new(
+    ctx.opening_leg = TradingLeg::new_with_qty(
         TradingVenue::from(plan.venue),
         plan.quote.bid,
+        plan.quote.bid_qty,
         plan.quote.ask,
+        plan.quote.ask_qty,
         plan.quote.ts,
     );
     ctx.set_opening_symbol(&plan.symbol);
@@ -644,22 +646,12 @@ impl MmDecision {
             );
             return;
         }
-        match self
-            .state
-            .depth_query_client
-            .query_batch_tick_indices(&hedge_symbol, &tick_indices)
-        {
-            Ok(tlens) => ctx.tlen_values = tlens,
-            Err(err) => {
-                warn!(
-                    "MmDecision: MMHedge tlen batch query failed symbol={} levels={} err={:#}",
-                    symbol,
-                    tick_indices.len(),
-                    err
-                );
-                ctx.tlen_values = vec![0.0; tick_indices.len()];
-            }
-        }
+        ctx.tlen_values = query_batch_tlens_or_zero(
+            "MmDecision: MMHedge",
+            &self.state.depth_query_client,
+            &hedge_symbol,
+            &tick_indices,
+        );
         let context = ctx.to_bytes();
         if let Err(err) = self.state.signal_pub.publish_trade_signal_parts(
             SignalType::MMHedge,
@@ -715,28 +707,45 @@ impl MmDecision {
                 .iter()
                 .map(|item| item.price_qv.get_count())
                 .collect();
-            let tlens = match self
-                .state
-                .depth_query_client
-                .query_batch_tick_indices(&symbol, &tick_indices)
-            {
-                Ok(values) => normalize_tlens_for_compare(
-                    "MmDecision: MMCancel",
-                    &self.state.open_min_qty_table,
-                    self.state.open_venue,
-                    &symbol,
-                    values,
-                ),
-                Err(err) => {
-                    warn!(
-                        "MmDecision: MMCancel tlen batch query failed symbol={} levels={} err={:#}",
+            let values = match super::local_tlen::query_batch_local_only_for_cancel(
+                "MmDecision: MMCancel",
+                self.state.depth_query_client.venue_slug(),
+                &symbol,
+                &tick_indices,
+            ) {
+                Some(Some(values)) => values,
+                Some(None) => {
+                    debug!(
+                        "MmDecision: MMCancel tlen local cache unavailable symbol={} levels={}, skip",
                         symbol,
-                        tick_indices.len(),
-                        err
+                        tick_indices.len()
                     );
                     continue;
                 }
+                None => match self
+                    .state
+                    .depth_query_client
+                    .query_batch_tick_indices(&symbol, &tick_indices)
+                {
+                    Ok(values) => values,
+                    Err(err) => {
+                        warn!(
+                            "MmDecision: MMCancel tlen batch query failed symbol={} levels={} err={:#}",
+                            symbol,
+                            tick_indices.len(),
+                            err
+                        );
+                        continue;
+                    }
+                },
             };
+            let tlens = normalize_tlens_for_compare(
+                "MmDecision: MMCancel",
+                &self.state.open_min_qty_table,
+                self.state.open_venue,
+                &symbol,
+                values,
+            );
             let open_quote = match MktChannel::instance().get_quote(&symbol, self.state.open_venue)
             {
                 Some(quote) => quote,

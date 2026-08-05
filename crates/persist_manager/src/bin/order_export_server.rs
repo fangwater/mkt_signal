@@ -21,10 +21,11 @@ use tokio::sync::Mutex;
 
 use persist_manager::{self, exporter::export_window_to_dir, RocksDbStore};
 
-const SNAPSHOT_FILES: [&str; 3] = [
+const SNAPSHOT_FILES: [&str; 4] = [
     "order_updates_unmatched.parquet",
     "trade_updates_unmatched.parquet",
     "uniform_orders.parquet",
+    "order_queue_positions.parquet",
 ];
 
 #[derive(Parser, Debug)]

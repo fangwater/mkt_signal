@@ -8,6 +8,7 @@ use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
+use crate::strategy::uniform_order_helper::signal_bbo_from_legs;
 use log::{debug, info, warn};
 use order_common::OrderUpdate;
 use order_common::Side;
@@ -308,6 +309,7 @@ impl ArbCloseStrategy {
         }
 
         let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
+        let signal_bbo = signal_bbo_from_legs(Some(&ctx.opening_leg), Some(&ctx.hedging_leg));
         let init = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "ArbClose",
             order_log_name: "ArbClose",
@@ -325,6 +327,7 @@ impl ArbCloseStrategy {
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
             from_key: ctx.from_key,
+            signal_bbo,
             price_qv: ctx.price_qv,
             order_qty_qv: None,
             order_price_qv: None,

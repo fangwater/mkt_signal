@@ -65,15 +65,22 @@ impl From<Venue> for TradingVenue {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Quote {
     pub bid: f64,
+    pub bid_qty: f64,
     pub ask: f64,
+    pub ask_qty: f64,
     pub ts: i64,
 }
 
 impl Quote {
-    pub fn update(&mut self, bid: f64, ask: f64, ts: i64) {
-        self.bid = bid;
-        self.ask = ask;
-        self.ts = ts;
+    #[inline]
+    pub fn update(&mut self, bid: f64, bid_qty: f64, ask: f64, ask_qty: f64, ts: i64) {
+        *self = Self {
+            bid,
+            bid_qty,
+            ask,
+            ask_qty,
+            ts,
+        };
     }
 
     pub fn is_valid(&self) -> bool {

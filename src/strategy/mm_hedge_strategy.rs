@@ -18,7 +18,7 @@ use crate::strategy::net_qty_queue::NetQtyQueue;
 use crate::strategy::order_reconcile::{qv_decimal_or_fallback, PendingOrderQueryReason};
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
+    publish_uniform_trade_order_from_order_update, signal_bbo_from_legs, UniformPublishCtx,
 };
 use log::{debug, info, warn};
 use order_common::OrderUpdate;
@@ -67,6 +67,7 @@ pub struct HedgePlanOrder {
 struct HedgeOrderMeta {
     from_key: Vec<u8>,
     price_offset: f64,
+    signal_bbo: Option<persist_common::SignalBbo>,
 }
 
 /// 做市对冲策略（每个 symbol 仅一个实例）
@@ -472,6 +473,7 @@ impl MarketMakerHedgeStrategy {
                 HedgeOrderMeta {
                     from_key: order_from_key.clone(),
                     price_offset,
+                    signal_bbo: signal_bbo_from_legs(None, Some(&ctx.opening_leg)),
                 },
             );
             self.hedge_plan.push(HedgePlanOrder {
@@ -1238,6 +1240,10 @@ impl MarketMakerHedgeStrategy {
             )
             .into_bytes(),
             price_offset: self.order_price_offset(client_order_id),
+            signal_bbo: self
+                .hedge_order_meta
+                .get(&client_order_id)
+                .and_then(|meta| meta.signal_bbo),
         }
     }
 
@@ -1749,6 +1755,7 @@ mod tests {
             HedgeOrderMeta {
                 from_key: b"hedge".to_vec(),
                 price_offset: 1.5,
+                signal_bbo: None,
             },
         );
         strategy

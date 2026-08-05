@@ -25,6 +25,7 @@ pub mod net_position;
 pub mod notification_client;
 pub mod open_order_rate_limiter;
 pub mod order_manager;
+pub mod order_queue_position_channel;
 pub mod params_load;
 pub mod persist_channel;
 pub mod price_table;
@@ -45,11 +46,12 @@ pub mod trade_eng_channel;
 pub mod unimmr_close_symbol_list;
 pub mod unimmr_open_lock;
 pub mod usdt_balance_manager;
+pub use order_queue_position_channel::OrderQueuePositionChannel;
 pub use persist_channel::PersistChannel;
 pub use persist_common::{
-    ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
-    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
-    UNIFORM_ORDER_RECORD_CHANNEL,
+    ORDER_QUEUE_POSITION_RECORD_CHANNEL, ORDER_UPDATE_RECORD_CHANNEL,
+    ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL, TRADE_UPDATE_RECORD_CHANNEL,
+    TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
 };
 pub use query_eng_channel::QueryEngHub;
 pub use resample_channel::{ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};

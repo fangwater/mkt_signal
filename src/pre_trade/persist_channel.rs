@@ -4,12 +4,13 @@ use std::cell::OnceCell;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use ipc_common::iceoryx_publisher::{
-    OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
+    OrderQueuePositionPublisher, OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
 };
 use order_common::TradingVenue;
 use order_common::{OrderUpdate, TradeUpdate};
 use persist_common::{
-    UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    OrderQueuePositionRecord, SignalBbo, UnifiedOrderRecord, ORDER_QUEUE_POSITION_RECORD_CHANNEL,
+    ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
     TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
     UNIFORM_ORDER_RECORD_CHANNEL,
 };
@@ -38,6 +39,7 @@ pub struct PersistChannel {
     order_update_record_pub: Option<OrderUpdatePublisher>,
     trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
     order_update_unmatched_pub: Option<OrderUpdatePublisher>,
+    order_queue_position_record_pub: Option<OrderQueuePositionPublisher>,
     uniform_order_record_pub: Option<UniformOrderPublisher>,
 }
 
@@ -98,6 +100,13 @@ impl PersistChannel {
         .map_err(|e| warn!("PersistChannel order_update_unmatched_pub failed: {e:#}"))
         .ok();
 
+        let order_queue_position_record_pub = OrderQueuePositionPublisher::new_with_prefix(
+            "persist_pubs",
+            ORDER_QUEUE_POSITION_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel order_queue_position_record_pub failed: {e:#}"))
+        .ok();
+
         let uniform_order_record_pub =
             UniformOrderPublisher::new_with_prefix("persist_pubs", UNIFORM_ORDER_RECORD_CHANNEL)
                 .map_err(|e| warn!("PersistChannel uniform_order_record_pub failed: {e:#}"))
@@ -108,6 +117,7 @@ impl PersistChannel {
             order_update_record_pub,
             trade_update_unmatched_pub,
             order_update_unmatched_pub,
+            order_queue_position_record_pub,
             uniform_order_record_pub,
         }
     }
@@ -207,6 +217,28 @@ impl PersistChannel {
                 record.client_order_id,
                 record.symbol_len,
                 record.from_key_len
+            );
+        }
+    }
+
+    pub fn publish_order_queue_position(&self, record: &OrderQueuePositionRecord) {
+        let Some(publisher) = &self.order_queue_position_record_pub else {
+            return;
+        };
+        let payload = match record.to_bytes() {
+            Ok(payload) => payload,
+            Err(err) => {
+                warn!(
+                    "failed to encode order-position record client_order_id={}: {}",
+                    record.client_order_id, err
+                );
+                return;
+            }
+        };
+        if let Err(err) = publisher.publish(&payload) {
+            warn!(
+                "failed to publish order-position record client_order_id={} venue={}: {err:#}",
+                record.client_order_id, record.venue
             );
         }
     }
@@ -431,6 +463,7 @@ fn put_opt_string(buf: &mut BytesMut, value: Option<&str>) {
 /// - status: u8
 /// - from_key_len: u32
 /// - from_key: [u8; from_key_len]
+/// - signal_bbo: [u8; 83]
 fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
 
@@ -470,6 +503,8 @@ fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
     let from_key_len = record.from_key.len() as u32;
     buf.put_u32_le(from_key_len);
     buf.put_slice(&record.from_key);
+
+    buf.put_slice(&SignalBbo::encode_optional(record.signal_bbo));
 
     buf.freeze()
 }

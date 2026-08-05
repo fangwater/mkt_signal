@@ -772,7 +772,9 @@ mod tests {
             symbol: "BEATUSDT",
             quote: Quote {
                 bid: 5.45,
+                bid_qty: 10.0,
                 ask: 5.46,
+                ask_qty: 10.0,
                 ts: 1,
             },
             volatility: 0.01,
@@ -819,7 +821,9 @@ mod tests {
             symbol: "BTCUSDT",
             quote: Quote {
                 bid: 62_664.3,
+                bid_qty: 1.0,
                 ask: 62_664.4,
+                ask_qty: 1.0,
                 ts: 1,
             },
             volatility: 0.0003122,

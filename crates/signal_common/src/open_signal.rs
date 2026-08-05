@@ -140,7 +140,9 @@ fn get_symbol(source: &[u8; 32]) -> String {
 fn write_leg(buf: &mut BytesMut, leg: &TradingLeg, symbol: &[u8; 32]) {
     buf.put_u8(leg.venue);
     buf.put_f64_le(leg.bid0);
+    buf.put_f64_le(leg.bid_qty0);
     buf.put_f64_le(leg.ask0);
+    buf.put_f64_le(leg.ask_qty0);
     buf.put_i64_le(leg.ts);
     bytes_helper::write_fixed_bytes(buf, symbol);
 }
@@ -232,7 +234,9 @@ fn read_leg_ref(
 ) -> Result<(TradingLeg, [u8; 32]), String> {
     let venue = read_u8(raw, offset, label)?;
     let bid0 = read_f64_le(raw, offset, label)?;
+    let bid_qty0 = read_f64_le(raw, offset, label)?;
     let ask0 = read_f64_le(raw, offset, label)?;
+    let ask_qty0 = read_f64_le(raw, offset, label)?;
     let ts = if with_ts {
         read_i64_le(raw, offset, label)?
     } else {
@@ -243,7 +247,9 @@ fn read_leg_ref(
         TradingLeg {
             venue,
             bid0,
+            bid_qty0,
             ask0,
+            ask_qty0,
             ts,
         },
         symbol,
@@ -263,14 +269,18 @@ impl ArbOpenCtx {
             opening_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
             hedging_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             hedging_symbol: [0u8; 32],
@@ -382,7 +392,9 @@ impl MmOpenCtx {
             opening_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
@@ -798,8 +810,10 @@ mod tests {
     #[test]
     fn arb_open_ctx_view_matches_owned_parse() {
         let mut ctx = ArbOpenCtx::new();
-        ctx.opening_leg = TradingLeg::new(TradingVenue::BinanceMargin, 1.0, 1.1, 101);
-        ctx.hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 2.0, 2.1, 202);
+        ctx.opening_leg =
+            TradingLeg::new_with_qty(TradingVenue::BinanceMargin, 1.0, 11.0, 1.1, 12.0, 101);
+        ctx.hedging_leg =
+            TradingLeg::new_with_qty(TradingVenue::BinanceFutures, 2.0, 21.0, 2.1, 22.0, 202);
         ctx.set_opening_symbol("BTCUSDT");
         ctx.set_hedging_symbol("BTCUSDT");
         ctx.set_side(Side::Buy);
@@ -822,7 +836,11 @@ mod tests {
         let view = ArbOpenCtxView::from_bytes(bytes.as_ref()).expect("view parse");
 
         assert_eq!(view.opening_leg.venue, owned.opening_leg.venue);
+        assert_eq!(view.opening_leg.bid_qty0, 11.0);
+        assert_eq!(view.opening_leg.ask_qty0, 12.0);
         assert_eq!(view.hedging_leg.ts, owned.hedging_leg.ts);
+        assert_eq!(view.hedging_leg.bid_qty0, 21.0);
+        assert_eq!(view.hedging_leg.ask_qty0, 22.0);
         assert_eq!(view.get_opening_symbol(), owned.get_opening_symbol());
         assert_eq!(view.get_hedging_symbol(), owned.get_hedging_symbol());
         assert_eq!(view.side, owned.side);
@@ -839,7 +857,8 @@ mod tests {
     #[test]
     fn mm_open_ctx_view_matches_owned_parse() {
         let mut ctx = MmOpenCtx::new();
-        ctx.opening_leg = TradingLeg::new(TradingVenue::GateFutures, 3.0, 3.1, 303);
+        ctx.opening_leg =
+            TradingLeg::new_with_qty(TradingVenue::GateFutures, 3.0, 31.0, 3.1, 32.0, 303);
         ctx.set_opening_symbol("ETHUSDT");
         ctx.set_side(Side::Sell);
         ctx.set_order_type(OrderType::Limit);
@@ -859,6 +878,8 @@ mod tests {
         let view = MmOpenCtxView::from_bytes(bytes.as_ref()).expect("view parse");
 
         assert_eq!(view.opening_leg.venue, owned.opening_leg.venue);
+        assert_eq!(view.opening_leg.bid_qty0, 31.0);
+        assert_eq!(view.opening_leg.ask_qty0, 32.0);
         assert_eq!(view.opening_leg.ts, owned.opening_leg.ts);
         assert_eq!(view.get_opening_symbol(), owned.get_opening_symbol());
         assert_eq!(view.side, owned.side);

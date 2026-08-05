@@ -16,9 +16,11 @@ use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::{CF_ORDER_UPDATE, CF_ORDER_UPDATE_UNMATCHED};
 use super::parquet::{
-    build_order_updates_df, build_trade_updates_df, build_uniform_orders_df, RangeFilter,
+    build_order_queue_positions_df, build_order_updates_df, build_trade_updates_df,
+    build_uniform_orders_df, RangeFilter,
 };
 use super::storage::RocksDbStore;
 use super::sync::center_source_cf_name;
@@ -86,6 +88,7 @@ enum TableKind {
     OrderUpdatesUnmatched,
     TradeUpdates,
     TradeUpdatesUnmatched,
+    OrderQueuePositions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +333,7 @@ impl TableKind {
             CF_ORDER_UPDATE_UNMATCHED => Ok(Self::OrderUpdatesUnmatched),
             CF_TRADE_UPDATE => Ok(Self::TradeUpdates),
             CF_TRADE_UPDATE_UNMATCHED => Ok(Self::TradeUpdatesUnmatched),
+            CF_ORDER_QUEUE_POSITION => Ok(Self::OrderQueuePositions),
             _ => Err(anyhow!("unknown table: {raw}")),
         }
     }
@@ -341,6 +345,7 @@ impl TableKind {
             Self::OrderUpdatesUnmatched => CF_ORDER_UPDATE_UNMATCHED,
             Self::TradeUpdates => CF_TRADE_UPDATE,
             Self::TradeUpdatesUnmatched => CF_TRADE_UPDATE_UNMATCHED,
+            Self::OrderQueuePositions => CF_ORDER_QUEUE_POSITION,
         }
     }
 
@@ -369,6 +374,21 @@ impl TableKind {
                 "from_key",
                 "from_key_hex",
                 "bbo_spread",
+            ],
+            Self::OrderQueuePositions => &[
+                "key",
+                "ts_us",
+                "recv_ts_us",
+                "account_id",
+                "trading_venue",
+                "action",
+                "create_tp",
+                "update_tp",
+                "local_tp",
+                "client_order_id",
+                "tlen",
+                "backlen",
+                "inpos",
             ],
             Self::OrderUpdates | Self::OrderUpdatesUnmatched => &[
                 "key",
@@ -438,6 +458,7 @@ fn default_allowed_tables() -> HashSet<TableKind> {
         TableKind::UniformOrders,
         TableKind::OrderUpdatesUnmatched,
         TableKind::TradeUpdatesUnmatched,
+        TableKind::OrderQueuePositions,
     ]
     .into_iter()
     .collect()
@@ -678,6 +699,7 @@ fn build_dataframe(
         TableKind::TradeUpdates | TableKind::TradeUpdatesUnmatched => {
             build_trade_updates_df(entries, range)
         }
+        TableKind::OrderQueuePositions => build_order_queue_positions_df(entries, range),
     }
 }
 

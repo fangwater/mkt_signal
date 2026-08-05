@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use bytes::{BufMut, Bytes, BytesMut};
+pub use persist_common::OrderQueuePositionAction;
 
 const ORDER_QUEUE_POSITION_MSG_BYTES: usize = 64;
 pub const ORDER_QUEUE_POSITION_MAX_BYTES: usize = ORDER_QUEUE_POSITION_MSG_BYTES;
@@ -8,31 +9,6 @@ pub const ORDER_QUEUE_POSITION_MAX_BYTES: usize = ORDER_QUEUE_POSITION_MSG_BYTES
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderQueuePositionMsgType {
     OrderQueuePositionUpdate = 2060,
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderQueuePositionAction {
-    New = 1,
-    Del = 2,
-    UpdateByCancel = 3,
-    UpdateByTrade = 4,
-}
-
-impl OrderQueuePositionAction {
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::New),
-            2 => Some(Self::Del),
-            3 => Some(Self::UpdateByCancel),
-            4 => Some(Self::UpdateByTrade),
-            _ => None,
-        }
-    }
-
-    pub fn to_u8(self) -> u8 {
-        self as u8
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,7 +88,7 @@ mod tests {
     #[test]
     fn order_queue_position_msg_roundtrip() {
         let msg = OrderQueuePositionMsg {
-            action: OrderQueuePositionAction::UpdateByTrade,
+            action: OrderQueuePositionAction::PartiallyFilled,
             create_tp: 111,
             update_tp: 222,
             local_tp: 333,

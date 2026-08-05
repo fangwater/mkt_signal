@@ -33,8 +33,8 @@ use mkt_signal::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::pre_trade::{
-    IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade, SnapshotQueryConfig,
-    TakerDecisionModelRefreshConfig,
+    IntraBwdRefreshConfig, OrderQueuePositionChannel, ParamRefreshConfig, PreTrade,
+    SnapshotQueryConfig, TakerDecisionModelRefreshConfig,
 };
 use mkt_signal::strategy::StrategyManager;
 use order_common::TradingVenue;
@@ -1020,6 +1020,15 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 info!("PersistChannel initialized successfully");
             });
 
+            let order_queue_position =
+                match OrderQueuePositionChannel::new([open_venue, hedge_venue]) {
+                    Ok(channel) => Some(channel),
+                    Err(err) => {
+                        warn!("order-position lifecycle persistence disabled: {err:#}");
+                        None
+                    }
+                };
+
             info!("All singletons initialized, starting pre_trade main loop...");
             if arb_mode == ArbMode::FundingArb {
                 let env_name = dir_prefix.as_deref().unwrap_or("pre-trade");
@@ -1037,6 +1046,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             let mut pre_trade = PreTrade::new()
                 .with_param_refresh(param_refresh)
                 .with_snapshot_query(snapshot_query);
+            if let Some(channel) = order_queue_position {
+                pre_trade = pre_trade.with_order_queue_position(channel);
+            }
             if exec_pre_trade {
                 pre_trade = pre_trade.without_legacy_resample();
             }

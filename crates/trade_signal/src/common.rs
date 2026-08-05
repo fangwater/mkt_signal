@@ -402,16 +402,10 @@ pub fn build_open_from_key_base(
     vol_band_scale: Option<[f64; 2]>,
     env_score: Option<f64>,
     env_threshold: Option<f64>,
-    open_bid: f64,
-    open_ask: f64,
-    hedge_bid: f64,
-    hedge_ask: f64,
 ) -> String {
     let vol_band_scale_text = vol_band_scale
         .map(|[lo, hi]| format!("{lo:.4},{hi:.4}"))
         .unwrap_or_else(|| "-".to_string());
-    // 记录开仓/对冲两腿的原始四档盘口价（最短可往返格式，避免低价币截断）；
-    // askbid_sr / bidask_sr / mid spread 均可由这四个价还原，故不再单独记录。
     append_key_value_fields(
         build_decision_from_key_base(
             now_us,
@@ -421,13 +415,7 @@ pub fn build_open_from_key_base(
             env_score,
             env_threshold,
         ),
-        &[
-            ("vol_band_scale", vol_band_scale_text),
-            ("open_bid", format!("{open_bid}")),
-            ("open_ask", format!("{open_ask}")),
-            ("hedge_bid", format!("{hedge_bid}")),
-            ("hedge_ask", format!("{hedge_ask}")),
-        ],
+        &[("vol_band_scale", vol_band_scale_text)],
     )
 }
 
@@ -633,7 +621,7 @@ mod tests {
         let bases = [
             "",
             "1783331226376757:ret_qtl=0.00000000:vol=0.12345678:env_score=0",
-            "173:ret_qtl=0.99999999:ret_thr=0:vol=0:env_score=0:env_thr=0:vol_band_scale=1.0000,2.0000:open_bid=100:open_ask=100.5:hedge_bid=99.9:hedge_ask=100.1:spread_fr=0.000123",
+            "173:ret_qtl=0.99999999:ret_thr=0:vol=0:env_score=0:env_thr=0:vol_band_scale=1.0000,2.0000:spread_fr=0.000123",
         ];
         let values = [
             0.0,

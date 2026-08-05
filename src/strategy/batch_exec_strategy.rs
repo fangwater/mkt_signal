@@ -19,6 +19,7 @@ use order_common::{
     OrderExecutionStatus, OrderManager, OrderStatus, OrderType, OrderUpdate, Side,
     TradeEngineResponse, TradeUpdate, TradingVenue,
 };
+use persist_common::{SignalBbo, SignalBboLeg};
 use quote_plan::common::{align_price_ceil, align_price_floor};
 use quote_plan::order_align::{align_final_order_qty, min_qty_symbol_key};
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
@@ -110,6 +111,7 @@ struct ChildOrderMeta {
     signal_ts: i64,
     price_offset: f64,
     from_key: Vec<u8>,
+    signal_bbo: Option<SignalBbo>,
     cancel_requested: bool,
 }
 
@@ -802,11 +804,23 @@ impl BatchExecStrategy {
         }
         self.next_batch_at_us =
             now_ts.saturating_add(i64::from(self.config.batch_interval_ms).saturating_mul(1_000));
+        let signal_bbo = SignalBbo::new(
+            SignalBboLeg::checked(
+                self.exec_venue.to_u8(),
+                quote.ts,
+                quote.bid,
+                quote.bid_qty,
+                quote.ask,
+                quote.ask_qty,
+            ),
+            None,
+        );
         self.send_child_orders(
             batch_seq,
             quote.bid,
             quote.ask,
             quote.ts,
+            signal_bbo,
             plans,
             qty_multiplier,
         );
@@ -818,6 +832,7 @@ impl BatchExecStrategy {
         bid: f64,
         ask: f64,
         quote_ts: i64,
+        signal_bbo: Option<SignalBbo>,
         plans: Vec<BatchChildOrderPlan>,
         qty_multiplier: f64,
     ) {
@@ -908,6 +923,7 @@ impl BatchExecStrategy {
                     order_base_qty: plan.qty_base,
                     accounted_fill_base_qty: 0.0,
                     signal_ts: now_ts,
+                    signal_bbo,
                     price_offset,
                     from_key,
                     cancel_requested: false,
@@ -1203,11 +1219,13 @@ impl BatchExecStrategy {
         self.child_orders
             .get(&client_order_id)
             .map(|meta| UniformPublishCtx {
+                signal_bbo: meta.signal_bbo,
                 signal_ts: meta.signal_ts,
                 from_key: meta.from_key.clone(),
                 price_offset: meta.price_offset,
             })
             .unwrap_or_else(|| UniformPublishCtx {
+                signal_bbo: None,
                 signal_ts: 0,
                 from_key: Vec::new(),
                 price_offset: 0.0,
@@ -1655,6 +1673,7 @@ mod tests {
                     order_base_qty: *order_base_qty,
                     accounted_fill_base_qty: *accounted_fill_base_qty,
                     signal_ts: 1,
+                    signal_bbo: None,
                     price_offset: f64::from(*level_index),
                     from_key: b"cta_alpha".to_vec(),
                     cancel_requested: false,

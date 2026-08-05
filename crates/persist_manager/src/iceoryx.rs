@@ -5,6 +5,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
 use crate::runtime_common::{build_service_name, SIGNAL_PAYLOAD};
+use persist_common::{OrderQueuePositionRecord, SIGNAL_BBO_BINARY_LEN};
 
 const NODE_PREFIX: &str = "persist_record_";
 
@@ -47,9 +48,14 @@ pub fn trim_order_update_payload(payload: &[u8]) -> Bytes {
     Bytes::copy_from_slice(&payload[..used])
 }
 
-pub fn trim_uniform_order_payload(payload: &[u8]) -> Bytes {
-    let used = uniform_order_used_len(payload).unwrap_or(payload.len());
-    Bytes::copy_from_slice(&payload[..used])
+pub fn trim_order_queue_position_payload(payload: &[u8]) -> Option<Bytes> {
+    let used = OrderQueuePositionRecord::encoded_len(payload)?;
+    Some(Bytes::copy_from_slice(&payload[..used]))
+}
+
+pub fn trim_uniform_order_payload(payload: &[u8]) -> Option<Bytes> {
+    let used = uniform_order_used_len(payload)?;
+    Some(Bytes::copy_from_slice(&payload[..used]))
 }
 
 fn trade_update_used_len(payload: &[u8]) -> Option<usize> {
@@ -139,6 +145,11 @@ fn uniform_order_used_len(payload: &[u8]) -> Option<usize> {
     }
     cursor.advance(from_key_len);
 
+    if cursor.remaining() < SIGNAL_BBO_BINARY_LEN {
+        return None;
+    }
+    cursor.advance(SIGNAL_BBO_BINARY_LEN);
+
     Some(payload.len().saturating_sub(cursor.remaining()))
 }
 
@@ -217,4 +228,75 @@ fn sanitize_suffix(raw: &str) -> std::borrow::Cow<'_, str> {
 
 fn is_valid_node_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::{BufMut, BytesMut};
+    use persist_common::OrderQueuePositionAction;
+
+    #[test]
+    fn order_queue_position_trim_drops_fixed_payload_padding() {
+        let record = OrderQueuePositionRecord {
+            recv_ts_us: 100,
+            account_id: "binance-intra-arb01".to_string(),
+            venue: 2,
+            action: OrderQueuePositionAction::New,
+            create_tp: 90,
+            update_tp: 95,
+            local_tp: 99,
+            client_order_id: 42,
+            tlen: 3.0,
+            backlen: 2.0,
+            inpos: 1.0,
+        };
+        let expected = record.to_bytes().unwrap();
+        let mut padded = vec![0u8; SIGNAL_PAYLOAD];
+        padded[..expected.len()].copy_from_slice(&expected);
+
+        let trimmed = trim_order_queue_position_payload(&padded).unwrap();
+        assert_eq!(trimmed.as_ref(), expected.as_slice());
+        assert_eq!(
+            OrderQueuePositionRecord::from_bytes(&trimmed).unwrap(),
+            record
+        );
+    }
+
+    fn uniform_payload() -> Vec<u8> {
+        let mut buf = BytesMut::new();
+        buf.put_i64_le(1);
+        buf.put_u16_le(0);
+        for value in 2..=8 {
+            buf.put_i64_le(value);
+        }
+        buf.put_u8(1);
+        buf.put_u8(0);
+        buf.put_u8(0);
+        buf.put_f64_le(100.0);
+        buf.put_f64_le(0.0);
+        buf.put_f64_le(1.0);
+        buf.put_f64_le(0.0);
+        buf.put_u8(0);
+        buf.put_u32_le(0);
+        buf.put_slice(&[0; SIGNAL_BBO_BINARY_LEN]);
+        buf.to_vec()
+    }
+
+    #[test]
+    fn uniform_trim_keeps_fixed_signal_bbo_and_drops_padding() {
+        let expected = uniform_payload();
+        let mut padded = expected.clone();
+        padded.extend_from_slice(&[0; 32]);
+
+        let trimmed = trim_uniform_order_payload(&padded).unwrap();
+        assert_eq!(trimmed.as_ref(), expected.as_slice());
+    }
+
+    #[test]
+    fn uniform_trim_rejects_missing_signal_bbo_bytes() {
+        let mut payload = uniform_payload();
+        payload.pop();
+        assert!(trim_uniform_order_payload(&payload).is_none());
+    }
 }

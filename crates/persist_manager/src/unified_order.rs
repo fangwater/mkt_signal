@@ -54,6 +54,9 @@ pub struct UnifiedOrderRecord {
     pub from_key_len: u32,
     /// 来源规则标识（不限制长度，原始二进制 bytes）。
     pub from_key: Vec<u8>,
+
+    /// Decision-time BBO carried by the originating signal.
+    pub signal_bbo: Option<persist_common::SignalBbo>,
 }
 
 impl UnifiedOrderRecord {

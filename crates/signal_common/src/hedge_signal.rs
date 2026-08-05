@@ -151,7 +151,9 @@ impl MmHedgeCtx {
             opening_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             opening_symbol: [0u8; 32],
@@ -210,7 +212,9 @@ impl ArbHedgeCtx {
             hedging_leg: TradingLeg {
                 venue: 0,
                 bid0: 0.0,
+                bid_qty0: 0.0,
                 ask0: 0.0,
+                ask_qty0: 0.0,
                 ts: 0,
             },
             hedging_symbol: [0u8; 32],
@@ -294,7 +298,9 @@ impl SignalBytes for ArbHedgeCtx {
 
         buf.put_u8(self.hedging_leg.venue);
         buf.put_f64_le(self.hedging_leg.bid0);
+        buf.put_f64_le(self.hedging_leg.bid_qty0);
         buf.put_f64_le(self.hedging_leg.ask0);
+        buf.put_f64_le(self.hedging_leg.ask_qty0);
         buf.put_i64_le(self.hedging_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.hedging_symbol);
 
@@ -324,7 +330,9 @@ impl SignalBytes for MmHedgeCtx {
         // Opening leg
         buf.put_u8(self.opening_leg.venue);
         buf.put_f64_le(self.opening_leg.bid0);
+        buf.put_f64_le(self.opening_leg.bid_qty0);
         buf.put_f64_le(self.opening_leg.ask0);
+        buf.put_f64_le(self.opening_leg.ask_qty0);
         buf.put_i64_le(self.opening_leg.ts);
         bytes_helper::write_fixed_bytes(&mut buf, &self.opening_symbol);
 
@@ -385,7 +393,7 @@ impl ArbHedgeCtx {
         let mut reader = SignalSliceReader::new(raw);
         let strategy_id = reader.read_i32_le("ArbHedgeCtx strategy_id")?;
         let hedge_side = reader.read_u8("ArbHedgeCtx side")?;
-        let (hedging_leg, hedging_symbol) = reader.read_trading_leg(true, "ArbHedgeCtx leg")?;
+        let (hedging_leg, hedging_symbol) = reader.read_bbo_trading_leg("ArbHedgeCtx leg")?;
         let price_qv = read_qv_slice(&mut reader, "ArbHedgeCtx price_qv")?;
         let amount_qv = read_qv_slice(&mut reader, "ArbHedgeCtx amount_qv")?;
         let price_offset = reader.read_f64_le("ArbHedgeCtx price_offset")?;
@@ -418,7 +426,7 @@ impl MmHedgeCtx {
     pub fn from_slice(raw: &[u8]) -> Result<Self, String> {
         const QV_BYTES_LEN: usize = 8 + 4 + 8;
         let mut reader = SignalSliceReader::new(raw);
-        let (opening_leg, opening_symbol) = reader.read_trading_leg(true, "opening leg")?;
+        let (opening_leg, opening_symbol) = reader.read_bbo_trading_leg("opening leg")?;
 
         let price_len = reader.read_u32_le("price_qv_list length")? as usize;
         let price_bytes = price_len
@@ -827,7 +835,8 @@ mod tests {
     #[test]
     fn mm_hedge_ctx_roundtrip_with_tlen_values() {
         let mut ctx = MmHedgeCtx::new();
-        ctx.opening_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.0, 100.1, 123456);
+        ctx.opening_leg =
+            TradingLeg::new_with_qty(TradingVenue::BinanceFutures, 100.0, 4.5, 100.1, 5.5, 123456);
         ctx.set_opening_symbol("BTCUSDT");
         ctx.price_qv_list
             .push(QuantizedValue::from_parts(1, -1, 724310));
@@ -843,6 +852,8 @@ mod tests {
 
         let parsed = MmHedgeCtx::from_bytes(ctx.to_bytes()).unwrap();
         assert_eq!(parsed.get_opening_symbol(), "BTCUSDT");
+        assert_eq!(parsed.opening_leg.bid_qty0, 4.5);
+        assert_eq!(parsed.opening_leg.ask_qty0, 5.5);
         assert_eq!(parsed.price_qv_list.len(), 1);
         assert_eq!(parsed.amount_qv_list.len(), 1);
         assert_eq!(parsed.price_offsets, vec![0.0015]);
@@ -859,7 +870,8 @@ mod tests {
         let mut ctx = ArbHedgeCtx::new();
         ctx.strategy_id = 11;
         ctx.set_side(Side::Sell);
-        ctx.hedging_leg = TradingLeg::new(TradingVenue::BinanceFutures, 100.0, 100.1, 123456);
+        ctx.hedging_leg =
+            TradingLeg::new_with_qty(TradingVenue::BinanceFutures, 100.0, 6.5, 100.1, 7.5, 123456);
         ctx.set_hedging_symbol("BTCUSDT");
         ctx.price_qv = QuantizedValue::from_parts(1, -2, 10005);
         ctx.amount_qv = QuantizedValue::from_parts(1, -3, 250);
@@ -872,6 +884,8 @@ mod tests {
         let parsed = ArbHedgeCtx::from_bytes(ctx.to_bytes()).unwrap();
         assert_eq!(parsed.strategy_id, 11);
         assert_eq!(parsed.get_side(), Some(Side::Sell));
+        assert_eq!(parsed.hedging_leg.bid_qty0, 6.5);
+        assert_eq!(parsed.hedging_leg.ask_qty0, 7.5);
         assert_eq!(parsed.get_hedging_symbol(), "BTCUSDT");
         assert!((parsed.price_value() - 100.05).abs() < 1e-12);
         assert!((parsed.amount_value() - 0.25).abs() < 1e-12);

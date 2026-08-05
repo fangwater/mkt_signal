@@ -31,7 +31,7 @@ use crate::strategy::net_qty_queue::{NetQtyQueue, TimedNetQtyLot, TimedNetQtyQue
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
-    publish_uniform_trade_order_from_order_update, UniformPublishCtx,
+    publish_uniform_trade_order_from_order_update, signal_bbo_from_legs, UniformPublishCtx,
 };
 use log::{debug, error, info, warn};
 use order_common::trade_error_code::gate;
@@ -247,6 +247,7 @@ pub struct ArbHedgeStrategy {
 struct ArbHedgeOrderMeta {
     signal_ts: i64,
     price_offset: f64,
+    signal_bbo: Option<persist_common::SignalBbo>,
     borrowed_qv: f64,
     order_base_qty: f64,
     expire_ts: i64,
@@ -1491,6 +1492,7 @@ impl ArbHedgeStrategy {
         UniformPublishCtx {
             signal_ts,
             from_key: format!("{bound_open_client_order_id}|{rich}").into_bytes(),
+            signal_bbo: meta.and_then(|m| m.signal_bbo),
             price_offset,
         }
     }
@@ -1721,6 +1723,7 @@ impl ArbHedgeStrategy {
             ArbHedgeOrderMeta {
                 signal_ts: ctx.signal_ts,
                 price_offset: ctx.price_offset,
+                signal_bbo: signal_bbo_from_legs(None, Some(&ctx.hedging_leg)),
                 borrowed_qv: borrowed.qv,
                 order_base_qty,
                 expire_ts: ctx.exp_time,
@@ -3312,6 +3315,7 @@ mod tests {
             ArbHedgeOrderMeta {
                 signal_ts: 10,
                 price_offset: 0.0,
+                signal_bbo: None,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,
                 expire_ts: 0,
@@ -3351,6 +3355,7 @@ mod tests {
             ArbHedgeOrderMeta {
                 signal_ts: 10,
                 price_offset: 0.0,
+                signal_bbo: None,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,
                 expire_ts: 0,
@@ -3396,6 +3401,7 @@ mod tests {
             ArbHedgeOrderMeta {
                 signal_ts: 10,
                 price_offset: 0.0,
+                signal_bbo: None,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,
                 expire_ts: 0,

@@ -1,3 +1,150 @@
+pub const SIGNAL_BBO_LEG_BINARY_LEN: usize = 1 + 8 + 8 * 4;
+pub const SIGNAL_BBO_BINARY_LEN: usize = 1 + SIGNAL_BBO_LEG_BINARY_LEN * 2;
+
+const SIGNAL_BBO_OPEN_PRESENT: u8 = 1 << 0;
+const SIGNAL_BBO_HEDGE_PRESENT: u8 = 1 << 1;
+const SIGNAL_BBO_VALID_MASK: u8 = SIGNAL_BBO_OPEN_PRESENT | SIGNAL_BBO_HEDGE_PRESENT;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignalBboLeg {
+    pub venue: u8,
+    pub ts: i64,
+    pub bid_price: f64,
+    pub bid_qty: f64,
+    pub ask_price: f64,
+    pub ask_qty: f64,
+}
+
+impl SignalBboLeg {
+    pub fn new(
+        venue: u8,
+        ts: i64,
+        bid_price: f64,
+        bid_qty: f64,
+        ask_price: f64,
+        ask_qty: f64,
+    ) -> Self {
+        Self {
+            venue,
+            ts,
+            bid_price,
+            bid_qty,
+            ask_price,
+            ask_qty,
+        }
+    }
+
+    pub fn checked(
+        venue: u8,
+        ts: i64,
+        bid_price: f64,
+        bid_qty: f64,
+        ask_price: f64,
+        ask_qty: f64,
+    ) -> Option<Self> {
+        (bid_price.is_finite()
+            && bid_price > 0.0
+            && bid_qty.is_finite()
+            && bid_qty > 0.0
+            && ask_price.is_finite()
+            && ask_price > 0.0
+            && ask_qty.is_finite()
+            && ask_qty > 0.0)
+            .then(|| Self::new(venue, ts, bid_price, bid_qty, ask_price, ask_qty))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SignalBbo {
+    pub open: Option<SignalBboLeg>,
+    pub hedge: Option<SignalBboLeg>,
+}
+
+impl SignalBbo {
+    pub fn new(open: Option<SignalBboLeg>, hedge: Option<SignalBboLeg>) -> Option<Self> {
+        (open.is_some() || hedge.is_some()).then_some(Self { open, hedge })
+    }
+
+    pub fn encode_optional(value: Option<Self>) -> [u8; SIGNAL_BBO_BINARY_LEN] {
+        let value = value.unwrap_or_default();
+        let mut out = [0u8; SIGNAL_BBO_BINARY_LEN];
+        let mut mask = 0u8;
+        if value.open.is_some() {
+            mask |= SIGNAL_BBO_OPEN_PRESENT;
+        }
+        if value.hedge.is_some() {
+            mask |= SIGNAL_BBO_HEDGE_PRESENT;
+        }
+        out[0] = mask;
+        encode_leg(&mut out[1..1 + SIGNAL_BBO_LEG_BINARY_LEN], value.open);
+        encode_leg(&mut out[1 + SIGNAL_BBO_LEG_BINARY_LEN..], value.hedge);
+        out
+    }
+
+    pub fn decode_optional(raw: &[u8]) -> Result<Option<Self>, String> {
+        if raw.len() != SIGNAL_BBO_BINARY_LEN {
+            return Err(format!(
+                "invalid signal_bbo length: expected {}, got {}",
+                SIGNAL_BBO_BINARY_LEN,
+                raw.len()
+            ));
+        }
+        let mask = raw[0];
+        if mask & !SIGNAL_BBO_VALID_MASK != 0 {
+            return Err(format!("invalid signal_bbo presence mask: {mask}"));
+        }
+        let open = decode_leg(
+            &raw[1..1 + SIGNAL_BBO_LEG_BINARY_LEN],
+            mask & SIGNAL_BBO_OPEN_PRESENT != 0,
+        );
+        let hedge = decode_leg(
+            &raw[1 + SIGNAL_BBO_LEG_BINARY_LEN..],
+            mask & SIGNAL_BBO_HEDGE_PRESENT != 0,
+        );
+        Ok(Self::new(open, hedge))
+    }
+}
+
+fn encode_leg(out: &mut [u8], leg: Option<SignalBboLeg>) {
+    let Some(leg) = leg else {
+        return;
+    };
+    out[0] = leg.venue;
+    out[1..9].copy_from_slice(&leg.ts.to_le_bytes());
+    out[9..17].copy_from_slice(&leg.bid_price.to_le_bytes());
+    out[17..25].copy_from_slice(&leg.bid_qty.to_le_bytes());
+    out[25..33].copy_from_slice(&leg.ask_price.to_le_bytes());
+    out[33..41].copy_from_slice(&leg.ask_qty.to_le_bytes());
+}
+
+fn decode_leg(raw: &[u8], present: bool) -> Option<SignalBboLeg> {
+    if !present {
+        return None;
+    }
+    let read_i64 = |start: usize| {
+        i64::from_le_bytes(
+            raw[start..start + 8]
+                .try_into()
+                .expect("fixed signal_bbo leg"),
+        )
+    };
+    let read_f64 = |start: usize| {
+        f64::from_le_bytes(
+            raw[start..start + 8]
+                .try_into()
+                .expect("fixed signal_bbo leg"),
+        )
+    };
+    Some(SignalBboLeg::new(
+        raw[0],
+        read_i64(1),
+        read_f64(9),
+        read_f64(17),
+        read_f64(25),
+        read_f64(33),
+    ))
+}
+
 /// 统一订单格式（仅结构定义，不含持久化接线逻辑）。
 ///
 /// 设计约束：
@@ -25,7 +172,7 @@ pub struct UnifiedOrderRecord {
     pub submit_ts: i64,
     /// OrderUpdate / TradeUpdate / 查询回报最近一次被本地实质性接受的时间戳（µs）。
     pub local_ts: i64,
-    /// 行情时间戳预留位（µs）；当前由调用方填 0，留给后续接入行情链路时间用。
+    /// 触发订单决策的盘口事件时间（µs）；双腿信号取两腿最大值，缺失时为 0。
     pub mkt_ts: i64,
 
     /// 客户端自定义订单 ID（幂等与追踪）。
@@ -54,6 +201,10 @@ pub struct UnifiedOrderRecord {
     pub from_key_len: u32,
     /// 来源规则标识（不限制长度，原始二进制 bytes）。
     pub from_key: Vec<u8>,
+
+    /// Decision-time BBO. Current producers populate it; historical records may
+    /// omit the fixed binary tail and decode to None.
+    pub signal_bbo: Option<SignalBbo>,
 }
 
 impl UnifiedOrderRecord {
@@ -67,5 +218,26 @@ impl UnifiedOrderRecord {
     pub fn length_fields_consistent(&self) -> bool {
         self.symbol_len as usize == self.symbol.len()
             && self.from_key_len as usize == self.from_key.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_bbo_fixed_binary_roundtrip() {
+        let open = SignalBboLeg::new(1, 10, 100.0, 2.0, 100.1, 3.0);
+        let hedge = SignalBboLeg::new(2, 11, 99.9, 4.0, 100.0, 5.0);
+        let value = SignalBbo::new(Some(open), Some(hedge));
+        let encoded = SignalBbo::encode_optional(value);
+        assert_eq!(encoded.len(), SIGNAL_BBO_BINARY_LEN);
+        assert_eq!(SignalBbo::decode_optional(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn signal_bbo_empty_binary_decodes_to_none() {
+        let encoded = SignalBbo::encode_optional(None);
+        assert_eq!(SignalBbo::decode_optional(&encoded).unwrap(), None);
     }
 }

@@ -6,6 +6,7 @@ use bytes::{BufMut, BytesMut};
 use clap::Parser;
 use log::info;
 use order_common::{ExecutionType, OrderStatus, OrderType, Side, TimeInForce, TradingVenue};
+use persist_common::{SignalBbo, SignalBboLeg, SIGNAL_BBO_BINARY_LEN};
 use persist_manager::sync::center_source_cf_name;
 use persist_manager::RocksDbStore;
 use polars::prelude::*;
@@ -13,6 +14,20 @@ use polars::prelude::*;
 const CF_UNIFORM_ORDERS: &str = "uniform_orders";
 const CF_ORDER_UPDATES_UNMATCHED: &str = "order_updates_unmatched";
 const CF_TRADE_UPDATES_UNMATCHED: &str = "trade_updates_unmatched";
+const SIGNAL_BBO_PARQUET_COLUMNS: [&str; 12] = [
+    "signal_open_venue",
+    "signal_open_ts",
+    "signal_open_bid_price",
+    "signal_open_bid_qty",
+    "signal_open_ask_price",
+    "signal_open_ask_qty",
+    "signal_hedge_venue",
+    "signal_hedge_ts",
+    "signal_hedge_bid_price",
+    "signal_hedge_bid_qty",
+    "signal_hedge_ask_price",
+    "signal_hedge_ask_qty",
+];
 const STANDARD_CFS: [&str; 3] = [
     CF_UNIFORM_ORDERS,
     CF_ORDER_UPDATES_UNMATCHED,
@@ -398,6 +413,7 @@ struct UniformColumns<'a> {
     status: &'a StringChunked,
     from_key: &'a StringChunked,
     from_key_hex: &'a StringChunked,
+    signal_bbo: Option<SignalBboColumns<'a>>,
     bbo_spread: &'a StringChunked,
 }
 
@@ -424,8 +440,107 @@ impl<'a> UniformColumns<'a> {
             status: str_col(df, "status")?,
             from_key: str_col(df, "from_key")?,
             from_key_hex: str_col(df, "from_key_hex")?,
+            signal_bbo: SignalBboColumns::new_optional(df)?,
             bbo_spread: str_col(df, "bbo_spread")?,
         })
+    }
+}
+
+struct SignalBboColumns<'a> {
+    open: SignalBboLegColumns<'a>,
+    hedge: SignalBboLegColumns<'a>,
+}
+
+impl<'a> SignalBboColumns<'a> {
+    fn new_optional(df: &'a DataFrame) -> Result<Option<Self>> {
+        let present = SIGNAL_BBO_PARQUET_COLUMNS
+            .iter()
+            .filter(|name| df.column(name).is_ok())
+            .count();
+        if present == 0 {
+            return Ok(None);
+        }
+        if present != SIGNAL_BBO_PARQUET_COLUMNS.len() {
+            return Err(anyhow!(
+                "signal_bbo parquet columns must be absent or complete (found {present}/{})",
+                SIGNAL_BBO_PARQUET_COLUMNS.len()
+            ));
+        }
+
+        Ok(Some(Self {
+            open: SignalBboLegColumns::new(df, "signal_open")?,
+            hedge: SignalBboLegColumns::new(df, "signal_hedge")?,
+        }))
+    }
+
+    fn value(&self, row: usize) -> Result<Option<SignalBbo>> {
+        Ok(SignalBbo::new(
+            self.open.value(row, "signal_open")?,
+            self.hedge.value(row, "signal_hedge")?,
+        ))
+    }
+}
+
+struct SignalBboLegColumns<'a> {
+    venue: &'a StringChunked,
+    ts: &'a Int64Chunked,
+    bid_price: &'a Float64Chunked,
+    bid_qty: &'a Float64Chunked,
+    ask_price: &'a Float64Chunked,
+    ask_qty: &'a Float64Chunked,
+}
+
+impl<'a> SignalBboLegColumns<'a> {
+    fn new(df: &'a DataFrame, prefix: &str) -> Result<Self> {
+        Ok(Self {
+            venue: str_col(df, &format!("{prefix}_venue"))?,
+            ts: i64_col(df, &format!("{prefix}_ts"))?,
+            bid_price: f64_col(df, &format!("{prefix}_bid_price"))?,
+            bid_qty: f64_col(df, &format!("{prefix}_bid_qty"))?,
+            ask_price: f64_col(df, &format!("{prefix}_ask_price"))?,
+            ask_qty: f64_col(df, &format!("{prefix}_ask_qty"))?,
+        })
+    }
+
+    fn value(&self, row: usize, prefix: &str) -> Result<Option<SignalBboLeg>> {
+        let venue = self.venue.get(row);
+        let ts = self.ts.get(row);
+        let bid_price = self.bid_price.get(row);
+        let bid_qty = self.bid_qty.get(row);
+        let ask_price = self.ask_price.get(row);
+        let ask_qty = self.ask_qty.get(row);
+        let present = [
+            venue.is_some(),
+            ts.is_some(),
+            bid_price.is_some(),
+            bid_qty.is_some(),
+            ask_price.is_some(),
+            ask_qty.is_some(),
+        ]
+        .into_iter()
+        .filter(|value| *value)
+        .count();
+
+        if present == 0 {
+            return Ok(None);
+        }
+        if present != 6 {
+            return Err(anyhow!(
+                "{prefix} columns must be all null or all populated at row={row}"
+            ));
+        }
+
+        let venue = parse_venue_code(venue.expect("presence checked"))?;
+        SignalBboLeg::checked(
+            venue,
+            ts.expect("presence checked"),
+            bid_price.expect("presence checked"),
+            bid_qty.expect("presence checked"),
+            ask_price.expect("presence checked"),
+            ask_qty.expect("presence checked"),
+        )
+        .map(Some)
+        .ok_or_else(|| anyhow!("invalid {prefix} BBO values at row={row}"))
     }
 }
 
@@ -522,8 +637,16 @@ fn encode_uniform_order_row(cols: &UniformColumns<'_>, row: usize) -> Result<(Ve
     if bbo_spread.len() > u16::MAX as usize {
         return Err(anyhow!("bbo_spread too long: {} bytes", bbo_spread.len()));
     }
+    let signal_bbo = cols
+        .signal_bbo
+        .as_ref()
+        .map(|columns| columns.value(row))
+        .transpose()?;
 
-    let mut buf = BytesMut::with_capacity(160 + symbol.len() + from_key.len() + bbo_spread.len());
+    let signal_bbo_len = usize::from(cols.signal_bbo.is_some()) * SIGNAL_BBO_BINARY_LEN;
+    let mut buf = BytesMut::with_capacity(
+        160 + symbol.len() + from_key.len() + bbo_spread.len() + signal_bbo_len,
+    );
     buf.put_i64_le(required_i64(cols.recv_ts_us, row, "recv_ts_us")?);
     buf.put_u16_le(symbol.len() as u16);
     buf.put_slice(symbol.as_bytes());
@@ -558,6 +681,9 @@ fn encode_uniform_order_row(cols: &UniformColumns<'_>, row: usize) -> Result<(Ve
     buf.put_slice(&from_key);
     buf.put_u16_le(bbo_spread.len() as u16);
     buf.put_slice(bbo_spread.as_bytes());
+    if cols.signal_bbo.is_some() {
+        buf.put_slice(&SignalBbo::encode_optional(signal_bbo.flatten()));
+    }
     Ok((key, buf.to_vec()))
 }
 

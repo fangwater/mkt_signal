@@ -59,18 +59,22 @@ pub fn build_arb_open_context_from_level(input: ArbOpenContextInput<'_>) -> ArbO
     let open_trade_symbol = input.open_trade_symbol;
     let hedge_trade_symbol = input.hedge_trade_symbol;
 
-    ctx.opening_leg = TradingLeg::new(
+    ctx.opening_leg = TradingLeg::new_with_qty(
         input.open_venue,
         input.open_quote.bid,
+        input.open_quote.bid_qty,
         input.open_quote.ask,
+        input.open_quote.ask_qty,
         input.open_quote.ts,
     );
     ctx.set_opening_symbol(open_trade_symbol);
 
-    ctx.hedging_leg = TradingLeg::new(
+    ctx.hedging_leg = TradingLeg::new_with_qty(
         input.hedge_venue,
         input.hedge_quote.bid,
+        input.hedge_quote.bid_qty,
         input.hedge_quote.ask,
+        input.hedge_quote.ask_qty,
         input.hedge_quote.ts,
     );
     ctx.set_hedging_symbol(hedge_trade_symbol);

@@ -1,6 +1,7 @@
 mod bbo_spread;
 pub mod exporter;
 mod iceoryx;
+mod order_queue_position;
 mod order_update;
 pub mod parquet;
 mod polling;
@@ -19,6 +20,7 @@ use anyhow::Result;
 use log::info;
 
 use bbo_spread::BboSpreadRuntime;
+use order_queue_position::OrderQueuePositionPersistor;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use polling::PollStats;
 use sync::{serve_sync_source, PersistSyncConfig};
@@ -39,6 +41,7 @@ pub fn required_column_families() -> Vec<&'static str> {
     let mut cf_names: Vec<&'static str> = Vec::new();
     cf_names.extend_from_slice(trade_update::required_column_families());
     cf_names.extend_from_slice(order_update::required_column_families());
+    cf_names.extend_from_slice(order_queue_position::required_column_families());
     cf_names.extend_from_slice(uniform_order_persist::required_column_families());
     cf_names
 }
@@ -109,6 +112,9 @@ impl PersistManager {
         let order_update_unmatched =
             OrderUpdateUnmatchedPersistor::new(store.clone(), sync_enabled)?;
 
+        info!("starting order queue position persistor");
+        let order_queue_position = OrderQueuePositionPersistor::new(store.clone(), sync_enabled)?;
+
         info!("starting uniform order persistor");
         let uniform_order = if let Some(runtime) = bbo_runtime {
             UniformOrderPersistor::new_with_bbo_spread(
@@ -127,6 +133,7 @@ impl PersistManager {
                 trade_update_unmatched,
                 order_update,
                 order_update_unmatched,
+                order_queue_position,
                 uniform_order,
             )
             .await;
@@ -146,6 +153,7 @@ async fn run_persistors(
     trade_update_unmatched: TradeUpdateUnmatchedPersistor,
     order_update: OrderUpdatePersistor,
     order_update_unmatched: OrderUpdateUnmatchedPersistor,
+    order_queue_position: OrderQueuePositionPersistor,
     uniform_order: UniformOrderPersistor,
 ) {
     info!(
@@ -161,6 +169,7 @@ async fn run_persistors(
         stats.merge(trade_update_unmatched.poll_available());
         stats.merge(order_update.poll_available());
         stats.merge(order_update_unmatched.poll_available());
+        stats.merge(order_queue_position.poll_available());
         stats.merge(uniform_order.poll_available(&mut uniform_pending));
 
         if stats.receive_error {

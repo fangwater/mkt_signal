@@ -384,7 +384,7 @@ fn process_askbid_payload(
             let quote = venue_quotes
                 .entry(symbol.clone())
                 .or_insert(Quote::default());
-            quote.update(bid_price, ask_price, timestamp);
+            quote.update(bid_price, bid_amount, ask_price, ask_amount, timestamp);
             Some(symbol)
         } else {
             None

@@ -1243,10 +1243,12 @@ impl MmDecisionState {
             }
 
             let mut ctx = MmOpenCtx::new();
-            ctx.opening_leg = TradingLeg::new(
+            ctx.opening_leg = TradingLeg::new_with_qty(
                 self.open_venue,
                 plan.quote.bid,
+                plan.quote.bid_qty,
                 plan.quote.ask,
+                plan.quote.ask_qty,
                 plan.quote.ts,
             );
             ctx.set_opening_symbol(&plan.symbol);

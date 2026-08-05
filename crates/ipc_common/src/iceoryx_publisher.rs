@@ -628,4 +628,5 @@ pub type ResamplePublisher = GenericPublisher<RESAMPLE_PAYLOAD>;
 // 通用持久化发布器（支持所有交易所）
 pub type TradeUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;
 pub type OrderUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;
+pub type OrderQueuePositionPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
 pub type UniformOrderPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
