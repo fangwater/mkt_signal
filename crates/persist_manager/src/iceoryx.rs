@@ -12,6 +12,13 @@ const NODE_PREFIX: &str = "persist_record_";
 pub fn create_record_subscriber(
     channel: &str,
 ) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>> {
+    create_record_subscriber_with_max_publishers(channel, 1)
+}
+
+pub fn create_record_subscriber_with_max_publishers(
+    channel: &str,
+    max_publishers: usize,
+) -> Result<Subscriber<ipc::Service, [u8; SIGNAL_PAYLOAD], ()>> {
     let node_name = format!("{}{}", NODE_PREFIX, sanitize_suffix(channel));
     let service_name = build_service_name(&format!("persist_pubs/{}", channel));
 
@@ -23,7 +30,7 @@ pub fn create_record_subscriber(
     let service = node
         .service_builder(&ServiceName::new(&service_name)?)
         .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
-        .max_publishers(1)
+        .max_publishers(max_publishers)
         .max_subscribers(32)
         .history_size(128)
         .subscriber_max_buffer_size(256)

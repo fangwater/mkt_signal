@@ -5,11 +5,16 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::service::ipc;
 use log::warn;
 
-use crate::iceoryx::{create_record_subscriber, trim_order_queue_position_payload};
+use crate::iceoryx::{
+    create_record_subscriber_with_max_publishers, trim_order_queue_position_payload,
+};
 use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
 use crate::storage::RocksDbStore;
 use crate::sync::persist_with_outbox;
-use persist_common::{OrderQueuePositionRecord, ORDER_QUEUE_POSITION_RECORD_CHANNEL};
+use persist_common::{
+    OrderQueuePositionRecord, ORDER_QUEUE_POSITION_RECORD_CHANNEL,
+    ORDER_QUEUE_POSITION_RECORD_MAX_PUBLISHERS,
+};
 
 pub(crate) const CF_ORDER_QUEUE_POSITION: &str = "order_queue_positions";
 
@@ -25,7 +30,10 @@ pub struct OrderQueuePositionPersistor {
 
 impl OrderQueuePositionPersistor {
     pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
-        let subscriber = create_record_subscriber(ORDER_QUEUE_POSITION_RECORD_CHANNEL)?;
+        let subscriber = create_record_subscriber_with_max_publishers(
+            ORDER_QUEUE_POSITION_RECORD_CHANNEL,
+            ORDER_QUEUE_POSITION_RECORD_MAX_PUBLISHERS,
+        )?;
         Ok(Self {
             subscriber,
             store,

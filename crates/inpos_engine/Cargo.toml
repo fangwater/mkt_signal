@@ -8,3 +8,4 @@ name = "queue_position_engine"
 path = "src/lib.rs"
 
 [dependencies]
+ahash.workspace = true

@@ -1,4 +1,6 @@
 const ORDER_QUEUE_POSITION_RECORD_FIXED_BYTES: usize = 68;
+pub const ORDER_QUEUE_POSITION_MSG_BYTES: usize = 64;
+pub const ORDER_QUEUE_POSITION_MAX_BYTES: usize = ORDER_QUEUE_POSITION_MSG_BYTES;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,100 @@ impl OrderQueuePositionAction {
             Self::Expired => "expired",
         }
     }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Filled | Self::Canceled | Self::Rejected | Self::Expired
+        )
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderQueuePositionMsgType {
+    OrderQueuePositionUpdate = 2060,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderQueuePositionMsg {
+    pub action: OrderQueuePositionAction,
+    pub create_tp: i64,
+    pub update_tp: i64,
+    pub local_tp: i64,
+    pub client_order_id: i64,
+    pub tlen: f64,
+    pub backlen: f64,
+    pub inpos: f64,
+}
+
+impl OrderQueuePositionMsg {
+    pub fn to_bytes(&self) -> [u8; ORDER_QUEUE_POSITION_MSG_BYTES] {
+        let mut out = [0u8; ORDER_QUEUE_POSITION_MSG_BYTES];
+        out[0..4].copy_from_slice(
+            &(OrderQueuePositionMsgType::OrderQueuePositionUpdate as u32).to_le_bytes(),
+        );
+        out[4] = self.action.to_u8();
+        out[8..16].copy_from_slice(&self.create_tp.to_le_bytes());
+        out[16..24].copy_from_slice(&self.update_tp.to_le_bytes());
+        out[24..32].copy_from_slice(&self.local_tp.to_le_bytes());
+        out[32..40].copy_from_slice(&self.client_order_id.to_le_bytes());
+        out[40..48].copy_from_slice(&self.tlen.to_le_bytes());
+        out[48..56].copy_from_slice(&self.backlen.to_le_bytes());
+        out[56..64].copy_from_slice(&self.inpos.to_le_bytes());
+        out
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
+        if data.len() < ORDER_QUEUE_POSITION_MSG_BYTES {
+            return Err(format!(
+                "order queue position msg too short: {} < {}",
+                data.len(),
+                ORDER_QUEUE_POSITION_MSG_BYTES
+            ));
+        }
+        let msg_type = u32::from_le_bytes(
+            data[0..4]
+                .try_into()
+                .expect("checked order queue position message"),
+        );
+        if msg_type != OrderQueuePositionMsgType::OrderQueuePositionUpdate as u32 {
+            return Err(format!(
+                "unexpected order queue position msg_type: {msg_type}"
+            ));
+        }
+        let action = OrderQueuePositionAction::from_u8(data[4])
+            .ok_or_else(|| format!("invalid order queue position action: {}", data[4]))?;
+
+        Ok(Self {
+            action,
+            create_tp: read_i64(data, 8),
+            update_tp: read_i64(data, 16),
+            local_tp: read_i64(data, 24),
+            client_order_id: read_i64(data, 32),
+            tlen: read_f64(data, 40),
+            backlen: read_f64(data, 48),
+            inpos: read_f64(data, 56),
+        })
+    }
+}
+
+#[inline]
+fn read_i64(data: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(
+        data[offset..offset + 8]
+            .try_into()
+            .expect("checked order queue position message"),
+    )
+}
+
+#[inline]
+fn read_f64(data: &[u8], offset: usize) -> f64 {
+    f64::from_le_bytes(
+        data[offset..offset + 8]
+            .try_into()
+            .expect("checked order queue position message"),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,5 +281,22 @@ mod tests {
             OrderQueuePositionRecord::from_bytes(&bytes).unwrap(),
             record
         );
+    }
+
+    #[test]
+    fn order_queue_position_msg_roundtrip() {
+        let msg = OrderQueuePositionMsg {
+            action: OrderQueuePositionAction::PartiallyFilled,
+            create_tp: 111,
+            update_tp: 222,
+            local_tp: 333,
+            client_order_id: 42,
+            tlen: 3.0,
+            backlen: 2.0,
+            inpos: 1.0,
+        };
+        let bytes = msg.to_bytes();
+        assert_eq!(bytes.len(), ORDER_QUEUE_POSITION_MSG_BYTES);
+        assert_eq!(OrderQueuePositionMsg::from_bytes(&bytes).unwrap(), msg);
     }
 }

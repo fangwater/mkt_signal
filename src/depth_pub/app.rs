@@ -3,44 +3,27 @@
 //! 订阅 mkt_pub 的 incremental 数据，维护订单簿，发布深度快照
 
 use anyhow::{anyhow, Result};
-use iceoryx2::port::publisher::Publisher;
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use indexmap::IndexSet;
 use log::{debug, info, warn};
-use runtime_common::fast_hash::{
-    fast_hash_map, fast_hash_map_from_iter, fast_hash_set, fast_hash_set_from_iter, FastHashMap,
-    FastHashSet,
-};
-use std::sync::{Arc, Mutex};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::cfg::{
-    DepthAccountSubscriptionConfig, DepthAccountSubscriptionsConfig,
-    DEFAULT_ACCOUNT_SUBSCRIPTIONS_PATH,
-};
 use super::depth_msg::DepthMsg;
-use super::order_queue_msg::{OrderQueuePositionMsg, ORDER_QUEUE_POSITION_MAX_BYTES};
-use super::orderbook::{price_to_key, OrderBook};
+use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
 use super::query_logic::{build_query_response, DepthQuerySource};
 use super::query_snapshot::{QuerySnapshotStore, SymbolQuerySnapshot};
-use super::queue_position::{
-    book_side_from_orderbook, QueuePositionPublishEvent, QueuePositionSnapshot, QueuePositionState,
-    QueuePositionStats,
-};
-use crate::common::trade_msg_parser::{parse_trade, TradeSide};
-use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
 use depth_pub_common::query_server::{DepthQueryConnection, DepthQuerySocketServer};
 use order_common::TradingVenue;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
 const INC_MAX_BYTES: usize = 2048;
-const TRADE_MAX_BYTES: usize = 128;
-const ACCOUNT_PAYLOAD: usize = 16_384;
 const TIMER_CHECK_EVERY_INCS: u64 = 500;
 const IDLE_SLEEP_MICROS: u64 = 100;
 /// 滑动窗口大小：用于去重的最近 update_id 数量
@@ -48,10 +31,7 @@ const DEDUP_WINDOW_SIZE: usize = 4096 * 2;
 const KEEPALIVE_PUSH_INTERVAL_MS: u64 = 1000;
 const BTC_DEPTH25_LOG_INTERVAL_SECS: u64 = 30;
 const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
-const QUEUE_POSITION_CLEANUP_INTERVAL_SECS: u64 = 60;
 const MAX_INC_DRAIN_PER_POLL: usize = 256;
-const MAX_TRADE_DRAIN_PER_POLL: usize = 256;
-const MAX_ACCOUNT_DRAIN_PER_POLL: usize = 256;
 const MAX_QUERY_ACCEPTS_PER_POLL: usize = 8;
 const MAX_QUERY_REQUESTS_PER_POLL: usize = 64;
 const STATS_INTERVAL_SECS: u64 = 60;
@@ -97,169 +77,15 @@ impl SymbolState {
     }
 }
 
-struct AccountSubscription {
-    account_id: String,
-    service_name: String,
-    order_queue_service_name: String,
-    venue: TradingVenue,
-    amount_scale: f64,
-    subscriber: Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()>,
-    order_queue_publisher: Publisher<ipc::Service, [u8; ORDER_QUEUE_POSITION_MAX_BYTES], ()>,
-    order_queue_publish_count: u64,
-    order_queue_drop_count: u64,
-}
-
-impl AccountSubscription {
-    fn matches_config(&self, cfg: &DepthAccountSubscriptionConfig) -> bool {
-        self.account_id == cfg.account_id
-            && self.service_name == cfg.service_name
-            && derive_order_pos_service_name(cfg)
-                .map(|service_name| self.order_queue_service_name == service_name)
-                .unwrap_or(false)
-            && self.venue == cfg.venue
-            && (self.amount_scale - cfg.amount_scale).abs() <= f64::EPSILON
-    }
-
-    fn publish_order_queue_position(&mut self, msg: &OrderQueuePositionMsg) -> bool {
-        let bytes = msg.to_bytes();
-        if bytes.len() > ORDER_QUEUE_POSITION_MAX_BYTES {
-            self.order_queue_drop_count = self.order_queue_drop_count.saturating_add(1);
-            return false;
-        }
-
-        let mut buffer = [0u8; ORDER_QUEUE_POSITION_MAX_BYTES];
-        buffer[..bytes.len()].copy_from_slice(&bytes);
-        match self.order_queue_publisher.loan_uninit() {
-            Ok(sample) => {
-                let sample = sample.write_payload(buffer);
-                if sample.send().is_ok() {
-                    self.order_queue_publish_count =
-                        self.order_queue_publish_count.saturating_add(1);
-                    true
-                } else {
-                    self.order_queue_drop_count = self.order_queue_drop_count.saturating_add(1);
-                    false
-                }
-            }
-            Err(_) => {
-                self.order_queue_drop_count = self.order_queue_drop_count.saturating_add(1);
-                false
-            }
-        }
-    }
-}
-
-#[derive(Default)]
-struct QueuePositionAccounts {
-    states: FastHashMap<String, QueuePositionState>,
-}
-
-impl QueuePositionAccounts {
-    fn is_empty(&self) -> bool {
-        self.states.is_empty()
-    }
-
-    fn resolve_order_snapshot(
-        &self,
-        account_id: Option<&str>,
-        client_order_id: i64,
-    ) -> Option<QueuePositionSnapshot> {
-        if let Some(account_id) = account_id {
-            return self
-                .states
-                .get(account_id)
-                .and_then(|state| state.order_snapshot(client_order_id));
-        }
-
-        self.states
-            .values()
-            .find_map(|state| state.order_snapshot(client_order_id))
-    }
-
-    fn apply_level_qty_all(
-        &mut self,
-        symbol: &str,
-        side: queue_position_engine::BookSide,
-        price_key: i64,
-        qty: f64,
-        update_tp: i64,
-        local_tp: i64,
-    ) -> Vec<QueuePositionPublishEvent> {
-        let mut events = Vec::new();
-        for state in self.states.values_mut() {
-            events.extend(state.apply_level_qty(symbol, side, price_key, qty, update_tp, local_tp));
-        }
-        events
-    }
-
-    fn apply_public_trade_all(
-        &mut self,
-        symbol: &str,
-        side: queue_position_engine::Side,
-        price_key: i64,
-        qty: f64,
-        update_tp: i64,
-        local_tp: i64,
-    ) -> Vec<QueuePositionPublishEvent> {
-        let mut events = Vec::new();
-        for state in self.states.values_mut() {
-            events.extend(
-                state.apply_public_trade(symbol, side, price_key, qty, update_tp, local_tp),
-            );
-        }
-        events
-    }
-
-    fn process_account_payload(
-        &mut self,
-        account_id: &str,
-        payload: &[u8],
-        now_ms: i64,
-        local_tp: i64,
-    ) -> Vec<QueuePositionPublishEvent> {
-        if let Some(state) = self.states.get_mut(account_id) {
-            state.process_account_payload(payload, now_ms, local_tp)
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn clear_orders_older_than_ms(&mut self, now_ms: i64, ttl_ms: i64) -> usize {
-        self.states
-            .values_mut()
-            .map(|state| state.clear_orders_older_than_ms(now_ms, ttl_ms))
-            .sum()
-    }
-
-    fn collect_and_reset_stats(&mut self) -> Vec<(String, usize, QueuePositionStats)> {
-        let mut stats = Vec::with_capacity(self.states.len());
-        for (account_id, state) in self.states.iter_mut() {
-            let len = state.len();
-            let account_stats = state.stats();
-            state.reset_interval_stats();
-            stats.push((account_id.clone(), len, account_stats));
-        }
-        stats
-    }
-}
-
 /// Depth Publisher 应用
 pub struct DepthPubApp {
     venue: TradingVenue,
     venue_slug: String,
     publisher: DepthMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>,
-    trade_subscriber: Option<Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>>,
-    account_subscriptions_path: String,
-    account_subscriptions: Vec<AccountSubscription>,
     query_snapshots: Arc<QuerySnapshotStore>,
     query_server: DepthQuerySocketServer,
     query_connections: Vec<DepthQueryConnection>,
-    queue_positions: Option<Arc<Mutex<QueuePositionAccounts>>>,
-    account_reload_interval: Duration,
-    order_ttl: Duration,
-    last_account_reload: Instant,
-    last_queue_cleanup: Instant,
     min_qty_table: VenueMinQtyTable,
     /// symbol -> SymbolState
     symbols: FastHashMap<String, SymbolState>,
@@ -282,7 +108,6 @@ pub struct DepthPubApp {
 
 struct DepthQueryAppSource {
     snapshots: Arc<QuerySnapshotStore>,
-    queue_positions: Option<Arc<Mutex<QueuePositionAccounts>>>,
 }
 
 impl DepthQuerySource for DepthQueryAppSource {
@@ -292,18 +117,6 @@ impl DepthQuerySource for DepthQueryAppSource {
 
     fn resolve_snapshot(&self, symbol: &str) -> Option<Arc<SymbolQuerySnapshot>> {
         self.snapshots.load(symbol)
-    }
-
-    fn resolve_order_queue_position(
-        &self,
-        account_id: Option<&str>,
-        client_order_id: i64,
-    ) -> Option<QueuePositionSnapshot> {
-        let queue_positions = self.queue_positions.as_ref()?;
-        queue_positions
-            .lock()
-            .ok()
-            .and_then(|state| state.resolve_order_snapshot(account_id, client_order_id))
     }
 }
 
@@ -385,34 +198,6 @@ impl DepthPubApp {
             "Subscribed to incremental channel: dat_pbs/{}/incremental",
             venue_slug
         );
-        let trade_subscriber = match Self::create_trade_subscriber(publisher.node(), venue_slug) {
-            Ok(subscriber) => Some(subscriber),
-            Err(err) => {
-                warn!(
-                    "DepthPubApp[{}] public trade subscription disabled: {err:#}",
-                    venue_slug
-                );
-                None
-            }
-        };
-        let account_subscriptions_path = DEFAULT_ACCOUNT_SUBSCRIPTIONS_PATH.to_string();
-        let account_config = Self::load_account_subscriptions_config(&account_subscriptions_path);
-        let account_reload_interval =
-            Duration::from_secs(account_config.runtime.reload_interval_secs);
-        let order_ttl = Duration::from_secs(account_config.runtime.order_ttl_secs);
-        let (account_subscriptions, queue_accounts) = if account_config.runtime.enabled {
-            Self::build_account_subscriptions(publisher.node(), venue, &account_config.accounts)
-        } else {
-            (Vec::new(), QueuePositionAccounts::default())
-        };
-        if !account_config.runtime.enabled {
-            info!(
-                "DepthPubApp[{}] account subscriptions disabled by config",
-                venue_slug
-            );
-        }
-        let queue_positions = Some(Arc::new(Mutex::new(queue_accounts)));
-
         let query_snapshots = Arc::new(QuerySnapshotStore::new(venue_slug));
         let query_server = DepthQuerySocketServer::bind(venue_slug)?;
 
@@ -426,17 +211,9 @@ impl DepthPubApp {
             venue_slug: venue_slug.to_string(),
             publisher,
             subscriber,
-            trade_subscriber,
-            account_subscriptions_path,
-            account_subscriptions,
             query_snapshots,
             query_server,
             query_connections: Vec::new(),
-            queue_positions,
-            account_reload_interval,
-            order_ttl,
-            last_account_reload: Instant::now(),
-            last_queue_cleanup: Instant::now(),
             min_qty_table,
             symbols: fast_hash_map(),
             push_interval,
@@ -470,303 +247,6 @@ impl DepthPubApp {
         Ok(subscriber)
     }
 
-    fn create_trade_subscriber(
-        node: &Node<ipc::Service>,
-        venue: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; TRADE_MAX_BYTES], ()>> {
-        let service_name = format!("dat_pbs/{}/trade", venue);
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; TRADE_MAX_BYTES]>()
-            .open()?;
-
-        let subscriber = service.subscriber_builder().create()?;
-        info!("Subscribed to public trade channel: {}", service_name);
-        Ok(subscriber)
-    }
-
-    fn create_account_subscriber(
-        node: &Node<ipc::Service>,
-        service_name: &str,
-    ) -> Result<Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()>> {
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; ACCOUNT_PAYLOAD]>()
-            .max_publishers(1)
-            .max_subscribers(PM_MAX_SUBSCRIBERS)
-            .history_size(PM_HISTORY_SIZE)
-            .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
-            .open()?;
-
-        let subscriber = service.subscriber_builder().create()?;
-        info!("Subscribed to account monitor channel: {}", service_name);
-        Ok(subscriber)
-    }
-
-    fn create_order_queue_publisher(
-        node: &Node<ipc::Service>,
-        service_name: &str,
-    ) -> Result<Publisher<ipc::Service, [u8; ORDER_QUEUE_POSITION_MAX_BYTES], ()>> {
-        let service = node
-            .service_builder(&ServiceName::new(service_name)?)
-            .publish_subscribe::<[u8; ORDER_QUEUE_POSITION_MAX_BYTES]>()
-            .max_publishers(1)
-            .max_subscribers(10)
-            .history_size(1024)
-            .open_or_create()?;
-
-        let publisher = service.publisher_builder().create()?;
-        info!("Publishing order queue position channel: {}", service_name);
-        Ok(publisher)
-    }
-
-    fn load_account_subscriptions_config(path: &str) -> DepthAccountSubscriptionsConfig {
-        match DepthAccountSubscriptionsConfig::load_sync(path) {
-            Ok(config) => config,
-            Err(err) => {
-                warn!(
-                    "depth account subscriptions config unavailable, account queue positions disabled until reload succeeds: path={} err={:#}",
-                    path, err
-                );
-                DepthAccountSubscriptionsConfig::default()
-            }
-        }
-    }
-
-    fn build_account_subscriptions(
-        node: &Node<ipc::Service>,
-        venue: TradingVenue,
-        configs: &[DepthAccountSubscriptionConfig],
-    ) -> (Vec<AccountSubscription>, QueuePositionAccounts) {
-        let mut subscriptions = Vec::new();
-        let mut accounts = QueuePositionAccounts::default();
-        let mut seen = fast_hash_set();
-
-        for cfg in configs {
-            if cfg.venue != venue {
-                continue;
-            }
-            if !seen.insert(cfg.account_id.clone()) {
-                warn!(
-                    "duplicate depth account subscription ignored: account_id={} service={}",
-                    cfg.account_id, cfg.service_name
-                );
-                continue;
-            }
-            let Some(state) = QueuePositionState::new_for_account(
-                cfg.account_id.clone(),
-                cfg.venue,
-                cfg.amount_scale,
-            ) else {
-                warn!(
-                    "unsupported depth account subscription venue: account_id={} venue={:?}",
-                    cfg.account_id, cfg.venue
-                );
-                continue;
-            };
-
-            match Self::create_account_subscription(node, cfg) {
-                Ok(subscription) => {
-                    accounts.states.insert(cfg.account_id.clone(), state);
-                    subscriptions.push(subscription);
-                }
-                Err(err) => {
-                    warn!(
-                        "DepthPubApp account monitor subscription unavailable: account_id={} service={} err={:#}",
-                        cfg.account_id, cfg.service_name, err
-                    );
-                }
-            }
-        }
-
-        info!(
-            "DepthPubApp account subscriptions active: count={}",
-            subscriptions.len()
-        );
-        (subscriptions, accounts)
-    }
-
-    fn create_account_subscription(
-        node: &Node<ipc::Service>,
-        cfg: &DepthAccountSubscriptionConfig,
-    ) -> Result<AccountSubscription> {
-        let subscriber = Self::create_account_subscriber(node, &cfg.service_name)?;
-        let order_queue_service_name = derive_order_pos_service_name(cfg)?;
-        let order_queue_publisher =
-            Self::create_order_queue_publisher(node, &order_queue_service_name)?;
-        Ok(AccountSubscription {
-            account_id: cfg.account_id.clone(),
-            service_name: cfg.service_name.clone(),
-            order_queue_service_name,
-            venue: cfg.venue,
-            amount_scale: cfg.amount_scale,
-            subscriber,
-            order_queue_publisher,
-            order_queue_publish_count: 0,
-            order_queue_drop_count: 0,
-        })
-    }
-
-    fn maybe_reload_account_subscriptions(&mut self) {
-        if self.last_account_reload.elapsed() < self.account_reload_interval {
-            return;
-        }
-        self.last_account_reload = Instant::now();
-
-        let cfg = Self::load_account_subscriptions_config(&self.account_subscriptions_path);
-        self.account_reload_interval = Duration::from_secs(cfg.runtime.reload_interval_secs);
-        self.order_ttl = Duration::from_secs(cfg.runtime.order_ttl_secs);
-        let accounts: Vec<DepthAccountSubscriptionConfig> = cfg
-            .accounts
-            .into_iter()
-            .filter(|account| account.venue == self.venue)
-            .collect();
-
-        if !cfg.runtime.enabled {
-            if !self.account_subscriptions.is_empty() {
-                info!(
-                    "DepthPubApp[{}] account subscriptions disabled on reload; dropping {} subscribers",
-                    self.venue_slug,
-                    self.account_subscriptions.len()
-                );
-            }
-            self.account_subscriptions.clear();
-            return;
-        }
-
-        if self.queue_positions.is_none() {
-            self.queue_positions = Some(Arc::new(Mutex::new(QueuePositionAccounts::default())));
-        }
-        self.reload_account_subscriptions(&accounts);
-    }
-
-    fn reload_account_subscriptions(&mut self, configs: &[DepthAccountSubscriptionConfig]) {
-        let desired: FastHashMap<String, DepthAccountSubscriptionConfig> = fast_hash_map_from_iter(
-            configs
-                .iter()
-                .map(|cfg| (cfg.account_id.clone(), cfg.clone())),
-        );
-
-        let before = self.account_subscriptions.len();
-        let mut removed = 0usize;
-        self.account_subscriptions.retain(|sub| {
-            let keep = desired
-                .get(&sub.account_id)
-                .map(|cfg| sub.matches_config(cfg))
-                .unwrap_or(false);
-            if !keep {
-                removed += 1;
-            }
-            keep
-        });
-        let active: FastHashSet<String> = fast_hash_set_from_iter(
-            self.account_subscriptions
-                .iter()
-                .map(|sub| sub.account_id.clone()),
-        );
-
-        let mut added = 0usize;
-        for cfg in desired.values() {
-            if active.contains(&cfg.account_id) {
-                continue;
-            }
-            let Some(state) = QueuePositionState::new_for_account(
-                cfg.account_id.clone(),
-                cfg.venue,
-                cfg.amount_scale,
-            ) else {
-                warn!(
-                    "unsupported depth account subscription venue on reload: account_id={} venue={:?}",
-                    cfg.account_id, cfg.venue
-                );
-                continue;
-            };
-            match Self::create_account_subscription(self.publisher.node(), cfg) {
-                Ok(subscription) => {
-                    if let Some(queue_positions) = self.queue_positions.as_ref() {
-                        if let Ok(mut accounts) = queue_positions.lock() {
-                            accounts
-                                .states
-                                .entry(cfg.account_id.clone())
-                                .or_insert(state);
-                        }
-                    }
-                    self.account_subscriptions.push(subscription);
-                    added += 1;
-                }
-                Err(err) => {
-                    warn!(
-                        "DepthPubApp account monitor subscription unavailable on reload: account_id={} service={} err={:#}",
-                        cfg.account_id, cfg.service_name, err
-                    );
-                }
-            }
-        }
-
-        if let Some(queue_positions) = self.queue_positions.as_ref() {
-            if let Ok(mut accounts) = queue_positions.lock() {
-                for cfg in desired.values() {
-                    if !accounts.states.contains_key(&cfg.account_id) {
-                        if let Some(state) = QueuePositionState::new_for_account(
-                            cfg.account_id.clone(),
-                            cfg.venue,
-                            cfg.amount_scale,
-                        ) {
-                            accounts.states.insert(cfg.account_id.clone(), state);
-                        }
-                    }
-                }
-            }
-        } else {
-            self.queue_positions = Some(Arc::new(Mutex::new(QueuePositionAccounts::default())));
-        }
-
-        if added > 0 || removed > 0 || before != self.account_subscriptions.len() {
-            info!(
-                "DepthPubApp[{}] account subscriptions reloaded: before={} after={} desired={} added={} removed_or_changed={}",
-                self.venue_slug,
-                before,
-                self.account_subscriptions.len(),
-                desired.len(),
-                added,
-                removed
-            );
-        } else {
-            debug!(
-                "DepthPubApp[{}] account subscriptions unchanged on config reload: active={} desired={}",
-                self.venue_slug,
-                self.account_subscriptions.len(),
-                desired.len()
-            );
-        }
-    }
-
-    fn maybe_cleanup_expired_queue_orders(&mut self) {
-        if self.last_queue_cleanup.elapsed()
-            < Duration::from_secs(QUEUE_POSITION_CLEANUP_INTERVAL_SECS)
-        {
-            return;
-        }
-        self.last_queue_cleanup = Instant::now();
-
-        let Some(queue_positions) = self.queue_positions.as_ref() else {
-            return;
-        };
-        let ttl_ms = self.order_ttl.as_millis() as i64;
-        let now_ms = runtime_common::time_util::get_timestamp_us() / 1_000;
-        if let Ok(mut accounts) = queue_positions.lock() {
-            let expired = accounts.clear_orders_older_than_ms(now_ms, ttl_ms);
-            if expired > 0 {
-                info!(
-                    "DepthPubApp[{}] expired queue position orders cleared: count={} ttl_secs={}",
-                    self.venue_slug,
-                    expired,
-                    self.order_ttl.as_secs()
-                );
-            }
-        }
-    }
-
     /// 主循环
     pub fn run(&mut self) -> Result<()> {
         info!("DepthMsgApp[{}] starting main loop", self.venue_slug);
@@ -796,11 +276,7 @@ impl DepthPubApp {
             self.process_message(&data);
         }
 
-        has_message |= self.drain_public_trades(MAX_TRADE_DRAIN_PER_POLL)?;
-        has_message |= self.drain_account_updates(MAX_ACCOUNT_DRAIN_PER_POLL)?;
         has_message |= self.poll_query_server()?;
-        self.maybe_reload_account_subscriptions();
-        self.maybe_cleanup_expired_queue_orders();
 
         if !has_message {
             self.idle_check_counter += 1;
@@ -818,7 +294,6 @@ impl DepthPubApp {
     fn poll_query_server(&mut self) -> Result<bool> {
         let source = DepthQueryAppSource {
             snapshots: Arc::clone(&self.query_snapshots),
-            queue_positions: self.queue_positions.as_ref().map(Arc::clone),
         };
         let activity = self.query_server.poll(
             &mut self.query_connections,
@@ -992,24 +467,6 @@ impl DepthPubApp {
             return;
         }
 
-        let mut queue_level_updates = Vec::with_capacity(bids.len() + asks.len());
-        for (price, amount) in &bids {
-            queue_level_updates.push((
-                book_side_from_orderbook(true),
-                price_to_key(*price),
-                state.orderbook.bids.amount_at_price(*price).unwrap_or(0.0),
-                *amount,
-            ));
-        }
-        for (price, amount) in &asks {
-            queue_level_updates.push((
-                book_side_from_orderbook(false),
-                price_to_key(*price),
-                state.orderbook.asks.amount_at_price(*price).unwrap_or(0.0),
-                *amount,
-            ));
-        }
-
         if is_snapshot {
             state
                 .orderbook
@@ -1024,7 +481,6 @@ impl DepthPubApp {
                 .apply_update(&bids, &asks, final_update_id, timestamp);
         }
         state.query_snapshot_dirty = true;
-        self.apply_queue_level_updates(&symbol, queue_level_updates, timestamp_to_us(timestamp));
 
         self.update_count += 1;
 
@@ -1055,117 +511,6 @@ impl DepthPubApp {
 
         for symbol in symbols_to_push {
             self.push_depth(&symbol);
-        }
-    }
-
-    fn apply_queue_level_updates(
-        &mut self,
-        symbol: &str,
-        updates: Vec<(queue_position_engine::BookSide, i64, f64, f64)>,
-        update_tp: i64,
-    ) {
-        let mut events = Vec::new();
-        let Some(queue_positions) = self.queue_positions.as_ref() else {
-            return;
-        };
-        let Ok(mut state) = queue_positions.lock() else {
-            return;
-        };
-        if state.is_empty() {
-            return;
-        }
-        for (side, price_key, old_qty, new_qty) in updates {
-            if (old_qty - new_qty).abs() <= f64::EPSILON {
-                continue;
-            }
-            let local_tp = runtime_common::time_util::get_timestamp_us();
-            events.extend(
-                state.apply_level_qty_all(symbol, side, price_key, new_qty, update_tp, local_tp),
-            );
-        }
-        drop(state);
-        self.publish_order_queue_events(events);
-    }
-
-    fn drain_public_trades(&mut self, max_messages: usize) -> Result<bool> {
-        let mut events = Vec::new();
-        let mut has_message = false;
-        {
-            let Some(subscriber) = self.trade_subscriber.as_ref() else {
-                return Ok(false);
-            };
-            let mut drained = 0usize;
-            while drained < max_messages {
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                has_message = true;
-                drained += 1;
-                let payload = sample.payload();
-                let Some(trade) = parse_trade(payload, self.venue) else {
-                    continue;
-                };
-                let side = match trade.side {
-                    TradeSide::Buy => queue_position_engine::Side::Buy,
-                    TradeSide::Sell => queue_position_engine::Side::Sell,
-                };
-                if let Some(queue_positions) = self.queue_positions.as_ref() {
-                    if let Ok(mut state) = queue_positions.lock() {
-                        let local_tp = runtime_common::time_util::get_timestamp_us();
-                        events.extend(state.apply_public_trade_all(
-                            &trade.symbol,
-                            side,
-                            price_to_key(trade.price),
-                            trade.amount,
-                            trade.timestamp_us,
-                            local_tp,
-                        ));
-                    }
-                }
-            }
-        }
-        self.publish_order_queue_events(events);
-        Ok(has_message)
-    }
-
-    fn drain_account_updates(&mut self, max_messages: usize) -> Result<bool> {
-        let mut events = Vec::new();
-        let mut has_message = false;
-        let mut drained = 0usize;
-        for subscription in &self.account_subscriptions {
-            while drained < max_messages {
-                let Some(sample) = subscription.subscriber.receive()? else {
-                    break;
-                };
-                has_message = true;
-                drained += 1;
-                if let Some(queue_positions) = self.queue_positions.as_ref() {
-                    if let Ok(mut state) = queue_positions.lock() {
-                        let local_tp = runtime_common::time_util::get_timestamp_us();
-                        let now_ms = local_tp / 1_000;
-                        events.extend(state.process_account_payload(
-                            &subscription.account_id,
-                            sample.payload(),
-                            now_ms,
-                            local_tp,
-                        ));
-                    }
-                }
-            }
-        }
-        self.publish_order_queue_events(events);
-        Ok(has_message)
-    }
-
-    fn publish_order_queue_events(&mut self, events: Vec<QueuePositionPublishEvent>) {
-        for event in events {
-            if let Some(subscription) = self
-                .account_subscriptions
-                .iter_mut()
-                .find(|subscription| subscription.account_id == event.account_id)
-            {
-                subscription.publish_order_queue_position(&event.msg);
-            }
         }
     }
 
@@ -1333,12 +678,6 @@ impl DepthPubApp {
 
     /// 打印统计
     fn log_stats(&mut self) {
-        let queue_stats = self.queue_positions.as_ref().and_then(|queue_positions| {
-            queue_positions
-                .lock()
-                .ok()
-                .map(|mut accounts| accounts.collect_and_reset_stats())
-        });
         info!(
             "DepthMsgApp[{}] stats: symbols={}, updates={}, pushes={}",
             self.venue_slug,
@@ -1346,38 +685,6 @@ impl DepthPubApp {
             self.update_count,
             self.push_count
         );
-        if let Some(queue_stats) = queue_stats {
-            for (account_id, tracked_orders, stats) in queue_stats {
-                info!(
-                    "QueuePosition[{}] stats: account_id={} tracked_orders={} public_trades={} level_updates={} order_updates={} trade_updates={} add_orders={} fill_updates={} remove_orders={} expired_orders={} account_decode_fail={} account_filtered={}",
-                    self.venue_slug,
-                    account_id,
-                    tracked_orders,
-                    stats.public_trade_count,
-                    stats.level_update_count,
-                    stats.order_update_count,
-                    stats.trade_update_count,
-                    stats.add_order_count,
-                    stats.fill_update_count,
-                    stats.remove_order_count,
-                    stats.expired_order_count,
-                    stats.account_decode_fail_count,
-                    stats.account_filtered_count
-                );
-            }
-        }
-        for subscription in &mut self.account_subscriptions {
-            info!(
-                "OrderQueuePublisher[{}] stats: account_id={} service={} published={} dropped={}",
-                self.venue_slug,
-                subscription.account_id,
-                subscription.order_queue_service_name,
-                subscription.order_queue_publish_count,
-                subscription.order_queue_drop_count
-            );
-            subscription.order_queue_publish_count = 0;
-            subscription.order_queue_drop_count = 0;
-        }
         self.publisher.log_stats();
         self.update_count = 0;
         self.push_count = 0;
@@ -1403,39 +710,4 @@ fn scaled_depth_levels(
     scale_depth_amounts(&mut bids, amount_scale);
     scale_depth_amounts(&mut asks, amount_scale);
     (bids, asks)
-}
-
-fn derive_order_pos_service_name(cfg: &DepthAccountSubscriptionConfig) -> Result<String> {
-    let Some((namespace, _)) = cfg.service_name.split_once("/account_pubs/") else {
-        return Err(anyhow!(
-            "account monitor service_name must include namespace/account_pubs: account_id={} service_name={}",
-            cfg.account_id,
-            cfg.service_name
-        ));
-    };
-    if namespace.trim().is_empty() {
-        return Err(anyhow!(
-            "account monitor service_name namespace is empty: account_id={} service_name={}",
-            cfg.account_id,
-            cfg.service_name
-        ));
-    }
-    Ok(format!(
-        "{}/order_pos_pub/{}",
-        namespace,
-        cfg.venue.data_pub_slug()
-    ))
-}
-
-fn timestamp_to_us(timestamp: i64) -> i64 {
-    if timestamp <= 0 {
-        return runtime_common::time_util::get_timestamp_us();
-    }
-    if timestamp >= 1_000_000_000_000_000 {
-        timestamp
-    } else if timestamp >= 1_000_000_000_000 {
-        timestamp.saturating_mul(1_000)
-    } else {
-        timestamp
-    }
 }

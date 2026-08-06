@@ -1024,7 +1024,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 match OrderQueuePositionChannel::new([open_venue, hedge_venue]) {
                     Ok(channel) => Some(channel),
                     Err(err) => {
-                        warn!("order-position lifecycle persistence disabled: {err:#}");
+                        warn!("order-position lifecycle tracking disabled: {err:#}");
                         None
                     }
                 };

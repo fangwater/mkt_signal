@@ -2280,7 +2280,6 @@ dependencies = [
  "persist_common",
  "prettytable",
  "prost",
- "queue_position_engine",
  "quote_plan",
  "rayon",
  "redis",
@@ -3497,6 +3496,9 @@ dependencies = [
 [[package]]
 name = "queue_position_engine"
 version = "0.1.0"
+dependencies = [
+ "ahash",
+]
 
 [[package]]
 name = "quote"
@@ -4998,6 +5000,7 @@ name = "trade_signal"
 version = "0.1.0"
 dependencies = [
  "account_common",
+ "ahash",
  "anyhow",
  "bytes",
  "chrono",
@@ -5012,6 +5015,8 @@ dependencies = [
  "log",
  "mkt_parsers",
  "order_common",
+ "persist_common",
+ "queue_position_engine",
  "quote_plan",
  "redis",
  "reqwest",

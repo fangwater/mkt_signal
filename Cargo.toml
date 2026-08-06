@@ -308,7 +308,6 @@ symbol_utils = { path = "crates/symbol_utils" }
 ipc_common = { path = "crates/ipc_common" }
 depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
-queue_position_engine = { path = "crates/inpos_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }
 rolling_common = { path = "crates/rolling_common" }
 viz_common = { path = "crates/viz_common" }

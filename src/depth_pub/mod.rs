@@ -6,9 +6,7 @@
 pub mod app;
 pub mod cfg;
 pub mod depth_msg;
-pub mod order_queue_msg;
 pub mod orderbook;
 pub mod publisher;
 pub mod query_logic;
 pub mod query_snapshot;
-pub mod queue_position;

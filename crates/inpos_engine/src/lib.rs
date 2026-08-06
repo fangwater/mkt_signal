@@ -1,3 +1,4 @@
+use ahash::RandomState;
 use std::collections::{HashMap, VecDeque};
 
 pub type OrderId = i64;
@@ -5,6 +6,13 @@ pub type PriceKey = i64;
 pub type Qty = f64;
 
 const DEFAULT_EPS: Qty = 1e-12;
+
+type FastHashMap<K, V> = HashMap<K, V, RandomState>;
+
+#[inline]
+fn fast_hash_map<K, V>() -> FastHashMap<K, V> {
+    HashMap::with_hasher(RandomState::new())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
@@ -165,9 +173,9 @@ pub struct LevelSummary {
 
 #[derive(Debug, Clone)]
 pub struct QueuePositionEngine {
-    orders: HashMap<OrderId, TrackedOrder>,
-    level_orders: HashMap<LevelKey, VecDeque<OrderId>>,
-    level_qty: HashMap<LevelKey, Qty>,
+    orders: FastHashMap<OrderId, TrackedOrder>,
+    level_orders: FastHashMap<LevelKey, VecDeque<OrderId>>,
+    level_qty: FastHashMap<LevelKey, Qty>,
     eps: Qty,
 }
 
@@ -180,9 +188,9 @@ impl Default for QueuePositionEngine {
 impl QueuePositionEngine {
     pub fn new() -> Self {
         Self {
-            orders: HashMap::new(),
-            level_orders: HashMap::new(),
-            level_qty: HashMap::new(),
+            orders: fast_hash_map(),
+            level_orders: fast_hash_map(),
+            level_qty: fast_hash_map(),
             eps: DEFAULT_EPS,
         }
     }
@@ -310,6 +318,7 @@ impl QueuePositionEngine {
             queue.retain(|id| *id != order_id);
             if queue.is_empty() {
                 self.level_orders.remove(&level);
+                self.level_qty.remove(&level);
             }
         }
         Some(order)
@@ -339,7 +348,10 @@ impl QueuePositionEngine {
         }
 
         let level = LevelKey::new(update.symbol, update.side, update.price_key);
-        self.level_qty.insert(level.clone(), update.new_qty);
+        let Some(current_qty) = self.level_qty.get_mut(&level) else {
+            return;
+        };
+        *current_qty = update.new_qty;
         let decrease = update.old_qty - update.new_qty;
         if decrease <= self.eps {
             return;

@@ -10,8 +10,8 @@ use super::query_msg::{
     build_depth_query_socket_path, read_depth_query_frame, resp_status_name,
     write_depth_query_frame, DepthQueryHeader, DepthQueryLoadTlenBatchReq,
     DepthQueryLoadTlenBatchResp, DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp,
-    DepthQueryOrderQueuePositionReq, DepthQueryOrderQueuePositionResp, DepthQueryTop5PriceTlenReq,
-    DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD, RESP_STATUS_OK,
+    DepthQueryTop5PriceTlenReq, DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
+    RESP_STATUS_OK,
 };
 use order_common::TradingVenue;
 
@@ -181,38 +181,6 @@ impl DepthQueryClient {
             DepthQueryType::Top5PriceTlen,
         )?;
         DepthQueryTop5PriceTlenResp::from_payload(&body).map_err(|err| anyhow!(err.to_string()))
-    }
-
-    pub fn query_order_queue_position(
-        &self,
-        client_order_id: i64,
-    ) -> Result<DepthQueryOrderQueuePositionResp> {
-        self.query_order_queue_position_for_account(None, client_order_id)
-    }
-
-    pub fn query_order_queue_position_for_account(
-        &self,
-        account_id: Option<&str>,
-        client_order_id: i64,
-    ) -> Result<DepthQueryOrderQueuePositionResp> {
-        let mut req_buf = [0u8; DEPTH_QUERY_PAYLOAD];
-        let header_len =
-            DepthQueryHeader::write(&mut req_buf, DepthQueryType::OrderQueuePosition as u8, "_")
-                .map_err(|err| anyhow!(err.to_string()))?;
-        let req = DepthQueryOrderQueuePositionReq {
-            timestamp_us: crate::time_util::get_timestamp_us(),
-            client_order_id,
-            account_id: account_id.map(str::to_string),
-        };
-        let payload_len = req
-            .write_to(&mut req_buf[header_len..])
-            .map_err(|err| anyhow!(err.to_string()))?;
-        let body = self.send_query(
-            &req_buf[..header_len + payload_len],
-            DepthQueryType::OrderQueuePosition,
-        )?;
-        DepthQueryOrderQueuePositionResp::from_payload(&body)
-            .map_err(|err| anyhow!(err.to_string()))
     }
 
     fn send_query(&self, req: &[u8], expected_type: DepthQueryType) -> Result<Vec<u8>> {

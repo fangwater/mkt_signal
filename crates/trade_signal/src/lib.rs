@@ -29,6 +29,7 @@ pub mod local_tlen;
 pub mod mkt_channel;
 pub mod mm_decision;
 pub mod model_output_hub;
+pub mod queue_position;
 pub mod rate_fetcher;
 pub mod return_score_threshold;
 pub mod rolling_threshold_sync;

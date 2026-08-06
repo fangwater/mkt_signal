@@ -8,12 +8,14 @@ use runtime_common::fast_hash::fast_hash_set;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set_from_iter, FastHashMap, FastHashSet};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::hash_map::Entry;
 use std::time::{Duration, Instant};
 
 use depth_pub_common::query_msg::{price_to_tick_index, TLEN_QUERY_AMOUNT_EMPTY};
 use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
+use queue_position_engine::{BookSide, Side};
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 use super::symbol_list::SymbolList;
@@ -191,22 +193,38 @@ impl LocalTlenStore {
 
         for &(price, amount) in bids {
             if let Some(tick_index) = price_to_tick_index(price, price_tick) {
-                apply_level_update(
+                if let Some((old_qty, new_qty)) = apply_level_update(
                     &mut cache.bids,
                     tick_index,
                     amount * amount_scale,
                     update_id,
-                );
+                ) {
+                    super::queue_position::apply_level_update(
+                        symbol,
+                        BookSide::Bid,
+                        tick_index,
+                        old_qty,
+                        new_qty,
+                    );
+                }
             }
         }
         for &(price, amount) in asks {
             if let Some(tick_index) = price_to_tick_index(price, price_tick) {
-                apply_level_update(
+                if let Some((old_qty, new_qty)) = apply_level_update(
                     &mut cache.asks,
                     tick_index,
                     amount * amount_scale,
                     update_id,
-                );
+                ) {
+                    super::queue_position::apply_level_update(
+                        symbol,
+                        BookSide::Ask,
+                        tick_index,
+                        old_qty,
+                        new_qty,
+                    );
+                }
             }
         }
         self.inc_updates = self.inc_updates.saturating_add(1);
@@ -273,6 +291,7 @@ pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool)
     let mode = startup_mode_from_env(force_remote);
     match mode {
         TlenQueryMode::Remote => {
+            super::queue_position::disable();
             LOCAL_TLEN.with(|state| {
                 *state.borrow_mut() = LocalTlenRuntime::Remote;
             });
@@ -293,6 +312,7 @@ pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool)
                 *state.borrow_mut() =
                     LocalTlenRuntime::Local(LocalTlenStore::new(open_venue, table));
             });
+            super::queue_position::init_local(open_venue)?;
             spawn_incremental_listener(open_venue);
             info!(
                 "local_tlen enabled: mode=local venue={} source=trade_signal_startup",
@@ -457,10 +477,15 @@ fn process_incremental_payload(payload: &[u8]) {
     let Some(update) = parse_incremental_payload(payload) else {
         return;
     };
-    let symbol = normalize_symbol_key(update.symbol);
+    let symbol = normalize_symbol_key_cow(update.symbol);
     LOCAL_TLEN.with(|state| {
         if let LocalTlenRuntime::Local(store) = &mut *state.borrow_mut() {
-            store.apply_incremental(&symbol, update.final_update_id, &update.bids, &update.asks);
+            store.apply_incremental(
+                symbol.as_ref(),
+                update.final_update_id,
+                &update.bids,
+                &update.asks,
+            );
         }
     });
 }
@@ -472,6 +497,7 @@ fn local_tlen_housekeeping() {
             store.maybe_log_stats();
         }
     });
+    super::queue_position::housekeeping();
 }
 
 struct IncrementalUpdate<'a> {
@@ -560,23 +586,73 @@ fn apply_level_update(
     tick_index: i64,
     amount: f64,
     update_id: i64,
-) {
-    if let Some(existing) = levels.get(&tick_index) {
-        if update_id <= existing.update_id {
-            return;
+) -> Option<(f64, f64)> {
+    let new_qty = if amount > 0.0 && amount.is_finite() {
+        amount
+    } else {
+        0.0
+    };
+    match levels.entry(tick_index) {
+        Entry::Occupied(mut entry) => {
+            if update_id <= entry.get().update_id {
+                return None;
+            }
+            let old_qty = entry.get().amount;
+            entry.insert(LevelEntry {
+                amount: new_qty,
+                update_id,
+            });
+            Some((old_qty, new_qty))
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(LevelEntry {
+                amount: new_qty,
+                update_id,
+            });
+            Some((0.0, new_qty))
         }
     }
-    if amount > 0.0 && amount.is_finite() {
-        levels.insert(tick_index, LevelEntry { amount, update_id });
-    } else {
-        levels.insert(
-            tick_index,
-            LevelEntry {
-                amount: 0.0,
-                update_id,
-            },
-        );
-    }
+}
+
+pub(crate) fn queue_level_context(
+    venue: TradingVenue,
+    symbol: &str,
+    side: Side,
+    price: f64,
+) -> Option<super::queue_position::LocalLevelContext> {
+    queue_level_context_by_book_side(venue, symbol, BookSide::from_order_side(side), price)
+}
+
+pub(crate) fn queue_level_context_by_book_side(
+    venue: TradingVenue,
+    symbol: &str,
+    side: BookSide,
+    price: f64,
+) -> Option<super::queue_position::LocalLevelContext> {
+    let symbol = normalize_symbol_key_cow(symbol);
+    LOCAL_TLEN.with(|state| {
+        let state = state.borrow();
+        let LocalTlenRuntime::Local(store) = &*state else {
+            return None;
+        };
+        if store.venue != venue {
+            return None;
+        }
+        let cache = store.symbols.get(symbol.as_ref())?;
+        let price_key = price_to_tick_index(price, cache.price_tick?)?;
+        let levels = match side {
+            BookSide::Bid => &cache.bids,
+            BookSide::Ask => &cache.asks,
+        };
+        let visible_qty = query_bbo_amount(cache.bbo, price_key)
+            .or_else(|| levels.get(&price_key).map(|entry| entry.amount))
+            .unwrap_or(0.0);
+        Some(super::queue_position::LocalLevelContext {
+            price_key,
+            visible_qty,
+            amount_scale: cache.amount_scale,
+        })
+    })
 }
 
 fn query_bbo_amount(bbo: BboEntry, tick_index: i64) -> Option<f64> {
@@ -612,7 +688,7 @@ fn normalize_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
 }
 
-fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
+pub(crate) fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
     let already_canonical = symbol.is_ascii()
         && !symbol
             .bytes()
