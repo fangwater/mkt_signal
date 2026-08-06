@@ -419,7 +419,7 @@ async fn run(
         }
         DecisionBranch::Exec => {
             info!(
-                "Exec branch initialized: exec_venue={:?}; signal response worker not enabled yet",
+                "Exec branch initialized: exec_venue={:?}; decision emission disabled",
                 open_venue
             );
         }
@@ -450,29 +450,26 @@ async fn run(
     let force_remote_tlen = matches!(arb_mode, Some(ArbMode::FundingArb));
     trade_signal::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen).await?;
     if matches!(branch, DecisionBranch::Exec) {
-        MktChannel::init_singleton_readonly(open_venue, hedge_venue)?;
+        MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
+        info!("Exec branch: BBO/local tlen/queue-position runtime initialized");
     } else {
         MktChannel::init_singleton(open_venue, hedge_venue)?;
-    }
-    RateFetcher::init_for_venues(open_venue, hedge_venue)?;
+        RateFetcher::init_for_venues(open_venue, hedge_venue)?;
 
-    // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
-    let spread_factor = SpreadFactor::instance();
-    let _ = FundingRateFactor::instance();
-    info!("所有单例初始化完成");
+        // SpreadFactor 和 FundingRateFactor 会在首次访问时自动初始化
+        let spread_factor = SpreadFactor::instance();
+        let _ = FundingRateFactor::instance();
 
-    // Gate 特化：futures.tickers 是事件驱动，冷门 symbol 长时间无推送 → current_fr_ma 一直空。
-    // 用 REST `/futures/usdt/contracts`（与 WS 同字段）每 5s 兜底 seed 一次，WS 到达会通过
-    // VecDeque rolling buffer 自然顶替。其它 venue 不调用，零影响。
-    if !matches!(branch, DecisionBranch::Exec) {
+        // Gate 特化：futures.tickers 是事件驱动，冷门 symbol 长时间无推送 → current_fr_ma 一直空。
+        // 用 REST `/futures/usdt/contracts`（与 WS 同字段）每 5s 兜底 seed 一次，WS 到达会通过
+        // VecDeque rolling buffer 自然顶替。其它 venue 不调用，零影响。
         trade_signal::gate_fr_supplement::spawn_gate_current_fr_seeder(hedge_venue);
-    }
 
-    // 调试：延迟2秒后打印价差数据（等待盘口数据）
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    if !matches!(branch, DecisionBranch::Exec) {
+        // 调试：延迟2秒后打印价差数据（等待盘口数据）
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         spread_factor.debug_print_stored_spreads(open_venue, hedge_venue);
     }
+    info!("所有单例初始化完成");
 
     // 3️⃣ 启动统一配置定时重载器（60秒）
     if matches!(branch, DecisionBranch::Exec) {
@@ -564,10 +561,7 @@ async fn run(
     // }
 
     if matches!(branch, DecisionBranch::Exec) {
-        info!(
-            "✅ {} 启动完成，等待 exec signal worker 接入...",
-            PROCESS_NAME
-        );
+        info!("✅ {} Exec 启动完成，等待行情与订单事件...", PROCESS_NAME);
     } else {
         info!("✅ {} 启动完成，等待市场数据触发决策...", PROCESS_NAME);
     }
@@ -836,6 +830,12 @@ mod tests {
     #[test]
     fn parse_exec_dir_with_plain_env_tag() {
         let parsed = parse_namespace_and_key_suffix("binance_exec_trade");
+        assert_eq!(parsed, Some(("exec".to_string(), "binance".to_string())));
+    }
+
+    #[test]
+    fn parse_exec_deploy_dir_with_instance_number() {
+        let parsed = parse_namespace_and_key_suffix("binance_exec_trade01");
         assert_eq!(parsed, Some(("exec".to_string(), "binance".to_string())));
     }
 

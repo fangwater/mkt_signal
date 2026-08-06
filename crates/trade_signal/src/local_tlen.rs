@@ -3,9 +3,9 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
-#[cfg(test)]
-use runtime_common::fast_hash::fast_hash_set;
-use runtime_common::fast_hash::{fast_hash_map, fast_hash_set_from_iter, FastHashMap, FastHashSet};
+use runtime_common::fast_hash::{
+    fast_hash_map, fast_hash_set, fast_hash_set_from_iter, FastHashMap, FastHashSet,
+};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
@@ -18,6 +18,7 @@ use order_common::TradingVenue;
 use queue_position_engine::{BookSide, Side};
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
+use super::decision_router::{decision_branch, DecisionBranch};
 use super::symbol_list::SymbolList;
 
 const INC_PAYLOAD: usize = 2048;
@@ -47,6 +48,21 @@ struct BboEntry {
     timestamp_us: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolScope {
+    Online,
+    All,
+}
+
+impl SymbolScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::All => "all",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct SymbolTlenCache {
     price_tick: Option<f64>,
@@ -60,6 +76,7 @@ struct SymbolTlenCache {
 struct LocalTlenStore {
     venue: TradingVenue,
     table: VenueMinQtyTable,
+    symbol_scope: SymbolScope,
     online_symbols: FastHashSet<String>,
     symbols: FastHashMap<String, SymbolTlenCache>,
     last_online_refresh: Instant,
@@ -72,11 +89,15 @@ struct LocalTlenStore {
 }
 
 impl LocalTlenStore {
-    fn new(venue: TradingVenue, table: VenueMinQtyTable) -> Self {
-        let online_symbols = load_online_symbol_set();
+    fn new(venue: TradingVenue, table: VenueMinQtyTable, symbol_scope: SymbolScope) -> Self {
+        let online_symbols = match symbol_scope {
+            SymbolScope::Online => load_online_symbol_set(),
+            SymbolScope::All => fast_hash_set(),
+        };
         Self {
             venue,
             table,
+            symbol_scope,
             online_symbols,
             symbols: fast_hash_map(),
             last_online_refresh: Instant::now(),
@@ -90,6 +111,9 @@ impl LocalTlenStore {
     }
 
     fn maybe_refresh_online_symbols(&mut self) {
+        if matches!(self.symbol_scope, SymbolScope::All) {
+            return;
+        }
         if self.last_online_refresh.elapsed() < ONLINE_REFRESH_INTERVAL {
             return;
         }
@@ -106,8 +130,9 @@ impl LocalTlenStore {
             return;
         }
         info!(
-            "local_tlen[{}] stats online_symbols={} cached_symbols={} inc_updates={} bbo_updates={} queries={} missing={} bbo_hits={}",
+            "local_tlen[{}] stats symbol_scope={} online_symbols={} cached_symbols={} inc_updates={} bbo_updates={} queries={} missing={} bbo_hits={}",
             self.venue.data_pub_slug(),
+            self.symbol_scope.label(),
             self.online_symbols.len(),
             self.symbols.len(),
             self.inc_updates,
@@ -125,7 +150,7 @@ impl LocalTlenStore {
     }
 
     fn is_online(&self, symbol: &str) -> bool {
-        self.online_symbols.contains(symbol)
+        matches!(self.symbol_scope, SymbolScope::All) || self.online_symbols.contains(symbol)
     }
 
     fn symbol_cache_mut(&mut self, symbol: &str) -> &mut SymbolTlenCache {
@@ -266,6 +291,10 @@ thread_local! {
 }
 
 pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
+    startup_mode_from_env_with_default(force_remote, false)
+}
+
+fn startup_mode_from_env_with_default(force_remote: bool, default_local: bool) -> TlenQueryMode {
     if let Ok(raw) = std::env::var(LOCAL_TLEN_MODE_ENV) {
         match raw.trim().to_ascii_lowercase().as_str() {
             "local" => return TlenQueryMode::Local,
@@ -284,11 +313,16 @@ pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
         return TlenQueryMode::Remote;
     }
 
-    TlenQueryMode::Remote
+    if default_local {
+        TlenQueryMode::Local
+    } else {
+        TlenQueryMode::Remote
+    }
 }
 
 pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool) -> Result<()> {
-    let mode = startup_mode_from_env(force_remote);
+    let exec_branch = matches!(decision_branch(), Some(DecisionBranch::Exec));
+    let mode = startup_mode_from_env_with_default(force_remote, exec_branch);
     match mode {
         TlenQueryMode::Remote => {
             super::queue_position::disable();
@@ -309,14 +343,20 @@ pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool)
                 .await
                 .with_context(|| format!("refresh local_tlen table for {:?}", open_venue))?;
             LOCAL_TLEN.with(|state| {
+                let symbol_scope = if exec_branch {
+                    SymbolScope::All
+                } else {
+                    SymbolScope::Online
+                };
                 *state.borrow_mut() =
-                    LocalTlenRuntime::Local(LocalTlenStore::new(open_venue, table));
+                    LocalTlenRuntime::Local(LocalTlenStore::new(open_venue, table, symbol_scope));
             });
             super::queue_position::init_local(open_venue)?;
             spawn_incremental_listener(open_venue);
             info!(
-                "local_tlen enabled: mode=local venue={} source=trade_signal_startup",
-                open_venue.data_pub_slug()
+                "local_tlen enabled: mode=local venue={} symbol_scope={} source=trade_signal_startup",
+                open_venue.data_pub_slug(),
+                if exec_branch { "all" } else { "online" }
             );
             Ok(())
         }
@@ -745,6 +785,7 @@ mod tests {
         LocalTlenStore {
             venue,
             table: VenueMinQtyTable::new(venue),
+            symbol_scope: SymbolScope::Online,
             online_symbols: fast_hash_set(),
             symbols: fast_hash_map(),
             last_online_refresh: Instant::now(),
@@ -764,6 +805,29 @@ mod tests {
 
         assert_eq!(startup_mode_from_env(false), TlenQueryMode::Remote);
         assert_eq!(startup_mode_from_env(true), TlenQueryMode::Remote);
+    }
+
+    #[test]
+    fn startup_mode_can_default_to_local_for_exec() {
+        let _guard = env_test_lock();
+        std::env::remove_var(LOCAL_TLEN_MODE_ENV);
+
+        assert_eq!(
+            startup_mode_from_env_with_default(false, true),
+            TlenQueryMode::Local
+        );
+        assert_eq!(
+            startup_mode_from_env_with_default(true, true),
+            TlenQueryMode::Remote
+        );
+    }
+
+    #[test]
+    fn all_symbol_scope_accepts_unlisted_symbols() {
+        let mut store = test_store(TradingVenue::BinanceFutures);
+        assert!(!store.is_online("BTCUSDT"));
+        store.symbol_scope = SymbolScope::All;
+        assert!(store.is_online("BTCUSDT"));
     }
 
     #[test]

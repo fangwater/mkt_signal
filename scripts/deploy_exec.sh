@@ -68,9 +68,11 @@ if [[ $DO_BUILD -eq 1 ]]; then
     --bin trade_engine \
     --bin "$ACCOUNT_MONITOR_BIN" \
     --bin spread_pbs)
+  (cd "$ROOT_DIR" && cargo build --release -p trade_signal --bin trade_signal)
   (cd "$ROOT_DIR" && cargo build --release -p viz_server --bin viz_server)
   (cd "$ROOT_DIR" && cargo build --release -p persist_manager --features runtime --bin persist_manager)
   install -m 755 "${ROOT_DIR}/target/release/exec-pre-trade" "${TARGET_DIR}/exec-pre-trade"
+  install -m 755 "${ROOT_DIR}/target/release/trade_signal" "${TARGET_DIR}/trade_signal"
   install -m 755 "${ROOT_DIR}/target/release/trade_engine" "${TARGET_DIR}/trade_engine"
   install -m 755 "${ROOT_DIR}/target/release/${ACCOUNT_MONITOR_BIN}" "${TARGET_DIR}/account_monitor"
   install -m 755 "${ROOT_DIR}/target/release/persist_manager" "${TARGET_DIR}/persist_manager"
@@ -80,6 +82,7 @@ fi
 
 FILES=(
   start_exec_pre_trade.sh stop_exec_pre_trade.sh
+  start_exec_trade_signal.sh stop_exec_trade_signal.sh
   start_exec_trade_engine.sh stop_exec_trade_engine.sh
   start_exec_persist_manager.sh stop_exec_persist_manager.sh
   start_exec_viz_server.sh stop_exec_viz_server.sh
