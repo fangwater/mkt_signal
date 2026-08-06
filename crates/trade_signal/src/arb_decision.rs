@@ -3,6 +3,7 @@ use bytes::Bytes;
 use iceoryx2::config::Config;
 use iceoryx2::prelude::{Node, NodeBuilder, NodeName, ServiceName};
 use iceoryx2::service::ipc;
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -14,7 +15,9 @@ use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
 use crate::FundingRatePeriod;
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
-use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::{
+    normalize_symbol_for_whitelist, normalize_symbol_for_whitelist_cow,
+};
 use order_common::Side;
 use order_common::TradingVenue;
 use quote_plan::inventory_hedge::{
@@ -37,15 +40,15 @@ use signal_common::trade_signal::SignalType;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 use super::arb_cooldown::is_cooldown_hit;
-use super::arb_cooldown::threshold_key;
 use super::arb_cooldown::update_last_ts;
+use super::arb_cooldown::SignalCooldownKey;
 use super::arb_mode::ArbMode;
 use super::arb_open_filter::{
     lookup_factor_realtime_value, lookup_realtime_open_filter_value, select_factor_threshold,
 };
 use super::common::normalize_tlens_for_compare;
 use super::common::Quote;
-use super::common::{ArbDirection, OperationType, ThresholdKey, VenuePair};
+use super::common::{ArbDirection, OperationType, VenuePair};
 use super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub, FactorValueLookupResult};
 use super::funding_rate_factor::FundingRateFactor;
 use super::funding_threshold_loader::FundingThresholdsResolved;
@@ -54,6 +57,7 @@ use super::mkt_channel::MktChannel;
 use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::rate_fetcher::RateFetcher;
 use super::rolling_threshold_sync::StoredFactorChainEntry;
+use super::symbol_list::SymbolListMembership;
 
 pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
@@ -244,6 +248,10 @@ pub fn evaluate_funding_signal(
 
 pub fn normalize_arb_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+}
+
+fn normalize_arb_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
+    normalize_symbol_for_whitelist_cow(symbol, TradingVenue::OkexFutures)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1282,13 +1290,16 @@ fn drive_funding_decision(
     let spread_factor = super::spread_factor::SpreadFactor::instance();
     let now = get_timestamp_us();
     let symbol_list = super::symbol_list::SymbolList::instance();
-    let open_symbol_key = normalize_arb_symbol_key(open_symbol);
-    let hedge_symbol_key = normalize_arb_symbol_key(hedge_symbol);
+    let open_symbol_key_storage = normalize_arb_symbol_key_cow(open_symbol);
+    let hedge_symbol_key_storage =
+        (open_symbol != hedge_symbol).then(|| normalize_arb_symbol_key_cow(hedge_symbol));
+    let open_symbol_key = open_symbol_key_storage.as_ref();
+    let hedge_symbol_key = hedge_symbol_key_storage
+        .as_deref()
+        .unwrap_or(open_symbol_key);
+    let membership = symbol_list.membership_canonical(open_symbol_key);
     // 心跳计数：活跃 symbol 每 tick 记一条 fr_seen，保证 summary 不会空表早退。
-    if symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
-        || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
-        || symbol_list.is_in_dump_list(open_symbol_key.as_str())
-    {
+    if membership.is_online() {
         let _ = ArbDecision::with_state_mut(|arb| {
             arb.record_intercept_summary("fr_seen");
         });
@@ -1303,13 +1314,13 @@ fn drive_funding_decision(
         );
     }
 
-    let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
+    let in_dump = membership.in_dump;
     if in_dump {
         if let Some(CloseGateOutcome::Pass(close_gate)) = ArbDecision::with_state_mut(|arb| {
             arb.evaluate_close_gate(
                 spread_factor,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 now,
@@ -1317,8 +1328,8 @@ fn drive_funding_decision(
         }) {
             let emit_allowed = emit_funding_open_close_signals(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 SignalType::ArbClose,
@@ -1329,7 +1340,7 @@ fn drive_funding_decision(
                 return Ok(None);
             }
             let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_close_triggered(close_gate.key, close_gate.side, now);
+                arb.mark_close_triggered(close_gate.key, now);
             });
             return Ok(Some(SignalType::ArbClose));
         }
@@ -1337,29 +1348,30 @@ fn drive_funding_decision(
 
     let forward_cancel = spread_factor.satisfy_forward_cancel(
         open_venue,
-        open_symbol_key.as_str(),
+        open_symbol_key,
         hedge_venue,
-        hedge_symbol_key.as_str(),
+        hedge_symbol_key,
     );
     let backward_cancel = spread_factor.satisfy_backward_cancel(
         open_venue,
-        open_symbol_key.as_str(),
+        open_symbol_key,
         hedge_venue,
-        hedge_symbol_key.as_str(),
+        hedge_symbol_key,
     );
     // Cancel fwd/bwd 拆开独立处理（参考 drive_spread_arb_decision 同结构）：
     // - 各自只在本方向触发时发对应 Side 的 ArbCancel
     // - 不早退，落到 open 评估让本 tick 还能开新仓
     let mut emitted_signal: Option<SignalType> = None;
     if forward_cancel {
-        if let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
+        if let Some(_cancel_gate) = ArbDecision::with_state_mut(|arb| {
             arb.evaluate_cancel_gate(
                 true,
                 false,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
+                Side::Buy,
             )
         })
         .flatten()
@@ -1373,28 +1385,28 @@ fn drive_funding_decision(
             );
             emit_funding_spread_cancel(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 Side::Buy,
             )?;
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary("cancel_fwd");
-                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, Side::Buy, now);
             });
             emitted_signal = Some(SignalType::ArbCancel);
         }
     }
     if backward_cancel {
-        if let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
+        if let Some(_cancel_gate) = ArbDecision::with_state_mut(|arb| {
             arb.evaluate_cancel_gate(
                 false,
                 true,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
+                Side::Sell,
             )
         })
         .flatten()
@@ -1408,15 +1420,14 @@ fn drive_funding_decision(
             );
             emit_funding_spread_cancel(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 Side::Sell,
             )?;
             let _ = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary("cancel_bwd");
-                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, Side::Sell, now);
             });
             emitted_signal = Some(SignalType::ArbCancel);
         }
@@ -1426,13 +1437,13 @@ fn drive_funding_decision(
         return Ok(emitted_signal);
     }
 
-    let rate_ready = funding_rate_symbol_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
-    let open_inputs_ready = funding_open_inputs_ready(hedge_symbol_key.as_str(), hedge_venue);
+    let rate_ready = funding_rate_symbol_inputs_ready(hedge_symbol_key, hedge_venue);
+    let open_inputs_ready = funding_open_inputs_ready(hedge_symbol_key, hedge_venue);
     let fr_signals = evaluate_funding_mode_signals(
         spread_factor,
-        open_symbol_key.as_str(),
-        hedge_symbol_key.as_str(),
-        hedge_symbol_key.as_str(),
+        open_symbol_key,
+        hedge_symbol_key,
+        hedge_symbol_key,
         open_venue,
         hedge_venue,
         in_dump,
@@ -1442,11 +1453,9 @@ fn drive_funding_decision(
     // FR 阈值判定结果细分：summary 里区分出哪条信号被触发、还是全 miss。
     // 仅活跃 symbol 记，避免 6300/30s 的全量 trigger 噪音。
     {
-        let in_active = symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
-            || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
-            || symbol_list.is_in_dump_list(open_symbol_key.as_str());
+        let in_active = membership.is_online();
         if in_active {
-            let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
+            let flags = evaluate_funding_signal_flags(hedge_symbol_key, hedge_venue);
             let _ = ArbDecision::with_state_mut(|arb| {
                 if !rate_ready {
                     arb.record_intercept_summary("fr_rate_not_ready");
@@ -1510,12 +1519,12 @@ fn drive_funding_decision(
                     Some("final_in_dump")
                 } else if !spread_factor.satisfy_forward_open(
                     open_venue,
-                    open_symbol_key.as_str(),
+                    open_symbol_key,
                     hedge_venue,
-                    hedge_symbol_key.as_str(),
+                    hedge_symbol_key,
                 ) {
                     Some("final_fwd_spread_miss")
-                } else if !symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str()) {
+                } else if !membership.in_fwd {
                     Some("final_not_in_fwd_list")
                 } else {
                     None
@@ -1528,12 +1537,12 @@ fn drive_funding_decision(
                     Some("final_in_dump")
                 } else if !spread_factor.satisfy_backward_open(
                     open_venue,
-                    open_symbol_key.as_str(),
+                    open_symbol_key,
                     hedge_venue,
-                    hedge_symbol_key.as_str(),
+                    hedge_symbol_key,
                 ) {
                     Some("final_bwd_spread_miss")
-                } else if !symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str()) {
+                } else if !membership.in_bwd {
                     Some("final_not_in_bwd_list")
                 } else {
                     None
@@ -1542,24 +1551,20 @@ fn drive_funding_decision(
             ArbSignalKind::ForwardClose => {
                 if !spread_factor.satisfy_forward_close(
                     open_venue,
-                    open_symbol_key.as_str(),
+                    open_symbol_key,
                     hedge_venue,
-                    hedge_symbol_key.as_str(),
+                    hedge_symbol_key,
                 ) {
                     let detail = spread_factor.get_spread_check_detail(
                         open_venue,
-                        open_symbol_key.as_str(),
+                        open_symbol_key,
                         hedge_venue,
-                        hedge_symbol_key.as_str(),
+                        hedge_symbol_key,
                         ArbDirection::Backward,
                         OperationType::Open,
                     );
                     let _ = ArbDecision::with_state_mut(|arb| {
-                        arb.record_funding_close_spread_block(
-                            open_symbol_key.as_str(),
-                            fr_signal,
-                            detail,
-                        );
+                        arb.record_funding_close_spread_block(open_symbol_key, fr_signal, detail);
                     });
                     Some("final_fwd_close_spread_miss")
                 } else {
@@ -1569,24 +1574,20 @@ fn drive_funding_decision(
             ArbSignalKind::BackwardClose => {
                 if !spread_factor.satisfy_backward_close(
                     open_venue,
-                    open_symbol_key.as_str(),
+                    open_symbol_key,
                     hedge_venue,
-                    hedge_symbol_key.as_str(),
+                    hedge_symbol_key,
                 ) {
                     let detail = spread_factor.get_spread_check_detail(
                         open_venue,
-                        open_symbol_key.as_str(),
+                        open_symbol_key,
                         hedge_venue,
-                        hedge_symbol_key.as_str(),
+                        hedge_symbol_key,
                         ArbDirection::Forward,
                         OperationType::Open,
                     );
                     let _ = ArbDecision::with_state_mut(|arb| {
-                        arb.record_funding_close_spread_block(
-                            open_symbol_key.as_str(),
-                            fr_signal,
-                            detail,
-                        );
+                        arb.record_funding_close_spread_block(open_symbol_key, fr_signal, detail);
                     });
                     Some("final_bwd_close_spread_miss")
                 } else {
@@ -1603,9 +1604,9 @@ fn drive_funding_decision(
             arb.evaluate_funding_control(
                 fr_signal,
                 spread_factor,
-                &symbol_list,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                membership,
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 open_inputs_ready,
@@ -1620,8 +1621,8 @@ fn drive_funding_decision(
         let final_signal = control.final_signal.clone();
         let emit_allowed = emit_funding_open_close_signals(
             decision,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
+            open_symbol_key,
+            hedge_symbol_key,
             open_venue,
             hedge_venue,
             final_signal.clone(),
@@ -1632,7 +1633,7 @@ fn drive_funding_decision(
             continue;
         }
         let _ = ArbDecision::with_state_mut(|arb| {
-            arb.mark_signal_triggered(&final_signal, control.key, control.side, now);
+            arb.mark_signal_triggered(&final_signal, control.key, now);
         });
         emitted_signal = Some(final_signal);
     }
@@ -1653,25 +1654,28 @@ fn drive_spread_arb_decision(
     let spread_factor = super::spread_factor::SpreadFactor::instance();
     let now = get_timestamp_us();
     let symbol_list = super::symbol_list::SymbolList::instance();
-    let open_symbol_key = normalize_arb_symbol_key(open_symbol);
-    let hedge_symbol_key = normalize_arb_symbol_key(hedge_symbol);
-    if symbol_list.is_in_fwd_trade_list(open_symbol_key.as_str())
-        || symbol_list.is_in_bwd_trade_list(open_symbol_key.as_str())
-        || symbol_list.is_in_dump_list(open_symbol_key.as_str())
-    {
+    let open_symbol_key_storage = normalize_arb_symbol_key_cow(open_symbol);
+    let hedge_symbol_key_storage =
+        (open_symbol != hedge_symbol).then(|| normalize_arb_symbol_key_cow(hedge_symbol));
+    let open_symbol_key = open_symbol_key_storage.as_ref();
+    let hedge_symbol_key = hedge_symbol_key_storage
+        .as_deref()
+        .unwrap_or(open_symbol_key);
+    let membership = symbol_list.membership_canonical(open_symbol_key);
+    if membership.is_online() {
         let _ = ArbDecision::with_state_mut(|arb| {
             arb.record_intercept_summary("spread_seen");
         });
     }
 
     let mut emitted_signal: Option<SignalType> = None;
-    let in_dump = symbol_list.is_in_dump_list(open_symbol_key.as_str());
+    let in_dump = membership.in_dump;
     if in_dump {
         if let Some(CloseGateOutcome::Pass(close_gate)) = ArbDecision::with_state_mut(|arb| {
             arb.evaluate_close_gate(
                 spread_factor,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 now,
@@ -1682,8 +1686,8 @@ fn drive_spread_arb_decision(
             });
             let emit_allowed = emit_spread_arb_close_signals(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 close_gate.side,
@@ -1692,7 +1696,7 @@ fn drive_spread_arb_decision(
                 return Ok(None);
             }
             let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_close_triggered(close_gate.key, close_gate.side, now);
+                arb.mark_close_triggered(close_gate.key, now);
             });
             return Ok(Some(SignalType::ArbClose));
         }
@@ -1700,7 +1704,7 @@ fn drive_spread_arb_decision(
 
     let is_intra_arb = matches!(ArbDecision::mode(), Some(ArbMode::IntraArb));
     if !in_dump && is_intra_arb {
-        let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
+        let flags = evaluate_funding_signal_flags(hedge_symbol_key, hedge_venue);
         let extreme_close_candidates = [
             (
                 ArbSignalKind::ForwardClose,
@@ -1721,13 +1725,14 @@ fn drive_spread_arb_decision(
             }
             let close_key = ArbDecision::with_state_mut(|arb| {
                 arb.record_intercept_summary(hit_summary);
-                let key = ArbDecisionState::build_threshold_key(
-                    open_symbol_key.as_str(),
-                    hedge_symbol_key.as_str(),
+                let key = ArbDecisionState::build_signal_cooldown_key(
+                    open_symbol_key,
+                    hedge_symbol_key,
                     open_venue,
                     hedge_venue,
+                    side,
                 );
-                if arb.is_close_cooldown_hit(&key, side, now) {
+                if arb.is_close_cooldown_hit(&key, now) {
                     arb.record_intercept_summary("intra_fr_extreme_close_cooldown");
                     None
                 } else {
@@ -1745,8 +1750,8 @@ fn drive_spread_arb_decision(
             };
             let emit_allowed = emit_spread_arb_close_signals(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 side,
@@ -1755,7 +1760,7 @@ fn drive_spread_arb_decision(
                 return Ok(None);
             }
             let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_close_triggered(close_key, side, now);
+                arb.mark_close_triggered(close_key, now);
             });
             return Ok(Some(SignalType::ArbClose));
         }
@@ -1765,7 +1770,7 @@ fn drive_spread_arb_decision(
         ArbDecision::with_state_mut(|arb| arb.enable_intra_funding_close_signal && is_intra_arb)
             .unwrap_or(false);
     if !in_dump && enable_intra_funding_close {
-        let flags = evaluate_funding_signal_flags(hedge_symbol_key.as_str(), hedge_venue);
+        let flags = evaluate_funding_signal_flags(hedge_symbol_key, hedge_venue);
         let close_candidates = [
             (
                 ArbSignalKind::ForwardClose,
@@ -1792,8 +1797,8 @@ fn drive_spread_arb_decision(
                 arb.record_intercept_summary(hit_summary);
                 let outcome = arb.evaluate_close_gate_for_side(
                     spread_factor,
-                    open_symbol_key.as_str(),
-                    hedge_symbol_key.as_str(),
+                    open_symbol_key,
+                    hedge_symbol_key,
                     open_venue,
                     hedge_venue,
                     side,
@@ -1803,17 +1808,13 @@ fn drive_spread_arb_decision(
                     CloseGateOutcome::NoSide => {
                         let detail = spread_factor.get_spread_check_detail(
                             open_venue,
-                            open_symbol_key.as_str(),
+                            open_symbol_key,
                             hedge_venue,
-                            hedge_symbol_key.as_str(),
+                            hedge_symbol_key,
                             spread_detail_direction,
                             OperationType::Open,
                         );
-                        arb.record_funding_close_spread_block(
-                            open_symbol_key.as_str(),
-                            fr_signal,
-                            detail,
-                        );
+                        arb.record_funding_close_spread_block(open_symbol_key, fr_signal, detail);
                         arb.record_intercept_summary("intra_fr_close_spread_miss");
                     }
                     CloseGateOutcome::Cooldown => {
@@ -1831,8 +1832,8 @@ fn drive_spread_arb_decision(
             };
             let emit_allowed = emit_spread_arb_close_signals(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 close_gate.side,
@@ -1841,7 +1842,7 @@ fn drive_spread_arb_decision(
                 return Ok(None);
             }
             let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_close_triggered(close_gate.key, close_gate.side, now);
+                arb.mark_close_triggered(close_gate.key, now);
             });
             return Ok(Some(SignalType::ArbClose));
         }
@@ -1849,32 +1850,33 @@ fn drive_spread_arb_decision(
 
     let forward_cancel = spread_factor.satisfy_forward_cancel(
         open_venue,
-        open_symbol_key.as_str(),
+        open_symbol_key,
         hedge_venue,
-        hedge_symbol_key.as_str(),
+        hedge_symbol_key,
     );
     let backward_cancel = spread_factor.satisfy_backward_cancel(
         open_venue,
-        open_symbol_key.as_str(),
+        open_symbol_key,
         hedge_venue,
-        hedge_symbol_key.as_str(),
+        hedge_symbol_key,
     );
     if forward_cancel {
         let Some(cancel_gate) = ArbDecision::with_state_mut(|arb| {
             arb.evaluate_cancel_gate(
                 true,
                 false,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
+                Side::Buy,
             )
         })
         .flatten() else {
             return Ok(emitted_signal);
         };
         let cancel_cooldown_hit = ArbDecision::with_state_mut(|arb| {
-            arb.is_spread_cancel_cooldown_hit(&cancel_gate.key, Side::Buy, now)
+            arb.is_spread_cancel_cooldown_hit(&cancel_gate.key, now)
         })
         .unwrap_or(false);
         if cancel_cooldown_hit {
@@ -1887,16 +1889,14 @@ fn drive_spread_arb_decision(
             });
             emit_spread_arb_spread_cancel(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 Side::Buy,
             )?;
-            let cancel_key = cancel_gate.key.clone();
             let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, Side::Buy, now);
-                arb.mark_spread_cancel_triggered(cancel_key, Side::Buy, now);
+                arb.mark_spread_cancel_triggered(cancel_gate.key, now);
             });
             emitted_signal = Some(SignalType::ArbCancel);
         }
@@ -1907,17 +1907,18 @@ fn drive_spread_arb_decision(
             arb.evaluate_cancel_gate(
                 false,
                 true,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
+                Side::Sell,
             )
         })
         .flatten() else {
             return Ok(emitted_signal);
         };
         let cancel_cooldown_hit = ArbDecision::with_state_mut(|arb| {
-            arb.is_spread_cancel_cooldown_hit(&cancel_gate.key, Side::Sell, now)
+            arb.is_spread_cancel_cooldown_hit(&cancel_gate.key, now)
         })
         .unwrap_or(false);
         if cancel_cooldown_hit {
@@ -1930,16 +1931,14 @@ fn drive_spread_arb_decision(
             });
             emit_spread_arb_spread_cancel(
                 decision,
-                open_symbol_key.as_str(),
-                hedge_symbol_key.as_str(),
+                open_symbol_key,
+                hedge_symbol_key,
                 open_venue,
                 hedge_venue,
                 Side::Sell,
             )?;
-            let cancel_key = cancel_gate.key.clone();
             let _ = ArbDecision::with_state_mut(|arb| {
-                arb.mark_signal_triggered(&SignalType::ArbCancel, cancel_gate.key, Side::Sell, now);
-                arb.mark_spread_cancel_triggered(cancel_key, Side::Sell, now);
+                arb.mark_spread_cancel_triggered(cancel_gate.key, now);
             });
             emitted_signal = Some(SignalType::ArbCancel);
         }
@@ -1952,14 +1951,13 @@ fn drive_spread_arb_decision(
     let Some(open_control) = ArbDecision::with_state_mut(|arb| {
         arb.evaluate_open_control(
             spread_factor,
-            &symbol_list,
-            open_symbol_key.as_str(),
-            hedge_symbol_key.as_str(),
+            membership,
+            open_symbol_key,
+            hedge_symbol_key,
             hedge_symbol,
             open_venue,
             hedge_venue,
             now,
-            in_dump,
         )
     })
     .flatten() else {
@@ -1968,8 +1966,8 @@ fn drive_spread_arb_decision(
 
     emit_spread_arb_open_signals(
         decision,
-        open_symbol_key.as_str(),
-        hedge_symbol_key.as_str(),
+        open_symbol_key,
+        hedge_symbol_key,
         open_venue,
         hedge_venue,
         open_control.side,
@@ -1981,7 +1979,7 @@ fn drive_spread_arb_decision(
         open_control.gate.open_volatility_factor,
     )?;
     let _ = ArbDecision::with_state_mut(|arb| {
-        arb.mark_open_triggered(open_control.key, open_control.side, now);
+        arb.mark_open_triggered(open_control.key, now);
     });
     Ok(Some(SignalType::ArbOpen))
 }
@@ -3954,7 +3952,7 @@ pub(crate) struct ArbOpenGatePassed {
 #[derive(Debug, Clone)]
 pub(crate) struct ArbOpenControlPassed {
     pub side: Side,
-    pub key: ThresholdKey,
+    pub key: SignalCooldownKey,
     pub gate: ArbOpenGatePassed,
 }
 
@@ -4047,7 +4045,7 @@ fn format_opt_opt_f64(value: Option<f64>) -> String {
 #[derive(Debug, Clone)]
 pub(crate) struct ArbCloseGatePassed {
     pub side: Side,
-    pub key: ThresholdKey,
+    pub key: SignalCooldownKey,
 }
 
 #[derive(Debug, Clone)]
@@ -4059,16 +4057,14 @@ pub(crate) enum CloseGateOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArbCancelGatePassed {
-    pub key: ThresholdKey,
+    pub key: SignalCooldownKey,
 }
-
-pub(crate) type SignalCooldownKey = (ThresholdKey, u8);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArbFundingControlPassed {
     pub final_signal: SignalType,
     pub side: Side,
-    pub key: ThresholdKey,
+    pub key: SignalCooldownKey,
     pub gate: Option<ArbOpenGatePassed>,
 }
 
@@ -4145,7 +4141,7 @@ pub(crate) struct ArbDecisionState {
     pub spread_cancel_cooldown_us: i64,
     pub last_open_ts: Rc<RefCell<HashMap<SignalCooldownKey, i64>>>,
     pub last_close_ts: Rc<RefCell<HashMap<SignalCooldownKey, i64>>>,
-    pub last_spread_cancel_ts: Rc<RefCell<HashMap<(ThresholdKey, u8), i64>>>,
+    pub last_spread_cancel_ts: Rc<RefCell<HashMap<SignalCooldownKey, i64>>>,
     pub last_tlen_threshold_reload_ts_us: i64,
     pub last_cancel_trigger_ts_us: i64,
     pub intercept_counts: HashMap<String, u64>,
@@ -4394,8 +4390,7 @@ impl ArbDecisionState {
         ) else {
             return CloseGateOutcome::NoSide;
         };
-        self.evaluate_close_gate_for_side(
-            spread_factor,
+        self.evaluate_close_cooldown_for_side(
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
@@ -4432,9 +4427,33 @@ impl ArbDecisionState {
         if !spread_ok {
             return CloseGateOutcome::NoSide;
         }
-        let key =
-            Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
-        if self.is_close_cooldown_hit(&key, side, now) {
+        self.evaluate_close_cooldown_for_side(
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side,
+            now,
+        )
+    }
+
+    fn evaluate_close_cooldown_for_side(
+        &self,
+        open_symbol_key: &str,
+        hedge_symbol_key: &str,
+        open_venue: TradingVenue,
+        hedge_venue: TradingVenue,
+        side: Side,
+        now: i64,
+    ) -> CloseGateOutcome {
+        let key = Self::build_signal_cooldown_key(
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side,
+        );
+        if self.is_close_cooldown_hit(&key, now) {
             return CloseGateOutcome::Cooldown;
         }
         CloseGateOutcome::Pass(ArbCloseGatePassed { side, key })
@@ -4448,12 +4467,18 @@ impl ArbDecisionState {
         hedge_symbol_key: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
+        side: Side,
     ) -> Option<ArbCancelGatePassed> {
         if !forward_cancel && !backward_cancel {
             return None;
         }
-        let key =
-            Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
+        let key = Self::build_signal_cooldown_key(
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side,
+        );
         Some(ArbCancelGatePassed { key })
     }
 
@@ -4585,7 +4610,7 @@ impl ArbDecisionState {
 
     pub fn evaluate_open_side(
         spread_factor: &super::spread_factor::SpreadFactor,
-        symbol_list: &super::symbol_list::SymbolList,
+        membership: SymbolListMembership,
         open_symbol_key: &str,
         hedge_symbol_key: &str,
         open_venue: TradingVenue,
@@ -4599,7 +4624,7 @@ impl ArbDecisionState {
                 hedge_venue,
                 hedge_symbol_key,
             )
-            && symbol_list.is_in_fwd_trade_list(open_symbol_key);
+            && membership.in_fwd;
         let backward_open = !in_dump
             && spread_factor.satisfy_backward_open(
                 open_venue,
@@ -4607,7 +4632,7 @@ impl ArbDecisionState {
                 hedge_venue,
                 hedge_symbol_key,
             )
-            && symbol_list.is_in_bwd_trade_list(open_symbol_key);
+            && membership.in_bwd;
 
         let side = if forward_open {
             Some(Side::Buy)
@@ -4622,36 +4647,37 @@ impl ArbDecisionState {
     pub fn evaluate_open_control(
         &mut self,
         spread_factor: &super::spread_factor::SpreadFactor,
-        symbol_list: &super::symbol_list::SymbolList,
+        membership: SymbolListMembership,
         open_symbol_key: &str,
         hedge_symbol_key: &str,
         hedge_symbol: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         now: i64,
-        in_dump: bool,
     ) -> Option<ArbOpenControlPassed> {
+        let in_dump = membership.in_dump;
         let (forward_open, backward_open, side) = Self::evaluate_open_side(
             spread_factor,
-            symbol_list,
+            membership,
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
             hedge_venue,
             in_dump,
         );
-        if side.is_none()
-            && !in_dump
-            && (symbol_list.is_in_fwd_trade_list(open_symbol_key)
-                || symbol_list.is_in_bwd_trade_list(open_symbol_key))
-        {
+        if side.is_none() && !in_dump && (membership.in_fwd || membership.in_bwd) {
             self.record_intercept_summary("spread_block");
         }
         let side = side?;
         self.record_intercept_summary("spread_hit");
-        let key =
-            Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
-        if self.is_open_cooldown_hit(&key, side, now) {
+        let key = Self::build_signal_cooldown_key(
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side,
+        );
+        if self.is_open_cooldown_hit(&key, now) {
             self.record_intercept_summary("cooldown");
             return None;
         }
@@ -4665,6 +4691,7 @@ impl ArbDecisionState {
             now,
             forward_open,
             backward_open,
+            membership.in_vol_gate,
         );
         let gate = gate?;
         Some(ArbOpenControlPassed { side, key, gate })
@@ -4673,7 +4700,7 @@ impl ArbDecisionState {
     pub fn evaluate_funding_final_signal(
         fr_signal: ArbSignalKind,
         spread_factor: &super::spread_factor::SpreadFactor,
-        symbol_list: &super::symbol_list::SymbolList,
+        membership: SymbolListMembership,
         open_symbol_key: &str,
         hedge_symbol_key: &str,
         open_venue: TradingVenue,
@@ -4692,7 +4719,7 @@ impl ArbDecisionState {
                     hedge_venue,
                     hedge_symbol_key,
                 );
-                let in_trade_list = symbol_list.is_in_fwd_trade_list(open_symbol_key);
+                let in_trade_list = membership.in_fwd;
                 if spread_ok && in_trade_list {
                     Some(signal_common::trade_signal::SignalType::ArbOpen)
                 } else {
@@ -4712,7 +4739,7 @@ impl ArbDecisionState {
                     hedge_venue,
                     hedge_symbol_key,
                 );
-                let in_trade_list = symbol_list.is_in_bwd_trade_list(open_symbol_key);
+                let in_trade_list = membership.in_bwd;
                 if spread_ok && in_trade_list {
                     Some(signal_common::trade_signal::SignalType::ArbOpen)
                 } else {
@@ -4738,7 +4765,7 @@ impl ArbDecisionState {
         &mut self,
         fr_signal: ArbSignalKind,
         spread_factor: &super::spread_factor::SpreadFactor,
-        symbol_list: &super::symbol_list::SymbolList,
+        membership: SymbolListMembership,
         open_symbol_key: &str,
         hedge_symbol_key: &str,
         open_venue: TradingVenue,
@@ -4750,7 +4777,7 @@ impl ArbDecisionState {
         let final_signal = Self::evaluate_funding_final_signal(
             fr_signal,
             spread_factor,
-            symbol_list,
+            membership,
             open_symbol_key,
             hedge_symbol_key,
             open_venue,
@@ -4759,9 +4786,14 @@ impl ArbDecisionState {
             in_dump,
         )?;
         let side = Self::side_from_funding_signal(fr_signal);
-        let key =
-            Self::build_threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue);
-        if self.is_signal_cooldown_hit(&final_signal, &key, side, now) {
+        let key = Self::build_signal_cooldown_key(
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side,
+        );
+        if self.is_signal_cooldown_hit(&final_signal, &key, now) {
             return None;
         }
         let gate = if matches!(final_signal, SignalType::ArbOpen) {
@@ -4775,6 +4807,7 @@ impl ArbDecisionState {
                 now,
                 matches!(fr_signal, ArbSignalKind::ForwardOpen),
                 matches!(fr_signal, ArbSignalKind::BackwardOpen),
+                membership.in_vol_gate,
             )?)
         } else {
             None
@@ -4787,67 +4820,61 @@ impl ArbDecisionState {
         })
     }
 
-    pub fn is_open_cooldown_hit(&self, key: &ThresholdKey, side: Side, now: i64) -> bool {
-        is_cooldown_hit(
-            &self.last_open_ts,
-            &(key.clone(), side.to_u8()),
-            now,
-            self.signal_cooldown_us,
-        )
+    pub fn is_open_cooldown_hit(&self, key: &SignalCooldownKey, now: i64) -> bool {
+        is_cooldown_hit(&self.last_open_ts, key, now, self.signal_cooldown_us)
     }
 
-    pub fn is_close_cooldown_hit(&self, key: &ThresholdKey, side: Side, now: i64) -> bool {
-        is_cooldown_hit(
-            &self.last_close_ts,
-            &(key.clone(), side.to_u8()),
-            now,
-            self.signal_cooldown_us,
-        )
+    pub fn is_close_cooldown_hit(&self, key: &SignalCooldownKey, now: i64) -> bool {
+        is_cooldown_hit(&self.last_close_ts, key, now, self.signal_cooldown_us)
     }
 
-    pub fn is_spread_cancel_cooldown_hit(&self, key: &ThresholdKey, side: Side, now: i64) -> bool {
+    pub fn is_spread_cancel_cooldown_hit(&self, key: &SignalCooldownKey, now: i64) -> bool {
         if self.spread_cancel_cooldown_us <= 0 {
             return false;
         }
         self.last_spread_cancel_ts
             .borrow()
-            .get(&(key.clone(), side.to_u8()))
+            .get(key)
             .is_some_and(|&last_ts| now - last_ts < self.spread_cancel_cooldown_us)
     }
 
-    pub fn build_threshold_key(
+    pub fn build_signal_cooldown_key(
         open_symbol_key: &str,
         hedge_symbol_key: &str,
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
-    ) -> ThresholdKey {
-        threshold_key(open_symbol_key, hedge_symbol_key, open_venue, hedge_venue)
+        side: Side,
+    ) -> SignalCooldownKey {
+        SignalCooldownKey::from_canonical(
+            open_symbol_key,
+            hedge_symbol_key,
+            open_venue,
+            hedge_venue,
+            side.to_u8(),
+        )
     }
 
-    pub fn mark_open_triggered(&self, key: ThresholdKey, side: Side, now: i64) {
-        update_last_ts(&self.last_open_ts, (key, side.to_u8()), now);
+    pub fn mark_open_triggered(&self, key: SignalCooldownKey, now: i64) {
+        update_last_ts(&self.last_open_ts, key, now);
     }
 
-    pub fn mark_close_triggered(&self, key: ThresholdKey, side: Side, now: i64) {
-        update_last_ts(&self.last_close_ts, (key, side.to_u8()), now);
+    pub fn mark_close_triggered(&self, key: SignalCooldownKey, now: i64) {
+        update_last_ts(&self.last_close_ts, key, now);
     }
 
-    pub fn mark_spread_cancel_triggered(&self, key: ThresholdKey, side: Side, now: i64) {
-        self.last_spread_cancel_ts
-            .borrow_mut()
-            .insert((key, side.to_u8()), now);
+    pub fn mark_spread_cancel_triggered(&self, key: SignalCooldownKey, now: i64) {
+        self.last_spread_cancel_ts.borrow_mut().insert(key, now);
     }
 
     pub fn is_signal_cooldown_hit(
         &self,
         signal_type: &SignalType,
-        key: &ThresholdKey,
-        side: Side,
+        key: &SignalCooldownKey,
         now: i64,
     ) -> bool {
         match signal_type {
-            SignalType::ArbOpen => self.is_open_cooldown_hit(key, side, now),
-            SignalType::ArbClose => self.is_close_cooldown_hit(key, side, now),
+            SignalType::ArbOpen => self.is_open_cooldown_hit(key, now),
+            SignalType::ArbClose => self.is_close_cooldown_hit(key, now),
             _ => false,
         }
     }
@@ -4855,13 +4882,12 @@ impl ArbDecisionState {
     pub fn mark_signal_triggered(
         &self,
         signal_type: &SignalType,
-        key: ThresholdKey,
-        side: Side,
+        key: SignalCooldownKey,
         now: i64,
     ) {
         match signal_type {
-            SignalType::ArbOpen => self.mark_open_triggered(key, side, now),
-            SignalType::ArbClose => self.mark_close_triggered(key, side, now),
+            SignalType::ArbOpen => self.mark_open_triggered(key, now),
+            SignalType::ArbClose => self.mark_close_triggered(key, now),
             _ => {}
         }
     }
@@ -5016,15 +5042,20 @@ impl ArbDecisionState {
         )
     }
 
-    pub fn record_intercept_summary(&mut self, reason: impl Into<String>) {
+    pub fn record_intercept_summary<'a>(&mut self, reason: impl Into<Cow<'a, str>>) {
         self.record_intercept_summary_by(reason, 1);
     }
 
-    pub fn record_intercept_summary_by(&mut self, reason: impl Into<String>, count: u64) {
+    pub fn record_intercept_summary_by<'a>(&mut self, reason: impl Into<Cow<'a, str>>, count: u64) {
         if count == 0 {
             return;
         }
-        *self.intercept_counts.entry(reason.into()).or_insert(0) += count;
+        let reason = reason.into();
+        if let Some(total) = self.intercept_counts.get_mut(reason.as_ref()) {
+            *total += count;
+        } else {
+            self.intercept_counts.insert(reason.into_owned(), count);
+        }
     }
 
     pub fn record_tlen_cancel_summary(
@@ -5330,8 +5361,9 @@ impl ArbDecisionState {
         };
         let _ = open_volatility_factor;
 
-        let key = Self::build_threshold_key(symbol, hedge_symbol, open_venue, hedge_venue);
-        if self.is_open_cooldown_hit(&key, side, get_timestamp_us()) {
+        let key =
+            Self::build_signal_cooldown_key(symbol, hedge_symbol, open_venue, hedge_venue, side);
+        if self.is_open_cooldown_hit(&key, get_timestamp_us()) {
             return Some("cooldown".to_string());
         }
 
@@ -5438,12 +5470,12 @@ impl ArbDecisionState {
         result: &EnvironmentSignalResult,
     ) {
         let reason = match (forward_open, backward_open, cooldown_hit, result.allow_open) {
-            (_, _, true, _) => "cooldown".to_string(),
-            (_, _, _, false) => "env_block".to_string(),
-            (true, false, false, true) => "forward_open".to_string(),
-            (false, true, false, true) => "backward_open".to_string(),
-            (true, true, false, true) => "both_open".to_string(),
-            _ => "neutral".to_string(),
+            (_, _, true, _) => "cooldown",
+            (_, _, _, false) => "env_block",
+            (true, false, false, true) => "forward_open",
+            (false, true, false, true) => "backward_open",
+            (true, true, false, true) => "both_open",
+            _ => "neutral",
         };
         self.record_intercept_summary(reason);
     }
@@ -5459,6 +5491,7 @@ impl ArbDecisionState {
         now: i64,
         forward_open: bool,
         backward_open: bool,
+        in_vol_gate: bool,
     ) -> Option<ArbOpenGatePassed> {
         // 仅供 logging:保留按 venue 类型推断的单一因子值快照(spread_fr 或 premium_rate)。
         // 真正的 funding filter 检查走下面的因子链 AND 串联。
@@ -5545,8 +5578,7 @@ impl ArbDecisionState {
         // Inline vol gate：仅对 intra_vol_gate_symbols 命中的 symbol 生效。
         // threshold 来源是 thread_local store 里同 symbol、同 percentile 的 rolling sample；
         // warming up 时直接拦截，比较方向由 vol_gate_compare 控制。
-        let apply_vol_gate = self.enable_volatility_limit
-            && super::symbol_list::SymbolList::instance().is_in_vol_gate_list(open_symbol_key);
+        let apply_vol_gate = self.enable_volatility_limit && in_vol_gate;
         if apply_vol_gate {
             let snapshot = snapshot_inline_volatility(
                 &vol_lookup.symbol_key,
@@ -5960,6 +5992,7 @@ impl ArbDecision {
                 } else if spread_bwd_cancel {
                     "BwdCancel"
                 } else {
+                    let membership = symbol_list.membership(symbol);
                     fr_signals
                         .iter()
                         .copied()
@@ -5967,7 +6000,7 @@ impl ArbDecision {
                             ArbDecisionState::evaluate_funding_final_signal(
                                 signal,
                                 spread_factor,
-                                &symbol_list,
+                                membership,
                                 symbol,
                                 symbol,
                                 open_venue,
@@ -6105,6 +6138,53 @@ mod funding_mode_signal_tests {
 
         assert_eq!(signal, None);
     }
+
+    #[test]
+    fn close_gate_preserves_side_and_cooldown_behavior() {
+        let symbol = "UNITCLOSEGATEUSDT";
+        let spread_factor = setup_spread_factor_with_forward_close(symbol);
+        let mut state = ArbDecisionState::new(
+            ArbMode::FundingArb,
+            (TradingVenue::BitgetMargin, TradingVenue::BitgetFutures),
+        );
+        state.signal_cooldown_us = 100;
+
+        let CloseGateOutcome::Pass(passed) = state.evaluate_close_gate(
+            spread_factor,
+            symbol,
+            symbol,
+            TradingVenue::BitgetMargin,
+            TradingVenue::BitgetFutures,
+            1_000,
+        ) else {
+            panic!("expected close gate to pass");
+        };
+        assert_eq!(passed.side, Side::Sell);
+        state.mark_close_triggered(passed.key, 1_000);
+
+        assert!(matches!(
+            state.evaluate_close_gate(
+                spread_factor,
+                symbol,
+                symbol,
+                TradingVenue::BitgetMargin,
+                TradingVenue::BitgetFutures,
+                1_099,
+            ),
+            CloseGateOutcome::Cooldown
+        ));
+        assert!(matches!(
+            state.evaluate_close_gate(
+                spread_factor,
+                symbol,
+                symbol,
+                TradingVenue::BitgetMargin,
+                TradingVenue::BitgetFutures,
+                1_100,
+            ),
+            CloseGateOutcome::Pass(_)
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -6153,6 +6233,19 @@ mod hedge_offset_overrides_tests {
         let state = fresh_state();
         assert!(state.enable_volatility_limit);
         assert!((state.open_volatility_limit - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn intercept_summary_accumulates_borrowed_and_owned_reasons() {
+        let mut state = fresh_state();
+        state.record_intercept_summary("spread_seen");
+        state.record_intercept_summary("spread_seen");
+        state.record_intercept_summary_by(String::from("dynamic_reason"), 3);
+        state.record_intercept_summary_by(String::from("dynamic_reason"), 2);
+
+        assert_eq!(state.intercept_counts.get("spread_seen"), Some(&2));
+        assert_eq!(state.intercept_counts.get("dynamic_reason"), Some(&5));
+        assert_eq!(state.intercept_counts.len(), 2);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::msg::mkt_msg::MktMsgType;
+use std::borrow::Cow;
 use symbol_utils::TradingVenue;
 
 /// 符号标准化工具，用于跨 venue 对齐
@@ -78,6 +79,22 @@ pub fn normalize_symbol_for_whitelist(symbol: &str, venue: TradingVenue) -> Stri
     cleaned
 }
 
+/// Borrow symbols that already match the whitelist canonical form; normalize only aliases.
+pub fn normalize_symbol_for_whitelist_cow(symbol: &str, venue: TradingVenue) -> Cow<'_, str> {
+    let strips_swap_suffix = matches!(venue, TradingVenue::OkexMargin | TradingVenue::OkexFutures)
+        && symbol.ends_with("SWAP");
+    let already_canonical = symbol.is_ascii()
+        && !symbol
+            .bytes()
+            .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
+        && !strips_swap_suffix;
+    if already_canonical {
+        Cow::Borrowed(symbol)
+    } else {
+        Cow::Owned(normalize_symbol_for_whitelist(symbol, venue))
+    }
+}
+
 /// 用于 premium 配对（mark_price + index_price 算 rate）的符号规范化。
 /// 通用规则（适用于 OKEx / Bybit / Gate / Binance 等所有交易所）:
 ///   - 大写、移除 '-'/'_'、去掉 SWAP 后缀
@@ -100,6 +117,17 @@ pub fn normalize_symbol_for_premium_pair(symbol: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whitelist_cow_borrows_canonical_symbols_and_normalizes_aliases() {
+        let canonical = normalize_symbol_for_whitelist_cow("BTCUSDT", TradingVenue::OkexFutures);
+        assert!(matches!(canonical, Cow::Borrowed(_)));
+        assert_eq!(canonical, "BTCUSDT");
+
+        let alias = normalize_symbol_for_whitelist_cow("btc-usdt-swap", TradingVenue::OkexFutures);
+        assert!(matches!(alias, Cow::Owned(_)));
+        assert_eq!(alias, "BTCUSDT");
+    }
 
     #[test]
     fn premium_pair_normalizes_okex_variants() {

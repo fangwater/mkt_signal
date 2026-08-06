@@ -16,7 +16,9 @@ use runtime_common::fast_hash::{
 use serde_json;
 use std::cell::RefCell;
 
-use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::{
+    normalize_symbol_for_whitelist, normalize_symbol_for_whitelist_cow,
+};
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use runtime_common::redis_client::RedisClient;
@@ -31,6 +33,20 @@ thread_local! {
 
 /// SymbolList 单例访问器（零大小类型）
 pub struct SymbolList;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SymbolListMembership {
+    pub in_fwd: bool,
+    pub in_bwd: bool,
+    pub in_dump: bool,
+    pub in_vol_gate: bool,
+}
+
+impl SymbolListMembership {
+    pub fn is_online(self) -> bool {
+        self.in_fwd || self.in_bwd || self.in_dump
+    }
+}
 
 /// SymbolList 内部实现
 struct SymbolListInner {
@@ -365,6 +381,18 @@ impl SymbolList {
 
     // ==================== 查询接口 ====================
 
+    /// Snapshot all hot-path memberships with one canonicalization and one state borrow.
+    pub fn membership(&self, symbol: &str) -> SymbolListMembership {
+        Self::with_inner(|inner| {
+            let symbol = Self::normalize_for_filtering_cow(symbol);
+            Self::membership_for_canonical(inner, symbol.as_ref())
+        })
+    }
+
+    pub(crate) fn membership_canonical(&self, symbol_key: &str) -> SymbolListMembership {
+        Self::with_inner(|inner| Self::membership_for_canonical(inner, symbol_key))
+    }
+
     /// 判断交易对是否在平仓列表中。
     ///
     /// 语义：原有 `dump_symbols` ∪（当 `UnimmrCloseGate` 任一 scope 处于
@@ -543,8 +571,33 @@ impl SymbolList {
     /// 判断集合中是否包含归一化后的 symbol（忽略分隔符和 OKEx SWAP 后缀）
     fn contains_normalized(set: &FastHashSet<String>, symbol: &str) -> bool {
         let target = Self::normalize_for_filtering(symbol);
+        Self::contains_normalized_target(set, &target)
+    }
+
+    fn contains_normalized_target(set: &FastHashSet<String>, target: &str) -> bool {
         set.iter()
-            .any(|s| Self::normalize_for_filtering(s) == target)
+            .any(|symbol| Self::normalize_for_filtering(symbol) == target)
+    }
+
+    fn membership_for_canonical(inner: &SymbolListInner, symbol_key: &str) -> SymbolListMembership {
+        let contains = |set: &FastHashSet<String>| {
+            if inner.canonical_filter_keys {
+                set.contains(symbol_key)
+            } else {
+                Self::contains_normalized_target(set, symbol_key)
+            }
+        };
+        let in_dump = contains(&inner.dump_symbols)
+            || contains(&inner.pos_dump_symbols)
+            || (super::unimmr_close_gate::UnimmrCloseGate::instance().any_close_allowed()
+                && contains(&inner.unimmr_close_symbols));
+
+        SymbolListMembership {
+            in_fwd: contains(&inner.fwd_trade_symbols),
+            in_bwd: contains(&inner.bwd_trade_symbols),
+            in_dump,
+            in_vol_gate: contains(&inner.vol_gate_symbols),
+        }
     }
 
     fn canonicalize_filter_set(set: &mut FastHashSet<String>) {
@@ -557,16 +610,7 @@ impl SymbolList {
     }
 
     fn normalize_for_filtering_cow(symbol: &str) -> Cow<'_, str> {
-        let already_canonical = symbol.is_ascii()
-            && !symbol
-                .bytes()
-                .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
-            && !symbol.ends_with("SWAP");
-        if already_canonical {
-            Cow::Borrowed(symbol)
-        } else {
-            Cow::Owned(Self::normalize_for_filtering(symbol))
-        }
+        normalize_symbol_for_whitelist_cow(symbol, TradingVenue::OkexFutures)
     }
 
     /// 归一化符号用于白名单过滤：大写，移除 '-'/'_'，并去掉 "-SWAP"/"SWAP" 后缀
@@ -722,5 +766,29 @@ mod tests {
         let venue_form = SymbolList::normalize_for_filtering_cow("btc-usdt-swap");
         assert!(matches!(venue_form, Cow::Owned(_)));
         assert_eq!(venue_form, "BTCUSDT");
+    }
+
+    #[test]
+    fn membership_snapshots_all_lists_for_one_canonical_symbol() {
+        SymbolList::init_singleton().unwrap();
+        SymbolList::with_inner_mut(|inner| {
+            inner.fwd_trade_symbols.insert("BTCUSDT".to_string());
+            inner.dump_symbols.insert("ETHUSDT".to_string());
+            inner.vol_gate_symbols.insert("BTCUSDT".to_string());
+            inner.canonical_filter_keys = true;
+        });
+
+        let list = SymbolList::instance();
+        let btc = list.membership("btc-usdt-swap");
+        assert!(btc.in_fwd);
+        assert!(!btc.in_bwd);
+        assert!(!btc.in_dump);
+        assert!(btc.in_vol_gate);
+        assert!(btc.is_online());
+
+        let eth = list.membership("ETHUSDT");
+        assert!(!eth.in_fwd);
+        assert!(eth.in_dump);
+        assert!(eth.is_online());
     }
 }
