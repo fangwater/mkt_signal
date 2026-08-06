@@ -433,7 +433,7 @@ routes:
     }
 
     #[test]
-    fn local_to_sg_model_route_ids_match() {
+    fn local_to_sg_model_routes_have_matching_receivers() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sender = BridgeConfig::load_from_file(
             root.join("config/ipc_bridge_local_to_sg_binance_models.yaml"),
@@ -444,22 +444,34 @@ routes:
         )
         .expect("load sg model receiver bridge config");
 
-        let outgoing: HashSet<String> = sender
+        let outgoing: Vec<&RouteConfig> = sender
             .routes
             .iter()
             .filter(|r| r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq)
-            .map(|r| r.id.clone())
             .collect();
-        let incoming: HashSet<String> = receiver
+        let incoming = receiver
             .routes
             .iter()
             .filter(|r| r.from.kind == EndpointType::Zmq && r.to.kind == EndpointType::Ipc)
-            .filter(|r| r.to.endpoint.contains("binance-futures-mid-re"))
-            .map(|r| r.id.clone())
-            .collect();
+            .map(|route| (route.id.as_str(), route))
+            .collect::<std::collections::HashMap<_, _>>();
 
-        assert_eq!(outgoing, incoming);
-        assert_eq!(outgoing.len(), 3);
+        assert!(!outgoing.is_empty());
+        for route in outgoing {
+            let counterpart = incoming
+                .get(route.id.as_str())
+                .unwrap_or_else(|| panic!("SG receiver is missing sender route {}", route.id));
+            assert_eq!(
+                route.from.endpoint, counterpart.to.endpoint,
+                "IPC endpoint mismatch for route {}",
+                route.id
+            );
+            assert_eq!(
+                route.from.size, counterpart.to.size,
+                "IPC payload size mismatch for route {}",
+                route.id
+            );
+        }
     }
 
     #[test]

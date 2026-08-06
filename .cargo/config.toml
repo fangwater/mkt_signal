@@ -1,6 +1,4 @@
 [env]
-# Pin ONNX Runtime to repository-local third_party binaries.
-# This prevents ort/ort-sys from attempting network downloads during build.
-ORT_LIB_LOCATION = { value = "third_party/onnxruntime/linux-x86_64/lib", relative = true }
-ORT_PREFER_DYNAMIC_LINK = "1"
-ORT_SKIP_DOWNLOAD = "1"
+# Load ONNX Runtime on first use from the repository-local third_party binary.
+# Tests that do not run inference can start without a process-level shared-library dependency.
+ORT_DYLIB_PATH = { value = "third_party/onnxruntime/linux-x86_64/lib/libonnxruntime.so", relative = true }

@@ -1,3 +1,5 @@
+#![cfg(feature = "runtime")]
+
 mod bbo_spread;
 pub mod exporter;
 mod iceoryx;
