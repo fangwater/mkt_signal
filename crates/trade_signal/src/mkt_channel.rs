@@ -9,6 +9,7 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -74,6 +75,19 @@ fn normalize_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
 }
 
+fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
+    let already_canonical = symbol.is_ascii()
+        && !symbol
+            .bytes()
+            .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
+        && !symbol.ends_with("SWAP");
+    if already_canonical {
+        Cow::Borrowed(symbol)
+    } else {
+        Cow::Owned(normalize_symbol_key(symbol))
+    }
+}
+
 fn askbid_service_root(_venue: TradingVenue) -> &'static str {
     "spread_pbs"
 }
@@ -130,19 +144,13 @@ fn mark_dirty_symbol(
 fn mark_dirty_askbid_symbol(
     symbol: &str,
     trigger_ts: i64,
-    dirty_symbols: &mut Vec<String>,
-    dirty_set: &mut HashSet<String>,
-    dirty_trigger_ts: &mut HashMap<String, i64>,
+    dirty_symbols: &mut HashMap<String, i64>,
 ) {
-    mark_dirty_symbol(symbol, dirty_symbols, dirty_set);
-    dirty_trigger_ts
-        .entry(symbol.to_string())
-        .and_modify(|ts| {
-            if trigger_ts > *ts {
-                *ts = trigger_ts;
-            }
-        })
-        .or_insert(trigger_ts);
+    if let Some(timestamp) = dirty_symbols.get_mut(symbol) {
+        *timestamp = (*timestamp).max(trigger_ts);
+    } else {
+        dirty_symbols.insert(symbol.to_owned(), trigger_ts);
+    }
 }
 
 struct DecisionQuoteAgeKll {
@@ -205,9 +213,7 @@ impl DecisionQuoteAgeKll {
 }
 
 fn flush_askbid_dirty_symbols(
-    dirty_symbols: &mut Vec<String>,
-    dirty_set: &mut HashSet<String>,
-    dirty_trigger_ts: &mut HashMap<String, i64>,
+    dirty_symbols: &mut HashMap<String, i64>,
     trigger_decisions: bool,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
@@ -217,15 +223,12 @@ fn flush_askbid_dirty_symbols(
     decision_quote_age: &mut DecisionQuoteAgeKll,
 ) {
     if dirty_symbols.is_empty() {
-        dirty_trigger_ts.clear();
         decision_quote_age.maybe_flush();
         return;
     }
 
     if open_venue == hedge_venue {
         dirty_symbols.clear();
-        dirty_set.clear();
-        dirty_trigger_ts.clear();
         return;
     }
 
@@ -233,7 +236,18 @@ fn flush_askbid_dirty_symbols(
         ArbDecision::poll_input_updates();
     }
 
-    for sym in dirty_symbols.iter() {
+    let filter_unlisted_before_spread = trigger_decisions
+        && open_venue.trade_engine_exchange() == hedge_venue.trade_engine_exchange();
+
+    for (sym, trigger_ts) in dirty_symbols.drain() {
+        let can_trigger = !trigger_decisions || should_trigger_decision(&sym);
+        if filter_unlisted_before_spread && !can_trigger {
+            if stats_unlisted_sample.len() < 10 {
+                stats_unlisted_sample.insert(sym);
+            }
+            continue;
+        }
+
         let now_us = get_timestamp_us();
 
         let decision_quote_ts = {
@@ -242,20 +256,20 @@ fn flush_askbid_dirty_symbols(
             let quotes_map = quotes.borrow();
             let open_quote = quotes_map
                 .get(&open_venue)
-                .and_then(|m| m.get(sym))
+                .and_then(|m| m.get(sym.as_str()))
                 .copied();
             let hedge_quote = quotes_map
                 .get(&hedge_venue)
-                .and_then(|m| m.get(sym))
+                .and_then(|m| m.get(sym.as_str()))
                 .copied();
             if let (Some(open_q), Some(hedge_q)) = (open_quote, hedge_quote) {
                 if open_q.is_valid() && hedge_q.is_valid() {
                     let spread_factor = SpreadFactor::instance();
                     spread_factor.update(
                         open_venue,
-                        sym,
+                        sym.as_str(),
                         hedge_venue,
-                        sym,
+                        sym.as_str(),
                         open_q.bid,
                         open_q.ask,
                         hedge_q.bid,
@@ -271,42 +285,39 @@ fn flush_askbid_dirty_symbols(
         };
 
         if trigger_decisions {
-            let can_trigger = should_trigger_decision(sym);
-            if can_trigger {
-                let trigger_age_us = {
-                    let gate_us = INTRA_BBO_STALE_GATE_US.with(|c| c.get());
-                    if gate_us > 0 {
-                        let trigger_ts = dirty_trigger_ts.get(sym).copied().unwrap_or_default();
-                        if trigger_ts <= 0 {
-                            continue;
-                        }
-                        let age_us = now_us.saturating_sub(trigger_ts);
-                        if age_us > gate_us {
-                            continue;
-                        }
-                        Some(age_us)
-                    } else {
-                        None
-                    }
-                };
-                if let Some(age_us) = trigger_age_us {
-                    decision_quote_age.push(age_us);
-                } else if let Some(quote_ts) = decision_quote_ts.filter(|ts| *ts > 0) {
-                    decision_quote_age.push(now_us.saturating_sub(quote_ts));
+            if !can_trigger {
+                if stats_unlisted_sample.len() < 10 {
+                    stats_unlisted_sample.insert(sym);
                 }
-                *stats_triggerable_msgs += 1;
-                super::decision_router::trigger_decision(sym, sym, open_venue, hedge_venue);
-            } else if stats_unlisted_sample.len() < 10 {
-                stats_unlisted_sample.insert(sym.clone());
+                continue;
             }
+
+            let trigger_age_us = {
+                let gate_us = INTRA_BBO_STALE_GATE_US.with(|c| c.get());
+                if gate_us > 0 {
+                    if trigger_ts <= 0 {
+                        continue;
+                    }
+                    let age_us = now_us.saturating_sub(trigger_ts);
+                    if age_us > gate_us {
+                        continue;
+                    }
+                    Some(age_us)
+                } else {
+                    None
+                }
+            };
+            if let Some(age_us) = trigger_age_us {
+                decision_quote_age.push(age_us);
+            } else if let Some(quote_ts) = decision_quote_ts.filter(|ts| *ts > 0) {
+                decision_quote_age.push(now_us.saturating_sub(quote_ts));
+            }
+            *stats_triggerable_msgs += 1;
+            super::decision_router::trigger_decision(&sym, &sym, open_venue, hedge_venue);
         }
     }
 
     decision_quote_age.maybe_flush();
-
-    dirty_symbols.clear();
-    dirty_set.clear();
-    dirty_trigger_ts.clear();
 }
 
 fn flush_derivatives_dirty_symbols(
@@ -349,9 +360,7 @@ fn process_askbid_payload(
     payload: &[u8],
     feed_venue: TradingVenue,
     quotes: &Rc<RefCell<HashMap<TradingVenue, HashMap<String, Quote>>>>,
-    dirty_symbols: &mut Vec<String>,
-    dirty_set: &mut HashSet<String>,
-    dirty_trigger_ts: &mut HashMap<String, i64>,
+    dirty_symbols: &mut HashMap<String, i64>,
     stats_total_msgs: &mut u64,
     stats_unique_symbols: &mut HashSet<String>,
     stats_last_symbol: &mut String,
@@ -367,7 +376,7 @@ fn process_askbid_payload(
 
     // 零拷贝解析
     let symbol_raw = AskBidSpreadMsg::get_symbol(payload);
-    let symbol = normalize_symbol_key(symbol_raw);
+    let symbol = normalize_symbol_key_cow(symbol_raw);
     let bid_price = AskBidSpreadMsg::get_bid_price(payload);
     let bid_amount = AskBidSpreadMsg::get_bid_amount(payload);
     let ask_price = AskBidSpreadMsg::get_ask_price(payload);
@@ -375,28 +384,41 @@ fn process_askbid_payload(
     let timestamp = AskBidSpreadMsg::get_timestamp(payload);
 
     super::local_tlen::update_bbo(
-        feed_venue, &symbol, timestamp, bid_price, bid_amount, ask_price, ask_amount,
+        feed_venue,
+        symbol.as_ref(),
+        timestamp,
+        bid_price,
+        bid_amount,
+        ask_price,
+        ask_amount,
     );
 
-    let symbol_for_decision = {
+    let quote_updated = {
         let mut quotes_map = quotes.borrow_mut();
         if let Some(venue_quotes) = quotes_map.get_mut(&feed_venue) {
-            let quote = venue_quotes
-                .entry(symbol.clone())
-                .or_insert(Quote::default());
-            quote.update(bid_price, bid_amount, ask_price, ask_amount, timestamp);
-            Some(symbol)
+            if let Some(quote) = venue_quotes.get_mut(symbol.as_ref()) {
+                quote.update(bid_price, bid_amount, ask_price, ask_amount, timestamp);
+            } else {
+                let mut quote = Quote::default();
+                quote.update(bid_price, bid_amount, ask_price, ask_amount, timestamp);
+                venue_quotes.insert(symbol.as_ref().to_owned(), quote);
+            }
+            true
         } else {
-            None
+            false
         }
     };
 
-    if let Some(sym) = symbol_for_decision {
+    if quote_updated {
+        let sym = symbol.as_ref();
         *stats_total_msgs += 1;
-        *stats_last_symbol = sym.clone();
-        stats_unique_symbols.insert(sym.clone());
+        stats_last_symbol.clear();
+        stats_last_symbol.push_str(sym);
+        if !stats_unique_symbols.contains(sym) {
+            stats_unique_symbols.insert(sym.to_owned());
+        }
 
-        mark_dirty_askbid_symbol(&sym, timestamp, dirty_symbols, dirty_set, dirty_trigger_ts);
+        mark_dirty_askbid_symbol(sym, timestamp, dirty_symbols);
     }
 }
 
@@ -666,12 +688,12 @@ impl MktChannel {
     /// - Some(Quote): 盘口数据
     /// - None: 未找到或数据无效
     pub fn get_quote(&self, symbol: &str, venue: TradingVenue) -> Option<Quote> {
-        let symbol_upper = normalize_symbol_key(symbol);
+        let symbol_upper = normalize_symbol_key_cow(symbol);
 
         Self::with_inner(|inner| {
             let quotes_map = inner.quotes.borrow();
             let venue_quotes = quotes_map.get(&venue)?;
-            let quote = venue_quotes.get(&symbol_upper)?;
+            let quote = venue_quotes.get(symbol_upper.as_ref())?;
 
             if quote.is_valid() {
                 Some(*quote)
@@ -812,9 +834,7 @@ impl MktChannel {
                 let mut stats_unique_symbols: HashSet<String> = HashSet::new();
                 let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
                 let mut stats_last_symbol: String = String::new();
-                let mut dirty_symbols: Vec<String> = Vec::new();
-                let mut dirty_set: HashSet<String> = HashSet::new();
-                let mut dirty_trigger_ts: HashMap<String, i64> = HashMap::new();
+                let mut dirty_symbols: HashMap<String, i64> = HashMap::new();
                 let mut decision_quote_age = DecisionQuoteAgeKll::new(this_venue.data_pub_slug());
 
                 loop {
@@ -825,8 +845,6 @@ impl MktChannel {
                                 this_venue,
                                 &quotes,
                                 &mut dirty_symbols,
-                                &mut dirty_set,
-                                &mut dirty_trigger_ts,
                                 &mut stats_total_msgs,
                                 &mut stats_unique_symbols,
                                 &mut stats_last_symbol,
@@ -844,8 +862,6 @@ impl MktChannel {
                         Ok(None) => {
                             flush_askbid_dirty_symbols(
                                 &mut dirty_symbols,
-                                &mut dirty_set,
-                                &mut dirty_trigger_ts,
                                 trigger_decisions,
                                 open_venue,
                                 hedge_venue,
@@ -859,8 +875,6 @@ impl MktChannel {
                         Err(err) => {
                             flush_askbid_dirty_symbols(
                                 &mut dirty_symbols,
-                                &mut dirty_set,
-                                &mut dirty_trigger_ts,
                                 trigger_decisions,
                                 open_venue,
                                 hedge_venue,
@@ -940,9 +954,7 @@ impl MktChannel {
                 let mut stats_unique_symbols: HashSet<String> = HashSet::new();
                 let mut stats_unlisted_sample: HashSet<String> = HashSet::new();
                 let mut stats_last_symbol: String = String::new();
-                let mut dirty_symbols: Vec<String> = Vec::new();
-                let mut dirty_set: HashSet<String> = HashSet::new();
-                let mut dirty_trigger_ts: HashMap<String, i64> = HashMap::new();
+                let mut dirty_symbols: HashMap<String, i64> = HashMap::new();
                 let stats_label = format!(
                     "{}<->{}",
                     open_venue.data_pub_slug(),
@@ -961,8 +973,6 @@ impl MktChannel {
                                     open_venue,
                                     &quotes,
                                     &mut dirty_symbols,
-                                    &mut dirty_set,
-                                    &mut dirty_trigger_ts,
                                     &mut stats_total_msgs,
                                     &mut stats_unique_symbols,
                                     &mut stats_last_symbol,
@@ -972,8 +982,6 @@ impl MktChannel {
                             Err(err) => {
                                 flush_askbid_dirty_symbols(
                                     &mut dirty_symbols,
-                                    &mut dirty_set,
-                                    &mut dirty_trigger_ts,
                                     trigger_decisions,
                                     open_venue,
                                     hedge_venue,
@@ -998,8 +1006,6 @@ impl MktChannel {
                                     hedge_venue,
                                     &quotes,
                                     &mut dirty_symbols,
-                                    &mut dirty_set,
-                                    &mut dirty_trigger_ts,
                                     &mut stats_total_msgs,
                                     &mut stats_unique_symbols,
                                     &mut stats_last_symbol,
@@ -1009,8 +1015,6 @@ impl MktChannel {
                             Err(err) => {
                                 flush_askbid_dirty_symbols(
                                     &mut dirty_symbols,
-                                    &mut dirty_set,
-                                    &mut dirty_trigger_ts,
                                     trigger_decisions,
                                     open_venue,
                                     hedge_venue,
@@ -1038,8 +1042,6 @@ impl MktChannel {
 
                     flush_askbid_dirty_symbols(
                         &mut dirty_symbols,
-                        &mut dirty_set,
-                        &mut dirty_trigger_ts,
                         trigger_decisions,
                         open_venue,
                         hedge_venue,
@@ -1272,6 +1274,27 @@ impl MktChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn askbid_dirty_symbol_keeps_latest_timestamp() {
+        let mut dirty_symbols = HashMap::new();
+
+        mark_dirty_askbid_symbol("BTCUSDT", 100, &mut dirty_symbols);
+        mark_dirty_askbid_symbol("BTCUSDT", 90, &mut dirty_symbols);
+        mark_dirty_askbid_symbol("BTCUSDT", 110, &mut dirty_symbols);
+
+        assert_eq!(dirty_symbols.len(), 1);
+        assert_eq!(dirty_symbols.get("BTCUSDT"), Some(&110));
+    }
+
+    #[test]
+    fn canonical_market_symbol_is_borrowed() {
+        assert!(matches!(
+            normalize_symbol_key_cow("BTCUSDT"),
+            Cow::Borrowed("BTCUSDT")
+        ));
+        assert_eq!(normalize_symbol_key_cow("btc-usdt-swap"), "BTCUSDT");
+    }
 
     #[test]
     fn binance_venues_use_direct_services() {

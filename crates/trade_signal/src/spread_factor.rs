@@ -3,15 +3,141 @@
 //! 提供价差因子计算、存储和阈值判断功能。
 //! 维护 askbid 和 bidask 两种价差因子，支持正套/反套开仓/撤单/平仓判断。
 
-use super::common::{
-    ArbDirection, CompareOp, FactorMode, OperationType, SymbolPair, ThresholdKey, VenuePair,
-};
+use super::common::{ArbDirection, CompareOp, FactorMode, OperationType, ThresholdKey, VenuePair};
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
+use std::hash::{Hash, Hasher};
 
-type SpreadThresholdEntryKey = (ThresholdKey, ArbDirection, OperationType);
+const INLINE_SYMBOL_CAPACITY: usize = 32;
+
+#[derive(Clone, PartialEq, Eq)]
+enum NormalizedSymbolKey {
+    Inline {
+        len: u8,
+        bytes: [u8; INLINE_SYMBOL_CAPACITY],
+    },
+    Heap(Box<str>),
+}
+
+impl Hash for NormalizedSymbolKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Inline { len, bytes } => bytes[..*len as usize].hash(state),
+            Self::Heap(symbol) => symbol.as_bytes().hash(state),
+        }
+    }
+}
+
+impl NormalizedSymbolKey {
+    fn new(symbol: &str) -> Self {
+        if symbol.len() <= INLINE_SYMBOL_CAPACITY {
+            let mut bytes = [0; INLINE_SYMBOL_CAPACITY];
+            bytes[..symbol.len()].copy_from_slice(symbol.as_bytes());
+            Self::Inline {
+                len: symbol.len() as u8,
+                bytes,
+            }
+        } else {
+            Self::Heap(symbol.into())
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Inline { len, bytes } => std::str::from_utf8(&bytes[..*len as usize])
+                .expect("inline spread symbol originates from valid UTF-8"),
+            Self::Heap(symbol) => symbol,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum SpreadSymbolPairKey {
+    Same(NormalizedSymbolKey),
+    Different(Box<[NormalizedSymbolKey; 2]>),
+}
+
+impl SpreadSymbolPairKey {
+    fn symbols(&self) -> (&str, &str) {
+        match self {
+            Self::Same(symbol) => (symbol.as_str(), symbol.as_str()),
+            Self::Different(symbols) => (symbols[0].as_str(), symbols[1].as_str()),
+        }
+    }
+}
+
+impl fmt::Debug for SpreadSymbolPairKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (symbol1, symbol2) = self.symbols();
+        formatter
+            .debug_tuple("")
+            .field(&symbol1)
+            .field(&symbol2)
+            .finish()
+    }
+}
+
+impl fmt::Display for SpreadSymbolPairKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (symbol1, symbol2) = self.symbols();
+        if symbol1 == symbol2 {
+            formatter.write_str(symbol1)
+        } else {
+            write!(formatter, "{}<->{}", symbol1, symbol2)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SpreadValues {
+    askbid: f64,
+    bidask: f64,
+    spread_rate: f64,
+    valid: u8,
+}
+
+impl SpreadValues {
+    const ASKBID_VALID: u8 = 1 << 0;
+    const BIDASK_VALID: u8 = 1 << 1;
+    const SPREAD_RATE_VALID: u8 = 1 << 2;
+
+    fn set(&mut self, spread_type: SpreadType, value: f64) {
+        let valid_bit = match spread_type {
+            SpreadType::AskBid => {
+                self.askbid = value;
+                Self::ASKBID_VALID
+            }
+            SpreadType::BidAsk => {
+                self.bidask = value;
+                Self::BIDASK_VALID
+            }
+            SpreadType::SpreadRate => {
+                self.spread_rate = value;
+                Self::SPREAD_RATE_VALID
+            }
+        };
+        self.valid |= valid_bit;
+    }
+
+    fn get(&self, spread_type: SpreadType) -> Option<f64> {
+        let (valid_bit, value) = match spread_type {
+            SpreadType::AskBid => (Self::ASKBID_VALID, self.askbid),
+            SpreadType::BidAsk => (Self::BIDASK_VALID, self.bidask),
+            SpreadType::SpreadRate => (Self::SPREAD_RATE_VALID, self.spread_rate),
+        };
+        if self.valid & valid_bit != 0 {
+            Some(value)
+        } else {
+            None
+        }
+    }
+}
+
+type SpreadThresholdEntryKey = (VenuePair, SpreadSymbolPairKey, ArbDirection, OperationType);
 
 const DEFAULT_FR_FWD_OPEN_SPREAD_LIMIT: f64 = 0.05;
 const DEFAULT_FR_BWD_OPEN_SPREAD_LIMIT: f64 = -0.05;
@@ -86,18 +212,8 @@ pub struct SpreadCheckDiagnostic {
 
 /// 价差因子单例
 pub struct SpreadFactor {
-    /// askbid 价差因子: (venue1, venue2) -> { (symbol1, symbol2) -> value }
-    /// askbid_sr = (spot_ask - fut_bid) / spot_ask
-    askbid: RefCell<HashMap<VenuePair, HashMap<SymbolPair, f64>>>,
-
-    /// bidask 价差因子: (venue1, venue2) -> { (symbol1, symbol2) -> value }
-    /// bidask_sr = (spot_bid - fut_ask) / spot_bid
-    bidask: RefCell<HashMap<VenuePair, HashMap<SymbolPair, f64>>>,
-
-    /// spread_rate 价差因子: (venue1, venue2) -> { (symbol1, symbol2) -> value }
-    /// mid_price = (ask0 + bid0) / 2
-    /// spread_rate = (mid_price_spot - mid_price_swap) / mid_price_spot
-    spread_rate: RefCell<HashMap<VenuePair, HashMap<SymbolPair, f64>>>,
+    /// 三种价差共享同一套 venue/symbol key，避免重复 key 与 HashMap 节点。
+    spreads: RefCell<HashMap<VenuePair, HashMap<SpreadSymbolPairKey, SpreadValues>>>,
 
     /// 阈值表: ((venue1, symbol1, venue2, symbol2), 方向, 操作) -> SpreadThresholdConfig
     mm_thresholds: RefCell<HashMap<SpreadThresholdEntryKey, SpreadThresholdConfig>>,
@@ -117,9 +233,7 @@ impl SpreadFactor {
     /// 创建新实例
     fn new() -> Self {
         Self {
-            askbid: RefCell::new(HashMap::new()),
-            bidask: RefCell::new(HashMap::new()),
-            spread_rate: RefCell::new(HashMap::new()),
+            spreads: RefCell::new(HashMap::new()),
             mm_thresholds: RefCell::new(HashMap::new()),
             mt_thresholds: RefCell::new(HashMap::new()),
             mode: RefCell::new(FactorMode::default()),
@@ -169,34 +283,16 @@ impl SpreadFactor {
         venue2_bid: f64,
         venue2_ask: f64,
     ) -> (Option<f64>, Option<f64>, Option<f64>) {
-        let venue_pair = (venue1, venue2);
-        let symbol_pair = (
-            Self::normalize_symbol_key(symbol1),
-            Self::normalize_symbol_key(symbol2),
-        );
-
         // 计算 askbid_sr = (venue1_ask - venue2_bid) / venue1_ask
         let askbid = if venue1_ask > 0.0 && venue2_bid > 0.0 {
-            let value = (venue1_ask - venue2_bid) / venue1_ask;
-            self.askbid
-                .borrow_mut()
-                .entry(venue_pair)
-                .or_default()
-                .insert(symbol_pair.clone(), value);
-            Some(value)
+            Some((venue1_ask - venue2_bid) / venue1_ask)
         } else {
             None
         };
 
         // 计算 bidask_sr = (venue1_bid - venue2_ask) / venue1_bid
         let bidask = if venue1_bid > 0.0 && venue2_ask > 0.0 {
-            let value = (venue1_bid - venue2_ask) / venue1_bid;
-            self.bidask
-                .borrow_mut()
-                .entry(venue_pair)
-                .or_default()
-                .insert(symbol_pair.clone(), value);
-            Some(value)
+            Some((venue1_bid - venue2_ask) / venue1_bid)
         } else {
             None
         };
@@ -208,19 +304,32 @@ impl SpreadFactor {
                 let mid_price_venue2 = (venue2_ask + venue2_bid) / 2.0;
 
                 if mid_price_venue1 > 0.0 {
-                    let value = (mid_price_venue1 - mid_price_venue2) / mid_price_venue1;
-                    self.spread_rate
-                        .borrow_mut()
-                        .entry(venue_pair)
-                        .or_default()
-                        .insert(symbol_pair, value);
-                    Some(value)
+                    Some((mid_price_venue1 - mid_price_venue2) / mid_price_venue1)
                 } else {
                     None
                 }
             } else {
                 None
             };
+
+        if askbid.is_some() || bidask.is_some() || spread_rate.is_some() {
+            let symbol_pair = Self::spread_symbol_pair_key(symbol1, symbol2);
+            let mut spreads = self.spreads.borrow_mut();
+            let values = spreads
+                .entry((venue1, venue2))
+                .or_default()
+                .entry(symbol_pair)
+                .or_default();
+            if let Some(value) = askbid {
+                values.set(SpreadType::AskBid, value);
+            }
+            if let Some(value) = bidask {
+                values.set(SpreadType::BidAsk, value);
+            }
+            if let Some(value) = spread_rate {
+                values.set(SpreadType::SpreadRate, value);
+            }
+        }
 
         (askbid, bidask, spread_rate)
     }
@@ -233,20 +342,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> Option<f64> {
-        // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
-        let query_venue1 = venue1;
-
-        let venue_pair = (query_venue1, venue2);
-        let symbol_pair = (
-            Self::normalize_symbol_key(symbol1),
-            Self::normalize_symbol_key(symbol2),
-        );
-
-        self.askbid
-            .borrow()
-            .get(&venue_pair)
-            .and_then(|inner| inner.get(&symbol_pair))
-            .copied()
+        self.get_spread_value(venue1, symbol1, venue2, symbol2, SpreadType::AskBid)
     }
 
     /// 获取 bidask 价差因子
@@ -257,20 +353,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> Option<f64> {
-        // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
-        let query_venue1 = venue1;
-
-        let venue_pair = (query_venue1, venue2);
-        let symbol_pair = (
-            Self::normalize_symbol_key(symbol1),
-            Self::normalize_symbol_key(symbol2),
-        );
-
-        self.bidask
-            .borrow()
-            .get(&venue_pair)
-            .and_then(|inner| inner.get(&symbol_pair))
-            .copied()
+        self.get_spread_value(venue1, symbol1, venue2, symbol2, SpreadType::BidAsk)
     }
 
     /// 获取 spread_rate 价差因子
@@ -281,20 +364,7 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> Option<f64> {
-        // 映射：BinanceMargin 使用 BinanceSpot 的价差数据（现货杠杆和现货共享盘口）
-        let query_venue1 = venue1;
-
-        let venue_pair = (query_venue1, venue2);
-        let symbol_pair = (
-            Self::normalize_symbol_key(symbol1),
-            Self::normalize_symbol_key(symbol2),
-        );
-
-        self.spread_rate
-            .borrow()
-            .get(&venue_pair)
-            .and_then(|inner| inner.get(&symbol_pair))
-            .copied()
+        self.get_spread_value(venue1, symbol1, venue2, symbol2, SpreadType::SpreadRate)
     }
 
     // ===== 模式管理 =====
@@ -332,6 +402,51 @@ impl SpreadFactor {
     }
 
     #[inline]
+    fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
+        let already_canonical = symbol.is_ascii()
+            && !symbol
+                .bytes()
+                .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
+            && !symbol.ends_with("SWAP");
+        if already_canonical {
+            Cow::Borrowed(symbol)
+        } else {
+            Cow::Owned(Self::normalize_symbol_key(symbol))
+        }
+    }
+
+    #[inline]
+    fn spread_symbol_pair_key(symbol1: &str, symbol2: &str) -> SpreadSymbolPairKey {
+        let symbol1 = Self::normalize_symbol_key_cow(symbol1);
+        let symbol2 = Self::normalize_symbol_key_cow(symbol2);
+        if symbol1 == symbol2 {
+            SpreadSymbolPairKey::Same(NormalizedSymbolKey::new(symbol1.as_ref()))
+        } else {
+            SpreadSymbolPairKey::Different(Box::new([
+                NormalizedSymbolKey::new(symbol1.as_ref()),
+                NormalizedSymbolKey::new(symbol2.as_ref()),
+            ]))
+        }
+    }
+
+    #[inline]
+    fn get_spread_value(
+        &self,
+        venue1: TradingVenue,
+        symbol1: &str,
+        venue2: TradingVenue,
+        symbol2: &str,
+        spread_type: SpreadType,
+    ) -> Option<f64> {
+        let symbol_pair = Self::spread_symbol_pair_key(symbol1, symbol2);
+        self.spreads
+            .borrow()
+            .get(&(venue1, venue2))
+            .and_then(|inner| inner.get(&symbol_pair))
+            .and_then(|values| values.get(spread_type))
+    }
+
+    #[inline]
     fn threshold_pair_key(
         venue1: TradingVenue,
         symbol1: &str,
@@ -356,7 +471,8 @@ impl SpreadFactor {
         operation: OperationType,
     ) -> SpreadThresholdEntryKey {
         (
-            Self::threshold_pair_key(venue1, symbol1, venue2, symbol2),
+            (Self::map_venue(venue1), venue2),
+            Self::spread_symbol_pair_key(symbol1, symbol2),
             arb_direction,
             operation,
         )
@@ -413,10 +529,10 @@ impl SpreadFactor {
     }
 
     fn resolve_fr_open_spread_limit(&self, symbol1: &str) -> FrOpenSpreadLimitOverride {
-        let symbol_key = Self::normalize_symbol_key(symbol1);
+        let symbol_key = Self::normalize_symbol_key_cow(symbol1);
         self.fr_open_spread_limit_overrides
             .borrow()
-            .get(&symbol_key)
+            .get(symbol_key.as_ref())
             .copied()
             .unwrap_or(FrOpenSpreadLimitOverride {
                 fwd_open_spread: *self.fr_fwd_open_spread_limit.borrow(),
@@ -513,16 +629,11 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = venue1;
-
-        let key = (
-            (
-                store_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Forward,
             OperationType::Open,
         );
@@ -558,16 +669,11 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = venue1;
-
-        let key = (
-            (
-                store_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Forward,
             OperationType::Cancel,
         );
@@ -604,16 +710,11 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = venue1;
-
-        let key = (
-            (
-                store_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Backward,
             OperationType::Open,
         );
@@ -649,16 +750,11 @@ impl SpreadFactor {
         mm_threshold: f64,
         mt_threshold: f64,
     ) {
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let store_venue1 = venue1;
-
-        let key = (
-            (
-                store_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Backward,
             OperationType::Cancel,
         );
@@ -718,16 +814,11 @@ impl SpreadFactor {
             return false;
         }
 
-        // 映射：BinanceMargin 使用 BinanceSpot 的阈值（现货杠杆和现货共享盘口）
-        let query_venue1 = venue1;
-
-        let key = (
-            (
-                query_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Forward,
             OperationType::Open,
         );
@@ -763,14 +854,11 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let query_venue1 = Self::map_venue(venue1);
-        let key = (
-            (
-                query_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Forward,
             OperationType::Cancel,
         );
@@ -841,14 +929,11 @@ impl SpreadFactor {
             return false;
         }
 
-        let query_venue1 = Self::map_venue(venue1);
-        let key = (
-            (
-                query_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Backward,
             OperationType::Open,
         );
@@ -884,14 +969,11 @@ impl SpreadFactor {
         venue2: TradingVenue,
         symbol2: &str,
     ) -> bool {
-        let query_venue1 = Self::map_venue(venue1);
-        let key = (
-            (
-                query_venue1,
-                Self::normalize_symbol_key(symbol1),
-                venue2,
-                Self::normalize_symbol_key(symbol2),
-            ),
+        let key = Self::threshold_entry_key(
+            venue1,
+            symbol1,
+            venue2,
+            symbol2,
             ArbDirection::Backward,
             OperationType::Cancel,
         );
@@ -1007,7 +1089,14 @@ impl SpreadFactor {
     ) -> SpreadCheckDiagnostic {
         let query_venue1 = venue1;
         let threshold_key = Self::threshold_pair_key(query_venue1, symbol1, venue2, symbol2);
-        let key = (threshold_key.clone(), arb_direction, operation);
+        let key = Self::threshold_entry_key(
+            query_venue1,
+            symbol1,
+            venue2,
+            symbol2,
+            arb_direction,
+            operation,
+        );
 
         let current_mode = self.get_mode();
         let config = {
@@ -1073,83 +1162,173 @@ impl SpreadFactor {
             );
         }
 
-        let askbid = self.askbid.borrow();
-        if let Some(inner) = askbid.get(&venue_pair) {
-            log::info!("  AskBid spreads: {} 个", inner.len());
-            for (symbol_pair, value) in inner.iter().take(5) {
-                log::info!("    {:?} = {:.6}", symbol_pair, value);
-            }
-
-            // 打印完整的 symbol 列表（用于排查）
-            let mut symbols: Vec<String> = inner
-                .keys()
-                .map(|(s1, s2)| {
-                    if s1 == s2 {
-                        s1.clone()
-                    } else {
-                        format!("{}<->{}", s1, s2)
-                    }
-                })
-                .collect();
-            symbols.sort();
-            log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
+        let spreads = self.spreads.borrow();
+        if let Some(inner) = spreads.get(&venue_pair) {
+            Self::debug_print_spread_type(inner, SpreadType::AskBid, "AskBid spreads");
+            Self::debug_print_spread_type(inner, SpreadType::BidAsk, "BidAsk spreads");
+            Self::debug_print_spread_type(inner, SpreadType::SpreadRate, "SpreadRate (mid price)");
         } else {
             log::info!("  AskBid spreads: 无数据");
-        }
-
-        let bidask = self.bidask.borrow();
-        if let Some(inner) = bidask.get(&venue_pair) {
-            log::info!("  BidAsk spreads: {} 个", inner.len());
-            for (symbol_pair, value) in inner.iter().take(5) {
-                log::info!("    {:?} = {:.6}", symbol_pair, value);
-            }
-
-            // 打印完整的 symbol 列表（用于排查）
-            let mut symbols: Vec<String> = inner
-                .keys()
-                .map(|(s1, s2)| {
-                    if s1 == s2 {
-                        s1.clone()
-                    } else {
-                        format!("{}<->{}", s1, s2)
-                    }
-                })
-                .collect();
-            symbols.sort();
-            log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
-        } else {
             log::info!("  BidAsk spreads: 无数据");
-        }
-
-        let spread_rate = self.spread_rate.borrow();
-        if let Some(inner) = spread_rate.get(&venue_pair) {
-            log::info!("  SpreadRate (mid price): {} 个", inner.len());
-            for (symbol_pair, value) in inner.iter().take(5) {
-                log::info!("    {:?} = {:.6}", symbol_pair, value);
-            }
-
-            // 打印完整的 symbol 列表（用于排查）
-            let mut symbols: Vec<String> = inner
-                .keys()
-                .map(|(s1, s2)| {
-                    if s1 == s2 {
-                        s1.clone()
-                    } else {
-                        format!("{}<->{}", s1, s2)
-                    }
-                })
-                .collect();
-            symbols.sort();
-            log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
-        } else {
             log::info!("  SpreadRate (mid price): 无数据");
         }
+    }
+
+    fn debug_print_spread_type(
+        inner: &HashMap<SpreadSymbolPairKey, SpreadValues>,
+        spread_type: SpreadType,
+        label: &str,
+    ) {
+        let count = inner
+            .values()
+            .filter(|values| values.get(spread_type).is_some())
+            .count();
+        if count == 0 {
+            log::info!("  {}: 无数据", label);
+            return;
+        }
+
+        log::info!("  {}: {} 个", label, count);
+        for (symbol_pair, value) in inner
+            .iter()
+            .filter_map(|(key, values)| values.get(spread_type).map(|value| (key, value)))
+            .take(5)
+        {
+            log::info!("    {:?} = {:.6}", symbol_pair, value);
+        }
+
+        let mut symbols: Vec<String> = inner
+            .iter()
+            .filter_map(|(key, values)| values.get(spread_type).map(|_| key.to_string()))
+            .collect();
+        symbols.sort();
+        log::info!("  完整 Symbol 列表: {}", symbols.join(", "));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_intra_symbol_uses_one_inline_key_for_all_spreads() {
+        let spread_factor = SpreadFactor::new();
+        let result = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+        );
+
+        assert!(result.0.is_some() && result.1.is_some() && result.2.is_some());
+        let spreads = spread_factor.spreads.borrow();
+        let inner = spreads
+            .get(&(TradingVenue::BinanceMargin, TradingVenue::BinanceFutures))
+            .unwrap();
+        assert_eq!(inner.len(), 1);
+        let (key, values) = inner.iter().next().unwrap();
+        assert!(matches!(
+            key,
+            SpreadSymbolPairKey::Same(NormalizedSymbolKey::Inline { .. })
+        ));
+        assert_eq!(values.get(SpreadType::AskBid), result.0);
+        assert_eq!(values.get(SpreadType::BidAsk), result.1);
+        assert_eq!(values.get(SpreadType::SpreadRate), result.2);
+    }
+
+    #[test]
+    fn spread_lookup_normalizes_venue_symbol_aliases() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.update(
+            TradingVenue::OkexMargin,
+            "btc-usdt-swap",
+            TradingVenue::OkexFutures,
+            "BTC_USDT_SWAP",
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+        );
+
+        assert_eq!(
+            spread_factor.get_spread_rate(
+                TradingVenue::OkexMargin,
+                "BTCUSDT",
+                TradingVenue::OkexFutures,
+                "BTCUSDT",
+            ),
+            spread_factor.get_spread_rate(
+                TradingVenue::OkexMargin,
+                "btc-usdt-swap",
+                TradingVenue::OkexFutures,
+                "BTC_USDT_SWAP",
+            )
+        );
+    }
+
+    #[test]
+    fn partial_update_preserves_previous_valid_spreads() {
+        let spread_factor = SpreadFactor::new();
+        spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "ETHUSDT",
+            TradingVenue::BinanceFutures,
+            "ETHUSDT",
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+        );
+        let previous_bidask = spread_factor.get_bidask(
+            TradingVenue::BinanceMargin,
+            "ETHUSDT",
+            TradingVenue::BinanceFutures,
+            "ETHUSDT",
+        );
+        let previous_spread_rate = spread_factor.get_spread_rate(
+            TradingVenue::BinanceMargin,
+            "ETHUSDT",
+            TradingVenue::BinanceFutures,
+            "ETHUSDT",
+        );
+
+        let update = spread_factor.update(
+            TradingVenue::BinanceMargin,
+            "ETHUSDT",
+            TradingVenue::BinanceFutures,
+            "ETHUSDT",
+            0.0,
+            102.0,
+            100.0,
+            101.0,
+        );
+
+        assert!(update.0.is_some());
+        assert_eq!(update.1, None);
+        assert_eq!(update.2, None);
+        assert_eq!(
+            spread_factor.get_bidask(
+                TradingVenue::BinanceMargin,
+                "ETHUSDT",
+                TradingVenue::BinanceFutures,
+                "ETHUSDT",
+            ),
+            previous_bidask
+        );
+        assert_eq!(
+            spread_factor.get_spread_rate(
+                TradingVenue::BinanceMargin,
+                "ETHUSDT",
+                TradingVenue::BinanceFutures,
+                "ETHUSDT",
+            ),
+            previous_spread_rate
+        );
+    }
 
     #[test]
     fn fr_open_spread_limit_is_disabled_by_default() {

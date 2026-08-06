@@ -6,6 +6,7 @@ use log::{info, warn};
 #[cfg(test)]
 use runtime_common::fast_hash::fast_hash_set;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set_from_iter, FastHashMap, FastHashSet};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
@@ -126,17 +127,23 @@ impl LocalTlenStore {
     }
 
     fn symbol_cache_mut(&mut self, symbol: &str) -> &mut SymbolTlenCache {
-        let price_tick = price_tick_for_symbol(&self.table, self.venue, symbol);
-        let amount_scale = amount_scale_for_symbol(&self.table, self.venue, symbol);
+        if !self.symbols.contains_key(symbol) {
+            let price_tick = price_tick_for_symbol(&self.table, self.venue, symbol);
+            let amount_scale = amount_scale_for_symbol(&self.table, self.venue, symbol);
+            self.symbols.insert(
+                symbol.to_owned(),
+                SymbolTlenCache {
+                    price_tick,
+                    amount_scale,
+                    bids: fast_hash_map(),
+                    asks: fast_hash_map(),
+                    bbo: BboEntry::default(),
+                },
+            );
+        }
         self.symbols
-            .entry(symbol.to_string())
-            .or_insert_with(|| SymbolTlenCache {
-                price_tick,
-                amount_scale,
-                bids: fast_hash_map(),
-                asks: fast_hash_map(),
-                bbo: BboEntry::default(),
-            })
+            .get_mut(symbol)
+            .expect("local_tlen symbol cache was just initialized")
     }
 
     fn apply_bbo(
@@ -305,12 +312,12 @@ pub fn update_bbo(
     ask_price: f64,
     ask_amount: f64,
 ) {
-    let symbol = normalize_symbol_key(symbol);
     LOCAL_TLEN.with(|state| {
         if let LocalTlenRuntime::Local(store) = &mut *state.borrow_mut() {
             if store.venue == venue {
+                let symbol = normalize_symbol_key_cow(symbol);
                 store.apply_bbo(
-                    &symbol,
+                    symbol.as_ref(),
                     timestamp_us,
                     bid_price,
                     bid_amount,
@@ -603,6 +610,19 @@ fn load_online_symbol_set() -> FastHashSet<String> {
 
 fn normalize_symbol_key(symbol: &str) -> String {
     normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
+}
+
+fn normalize_symbol_key_cow(symbol: &str) -> Cow<'_, str> {
+    let already_canonical = symbol.is_ascii()
+        && !symbol
+            .bytes()
+            .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
+        && !symbol.ends_with("SWAP");
+    if already_canonical {
+        Cow::Borrowed(symbol)
+    } else {
+        Cow::Owned(normalize_symbol_key(symbol))
+    }
 }
 
 fn symbol_key_for_table(venue: TradingVenue, symbol: &str) -> String {
