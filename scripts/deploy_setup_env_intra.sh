@@ -179,6 +179,7 @@ else
 
 # IceOryx 命名空间（非 dat_pbs 通道会被加上该前缀）
 export IPC_NAMESPACE='$NAMESPACE'
+export TRADE_SIGNAL_ENABLE_QUEUE_POSITION='0'
 
 # 同所 venue
 export OPEN_VENUE='$OPEN_VENUE'

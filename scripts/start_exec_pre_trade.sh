@@ -10,7 +10,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 VENUE="${EXEC_VENUE:-${VENUE:-}}"
-CONFIG_RELOAD_MS="${EXEC_CONFIG_RELOAD_MS:-1000}"
+CONFIG_RELOAD_MS="${EXEC_CONFIG_RELOAD_MS:-30000}"
 CORE="${EXEC_PRE_TRADE_CORE:-${PRE_TRADE_CORE:-}}"
 while [[ $# -gt 0 ]]; do
   case "$1" in

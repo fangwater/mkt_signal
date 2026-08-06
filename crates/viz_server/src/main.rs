@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
                 let hub = WsHub::new(128);
                 let http_cfg = server.http.clone();
                 let exec_dashboard = server.exec_pre_trade.enabled;
+                let config_proxy_url = server.exec_pre_trade.config_proxy_url.clone();
 
                 if let Err(err) = spawn_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
                 {
@@ -42,7 +43,9 @@ async fn main() -> Result<()> {
                 }
 
                 tokio::task::spawn_local(async move {
-                    if let Err(err) = serve_http(http_cfg, hub, exec_dashboard).await {
+                    if let Err(err) =
+                        serve_http(http_cfg, hub, exec_dashboard, config_proxy_url).await
+                    {
                         warn!("viz http server exited: {err:#}");
                     }
                 });

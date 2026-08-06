@@ -73,18 +73,24 @@ fi
 PROC_NAME="cross_${OPEN_EX}_${HEDGE_EX}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${LEGACY_PM2_TAG}"
 RUST_LOG="${RUST_LOG:-info}"
+QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+QUEUE_POSITION_ENABLED="${QUEUE_POSITION_ENABLED,,}"
+case "$QUEUE_POSITION_ENABLED" in
+  1|true|yes|on|0|false|no|off) ;;
+  *) echo "[ERROR] TRADE_SIGNAL_ENABLE_QUEUE_POSITION must be a boolean" >&2; exit 1 ;;
+esac
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
 npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
-RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
+RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
   --namespace "$NAMESPACE" \
   --cwd "$BASE_DIR"
 
 echo ""
-echo "[INFO] Started trade_signal (open=${OPEN_EX} hedge=${HEDGE_EX} env=${ENV_TAG})"
+echo "[INFO] Started trade_signal (open=${OPEN_EX} hedge=${HEDGE_EX} env=${ENV_TAG} queue_position=${QUEUE_POSITION_ENABLED})"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"

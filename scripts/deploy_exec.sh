@@ -124,7 +124,9 @@ export VENUE="${VENUE}"
 export EXEC_INSTANCE="${INSTANCE_SUFFIX}"
 export EXEC_VIZ_PORT="${VIZ_PORT}"
 export EXEC_CONFIG_PORT="${CONFIG_PORT}"
+export EXEC_CONFIG_RELOAD_MS="\${EXEC_CONFIG_RELOAD_MS:-30000}"
 export PYTHON_BIN="\${PYTHON_BIN:-\${HOME}/.venvs/default/bin/python}"
+export TRADE_SIGNAL_ENABLE_QUEUE_POSITION="\${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
 
 # Add the ${EXCHANGE} account credentials and account-mode settings before starting.
 ENV
@@ -142,6 +144,7 @@ enabled = false
 [servers.exec_pre_trade]
 enabled = true
 namespace = "${ENV_NAME}"
+config_proxy_url = "http://127.0.0.1:${CONFIG_PORT}"
 TOML
 fi
 if [[ ! -f "${TARGET_DIR}/config/exec_config_server.env" ]]; then
@@ -151,7 +154,7 @@ PORT=${CONFIG_PORT}
 ENV_NAME=${ENV_NAME}
 VENUE=${VENUE}
 REDIS_URL=redis://127.0.0.1:6379/0
-DASHBOARD_URL=http://127.0.0.1:${VIZ_PORT}/
+DASHBOARD_URL=../
 ENV
 fi
 echo "[INFO] Deployed complete Exec runtime to ${TARGET_DIR}"

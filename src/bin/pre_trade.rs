@@ -61,7 +61,7 @@ struct Args {
     venue: Option<ExecVenue>,
 
     /// Redis reload interval for BatchExec config and targets.
-    #[arg(long, default_value_t = 1_000)]
+    #[arg(long, default_value_t = 30_000)]
     config_reload_ms: u64,
 
     /// Venue for opening leg (e.g., binance-margin).

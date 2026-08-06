@@ -451,7 +451,7 @@ async fn run(
     trade_signal::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen).await?;
     if matches!(branch, DecisionBranch::Exec) {
         MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
-        info!("Exec branch: BBO/local tlen/queue-position runtime initialized");
+        info!("Exec branch: BBO/local tlen runtime initialized");
     } else {
         MktChannel::init_singleton(open_venue, hedge_venue)?;
         RateFetcher::init_for_venues(open_venue, hedge_venue)?;

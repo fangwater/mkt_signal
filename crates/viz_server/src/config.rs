@@ -94,6 +94,9 @@ pub struct ExecPreTradeSrcCfg {
     /// Exec 必须显式使用独立 namespace，不继承 server.namespaces。
     #[serde(default)]
     pub namespace: String,
+    /// Optional local config server proxied under `/config/` on the dashboard.
+    #[serde(default)]
+    pub config_proxy_url: Option<String>,
 }
 
 #[cfg(test)]
@@ -112,6 +115,7 @@ mod tests {
 
         assert!(!cfg.servers[0].exec_pre_trade.enabled);
         assert!(cfg.servers[0].exec_pre_trade.namespace.is_empty());
+        assert!(cfg.servers[0].exec_pre_trade.config_proxy_url.is_none());
     }
 
     #[test]
@@ -126,12 +130,17 @@ mod tests {
                 [servers.exec_pre_trade]
                 enabled = true
                 namespace = "cta_exec_trade"
+                config_proxy_url = "http://127.0.0.1:18161"
             "#,
         )
         .unwrap();
 
         assert!(cfg.servers[0].exec_pre_trade.enabled);
         assert_eq!(cfg.servers[0].exec_pre_trade.namespace, "cta_exec_trade");
+        assert_eq!(
+            cfg.servers[0].exec_pre_trade.config_proxy_url.as_deref(),
+            Some("http://127.0.0.1:18161")
+        );
         assert!(!cfg.servers[0].pre_trade.enabled);
         assert!(cfg.servers[0].namespaces.is_empty());
     }

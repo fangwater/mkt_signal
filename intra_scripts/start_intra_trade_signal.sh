@@ -56,6 +56,12 @@ ENV_TAG="$(printf '%s' "$ENV_TAG" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')
 PROC_NAME="intra_${EXCHANGE}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${EXCHANGE}"
 RUST_LOG="${RUST_LOG:-info}"
+QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+QUEUE_POSITION_ENABLED="${QUEUE_POSITION_ENABLED,,}"
+case "$QUEUE_POSITION_ENABLED" in
+  1|true|yes|on|0|false|no|off) ;;
+  *) echo "[ERROR] TRADE_SIGNAL_ENABLE_QUEUE_POSITION must be a boolean" >&2; exit 1 ;;
+esac
 
 # 绑核来源：env.sh 里 export TRADE_SIGNAL_CORE=<N>，单个整数；未设置则不绑。
 core_args=()
@@ -79,10 +85,10 @@ pm2_cmd=(npx pm2 start "$BIN_PATH"
 if [[ ${#core_args[@]} -gt 0 ]]; then
   pm2_cmd+=(-- "${core_args[@]}")
 fi
-RUST_LOG="${RUST_LOG}" "${pm2_cmd[@]}"
+RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" "${pm2_cmd[@]}"
 
 echo ""
-echo "[INFO] Started trade_signal (exchange=${EXCHANGE} env=${ENV_TAG})"
+echo "[INFO] Started trade_signal (exchange=${EXCHANGE} env=${ENV_TAG} queue_position=${QUEUE_POSITION_ENABLED})"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"

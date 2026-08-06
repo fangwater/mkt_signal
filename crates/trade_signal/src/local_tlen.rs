@@ -23,6 +23,7 @@ use super::symbol_list::SymbolList;
 
 const INC_PAYLOAD: usize = 2048;
 const LOCAL_TLEN_MODE_ENV: &str = "TRADE_SIGNAL_TLEN_QUERY_MODE";
+const QUEUE_POSITION_ENABLED_ENV: &str = "TRADE_SIGNAL_ENABLE_QUEUE_POSITION";
 const ONLINE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const STATS_LOG_INTERVAL: Duration = Duration::from_secs(10);
 const INC_DRAIN_BUDGET: usize = 2048;
@@ -294,6 +295,23 @@ pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
     startup_mode_from_env_with_default(force_remote, false)
 }
 
+fn queue_position_enabled_from_env() -> bool {
+    let Ok(raw) = std::env::var(QUEUE_POSITION_ENABLED_ENV) else {
+        return false;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        other => {
+            warn!(
+                "invalid {}='{}'; queue-position messages disabled",
+                QUEUE_POSITION_ENABLED_ENV, other
+            );
+            false
+        }
+    }
+}
+
 fn startup_mode_from_env_with_default(force_remote: bool, default_local: bool) -> TlenQueryMode {
     if let Ok(raw) = std::env::var(LOCAL_TLEN_MODE_ENV) {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -322,6 +340,7 @@ fn startup_mode_from_env_with_default(force_remote: bool, default_local: bool) -
 
 pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool) -> Result<()> {
     let exec_branch = matches!(decision_branch(), Some(DecisionBranch::Exec));
+    let queue_position_enabled = queue_position_enabled_from_env();
     let mode = startup_mode_from_env_with_default(force_remote, exec_branch);
     match mode {
         TlenQueryMode::Remote => {
@@ -351,7 +370,17 @@ pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool)
                 *state.borrow_mut() =
                     LocalTlenRuntime::Local(LocalTlenStore::new(open_venue, table, symbol_scope));
             });
-            super::queue_position::init_local(open_venue)?;
+            if queue_position_enabled {
+                super::queue_position::init_local(open_venue)?;
+            } else {
+                super::queue_position::disable();
+                info!(
+                    "queue-position messages disabled: venue={} env={} exec_branch={}",
+                    open_venue.data_pub_slug(),
+                    QUEUE_POSITION_ENABLED_ENV,
+                    exec_branch
+                );
+            }
             spawn_incremental_listener(open_venue);
             info!(
                 "local_tlen enabled: mode=local venue={} symbol_scope={} source=trade_signal_startup",
@@ -820,6 +849,28 @@ mod tests {
             startup_mode_from_env_with_default(true, true),
             TlenQueryMode::Remote
         );
+    }
+
+    #[test]
+    fn queue_position_messages_require_explicit_enable() {
+        let _guard = env_test_lock();
+        std::env::remove_var(QUEUE_POSITION_ENABLED_ENV);
+
+        assert!(!queue_position_enabled_from_env());
+
+        for enabled in ["1", "true", "yes", "on"] {
+            std::env::set_var(QUEUE_POSITION_ENABLED_ENV, enabled);
+            assert!(queue_position_enabled_from_env());
+        }
+        for disabled in ["0", "false", "no", "off"] {
+            std::env::set_var(QUEUE_POSITION_ENABLED_ENV, disabled);
+            assert!(!queue_position_enabled_from_env());
+        }
+
+        std::env::set_var(QUEUE_POSITION_ENABLED_ENV, "invalid");
+        assert!(!queue_position_enabled_from_env());
+
+        std::env::remove_var(QUEUE_POSITION_ENABLED_ENV);
     }
 
     #[test]

@@ -27,6 +27,12 @@ command -v "$PMDAEMON_BIN" >/dev/null 2>&1 || { echo "[ERROR] pmdaemon not found
 dir_tag="$(basename "$BASE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"
 PROC_NAME="${PMDAEMON_NAME:-exec_ts_${dir_tag}}"
 CORE="${TRADE_SIGNAL_CORE:-}"
+QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+QUEUE_POSITION_ENABLED="${QUEUE_POSITION_ENABLED,,}"
+case "$QUEUE_POSITION_ENABLED" in
+  1|true|yes|on|0|false|no|off) ;;
+  *) echo "[ERROR] TRADE_SIGNAL_ENABLE_QUEUE_POSITION must be a boolean" >&2; exit 1 ;;
+esac
 ARGS=()
 if [[ -n "$CORE" ]]; then
   [[ "$CORE" =~ ^[0-9]+$ ]] || { echo "[ERROR] TRADE_SIGNAL_CORE must be an integer" >&2; exit 1; }
@@ -43,10 +49,10 @@ done
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","IPC_NAMESPACE":"${IPC_NAMESPACE}"}}]}
+{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","IPC_NAMESPACE":"${IPC_NAMESPACE}","TRADE_SIGNAL_ENABLE_QUEUE_POSITION":"${QUEUE_POSITION_ENABLED}"}}]}
 JSON
 
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_exec_trade_signal.sh"
-echo "[INFO] Starting ${PROC_NAME}; Exec branch and venue will be inferred from cwd=${BASE_DIR}"
+echo "[INFO] Starting ${PROC_NAME}; Exec branch and venue will be inferred from cwd=${BASE_DIR}; queue_position=${QUEUE_POSITION_ENABLED}"
 "$PMDAEMON_BIN" --config "$cfg_file" start --name "$PROC_NAME"
 echo "[INFO] Logs: ${PMDAEMON_BIN} logs ${PROC_NAME} --follow"

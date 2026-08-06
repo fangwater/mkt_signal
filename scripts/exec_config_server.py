@@ -508,27 +508,39 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
             parsed = urlparse(self.path)
             try:
                 if parsed.path != "/api/strategy":
-                    self.send_error_json(404, ValueError("not found"))
+                    response = {"ok": False, "error": "not found"}
+                    self.log_update_response(404, response)
+                    self.send_json(404, response)
                     return
                 payload = self.read_json()
                 name = validate_strategy_name(payload.get("strategy_name"))
                 config = store.save(name, payload.get("config"))
-                self.send_json(
-                    200,
-                    {
-                        "ok": True,
-                        "strategy_name": name,
-                        "key": store.key(name),
-                        "config": config,
-                    },
-                )
+                response = {
+                    "ok": True,
+                    "strategy_name": name,
+                    "key": store.key(name),
+                    "config": config,
+                }
+                self.log_update_response(200, response)
+                self.send_json(200, response)
             except (ValueError, json.JSONDecodeError) as exc:
-                self.send_error_json(400, exc)
+                response = {"ok": False, "error": str(exc)}
+                self.log_update_response(400, response)
+                self.send_json(400, response)
             except Exception as exc:
-                self.send_error_json(500, exc)
+                response = {"ok": False, "error": str(exc)}
+                self.log_update_response(500, response)
+                self.send_json(500, response)
+
+        def log_update_response(self, status: int, payload: Dict[str, Any]) -> None:
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            print(
+                f"[exec-config] update status={status} response={encoded}",
+                flush=True,
+            )
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            print(f"[exec-config] {self.address_string()} {fmt % args}")
+            print(f"[exec-config] {self.address_string()} {fmt % args}", flush=True)
 
     return Handler
 

@@ -1,7 +1,12 @@
+import contextlib
 import importlib.util
+import io
+import json
 import pathlib
 import threading
 import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 
 MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "exec_config_server.py"
@@ -33,6 +38,37 @@ def fake_store():
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_http_update_writes_redis_and_logs_response(self):
+        store = fake_store()
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"btcusdt": 0.2}
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/strategy",
+            data=json.dumps(
+                {"strategy_name": "trend_a", "config": config}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            with urllib.request.urlopen(request, timeout=2) as response:
+                payload = json.load(response)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["config"]["targets"], {"BTCUSDT": 0.2})
+        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
+        self.assertIn("update status=200 response=", output.getvalue())
+        self.assertIn(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), output.getvalue())
+
     def test_strategy_names_write_independent_keys(self):
         store = fake_store()
         first = dict(MODULE.DEFAULT_CONFIG)

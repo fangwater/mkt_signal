@@ -157,6 +157,12 @@ else
 fi
 PROC_NAME="${PM2_NAME:-$DEFAULT_PROC_NAME}"
 RUST_LOG="${RUST_LOG:-info}"
+QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+QUEUE_POSITION_ENABLED="${QUEUE_POSITION_ENABLED,,}"
+case "$QUEUE_POSITION_ENABLED" in
+  1|true|yes|on|0|false|no|off) ;;
+  *) echo "[ERROR] TRADE_SIGNAL_ENABLE_QUEUE_POSITION must be a boolean" >&2; exit 1 ;;
+esac
 
 if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
   if [[ ! "$TRADE_SIGNAL_CORE" =~ ^[0-9]+$ ]]; then
@@ -176,7 +182,7 @@ if [[ -n "$BUGGY_PROC_NAME" && "$BUGGY_PROC_NAME" != "$PROC_NAME" ]]; then
 fi
 npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
 
-RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
+RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
   --namespace "$NAMESPACE" \
   --cwd "$BASE_DIR" \
@@ -184,7 +190,7 @@ RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   "${ARGS[@]}"
 
 echo ""
-echo "[INFO] Started trade_signal (ns=${NS:-unknown} suffix=${SUFFIX:-unknown})"
+echo "[INFO] Started trade_signal (ns=${NS:-unknown} suffix=${SUFFIX:-unknown} queue_position=${QUEUE_POSITION_ENABLED})"
 echo "Market data source: bridge for binance/gate/bitget; spread_pbs+dat_pbs for okex/bybit"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"

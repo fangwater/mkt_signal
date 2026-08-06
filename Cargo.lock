@@ -5206,6 +5206,7 @@ dependencies = [
  "iceoryx2",
  "ipc_common",
  "log",
+ "reqwest",
  "runtime_common",
  "serde",
  "serde_json",

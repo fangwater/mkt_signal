@@ -33,6 +33,7 @@ fi
 BIND="${BIND:-127.0.0.1}"
 PORT="${PORT:-18161}"
 REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
+DASHBOARD_URL="${DASHBOARD_URL:-../}"
 APP_NAME="${PMDAEMON_NAME:-exec_cfg_${dir_tag}}"
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
@@ -68,8 +69,9 @@ json_port="$(json_escape "$PORT")"
 json_redis="$(json_escape "$REDIS_URL")"
 json_env_name="$(json_escape "$ENV_NAME")"
 json_venue="$(json_escape "$VENUE")"
+json_dashboard="$(json_escape "$DASHBOARD_URL")"
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${json_name}","script":"${json_python}","args":["${json_script}","--bind","${json_bind}","--port","${json_port}","--redis-url","${json_redis}","--env-name","${json_env_name}","--venue","${json_venue}"],"cwd":"${json_base}"}]}
+{"apps":[{"name":"${json_name}","script":"${json_python}","args":["${json_script}","--bind","${json_bind}","--port","${json_port}","--redis-url","${json_redis}","--env-name","${json_env_name}","--venue","${json_venue}","--dashboard-url","${json_dashboard}"],"cwd":"${json_base}"}]}
 JSON
 
 echo "[INFO] Starting exec_config_server env=${ENV_NAME} venue=${VENUE} port=${PORT}"
