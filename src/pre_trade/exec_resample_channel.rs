@@ -107,6 +107,8 @@ impl ExecResampleChannel {
                     live_order_usdt: snapshot.live_order_qty * price,
                     pending_usdt: snapshot.pending_qty * price,
                     active_batches: snapshot.active_batches.min(u32::MAX as usize) as u32,
+                    remaining_batches: snapshot.remaining_batches,
+                    estimated_completion_ts_ms: snapshot.estimated_completion_ts_ms,
                 });
             }
             rows.sort_by(|lhs, rhs| {

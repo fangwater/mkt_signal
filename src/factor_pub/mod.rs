@@ -8,3 +8,4 @@ pub mod model_pub;
 pub mod pairmm_resample;
 pub mod rl_vol;
 pub mod trade_flow_feature_pub;
+pub mod trade_notional_kll;

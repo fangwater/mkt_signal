@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Exec Pre-Trade</title>
+    <title>Exec 执行监控</title>
     <style>
       :root {
         color-scheme: dark;
@@ -83,12 +83,31 @@
       .section { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
       .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
       .section-head h2 { margin: 0; font-size: 14px; }
+      .view-switch {
+        display: inline-flex;
+        padding: 2px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+      }
+      .view-switch button {
+        height: 27px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--muted);
+      }
+      .view-switch button[aria-pressed="true"] {
+        background: #263341;
+        color: var(--text);
+      }
       .meta { color: var(--muted); font-size: 12px; }
       .meta.stale { color: var(--red); }
       .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
       .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
       .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-      table { width: 100%; min-width: 1380px; border-collapse: collapse; }
+      table { width: 100%; min-width: 1160px; border-collapse: collapse; }
       thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
       th, td {
         height: 40px;
@@ -105,17 +124,39 @@
       tbody tr:hover { background: #18212b; }
       .aggregate-row { background: #151e27; font-weight: 600; }
       .aggregate-row td { border-top: 1px solid #3b4857; }
-      .strategy-row td:first-child { padding-left: 28px; position: relative; }
-      .strategy-row td:first-child::before {
+      .detail-row td:first-child { padding-left: 36px; position: relative; }
+      .detail-row td:first-child::before {
         content: "";
         position: absolute;
-        left: 14px;
+        left: 20px;
         top: 12px;
         width: 6px;
         height: 12px;
         border-left: 1px solid #526174;
         border-bottom: 1px solid #526174;
       }
+      .group-label { display: inline-flex; align-items: center; gap: 7px; }
+      button.group-toggle {
+        width: 24px;
+        min-width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        display: inline-grid;
+        place-items: center;
+      }
+      button.group-toggle::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid var(--muted);
+        border-bottom: 2px solid var(--muted);
+        transform: rotate(-45deg);
+        transition: transform 120ms ease;
+      }
+      button.group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
+      button.group-toggle:hover::before { border-color: var(--cyan); }
       .scope-label { color: var(--cyan); }
       .positive { color: var(--green); }
       .negative { color: var(--red); }
@@ -155,56 +196,61 @@
   </head>
   <body>
     <header>
-      <h1>Exec Pre-Trade</h1>
+      <h1>Exec 执行监控</h1>
       <div class="connection">
         <span id="conn-dot" class="dot"></span>
-        <span id="conn-text">Connecting</span>
+        <span id="conn-text">连接中</span>
         <span id="namespace">-</span>
         <span id="last-update">-</span>
       </div>
       <div class="toolbar">
-        <select id="strategy-filter" aria-label="Strategy name"><option value="">All strategies</option></select>
-        <input id="symbol-filter" placeholder="Symbol" aria-label="Symbol filter" />
-        <button id="refresh" type="button">Refresh</button>
-        <a id="config-link" class="command" href="./config/">Config</a>
+        <select id="strategy-filter" aria-label="策略筛选"><option value="">全部策略</option></select>
+        <input id="symbol-filter" placeholder="筛选品种" aria-label="品种筛选" />
+        <button id="refresh" type="button">刷新</button>
+        <a id="config-link" class="command" href="./config/">配置</a>
       </div>
     </header>
 
     <main>
-      <section class="risk-band" aria-label="Account risk">
-        <div class="metric"><label>Equity USDT</label><strong id="equity">--</strong></div>
-        <div class="metric"><label>Leverage</label><strong id="leverage">--</strong></div>
-        <div class="metric"><label>Gross Notional</label><strong id="gross">--</strong></div>
-        <div class="metric"><label>Net Notional</label><strong id="net">--</strong></div>
-        <div class="metric"><label>Long Notional</label><strong id="long">--</strong></div>
-        <div class="metric"><label>Short Notional</label><strong id="short">--</strong></div>
+      <section class="risk-band" aria-label="账户风险">
+        <div class="metric"><label>账户权益 USDT</label><strong id="equity">--</strong></div>
+        <div class="metric"><label>杠杆率</label><strong id="leverage">--</strong></div>
+        <div class="metric"><label>总名义价值</label><strong id="gross">--</strong></div>
+        <div class="metric"><label>净名义价值</label><strong id="net">--</strong></div>
+        <div class="metric"><label>多头名义价值</label><strong id="long">--</strong></div>
+        <div class="metric"><label>空头名义价值</label><strong id="short">--</strong></div>
       </section>
 
       <section class="section">
         <div class="section-head">
-          <h2>Target Positions</h2>
-          <span id="state-meta" class="meta">No data</span>
+          <h2>目标仓位</h2>
+          <div class="view-switch" role="group" aria-label="仓位分组方式">
+            <button type="button" data-group-mode="symbol" aria-pressed="true">按品种</button>
+            <button type="button" data-group-mode="strategy" aria-pressed="false">按策略</button>
+          </div>
+          <span id="state-meta" class="meta">暂无数据</span>
           <div class="summary">
-            <span>Target <strong id="sum-target">--</strong></span>
-            <span>Current <strong id="sum-current">--</strong></span>
-            <span>Delta <strong id="sum-delta">--</strong></span>
-            <span>Pending <strong id="sum-pending">--</strong></span>
-            <span>Live <strong id="sum-live">--</strong></span>
+            <span>差额 USDT <strong id="sum-delta">--</strong></span>
+            <span>待下单 USDT <strong id="sum-pending">--</strong></span>
+            <span>挂单 USDT <strong id="sum-live">--</strong></span>
           </div>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Scope / Strategy</th><th>Symbol</th><th>Status</th>
-                <th>Target Qty</th><th>Position Qty</th><th>Allocated Qty</th><th>Delta Qty</th>
-                <th>Live Qty</th><th>Pending Qty</th><th>Target USDT</th><th>Current USDT</th>
-                <th>Delta USDT</th><th>Live USDT</th><th>Pending USDT</th><th>Batches</th><th></th>
+                <th id="scope-column">品种 / 策略</th><th id="detail-column">所属品种</th><th>状态</th>
+                <th>目标仓位</th><th title="策略行显示策略实际仓位；品种汇总行显示交易所综合仓位">实际仓位</th>
+                <th>挂单数量</th><th>待下单数量</th><th>差额 USDT</th>
+                <th title="活动子单尚未成交数量 × 当前中间价">挂单 USDT</th>
+                <th title="(目标仓位 - 实际仓位 - 活动挂单数量) × 当前中间价">待下单 USDT</th>
+                <th title="达到目标仓位前预计还需完成的批次数量">剩余批次</th>
+                <th title="最后一个批次启动后，按最大 Maker 重报价次数估算">预计完成</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="rows"></tbody>
           </table>
-          <div id="empty" class="empty">Waiting for Exec state</div>
+          <div id="empty" class="empty">等待 Exec 状态数据</div>
         </div>
       </section>
     </main>
@@ -213,29 +259,49 @@
       (() => {
         const STALE_MS = 5000;
         const RECONNECT_MS = 2000;
-        const state = { exec: null, risk: null, ws: null, reconnect: null, strategy: "", symbol: "" };
+        const params = new URLSearchParams(location.search);
+        const demoMode = params.get("demo") === "1";
+        const state = {
+          exec: null,
+          risk: null,
+          ws: null,
+          reconnect: null,
+          strategy: "",
+          symbol: "",
+          groupMode: params.get("group") === "strategy" ? "strategy" : "symbol",
+          collapsed: { symbol: new Set(), strategy: new Set() },
+        };
         const byId = (id) => document.getElementById(id);
-        const qtyFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
-        const usdFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        const levFmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+        const qtyFmt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 8 });
+        const usdFmt = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const levFmt = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 
         function finite(value) { return typeof value === "number" && Number.isFinite(value); }
         function fmt(value, formatter) { return finite(value) ? formatter.format(value) : "--"; }
+        function fmtEta(value) {
+          return finite(value) && value > 0
+            ? new Date(value).toLocaleTimeString("zh-CN", { hour12: false })
+            : "--";
+        }
+        function etaTitle(value) {
+          return finite(value) && value > 0 ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "";
+        }
         function cls(value) { return !finite(value) ? "muted" : value > 0 ? "positive" : value < 0 ? "negative" : ""; }
         function escapeHtml(value) {
           return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
         }
         function wsUrl() {
-          const override = new URLSearchParams(location.search).get("ws");
+          const override = params.get("ws");
           const url = new URL(override || "./ws", location.href);
           url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
           return url.toString();
         }
         function snapshotUrl() {
-          return new URL(new URLSearchParams(location.search).get("snapshot") || "./snapshot", location.href).toString();
+          const fallback = demoMode ? "./exec_pre_trade_sample_snapshot.json" : "./snapshot";
+          return new URL(params.get("snapshot") || fallback, location.href).toString();
         }
         function configUrl(strategy) {
-          const configured = new URLSearchParams(location.search).get("config");
+          const configured = params.get("config");
           const url = new URL(configured || "./config/", location.href);
           if (strategy) url.searchParams.set("strategy", strategy);
           return url.toString();
@@ -252,6 +318,18 @@
           render();
         }
         function applySnapshot(payload) {
+          if (demoMode && payload && finite(payload.ts_ms) && Array.isArray(payload.entries)) {
+            const timeOffset = Date.now() - payload.ts_ms;
+            payload.entries.forEach((message) => {
+              const rows = message && message.entry && message.entry.rows;
+              if (!Array.isArray(rows)) return;
+              rows.forEach((row) => {
+                if (finite(row.estimated_completion_ts_ms) && row.estimated_completion_ts_ms > 0) {
+                  row.estimated_completion_ts_ms += timeOffset;
+                }
+              });
+            });
+          }
           if (payload && Array.isArray(payload.entries)) payload.entries.forEach(applyMessage);
         }
         function loadSnapshot() {
@@ -261,20 +339,27 @@
           const names = [...new Set(rows.map((row) => String(row.strategy_name || "")).filter(Boolean))].sort();
           const select = byId("strategy-filter");
           const current = state.strategy;
-          select.innerHTML = '<option value="">All strategies</option>' + names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+          select.innerHTML = '<option value="">全部策略</option>' + names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
           select.value = names.includes(current) ? current : "";
           state.strategy = select.value;
         }
         function rowStatus(row, ready) {
-          if (!ready || row.position_allocated === false) return ["WAIT", "wait"];
-          if (Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0) return ["WORKING", "live"];
-          if (Math.abs(row.delta_usdt || 0) <= 0.01) return ["SETTLED", "done"];
-          return ["QUEUED", "wait"];
+          if (!ready || row.position_allocated === false) return ["等待仓位", "wait"];
+          const working = row.has_working === true
+            || Math.abs(row.live_order_usdt || 0) > 0.01
+            || (row.active_batches || 0) > 0;
+          if (working) return ["执行中", "live"];
+          const unsettled = row.has_unsettled === true || Math.abs(row.delta_usdt || 0) > 0.01;
+          if (!unsettled) return ["已完成", "done"];
+          return ["待执行", "wait"];
         }
         function sumField(rows, key) {
           return rows.reduce((total, row) => total + (finite(row[key]) ? row[key] : 0), 0);
         }
-        function aggregateSymbolRows(rows) {
+        function maxField(rows, key) {
+          return rows.reduce((maximum, row) => finite(row[key]) ? Math.max(maximum, row[key]) : maximum, 0);
+        }
+        function aggregateSymbolRows(rows, useAccountPosition) {
           const grouped = new Map();
           rows.forEach((row) => {
             const symbol = String(row.symbol || "");
@@ -282,26 +367,32 @@
             grouped.get(symbol).push(row);
           });
           return [...grouped.entries()].map(([symbol, strategies]) => {
-            strategies.sort((a, b) => String(a.strategy_name).localeCompare(String(b.strategy_name)));
-            const first = strategies[0] || {};
-            const targetQty = sumField(strategies, "target_qty");
-            const targetUsdt = sumField(strategies, "target_usdt");
-            const liveQty = sumField(strategies, "live_order_qty");
-            const liveUsdt = sumField(strategies, "live_order_usdt");
-            const accountQty = finite(first.account_position_qty)
+            const children = [...strategies].sort((a, b) => String(a.strategy_name).localeCompare(String(b.strategy_name), "zh-CN"));
+            const first = children[0] || {};
+            const targetQty = sumField(children, "target_qty");
+            const targetUsdt = sumField(children, "target_usdt");
+            const liveQty = sumField(children, "live_order_qty");
+            const liveUsdt = sumField(children, "live_order_usdt");
+            const accountQty = useAccountPosition && finite(first.account_position_qty)
               ? first.account_position_qty
-              : sumField(strategies, "current_qty");
-            const accountUsdt = finite(first.account_position_usdt)
+              : sumField(children, "current_qty");
+            const accountUsdt = useAccountPosition && finite(first.account_position_usdt)
               ? first.account_position_usdt
-              : sumField(strategies, "current_usdt");
+              : sumField(children, "current_usdt");
             const aggregate = {
               aggregate: true,
-              strategy_name: "Aggregate",
+              group_mode: "symbol",
+              group_key: symbol,
+              group_label: symbol,
+              group_detail: `${children.length} 个策略`,
               symbol,
-              position_allocated: strategies.every((row) => row.position_allocated !== false),
+              position_title: useAccountPosition ? "交易所账户综合实际仓位" : "筛选策略的实际仓位汇总",
+              position_allocated: children.every((row) => row.position_allocated !== false),
+              has_working: children.some((row) => Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0),
+              has_unsettled: children.some((row) => Math.abs(row.delta_usdt || 0) > 0.01),
               target_qty: targetQty,
               current_qty: accountQty,
-              effective_position_qty: sumField(strategies, "effective_position_qty"),
+              effective_position_qty: sumField(children, "effective_position_qty"),
               delta_qty: targetQty - accountQty,
               live_order_qty: liveQty,
               pending_qty: targetQty - accountQty - liveQty,
@@ -310,34 +401,81 @@
               delta_usdt: targetUsdt - accountUsdt,
               live_order_usdt: liveUsdt,
               pending_usdt: targetUsdt - accountUsdt - liveUsdt,
-              active_batches: sumField(strategies, "active_batches"),
+              active_batches: sumField(children, "active_batches"),
+              remaining_batches: sumField(children, "remaining_batches"),
+              estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
             };
-            return { aggregate, strategies };
+            return { aggregate, children };
           }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.symbol.localeCompare(b.aggregate.symbol));
         }
+
+        function aggregateStrategyRows(rows) {
+          const grouped = new Map();
+          rows.forEach((row) => {
+            const strategy = String(row.strategy_name || "");
+            if (!grouped.has(strategy)) grouped.set(strategy, []);
+            grouped.get(strategy).push(row);
+          });
+          return [...grouped.entries()].map(([strategy, strategyRows]) => {
+            const children = [...strategyRows].sort((a, b) => String(a.symbol).localeCompare(String(b.symbol), "zh-CN"));
+            const symbols = new Set(children.map((row) => String(row.symbol || "")));
+            const quantitiesComparable = symbols.size === 1;
+            const qty = (key) => quantitiesComparable ? sumField(children, key) : undefined;
+            const aggregate = {
+              aggregate: true,
+              group_mode: "strategy",
+              group_key: strategy,
+              group_label: strategy || "未命名策略",
+              group_detail: `${symbols.size} 个品种`,
+              strategy_name: strategy,
+              position_title: quantitiesComparable ? "策略实际仓位汇总" : "跨品种数量不可直接相加",
+              position_allocated: children.every((row) => row.position_allocated !== false),
+              has_working: children.some((row) => Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0),
+              has_unsettled: children.some((row) => Math.abs(row.delta_usdt || 0) > 0.01),
+              target_qty: qty("target_qty"),
+              current_qty: qty("current_qty"),
+              effective_position_qty: qty("effective_position_qty"),
+              delta_qty: qty("delta_qty"),
+              live_order_qty: qty("live_order_qty"),
+              pending_qty: qty("pending_qty"),
+              target_usdt: sumField(children, "target_usdt"),
+              current_usdt: sumField(children, "current_usdt"),
+              delta_usdt: sumField(children, "delta_usdt"),
+              live_order_usdt: sumField(children, "live_order_usdt"),
+              pending_usdt: sumField(children, "pending_usdt"),
+              active_batches: sumField(children, "active_batches"),
+              remaining_batches: sumField(children, "remaining_batches"),
+              estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
+            };
+            return { aggregate, children };
+          }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.group_label.localeCompare(b.aggregate.group_label, "zh-CN"));
+        }
+
         function renderTableRow(row, ready) {
           const [status, statusClass] = rowStatus(row, ready);
-          const rowClass = row.aggregate ? "aggregate-row" : "strategy-row";
-          const strategy = row.aggregate
-            ? '<span class="scope-label">Aggregate</span>'
-            : escapeHtml(row.strategy_name);
-          const positionTitle = row.aggregate ? "Exchange account position" : "Strategy allocated position";
-          const action = row.aggregate
+          const rowClass = row.aggregate ? "aggregate-row" : "detail-row";
+          const collapsed = row.aggregate && state.collapsed[row.group_mode].has(row.group_key);
+          const primary = row.aggregate
+            ? `<span class="group-label"><button class="group-toggle" type="button" data-group-mode="${row.group_mode}" data-group-key="${escapeHtml(row.group_key)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? "展开" : "收起"}${escapeHtml(row.group_label)}明细" title="${collapsed ? "展开明细" : "收起明细"}"></button><span class="scope-label">${escapeHtml(row.group_label)}</span></span>`
+            : escapeHtml(state.groupMode === "symbol" ? row.strategy_name : row.symbol);
+          const secondary = row.aggregate
+            ? escapeHtml(row.group_detail)
+            : escapeHtml(state.groupMode === "symbol" ? row.symbol : row.strategy_name);
+          const positionTitle = row.aggregate ? row.position_title : "策略实际仓位";
+          const action = row.aggregate || demoMode
             ? ""
-            : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">Edit</a>`;
+            : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">编辑</a>`;
           return `<tr class="${rowClass}">
-            <td>${strategy}</td><td>${escapeHtml(row.symbol)}</td>
+            <td>${primary}</td><td>${secondary}</td>
             <td><span class="status ${statusClass}">${status}</span></td>
             <td class="${cls(row.target_qty)}">${fmt(row.target_qty, qtyFmt)}</td>
             <td class="${cls(row.current_qty)}" title="${positionTitle}">${fmt(row.current_qty, qtyFmt)}</td>
-            <td class="${cls(row.effective_position_qty)}">${fmt(row.effective_position_qty, qtyFmt)}</td>
-            <td class="${cls(row.delta_qty)}">${fmt(row.delta_qty, qtyFmt)}</td>
             <td class="${cls(row.live_order_qty)}">${fmt(row.live_order_qty, qtyFmt)}</td>
             <td class="${cls(row.pending_qty)}">${fmt(row.pending_qty, qtyFmt)}</td>
-            <td>${fmt(row.target_usdt, usdFmt)}</td><td>${fmt(row.current_usdt, usdFmt)}</td>
             <td class="${cls(row.delta_usdt)}">${fmt(row.delta_usdt, usdFmt)}</td>
             <td>${fmt(row.live_order_usdt, usdFmt)}</td><td>${fmt(row.pending_usdt, usdFmt)}</td>
-            <td>${row.active_batches || 0}</td><td>${action}</td>
+            <td>${row.remaining_batches || 0}</td>
+            <td title="${escapeHtml(etaTitle(row.estimated_completion_ts_ms))}">${fmtEta(row.estimated_completion_ts_ms)}</td><td>${action}</td>
           </tr>`;
         }
         function renderRisk() {
@@ -358,48 +496,54 @@
             .filter((row) => !state.strategy || row.strategy_name === state.strategy)
             .filter((row) => !state.symbol || String(row.symbol || "").toUpperCase().includes(state.symbol));
           const ready = !!(entry && entry.position_ready);
-          let displayRows;
-          let summaryRows;
-          if (state.strategy) {
-            displayRows = rows.sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)) || Math.abs(b.delta_usdt || 0) - Math.abs(a.delta_usdt || 0));
-            summaryRows = displayRows;
-          } else {
-            const groups = aggregateSymbolRows(rows);
-            displayRows = [];
-            groups.forEach((group) => {
-              displayRows.push(group.aggregate);
-              displayRows.push(...group.strategies);
-            });
-            summaryRows = groups.map((group) => group.aggregate);
-          }
+          const groups = state.groupMode === "symbol"
+            ? aggregateSymbolRows(rows, !state.strategy)
+            : aggregateStrategyRows(rows);
+          const displayRows = [];
+          groups.forEach((group) => {
+            displayRows.push(group.aggregate);
+            if (!state.collapsed[state.groupMode].has(group.aggregate.group_key)) {
+              displayRows.push(...group.children);
+            }
+          });
+          const summaryRows = groups.map((group) => group.aggregate);
           const tbody = byId("rows");
           tbody.innerHTML = displayRows.map((row) => renderTableRow(row, ready)).join("");
           byId("empty").style.display = displayRows.length ? "none" : "block";
           const sum = (key) => sumField(summaryRows, key);
-          byId("sum-target").textContent = fmt(sum("target_usdt"), usdFmt);
-          byId("sum-current").textContent = fmt(sum("current_usdt"), usdFmt);
           byId("sum-delta").textContent = fmt(sum("delta_usdt"), usdFmt);
           byId("sum-pending").textContent = fmt(sum("pending_usdt"), usdFmt);
           byId("sum-live").textContent = fmt(sum("live_order_usdt"), usdFmt);
           const latest = Math.max(state.exec ? state.exec.received : 0, state.risk ? state.risk.received : 0);
           const namespace = (state.exec && state.exec.namespace) || (state.risk && state.risk.namespace) || "-";
           byId("namespace").textContent = namespace;
-          byId("last-update").textContent = latest ? new Date(latest).toLocaleTimeString() : "-";
+          byId("last-update").textContent = latest ? new Date(latest).toLocaleTimeString("zh-CN", { hour12: false }) : "-";
           const symbolCount = new Set(allRows.map((row) => String(row.symbol || ""))).size;
-          byId("state-meta").textContent = `${ready ? "Position ready" : "Position waiting"} / ${allRows.length} allocations / ${symbolCount} symbols`;
-          byId("state-meta").classList.toggle("stale", latest > 0 && Date.now() - latest > STALE_MS);
+          const strategyCount = new Set(allRows.map((row) => String(row.strategy_name || ""))).size;
+          const stale = !demoMode && latest > 0 && Date.now() - latest > STALE_MS;
+          byId("state-meta").textContent = `${ready ? "仓位已就绪" : "等待仓位"} / ${strategyCount} 个策略 / ${symbolCount} 个品种${stale ? " / 数据延迟" : ""}`;
+          byId("state-meta").classList.toggle("stale", stale);
+          byId("scope-column").textContent = state.groupMode === "symbol" ? "品种 / 策略" : "策略 / 品种";
+          byId("detail-column").textContent = state.groupMode === "symbol" ? "所属品种" : "所属策略";
+          document.querySelectorAll("[data-group-mode]:not(.group-toggle)").forEach((button) => {
+            button.setAttribute("aria-pressed", String(button.dataset.groupMode === state.groupMode));
+          });
           byId("config-link").href = configUrl(state.strategy);
         }
         function connect() {
+          if (demoMode) {
+            setConnection("ok", "演示数据");
+            return;
+          }
           if (state.ws) state.ws.close();
-          setConnection("", "Connecting");
+          setConnection("", "连接中");
           const ws = new WebSocket(wsUrl());
           state.ws = ws;
-          ws.onopen = () => { setConnection("ok", "Live"); loadSnapshot(); };
+          ws.onopen = () => { setConnection("ok", "实时"); loadSnapshot(); };
           ws.onmessage = (event) => { try { applyMessage(JSON.parse(event.data)); } catch (_) {} };
-          ws.onerror = () => setConnection("err", "Error");
+          ws.onerror = () => setConnection("err", "连接错误");
           ws.onclose = () => {
-            setConnection("err", "Disconnected");
+            setConnection("err", "已断开");
             loadSnapshot();
             clearTimeout(state.reconnect);
             state.reconnect = setTimeout(connect, RECONNECT_MS);
@@ -407,7 +551,19 @@
         }
         byId("strategy-filter").onchange = (event) => { state.strategy = event.target.value; render(); };
         byId("symbol-filter").oninput = (event) => { state.symbol = event.target.value.trim().toUpperCase(); render(); };
-        byId("refresh").onclick = () => { loadSnapshot(); connect(); };
+        byId("refresh").onclick = () => { loadSnapshot(); if (!demoMode) connect(); };
+        document.querySelectorAll(".view-switch [data-group-mode]").forEach((button) => {
+          button.onclick = () => { state.groupMode = button.dataset.groupMode; render(); };
+        });
+        byId("rows").onclick = (event) => {
+          const button = event.target.closest(".group-toggle");
+          if (!button) return;
+          const collapsed = state.collapsed[button.dataset.groupMode];
+          const key = button.dataset.groupKey;
+          if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
+          render();
+        };
+        byId("config-link").style.display = demoMode ? "none" : "inline-flex";
         setInterval(render, 1000);
         loadSnapshot();
         connect();

@@ -3,14 +3,29 @@
 # each named factor below becomes a Float64 column holding its raw value.
 venue = "binance-futures"
 symbols = ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
-start_date = "2024-12-01"
-end_date = "2024-12-31"
-replay_workers = 6
+start_date = "2025-12-29"
+end_date = "2026-07-31"
+replay_workers = 48
+replay_chunk_days = 1
+replay_warmup_days = 1
 
-# Add only the baseline factors required by the experiment. To add a new
-# factor later, append it here and replay the target range with the complete
-# list (including existing names); the binary widens the same output table.
-factors = ["baseline_118"]
+# Load the ordered per-symbol raw-factor plans used by the live 5s publisher.
+# The response is fetched once at startup and remains fixed for the whole run.
+# Build their ordered union and compute that same factor vector for every symbol.
+[factor_plan]
+base_url = "http://13.115.227.29:6322"
+config_type = "factor_plan"
+request_timeout_ms = 30000
+uniform_factor_shape = true
+
+# Computed after baseline rows exist. Rows before start_date warm the rolling
+# state; insufficient history in the requested range is stored as NULL.
+[rl_vol]
+enabled = true
+bar_ms = 5000
+pct_change_period = 12
+rolling_window = 30
+scale_factor = 1.3
 
 [clickhouse]
 url = "http://127.0.0.1:18123"

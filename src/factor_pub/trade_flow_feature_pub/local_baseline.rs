@@ -1,5 +1,6 @@
 //! Exact event-time trade-flow baseline aggregation for local replays.
 
+use crate::common::amount_threshold::AmountThreshold;
 use crate::depth_pub::orderbook::OrderBook;
 use anyhow::Result;
 use bytes::Bytes;
@@ -46,12 +47,24 @@ pub struct BaselineBar {
     pub sell_amount: f64,
     pub buy_volume: f64,
     pub sell_volume: f64,
+    pub large_order: f64,
+    pub medium_order: f64,
+    pub small_order: f64,
+    pub large_buy: f64,
+    pub large_sell: f64,
+    pub medium_buy: f64,
+    pub medium_sell: f64,
+    pub small_buy: f64,
+    pub small_sell: f64,
     pub vwap: f64,
     pub buy_vwap: f64,
     pub sell_vwap: f64,
     pub net_buy_amount: f64,
     pub net_buy_volume: f64,
     pub net_buy_pct: f64,
+    pub net_buy_large: f64,
+    pub net_buy_medium: f64,
+    pub net_buy_small: f64,
     /// Latest book at the right edge of this bar, padded with zero levels when needed.
     pub depth20: BaselineDepth20,
 }
@@ -157,12 +170,24 @@ impl BaselineBar {
             sell_amount: 0.0,
             buy_volume: 0.0,
             sell_volume: 0.0,
+            large_order: 0.0,
+            medium_order: 0.0,
+            small_order: 0.0,
+            large_buy: 0.0,
+            large_sell: 0.0,
+            medium_buy: 0.0,
+            medium_sell: 0.0,
+            small_buy: 0.0,
+            small_sell: 0.0,
             vwap: 0.0,
             buy_vwap: 0.0,
             sell_vwap: 0.0,
             net_buy_amount: 0.0,
             net_buy_volume: 0.0,
             net_buy_pct: 0.0,
+            net_buy_large: 0.0,
+            net_buy_medium: 0.0,
+            net_buy_small: 0.0,
             depth20: BaselineDepth20 {
                 bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
                 asks: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
@@ -170,9 +195,20 @@ impl BaselineBar {
         }
     }
 
-    fn update_trade(&mut self, is_buy: bool, price: f64, amount: f64) {
+    fn update_trade(
+        &mut self,
+        is_buy: bool,
+        price: f64,
+        amount: f64,
+        threshold: Option<AmountThreshold>,
+    ) {
         let notional = price * amount;
-        if !price.is_finite() || !amount.is_finite() || price <= 0.0 || amount <= 0.0 {
+        if !price.is_finite()
+            || !amount.is_finite()
+            || price <= 0.0
+            || amount <= 0.0
+            || !notional.is_finite()
+        {
             return;
         }
         if !self.has_trade {
@@ -196,6 +232,30 @@ impl BaselineBar {
             self.sell_count = self.sell_count.saturating_add(1);
             self.sell_amount += notional;
             self.sell_volume += amount;
+        }
+        if let Some(threshold) = threshold {
+            if notional >= threshold.large_notional_threshold {
+                self.large_order += notional;
+                if is_buy {
+                    self.large_buy += notional;
+                } else {
+                    self.large_sell += notional;
+                }
+            } else if notional >= threshold.medium_notional_threshold {
+                self.medium_order += notional;
+                if is_buy {
+                    self.medium_buy += notional;
+                } else {
+                    self.medium_sell += notional;
+                }
+            } else {
+                self.small_order += notional;
+                if is_buy {
+                    self.small_buy += notional;
+                } else {
+                    self.small_sell += notional;
+                }
+            }
         }
     }
 
@@ -221,6 +281,15 @@ impl BaselineBar {
         self.sell_amount += source.sell_amount;
         self.buy_volume += source.buy_volume;
         self.sell_volume += source.sell_volume;
+        self.large_order += source.large_order;
+        self.medium_order += source.medium_order;
+        self.small_order += source.small_order;
+        self.large_buy += source.large_buy;
+        self.large_sell += source.large_sell;
+        self.medium_buy += source.medium_buy;
+        self.medium_sell += source.medium_sell;
+        self.small_buy += source.small_buy;
+        self.small_sell += source.small_sell;
     }
 
     fn finalize(
@@ -260,13 +329,15 @@ impl BaselineBar {
         self.net_buy_amount = self.buy_amount - self.sell_amount;
         self.net_buy_volume = self.buy_volume - self.sell_volume;
         self.net_buy_pct = self.net_buy_amount / (self.buy_amount + self.sell_amount + 1e-6);
+        self.net_buy_large = self.large_buy - self.large_sell;
+        self.net_buy_medium = self.medium_buy - self.medium_sell;
+        self.net_buy_small = self.small_buy - self.small_sell;
         self
     }
 
     /// Encodes the same wire format as the live trade-flow publisher.
     ///
-    /// Local Tardis baseline aggregation has no amount-threshold configuration,
-    /// so the large/medium/small trade buckets and their net values are zero.
+    /// Size buckets are populated when trades were aggregated with thresholds.
     /// Missing book levels are encoded as zero price and zero amount so every
     /// completed bar has the standard 20-level wire shape.
     pub fn to_trade_flow_feature_payload(&self, symbol: &str, venue: u8) -> Result<Bytes> {
@@ -309,24 +380,24 @@ impl BaselineBar {
             self.sell_amount,
             self.buy_volume,
             self.sell_volume,
-            0.0, // large_order
-            0.0, // medium_order
-            0.0, // small_order
-            0.0, // large_buy
-            0.0, // large_sell
-            0.0, // medium_buy
-            0.0, // medium_sell
-            0.0, // small_buy
-            0.0, // small_sell
+            self.large_order,
+            self.medium_order,
+            self.small_order,
+            self.large_buy,
+            self.large_sell,
+            self.medium_buy,
+            self.medium_sell,
+            self.small_buy,
+            self.small_sell,
             self.vwap,
             self.buy_vwap,
             self.sell_vwap,
             self.net_buy_amount,
             self.net_buy_volume,
             self.net_buy_pct,
-            0.0, // net_buy_large
-            0.0, // net_buy_medium
-            0.0, // net_buy_small
+            self.net_buy_large,
+            self.net_buy_medium,
+            self.net_buy_small,
         ]
     }
 }
@@ -470,6 +541,29 @@ impl LocalBaselineAggregator {
         price: f64,
         amount: f64,
     ) -> Vec<BaselineBar> {
+        self.on_trade_inner(timestamp_us, is_buy, price, amount, None)
+    }
+
+    /// Applies a trade using fixed notional thresholds for order-size buckets.
+    pub fn on_trade_with_threshold(
+        &mut self,
+        timestamp_us: i64,
+        is_buy: bool,
+        price: f64,
+        amount: f64,
+        threshold: AmountThreshold,
+    ) -> Vec<BaselineBar> {
+        self.on_trade_inner(timestamp_us, is_buy, price, amount, Some(threshold))
+    }
+
+    fn on_trade_inner(
+        &mut self,
+        timestamp_us: i64,
+        is_buy: bool,
+        price: f64,
+        amount: f64,
+        threshold: Option<AmountThreshold>,
+    ) -> Vec<BaselineBar> {
         let mut completed = Vec::new();
         if !self.advance_to(timestamp_us, &mut completed) {
             self.base.stats.late_trades = self.base.stats.late_trades.saturating_add(1);
@@ -479,10 +573,10 @@ impl LocalBaselineAggregator {
         let target_start = align(timestamp_ms, BASELINE_BAR_MS);
         if self.base.current.is_none() {
             let mut bar = BaselineBar::new(target_start);
-            bar.update_trade(is_buy, price, amount);
+            bar.update_trade(is_buy, price, amount, threshold);
             self.base.current = Some(bar);
         } else if let Some(bar) = self.base.current.as_mut() {
-            bar.update_trade(is_buy, price, amount);
+            bar.update_trade(is_buy, price, amount, threshold);
         }
         completed
     }
@@ -560,7 +654,10 @@ impl LocalBaselineAggregator {
 
     fn consume_base_bar(&mut self, bar: &BaselineBar) {
         let _ = consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS);
-        if let Some(completed) = consume_sub_bar(&mut self.sixty_seconds, bar, BASELINE_BAR_MS) {
+        for completed in consume_sub_bar(&mut self.sixty_seconds, bar, BASELINE_BAR_MS)
+            .into_iter()
+            .flatten()
+        {
             self.completed_sixty_seconds.push(completed);
         }
     }
@@ -570,15 +667,15 @@ fn consume_sub_bar(
     state: &mut BarState,
     source: &BaselineBar,
     source_bar_ms: i64,
-) -> Option<BaselineBar> {
+) -> [Option<BaselineBar>; 2] {
     let target_start = align(source.start_ms, state.bar_ms);
-    let mut completed = None;
+    let mut completed = [None, None];
     match state.current.as_ref().map(|bar| bar.start_ms) {
         None => state.current = Some(BaselineBar::new(target_start)),
         Some(start) if target_start > start => {
-            completed = state.close_current();
+            completed[0] = state.close_current();
         }
-        Some(start) if target_start < start => return None,
+        Some(start) if target_start < start => return completed,
         Some(_) => {}
     }
     if state.current.is_none() {
@@ -588,7 +685,8 @@ fn consume_sub_bar(
         target.merge(source);
     }
     if source.start_ms.saturating_add(source_bar_ms) >= target_start.saturating_add(state.bar_ms) {
-        completed = state.close_current();
+        let target = if completed[0].is_some() { 1 } else { 0 };
+        completed[target] = state.close_current();
     }
     completed
 }
@@ -600,6 +698,7 @@ fn align(timestamp_ms: i64, bar_ms: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{HourlyNotionalKll, LocalBaselineAggregator, HOUR_MS};
+    use crate::common::amount_threshold::AmountThreshold;
     use mkt_parsers::msg::mkt_msg::Level;
     use mkt_parsers::msg::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 
@@ -631,6 +730,74 @@ mod tests {
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].start_ms, 0);
         assert!(completed[0].has_trade);
+    }
+
+    #[test]
+    fn preserves_both_sixty_second_bars_when_gap_resumes_at_last_sub_bar() {
+        let mut agg = LocalBaselineAggregator::new();
+        agg.on_trade(1, true, 100.0, 1.0);
+        agg.on_trade(50_000_001, true, 100.0, 2.0);
+        agg.on_trade(175_000_001, true, 100.0, 3.0);
+        agg.on_trade(180_000_001, true, 100.0, 4.0);
+
+        let completed = agg.drain_sixty_second_bars();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].start_ms, 0);
+        assert_eq!(completed[0].amount, 300.0);
+        assert_eq!(completed[1].start_ms, 120_000);
+        assert_eq!(completed[1].amount, 300.0);
+    }
+
+    #[test]
+    fn classifies_trade_notional_at_medium_and_large_boundaries() {
+        let mut agg = LocalBaselineAggregator::new();
+        let threshold = AmountThreshold {
+            medium_notional_threshold: 100.0,
+            large_notional_threshold: 200.0,
+        };
+        agg.on_trade_with_threshold(1_000, true, 10.0, 5.0, threshold);
+        agg.on_trade_with_threshold(2_000, true, 10.0, 10.0, threshold);
+        agg.on_trade_with_threshold(3_000, false, 10.0, 20.0, threshold);
+        let closed = agg.on_book(5_001_000, false, &[], &[]);
+
+        assert_eq!(closed.len(), 1);
+        let bar = &closed[0];
+        assert_eq!(bar.small_order, 50.0);
+        assert_eq!(bar.medium_order, 100.0);
+        assert_eq!(bar.large_order, 200.0);
+        assert_eq!(bar.small_buy, 50.0);
+        assert_eq!(bar.medium_buy, 100.0);
+        assert_eq!(bar.large_sell, 200.0);
+        assert_eq!(bar.net_buy_small, 50.0);
+        assert_eq!(bar.net_buy_medium, 100.0);
+        assert_eq!(bar.net_buy_large, -200.0);
+        assert_eq!(
+            bar.small_order + bar.medium_order + bar.large_order,
+            bar.amount
+        );
+    }
+
+    #[test]
+    fn sixty_second_bar_merges_classified_five_second_bars() {
+        let mut agg = LocalBaselineAggregator::new();
+        let threshold = AmountThreshold {
+            medium_notional_threshold: 100.0,
+            large_notional_threshold: 200.0,
+        };
+        agg.on_trade_with_threshold(1_000, true, 10.0, 5.0, threshold);
+        agg.on_trade_with_threshold(5_001_000, false, 10.0, 10.0, threshold);
+        agg.on_trade_with_threshold(10_001_000, true, 10.0, 20.0, threshold);
+        agg.flush();
+
+        let completed = agg.drain_sixty_second_bars();
+        assert_eq!(completed.len(), 1);
+        let bar = &completed[0];
+        assert_eq!(bar.small_order, 50.0);
+        assert_eq!(bar.medium_order, 100.0);
+        assert_eq!(bar.large_order, 200.0);
+        assert_eq!(bar.net_buy_small, 50.0);
+        assert_eq!(bar.net_buy_medium, -100.0);
+        assert_eq!(bar.net_buy_large, 200.0);
     }
 
     #[test]

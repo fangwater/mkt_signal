@@ -393,9 +393,23 @@ impl Default for SymbolRollingStats {
 pub struct BaselineReplayState {
     state: SymbolCalcState,
     rolling: SymbolRollingStats,
+    latest_depth: Option<DepthDerived>,
 }
 
 impl BaselineReplayState {
+    pub fn validate_factor_plan(plan: &SymbolFactorPlan) -> Result<()> {
+        let mut state = SymbolCalcState::default();
+        let series = FusionFactorPubApp::build_symbol_series_from_state(&mut state);
+        for binding in &plan.ordered_factors {
+            if FusionFactorPubApp::compute_supported_factor(binding, None, None, Some(&series))
+                .is_none()
+            {
+                bail!("factor has no fusion computation: {}", binding.name);
+            }
+        }
+        Ok(())
+    }
+
     pub fn push(&mut self, mut msg: TradeFlowFeatureMsg) -> Result<()> {
         let symbol = msg.symbol.clone();
         FusionFactorPubApp::validate_and_fix_trade_flow("db-replay", &symbol, &mut msg)
@@ -412,6 +426,7 @@ impl BaselineReplayState {
             &msg,
             depth.as_ref(),
         );
+        self.latest_depth = depth;
         Ok(())
     }
 
@@ -420,6 +435,38 @@ impl BaselineReplayState {
         names
             .iter()
             .map(|name| baseline_engine::compute_baseline(name, &series).unwrap_or(f64::NAN))
+            .collect()
+    }
+
+    /// Evaluate raw factor values with the same bindings and readiness rules as
+    /// the live fusion publisher. Call exactly once after every pushed row,
+    /// including warm-up rows, so stateful factors advance identically.
+    pub fn factor_values(&mut self, plan: &SymbolFactorPlan) -> Vec<f64> {
+        let needs_factor_118 = plan
+            .ordered_factors
+            .iter()
+            .any(|binding| binding.factor_id == Some(FusionFactorId::Factor118));
+        let factor_118_result = if needs_factor_118 {
+            self.latest_depth.as_ref().and_then(|depth| {
+                FusionFactorPubApp::compute_factor_118_with_state(&mut self.state, depth)
+            })
+        } else {
+            None
+        };
+        let series = FusionFactorPubApp::build_symbol_series_from_state(&mut self.state);
+        plan.ordered_factors
+            .iter()
+            .map(|binding| {
+                match FusionFactorPubApp::compute_supported_factor(
+                    binding,
+                    factor_118_result,
+                    self.latest_depth.as_ref(),
+                    Some(&series),
+                ) {
+                    Some((value, true, _)) => value,
+                    Some(_) | None => f64::NAN,
+                }
+            })
             .collect()
     }
 }
@@ -6529,6 +6576,46 @@ mod tests {
             amount: 10.0,
         });
         DepthDerived::from_snapshot(&DepthSnapshot { bids, asks })
+    }
+
+    fn replay_message(ts: i64) -> TradeFlowFeatureMsg {
+        let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
+        for index in 0..MAX_DEPTH_LEVELS_CACHE {
+            values.push(100.0 - index as f64 * 0.1);
+            values.push(10.0 + index as f64);
+        }
+        for index in 0..MAX_DEPTH_LEVELS_CACHE {
+            values.push(100.1 + index as f64 * 0.1);
+            values.push(11.0 + index as f64);
+        }
+        TradeFlowFeatureMsg::from_indexed_values("BTCUSDT".to_string(), 1, ts, &values)
+            .expect("replay message")
+    }
+
+    #[test]
+    fn replay_factor_plan_returns_raw_values_and_advances_stateful_factor_118() {
+        let plan = SymbolFactorPlan::from_factor_names(
+            "BTCUSDT",
+            vec!["close".to_string(), "factor_118".to_string()],
+        )
+        .expect("factor plan");
+        let mut state = BaselineReplayState::default();
+
+        for index in 0..119 {
+            state
+                .push(replay_message(index * 5_000))
+                .expect("push warm-up row");
+            let values = state.factor_values(&plan);
+            assert_eq!(values[0], 1.0);
+            assert!(values[1].is_nan());
+        }
+
+        state
+            .push(replay_message(119 * 5_000))
+            .expect("push ready row");
+        let values = state.factor_values(&plan);
+        assert_eq!(values[0], 1.0);
+        assert!(values[1].is_finite());
     }
 
     #[test]

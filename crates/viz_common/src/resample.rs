@@ -151,6 +151,8 @@ pub struct ExecStrategyStateRow {
     pub live_order_usdt: f64,
     pub pending_usdt: f64,
     pub active_batches: u32,
+    pub remaining_batches: u32,
+    pub estimated_completion_ts_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +220,8 @@ mod tests {
                 live_order_usdt: 5.0,
                 pending_usdt: 65.0,
                 active_batches: 1,
+                remaining_batches: 3,
+                estimated_completion_ts_ms: 456,
             }],
         };
 
@@ -228,5 +232,7 @@ mod tests {
         assert_eq!(decoded.rows.len(), 1);
         assert_eq!(decoded.rows[0].strategy_name, "cta_alpha");
         assert_eq!(decoded.rows[0].pending_qty, 0.65);
+        assert_eq!(decoded.rows[0].remaining_batches, 3);
+        assert_eq!(decoded.rows[0].estimated_completion_ts_ms, 456);
     }
 }

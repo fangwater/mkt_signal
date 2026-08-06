@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use clap::{Parser, ValueEnum};
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use csv::StringRecord;
@@ -18,9 +18,14 @@ use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
 };
 use mkt_parsers::msg::trade_notional_kll_msg::{TradeNotionalKllMsg, TRADE_NOTIONAL_KLL_MAX_BYTES};
+use mkt_signal::common::amount_threshold::AmountThreshold;
 use mkt_signal::depth_pub::orderbook::OrderBook;
 use mkt_signal::factor_pub::trade_flow_feature_pub::local_baseline::{
     BaselineBar, HourlyNotionalKll, HourlyNotionalKllSnapshot, LocalBaselineAggregator,
+};
+use mkt_signal::factor_pub::trade_notional_kll::{
+    load_merged_hourly_kll, order_size_thresholds, previous_month, utc_month_bounds,
+    validate_order_size_quantiles, HOUR_MS,
 };
 use order_common::TradingVenue;
 use rayon::prelude::*;
@@ -30,6 +35,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -81,11 +87,39 @@ struct ReplayConfig {
     #[serde(default)]
     #[serde(alias = "publish_hourly_notional_kll")]
     write_hourly_notional_kll: bool,
+    /// Read trades and write hourly notional KLL rows without baseline or L2 work.
+    #[serde(default)]
+    kll_only: bool,
+    /// Rebuild only 5s/60s trade baseline rows using previous-month KLL thresholds.
+    #[serde(default)]
+    order_size_only: bool,
+    /// Rebuild only 5s/60s depth baseline rows; preserve trade and KLL tables.
+    #[serde(default)]
+    depth_only: bool,
     /// Delete selected symbol/date rows before replaying so reruns are idempotent.
     #[serde(default)]
     overwrite_existing: bool,
     #[serde(default)]
+    order_size: OrderSizeConfig,
+    #[serde(default)]
     clickhouse: ClickHouseConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OrderSizeConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_medium_quantile")]
+    medium_quantile: f32,
+    #[serde(default = "default_large_quantile")]
+    large_quantile: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MonthlyAmountThreshold {
+    start_us: i64,
+    end_us: i64,
+    threshold: AmountThreshold,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,12 +162,30 @@ impl Default for ClickHouseConfig {
     }
 }
 
+impl Default for OrderSizeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            medium_quantile: default_medium_quantile(),
+            large_quantile: default_large_quantile(),
+        }
+    }
+}
+
 fn default_replay_workers() -> usize {
     1
 }
 
 fn default_publish_ipc() -> bool {
     false
+}
+
+fn default_medium_quantile() -> f32 {
+    0.5
+}
+
+fn default_large_quantile() -> f32 {
+    0.9
 }
 
 fn default_clickhouse_url() -> String {
@@ -923,6 +975,167 @@ fn validate_dates(config: &ReplayConfig) -> Result<()> {
     Ok(())
 }
 
+fn order_size_target_months(config: &ReplayConfig) -> Result<Vec<String>> {
+    if !config.order_size.enabled {
+        return Ok(Vec::new());
+    }
+    validate_order_size_quantiles(
+        config.order_size.medium_quantile,
+        config.order_size.large_quantile,
+    )?;
+    let start = config
+        .start_date
+        .as_deref()
+        .context("order_size.enabled requires start_date")?;
+    let end = config
+        .end_date
+        .as_deref()
+        .context("order_size.enabled requires end_date")?;
+    let start = NaiveDate::parse_from_str(start, "%Y-%m-%d")
+        .context("parse order-size replay start_date")?;
+    let end =
+        NaiveDate::parse_from_str(end, "%Y-%m-%d").context("parse order-size replay end_date")?;
+    if start > end {
+        bail!("order-size replay start_date must not be after end_date");
+    }
+
+    let mut year = start.year();
+    let mut month = start.month();
+    let end_month = (end.year(), end.month());
+    let mut months = Vec::new();
+    loop {
+        months.push(format!("{year:04}-{month:02}"));
+        if (year, month) == end_month {
+            break;
+        }
+        if month == 12 {
+            year = year
+                .checked_add(1)
+                .context("order-size target month exceeds supported year range")?;
+            month = 1;
+        } else {
+            month += 1;
+        }
+    }
+    Ok(months)
+}
+
+fn load_replay_order_size_thresholds(
+    config: &ReplayConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+    symbols: &[String],
+) -> Result<Option<BTreeMap<String, Vec<MonthlyAmountThreshold>>>> {
+    let target_months = order_size_target_months(config)?;
+    if target_months.is_empty() {
+        return Ok(None);
+    }
+    let table = trade_notional_kll_table_name(venue_slug);
+    let thresholds = symbols
+        .par_iter()
+        .map(
+            |symbol| -> Result<(String, Vec<MonthlyAmountThreshold>)> {
+                let mut symbol_thresholds = Vec::with_capacity(target_months.len());
+                for target_month in &target_months {
+                    let source_month = previous_month(target_month)?;
+                    let (source_start_ms, source_end_ms) = utc_month_bounds(&source_month)?;
+                    let expected_source_hours = usize::try_from(
+                        (source_end_ms - source_start_ms).div_euclid(HOUR_MS),
+                    )
+                    .context("source-month hour count exceeds usize")?;
+                    let merged = load_merged_hourly_kll(
+                        &config.clickhouse.url,
+                        &config.clickhouse.database,
+                        &table,
+                        symbol,
+                        source_start_ms,
+                        source_end_ms,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "load source-month order-size KLL: symbol={symbol} source_month={source_month}"
+                        )
+                    })?;
+                    if merged.source_hourly_rows != expected_source_hours {
+                        bail!(
+                            "incomplete source-month KLL for symbol={symbol} source_month={source_month}: expected_hours={} actual_hours={}",
+                            expected_source_hours,
+                            merged.source_hourly_rows
+                        );
+                    }
+                    if merged.venue != venue.to_u8() {
+                        bail!(
+                            "hourly KLL venue mismatch for symbol={symbol}: expected={} actual={}",
+                            venue.to_u8(),
+                            merged.venue
+                        );
+                    }
+                    let (medium_notional_threshold, large_notional_threshold) =
+                        order_size_thresholds(
+                            &merged.sketch,
+                            config.order_size.medium_quantile,
+                            config.order_size.large_quantile,
+                        )?;
+                    let threshold = AmountThreshold {
+                        medium_notional_threshold,
+                        large_notional_threshold,
+                    };
+                    if !threshold.is_online() {
+                        bail!(
+                            "invalid order-size threshold for symbol={symbol}: medium={} large={}",
+                            medium_notional_threshold,
+                            large_notional_threshold
+                        );
+                    }
+                    let (target_start_ms, target_end_ms) = utc_month_bounds(target_month)?;
+                    symbol_thresholds.push(MonthlyAmountThreshold {
+                        start_us: target_start_ms
+                            .checked_mul(1_000)
+                            .context("target month start exceeds microseconds")?,
+                        end_us: target_end_ms
+                            .checked_mul(1_000)
+                            .context("target month end exceeds microseconds")?,
+                        threshold,
+                    });
+                    info!(
+                        "Loaded replay order-size thresholds: symbol={} target_month={} source_month={} source_hours={} samples={} q_medium={} medium={} q_large={} large={}",
+                        symbol,
+                        target_month,
+                        source_month,
+                        merged.source_hourly_rows,
+                        merged.sketch.sample_count,
+                        config.order_size.medium_quantile,
+                        medium_notional_threshold,
+                        config.order_size.large_quantile,
+                        large_notional_threshold,
+                    );
+                }
+                Ok((symbol.clone(), symbol_thresholds))
+            },
+        )
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .collect();
+    Ok(Some(thresholds))
+}
+
+fn threshold_for_timestamp(
+    thresholds: &[MonthlyAmountThreshold],
+    index: &mut usize,
+    timestamp_us: i64,
+) -> Result<AmountThreshold> {
+    while *index < thresholds.len() && timestamp_us >= thresholds[*index].end_us {
+        *index += 1;
+    }
+    let period = thresholds
+        .get(*index)
+        .with_context(|| format!("no order-size threshold covers timestamp_us={timestamp_us}"))?;
+    if timestamp_us < period.start_us {
+        bail!("no order-size threshold covers timestamp_us={timestamp_us}");
+    }
+    Ok(period.threshold)
+}
+
 fn replay_time_bounds(config: &ReplayConfig) -> Result<(i64, i64)> {
     let start = config
         .start_date
@@ -952,6 +1165,8 @@ fn replay_time_bounds(config: &ReplayConfig) -> Result<(i64, i64)> {
 
 fn replay(config: &ReplayConfig) -> Result<()> {
     validate_dates(config)?;
+    validate_replay_mode(config)?;
+    order_size_target_months(config)?;
     if config.replay_workers == 0 {
         bail!("replay_workers must be > 0");
     }
@@ -965,6 +1180,288 @@ fn replay(config: &ReplayConfig) -> Result<()> {
     replay_staging(config, venue, venue_slug, &symbols)
 }
 
+fn validate_replay_mode(config: &ReplayConfig) -> Result<()> {
+    let exclusive_modes = [config.kll_only, config.order_size_only, config.depth_only]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count();
+    if exclusive_modes > 1 {
+        bail!("kll_only, order_size_only, and depth_only are mutually exclusive");
+    }
+    if config.kll_only && !config.write_hourly_notional_kll {
+        bail!("kll_only requires write_hourly_notional_kll=true");
+    }
+    if config.kll_only && config.order_size.enabled {
+        bail!("kll_only cannot be combined with order_size.enabled=true");
+    }
+    if config.kll_only && config.order_size_only {
+        bail!("kll_only cannot be combined with order_size_only=true");
+    }
+    if config.order_size_only && !config.order_size.enabled {
+        bail!("order_size_only requires order_size.enabled=true");
+    }
+    if config.order_size_only && config.write_hourly_notional_kll {
+        bail!("order_size_only requires write_hourly_notional_kll=false");
+    }
+    if config.order_size_only && !config.overwrite_existing {
+        bail!("order_size_only requires overwrite_existing=true");
+    }
+    if config.depth_only && config.write_hourly_notional_kll {
+        bail!("depth_only requires write_hourly_notional_kll=false");
+    }
+    if config.depth_only && config.order_size.enabled {
+        bail!("depth_only requires order_size.enabled=false");
+    }
+    if config.depth_only && !config.overwrite_existing {
+        bail!("depth_only requires overwrite_existing=true");
+    }
+    Ok(())
+}
+
+fn replay_hourly_kll_only(
+    config: &ReplayConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+    symbols: &[String],
+    kll_table: &str,
+) -> Result<()> {
+    ensure_hourly_kll_table(
+        &config.clickhouse.url,
+        &config.clickhouse.database,
+        kll_table,
+    )?;
+    if config.overwrite_existing {
+        let (start_ms, end_ms) = replay_time_bounds(config)?;
+        info!(
+            "Replacing existing hourly KLL range: symbols={} start_ms={} end_ms={}",
+            symbols.join(","),
+            start_ms,
+            end_ms,
+        );
+        delete_hourly_kll_range(
+            &config.clickhouse.url,
+            &config.clickhouse.database,
+            kll_table,
+            symbols,
+            start_ms,
+            end_ms,
+        )?;
+    }
+
+    let writer = StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: kll_table.to_string(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?;
+    let sender = writer.sender();
+    let workers = config.replay_workers.min(symbols.len()).max(1);
+    info!(
+        "Starting hourly KLL-only replay: venue={} symbols={} workers={}",
+        venue_slug,
+        symbols.len(),
+        workers
+    );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .context("build hourly KLL replay pool")?;
+    let result = pool.install(|| {
+        symbols.par_iter().try_for_each(|symbol| {
+            replay_hourly_kll_symbol(config, venue, venue_slug, symbol, &sender)
+        })
+    });
+    drop(sender);
+    let stats = writer.finish()?;
+    result?;
+    info!(
+        "Hourly KLL-only replay complete: rows={} batches={}",
+        stats.inserted_rows, stats.inserted_batches
+    );
+    Ok(())
+}
+
+fn replay_hourly_kll_symbol(
+    config: &ReplayConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+    symbol: &str,
+    writer: &Sender<Bytes>,
+) -> Result<()> {
+    let data_dir = replay_data_dir(config, symbol)?;
+    let mut reader = TradeEventReader {
+        records: CsvGzipReader::new(discover_files(
+            data_dir,
+            "trades",
+            venue_slug,
+            symbol,
+            config.start_date.as_deref(),
+            config.end_date.as_deref(),
+        )?),
+    };
+    let mut kll = HourlyNotionalKll::new();
+    let mut source_events = 0u64;
+    let mut rows = 0u64;
+    let mut last_progress_files = 0usize;
+    let started = Instant::now();
+    let (_, total_files) = reader.records.file_progress();
+    log_stage_progress(
+        "kll",
+        symbol,
+        0,
+        total_files,
+        source_events,
+        rows,
+        started.elapsed(),
+    );
+    while let Some(row) = reader.next_event()? {
+        if let Some(snapshot) = kll.on_trade(row.timestamp_us, row.price, row.amount) {
+            writer
+                .send(encode_hourly_kll(&snapshot, symbol, venue.to_u8())?)
+                .map_err(|_| anyhow!("hourly KLL writer stopped"))?;
+            rows = rows.saturating_add(1);
+        }
+        source_events = source_events.saturating_add(1);
+        let (files_done, _) = reader.records.file_progress();
+        if files_done != last_progress_files || source_events % PROGRESS_LOG_EVENTS == 0 {
+            log_stage_progress(
+                "kll",
+                symbol,
+                files_done,
+                total_files,
+                source_events,
+                rows,
+                started.elapsed(),
+            );
+            last_progress_files = files_done;
+        }
+    }
+    if let Some(snapshot) = kll.flush() {
+        writer
+            .send(encode_hourly_kll(&snapshot, symbol, venue.to_u8())?)
+            .map_err(|_| anyhow!("hourly KLL writer stopped"))?;
+        rows = rows.saturating_add(1);
+    }
+    let (files_done, _) = reader.records.file_progress();
+    log_stage_progress(
+        "kll",
+        symbol,
+        files_done,
+        total_files,
+        source_events,
+        rows,
+        started.elapsed(),
+    );
+    info!(
+        "Hourly KLL replay complete: symbol={} source_events={} rows={} late_trades={} elapsed={:.2?}",
+        symbol,
+        source_events,
+        rows,
+        kll.late_trades(),
+        started.elapsed()
+    );
+    Ok(())
+}
+
+fn replay_order_size_trade_only(
+    config: &ReplayConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+    symbols: &[String],
+    trade_5s_table: &str,
+    trade_60s_table: &str,
+    kll_table: &str,
+) -> Result<()> {
+    ensure_trade_staging_tables(
+        &config.clickhouse.url,
+        &config.clickhouse.database,
+        trade_5s_table,
+        trade_60s_table,
+        kll_table,
+    )?;
+    let size_thresholds = load_replay_order_size_thresholds(config, venue, venue_slug, symbols)?
+        .context("order_size_only requires loaded order-size thresholds")?;
+    let (start_ms, end_ms) = replay_time_bounds(config)?;
+    delete_baseline_ranges(
+        &config.clickhouse.url,
+        &config.clickhouse.database,
+        &[trade_5s_table, trade_60s_table],
+        symbols,
+        start_ms,
+        end_ms,
+    )?;
+
+    let trade_5s_writer = StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: trade_5s_table.to_string(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?;
+    let trade_60s_writer = StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: trade_60s_table.to_string(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?;
+    let trade_5s_sender = trade_5s_writer.sender();
+    let trade_60s_sender = trade_60s_writer.sender();
+    let workers = config.replay_workers.min(symbols.len()).max(1);
+    info!(
+        "Starting order-size-only trade baseline replay: venue={} symbols={} workers={} dates={:?}..{:?}",
+        venue_slug,
+        symbols.len(),
+        workers,
+        config.start_date,
+        config.end_date,
+    );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .context("build order-size-only replay pool")?;
+    let result = pool.install(|| {
+        symbols.par_iter().try_for_each(|symbol| {
+            let thresholds = size_thresholds
+                .get(symbol)
+                .with_context(|| format!("missing order-size thresholds for symbol={symbol}"))?;
+            replay_trade_stage_symbol(
+                config,
+                venue,
+                venue_slug,
+                symbol,
+                &trade_5s_sender,
+                &trade_60s_sender,
+                None,
+                Some(thresholds.as_slice()),
+            )
+        })
+    });
+    drop(trade_5s_sender);
+    drop(trade_60s_sender);
+    let trade_5s_stats = trade_5s_writer.finish()?;
+    let trade_60s_stats = trade_60s_writer.finish()?;
+    result?;
+    info!(
+        "Order-size-only trade baseline replay complete: trade_5s_rows={} trade_60s_rows={} trade_5s_batches={} trade_60s_batches={}",
+        trade_5s_stats.inserted_rows,
+        trade_60s_stats.inserted_rows,
+        trade_5s_stats.inserted_batches,
+        trade_60s_stats.inserted_batches,
+    );
+    Ok(())
+}
+
 fn replay_staging(
     config: &ReplayConfig,
     venue: TradingVenue,
@@ -976,6 +1473,32 @@ fn replay_staging(
     let trade_60s_table = baseline_trade_table_name(venue_slug, 60_000);
     let depth_60s_table = baseline_depth_table_name(venue_slug, 60_000);
     let kll_table = trade_notional_kll_table_name(venue_slug);
+    if config.kll_only {
+        return replay_hourly_kll_only(config, venue, venue_slug, symbols, &kll_table);
+    }
+    if config.order_size_only {
+        return replay_order_size_trade_only(
+            config,
+            venue,
+            venue_slug,
+            symbols,
+            &trade_5s_table,
+            &trade_60s_table,
+            &kll_table,
+        );
+    }
+    if config.depth_only {
+        return replay_depth_only(
+            config,
+            venue_slug,
+            symbols,
+            &trade_5s_table,
+            &depth_5s_table,
+            &trade_60s_table,
+            &depth_60s_table,
+            &kll_table,
+        );
+    }
     ensure_staging_tables(
         &config.clickhouse.url,
         &config.clickhouse.database,
@@ -985,6 +1508,7 @@ fn replay_staging(
         &depth_60s_table,
         &kll_table,
     )?;
+    let size_thresholds = load_replay_order_size_thresholds(config, venue, venue_slug, symbols)?;
     if config.overwrite_existing {
         let (start_ms, end_ms) = replay_time_bounds(config)?;
         info!(
@@ -1002,7 +1526,9 @@ fn replay_staging(
                 trade_60s_table.as_str(),
                 depth_60s_table.as_str(),
             ],
-            &kll_table,
+            config
+                .write_hourly_notional_kll
+                .then_some(kll_table.as_str()),
             symbols,
             start_ms,
             end_ms,
@@ -1076,6 +1602,10 @@ fn replay_staging(
         let trade_handle = scope.spawn(|| {
             trade_pool.install(|| {
                 symbols.par_iter().try_for_each(|symbol| {
+                    let size_threshold = size_thresholds
+                        .as_ref()
+                        .and_then(|thresholds| thresholds.get(symbol))
+                        .map(Vec::as_slice);
                     replay_trade_stage_symbol(
                         config,
                         venue,
@@ -1084,6 +1614,7 @@ fn replay_staging(
                         &trade_5s_sender,
                         &trade_60s_sender,
                         kll_config.as_ref(),
+                        size_threshold,
                     )
                 })
             })
@@ -1121,6 +1652,162 @@ fn replay_staging(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn replay_depth_only(
+    config: &ReplayConfig,
+    venue_slug: &str,
+    symbols: &[String],
+    trade_5s_table: &str,
+    depth_5s_table: &str,
+    trade_60s_table: &str,
+    depth_60s_table: &str,
+    kll_table: &str,
+) -> Result<()> {
+    ensure_staging_tables(
+        &config.clickhouse.url,
+        &config.clickhouse.database,
+        trade_5s_table,
+        depth_5s_table,
+        trade_60s_table,
+        depth_60s_table,
+        kll_table,
+    )?;
+    let depth_symbols = build_depth_tasks(config, venue_slug, symbols)?;
+    validate_depth_task_coverage(config, &depth_symbols)?;
+    let (start_ms, end_ms) = replay_time_bounds(config)?;
+    info!(
+        "Replacing existing depth-only staging range: symbols={} start_ms={} end_ms={}",
+        symbols.join(","),
+        start_ms,
+        end_ms,
+    );
+    delete_staging_range(
+        &config.clickhouse.url,
+        &config.clickhouse.database,
+        &[depth_5s_table, depth_60s_table],
+        None,
+        symbols,
+        start_ms,
+        end_ms,
+    )?;
+
+    let depth_5s_writer = StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: depth_5s_table.to_string(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?;
+    let depth_60s_writer = StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: depth_60s_table.to_string(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?;
+    let depth_5s_sender = depth_5s_writer.sender();
+    let depth_60s_sender = depth_60s_writer.sender();
+    let depth_days: Vec<&DepthReplayTask> = depth_symbols
+        .iter()
+        .flat_map(|symbol| symbol.days.iter())
+        .collect();
+    let total_days = depth_days.len();
+    let workers = config.replay_workers.min(total_days).max(1);
+    info!(
+        "Starting depth-only Tardis staging replay: venue={} symbols={} day_tasks={} workers={} dates={:?}..{:?}",
+        venue_slug,
+        depth_symbols.len(),
+        total_days,
+        workers,
+        config.start_date,
+        config.end_date,
+    );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .context("build depth-only replay pool")?;
+    let completed_days = AtomicUsize::new(0);
+    let source_events = AtomicU64::new(0);
+    let rows_5s = AtomicU64::new(0);
+    let started = Instant::now();
+    let result: Result<()> = pool.install(|| {
+        depth_days.par_iter().try_for_each(|task| {
+            let stats = replay_depth_stage_day(task, &depth_5s_sender, &depth_60s_sender)?;
+            let events = source_events.fetch_add(stats.source_events, AtomicOrdering::Relaxed)
+                + stats.source_events;
+            let rows = rows_5s.fetch_add(stats.rows_5s, AtomicOrdering::Relaxed) + stats.rows_5s;
+            let completed = completed_days.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+            if completed == total_days || completed % workers == 0 {
+                log_stage_progress(
+                    "depth-days",
+                    "all",
+                    completed,
+                    total_days,
+                    events,
+                    rows,
+                    started.elapsed(),
+                );
+            }
+            Ok(())
+        })
+    });
+    drop(depth_5s_sender);
+    drop(depth_60s_sender);
+    let depth_5s_stats = depth_5s_writer.finish()?;
+    let depth_60s_stats = depth_60s_writer.finish()?;
+    result?;
+    info!(
+        "Depth-only Tardis staging replay complete: depth_5s_rows={} depth_60s_rows={} depth_5s_batches={} depth_60s_batches={}",
+        depth_5s_stats.inserted_rows,
+        depth_60s_stats.inserted_rows,
+        depth_5s_stats.inserted_batches,
+        depth_60s_stats.inserted_batches,
+    );
+    Ok(())
+}
+
+fn validate_depth_task_coverage(
+    config: &ReplayConfig,
+    symbols: &[DepthReplaySymbol],
+) -> Result<()> {
+    let (start_ms, end_ms) = replay_time_bounds(config)?;
+    let expected_days = usize::try_from((end_ms - start_ms).div_euclid(86_400_000))
+        .context("depth-only day count exceeds usize")?;
+    if expected_days == 0 {
+        bail!("depth-only replay requires at least one day");
+    }
+    for symbol in symbols {
+        if symbol.days.len() != expected_days {
+            bail!(
+                "incomplete depth files for symbol={}: expected_days={} actual_days={}",
+                symbol.symbol,
+                expected_days,
+                symbol.days.len()
+            );
+        }
+        for (index, task) in symbol.days.iter().enumerate() {
+            let expected_start = start_ms + index as i64 * 86_400_000;
+            if task.start_ms != expected_start || task.end_ms != expected_start + 86_400_000 {
+                bail!(
+                    "non-contiguous depth file coverage for symbol={} index={} expected_start_ms={} actual_start_ms={} path={}",
+                    symbol.symbol,
+                    index,
+                    expected_start,
+                    task.start_ms,
+                    task.path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn replay_trade_stage_symbol(
     config: &ReplayConfig,
     venue: TradingVenue,
@@ -1129,6 +1816,7 @@ fn replay_trade_stage_symbol(
     trade_5s_sender: &Sender<Bytes>,
     trade_60s_sender: &Sender<Bytes>,
     kll_config: Option<&ClickHouseWriterConfig>,
+    size_thresholds: Option<&[MonthlyAmountThreshold]>,
 ) -> Result<()> {
     let data_dir = replay_data_dir(config, symbol)?;
     let mut reader = TradeEventReader {
@@ -1149,6 +1837,7 @@ fn replay_trade_stage_symbol(
     let mut rows_5s = 0u64;
     let mut rows_60s = 0u64;
     let mut source_events = 0u64;
+    let mut threshold_index = 0usize;
     let mut last_progress_files = 0usize;
     let started = Instant::now();
     let (_, total_files) = reader.records.file_progress();
@@ -1162,7 +1851,21 @@ fn replay_trade_stage_symbol(
         started.elapsed(),
     );
     while let Some(row) = reader.next_event()? {
-        for bar in aggregator.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount) {
+        let closed = match size_thresholds {
+            Some(thresholds) => {
+                let threshold =
+                    threshold_for_timestamp(thresholds, &mut threshold_index, row.timestamp_us)?;
+                aggregator.on_trade_with_threshold(
+                    row.timestamp_us,
+                    row.side == 'B',
+                    row.price,
+                    row.amount,
+                    threshold,
+                )
+            }
+            None => aggregator.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount),
+        };
+        for bar in closed {
             trade_5s_sender
                 .send(encode_stage_row(
                     bar.start_ms,
@@ -1698,6 +2401,20 @@ fn trade_notional_kll_table_name(venue_slug: &str) -> String {
     format!("trade_notional_kll_{}_hourly", venue_slug.replace('-', "_"))
 }
 
+fn ensure_hourly_kll_table(url: &str, database: &str, table: &str) -> Result<()> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+    let client = clickhouse_http_client()?;
+    clickhouse_execute(
+        &client,
+        url,
+        &format!("CREATE DATABASE IF NOT EXISTS {database}"),
+    )?;
+    clickhouse_execute(&client, url, &format!(
+        "CREATE TABLE IF NOT EXISTS {database}.{table} (hour_start DateTime64(3, 'UTC') CODEC(Delta, ZSTD), symbol String, sample_count UInt64, level_capacity UInt32, payload String CODEC(ZSTD)) ENGINE = MergeTree PARTITION BY toYYYYMM(hour_start) ORDER BY (symbol, hour_start)"
+    ))
+}
+
 fn ensure_staging_tables(
     url: &str,
     database: &str,
@@ -1707,50 +2424,88 @@ fn ensure_staging_tables(
     depth_60s_table: &str,
     kll_table: &str,
 ) -> Result<()> {
-    validate_identifier(database)?;
-    validate_identifier(trade_5s_table)?;
     validate_identifier(depth_5s_table)?;
-    validate_identifier(trade_60s_table)?;
     validate_identifier(depth_60s_table)?;
-    validate_identifier(kll_table)?;
+    ensure_trade_staging_tables(url, database, trade_5s_table, trade_60s_table, kll_table)?;
     let client = clickhouse_http_client()?;
-    clickhouse_execute(
-        &client,
-        url,
-        &format!("CREATE DATABASE IF NOT EXISTS {database}"),
-    )?;
-    clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{trade_5s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
-        baseline_trade_columns_sql()
-    ))?;
     clickhouse_execute(&client, url, &format!(
         "CREATE TABLE IF NOT EXISTS {database}.{depth_5s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
         baseline_depth_columns_sql()
     ))?;
     clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{trade_60s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+        "CREATE TABLE IF NOT EXISTS {database}.{depth_60s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+        baseline_depth_columns_sql()
+    ))
+}
+
+fn ensure_trade_staging_tables(
+    url: &str,
+    database: &str,
+    trade_5s_table: &str,
+    trade_60s_table: &str,
+    kll_table: &str,
+) -> Result<()> {
+    validate_identifier(trade_5s_table)?;
+    validate_identifier(trade_60s_table)?;
+    ensure_hourly_kll_table(url, database, kll_table)?;
+    let client = clickhouse_http_client()?;
+    clickhouse_execute(&client, url, &format!(
+        "CREATE TABLE IF NOT EXISTS {database}.{trade_5s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
         baseline_trade_columns_sql()
     ))?;
     clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{depth_60s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
-        baseline_depth_columns_sql()
-    ))?;
-    clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{kll_table} (hour_start DateTime64(3, 'UTC') CODEC(Delta, ZSTD), symbol String, sample_count UInt64, level_capacity UInt32, payload String CODEC(ZSTD)) ENGINE = MergeTree PARTITION BY toYYYYMM(hour_start) ORDER BY (symbol, hour_start)"
+        "CREATE TABLE IF NOT EXISTS {database}.{trade_60s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+        baseline_trade_columns_sql()
     ))
+}
+
+fn delete_hourly_kll_range(
+    url: &str,
+    database: &str,
+    table: &str,
+    symbols: &[String],
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<()> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+    let symbol_list = clickhouse_symbol_list(symbols)?;
+    let client = clickhouse_http_client()?;
+    clickhouse_execute_sync_mutation(
+        &client,
+        url,
+        &format!(
+            "ALTER TABLE {database}.{table} DELETE WHERE symbol IN ({symbol_list}) AND hour_start >= fromUnixTimestamp64Milli({start_ms}) AND hour_start < fromUnixTimestamp64Milli({end_ms})"
+        ),
+    )
 }
 
 fn delete_staging_range(
     url: &str,
     database: &str,
     tables: &[&str],
-    kll_table: &str,
+    kll_table: Option<&str>,
+    symbols: &[String],
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<()> {
+    delete_baseline_ranges(url, database, tables, symbols, start_ms, end_ms)?;
+    let Some(kll_table) = kll_table else {
+        return Ok(());
+    };
+    validate_identifier(kll_table)?;
+    delete_hourly_kll_range(url, database, kll_table, symbols, start_ms, end_ms)
+}
+
+fn delete_baseline_ranges(
+    url: &str,
+    database: &str,
+    tables: &[&str],
     symbols: &[String],
     start_ms: i64,
     end_ms: i64,
 ) -> Result<()> {
     validate_identifier(database)?;
-    validate_identifier(kll_table)?;
     let symbol_list = clickhouse_symbol_list(symbols)?;
     let client = clickhouse_http_client()?;
     for table in tables {
@@ -1763,13 +2518,7 @@ fn delete_staging_range(
             ),
         )?;
     }
-    clickhouse_execute_sync_mutation(
-        &client,
-        url,
-        &format!(
-            "ALTER TABLE {database}.{kll_table} DELETE WHERE symbol IN ({symbol_list}) AND hour_start >= fromUnixTimestamp64Milli({start_ms}) AND hour_start < fromUnixTimestamp64Milli({end_ms})"
-        ),
-    )
+    Ok(())
 }
 
 fn clickhouse_symbol_list(symbols: &[String]) -> Result<String> {
@@ -2249,6 +2998,120 @@ mod tests {
     }
 
     #[test]
+    fn order_size_replay_builds_target_month_sequence() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        config.order_size.enabled = true;
+        config.start_date = Some("2025-12-05".to_string());
+        config.end_date = Some("2026-03-20".to_string());
+        assert_eq!(
+            order_size_target_months(&config).unwrap(),
+            ["2025-12", "2026-01", "2026-02", "2026-03"]
+        );
+    }
+
+    #[test]
+    fn order_size_replay_validates_quantile_order() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        config.order_size.enabled = true;
+        config.order_size.medium_quantile = 0.95;
+        config.order_size.large_quantile = 0.9;
+        assert!(order_size_target_months(&config).is_err());
+    }
+
+    #[test]
+    fn switches_order_size_threshold_at_utc_month_boundary() {
+        let (jan_start_ms, feb_start_ms) = utc_month_bounds("2026-01").unwrap();
+        let (_, mar_start_ms) = utc_month_bounds("2026-02").unwrap();
+        let thresholds = [
+            MonthlyAmountThreshold {
+                start_us: jan_start_ms * 1_000,
+                end_us: feb_start_ms * 1_000,
+                threshold: AmountThreshold {
+                    medium_notional_threshold: 10.0,
+                    large_notional_threshold: 20.0,
+                },
+            },
+            MonthlyAmountThreshold {
+                start_us: feb_start_ms * 1_000,
+                end_us: mar_start_ms * 1_000,
+                threshold: AmountThreshold {
+                    medium_notional_threshold: 30.0,
+                    large_notional_threshold: 40.0,
+                },
+            },
+        ];
+        let mut index = 0;
+        assert_eq!(
+            threshold_for_timestamp(&thresholds, &mut index, feb_start_ms * 1_000 - 1)
+                .unwrap()
+                .medium_notional_threshold,
+            10.0
+        );
+        assert_eq!(
+            threshold_for_timestamp(&thresholds, &mut index, feb_start_ms * 1_000)
+                .unwrap()
+                .medium_notional_threshold,
+            30.0
+        );
+        assert!(threshold_for_timestamp(&thresholds, &mut index, mar_start_ms * 1_000).is_err());
+    }
+
+    #[test]
+    fn kll_only_requires_kll_output_and_disables_order_size() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        config.kll_only = true;
+        config.write_hourly_notional_kll = false;
+        assert!(validate_replay_mode(&config).is_err());
+
+        config.write_hourly_notional_kll = true;
+        config.order_size.enabled = true;
+        assert!(validate_replay_mode(&config).is_err());
+
+        config.order_size.enabled = false;
+        assert!(validate_replay_mode(&config).is_ok());
+    }
+
+    #[test]
+    fn order_size_only_preserves_kll_and_requires_overwrite() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        config.order_size_only = true;
+        config.order_size.enabled = true;
+        config.write_hourly_notional_kll = false;
+        config.overwrite_existing = true;
+        assert!(validate_replay_mode(&config).is_ok());
+
+        config.write_hourly_notional_kll = true;
+        assert!(validate_replay_mode(&config).is_err());
+        config.write_hourly_notional_kll = false;
+        config.overwrite_existing = false;
+        assert!(validate_replay_mode(&config).is_err());
+    }
+
+    #[test]
+    fn depth_only_preserves_trade_and_kll_and_requires_overwrite() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        config.depth_only = true;
+        config.write_hourly_notional_kll = false;
+        config.order_size.enabled = false;
+        config.overwrite_existing = true;
+        assert!(validate_replay_mode(&config).is_ok());
+
+        config.order_size.enabled = true;
+        assert!(validate_replay_mode(&config).is_err());
+        config.order_size.enabled = false;
+        config.overwrite_existing = false;
+        assert!(validate_replay_mode(&config).is_err());
+        config.overwrite_existing = true;
+        config.order_size_only = true;
+        assert!(validate_replay_mode(&config).is_err());
+    }
+
+    #[test]
     fn replay_config_template_parses() {
         let config: ReplayConfig = toml::from_str(include_str!("../../config/tardis_replay.toml"))
             .expect("replay config template");
@@ -2260,7 +3123,13 @@ mod tests {
         assert_eq!(config.start_date.as_deref(), Some("2024-12-01"));
         assert_eq!(config.end_date.as_deref(), Some("2024-12-31"));
         assert!(!config.publish_ipc);
+        assert!(!config.kll_only);
+        assert!(!config.order_size_only);
+        assert!(!config.depth_only);
         assert!(config.overwrite_existing);
+        assert!(!config.order_size.enabled);
+        assert_eq!(config.order_size.medium_quantile, 0.5);
+        assert_eq!(config.order_size.large_quantile, 0.9);
         assert_eq!(
             replay_data_dir(&config, "SOLUSDT").expect("SOL data directory"),
             Path::new("/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_solusdt")

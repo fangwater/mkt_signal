@@ -71,6 +71,52 @@ impl BatchExecConfig {
     }
 }
 
+fn estimate_batch_progress(
+    config: &BatchExecConfig,
+    delta_usdt: f64,
+    active_batches: u32,
+    active_completion_ts_us: i64,
+    now_ts_us: i64,
+    next_batch_at_us: i64,
+) -> (u32, i64) {
+    if !delta_usdt.is_finite() || delta_usdt.abs() <= config.target_tolerance_usdt || now_ts_us <= 0
+    {
+        return (0, 0);
+    }
+
+    let raw_batches = (delta_usdt.abs() / config.max_batch_usdt()).ceil();
+    let batch_equivalent = if raw_batches >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        raw_batches.max(1.0) as u32
+    };
+    let remaining_batches = batch_equivalent.max(active_batches);
+    let future_batches = remaining_batches.saturating_sub(active_batches);
+
+    let future_completion_ts_us = if future_batches == 0 {
+        0
+    } else {
+        if next_batch_at_us == i64::MAX {
+            return (remaining_batches, 0);
+        }
+        let first_batch_delay_us = next_batch_at_us.saturating_sub(now_ts_us).max(0);
+        let subsequent_batch_delay_us = i64::from(future_batches.saturating_sub(1))
+            .saturating_mul(i64::from(config.batch_interval_ms))
+            .saturating_mul(1_000);
+        let last_batch_start_ts_us = now_ts_us
+            .saturating_add(first_batch_delay_us)
+            .saturating_add(subsequent_batch_delay_us);
+        // Initial maker order plus max_maker_requotes maker retries, then taker fallback.
+        let maker_attempts = i64::from(config.max_maker_requotes).saturating_add(1);
+        let maker_lifecycle_us = maker_attempts
+            .saturating_mul(i64::from(config.maker_timeout_ms))
+            .saturating_mul(1_000);
+        last_batch_start_ts_us.saturating_add(maker_lifecycle_us)
+    };
+    let estimated_completion_ts_ms = active_completion_ts_us.max(future_completion_ts_us) / 1_000;
+    (remaining_batches, estimated_completion_ts_ms)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MakerPriceAnchor {
@@ -100,6 +146,50 @@ struct BatchState {
     require_new_quote: bool,
     expires_at_us: i64,
     from_key: Vec<u8>,
+}
+
+fn estimate_active_batch_completion_ts_us(
+    config: &BatchExecConfig,
+    batch: &BatchState,
+    now_ts_us: i64,
+) -> i64 {
+    if batch.use_taker || batch.maker_requotes > config.max_maker_requotes {
+        return now_ts_us;
+    }
+    let timeout_us = i64::from(config.maker_timeout_ms).saturating_mul(1_000);
+    match batch.phase {
+        BatchPhase::Live => {
+            let current_expiry = if batch.expires_at_us > 0 {
+                batch.expires_at_us.max(now_ts_us)
+            } else {
+                now_ts_us.saturating_add(timeout_us)
+            };
+            let later_maker_attempts = i64::from(
+                config
+                    .max_maker_requotes
+                    .saturating_sub(batch.maker_requotes),
+            );
+            current_expiry.saturating_add(later_maker_attempts.saturating_mul(timeout_us))
+        }
+        BatchPhase::CancellingForRequote => {
+            let later_maker_attempts = i64::from(
+                config
+                    .max_maker_requotes
+                    .saturating_sub(batch.maker_requotes),
+            );
+            now_ts_us.saturating_add(later_maker_attempts.saturating_mul(timeout_us))
+        }
+        BatchPhase::ReadyToSubmit => {
+            let maker_attempts = i64::from(
+                config
+                    .max_maker_requotes
+                    .saturating_sub(batch.maker_requotes)
+                    .saturating_add(1),
+            );
+            now_ts_us.saturating_add(maker_attempts.saturating_mul(timeout_us))
+        }
+        BatchPhase::CancellingForTarget => now_ts_us,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +234,8 @@ pub struct BatchExecSnapshot {
     pub pending_qty: f64,
     pub live_order_qty: f64,
     pub active_batches: usize,
+    pub remaining_batches: u32,
+    pub estimated_completion_ts_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -450,7 +542,7 @@ impl BatchExecStrategy {
         Ok(())
     }
 
-    pub fn snapshot(&self, _now_ts: i64) -> BatchExecSnapshot {
+    pub fn snapshot(&self, now_ts: i64) -> BatchExecSnapshot {
         let account_position_qty =
             MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
         let position_qty = self.virtual_position_qty.unwrap_or(0.0);
@@ -460,6 +552,26 @@ impl BatchExecStrategy {
         let pending_qty = target_qty
             .map(|target| target - effective_position_qty - live_order_qty)
             .unwrap_or(0.0);
+        let (remaining_batches, estimated_completion_ts_ms) = target_qty
+            .and_then(|target| {
+                MktChannel::instance()
+                    .get_quote(&self.symbol, self.exec_venue)
+                    .map(|quote| (target, (quote.bid + quote.ask) * 0.5))
+            })
+            .filter(|(_, price)| price.is_finite() && *price > 0.0)
+            .map(|(target, price)| {
+                let (active_batches, active_completion_ts_us) =
+                    self.relevant_active_batch_progress(target, position_qty, now_ts);
+                estimate_batch_progress(
+                    &self.config,
+                    (target - position_qty) * price,
+                    active_batches,
+                    active_completion_ts_us,
+                    now_ts,
+                    self.next_batch_at_us,
+                )
+            })
+            .unwrap_or((0, 0));
         BatchExecSnapshot {
             strategy_name: self.strategy_name.clone(),
             symbol: self.symbol.clone(),
@@ -472,7 +584,50 @@ impl BatchExecStrategy {
             pending_qty,
             live_order_qty,
             active_batches: self.batches.len(),
+            remaining_batches,
+            estimated_completion_ts_ms,
         }
+    }
+
+    fn relevant_active_batch_progress(
+        &self,
+        target_qty: f64,
+        position_qty: f64,
+        now_ts_us: i64,
+    ) -> (u32, i64) {
+        if self.pending_target.is_some() {
+            return (0, 0);
+        }
+        let Some(active_target) = self.active_target.as_ref() else {
+            return (0, 0);
+        };
+        let delta_qty = target_qty - position_qty;
+        if delta_qty.abs() <= QTY_EPS {
+            return (0, 0);
+        }
+        let side = if delta_qty > 0.0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        self.batches
+            .values()
+            .filter(|batch| {
+                batch.target_generation == active_target.generation_time
+                    && batch.side == side
+                    && batch.phase != BatchPhase::CancellingForTarget
+                    && batch.remaining_base_qty > QTY_EPS
+            })
+            .fold((0u32, 0i64), |(count, latest_completion), batch| {
+                (
+                    count.saturating_add(1),
+                    latest_completion.max(estimate_active_batch_completion_ts_us(
+                        &self.config,
+                        batch,
+                        now_ts_us,
+                    )),
+                )
+            })
     }
 
     fn next_batch_seq(&mut self) -> u64 {
@@ -1626,6 +1781,71 @@ mod tests {
             max_maker_requotes: 2,
             target_tolerance_usdt: 10.0,
         }
+    }
+
+    #[test]
+    fn batch_progress_estimate_includes_last_batch_and_maker_requotes() {
+        let now_ts_us = 10_000_000;
+        let (remaining_batches, completion_ts_ms) = estimate_batch_progress(
+            &config(),
+            850.0,
+            1,
+            now_ts_us + 1_000_000,
+            now_ts_us,
+            now_ts_us + 200_000,
+        );
+
+        assert_eq!(remaining_batches, 3);
+        // Two future batches: first in 200ms, last 500ms later, then 3 maker timeouts.
+        assert_eq!(completion_ts_ms, 13_700);
+    }
+
+    #[test]
+    fn batch_progress_estimate_keeps_fragmented_active_batches() {
+        let now_ts_us = 10_000_000;
+        let (remaining_batches, completion_ts_ms) = estimate_batch_progress(
+            &config(),
+            100.0,
+            4,
+            now_ts_us + 2_000_000,
+            now_ts_us,
+            now_ts_us,
+        );
+
+        assert_eq!(remaining_batches, 4);
+        assert_eq!(completion_ts_ms, 12_000);
+    }
+
+    #[test]
+    fn batch_progress_estimate_is_empty_within_tolerance() {
+        assert_eq!(
+            estimate_batch_progress(&config(), 10.0, 0, 0, 1_000, 1_000),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn active_batch_estimate_uses_current_expiry_and_remaining_requotes() {
+        let now_ts_us = 10_000_000;
+        let batch = BatchState {
+            target_generation: 1,
+            side: Side::Buy,
+            remaining_base_qty: 1.0,
+            maker_requotes: 1,
+            use_taker: false,
+            phase: BatchPhase::Live,
+            child_order_ids: BTreeSet::new(),
+            remaining_qty_by_level: BTreeMap::new(),
+            last_quote_ts: 0,
+            require_new_quote: false,
+            expires_at_us: now_ts_us + 400_000,
+            from_key: Vec::new(),
+        };
+
+        assert_eq!(
+            estimate_active_batch_completion_ts_us(&config(), &batch, now_ts_us),
+            now_ts_us + 1_400_000
+        );
     }
 
     fn strategy_with_orphan_batch(entries: &[(i64, u32, f64, f64)]) -> BatchExecStrategy {

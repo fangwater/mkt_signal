@@ -27,9 +27,21 @@ replay_workers = 6
 publish_ipc = false
 # Persist hourly trade-notional KLL sketches beside the trade/depth staging data.
 write_hourly_notional_kll = true
+# When true, skip all baseline and L2 work and only write hourly KLL rows.
+kll_only = false
+# When true, rebuild only 5s/60s trade baseline rows. KLL and depth rows are preserved.
+order_size_only = false
 # Rerunning this date/symbol selection first synchronously deletes matching rows
 # from the four staging tables and hourly KLL table, then writes a fresh result.
 overwrite_existing = true
+
+# Enable after the previous natural month's hourly KLL rows have been written.
+# Each target month loads the previous natural month's KLL. Each raw trade is
+# classified by price * amount before the existing 5s and 60s aggregation.
+[order_size]
+enabled = false
+medium_quantile = 0.5
+large_quantile = 0.9
 
 [symbol_data_dirs]
 XRPUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_xrpusdt"

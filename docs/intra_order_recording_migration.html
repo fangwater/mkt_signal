@@ -1,0 +1,1656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<title>Intra 订单记录与因子存储迁移设计</title>
+<style>
+:root {
+  --page: #f5f7f5;
+  --paper: #ffffff;
+  --ink: #17201b;
+  --muted: #5f6e65;
+  --line: #d8dfda;
+  --line-strong: #aebbb3;
+  --green: #116149;
+  --green-soft: #e8f4ee;
+  --blue: #1f6287;
+  --blue-soft: #e9f3f8;
+  --amber: #8a5b00;
+  --amber-soft: #fff3d4;
+  --red: #9b3b34;
+  --red-soft: #fbeceb;
+  --violet: #674c7c;
+  --violet-soft: #f1ebf5;
+  --code-bg: #111814;
+  --code-text: #e8efe9;
+  --shadow: 0 10px 28px rgba(25, 46, 34, 0.08);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.72;
+  letter-spacing: 0;
+}
+
+a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { color: var(--green); }
+code, pre { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace; }
+
+.layout {
+  width: min(1540px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 268px minmax(0, 1fr);
+  align-items: start;
+}
+
+.toc {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 28px 22px;
+  border-right: 1px solid var(--line);
+  background: #eef2ef;
+  overflow-y: auto;
+}
+
+.toc-brand {
+  font-weight: 760;
+  font-size: 15px;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.toc-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 24px;
+}
+
+.toc nav { display: grid; gap: 3px; }
+.toc nav a {
+  color: #334239;
+  text-decoration: none;
+  font-size: 13px;
+  padding: 7px 9px;
+  border-left: 3px solid transparent;
+}
+.toc nav a:hover {
+  background: var(--paper);
+  border-left-color: var(--green);
+  color: var(--green);
+}
+
+.toc-legend {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.legend-row { display: flex; align-items: center; gap: 8px; }
+.swatch { width: 14px; height: 14px; border: 1px solid; border-radius: 3px; flex: 0 0 auto; }
+.swatch.hot { background: var(--green-soft); border-color: var(--green); }
+.swatch.data { background: var(--blue-soft); border-color: var(--blue); }
+.swatch.store { background: var(--amber-soft); border-color: var(--amber); }
+.swatch.risk { background: var(--red-soft); border-color: var(--red); }
+
+main {
+  min-width: 0;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+
+.content {
+  width: min(1180px, calc(100% - 72px));
+  margin: 0 auto;
+  padding-bottom: 100px;
+}
+
+.doc-header {
+  min-height: 390px;
+  padding: 64px 0 46px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow {
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 760;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+h1, h2, h3, h4 { line-height: 1.28; letter-spacing: 0; }
+h1 {
+  margin: 0;
+  max-width: 920px;
+  font-size: 40px;
+  font-weight: 780;
+}
+
+.header-subtitle {
+  max-width: 880px;
+  margin: 20px 0 0;
+  color: var(--muted);
+  font-size: 19px;
+}
+
+section {
+  padding: 64px 0 0;
+  scroll-margin-top: 24px;
+}
+
+section + section {
+  margin-top: 64px;
+  border-top: 1px solid var(--line);
+}
+
+.section-no {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+h2 { margin: 0 0 14px; font-size: 28px; font-weight: 760; }
+h3 { margin: 38px 0 12px; font-size: 20px; font-weight: 730; }
+h4 { margin: 26px 0 8px; font-size: 16px; font-weight: 730; }
+p { margin: 10px 0; }
+.section-intro { color: var(--muted); font-size: 17px; max-width: 920px; }
+
+.thesis {
+  margin-top: 30px;
+  padding: 20px 24px;
+  border-left: 5px solid var(--green);
+  background: var(--green-soft);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.key-grid {
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.key-item { padding: 20px; background: #fbfcfb; }
+.key-item + .key-item { border-left: 1px solid var(--line); }
+.key-kicker { color: var(--muted); font-size: 12px; font-weight: 700; }
+.key-title { margin-top: 5px; font-size: 18px; font-weight: 740; }
+.key-copy { margin-top: 8px; color: var(--muted); font-size: 14px; }
+
+.diagram {
+  margin: 26px 0 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fcfdfc;
+  overflow-x: auto;
+}
+
+.diagram svg { display: block; width: 100%; height: auto; min-width: 920px; }
+.diagram.medium svg { min-width: 760px; }
+.diagram figcaption {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.svg-box { fill: #fff; stroke: #aebbb3; stroke-width: 1.5; rx: 6; }
+.svg-box-hot { fill: #e8f4ee; stroke: #116149; stroke-width: 1.7; rx: 6; }
+.svg-box-data { fill: #e9f3f8; stroke: #1f6287; stroke-width: 1.7; rx: 6; }
+.svg-box-store { fill: #fff3d4; stroke: #8a5b00; stroke-width: 1.7; rx: 6; }
+.svg-box-risk { fill: #fbeceb; stroke: #9b3b34; stroke-width: 1.7; rx: 6; }
+.svg-box-violet { fill: #f1ebf5; stroke: #674c7c; stroke-width: 1.7; rx: 6; }
+.svg-title { fill: #17201b; font-size: 16px; font-weight: 700; }
+.svg-label { fill: #435249; font-size: 13px; }
+.svg-small { fill: #5f6e65; font-size: 11px; }
+.svg-lane { stroke: #c8d1cb; stroke-width: 1.2; stroke-dasharray: 5 5; }
+.svg-arrow { stroke: #3e5146; stroke-width: 1.7; fill: none; }
+.svg-arrow-blue { stroke: #1f6287; stroke-width: 2; fill: none; }
+.svg-arrow-green { stroke: #116149; stroke-width: 2.2; fill: none; }
+.svg-arrow-amber { stroke: #8a5b00; stroke-width: 2; fill: none; }
+.svg-arrow-red { stroke: #9b3b34; stroke-width: 2; fill: none; }
+.svg-arrow-dash { stroke: #674c7c; stroke-width: 1.8; stroke-dasharray: 7 5; fill: none; }
+.svg-time { stroke: #8a9990; stroke-width: 2; }
+.svg-point { fill: #1f6287; stroke: #fff; stroke-width: 2; }
+.svg-point-order { fill: #116149; stroke: #fff; stroke-width: 2; }
+.svg-point-miss { fill: #9b3b34; stroke: #fff; stroke-width: 2; }
+
+.callout {
+  margin: 22px 0;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-left-width: 5px;
+  border-radius: 4px;
+  background: #fbfcfb;
+}
+.callout strong { display: block; margin-bottom: 4px; }
+.callout.info { border-left-color: var(--blue); background: var(--blue-soft); }
+.callout.keep { border-left-color: var(--green); background: var(--green-soft); }
+.callout.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+.callout.danger { border-left-color: var(--red); background: var(--red-soft); }
+
+.table-wrap { margin: 20px 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+table { width: 100%; min-width: 720px; border-collapse: collapse; background: #fff; }
+th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: #eef2ef; font-size: 13px; font-weight: 750; color: #334239; }
+td { font-size: 14px; }
+tr:last-child td { border-bottom: 0; }
+.nowrap { white-space: nowrap; }
+
+.steps { counter-reset: step; display: grid; gap: 12px; margin: 22px 0; }
+.step {
+  position: relative;
+  padding: 15px 18px 15px 58px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+.step::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute;
+  left: 17px;
+  top: 15px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--green);
+  color: #fff;
+  font-weight: 750;
+  font-size: 13px;
+}
+.step-title { font-weight: 740; }
+.step-copy { color: var(--muted); font-size: 14px; margin-top: 3px; }
+
+pre {
+  position: relative;
+  margin: 18px 0;
+  padding: 20px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+
+.code-label {
+  display: inline-block;
+  margin-bottom: -18px;
+  padding: 4px 9px;
+  border-radius: 4px 4px 0 0;
+  background: #26352c;
+  color: #cfe2d5;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.inline-code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #edf1ee;
+  color: #284437;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.9em;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin: 22px 0;
+}
+
+.panel {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+.panel h3, .panel h4 { margin-top: 0; }
+.panel p:last-child { margin-bottom: 0; }
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 24px 0;
+  border: 1px solid var(--line);
+  background: var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.metric { padding: 15px; background: #fff; }
+.metric-name { color: var(--muted); font-size: 12px; }
+.metric-value { margin-top: 4px; font-size: 18px; font-weight: 750; }
+
+.size-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 760;
+}
+.size-s { color: var(--green); background: var(--green-soft); border: 1px solid #a8d1bf; }
+.size-m { color: var(--amber); background: var(--amber-soft); border: 1px solid #e2c77e; }
+.size-l { color: var(--red); background: var(--red-soft); border: 1px solid #dfaaa6; }
+
+.phase-list { display: grid; gap: 0; margin-top: 26px; }
+.phase {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 18px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+.phase:first-child { border-top: 1px solid var(--line); }
+.phase-id { color: var(--green); font-weight: 780; font-size: 13px; }
+.phase-title { font-weight: 750; }
+.phase-copy { color: var(--muted); font-size: 14px; margin-top: 4px; }
+
+.source-list {
+  margin: 22px 0 0;
+  padding: 0;
+  list-style: none;
+  columns: 2;
+  column-gap: 28px;
+}
+.source-list li { break-inside: avoid; margin: 0 0 10px; font-size: 13px; }
+.source-list code { color: #375345; }
+
+.glossary {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+.glossary dt, .glossary dd { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.glossary dt { font-weight: 740; }
+.glossary dd { color: var(--muted); }
+
+.footer-note {
+  margin-top: 64px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 1040px) {
+  .layout { display: block; }
+  .toc {
+    position: static;
+    width: 100%;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 16px 20px;
+  }
+  .toc-brand, .toc-meta, .toc-legend { display: none; }
+  .toc nav { display: flex; overflow-x: auto; gap: 4px; }
+  .toc nav a { white-space: nowrap; border-left: 0; border-bottom: 3px solid transparent; }
+  .toc nav a:hover { border-left-color: transparent; border-bottom-color: var(--green); }
+  main { box-shadow: none; }
+}
+
+@media (max-width: 760px) {
+  .content { width: calc(100% - 32px); }
+  .doc-header { min-height: 330px; padding: 42px 0 34px; }
+  h1 { font-size: 31px; }
+  .header-subtitle { font-size: 17px; }
+  section { padding-top: 50px; }
+  section + section { margin-top: 50px; }
+  h2 { font-size: 24px; }
+  .key-grid, .split, .metric-strip { grid-template-columns: 1fr; }
+  .key-item + .key-item { border-left: 0; border-top: 1px solid var(--line); }
+  .metric-strip { gap: 1px; }
+  .phase { grid-template-columns: 64px minmax(0, 1fr); gap: 10px; }
+  .source-list { columns: 1; }
+  .glossary { grid-template-columns: 1fr; }
+  .glossary dt { border-bottom: 0; padding-bottom: 2px; }
+  .glossary dd { padding-top: 2px; }
+  .diagram { padding: 12px; }
+  pre { font-size: 12px; padding: 16px; }
+}
+
+@media print {
+  body { background: #fff; }
+  .layout { display: block; width: 100%; }
+  .toc { display: none; }
+  main { box-shadow: none; }
+  .content { width: 94%; }
+  .doc-header { min-height: auto; page-break-after: always; }
+  section { break-inside: avoid-page; }
+  .diagram { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="toc" aria-label="文档目录">
+    <div class="toc-brand">Intra 订单记录迁移</div>
+    <div class="toc-meta">架构与时序设计说明<br>2026-08-04</div>
+    <nav>
+      <a href="#summary">设计结论</a>
+      <a href="#mental-model">1. 两类数据</a>
+      <a href="#current-intra">2. 当前 Intra</a>
+      <a href="#recording-timeline">3. 当前记录时序</a>
+      <a href="#bbo-backfill">4. BBO 采样与回补</a>
+      <a href="#tlen-migration">5. tlen 迁移</a>
+      <a href="#factor-pipeline">6. 因子记录</a>
+      <a href="#clickhouse">7. ClickHouse</a>
+      <a href="#workload">8. 修改量</a>
+      <a href="#target-state">9. 最终存储</a>
+    </nav>
+    <div class="toc-legend">
+      <div class="legend-row"><span class="swatch hot"></span>在线交易热路径</div>
+      <div class="legend-row"><span class="swatch data"></span>行情与研究数据</div>
+      <div class="legend-row"><span class="swatch store"></span>持久化与批处理</div>
+      <div class="legend-row"><span class="swatch risk"></span>风险与阻断项</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="content">
+      <header class="doc-header">
+        <div class="eyebrow">Architecture migration note</div>
+        <h1>Intra 订单记录与因子存储迁移设计</h1>
+        <p class="header-subtitle">
+          订单事件、盘口回补、tlen 执行和定频因子分别建模；在线交易热路径与 ClickHouse 研究数据链路异步隔离。
+        </p>
+      </header>
+
+      <section id="summary">
+        <div class="section-no">Executive summary</div>
+        <h2>设计结论</h2>
+        <p class="section-intro">
+          当前问题的根源不是 RocksDB 写得慢，也不是 persist manager 少订阅了一个频道，而是把两种完全不同的数据模型放进了同一条订单记录。
+        </p>
+
+        <div class="thesis">
+          订单是一张稀疏的执行事件表；因子是一张连续的时间序列特征表。不能依赖订单状态变化来记录连续因子。
+        </div>
+
+        <div class="key-grid">
+          <div class="key-item">
+            <div class="key-kicker">保持不变</div>
+            <div class="key-title">BBO 回补逻辑</div>
+            <div class="key-copy">继续按订单 update_ts，在两腿盘口环形缓存中分别取不晚于该时间的最后一条 BBO。</div>
+          </div>
+          <div class="key-item">
+            <div class="key-kicker">在线迁移</div>
+            <div class="key-title">tlen 移到 pre-trade</div>
+            <div class="key-copy">pre-trade 直接维护价位可见量，负责开仓 gate、活动订单监控和撤单，不再和 trade_signal 往返推送候选。</div>
+          </div>
+          <div class="key-item">
+            <div class="key-kicker">研究数据</div>
+            <div class="key-title">定频因子进入 ClickHouse</div>
+            <div class="key-copy">baseline、fusion、model、vol 由独立 recorder 聚合成具名列；盘后按无未来原则对齐订单。</div>
+          </div>
+        </div>
+
+        <div class="callout info">
+          <strong>最终分工</strong>
+          内存负责实时判断；RocksDB 保存订单、成交、延迟、BBO 和 tlen 等稀疏数据；ClickHouse 保存 baseline、fusion、model、vol 和 tradeflow 等定频数据。
+        </div>
+      </section>
+
+      <section id="mental-model">
+        <div class="section-no">01 / Data model</div>
+        <h2>数据模型边界</h2>
+        <p class="section-intro">
+          订单事件按状态变化记录；因子按固定时间桶记录。两者使用独立的采样频率、时间语义与存储结构。
+        </p>
+
+        <figure class="diagram medium">
+          <svg viewBox="0 0 1080 390" role="img" aria-labelledby="mental-title mental-desc">
+            <title id="mental-title">订单事件和因子时间序列的频率差异</title>
+            <desc id="mental-desc">订单状态变化和 tlen 记录均为稀疏事件，定频因子使用独立连续时间序列。</desc>
+            <defs>
+              <marker id="mental-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+            </defs>
+
+            <text x="40" y="55" class="svg-title">订单事件：稀疏标签</text>
+            <line x1="190" y1="95" x2="1020" y2="95" class="svg-time" marker-end="url(#mental-arrow)"></line>
+            <circle cx="270" cy="95" r="9" class="svg-point-order"></circle>
+            <circle cx="620" cy="95" r="9" class="svg-point-order"></circle>
+            <circle cx="930" cy="95" r="9" class="svg-point-order"></circle>
+            <text x="242" y="128" class="svg-label">New</text>
+            <text x="567" y="128" class="svg-label">PartialFill</text>
+            <text x="896" y="128" class="svg-label">Fill</text>
+
+            <text x="40" y="190" class="svg-title">定频因子：连续特征</text>
+            <line x1="190" y1="230" x2="1020" y2="230" class="svg-time" marker-end="url(#mental-arrow)"></line>
+            <g>
+              <circle cx="220" cy="230" r="7" class="svg-point"></circle><circle cx="290" cy="230" r="7" class="svg-point"></circle>
+              <circle cx="360" cy="230" r="7" class="svg-point"></circle><circle cx="430" cy="230" r="7" class="svg-point"></circle>
+              <circle cx="500" cy="230" r="7" class="svg-point"></circle><circle cx="570" cy="230" r="7" class="svg-point"></circle>
+              <circle cx="640" cy="230" r="7" class="svg-point"></circle><circle cx="710" cy="230" r="7" class="svg-point"></circle>
+              <circle cx="780" cy="230" r="7" class="svg-point"></circle><circle cx="850" cy="230" r="7" class="svg-point"></circle>
+              <circle cx="920" cy="230" r="7" class="svg-point"></circle><circle cx="990" cy="230" r="7" class="svg-point"></circle>
+            </g>
+            <text x="207" y="263" class="svg-small">F0</text><text x="347" y="263" class="svg-small">F2</text>
+            <text x="487" y="263" class="svg-small">F4</text><text x="627" y="263" class="svg-small">F6</text>
+            <text x="767" y="263" class="svg-small">F8</text><text x="907" y="263" class="svg-small">F10</text>
+
+            <path d="M270 105 C300 150, 330 165, 360 220" class="svg-arrow-red" marker-end="url(#mental-arrow)"></path>
+            <path d="M620 105 C640 150, 665 170, 710 220" class="svg-arrow-red" marker-end="url(#mental-arrow)"></path>
+            <path d="M930 105 C945 150, 965 170, 990 220" class="svg-arrow-red" marker-end="url(#mental-arrow)"></path>
+            <text x="380" y="330" class="svg-title">当前只在绿色订单事件出现时，抽取一次蓝色因子快照</text>
+            <text x="415" y="358" class="svg-label">事件之间发生的因子变化不会进入订单记录</text>
+          </svg>
+          <figcaption>图 1：订单记录的采样频率由订单状态决定，不能代表完整因子轨迹。</figcaption>
+        </figure>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>数据类型</th><th>一行代表什么</th><th>自然主时间</th><th>合适的存储</th></tr></thead>
+            <tbody>
+              <tr><td>订单事件</td><td>一次 New、Fill、Cancel 等状态事实</td><td>订单 update_ts</td><td>RocksDB</td></tr>
+              <tr><td>BBO 回补</td><td>订单事件发生时，两腿最后已知盘口</td><td>交易所盘口时间</td><td>订单记录附加字段</td></tr>
+              <tr><td>tlen</td><td>报单、撤单或关键订单事件处的价位可见量快照</td><td>决策使用的订单簿时间</td><td>pre-trade 内存状态 + 订单事件稀疏字段</td></tr>
+              <tr><td>定频因子</td><td>某 symbol 在某个时间桶的特征向量</td><td>bucket_ts + available_ts</td><td>ClickHouse 具名列</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="current-intra">
+        <div class="section-no">02 / Current architecture</div>
+        <h2>当前 Intra 模式的完整进程链路</h2>
+        <p class="section-intro">
+          Intra 是同一交易所的现货/保证金腿与永续腿套利。trade_signal 负责产生交易意图，pre-trade 才拥有订单与策略状态，trade_engine 负责把请求发到交易所。
+        </p>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 1420 720" role="img" aria-labelledby="intra-title intra-desc">
+            <title id="intra-title">当前 Intra 进程和 IPC 链路</title>
+            <desc id="intra-desc">行情、因子、交易信号、风控执行和持久化进程之间的完整关系。</desc>
+            <defs>
+              <marker id="intra-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="intra-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1f6287"></path>
+              </marker>
+              <marker id="intra-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#116149"></path>
+              </marker>
+              <marker id="intra-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#8a5b00"></path>
+              </marker>
+            </defs>
+
+            <text x="30" y="38" class="svg-small">市场数据与因子</text>
+            <rect x="30" y="60" width="210" height="90" class="svg-box-data"></rect>
+            <text x="135" y="92" text-anchor="middle" class="svg-title">spread_pbs</text>
+            <text x="135" y="117" text-anchor="middle" class="svg-label">Margin / Futures BBO</text>
+            <text x="135" y="138" text-anchor="middle" class="svg-small">exchange timestamp</text>
+
+            <rect x="30" y="185" width="210" height="90" class="svg-box-data"></rect>
+            <text x="135" y="217" text-anchor="middle" class="svg-title">dat_pbs / depth_pub</text>
+            <text x="135" y="242" text-anchor="middle" class="svg-label">incremental + orderbook</text>
+            <text x="135" y="263" text-anchor="middle" class="svg-small">tlen exact price level</text>
+
+            <rect x="30" y="330" width="210" height="90" class="svg-box-data"></rect>
+            <text x="135" y="362" text-anchor="middle" class="svg-title">trade_flow_feature_pub</text>
+            <text x="135" y="387" text-anchor="middle" class="svg-label">5s baseline + vol</text>
+            <text x="135" y="408" text-anchor="middle" class="svg-small">quiet bar ffill</text>
+
+            <rect x="300" y="330" width="190" height="90" class="svg-box-violet"></rect>
+            <text x="395" y="362" text-anchor="middle" class="svg-title">fusion_factor_pub</text>
+            <text x="395" y="387" text-anchor="middle" class="svg-label">ordered factor vector</text>
+
+            <rect x="550" y="330" width="190" height="90" class="svg-box-violet"></rect>
+            <text x="645" y="362" text-anchor="middle" class="svg-title">model_pub</text>
+            <text x="645" y="387" text-anchor="middle" class="svg-label">score / quantile</text>
+
+            <text x="815" y="38" class="svg-small">在线交易热路径</text>
+            <rect x="800" y="60" width="230" height="130" class="svg-box-hot"></rect>
+            <text x="915" y="93" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="915" y="119" text-anchor="middle" class="svg-label">IntraArb / event driven</text>
+            <text x="915" y="143" text-anchor="middle" class="svg-small">BBO trigger + latest factor cache</text>
+            <text x="915" y="165" text-anchor="middle" class="svg-small">open tlen gate + from_key</text>
+
+            <rect x="800" y="245" width="230" height="130" class="svg-box-hot"></rect>
+            <text x="915" y="278" text-anchor="middle" class="svg-title">pre_trade</text>
+            <text x="915" y="304" text-anchor="middle" class="svg-label">risk + strategy state</text>
+            <text x="915" y="328" text-anchor="middle" class="svg-small">order lifecycle owner</text>
+            <text x="915" y="350" text-anchor="middle" class="svg-small">persist event publisher</text>
+
+            <rect x="1110" y="245" width="210" height="130" class="svg-box-hot"></rect>
+            <text x="1215" y="278" text-anchor="middle" class="svg-title">trade_engine</text>
+            <text x="1215" y="304" text-anchor="middle" class="svg-label">WS / REST execution</text>
+            <text x="1215" y="328" text-anchor="middle" class="svg-small">order + query routing</text>
+
+            <rect x="1110" y="60" width="210" height="100" class="svg-box"></rect>
+            <text x="1215" y="95" text-anchor="middle" class="svg-title">Exchange</text>
+            <text x="1215" y="121" text-anchor="middle" class="svg-label">market + user stream</text>
+
+            <rect x="550" y="500" width="190" height="90" class="svg-box-hot"></rect>
+            <text x="645" y="532" text-anchor="middle" class="svg-title">account_monitor</text>
+            <text x="645" y="557" text-anchor="middle" class="svg-label">account_pubs/*_pm</text>
+
+            <text x="815" y="472" class="svg-small">订单持久化</text>
+            <rect x="800" y="500" width="230" height="110" class="svg-box-store"></rect>
+            <text x="915" y="535" text-anchor="middle" class="svg-title">persist_manager</text>
+            <text x="915" y="561" text-anchor="middle" class="svg-label">uniform + raw updates</text>
+            <text x="915" y="584" text-anchor="middle" class="svg-small">BBO retrospective enrich</text>
+
+            <rect x="1110" y="500" width="210" height="110" class="svg-box-store"></rect>
+            <text x="1215" y="540" text-anchor="middle" class="svg-title">RocksDB</text>
+            <text x="1215" y="566" text-anchor="middle" class="svg-label">order event truth</text>
+
+            <path d="M240 105 H770 Q790 105 800 115" class="svg-arrow-blue" marker-end="url(#intra-blue)"></path>
+            <text x="490" y="94" class="svg-small">spread_pbs/*/ask_bid_spread</text>
+            <path d="M240 230 H680 Q760 230 800 165" class="svg-arrow-dash" marker-end="url(#intra-arrow)"></path>
+            <text x="330" y="218" class="svg-small">UDS query / optional local tlen</text>
+
+            <path d="M240 375 H300" class="svg-arrow-blue" marker-end="url(#intra-blue)"></path>
+            <path d="M490 375 H550" class="svg-arrow-blue" marker-end="url(#intra-blue)"></path>
+            <path d="M740 365 Q770 365 790 175" class="svg-arrow-blue" marker-end="url(#intra-blue)"></path>
+            <path d="M240 400 Q620 470 800 180" class="svg-arrow-blue" marker-end="url(#intra-blue)"></path>
+            <text x="493" y="455" class="svg-small">selected vol / tradeflow cache</text>
+
+            <path d="M915 190 V245" class="svg-arrow-green" marker-end="url(#intra-green)"></path>
+            <text x="930" y="220" class="svg-small">signal_pubs/trade_signal</text>
+            <path d="M1030 292 H1110" class="svg-arrow-green" marker-end="url(#intra-green)"></path>
+            <text x="1043" y="279" class="svg-small">order_reqs</text>
+            <path d="M1215 245 V160" class="svg-arrow-green" marker-end="url(#intra-green)"></path>
+            <path d="M1195 160 V225 Q1195 235 1180 245" class="svg-arrow" marker-end="url(#intra-arrow)"></path>
+            <text x="1225" y="206" class="svg-small">updates</text>
+            <path d="M1110 350 H1030" class="svg-arrow" marker-end="url(#intra-arrow)"></path>
+            <text x="1045" y="371" class="svg-small">order_resps</text>
+
+            <path d="M1215 160 C1100 445 820 440 700 500" class="svg-arrow" marker-end="url(#intra-arrow)"></path>
+            <path d="M740 545 H780 Q800 545 800 520" class="svg-arrow-green" marker-end="url(#intra-green)"></path>
+            <text x="745" y="567" class="svg-small">account_pubs</text>
+
+            <path d="M915 375 V500" class="svg-arrow-amber" marker-end="url(#intra-amber)"></path>
+            <text x="930" y="440" class="svg-small">persist_pubs/*</text>
+            <path d="M1030 555 H1110" class="svg-arrow-amber" marker-end="url(#intra-amber)"></path>
+            <path d="M240 130 C370 650 680 650 800 575" class="svg-arrow-amber" marker-end="url(#intra-amber)"></path>
+            <text x="380" y="663" class="svg-small">persist_manager 独立订阅两腿 BBO，用于订单事件回补</text>
+          </svg>
+          <figcaption>图 2：当前 Intra 完整进程图。绿色是在线交易路径，蓝色是行情/因子，黄色是订单持久化。</figcaption>
+        </figure>
+
+        <h3>一次开仓从行情到订单的执行顺序</h3>
+        <figure class="diagram">
+          <svg viewBox="0 0 1480 1020" role="img" aria-labelledby="open-seq-title open-seq-desc">
+            <title id="open-seq-title">当前 Intra 一次开仓的完整执行时序</title>
+            <desc id="open-seq-desc">BBO 触发 trade_signal 决策，经过 tlen 查询、pre-trade 风控和 trade_engine 发单，再由 persist manager 回补 BBO 并写入 RocksDB。</desc>
+            <defs>
+              <marker id="open-seq-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="open-seq-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1f6287"></path>
+              </marker>
+              <marker id="open-seq-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#116149"></path>
+              </marker>
+              <marker id="open-seq-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#8a5b00"></path>
+              </marker>
+            </defs>
+
+            <g>
+              <rect x="35" y="25" width="180" height="58" class="svg-box-data"></rect>
+              <rect x="275" y="25" width="180" height="58" class="svg-box-hot"></rect>
+              <rect x="515" y="25" width="180" height="58" class="svg-box-hot"></rect>
+              <rect x="755" y="25" width="180" height="58" class="svg-box-hot"></rect>
+              <rect x="995" y="25" width="180" height="58" class="svg-box"></rect>
+              <rect x="1235" y="25" width="180" height="58" class="svg-box-store"></rect>
+              <text x="125" y="51" text-anchor="middle" class="svg-title">Market data</text>
+              <text x="125" y="71" text-anchor="middle" class="svg-small">BBO / depth / factor</text>
+              <text x="365" y="60" text-anchor="middle" class="svg-title">trade_signal</text>
+              <text x="605" y="60" text-anchor="middle" class="svg-title">pre_trade</text>
+              <text x="845" y="60" text-anchor="middle" class="svg-title">trade_engine</text>
+              <text x="1085" y="60" text-anchor="middle" class="svg-title">Exchange</text>
+              <text x="1325" y="60" text-anchor="middle" class="svg-title">persist_manager</text>
+            </g>
+
+            <g>
+              <line x1="125" y1="83" x2="125" y2="970" class="svg-lane"></line>
+              <line x1="365" y1="83" x2="365" y2="970" class="svg-lane"></line>
+              <line x1="605" y1="83" x2="605" y2="970" class="svg-lane"></line>
+              <line x1="845" y1="83" x2="845" y2="970" class="svg-lane"></line>
+              <line x1="1085" y1="83" x2="1085" y2="970" class="svg-lane"></line>
+              <line x1="1325" y1="83" x2="1325" y2="970" class="svg-lane"></line>
+            </g>
+
+            <path d="M125 130 H355" class="svg-arrow-blue" marker-end="url(#open-seq-blue)"></path>
+            <text x="175" y="117" class="svg-label">1. 任一腿 BBO 更新</text>
+            <text x="175" y="151" class="svg-small">drain open / hedge，标记 dirty symbol</text>
+
+            <path d="M125 200 H355" class="svg-arrow-blue" marker-end="url(#open-seq-blue)"></path>
+            <text x="165" y="187" class="svg-label">2. factor / model / vol IPC</text>
+            <text x="165" y="221" class="svg-small">刷新 symbol 最新值缓存</text>
+
+            <rect x="282" y="248" width="166" height="96" class="svg-box-data"></rect>
+            <text x="365" y="274" text-anchor="middle" class="svg-label">3. 更新 SpreadFactor</text>
+            <text x="365" y="297" text-anchor="middle" class="svg-small">两腿 BBO + factor cache</text>
+            <text x="365" y="319" text-anchor="middle" class="svg-small">spread / model gate</text>
+            <text x="365" y="338" text-anchor="middle" class="svg-small">生成价格与数量候选</text>
+
+            <path d="M355 380 H135" class="svg-arrow-dash" marker-end="url(#open-seq-arrow)"></path>
+            <text x="170" y="367" class="svg-label">4. 当前路径：查询候选价位 tlen</text>
+            <path d="M135 425 H355" class="svg-arrow-dash" marker-end="url(#open-seq-arrow)"></path>
+            <text x="190" y="448" class="svg-small">exact tick visible quantity</text>
+
+            <path d="M365 490 H595" class="svg-arrow-green" marker-end="url(#open-seq-green)"></path>
+            <text x="410" y="477" class="svg-label">5. ArbOpen</text>
+            <text x="410" y="512" class="svg-small">signal_ts + from_key snapshot</text>
+
+            <rect x="522" y="540" width="166" height="105" class="svg-box-hot"></rect>
+            <text x="605" y="567" text-anchor="middle" class="svg-label">6. 接受与初始化</text>
+            <text x="605" y="591" text-anchor="middle" class="svg-small">risk / balance / exposure</text>
+            <text x="605" y="613" text-anchor="middle" class="svg-small">strategy state</text>
+            <text x="605" y="635" text-anchor="middle" class="svg-small">保存 signal_ts / from_key</text>
+
+            <path d="M605 680 H835" class="svg-arrow-green" marker-end="url(#open-seq-green)"></path>
+            <text x="665" y="667" class="svg-label">7. OrderRequest</text>
+            <path d="M845 725 H1075" class="svg-arrow-green" marker-end="url(#open-seq-green)"></path>
+            <text x="912" y="712" class="svg-label">8. WS / REST 发单</text>
+
+            <path d="M1085 770 H855" class="svg-arrow" marker-end="url(#open-seq-arrow)"></path>
+            <text x="918" y="757" class="svg-label">9. Exchange ack / order update</text>
+            <path d="M835 815 H615" class="svg-arrow" marker-end="url(#open-seq-arrow)"></path>
+            <text x="670" y="802" class="svg-label">10. OrderStatus::New</text>
+
+            <path d="M605 860 H1315" class="svg-arrow-amber" marker-end="url(#open-seq-amber)"></path>
+            <text x="840" y="847" class="svg-label">11. uniform_order(New) / raw update</text>
+            <path d="M125 900 H1315" class="svg-arrow-blue" marker-end="url(#open-seq-blue)"></path>
+            <text x="430" y="887" class="svg-label">persist_manager 独立接收两腿 BBO ring</text>
+
+            <rect x="1238" y="920" width="174" height="78" class="svg-box-store"></rect>
+            <text x="1325" y="946" text-anchor="middle" class="svg-label">12. wait 500ms</text>
+            <text x="1325" y="969" text-anchor="middle" class="svg-small">find_le(update_ts)</text>
+            <text x="1325" y="989" text-anchor="middle" class="svg-small">append BBO → RocksDB</text>
+          </svg>
+          <figcaption>图 2A：当前一次开仓从行情触发到订单落库的完整时序。tlen 查询位于 trade_signal，BBO 回补位于 persist_manager。</figcaption>
+        </figure>
+
+        <span class="code-label">current Rust: BBO event triggers decision</span>
+        <pre><code>if trigger_decisions {
+    ArbDecision::poll_input_updates();
+}
+
+spread_factor.update(
+    open_venue, symbol,
+    hedge_venue, symbol,
+    open_quote.bid, open_quote.ask,
+    hedge_quote.bid, hedge_quote.ask,
+);
+
+trigger_decision(symbol, symbol, open_venue, hedge_venue);</code></pre>
+      </section>
+
+      <section id="recording-timeline">
+        <div class="section-no">03 / Recording timeline</div>
+        <h2>订单记录触发时序</h2>
+        <p class="section-intro">
+          pre-trade 直接 push 持久化消息；携带 from_key 的 uniform order 仅由订单生命周期事件触发，因子更新不触发订单记录。
+        </p>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 1320 790" role="img" aria-labelledby="record-title record-desc">
+            <title id="record-title">当前订单记录时序</title>
+            <desc id="record-desc">从 BBO 触发到订单状态记录的时序，以及订单事件之间的因子更新。</desc>
+            <defs>
+              <marker id="record-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="record-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1f6287"></path>
+              </marker>
+              <marker id="record-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#116149"></path>
+              </marker>
+              <marker id="record-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#8a5b00"></path>
+              </marker>
+            </defs>
+
+            <g>
+              <rect x="35" y="35" width="190" height="54" class="svg-box-data"></rect>
+              <rect x="285" y="35" width="190" height="54" class="svg-box-hot"></rect>
+              <rect x="535" y="35" width="190" height="54" class="svg-box-hot"></rect>
+              <rect x="785" y="35" width="190" height="54" class="svg-box"></rect>
+              <rect x="1035" y="35" width="220" height="54" class="svg-box-store"></rect>
+              <text x="130" y="69" text-anchor="middle" class="svg-title">Market / Factor</text>
+              <text x="380" y="69" text-anchor="middle" class="svg-title">trade_signal</text>
+              <text x="630" y="69" text-anchor="middle" class="svg-title">pre_trade</text>
+              <text x="880" y="69" text-anchor="middle" class="svg-title">Exchange</text>
+              <text x="1145" y="69" text-anchor="middle" class="svg-title">persist_manager</text>
+            </g>
+            <g>
+              <line x1="130" y1="89" x2="130" y2="735" class="svg-lane"></line>
+              <line x1="380" y1="89" x2="380" y2="735" class="svg-lane"></line>
+              <line x1="630" y1="89" x2="630" y2="735" class="svg-lane"></line>
+              <line x1="880" y1="89" x2="880" y2="735" class="svg-lane"></line>
+              <line x1="1145" y1="89" x2="1145" y2="735" class="svg-lane"></line>
+            </g>
+
+            <path d="M130 135 H370" class="svg-arrow-blue" marker-end="url(#record-blue)"></path>
+            <text x="185" y="124" class="svg-label">BBO trigger @ T0</text>
+            <rect x="298" y="152" width="164" height="76" class="svg-box-data"></rect>
+            <text x="380" y="177" text-anchor="middle" class="svg-label">poll latest caches</text>
+            <text x="380" y="198" text-anchor="middle" class="svg-small">model / vol / factor</text>
+            <text x="380" y="216" text-anchor="middle" class="svg-small">query tlen</text>
+
+            <path d="M380 250 H620" class="svg-arrow-green" marker-end="url(#record-green)"></path>
+            <text x="445" y="239" class="svg-label">push ArbOpen</text>
+            <text x="445" y="270" class="svg-small">from_key = T0 snapshot</text>
+
+            <rect x="548" y="288" width="164" height="66" class="svg-box-hot"></rect>
+            <text x="630" y="314" text-anchor="middle" class="svg-label">save signal_ts</text>
+            <text x="630" y="336" text-anchor="middle" class="svg-label">save from_key once</text>
+
+            <path d="M630 380 H870" class="svg-arrow-green" marker-end="url(#record-green)"></path>
+            <text x="702" y="369" class="svg-label">OrderRequest @ T1</text>
+            <path d="M880 425 H640" class="svg-arrow" marker-end="url(#record-arrow)"></path>
+            <text x="714" y="414" class="svg-label">OrderStatus::New @ T2</text>
+
+            <path d="M630 470 H1135" class="svg-arrow-amber" marker-end="url(#record-amber)"></path>
+            <text x="773" y="459" class="svg-label">uniform_order(New)</text>
+            <rect x="1058" y="488" width="174" height="72" class="svg-box-store"></rect>
+            <text x="1145" y="514" text-anchor="middle" class="svg-label">wait 500ms</text>
+            <text x="1145" y="536" text-anchor="middle" class="svg-small">BBO find_le(T2)</text>
+            <text x="1145" y="553" text-anchor="middle" class="svg-small">write RocksDB</text>
+
+            <path d="M130 515 H370" class="svg-arrow-blue" marker-end="url(#record-blue)"></path>
+            <text x="158" y="502" class="svg-label">F1, F2, F3 ... / tlen 未触发查询</text>
+            <rect x="285" y="536" width="440" height="58" class="svg-box-risk"></rect>
+            <text x="505" y="561" text-anchor="middle" class="svg-title">没有订单状态变化，不产生新的 uniform_order</text>
+            <text x="505" y="582" text-anchor="middle" class="svg-small">这些变化无法从订单记录恢复</text>
+
+            <path d="M880 640 H640" class="svg-arrow" marker-end="url(#record-arrow)"></path>
+            <text x="708" y="629" class="svg-label">Fill / Cancel @ T3</text>
+            <path d="M630 690 H1135" class="svg-arrow-amber" marker-end="url(#record-amber)"></path>
+            <text x="742" y="679" class="svg-label">uniform_order(terminal)</text>
+            <text x="760" y="716" class="svg-small">仍复制开仓保存的 from_key；Cancel 可能只替换 signal_ts</text>
+          </svg>
+          <figcaption>图 3：from_key 只在开仓时保存一次；订单存续期间的连续观测不进入订单事件表。</figcaption>
+        </figure>
+
+        <h3>订单记录中的时间字段</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>当前含义</th><th>对应分析用途</th></tr></thead>
+            <tbody>
+              <tr><td class="nowrap"><code>create_ts</code></td><td>订单首次在本地生成的时间</td><td>作为订单生命周期起点</td></tr>
+              <tr><td><code>update_ts</code></td><td>本次订单/成交回报的交易所事件时间</td><td>BBO 回补的目标时间</td></tr>
+              <tr><td><code>signal_ts</code></td><td>开仓信号时间；主动取消终态可能改成取消触发时间</td><td>执行链路延迟和因子可用性约束</td></tr>
+              <tr><td><code>submit_ts</code></td><td>最近一次向 trade/query engine 发送请求的本地时间</td><td>计算 pre-trade 到发送延迟</td></tr>
+              <tr><td><code>local_ts</code></td><td>回报被本地实质接受的时间</td><td>计算交易所回报到状态更新延迟</td></tr>
+              <tr><td><code>mkt_ts</code></td><td>触发动作时使用的市场时间</td><td>解释信号基于哪一版行情</td></tr>
+              <tr><td><code>recv_ts</code></td><td>pre-trade 发布持久化消息时附加的本地时间</td><td>持久化链路诊断，不作为市场时间</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger">
+          <strong>tlen 记录结论</strong>
+          现有 MM 每次报单都记录报单时 tlen；后续订单事件复用该快照。普通撤单没有撤单时点值，只有 tlen 触发撤单会再次查询并记录触发值。
+        </div>
+
+        <span class="code-label">current Rust: open snapshot is reused by later events</span>
+        <pre><code>// 收到 ArbOpen 时只保存一次
+state.signal_ts = input.create_ts;
+state.from_key = input.from_key.into_owned();
+
+// New / Terminal / Trade 事件都从 open_state 复制同一份 from_key
+let ctx = self.uniform_open_publish_ctx();
+publish_uniform_terminal_order(order_update, order, previous_qty, &ctx, ...);</code></pre>
+      </section>
+
+      <section id="bbo-backfill">
+        <div class="section-no">04 / BBO sampling</div>
+        <h2>BBO 触发采样与左向回补</h2>
+        <p class="section-intro">
+          订单记录保存构成价差的两腿 BBO，不固化单一价差值；ask-bid、bid-ask 和 mid spread 均由原始 BBO 重算。
+        </p>
+
+        <div class="split">
+          <div class="panel">
+            <h3>触发采样</h3>
+            <p><span class="inline-code">from_key</span> 保存 trade_signal 决策时的 open_bid/open_ask/hedge_bid/hedge_ask。</p>
+            <p>用途：定位交易信号使用的市场输入。</p>
+          </div>
+          <div class="panel">
+            <h3>回溯采样</h3>
+            <p>persist manager 根据订单 <span class="inline-code">update_ts</span>，回看两腿 BBO ring。</p>
+            <p>含义：订单状态变化发生时，交易所时间轴上的市场状态。</p>
+          </div>
+        </div>
+
+        <figure class="diagram medium">
+          <svg viewBox="0 0 1120 500" role="img" aria-labelledby="bbo-title bbo-desc">
+            <title id="bbo-title">BBO 左向回补算法</title>
+            <desc id="bbo-desc">对 open 和 hedge 两腿分别选择不晚于订单更新时间的最新 BBO。</desc>
+            <defs>
+              <marker id="bbo-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+            </defs>
+
+            <text x="40" y="58" class="svg-title">Open venue BBO ring</text>
+            <line x1="215" y1="95" x2="1035" y2="95" class="svg-time" marker-end="url(#bbo-arrow)"></line>
+            <circle cx="330" cy="95" r="9" class="svg-point"></circle>
+            <circle cx="610" cy="95" r="11" class="svg-point-order"></circle>
+            <circle cx="910" cy="95" r="9" class="svg-point-miss"></circle>
+            <line x1="740" y1="55" x2="740" y2="410" class="svg-arrow-red" stroke-dasharray="6 5"></line>
+            <text x="305" y="130" class="svg-label">q1: tp=100</text>
+            <text x="577" y="130" class="svg-label">q2: tp=180</text>
+            <text x="878" y="130" class="svg-label">q3: tp=230</text>
+
+            <text x="40" y="215" class="svg-title">Hedge venue BBO ring</text>
+            <line x1="215" y1="252" x2="1035" y2="252" class="svg-time" marker-end="url(#bbo-arrow)"></line>
+            <circle cx="480" cy="252" r="11" class="svg-point-order"></circle>
+            <circle cx="860" cy="252" r="9" class="svg-point-miss"></circle>
+            <text x="445" y="287" class="svg-label">h1: tp=150</text>
+            <text x="826" y="287" class="svg-label">h2: tp=220</text>
+
+            <rect x="655" y="330" width="170" height="72" class="svg-box-risk"></rect>
+            <text x="740" y="358" text-anchor="middle" class="svg-title">Order update</text>
+            <text x="740" y="383" text-anchor="middle" class="svg-label">update_ts = 200</text>
+
+            <path d="M725 330 C695 295 650 245 615 115" class="svg-arrow-green" marker-end="url(#bbo-arrow)"></path>
+            <path d="M690 345 C620 340 540 310 485 270" class="svg-arrow-green" marker-end="url(#bbo-arrow)"></path>
+            <text x="100" y="365" class="svg-title">选择结果</text>
+            <text x="100" y="394" class="svg-label">open = q2，因为 180 &lt;= 200</text>
+            <text x="100" y="420" class="svg-label">hedge = h1，因为 150 &lt;= 200</text>
+            <text x="100" y="455" class="svg-small">q3 和 h2 都在订单事件之后，严格禁止使用</text>
+          </svg>
+          <figcaption>图 4：回补采用 left as-of，只选择不晚于订单 update_ts 的最新样本。</figcaption>
+        </figure>
+
+        <h3>回补执行步骤</h3>
+        <div class="steps">
+          <div class="step"><div class="step-title">persist manager 独立订阅两腿 BBO</div><div class="step-copy">按 venue + normalized symbol 分别维护环形缓存。</div></div>
+          <div class="step"><div class="step-title">收到 uniform order 后暂存</div><div class="step-copy">默认等待 500ms，让可能稍晚到达的 BBO 有机会先进入 ring。</div></div>
+          <div class="step"><div class="step-title">分别执行 find_le(update_ts)</div><div class="step-copy">open 与 hedge 各取一个 exchange timestamp 不大于 update_ts 的最新样本。</div></div>
+          <div class="step"><div class="step-title">追加十个 BBO 字段</div><div class="step-copy">两腿各保存 tp、bid、bid_qty、ask、ask_qty，然后写入 RocksDB。</div></div>
+        </div>
+
+        <span class="code-label">current Rust: retrospective lookup</span>
+        <pre><code>let open = rings
+    .get(&(open_venue, symbol.clone()))
+    .and_then(|ring| ring.find_le(order.update_ts));
+
+let hedge = rings
+    .get(&(hedge_venue, symbol))
+    .and_then(|ring| ring.find_le(order.update_ts));
+
+// find_le returns the last sample satisfying:
+// sample.exchange_ts &lt;= order.update_ts</code></pre>
+
+        <div class="callout keep">
+          <strong>迁移约束：回补算法保持不变</strong>
+          扩展字段包括 open_bbo_age_us、hedge_bbo_age_us 和两腿 found 标记，用于标识样本陈旧度和缺腿状态，不改变样本选择结果。
+        </div>
+
+        <div class="callout warn">
+          <strong>回补边界</strong>
+          ring 按条数限制容量，乱序样本直接丢弃，且没有最大陈旧度检查；命中历史样本不代表该样本满足新鲜度要求。
+        </div>
+      </section>
+
+      <section id="tlen-migration">
+        <div class="section-no">05 / tlen execution</div>
+        <h2>tlen 获取与执行迁移至 pre-trade</h2>
+        <p class="section-intro">
+          pre-trade 在持有候选订单和活动订单状态的同一进程内读取 tlen，并直接完成开仓 gate、活动订单监控和撤单执行。
+        </p>
+
+        <div class="thesis">
+          当前 tlen 采用请求-响应模型，记录覆盖完全跟随查询时点。每增加一个取值时点都要重新发起请求；迁移只改变获取位置和执行归属，稀疏记录方式保持不变。
+        </div>
+
+        <figure class="diagram medium">
+          <svg viewBox="0 0 1180 650" role="img" aria-labelledby="tlen-compare-title tlen-compare-desc">
+            <title id="tlen-compare-title">tlen 获取与记录覆盖迁移前后对比</title>
+            <desc id="tlen-compare-desc">迁移前只有报单和 tlen 触发撤单会查询当前 tlen；迁移后 pre-trade 本地持有最新 tlen，并在相同的稀疏订单事件处读取。</desc>
+            <defs>
+              <marker id="tlen-compare-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+            </defs>
+
+            <rect x="25" y="25" width="1130" height="270" class="svg-box"></rect>
+            <text x="55" y="62" class="svg-title">迁移前：查询发生时才得到当前 tlen</text>
+            <text x="55" y="90" class="svg-small">tlen request / response</text>
+            <line x1="205" y1="160" x2="1100" y2="160" class="svg-time" marker-end="url(#tlen-compare-arrow)"></line>
+
+            <line x1="310" y1="95" x2="310" y2="148" class="svg-arrow-dash"></line>
+            <line x1="990" y1="95" x2="990" y2="148" class="svg-arrow-dash"></line>
+            <circle cx="310" cy="160" r="11" class="svg-point-order"></circle>
+            <circle cx="510" cy="160" r="9" class="svg-point"></circle>
+            <circle cx="740" cy="160" r="10" class="svg-point-miss"></circle>
+            <circle cx="990" cy="160" r="11" class="svg-point-order"></circle>
+
+            <text x="310" y="132" text-anchor="middle" class="svg-label">报单</text>
+            <text x="510" y="132" text-anchor="middle" class="svg-label">New / Fill</text>
+            <text x="740" y="132" text-anchor="middle" class="svg-label">普通撤单</text>
+            <text x="990" y="132" text-anchor="middle" class="svg-label">tlen 撤单</text>
+            <text x="310" y="198" text-anchor="middle" class="svg-small">请求并记录报单时 tlen</text>
+            <text x="510" y="198" text-anchor="middle" class="svg-small">复用报单快照</text>
+            <text x="740" y="198" text-anchor="middle" class="svg-small">无撤单时点 tlen</text>
+            <text x="990" y="198" text-anchor="middle" class="svg-small">触发查询并记录当前值</text>
+
+            <rect x="235" y="225" width="830" height="42" class="svg-box-risk"></rect>
+            <text x="650" y="252" text-anchor="middle" class="svg-label">记录覆盖由 query 是否发生决定；订单存续期的中间 tlen 不形成记录</text>
+
+            <rect x="25" y="325" width="1130" height="295" class="svg-box-hot"></rect>
+            <text x="55" y="362" class="svg-title">迁移后：pre-trade 本地持有最新 tlen</text>
+            <rect x="205" y="390" width="895" height="42" class="svg-box-data"></rect>
+            <text x="652" y="417" text-anchor="middle" class="svg-label">TlenBook：随深度推送更新，仅保留最新内存状态</text>
+            <line x1="205" y1="490" x2="1100" y2="490" class="svg-time" marker-end="url(#tlen-compare-arrow)"></line>
+
+            <circle cx="310" cy="490" r="11" class="svg-point-order"></circle>
+            <circle cx="510" cy="490" r="9" class="svg-point"></circle>
+            <circle cx="740" cy="490" r="11" class="svg-point-order"></circle>
+            <circle cx="990" cy="490" r="11" class="svg-point-order"></circle>
+            <text x="310" y="468" text-anchor="middle" class="svg-label">报单</text>
+            <text x="510" y="468" text-anchor="middle" class="svg-label">订单存续期</text>
+            <text x="740" y="468" text-anchor="middle" class="svg-label">普通撤单</text>
+            <text x="990" y="468" text-anchor="middle" class="svg-label">tlen 撤单</text>
+            <text x="310" y="528" text-anchor="middle" class="svg-small">本地读取并记录</text>
+            <text x="510" y="528" text-anchor="middle" class="svg-small">只更新内存</text>
+            <text x="740" y="528" text-anchor="middle" class="svg-small">本地读取撤单时点值</text>
+            <text x="990" y="528" text-anchor="middle" class="svg-small">本地阈值状态</text>
+
+            <rect x="235" y="555" width="830" height="42" class="svg-box-store"></rect>
+            <text x="650" y="582" text-anchor="middle" class="svg-label">存储频率不变：报单、撤单和关键订单事件处稀疏落点</text>
+          </svg>
+          <figcaption>图 5：迁移前的报单记录已有 tlen；普通撤单只有报单快照，tlen 触发撤单才有触发时点值。迁移后各类撤单都能从 pre-trade 本地状态读取当前值。</figcaption>
+        </figure>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>记录时点</th><th>迁移前</th><th>迁移后</th></tr></thead>
+            <tbody>
+              <tr><td>每次报单</td><td>请求 tlen，并写入报单 from_key</td><td>从 pre-trade 本地状态读取并记录</td></tr>
+              <tr><td>订单存续期盘口变化</td><td>没有查询，不新增记录</td><td>只更新 pre-trade 内存，不新增记录</td></tr>
+              <tr><td>普通撤单</td><td>保留报单时 tlen，没有撤单时点值</td><td>撤单处理时直接读取本地当前值</td></tr>
+              <tr><td>tlen 触发撤单</td><td>触发查询，因此能够记录触发时点值</td><td>直接使用本地阈值状态并稀疏记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>迁移前：通过消息链路获取 tlen</h3>
+        <figure class="diagram">
+          <svg viewBox="0 0 1280 520" role="img" aria-labelledby="tlen-current-title tlen-current-desc">
+            <title id="tlen-current-title">迁移前的 tlen 获取与撤单链路</title>
+            <desc id="tlen-current-desc">订单状态位于 pre-trade，tlen 判断位于 trade_signal，撤单判断通过多段消息推送完成。</desc>
+            <defs>
+              <marker id="tc-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="tc-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#9b3b34"></path>
+              </marker>
+            </defs>
+
+            <text x="30" y="42" class="svg-title">开仓</text>
+            <rect x="110" y="70" width="220" height="90" class="svg-box-hot"></rect>
+            <text x="220" y="105" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="220" y="132" text-anchor="middle" class="svg-label">生成候选价格</text>
+            <rect x="450" y="70" width="220" height="90" class="svg-box-data"></rect>
+            <text x="560" y="105" text-anchor="middle" class="svg-title">depth_pub</text>
+            <text x="560" y="132" text-anchor="middle" class="svg-label">query exact tick tlen</text>
+            <rect x="790" y="70" width="220" height="90" class="svg-box-hot"></rect>
+            <text x="900" y="105" text-anchor="middle" class="svg-title">pre_trade</text>
+            <text x="900" y="132" text-anchor="middle" class="svg-label">接收已过滤 ArbOpen</text>
+            <path d="M330 105 H440" class="svg-arrow-dash" marker-end="url(#tc-arrow)"></path>
+            <path d="M450 140 H340" class="svg-arrow-dash" marker-end="url(#tc-arrow)"></path>
+            <path d="M330 140 C540 190 690 190 790 140" class="svg-arrow-green" marker-end="url(#tc-arrow)"></path>
+            <text x="470" y="196" class="svg-small">tlen 被写入 from_key，只保存这一刻</text>
+
+            <line x1="30" y1="235" x2="1240" y2="235" stroke="#d8dfda"></line>
+            <text x="30" y="280" class="svg-title">基于 tlen 的活动订单撤单</text>
+            <rect x="70" y="310" width="210" height="100" class="svg-box-hot"></rect>
+            <text x="175" y="343" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="175" y="369" text-anchor="middle" class="svg-label">周期 CancelTrigger</text>
+            <rect x="360" y="310" width="210" height="100" class="svg-box-hot"></rect>
+            <text x="465" y="343" text-anchor="middle" class="svg-title">pre_trade</text>
+            <text x="465" y="369" text-anchor="middle" class="svg-label">收集活动订单候选</text>
+            <rect x="650" y="310" width="210" height="100" class="svg-box-hot"></rect>
+            <text x="755" y="343" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="755" y="369" text-anchor="middle" class="svg-label">查询 tlen + 比阈值</text>
+            <rect x="940" y="310" width="210" height="100" class="svg-box-hot"></rect>
+            <text x="1045" y="343" text-anchor="middle" class="svg-title">pre_trade</text>
+            <text x="1045" y="369" text-anchor="middle" class="svg-label">执行 targeted cancel</text>
+            <path d="M280 360 H350" class="svg-arrow-red" marker-end="url(#tc-red)"></path>
+            <path d="M570 360 H640" class="svg-arrow-red" marker-end="url(#tc-red)"></path>
+            <path d="M860 360 H930" class="svg-arrow-red" marker-end="url(#tc-red)"></path>
+            <text x="285" y="345" class="svg-small">push</text>
+            <text x="575" y="345" class="svg-small">push backward</text>
+            <text x="865" y="345" class="svg-small">push cancel</text>
+            <rect x="330" y="447" width="560" height="48" class="svg-box-risk"></rect>
+            <text x="610" y="477" text-anchor="middle" class="svg-label">活动订单上下文与 tlen 分属两个进程，撤单判断经过三段 push</text>
+          </svg>
+          <figcaption>图 5A：下半段只表示 tlen 触发撤单。pre-trade 与 trade_signal 通过消息推送传递活动订单和撤单结果。</figcaption>
+        </figure>
+
+        <h3>迁移后：pre-trade 本地读取 tlen</h3>
+        <figure class="diagram">
+          <svg viewBox="0 0 1280 540" role="img" aria-labelledby="tlen-new-title tlen-new-desc">
+            <title id="tlen-new-title">修改后的 pre-trade tlen 架构</title>
+            <desc id="tlen-new-desc">深度增量推送给 pre-trade，pre-trade 在本地维护 tlen 并执行开仓和撤单。</desc>
+            <defs>
+              <marker id="tn-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="tn-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#116149"></path>
+              </marker>
+              <marker id="tn-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1f6287"></path>
+              </marker>
+              <marker id="tn-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#8a5b00"></path>
+              </marker>
+            </defs>
+
+            <rect x="40" y="70" width="220" height="100" class="svg-box-data"></rect>
+            <text x="150" y="105" text-anchor="middle" class="svg-title">dat_pbs / depth_pub</text>
+            <text x="150" y="132" text-anchor="middle" class="svg-label">incremental push</text>
+            <text x="150" y="153" text-anchor="middle" class="svg-small">book sequence + event ts</text>
+
+            <rect x="360" y="55" width="250" height="130" class="svg-box-hot"></rect>
+            <text x="485" y="91" text-anchor="middle" class="svg-title">pre_trade::TlenBook</text>
+            <text x="485" y="118" text-anchor="middle" class="svg-label">symbol + side + price_tick</text>
+            <text x="485" y="142" text-anchor="middle" class="svg-small">valid / empty / visible qty</text>
+            <text x="485" y="163" text-anchor="middle" class="svg-small">latest exact-tick state</text>
+            <path d="M260 120 H350" class="svg-arrow-blue" marker-end="url(#tn-blue)"></path>
+
+            <rect x="40" y="280" width="220" height="100" class="svg-box-hot"></rect>
+            <text x="150" y="315" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="150" y="342" text-anchor="middle" class="svg-label">price / qty candidate</text>
+            <text x="150" y="363" text-anchor="middle" class="svg-small">signal intent only</text>
+
+            <rect x="360" y="255" width="250" height="150" class="svg-box-hot"></rect>
+            <text x="485" y="290" text-anchor="middle" class="svg-title">pre_trade decision</text>
+            <text x="485" y="318" text-anchor="middle" class="svg-label">1. current tlen open gate</text>
+            <text x="485" y="344" text-anchor="middle" class="svg-label">2. register watch first</text>
+            <text x="485" y="370" text-anchor="middle" class="svg-label">3. submit order second</text>
+            <text x="485" y="392" text-anchor="middle" class="svg-small">single process owns state + action</text>
+            <path d="M260 330 H350" class="svg-arrow-green" marker-end="url(#tn-green)"></path>
+            <path d="M485 185 V245" class="svg-arrow-green" marker-end="url(#tn-green)"></path>
+
+            <rect x="725" y="55" width="240" height="130" class="svg-box-hot"></rect>
+            <text x="845" y="90" text-anchor="middle" class="svg-title">ActiveOrderWatch</text>
+            <text x="845" y="118" text-anchor="middle" class="svg-label">strategy / order / threshold</text>
+            <text x="845" y="143" text-anchor="middle" class="svg-small">unregister on terminal</text>
+            <path d="M610 300 C670 280 690 175 725 145" class="svg-arrow-green" marker-end="url(#tn-green)"></path>
+            <path d="M610 120 H715" class="svg-arrow-green" marker-end="url(#tn-green)"></path>
+            <text x="626" y="107" class="svg-small">tlen changed</text>
+
+            <rect x="725" y="255" width="240" height="150" class="svg-box-risk"></rect>
+            <text x="845" y="290" text-anchor="middle" class="svg-title">Local cancel decision</text>
+            <text x="845" y="318" text-anchor="middle" class="svg-label">threshold crossing</text>
+            <text x="845" y="344" text-anchor="middle" class="svg-label">or configured invalid policy</text>
+            <text x="845" y="370" text-anchor="middle" class="svg-small">no trade_signal round trip</text>
+            <path d="M845 185 V245" class="svg-arrow-red" marker-end="url(#tn-arrow)"></path>
+
+            <rect x="1055" y="255" width="185" height="150" class="svg-box-hot"></rect>
+            <text x="1148" y="298" text-anchor="middle" class="svg-title">trade_engine</text>
+            <text x="1148" y="326" text-anchor="middle" class="svg-label">order / cancel</text>
+            <text x="1148" y="352" text-anchor="middle" class="svg-small">normal order_reqs</text>
+            <path d="M610 350 H1045" class="svg-arrow-green" marker-end="url(#tn-green)"></path>
+            <path d="M965 330 H1045" class="svg-arrow-red" marker-end="url(#tn-arrow)"></path>
+
+            <rect x="360" y="455" width="605" height="58" class="svg-box-store"></rect>
+            <text x="663" y="480" text-anchor="middle" class="svg-title">Existing sparse order record</text>
+            <text x="663" y="501" text-anchor="middle" class="svg-small">attach current tlen at open / cancel / order event</text>
+            <path d="M485 405 V445" class="svg-arrow-amber" marker-end="url(#tn-amber)"></path>
+            <path d="M845 405 V445" class="svg-arrow-amber" marker-end="url(#tn-amber)"></path>
+          </svg>
+          <figcaption>图 6：pre-trade 同时拥有活动订单状态、tlen 当前值和执行权；持久化仍按关键动作稀疏记录。</figcaption>
+        </figure>
+
+        <div class="callout keep">
+          <strong>记录方式保持不变</strong>
+          tlen 只在开仓判断、阈值穿越、撤单动作和订单状态事件处记录；pre-trade 内存中的中间变化不形成定频序列。
+        </div>
+
+        <div class="callout info">
+          <strong>异步 tlen event 是可选扩展</strong>
+          基线迁移不产生独立 async tlen event，只在既有稀疏订单记录中附加当前值。研究或监控需要更细的阈值穿越与状态变化时，可增加异步事件流；该事件流与交易执行解耦。
+        </div>
+      </section>
+
+      <section id="factor-pipeline">
+        <div class="section-no">06 / Feature recording</div>
+        <h2>定频因子独立记录到 ClickHouse</h2>
+        <p class="section-intro">
+          baseline、fusion、model 和 vol 已经通过 IPC 持续产生数据。当前 trade_signal 只保存每个 symbol 的最新值，并在交易信号出现时抽取其中少数字段写入 from_key。
+        </p>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 1320 570" role="img" aria-labelledby="factor-title factor-desc">
+            <title id="factor-title">新的因子记录架构</title>
+            <desc id="factor-desc">因子 IPC 同时供在线策略和独立 recorder 消费，recorder 经内存聚合和本地 outbox 后批量写入 ClickHouse。</desc>
+            <defs>
+              <marker id="factor-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="factor-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1f6287"></path>
+              </marker>
+              <marker id="factor-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#116149"></path>
+              </marker>
+              <marker id="factor-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#8a5b00"></path>
+              </marker>
+            </defs>
+
+            <text x="35" y="35" class="svg-small">定频生产者</text>
+            <rect x="35" y="60" width="200" height="88" class="svg-box-data"></rect>
+            <text x="135" y="91" text-anchor="middle" class="svg-title">tradeflow baseline</text>
+            <text x="135" y="117" text-anchor="middle" class="svg-label">5s / 60s</text>
+            <rect x="35" y="175" width="200" height="88" class="svg-box-violet"></rect>
+            <text x="135" y="206" text-anchor="middle" class="svg-title">fusion factor</text>
+            <text x="135" y="232" text-anchor="middle" class="svg-label">factor plan vector</text>
+            <rect x="35" y="290" width="200" height="88" class="svg-box-violet"></rect>
+            <text x="135" y="321" text-anchor="middle" class="svg-title">model output</text>
+            <text x="135" y="347" text-anchor="middle" class="svg-label">score / quantile</text>
+            <rect x="35" y="405" width="200" height="88" class="svg-box-data"></rect>
+            <text x="135" y="436" text-anchor="middle" class="svg-title">vol</text>
+            <text x="135" y="462" text-anchor="middle" class="svg-label">value + ready</text>
+
+            <rect x="320" y="185" width="180" height="170" class="svg-box-data"></rect>
+            <text x="410" y="220" text-anchor="middle" class="svg-title">IPC</text>
+            <text x="410" y="250" text-anchor="middle" class="svg-label">push streams</text>
+            <text x="410" y="279" text-anchor="middle" class="svg-small">source timestamp</text>
+            <text x="410" y="301" text-anchor="middle" class="svg-small">schema / sequence</text>
+            <text x="410" y="323" text-anchor="middle" class="svg-small">ready status</text>
+
+            <path d="M235 104 H280 Q320 104 320 205" class="svg-arrow-blue" marker-end="url(#factor-blue)"></path>
+            <path d="M235 219 H310" class="svg-arrow-blue" marker-end="url(#factor-blue)"></path>
+            <path d="M235 334 H310" class="svg-arrow-blue" marker-end="url(#factor-blue)"></path>
+            <path d="M235 449 H280 Q320 449 320 335" class="svg-arrow-blue" marker-end="url(#factor-blue)"></path>
+
+            <rect x="590" y="55" width="220" height="110" class="svg-box-hot"></rect>
+            <text x="700" y="91" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="700" y="118" text-anchor="middle" class="svg-label">latest cache for execution</text>
+            <text x="700" y="141" text-anchor="middle" class="svg-small">not a persistence owner</text>
+            <path d="M500 225 C545 180 550 115 580 110" class="svg-arrow-green" marker-end="url(#factor-green)"></path>
+
+            <rect x="590" y="220" width="220" height="110" class="svg-box-store"></rect>
+            <text x="700" y="256" text-anchor="middle" class="svg-title">feature_recorder</text>
+            <text x="700" y="283" text-anchor="middle" class="svg-label">normalize + validate</text>
+            <text x="700" y="306" text-anchor="middle" class="svg-small">independent process</text>
+            <path d="M500 275 H580" class="svg-arrow-amber" marker-end="url(#factor-amber)"></path>
+
+            <rect x="590" y="385" width="220" height="130" class="svg-box-store"></rect>
+            <text x="700" y="420" text-anchor="middle" class="svg-title">memory aggregator</text>
+            <text x="700" y="448" text-anchor="middle" class="svg-label">venue + symbol + bucket</text>
+            <text x="700" y="474" text-anchor="middle" class="svg-small">watermark + source mask</text>
+            <text x="700" y="495" text-anchor="middle" class="svg-small">late row becomes new version</text>
+            <path d="M700 330 V375" class="svg-arrow-amber" marker-end="url(#factor-amber)"></path>
+
+            <rect x="900" y="385" width="180" height="130" class="svg-box-store"></rect>
+            <text x="990" y="420" text-anchor="middle" class="svg-title">local outbox</text>
+            <text x="990" y="448" text-anchor="middle" class="svg-label">durable retry buffer</text>
+            <text x="990" y="474" text-anchor="middle" class="svg-small">temporary / replay</text>
+            <text x="990" y="495" text-anchor="middle" class="svg-small">not long-term storage</text>
+            <path d="M810 450 H890" class="svg-arrow-amber" marker-end="url(#factor-amber)"></path>
+
+            <rect x="1170" y="220" width="115" height="295" class="svg-box-data"></rect>
+            <text x="1228" y="258" text-anchor="middle" class="svg-title">ClickHouse</text>
+            <text x="1228" y="288" text-anchor="middle" class="svg-small">raw audit</text>
+            <text x="1228" y="312" text-anchor="middle" class="svg-small">wide 5s</text>
+            <text x="1228" y="336" text-anchor="middle" class="svg-small">wide 60s</text>
+            <text x="1228" y="360" text-anchor="middle" class="svg-small">model</text>
+            <text x="1228" y="384" text-anchor="middle" class="svg-small">vol</text>
+            <text x="1228" y="430" text-anchor="middle" class="svg-label">post-market</text>
+            <text x="1228" y="454" text-anchor="middle" class="svg-small">factor query</text>
+            <text x="1228" y="478" text-anchor="middle" class="svg-small">aligned view</text>
+            <path d="M1080 450 H1160" class="svg-arrow-blue" marker-end="url(#factor-blue)"></path>
+          </svg>
+          <figcaption>图 7：定频 IPC 同时服务在线策略和 feature_recorder；ClickHouse 只接收定频数据，写入不进入交易热路径。</figcaption>
+        </figure>
+
+        <h3>内存聚合按 watermark 封桶</h3>
+        <figure class="diagram medium">
+          <svg viewBox="0 0 1080 430" role="img" aria-labelledby="agg-title agg-desc">
+            <title id="agg-title">一个 5 秒桶的聚合与迟到处理</title>
+            <desc id="agg-desc">不同来源在不同时间到达，聚合器在 watermark 后封桶，迟到数据作为新版本写入。</desc>
+            <defs>
+              <marker id="agg-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+            </defs>
+            <line x1="120" y1="205" x2="1020" y2="205" class="svg-time" marker-end="url(#agg-arrow)"></line>
+            <text x="55" y="210" class="svg-label">arrival</text>
+            <circle cx="245" cy="205" r="10" class="svg-point"></circle>
+            <circle cx="385" cy="205" r="10" fill="#674c7c" stroke="#fff" stroke-width="2"></circle>
+            <circle cx="525" cy="205" r="10" fill="#674c7c" stroke="#fff" stroke-width="2"></circle>
+            <circle cx="650" cy="205" r="10" class="svg-point"></circle>
+            <line x1="780" y1="105" x2="780" y2="305" class="svg-arrow-amber" stroke-dasharray="6 5"></line>
+            <circle cx="930" cy="205" r="10" class="svg-point-miss"></circle>
+            <text x="207" y="166" class="svg-title">baseline</text>
+            <text x="365" y="250" class="svg-title">fusion</text>
+            <text x="502" y="166" class="svg-title">model</text>
+            <text x="635" y="250" class="svg-title">vol</text>
+            <text x="746" y="88" class="svg-title">watermark</text>
+            <text x="729" y="331" class="svg-label">seal version=1</text>
+            <text x="888" y="166" class="svg-title">late correction</text>
+            <text x="881" y="250" class="svg-label">write version=2</text>
+            <rect x="180" y="350" width="720" height="52" class="svg-box-store"></rect>
+            <text x="540" y="382" text-anchor="middle" class="svg-label">每一行保留 source_mask、每个来源的 event_ts / available_ts / ready</text>
+          </svg>
+          <figcaption>图 8：不完整桶也要在 watermark 后落盘并标记缺失，不能无限等待；迟到数据通过版本行修正。</figcaption>
+        </figure>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>含义</th><th>记录目的</th></tr></thead>
+            <tbody>
+              <tr><td><code>bucket_ts</code></td><td>这组值描述哪个市场时间桶</td><td>研究横截面和 bar 对齐</td></tr>
+              <tr><td><code>source_event_ts</code></td><td>每个来源自己声明的观测时间</td><td>识别不同来源是否真的属于同一桶</td></tr>
+              <tr><td><code>source_available_ts</code></td><td>该值最早什么时候可供策略使用</td><td>防止回测未来数据</td></tr>
+              <tr><td><code>ingest_ts</code></td><td>recorder 实际接收时间</td><td>监控 IPC 延迟、迟到和积压</td></tr>
+              <tr><td><code>schema_version</code></td><td>因子 ID 到列名的版本</td><td>factor plan 变更后仍能解释历史值</td></tr>
+              <tr><td><code>source_mask / ready</code></td><td>哪些来源到齐、哪些值已 warm up</td><td>区分缺失、未就绪和数值 0</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger">
+          <strong>时间单位契约必须先统一</strong>
+          trade flow 生成 bar.start_ms，fusion 当前又按微秒处理 msg.ts；迁移前必须用真实 IPC 样本确认并固化单位，否则 factor/model 时间存在 1000 倍偏差。
+        </div>
+
+        <div class="callout warn">
+          <strong>fusion 增加 schema ID</strong>
+          当前 FeatureMsg 只有 feature_dim 和位置向量，没有 factor ID。缺少 schema_id 或严格版本化的 factor registry 时，位置向量无法稳定映射为具名列。
+        </div>
+      </section>
+
+      <section id="clickhouse">
+        <div class="section-no">07 / Analytical storage</div>
+        <h2>ClickHouse 承担因子列存与盘后对齐</h2>
+        <p class="section-intro">
+          ClickHouse 长期表只保存定频数据：一行对应一个时间切片，一列对应一个具名变量。
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>研究任务</th><th>from_key / RocksDB</th><th>ClickHouse</th></tr></thead>
+            <tbody>
+              <tr><td>查询 BTC 三个月的 vol 与 model_score</td><td>扫描 value，反序列化整行，再解析字符串</td><td>只读取 ts、symbol、vol、model_score 四列</td></tr>
+              <tr><td>增加一个 fusion factor</td><td>修改字符串协议和所有解析脚本</td><td>ADD COLUMN，并登记 schema version</td></tr>
+              <tr><td>删除或停用因子</td><td>历史字符串语义难以管理</td><td>registry 标记 deprecated；历史列保留用于复现</td></tr>
+              <tr><td>订单前最近一次因子</td><td>应用代码手写扫描和时间比较</td><td>ASOF JOIN / argMax 查询</td></tr>
+              <tr><td>按日、symbol、venue 聚合</td><td>大量 KV 解码和自定义程序</td><td>SQL 聚合、排序键和分区裁剪</td></tr>
+              <tr><td>单个订单的低延迟点查</td><td>RocksDB 更合适</td><td>不是 ClickHouse 的主要目标</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>宽表结构</h3>
+        <span class="code-label">ClickHouse DDL</span>
+        <pre><code>CREATE TABLE research.factor_snapshot_5s
+(
+    bucket_ts             DateTime64(3, 'UTC') CODEC(Delta, ZSTD),
+    snapshot_available_ts DateTime64(6, 'UTC') CODEC(Delta, ZSTD),
+    venue                 LowCardinality(String),
+    symbol                LowCardinality(String),
+    schema_version        UInt32,
+    ingest_version        UInt64,
+
+    tradeflow_close       Float64,
+    fusion_baseline_118   Float64,
+    model_score           Float64,
+    model_quantile        Float64,
+    vol                   Float64,
+
+    tradeflow_ready       UInt8,
+    fusion_ready          UInt8,
+    model_ready           UInt8,
+    vol_ready             UInt8,
+    source_mask           UInt8
+)
+ENGINE = ReplacingMergeTree(ingest_version)
+PARTITION BY toYYYYMM(bucket_ts)
+ORDER BY (venue, symbol, bucket_ts, schema_version);</code></pre>
+
+        <p>
+          数值列与 ready 列成对保存。这样 <span class="inline-code">0</span> 可以继续表示真实数值 0，
+          <span class="inline-code">ready=0</span> 表示缺失或未 warm up，避免依赖 Nullable 带来的额外语义和开销。
+        </p>
+
+        <span class="code-label">add one factor</span>
+        <pre><code>ALTER TABLE research.factor_snapshot_5s
+    ADD COLUMN IF NOT EXISTS fusion_new_factor Float64 DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS fusion_new_factor_ready UInt8 DEFAULT 0;</code></pre>
+
+        <h3>盘后无未来对齐</h3>
+        <p>
+          订单窗口盘后从 RocksDB 导出为临时输入，再与 ClickHouse 定频因子表做 left as-of 对齐；订单事实仍以 RocksDB 为长期存储。
+        </p>
+        <span class="code-label">execution-time ASOF JOIN</span>
+        <pre><code>SELECT
+    o.client_order_id,
+    o.symbol,
+    o.signal_ts,
+    f.bucket_ts,
+    f.model_score,
+    f.vol
+FROM research.order_event_input AS o
+ASOF LEFT JOIN research.factor_snapshot_5s AS f
+    ON  o.venue = f.venue
+    AND o.symbol = f.symbol
+    AND f.snapshot_available_ts &lt;= o.signal_ts
+WHERE o.trade_date = '2026-08-04';</code></pre>
+
+        <div class="callout info">
+          <strong>执行复现使用 available_ts</strong>
+          bucket_ts 表示“数据描述哪个市场时间”；available_ts 表示“策略什么时候真的能看到它”。执行复现必须满足 available_ts 不晚于 signal_ts，否则会把事后才计算出的模型结果带回过去。
+        </div>
+
+        <h3>可复用的现有能力</h3>
+        <div class="split">
+          <div class="panel">
+            <h4>宽表和自动加列</h4>
+            <p><code>db_fusion_factor_replay</code> 已创建 ReplacingMergeTree 宽表，并为配置中的具名因子执行 ADD COLUMN。</p>
+          </div>
+          <div class="panel">
+            <h4>批量 RowBinary writer</h4>
+            <p><code>tardis_ipc_replay</code> 已有有界队列、独立写线程、batch_rows 和 flush interval，可以抽成公共库。</p>
+          </div>
+        </div>
+
+        <div class="callout keep">
+          <strong>现有表形态复用</strong>
+          live recorder 与现有 replay 表共用列命名和 RowBinary 编码，跨 venue 查询由 UNION VIEW 提供，避免形成两套不兼容的 schema。
+        </div>
+
+        <p>
+          ClickHouse 列存只读取查询涉及的列，MergeTree 使用排序键和分区减少扫描，ASOF JOIN 支持“不晚于事件时间的最近记录”。
+          详细依据可见
+          <a href="https://clickhouse.com/resources/engineering/what-is-columnar-storage">列存原理</a>、
+          <a href="https://clickhouse.com/docs/reference/engines/table-engines/mergetree-family/mergetree">MergeTree</a>、
+          <a href="https://clickhouse.com/docs/reference/statements/select/join#asof-join-usage">ASOF JOIN</a> 和
+          <a href="https://clickhouse.com/docs/concepts/best-practices/selecting-an-insert-strategy">批量写入策略</a>。
+        </p>
+      </section>
+
+      <section id="workload">
+        <div class="section-no">08 / Change sizing</div>
+        <h2>大、中、小修改量评估</h2>
+        <p class="section-intro">
+          这里的大小同时考虑代码量、跨进程范围和真实交易风险。修改文件少但会改变撤单行为，仍然属于“大”。
+        </p>
+
+        <div class="key-grid">
+          <div class="key-item">
+            <div class="key-kicker"><span class="size-badge size-s">小</span></div>
+            <div class="key-title">单模块、无行为迁移</div>
+            <div class="key-copy">约 1 至 3 个工程日。主要是字段、监控、局部测试或复用现有组件。</div>
+          </div>
+          <div class="key-item">
+            <div class="key-kicker"><span class="size-badge size-m">中</span></div>
+            <div class="key-title">跨进程或新增契约</div>
+            <div class="key-copy">约 1 至 2 个工程周。需要 IPC、schema、集成测试和故障恢复。</div>
+          </div>
+          <div class="key-item">
+            <div class="key-kicker"><span class="size-badge size-l">大</span></div>
+            <div class="key-title">真实交易语义变化</div>
+            <div class="key-copy">3 个工程周以上，并需要 shadow、灰度、回滚开关和生产观察期。</div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>修改项</th><th>量级</th><th>影响面</th><th>主要工作与风险</th></tr></thead>
+            <tbody>
+              <tr><td>保留 BBO 回补，新增 age/found</td><td><span class="size-badge size-s">小</span></td><td>persist_manager</td><td>字段扩展、二分回看测试、缺腿和陈旧度指标</td></tr>
+              <tr><td>统一 timestamp / factor schema 契约</td><td><span class="size-badge size-m">中</span></td><td>baseline、fusion、model、vol</td><td>修复单位歧义，增加 schema/model version 和兼容解析</td></tr>
+              <tr><td>feature_recorder + 多 IPC 订阅</td><td><span class="size-badge size-m">中</span></td><td>新进程</td><td>订阅管理、序列缺口、source normalization</td></tr>
+              <tr><td>内存桶聚合 + ClickHouse 宽表</td><td><span class="size-badge size-m">中</span></td><td>新进程 + ClickHouse</td><td>可复用已有 RowBinary writer 和自动加列逻辑</td></tr>
+              <tr><td>本地 outbox、重试和幂等</td><td><span class="size-badge size-m">中</span></td><td>feature_recorder</td><td>仅作为 ClickHouse 写入失败时的临时重试缓冲</td></tr>
+              <tr><td>pre-trade 维护 TlenBook shadow</td><td><span class="size-badge size-m">中</span></td><td>pre_trade + depth IPC</td><td>复用/抽取 local_tlen，比较新旧 exact tick 结果</td></tr>
+              <tr><td>开仓 gate 与撤单执行权切换</td><td><span class="size-badge size-l">大</span></td><td>trade_signal + pre_trade</td><td>直接改变订单接受/拒绝/撤单行为，涉及重启恢复和 orphan</td></tr>
+              <tr><td>既有订单事件附加当前 tlen</td><td><span class="size-badge size-s">小</span></td><td>pre_trade + persistence</td><td>复用报单、撤单等稀疏记录时点，不新增定频 tlen 数据流</td></tr>
+              <tr><td>可选 async tlen event</td><td><span class="size-badge size-m">中</span></td><td>pre_trade + persistence</td><td>仅在研究或监控需要细粒度变化时启用，与交易热路径异步隔离</td></tr>
+              <tr><td>订单临时输入与盘后 ASOF 对齐</td><td><span class="size-badge size-m">中</span></td><td>RocksDB export + ClickHouse</td><td>订单只按查询窗口临时导入，长期存储仍在 RocksDB</td></tr>
+              <tr><td>缩减 from_key</td><td><span class="size-badge size-m">中</span></td><td>trade_signal + 研究脚本</td><td>旧数据兼容；最终只保留 decision/schema/snapshot ID 和 reason</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger">
+          <strong>总体评估：大</strong>
+          ClickHouse 接入本身因为已有代码可复用，属于中等修改。总体之所以是大，主要来自 tlen 在线执行权迁移及其生产恢复语义。
+        </div>
+      </section>
+
+      <section id="target-state">
+        <div class="section-no">09 / Final storage</div>
+        <h2>最终存储形态</h2>
+        <p class="section-intro">
+          RocksDB 保存订单及其延迟、BBO、tlen 等稀疏事件；ClickHouse 保存按固定时间桶产生的因子、模型、波动率和 tradeflow 数据。
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>长期存储</th><th>数据形态</th><th>保存内容</th><th>写入方式</th></tr></thead>
+            <tbody>
+              <tr><td><strong>RocksDB</strong></td><td>稀疏事件</td><td>订单与成交、生命周期时间戳和延迟、订单时点 BBO 回补、报单与撤单时点 tlen</td><td>由 New、Fill、Cancel、Trade 等事件触发</td></tr>
+              <tr><td><strong>ClickHouse</strong></td><td>定频列存</td><td>baseline、fusion factor、model、vol、tradeflow feature 及其时间和 ready 状态</td><td>按 5s/60s 时间桶聚合后批量写入</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 1280 560" role="img" aria-labelledby="target-title target-desc">
+            <title id="target-title">最终在线路径与两类长期存储</title>
+            <desc id="target-desc">在线交易热路径与存储异步隔离，RocksDB 保存稀疏订单数据，ClickHouse 保存定频数据。</desc>
+            <defs>
+              <marker id="target-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#3e5146"></path>
+              </marker>
+              <marker id="target-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#116149"></path>
+              </marker>
+              <marker id="target-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#1f6287"></path>
+              </marker>
+              <marker id="target-amber" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#8a5b00"></path>
+              </marker>
+            </defs>
+
+            <rect x="25" y="35" width="1230" height="175" class="svg-box-hot"></rect>
+            <text x="50" y="70" class="svg-title">A. 在线交易热路径：微秒到毫秒，不能等待数据库</text>
+            <rect x="70" y="100" width="210" height="78" class="svg-box-data"></rect>
+            <text x="175" y="132" text-anchor="middle" class="svg-title">BBO / Depth push</text>
+            <text x="175" y="157" text-anchor="middle" class="svg-small">exchange event state</text>
+            <rect x="390" y="100" width="210" height="78" class="svg-box-hot"></rect>
+            <text x="495" y="132" text-anchor="middle" class="svg-title">trade_signal</text>
+            <text x="495" y="157" text-anchor="middle" class="svg-small">signal intent only</text>
+            <rect x="710" y="100" width="210" height="78" class="svg-box-hot"></rect>
+            <text x="815" y="132" text-anchor="middle" class="svg-title">pre_trade</text>
+            <text x="815" y="157" text-anchor="middle" class="svg-small">risk + TlenBook + watches</text>
+            <rect x="1030" y="100" width="175" height="78" class="svg-box-hot"></rect>
+            <text x="1118" y="132" text-anchor="middle" class="svg-title">trade_engine</text>
+            <text x="1118" y="157" text-anchor="middle" class="svg-small">order / cancel</text>
+            <path d="M280 139 H380" class="svg-arrow-blue" marker-end="url(#target-blue)"></path>
+            <path d="M600 139 H700" class="svg-arrow-green" marker-end="url(#target-green)"></path>
+            <path d="M920 139 H1020" class="svg-arrow-green" marker-end="url(#target-green)"></path>
+
+            <rect x="25" y="245" width="590" height="265" class="svg-box-store"></rect>
+            <text x="50" y="280" class="svg-title">B. RocksDB：订单与稀疏数据</text>
+            <rect x="70" y="315" width="210" height="86" class="svg-box-hot"></rect>
+            <text x="175" y="347" text-anchor="middle" class="svg-title">pre_trade events</text>
+            <text x="175" y="371" text-anchor="middle" class="svg-small">order / trade / latency</text>
+            <text x="175" y="389" text-anchor="middle" class="svg-small">BBO / tlen snapshot</text>
+            <rect x="350" y="315" width="210" height="86" class="svg-box-store"></rect>
+            <text x="455" y="347" text-anchor="middle" class="svg-title">RocksDB</text>
+            <text x="455" y="374" text-anchor="middle" class="svg-small">sparse event truth</text>
+            <path d="M280 358 H340" class="svg-arrow-amber" marker-end="url(#target-amber)"></path>
+            <text x="70" y="448" class="svg-label">订单生命周期 + create/update/signal/submit/local/recv 延迟</text>
+            <text x="70" y="476" class="svg-small">订单时点 BBO left as-of 回补 + 报单/撤单时点 tlen 快照</text>
+
+            <rect x="665" y="245" width="590" height="265" class="svg-box-data"></rect>
+            <text x="690" y="280" class="svg-title">C. ClickHouse：定频列存数据</text>
+            <rect x="710" y="315" width="210" height="86" class="svg-box-store"></rect>
+            <text x="815" y="347" text-anchor="middle" class="svg-title">feature_recorder</text>
+            <text x="815" y="374" text-anchor="middle" class="svg-small">fixed-frequency IPC + batch</text>
+            <rect x="990" y="315" width="210" height="86" class="svg-box-data"></rect>
+            <text x="1095" y="347" text-anchor="middle" class="svg-title">ClickHouse</text>
+            <text x="1095" y="374" text-anchor="middle" class="svg-small">fixed-frequency wide columns</text>
+            <path d="M920 358 H980" class="svg-arrow-blue" marker-end="url(#target-blue)"></path>
+            <text x="710" y="448" class="svg-label">baseline / fusion / model / vol / tradeflow feature</text>
+            <text x="710" y="476" class="svg-small">bucket_ts + available_ts + schema_version + ready</text>
+
+            <path d="M815 210 C690 235 315 240 190 305" class="svg-arrow-amber" marker-end="url(#target-amber)"></path>
+          </svg>
+          <figcaption>图 9：RocksDB 是稀疏订单事件库；ClickHouse 是定频研究数据列存。两者按时间在盘后对齐，不混写为同一种记录。</figcaption>
+        </figure>
+
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

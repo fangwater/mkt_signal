@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -10,8 +10,24 @@ use super::factor_enum::FusionFactorId;
 const TLEN_SHARED_CONFIG_FIELD: &str = "__shared__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SymbolFactorPlan {
+pub struct SymbolFactorPlan {
     pub(crate) ordered_factors: Vec<FactorBinding>,
+}
+
+impl SymbolFactorPlan {
+    pub fn from_factor_names(scope: &str, factors: Vec<String>) -> Result<Self> {
+        build_factor_plan(scope, factors)
+    }
+
+    pub fn factor_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.ordered_factors
+            .iter()
+            .map(|binding| binding.name.as_str())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ordered_factors.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,13 +273,13 @@ struct FactorPlanItem {
     factors: Vec<String>,
 }
 
-fn build_factor_plan(scope: &str, factors: Vec<String>) -> SymbolFactorPlan {
+fn build_factor_plan(scope: &str, factors: Vec<String>) -> Result<SymbolFactorPlan> {
     let mut ordered_factors = Vec::with_capacity(factors.len());
     for name in factors {
         let factor_id = FusionFactorId::from_name(&name);
         let extra_factor_id = ExtraFactorId::from_name(&name);
         if factor_id.is_none() && extra_factor_id.is_none() {
-            panic!("factor-plan unmapped: {} {}", scope, name);
+            bail!("factor-plan unmapped: {} {}", scope, name);
         }
         ordered_factors.push(FactorBinding {
             name,
@@ -272,7 +288,7 @@ fn build_factor_plan(scope: &str, factors: Vec<String>) -> SymbolFactorPlan {
         });
     }
 
-    SymbolFactorPlan { ordered_factors }
+    Ok(SymbolFactorPlan { ordered_factors })
 }
 
 fn decode_symbol_factor_plans(
@@ -288,7 +304,7 @@ fn decode_symbol_factor_plans(
             continue;
         }
         let normalized_symbol = key.to_uppercase();
-        let plan = build_factor_plan(&normalized_symbol, item.factors);
+        let plan = build_factor_plan(&normalized_symbol, item.factors)?;
         if plan.ordered_factors.is_empty() {
             continue;
         }
@@ -369,6 +385,28 @@ mod tests {
         assert_eq!(factor_names, vec!["factor_001", "avg_price"]);
         assert!(!plans.contains_key("__shared__"));
         assert!(!plans.contains_key("ETHUSDT"));
+    }
+
+    #[test]
+    fn public_factor_plan_constructor_validates_names_and_preserves_order() {
+        let plan = SymbolFactorPlan::from_factor_names(
+            "BTCUSDT",
+            vec![
+                "factor_118".to_string(),
+                "baseline_118".to_string(),
+                "TD_TI_015".to_string(),
+                "avg_price".to_string(),
+            ],
+        )
+        .expect("mapped factor plan");
+        assert_eq!(
+            plan.factor_names().collect::<Vec<_>>(),
+            ["factor_118", "baseline_118", "TD_TI_015", "avg_price"]
+        );
+        assert!(
+            SymbolFactorPlan::from_factor_names("BTCUSDT", vec!["not_a_factor".to_string()])
+                .is_err()
+        );
     }
 
     #[test]
