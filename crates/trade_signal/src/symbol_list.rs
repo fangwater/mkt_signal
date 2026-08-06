@@ -20,6 +20,7 @@ use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use runtime_common::redis_client::RedisClient;
+use std::borrow::Cow;
 
 const DEFAULT_SYMBOL_NAMESPACE: &str = "fr";
 
@@ -35,6 +36,10 @@ pub struct SymbolList;
 struct SymbolListInner {
     /// 当前运行 exchange（加载列表时记录）
     current_exchange: Option<Exchange>,
+
+    /// intra 列表在加载完成后统一保存为 whitelist canonical key。
+    /// 此时查询可以直接走 HashSet borrowed lookup，无需逐项规范化。
+    canonical_filter_keys: bool,
 
     /// 平仓列表
     dump_symbols: FastHashSet<String>,
@@ -90,6 +95,7 @@ impl SymbolList {
     pub fn init_singleton() -> Result<()> {
         let inner = SymbolListInner {
             current_exchange: None,
+            canonical_filter_keys: false,
             dump_symbols: fast_hash_set(),
             pos_dump_symbols: fast_hash_set(),
             fwd_trade_symbols: fast_hash_set(),
@@ -154,6 +160,11 @@ impl SymbolList {
         let key_suffix = key_suffix.trim().to_ascii_lowercase();
         let ns = normalize_symbol_list_namespace(namespace);
         let key_prefix = normalize_symbol_list_key_prefix(key_prefix);
+        // Redis reads below contain await points and update the sets independently. Keep the
+        // compatibility lookup active until an intra reload has canonicalized every set.
+        Self::with_inner_mut(|inner| {
+            inner.canonical_filter_keys = false;
+        });
 
         // 读取平仓列表
         let dump_key =
@@ -320,6 +331,13 @@ impl SymbolList {
         // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
         if ns == "intra" {
             Self::with_inner_mut(|inner| {
+                Self::canonicalize_filter_set(&mut inner.dump_symbols);
+                Self::canonicalize_filter_set(&mut inner.pos_dump_symbols);
+                Self::canonicalize_filter_set(&mut inner.fwd_trade_symbols);
+                Self::canonicalize_filter_set(&mut inner.bwd_trade_symbols);
+                Self::canonicalize_filter_set(&mut inner.unimmr_close_symbols);
+                Self::canonicalize_filter_set(&mut inner.vol_gate_symbols);
+
                 let union: FastHashSet<String> = fast_hash_set_from_iter(
                     inner
                         .fwd_trade_symbols
@@ -329,6 +347,7 @@ impl SymbolList {
                 let count = union.len();
                 inner.fwd_trade_symbols = union.clone();
                 inner.bwd_trade_symbols = union;
+                inner.canonical_filter_keys = true;
                 info!(
                     "intra online 列表 {}: 合并 fwd∪bwd = {} 个交易对",
                     key_suffix, count
@@ -354,6 +373,19 @@ impl SymbolList {
     /// 自然把这些 symbol 走 close 流程，无需新增分支。
     pub fn is_in_dump_list(&self, symbol: &str) -> bool {
         Self::with_inner(|inner| {
+            if inner.canonical_filter_keys {
+                let symbol = Self::normalize_for_filtering_cow(symbol);
+                let symbol = symbol.as_ref();
+                if inner.dump_symbols.contains(symbol) {
+                    return true;
+                }
+                if inner.pos_dump_symbols.contains(symbol) {
+                    return true;
+                }
+                return super::unimmr_close_gate::UnimmrCloseGate::instance().any_close_allowed()
+                    && inner.unimmr_close_symbols.contains(symbol);
+            }
+
             if Self::contains_normalized(&inner.dump_symbols, symbol) {
                 return true;
             }
@@ -371,17 +403,38 @@ impl SymbolList {
 
     /// 判断交易对是否在正套建仓列表中
     pub fn is_in_fwd_trade_list(&self, symbol: &str) -> bool {
-        Self::with_inner(|inner| Self::contains_normalized(&inner.fwd_trade_symbols, symbol))
+        Self::with_inner(|inner| {
+            if inner.canonical_filter_keys {
+                let symbol = Self::normalize_for_filtering_cow(symbol);
+                inner.fwd_trade_symbols.contains(symbol.as_ref())
+            } else {
+                Self::contains_normalized(&inner.fwd_trade_symbols, symbol)
+            }
+        })
     }
 
     /// 判断交易对是否在反套建仓列表中
     pub fn is_in_bwd_trade_list(&self, symbol: &str) -> bool {
-        Self::with_inner(|inner| Self::contains_normalized(&inner.bwd_trade_symbols, symbol))
+        Self::with_inner(|inner| {
+            if inner.canonical_filter_keys {
+                let symbol = Self::normalize_for_filtering_cow(symbol);
+                inner.bwd_trade_symbols.contains(symbol.as_ref())
+            } else {
+                Self::contains_normalized(&inner.bwd_trade_symbols, symbol)
+            }
+        })
     }
 
     /// 判断交易对是否在 intra vol gate 列表中。
     pub fn is_in_vol_gate_list(&self, symbol: &str) -> bool {
-        Self::with_inner(|inner| Self::contains_normalized(&inner.vol_gate_symbols, symbol))
+        Self::with_inner(|inner| {
+            if inner.canonical_filter_keys {
+                let symbol = Self::normalize_for_filtering_cow(symbol);
+                inner.vol_gate_symbols.contains(symbol.as_ref())
+            } else {
+                Self::contains_normalized(&inner.vol_gate_symbols, symbol)
+            }
+        })
     }
 
     /// 获取平仓列表
@@ -494,6 +547,28 @@ impl SymbolList {
             .any(|s| Self::normalize_for_filtering(s) == target)
     }
 
+    fn canonicalize_filter_set(set: &mut FastHashSet<String>) {
+        let canonical = fast_hash_set_from_iter(
+            set.drain()
+                .map(|symbol| Self::normalize_for_filtering(symbol.trim()))
+                .filter(|symbol| !symbol.is_empty()),
+        );
+        *set = canonical;
+    }
+
+    fn normalize_for_filtering_cow(symbol: &str) -> Cow<'_, str> {
+        let already_canonical = symbol.is_ascii()
+            && !symbol
+                .bytes()
+                .any(|byte| byte.is_ascii_lowercase() || matches!(byte, b'-' | b'_'))
+            && !symbol.ends_with("SWAP");
+        if already_canonical {
+            Cow::Borrowed(symbol)
+        } else {
+            Cow::Owned(Self::normalize_for_filtering(symbol))
+        }
+    }
+
     /// 归一化符号用于白名单过滤：大写，移除 '-'/'_'，并去掉 "-SWAP"/"SWAP" 后缀
     /// 不区分 open/hedge，统一用 OkexFutures 触发去 SWAP 逻辑
     fn normalize_for_filtering(symbol: &str) -> String {
@@ -565,6 +640,7 @@ fn exchange_from_key_suffix(key_suffix: &str) -> Option<Exchange> {
 #[cfg(test)]
 mod tests {
     use super::{symbol_list_redis_key, SymbolList};
+    use std::borrow::Cow;
 
     #[test]
     fn symbol_list_redis_key_without_prefix_matches_legacy_shape() {
@@ -615,5 +691,36 @@ mod tests {
         let list = SymbolList::instance();
         assert!(list.is_in_dump_list("ETH-USDT-SWAP"));
         assert!(list.get_online_symbols().contains(&"ETHUSDT".to_string()));
+    }
+
+    #[test]
+    fn intra_canonical_filter_set_deduplicates_aliases_and_uses_hash_lookup() {
+        SymbolList::init_singleton().unwrap();
+        SymbolList::with_inner_mut(|inner| {
+            inner.fwd_trade_symbols = ["BTCUSDT", "btcusdt", "BTC_USDT", "BTC-USDT-SWAP"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            SymbolList::canonicalize_filter_set(&mut inner.fwd_trade_symbols);
+            inner.canonical_filter_keys = true;
+        });
+
+        let list = SymbolList::instance();
+        assert_eq!(list.get_fwd_trade_symbols(), vec!["BTCUSDT".to_string()]);
+        assert!(list.is_in_fwd_trade_list("BTCUSDT"));
+        assert!(list.is_in_fwd_trade_list("btcusdt"));
+        assert!(list.is_in_fwd_trade_list("BTC_USDT"));
+        assert!(list.is_in_fwd_trade_list("BTC-USDT-SWAP"));
+    }
+
+    #[test]
+    fn canonical_filter_key_borrows_already_normalized_symbol() {
+        let canonical = SymbolList::normalize_for_filtering_cow("BTCUSDT");
+        assert!(matches!(canonical, Cow::Borrowed(_)));
+        assert_eq!(canonical, "BTCUSDT");
+
+        let venue_form = SymbolList::normalize_for_filtering_cow("btc-usdt-swap");
+        assert!(matches!(venue_form, Cow::Owned(_)));
+        assert_eq!(venue_form, "BTCUSDT");
     }
 }
