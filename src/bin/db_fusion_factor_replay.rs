@@ -1553,7 +1553,7 @@ mod tests {
             .factor_plan
             .as_ref()
             .expect("live factor plan config");
-        assert_eq!(factor_plan.base_url, "http://13.115.227.29:6322");
+        assert_eq!(factor_plan.base_url, "http://52.69.209.108:6322");
         assert_eq!(factor_plan.config_type, "factor_plan");
         assert!(factor_plan.uniform_factor_shape);
         assert_eq!(config.replay_workers, 48);

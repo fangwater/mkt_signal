@@ -13,7 +13,7 @@ replay_warmup_days = 1
 # The response is fetched once at startup and remains fixed for the whole run.
 # Build their ordered union and compute that same factor vector for every symbol.
 [factor_plan]
-base_url = "http://13.115.227.29:6322"
+base_url = "http://52.69.209.108:6322"
 config_type = "factor_plan"
 request_timeout_ms = 30000
 uniform_factor_shape = true
