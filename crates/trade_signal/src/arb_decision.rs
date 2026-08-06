@@ -2602,7 +2602,6 @@ fn drive_funding_cancel_candidate_query(
                 venues.0,
                 venues.1,
                 item.strategy_id,
-                tlen,
                 threshold,
                 now_us,
                 query.trigger_ts,
@@ -2770,7 +2769,6 @@ fn drive_spread_arb_cancel_candidate_query(
                 venues.0,
                 venues.1,
                 item.strategy_id,
-                tlen,
                 threshold,
                 now_us,
                 query.trigger_ts,
@@ -2833,7 +2831,6 @@ fn emit_funding_precise_tlen_cancel(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     strategy_id: i32,
-    tlen: f64,
     threshold: f64,
     now_us: i64,
     trigger_t0: i64,
@@ -2860,17 +2857,20 @@ fn emit_funding_precise_tlen_cancel(
         hedge_venue,
     )
     .map(|(value, _)| value);
-    let from_key = super::arb_from_key::build_funding_tlen_cancel_from_key(
-        now_us,
-        snapshot.return_qtl,
-        snapshot.return_threshold,
-        snapshot.volatility,
-        snapshot.vol_band_scale,
-        snapshot.env_score,
-        snapshot.env_threshold,
-        premium_rate,
-        tlen,
-        threshold,
+    let from_key = super::common::append_tlen_threshold(
+        super::arb_from_key::build_funding_decision_from_key_base(
+            now_us,
+            snapshot.return_qtl,
+            snapshot.return_threshold,
+            snapshot.volatility,
+            snapshot.vol_band_scale,
+            snapshot.env_score,
+            snapshot.env_threshold,
+            "",
+            TradingVenue::OkexFutures,
+            premium_rate,
+        ),
+        Some(threshold),
     );
     // tlen 撤单复用现有两个时间维度：mkt_ts 取 trigger 周期时刻 T0（leg.ts→max→order.mkt_t），
     // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，from_key 不依赖 ts。
@@ -2899,7 +2899,6 @@ fn emit_spread_arb_precise_tlen_cancel(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     strategy_id: i32,
-    tlen: f64,
     threshold: f64,
     now_us: i64,
     trigger_t0: i64,
@@ -2927,23 +2926,24 @@ fn emit_spread_arb_precise_tlen_cancel(
             .target_factor_value
     })
     .flatten();
-    let from_key = super::arb_from_key::build_spread_arb_tlen_cancel_from_key(
-        now_us,
-        return_qtl,
-        None,
-        environment_score,
-        environment_signal.threshold,
-        volatility,
-        ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
-        super::arb_open_filter::lookup_realtime_open_filter_value(
-            open_symbol,
-            hedge_symbol,
-            open_venue,
-            hedge_venue,
-        )
-        .map(|(value, _)| value),
-        tlen,
-        threshold,
+    let from_key = super::common::append_tlen_threshold(
+        super::arb_from_key::build_spread_arb_cancel_from_key(
+            now_us,
+            return_qtl,
+            None,
+            environment_score,
+            environment_signal.threshold,
+            volatility,
+            ArbDecision::with_state_mut(|arb| Some(arb.vol_band_scale)).flatten(),
+            super::arb_open_filter::lookup_realtime_open_filter_value(
+                open_symbol,
+                hedge_symbol,
+                open_venue,
+                hedge_venue,
+            )
+            .map(|(value, _)| value),
+        ),
+        Some(threshold),
     );
     // tlen 撤单复用现有两个时间维度：mkt_ts 取 trigger 周期时刻 T0（leg.ts→max→order.mkt_t），
     // signal_ts 仍取回查执行撤单时刻 T2（now_us→trigger_ts）。bid/ask 不动，from_key 不依赖 ts。
@@ -3118,7 +3118,7 @@ fn emit_spread_arb_open_signals(
         Some(environment_score),
         environment_threshold,
     );
-    let from_key = super::common::append_key_value_fields(
+    let from_key_base = super::common::append_key_value_fields(
         base_from_key,
         &[(
             "spread_fr",
@@ -3177,6 +3177,17 @@ fn emit_spread_arb_open_signals(
     let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
     let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
     let open_symbol_key = min_qty_symbol_key(open_venue, &open_trade_symbol);
+    let tlen_gate = ArbDecision::with_state_mut(|arb| {
+        if arb.enable_tlen_cancel {
+            arb.tlen_thresholds
+                .get(&open_trade_symbol.to_ascii_uppercase())
+                .copied()
+        } else {
+            None
+        }
+    })
+    .flatten();
+    let from_key = super::common::append_tlen_threshold(from_key_base, tlen_gate);
     let build_ctx = |level: &quote_plan::quote_plan_levels::QuotePlanLevel| {
         super::arb_open_context::build_arb_open_context_from_level_with_tables(
             super::arb_open_context::ArbOpenContextTablesInput {
@@ -3220,22 +3231,12 @@ fn emit_spread_arb_open_signals(
                 .as_ref()
                 .expect("missing open-side depth query client")
         };
-        let tlen_gate = ArbDecision::with_state_mut(|arb| {
-            if arb.enable_tlen_cancel {
-                arb.tlen_thresholds
-                    .get(&query_symbol.to_ascii_uppercase())
-                    .copied()
-            } else {
-                None
-            }
-        })
-        .flatten();
         let tlen_start_us = get_timestamp_us();
         record_arb_open_latency(
             "ts_open_before_tlen",
             tlen_start_us.saturating_sub(batch_ts),
         );
-        let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
+        let gate_result = super::common::query_open_tlen_gate_mask(
             SPREAD_ARB_SHELL_NAME,
             open_depth_query_client,
             if open_venue == decision.runtime.venues.0 {
@@ -3246,33 +3247,27 @@ fn emit_spread_arb_open_signals(
             open_venue,
             &query_symbol,
             &tick_indices,
-            &from_key,
             tlen_gate,
         );
         record_arb_open_latency(
             "ts_open_tlen_query_gate",
             get_timestamp_us().saturating_sub(tlen_start_us),
         );
-        contexts = from_keys
-            .into_iter()
-            .zip(contexts)
-            .filter_map(|(from_key_bytes, mut ctx)| {
-                let from_key_bytes = from_key_bytes?;
-                ctx.set_from_key(from_key_bytes);
-                Some(ctx)
-            })
-            .collect();
-        if filtered_levels > 0 {
-            let _ = ArbDecision::with_state_mut(|arb| {
-                arb.record_intercept_summary_by("tlen_gate", filtered_levels as u64);
-            });
-            log::debug!(
-                "{SPREAD_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
-                query_symbol,
-                tlen_gate,
-                filtered_levels,
-                contexts.len()
-            );
+        if let Some((keep_mask, filtered_levels)) = gate_result {
+            let mut keep = keep_mask.into_iter();
+            contexts.retain(|_| keep.next().unwrap_or(false));
+            if filtered_levels > 0 {
+                let _ = ArbDecision::with_state_mut(|arb| {
+                    arb.record_intercept_summary_by("tlen_gate", filtered_levels as u64);
+                });
+                log::debug!(
+                    "{SPREAD_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
+                    query_symbol,
+                    tlen_gate,
+                    filtered_levels,
+                    contexts.len()
+                );
+            }
         }
     }
 
@@ -3462,30 +3457,6 @@ fn emit_spread_arb_close_signals(
         )
     });
     let mut contexts: Vec<_> = contexts.collect();
-    if !contexts.is_empty() {
-        let tick_indices: Vec<i64> = contexts.iter().map(|ctx| ctx.price_count()).collect();
-        let query_symbol = contexts[0].get_opening_symbol();
-        let open_depth_query_client = if open_venue == decision.runtime.venues.0 {
-            &decision.runtime.open_depth_query_client
-        } else {
-            decision
-                .runtime
-                .hedge_depth_query_client
-                .as_ref()
-                .expect("missing open-side depth query client")
-        };
-        let tlens = super::common::query_batch_tlens_or_zero(
-            SPREAD_ARB_SHELL_NAME,
-            open_depth_query_client,
-            &query_symbol,
-            &tick_indices,
-        );
-        for (ctx, level_tlen) in contexts.iter_mut().zip(tlens.into_iter()) {
-            ctx.set_from_key(super::common::build_tlen_from_key_bytes(
-                &from_key, level_tlen,
-            ));
-        }
-    }
     contexts.retain(arb_close_notional_meets_min);
     if contexts.is_empty() {
         return Ok(false);
@@ -3712,6 +3683,27 @@ fn emit_funding_open_close_signals(
     let open_trade_symbol = normalize_symbol_for_venue(spot_symbol, spot_venue);
     let hedge_trade_symbol = normalize_symbol_for_venue(futures_symbol, futures_venue);
     let open_symbol_key = min_qty_symbol_key(spot_venue, &open_trade_symbol);
+    let tlen_gate = if matches!(signal_type, SignalType::ArbOpen) {
+        ArbDecision::with_state_mut(|arb| {
+            if arb.enable_tlen_cancel {
+                arb.tlen_thresholds
+                    .get(&open_trade_symbol.to_ascii_uppercase())
+                    .copied()
+            } else {
+                None
+            }
+        })
+        .flatten()
+    } else {
+        None
+    };
+    let from_key = if matches!(signal_type, SignalType::ArbOpen) {
+        let from_key =
+            String::from_utf8(from_key).expect("funding decision from_key must be valid UTF-8");
+        super::common::append_tlen_threshold(from_key, tlen_gate).into_bytes()
+    } else {
+        from_key
+    };
     let contexts = plan.levels.iter().map(|level| {
         super::arb_open_context::build_arb_open_context_from_level_with_tables(
             super::arb_open_context::ArbOpenContextTablesInput {
@@ -3755,23 +3747,12 @@ fn emit_funding_open_close_signals(
                 .as_ref()
                 .expect("missing open-side depth query client")
         };
-        let tlen_gate = ArbDecision::with_state_mut(|arb| {
-            if arb.enable_tlen_cancel {
-                arb.tlen_thresholds
-                    .get(&query_symbol.to_ascii_uppercase())
-                    .copied()
-            } else {
-                None
-            }
-        })
-        .flatten();
-        let from_key_str = std::str::from_utf8(&from_key).unwrap_or("");
         let tlen_start_us = get_timestamp_us();
         record_arb_open_latency(
             "ts_open_before_tlen",
             tlen_start_us.saturating_sub(batch_ts),
         );
-        let (from_keys, filtered_levels) = super::common::apply_open_tlen_gate_and_build_from_keys(
+        let gate_result = super::common::query_open_tlen_gate_mask(
             FUNDING_ARB_SHELL_NAME,
             open_depth_query_client,
             if spot_venue == decision.runtime.venues.0 {
@@ -3782,33 +3763,27 @@ fn emit_funding_open_close_signals(
             spot_venue,
             &query_symbol,
             &tick_indices,
-            from_key_str,
             tlen_gate,
         );
         record_arb_open_latency(
             "ts_open_tlen_query_gate",
             get_timestamp_us().saturating_sub(tlen_start_us),
         );
-        contexts = from_keys
-            .into_iter()
-            .zip(contexts)
-            .filter_map(|(from_key_bytes, mut ctx)| {
-                let from_key_bytes = from_key_bytes?;
-                ctx.set_from_key(from_key_bytes);
-                Some(ctx)
-            })
-            .collect();
-        if filtered_levels > 0 {
-            let _ = ArbDecision::with_state_mut(|arb| {
-                arb.record_intercept_summary_by("tlen_gate", filtered_levels as u64);
-            });
-            log::debug!(
-                "{FUNDING_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
-                query_symbol,
-                tlen_gate,
-                filtered_levels,
-                contexts.len()
-            );
+        if let Some((keep_mask, filtered_levels)) = gate_result {
+            let mut keep = keep_mask.into_iter();
+            contexts.retain(|_| keep.next().unwrap_or(false));
+            if filtered_levels > 0 {
+                let _ = ArbDecision::with_state_mut(|arb| {
+                    arb.record_intercept_summary_by("tlen_gate", filtered_levels as u64);
+                });
+                log::debug!(
+                    "{FUNDING_ARB_SHELL_NAME}: ArbOpen tlen gated symbol={} threshold={:?} filtered_levels={} kept_levels={}",
+                    query_symbol,
+                    tlen_gate,
+                    filtered_levels,
+                    contexts.len()
+                );
+            }
         }
     }
     if matches!(signal_type, SignalType::ArbClose) {

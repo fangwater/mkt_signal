@@ -13,42 +13,6 @@ use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
-pub fn format_tlen_value(value: f64) -> String {
-    if value.is_finite() {
-        format!("{value:.8}")
-    } else {
-        "nan".to_string()
-    }
-}
-
-pub fn append_tlen_to_from_key(base_from_key: &str, level_tlen: f64) -> String {
-    format!("{base_from_key}:tlen={}", format_tlen_value(level_tlen))
-}
-
-/// Hot-path builder that is byte-for-byte identical to
-/// `append_tlen_to_from_key(base_from_key, level_tlen).into_bytes()` but writes
-/// straight into a single freshly-sized `Vec<u8>`, skipping the intermediate
-/// `format_tlen_value` / `format!` `String` allocations. One allocation per
-/// level (the owned output) instead of two, with no format-driven regrowth and
-/// no re-formatting of the shared base (it is memcpy'd in as bytes).
-pub fn build_tlen_from_key_bytes(base_from_key: &str, level_tlen: f64) -> Vec<u8> {
-    use std::io::Write;
-    let base = base_from_key.as_bytes();
-    // ":tlen=" (6 bytes) + a formatted `{:.8}` value (or "nan"). 32 bytes of
-    // headroom covers realistic tlen magnitudes without a reallocation.
-    let mut out = Vec::with_capacity(base.len() + 32);
-    out.extend_from_slice(base);
-    out.extend_from_slice(b":tlen=");
-    if level_tlen.is_finite() {
-        // `write!` into a `Vec<u8>` (io::Write) drives the same float formatter
-        // as `format!("{:.8}")`, so the emitted bytes are identical.
-        let _ = write!(out, "{level_tlen:.8}");
-    } else {
-        out.extend_from_slice(b"nan");
-    }
-    out
-}
-
 pub fn query_batch_tlens_or_zero(
     source: &str,
     depth_query_client: &DepthQueryClient,
@@ -120,18 +84,22 @@ pub fn normalize_tlens_for_compare(
         .collect()
 }
 
-pub fn apply_open_tlen_gate_and_build_from_keys(
+/// Evaluate the optional open tlen gate without carrying tlen into the signal.
+///
+/// `None` means the gate is disabled, so callers can avoid both the depth query
+/// and an otherwise unnecessary per-level allocation.
+pub fn query_open_tlen_gate_mask(
     source: &str,
     depth_query_client: &DepthQueryClient,
     table: &VenueMinQtyTable,
     venue: TradingVenue,
     symbol: &str,
     tick_indices: &[i64],
-    base_from_key: &str,
     threshold: Option<f64>,
-) -> (Vec<Option<Vec<u8>>>, usize) {
+) -> Option<(Vec<bool>, usize)> {
+    let threshold = threshold?;
     if tick_indices.is_empty() {
-        return (Vec::new(), 0);
+        return Some((Vec::new(), 0));
     }
 
     let tlens = normalize_tlens_for_compare(
@@ -145,16 +113,15 @@ pub fn apply_open_tlen_gate_and_build_from_keys(
     let out = tlens
         .into_iter()
         .map(|level_tlen| {
-            if let Some(threshold) = threshold {
-                if level_tlen < threshold {
-                    filtered += 1;
-                    return None;
-                }
+            if level_tlen < threshold {
+                filtered += 1;
+                false
+            } else {
+                true
             }
-            Some(build_tlen_from_key_bytes(base_from_key, level_tlen))
         })
         .collect();
-    (out, filtered)
+    Some((out, filtered))
 }
 
 // ========== 资金费率周期 ==========
@@ -394,6 +361,20 @@ pub fn append_key_value_fields(base: String, fields: &[(&str, String)]) -> Strin
     out
 }
 
+pub fn append_tlen_threshold(mut base: String, threshold: Option<f64>) -> String {
+    use std::fmt::Write;
+
+    base.reserve(32);
+    base.push_str(":tlen_thr=");
+    match threshold.filter(|value| value.is_finite()) {
+        Some(value) => {
+            let _ = write!(base, "{value:.8}");
+        }
+        None => base.push_str("NA"),
+    }
+    base
+}
+
 pub fn build_open_from_key_base(
     now_us: i64,
     return_qtl: Option<f64>,
@@ -428,16 +409,6 @@ pub fn append_suffix_token(base: String, suffix: &str) -> String {
     out.push(':');
     out.push_str(suffix);
     out
-}
-
-pub fn append_tlen_suffix(base: String, tlen: f64, threshold: f64) -> String {
-    append_key_value_fields(
-        base,
-        &[
-            ("tlen", format!("{tlen:.8}")),
-            ("tlen_thr", format!("{threshold:.8}")),
-        ],
-    )
 }
 
 /// Funding Rate 数据（默认维护60条 + rolling sum/mean）
@@ -617,39 +588,15 @@ mod tests {
     }
 
     #[test]
-    fn build_tlen_from_key_bytes_matches_legacy_string_path() {
-        let bases = [
-            "",
-            "1783331226376757:ret_qtl=0.00000000:vol=0.12345678:env_score=0",
-            "173:ret_qtl=0.99999999:ret_thr=0:vol=0:env_score=0:env_thr=0:vol_band_scale=1.0000,2.0000:spread_fr=0.000123",
-        ];
-        let values = [
-            0.0,
-            -0.0,
-            1.0,
-            -1.0,
-            0.000_000_01,
-            12_345.678_9,
-            -9_999.999_999_99,
-            f64::MIN_POSITIVE,
-            1e12,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-        ];
-        for base in bases {
-            for v in values {
-                let legacy = append_tlen_to_from_key(base, v).into_bytes();
-                let optimized = build_tlen_from_key_bytes(base, v);
-                assert_eq!(
-                    optimized,
-                    legacy,
-                    "byte mismatch base={base:?} value={v:?}: {} vs {}",
-                    String::from_utf8_lossy(&optimized),
-                    String::from_utf8_lossy(&legacy),
-                );
-            }
-        }
+    fn append_tlen_threshold_keeps_batch_value_without_tlen() {
+        let key = append_tlen_threshold("decision".to_string(), Some(3.5));
+        assert_eq!(key, "decision:tlen_thr=3.50000000");
+        assert!(!key.contains(":tlen="));
+
+        assert_eq!(
+            append_tlen_threshold("decision".to_string(), None),
+            "decision:tlen_thr=NA"
+        );
     }
 
     #[test]

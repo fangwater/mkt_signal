@@ -36,7 +36,6 @@ use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use signal_common::mm_signal::MmBackwardQueryMsg;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
-use trade_signal::mm_decision::from_key::append_mm_hedge_tlen_to_from_key;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -198,11 +197,6 @@ impl MarketMakerHedgeStrategy {
         }
         self.hedge_order_ids.clear();
         self.hedge_order_meta.clear();
-    }
-
-    fn build_order_from_key(&self, batch_from_key: &[u8], tlen: f64) -> Vec<u8> {
-        let batch = String::from_utf8_lossy(batch_from_key);
-        append_mm_hedge_tlen_to_from_key(&batch, tlen).into_bytes()
     }
 
     fn order_from_key_bytes(&self, client_order_id: i64) -> Vec<u8> {
@@ -462,10 +456,8 @@ impl MarketMakerHedgeStrategy {
                     0.0,
                 )
             } else {
-                let tlen = ctx.tlen_values.get(level_index).copied().unwrap_or(0.0);
-                let order_from_key = self.build_order_from_key(&ctx.from_key, tlen);
                 let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
-                (OrderType::Limit, price, order_from_key, price_offset)
+                (OrderType::Limit, price, ctx.from_key.clone(), price_offset)
             };
 
             self.hedge_order_meta.insert(
@@ -1857,6 +1849,39 @@ mod tests {
             .hedge_order_meta
             .values()
             .all(|meta| meta.price_offset == 0.0 && meta.from_key == b"mm_hedge"));
+
+        std::mem::forget(strategy);
+    }
+
+    #[test]
+    fn maker_hedge_plan_does_not_append_tlen_to_from_key() {
+        let mut strategy = MarketMakerHedgeStrategy::new(18, "BANKUSDT".to_string());
+        let mut ctx = MmHedgeCtx::new();
+        ctx.from_key = b"mm_hedge".to_vec();
+        ctx.tlen_values = vec![12.5, 8.0];
+        ctx.price_offsets = vec![0.001, 0.002];
+        let split_orders = vec![
+            HedgeSplitOrder {
+                level_index: 0,
+                side: Side::Buy,
+                price: 0.2038,
+                qty: 20.0,
+            },
+            HedgeSplitOrder {
+                level_index: 1,
+                side: Side::Buy,
+                price: 0.2039,
+                qty: 15.0,
+            },
+        ];
+
+        strategy.prepare_hedge_plan(&ctx, split_orders);
+
+        assert_eq!(strategy.hedge_order_meta.len(), 2);
+        assert!(strategy
+            .hedge_order_meta
+            .values()
+            .all(|meta| meta.from_key == b"mm_hedge"));
 
         std::mem::forget(strategy);
     }

@@ -818,7 +818,6 @@ impl MmDecision {
                     None,
                     volatility,
                     &environment_signal,
-                    Some(tlen),
                     Some(threshold),
                 );
                 if let Err(err) = self.state.emit_mm_cancel_signal_precise(

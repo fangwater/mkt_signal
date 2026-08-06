@@ -10,6 +10,13 @@
 - 浮点字段统一 `:.6` 精度。
 - `from_key` 为 UTF-8 字符串，落地为 `Vec<u8>`。
 
+## `tlen` 迁移
+
+- 新产生的 `from_key` 不再写入逐档 `tlen`；实时 `tlen` 仍参与开仓 gate 和撤单判定。
+- 批次/标的共享的 `tlen_thr` 保留在基础 `from_key` 中，并在拆单前只写入一次；阈值不可用时写为 `NA`。
+- 历史 RocksDB / parquet 记录保持原样，不做回写；读取侧应同时接受带或不带 `tlen` 的旧、新记录。
+- 新记录的 `tlen / backlen / inpos` 从 order queue position parquet 获取，优先按 `client_order_id + trading_venue` 与 uniform order 对齐。
+
 ## 协议更新（ArbHedge）
 
 - `ArbHedgeSignalQueryMsg` 的数量字段为 `hedge_base_qty`（base 口径），用于向上游决策侧请求对冲报价。

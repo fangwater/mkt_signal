@@ -127,7 +127,6 @@ impl MmCancelDecision {
                     volatility,
                     &environment_signal,
                     None,
-                    None,
                 );
                 state.emit_mm_cancel_signal(symbol, Side::Sell, open_quote, now_us, &from_key)?;
                 self.mark_cancel_sent(symbol, Side::Sell, now_us);
@@ -149,7 +148,6 @@ impl MmCancelDecision {
                     Some(state.return_score_sell_cancel_quantile),
                     volatility,
                     &environment_signal,
-                    None,
                     None,
                 );
                 state.emit_mm_cancel_signal(symbol, Side::Buy, open_quote, now_us, &from_key)?;

@@ -1,8 +1,7 @@
 use order_common::TradingVenue;
 
 use super::common::{
-    append_key_value_fields, append_tlen_suffix, build_open_from_key_base,
-    format_from_key_optional_value,
+    append_key_value_fields, build_open_from_key_base, format_from_key_optional_value,
 };
 
 pub fn build_spread_decision_from_key_base(
@@ -127,60 +126,5 @@ pub fn build_spread_arb_cancel_from_key(
         Some(environment_score),
         environment_threshold,
         spread_fr,
-    )
-}
-
-pub fn build_spread_arb_tlen_cancel_from_key(
-    now: i64,
-    return_qtl: Option<f64>,
-    return_threshold: Option<f64>,
-    environment_score: f64,
-    environment_threshold: Option<f64>,
-    volatility: Option<f64>,
-    vol_band_scale: Option<[f64; 2]>,
-    spread_fr: Option<f64>,
-    tlen: f64,
-    threshold: f64,
-) -> String {
-    let from_key = build_spread_arb_cancel_from_key(
-        now,
-        return_qtl,
-        return_threshold,
-        environment_score,
-        environment_threshold,
-        volatility,
-        vol_band_scale,
-        spread_fr,
-    );
-    append_tlen_suffix(from_key, tlen, threshold)
-}
-
-pub fn build_funding_tlen_cancel_from_key(
-    now: i64,
-    return_qtl: Option<f64>,
-    return_threshold: Option<f64>,
-    volatility: Option<f64>,
-    vol_band_scale: Option<[f64; 2]>,
-    env_score: Option<f64>,
-    env_threshold: Option<f64>,
-    premium_rate: Option<f64>,
-    tlen: f64,
-    threshold: f64,
-) -> String {
-    append_tlen_suffix(
-        build_funding_decision_from_key_base(
-            now,
-            return_qtl,
-            return_threshold,
-            volatility,
-            vol_band_scale,
-            env_score,
-            env_threshold,
-            "",
-            TradingVenue::OkexFutures,
-            premium_rate,
-        ),
-        tlen,
-        threshold,
     )
 }

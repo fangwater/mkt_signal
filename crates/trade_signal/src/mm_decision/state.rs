@@ -5,7 +5,7 @@ use log::{debug, info, warn};
 use std::collections::HashMap;
 
 use super::super::arb_decision::DEFAULT_ARBITRAGE_SIGNAL_CHANNEL;
-use super::super::common::apply_open_tlen_gate_and_build_from_keys;
+use super::super::common::{append_tlen_threshold, query_open_tlen_gate_mask};
 use super::super::factor_value_hub::{EnvironmentSignalResult, FactorValueHub};
 use super::super::inline_volatility::{
     snapshot_inline_tradecount, snapshot_inline_volatility, InlineVolatilitySnapshot,
@@ -1291,35 +1291,35 @@ impl MmDecisionState {
                 plan.symbol
             );
         }
+        let from_key = append_tlen_threshold(from_key.to_owned(), tlen_gate);
 
-        let gated_prepared = if prepared.is_empty() {
-            Vec::new()
-        } else {
+        if !prepared.is_empty() {
             let tick_indices: Vec<i64> = prepared.iter().map(|item| item.tick_index).collect();
-            let (from_keys, filtered_levels) = apply_open_tlen_gate_and_build_from_keys(
+            let gate_result = query_open_tlen_gate_mask(
                 "MmDecision: MMOpen",
                 &self.depth_query_client,
                 &self.open_min_qty_table,
                 self.open_venue,
                 &plan.symbol,
                 &tick_indices,
-                from_key,
                 tlen_gate,
             );
-            tlen_filtered_levels += filtered_levels;
-            from_keys
-                .into_iter()
-                .zip(prepared)
-                .filter_map(|(from_key_bytes, mut item)| {
-                    let Some(from_key_bytes) = from_key_bytes else {
+            if let Some((keep_mask, filtered_levels)) = gate_result {
+                tlen_filtered_levels += filtered_levels;
+                let mut keep = keep_mask.into_iter();
+                prepared.retain(|item| {
+                    let keep_level = keep.next().unwrap_or(false);
+                    if !keep_level {
                         side_breakdown_mut(item.side, &mut buy, &mut sell).tlen_filtered += 1;
-                        return None;
-                    };
-                    item.ctx.set_from_key(from_key_bytes);
-                    Some(item)
-                })
-                .collect()
-        };
+                    }
+                    keep_level
+                });
+            }
+        }
+        for item in &mut prepared {
+            item.ctx.set_from_key(from_key.as_bytes().to_vec());
+        }
+        let gated_prepared = prepared;
 
         for item in gated_prepared.iter() {
             let context = item.ctx.to_bytes();
