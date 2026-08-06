@@ -309,6 +309,7 @@ async fn config_proxy_route(
     let mut response = Response::builder().status(status);
     for name in [
         header::CONTENT_TYPE,
+        header::CONTENT_DISPOSITION,
         header::CACHE_CONTROL,
         header::LOCATION,
     ] {

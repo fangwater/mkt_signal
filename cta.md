@@ -210,6 +210,34 @@ dashboard 默认链接到同域 `/config/`；未配置反向代理时，可以�
 http://<viz-host>:10041/?config=http://<config-host>:18161/
 ```
 
+当前反向隧道入口可以通过标准库 Python 客户端直接 GET/POST JSON：
+
+```text
+http://172.16.30.42:10041/config/exec_config_client.py
+```
+
+浏览器打开该地址会直接下载客户端脚本，也可以在命令行中使用：
+
+```bash
+wget http://172.16.30.42:10041/config/exec_config_client.py
+
+# GET 策略列表或单个策略
+python3 scripts/exec_config_client.py get
+python3 scripts/exec_config_client.py get cta_alpha > cta_alpha.json
+
+# 编辑 GET 返回 JSON 后，直接 POST 新增或修改
+python3 scripts/exec_config_client.py post @cta_alpha.json
+
+# 也可以传内联 JSON 或 stdin
+python3 scripts/exec_config_client.py post \
+  '{"strategy_name":"cta_alpha","config":{"single_order_usdt":100.0,"orders_per_batch":3,"maker_price_anchor":"own_best","tick_spacing":1,"batch_interval_ms":500,"maker_timeout_ms":1000,"max_maker_requotes":2,"target_tolerance_usdt":10.0,"targets":{"BTCUSDT":0.03}}}'
+cat cta_alpha.json | python3 scripts/exec_config_client.py post -
+```
+
+默认入口为 `http://172.16.30.42:10041/config/`，可通过全局参数
+`--url` 或环境变量 `EXEC_CONFIG_URL` 覆盖。GET 和 POST 都会直接打印服务端
+JSON response。
+
 ## 7. 部署与启停
 
 ```bash

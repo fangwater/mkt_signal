@@ -11,6 +11,7 @@ import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -38,6 +39,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "target_tolerance_usdt": 10.0,
     "targets": {},
 }
+CLIENT_SCRIPT_PATH = Path(__file__).resolve().with_name("exec_config_client.py")
+CLIENT_SCRIPT_ROUTE = "/exec_config_client.py"
 
 
 def validate_strategy_name(raw: Any) -> str:
@@ -455,6 +458,26 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             try:
+                if parsed.path == CLIENT_SCRIPT_ROUTE:
+                    try:
+                        script = CLIENT_SCRIPT_PATH.read_bytes()
+                    except OSError as exc:
+                        self.send_error_json(
+                            404, ValueError(f"client script is unavailable: {exc}")
+                        )
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header(
+                        "Content-Disposition",
+                        'attachment; filename="exec_config_client.py"',
+                    )
+                    self.send_header("Content-Length", str(len(script)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    self.wfile.write(script)
+                    return
                 if parsed.path in {"/", "/index.html"}:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")

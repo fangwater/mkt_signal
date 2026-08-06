@@ -38,6 +38,31 @@ def fake_store():
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_client_script_is_downloadable(self):
+        store = fake_store()
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/exec_config_client.py",
+            timeout=2,
+        ) as response:
+            body = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "application/octet-stream")
+            self.assertEqual(
+                response.headers["Content-Disposition"],
+                'attachment; filename="exec_config_client.py"',
+            )
+
+        self.assertTrue(body.startswith("#!/usr/bin/env python3"))
+        self.assertIn("http://172.16.30.42:10041/config/", body)
+
     def test_http_update_writes_redis_and_logs_response(self):
         store = fake_store()
         server = ThreadingHTTPServer(

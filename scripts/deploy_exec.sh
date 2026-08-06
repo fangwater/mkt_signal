@@ -86,7 +86,8 @@ FILES=(
   start_exec_trade_engine.sh stop_exec_trade_engine.sh
   start_exec_persist_manager.sh stop_exec_persist_manager.sh
   start_exec_viz_server.sh stop_exec_viz_server.sh
-  start_exec_config_server.sh stop_exec_config_server.sh exec_config_server.py
+  start_exec_config_server.sh stop_exec_config_server.sh
+  exec_config_server.py exec_config_client.py
   start_account_monitor.sh stop_account_monitor.sh
   start_trade_engine.sh stop_trade_engine.sh
   start_fr_persist_manager.sh stop_fr_persist_manager.sh
