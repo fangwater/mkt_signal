@@ -131,6 +131,13 @@ else
   PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-trade_engine_${dir_tag}}}"
 fi
 RUST_LOG="${RUST_LOG:-info}"
+FAST_POLL_ENABLED="${enable_ipc_fast_poll:-${ENABLE_IPC_FAST_POLL:-0}}"
+FAST_POLL_ENABLED="${FAST_POLL_ENABLED,,}"
+case "$FAST_POLL_ENABLED" in
+  1|true|yes|y|on) FAST_POLL_ENABLED=1 ;;
+  0|false|no|n|off) FAST_POLL_ENABLED=0 ;;
+  *) echo "[ERROR] enable_ipc_fast_poll must be a boolean" >&2; exit 1 ;;
+esac
 
 find_trade_engine_pids() {
   ps -eo pid=,args= | awk -v base_dir="${BASE_DIR}" -v exchange="${EXCHANGE}" '
@@ -199,7 +206,9 @@ cat >"$cfg_file" <<JSON
       "args": ["--exchange", "${json_exchange}"],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"
+        "RUST_LOG": "${json_rust_log}",
+        "enable_ipc_fast_poll": "${FAST_POLL_ENABLED}",
+        "ENABLE_IPC_FAST_POLL": "${FAST_POLL_ENABLED}"
       }
     }
   ]

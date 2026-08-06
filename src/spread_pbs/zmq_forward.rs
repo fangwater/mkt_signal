@@ -4,7 +4,7 @@ use mkt_parsers::msg::mkt_msg::MktMsgType;
 use super::publisher::{DERIVATIVES_PAYLOAD_BYTES, SPREAD_PAYLOAD_BYTES};
 
 pub const DEFAULT_ZMQ_PORT: u16 = 6320;
-pub const DEFAULT_COLO_HOST: &str = "13.115.227.29";
+pub const DEFAULT_COLO_HOST: &str = "52.69.209.108";
 pub const DEFAULT_ZMQ_HWM: i32 = 128;
 pub const DEFAULT_ZMQ_SOCKET_BUFFER_BYTES: i32 = 65_536;
 
@@ -288,7 +288,7 @@ mod tests {
         );
         assert_eq!(
             tcp_endpoint(DEFAULT_COLO_HOST, DEFAULT_ZMQ_PORT).unwrap(),
-            "tcp://13.115.227.29:6320"
+            "tcp://52.69.209.108:6320"
         );
     }
 }

@@ -8,6 +8,8 @@ if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
 fi
+export enable_ipc_fast_poll=0
+export ENABLE_IPC_FAST_POLL=0
 
 [[ $# -eq 0 ]] || { echo "[ERROR] start_exec_trade_signal.sh takes no arguments" >&2; exit 1; }
 [[ -n "${IPC_NAMESPACE:-}" ]] || { echo "[ERROR] IPC_NAMESPACE is required" >&2; exit 1; }
@@ -49,7 +51,7 @@ done
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","IPC_NAMESPACE":"${IPC_NAMESPACE}","TRADE_SIGNAL_ENABLE_QUEUE_POSITION":"${QUEUE_POSITION_ENABLED}"}}]}
+{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","IPC_NAMESPACE":"${IPC_NAMESPACE}","TRADE_SIGNAL_ENABLE_QUEUE_POSITION":"${QUEUE_POSITION_ENABLED}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
 JSON
 
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_exec_trade_signal.sh"

@@ -126,7 +126,9 @@ export EXEC_VIZ_PORT="${VIZ_PORT}"
 export EXEC_CONFIG_PORT="${CONFIG_PORT}"
 export EXEC_CONFIG_RELOAD_MS="\${EXEC_CONFIG_RELOAD_MS:-30000}"
 export PYTHON_BIN="\${PYTHON_BIN:-\${HOME}/.venvs/default/bin/python}"
-export TRADE_SIGNAL_ENABLE_QUEUE_POSITION="\${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+export TRADE_SIGNAL_ENABLE_QUEUE_POSITION="0"
+export enable_ipc_fast_poll="0"
+export ENABLE_IPC_FAST_POLL="0"
 
 # Add the ${EXCHANGE} account credentials and account-mode settings before starting.
 ENV

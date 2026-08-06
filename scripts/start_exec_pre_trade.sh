@@ -8,6 +8,8 @@ if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
 fi
+export enable_ipc_fast_poll=0
+export ENABLE_IPC_FAST_POLL=0
 
 VENUE="${EXEC_VENUE:-${VENUE:-}}"
 CONFIG_RELOAD_MS="${EXEC_CONFIG_RELOAD_MS:-30000}"
@@ -65,7 +67,7 @@ done
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file"' EXIT
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}"}}]}
+{"apps":[{"name":"${PROC_NAME}","script":"${BIN_PATH}","args":[${json_args}],"cwd":"${BASE_DIR}","env":{"RUST_LOG":"${RUST_LOG:-info}","enable_ipc_fast_poll":"0","ENABLE_IPC_FAST_POLL":"0"}}]}
 JSON
 
 PMDAEMON_NAME="$PROC_NAME" "${SCRIPT_DIR}/stop_exec_pre_trade.sh"

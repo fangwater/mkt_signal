@@ -295,7 +295,7 @@ pub fn startup_mode_from_env(force_remote: bool) -> TlenQueryMode {
     startup_mode_from_env_with_default(force_remote, false)
 }
 
-fn queue_position_enabled_from_env() -> bool {
+pub fn queue_position_enabled_from_env() -> bool {
     let Ok(raw) = std::env::var(QUEUE_POSITION_ENABLED_ENV) else {
         return false;
     };
@@ -310,6 +310,10 @@ fn queue_position_enabled_from_env() -> bool {
             false
         }
     }
+}
+
+fn should_initialize_runtime(exec_branch: bool, queue_position_enabled: bool) -> bool {
+    !exec_branch || queue_position_enabled
 }
 
 fn startup_mode_from_env_with_default(force_remote: bool, default_local: bool) -> TlenQueryMode {
@@ -338,9 +342,21 @@ fn startup_mode_from_env_with_default(force_remote: bool, default_local: bool) -
     }
 }
 
-pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool) -> Result<()> {
+pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool) -> Result<bool> {
     let exec_branch = matches!(decision_branch(), Some(DecisionBranch::Exec));
     let queue_position_enabled = queue_position_enabled_from_env();
+    if !should_initialize_runtime(exec_branch, queue_position_enabled) {
+        super::queue_position::disable();
+        LOCAL_TLEN.with(|state| {
+            *state.borrow_mut() = LocalTlenRuntime::Uninitialized;
+        });
+        info!(
+            "Exec local_tlen disabled with queue-position runtime: venue={} env={}",
+            open_venue.data_pub_slug(),
+            QUEUE_POSITION_ENABLED_ENV
+        );
+        return Ok(false);
+    }
     let mode = startup_mode_from_env_with_default(force_remote, exec_branch);
     match mode {
         TlenQueryMode::Remote => {
@@ -353,7 +369,7 @@ pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool)
                 open_venue.data_pub_slug(),
                 force_remote
             );
-            Ok(())
+            Ok(false)
         }
         TlenQueryMode::Local => {
             let mut table = VenueMinQtyTable::new(open_venue);
@@ -387,7 +403,7 @@ pub async fn init_for_trade_signal(open_venue: TradingVenue, force_remote: bool)
                 open_venue.data_pub_slug(),
                 if exec_branch { "all" } else { "online" }
             );
-            Ok(())
+            Ok(true)
         }
     }
 }
@@ -871,6 +887,14 @@ mod tests {
         assert!(!queue_position_enabled_from_env());
 
         std::env::remove_var(QUEUE_POSITION_ENABLED_ENV);
+    }
+
+    #[test]
+    fn exec_runtime_requires_queue_position_but_other_branches_do_not() {
+        assert!(!should_initialize_runtime(true, false));
+        assert!(should_initialize_runtime(true, true));
+        assert!(should_initialize_runtime(false, false));
+        assert!(should_initialize_runtime(false, true));
     }
 
     #[test]

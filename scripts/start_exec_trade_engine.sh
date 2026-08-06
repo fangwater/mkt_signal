@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 [[ -f "${BASE_DIR}/env.sh" ]] && source "${BASE_DIR}/env.sh"
+export enable_ipc_fast_poll=0
+export ENABLE_IPC_FAST_POLL=0
 
 VENUE="${EXEC_VENUE:-${VENUE:-}}"
 case "$VENUE" in

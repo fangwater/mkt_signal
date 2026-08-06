@@ -448,10 +448,15 @@ async fn run(
     }
 
     let force_remote_tlen = matches!(arb_mode, Some(ArbMode::FundingArb));
-    trade_signal::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen).await?;
+    let local_tlen_enabled =
+        trade_signal::local_tlen::init_for_trade_signal(open_venue, force_remote_tlen).await?;
     if matches!(branch, DecisionBranch::Exec) {
-        MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
-        info!("Exec branch: BBO/local tlen runtime initialized");
+        if local_tlen_enabled {
+            MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
+            info!("Exec branch: BBO/local tlen runtime initialized");
+        } else {
+            info!("Exec branch: BBO/local tlen/queue-position runtime disabled");
+        }
     } else {
         MktChannel::init_singleton(open_venue, hedge_venue)?;
         RateFetcher::init_for_venues(open_venue, hedge_venue)?;
