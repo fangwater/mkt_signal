@@ -25,11 +25,13 @@ fn main() -> Result<()> {
         resolved.output_dir.display()
     );
 
-    let cf_names = persist_manager::sync::order_export_sync_column_families();
+    let required_cf_names = persist_manager::sync::order_export_required_column_families();
+    let optional_cf_names = persist_manager::sync::order_export_optional_column_families();
     let tuning = persist_manager::default_tuning();
-    let store = RocksDbStore::open_read_only_with_tuning(
+    let store = RocksDbStore::open_read_only_with_optional_cfs_and_tuning(
         &resolved.input_dir.to_string_lossy(),
-        &cf_names,
+        required_cf_names,
+        optional_cf_names,
         &tuning,
     )?;
 

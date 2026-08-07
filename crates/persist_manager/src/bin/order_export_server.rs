@@ -235,11 +235,13 @@ async fn run_one_tick(
     let persist_dir = persist_dir.to_path_buf();
     let tmp_dir_clone = tmp_dir.clone();
     let export_result = tokio::task::spawn_blocking(move || -> Result<()> {
-        let cf_names = persist_manager::required_column_families();
+        let required_cf_names = persist_manager::sync::order_export_required_column_families();
+        let optional_cf_names = persist_manager::sync::order_export_optional_column_families();
         let tuning = persist_manager::default_tuning();
-        let store = RocksDbStore::open_read_only_with_tuning(
+        let store = RocksDbStore::open_read_only_with_optional_cfs_and_tuning(
             &persist_dir.to_string_lossy(),
-            &cf_names,
+            required_cf_names,
+            optional_cf_names,
             &tuning,
         )?;
         export_window_to_dir(&store, &tmp_dir_clone, start_us, end_us)
@@ -476,11 +478,13 @@ async fn get_export(
     let tmp_dir_for_blocking = tmp_dir.clone();
     let name_for_blocking = name.clone();
     let blocking = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-        let cf_names = persist_manager::required_column_families();
+        let required_cf_names = persist_manager::sync::order_export_required_column_families();
+        let optional_cf_names = persist_manager::sync::order_export_optional_column_families();
         let tuning = persist_manager::default_tuning();
-        let store = RocksDbStore::open_read_only_with_tuning(
+        let store = RocksDbStore::open_read_only_with_optional_cfs_and_tuning(
             &persist_dir.to_string_lossy(),
-            &cf_names,
+            required_cf_names,
+            optional_cf_names,
             &tuning,
         )?;
         export_window_to_dir(&store, &tmp_dir_for_blocking, start_us, end_us)?;

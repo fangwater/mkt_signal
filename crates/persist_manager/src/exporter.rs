@@ -43,9 +43,16 @@ pub fn export_all_to_dir(store: &RocksDbStore, output_dir: &Path) -> Result<()> 
     let parquet = build_parquet_trade_updates(entries, &range)?;
     write_parquet(output_dir, "trade_updates_unmatched.parquet", parquet)?;
 
-    let entries = store.scan(CF_ORDER_QUEUE_POSITION, None, false, None)?;
-    let parquet = build_parquet_order_queue_positions(entries, &range)?;
-    write_parquet(output_dir, "order_queue_positions.parquet", parquet)?;
+    if store.has_column_family(CF_ORDER_QUEUE_POSITION) {
+        let entries = store.scan(CF_ORDER_QUEUE_POSITION, None, false, None)?;
+        let parquet = build_parquet_order_queue_positions(entries, &range)?;
+        write_parquet(output_dir, "order_queue_positions.parquet", parquet)?;
+    } else {
+        info!(
+            "optional column family {} not found; skipping order queue position export",
+            CF_ORDER_QUEUE_POSITION
+        );
+    }
 
     Ok(())
 }
@@ -95,14 +102,21 @@ pub fn export_window_to_dir(
     let parquet = build_parquet_uniform_orders(entries, &range)?;
     write_parquet(output_dir, "uniform_orders.parquet", parquet)?;
 
-    let entries = store.scan_range(
-        CF_ORDER_QUEUE_POSITION,
-        start_key.as_bytes(),
-        end_key.as_bytes(),
-        None,
-    )?;
-    let parquet = build_parquet_order_queue_positions(entries, &range)?;
-    write_parquet(output_dir, "order_queue_positions.parquet", parquet)?;
+    if store.has_column_family(CF_ORDER_QUEUE_POSITION) {
+        let entries = store.scan_range(
+            CF_ORDER_QUEUE_POSITION,
+            start_key.as_bytes(),
+            end_key.as_bytes(),
+            None,
+        )?;
+        let parquet = build_parquet_order_queue_positions(entries, &range)?;
+        write_parquet(output_dir, "order_queue_positions.parquet", parquet)?;
+    } else {
+        info!(
+            "optional column family {} not found; skipping order queue position export",
+            CF_ORDER_QUEUE_POSITION
+        );
+    }
 
     Ok(())
 }

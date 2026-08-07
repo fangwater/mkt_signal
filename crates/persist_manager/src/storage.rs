@@ -51,6 +51,32 @@ pub struct RocksDbStore {
     secondary: bool,
 }
 
+fn select_existing_column_families<'a>(
+    required_cf_names: &[&'a str],
+    optional_cf_names: &[&'a str],
+    existing_cf_names: &HashSet<String>,
+) -> Result<Vec<&'a str>> {
+    let missing = required_cf_names
+        .iter()
+        .copied()
+        .filter(|name| !existing_cf_names.contains(*name))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "required column families not found: {}",
+            missing.join(", ")
+        ));
+    }
+
+    let mut selected = required_cf_names.to_vec();
+    for name in optional_cf_names {
+        if existing_cf_names.contains(*name) && !selected.contains(name) {
+            selected.push(*name);
+        }
+    }
+    Ok(selected)
+}
+
 impl RocksDbStore {
     #[allow(dead_code)]
     pub fn open(path: &str, cf_names: &[&str], sync_writes: bool) -> Result<Self> {
@@ -104,6 +130,33 @@ impl RocksDbStore {
 
     pub fn open_read_only(path: &str, cf_names: &[&str]) -> Result<Self> {
         Self::open_read_only_with_tuning(path, cf_names, &RocksDbTuning::default())
+    }
+
+    pub fn open_read_only_with_optional_cfs_and_tuning(
+        path: &str,
+        required_cf_names: &[&str],
+        optional_cf_names: &[&str],
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if !path_ref.exists() {
+            return Err(anyhow!("rocksdb path does not exist: {}", path));
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+        let existing_cf_names = DB::list_cf(&db_opts, path_ref)
+            .with_context(|| format!("failed to list column families for {}", path))?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let cf_names = select_existing_column_families(
+            required_cf_names,
+            optional_cf_names,
+            &existing_cf_names,
+        )?;
+
+        Self::open_read_only_with_tuning(path, &cf_names, tuning)
     }
 
     pub fn open_with_existing_cfs_and_tuning(
@@ -264,6 +317,10 @@ impl RocksDbStore {
         self.db
             .try_catch_up_with_primary()
             .with_context(|| "rocksdb secondary failed to catch up with primary")
+    }
+
+    pub fn has_column_family(&self, cf_name: &str) -> bool {
+        self.db.cf_handle(cf_name).is_some()
     }
 
     pub fn put(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -472,5 +529,38 @@ impl RocksDbStore {
         }
 
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_column_family_can_be_absent() {
+        let existing = ["default", "orders"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+
+        let selected =
+            select_existing_column_families(&["orders"], &["order_queue_positions"], &existing)
+                .unwrap();
+
+        assert_eq!(selected, vec!["orders"]);
+    }
+
+    #[test]
+    fn required_column_family_must_exist() {
+        let existing = ["default"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+
+        let err = select_existing_column_families(&["orders"], &[], &existing).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("required column families not found: orders"));
     }
 }

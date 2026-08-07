@@ -93,6 +93,18 @@ pub fn sync_column_families() -> &'static [&'static str] {
     &[CF_SYNC_OUTBOX, CF_SYNC_META, CF_SYNC_APPLIED]
 }
 
+pub fn order_export_required_column_families() -> &'static [&'static str] {
+    &[
+        CF_ORDER_UPDATE_UNMATCHED,
+        CF_TRADE_UPDATE_UNMATCHED,
+        CF_UNIFORM_ORDER,
+    ]
+}
+
+pub fn order_export_optional_column_families() -> &'static [&'static str] {
+    &[CF_ORDER_QUEUE_POSITION]
+}
+
 pub fn order_export_sync_column_families() -> &'static [&'static str] {
     &[
         CF_ORDER_UPDATE_UNMATCHED,
