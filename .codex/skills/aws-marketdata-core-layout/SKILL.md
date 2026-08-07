@@ -99,6 +99,11 @@ Other market-data egress and relay processes use the following assignments:
 | --- | --- | --- |
 | `bridge_sg_model_sender/ipc_bridge` | Outgoing ZMQ TCP source `172.31.46.90` via top-level `zmq_source_ip` | `pmdaemon` process `bridge_sg_model_sender` |
 | `spread_bbo_zmq_pub` (`binance-futures`) | Listen on `172.31.46.90:6320`; peers connect through the EIP associated with that private address | PM2 process `sbbzp_bn_fu` in namespace `spread_bbo_zmq_pub`, CPU `5` |
+| `rclone-gdrive` | Google Drive HTTPS source `172.31.46.92` via `rclone --bind` | systemd `rclone-gdrive.service`; drop-in `/etc/systemd/system/rclone-gdrive.service.d/ens42-bind.conf` |
+| `persist_sync_collector` SG sources | Collector connects to `127.0.0.1:50551-50553`; nginx binds `172.31.46.93` and proxies to `47.131.162.78:6351-6353` | PM2 `persist_center_persist_sync_collector`; nginx config `/etc/nginx/stream-enabled/persist_center_sg_ens42.conf` |
+
+`172.31.46.93` is assigned to non-exchange service egress through explicit
+per-service binds. Review existing consumers before adding another service to it.
 
 Manage the BBO relay with the deployed
 `scripts/start_spread_bbo_zmq_pub.sh` and
