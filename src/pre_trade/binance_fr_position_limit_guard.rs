@@ -164,6 +164,7 @@ struct BinanceFrPositionLimitRefreshResult {
     limits: FastHashMap<String, BinanceFrPositionLimit>,
     online_symbols: usize,
     missing_online: Vec<String>,
+    symbol_config_rows: usize,
     position_rows: usize,
     bracket_rows: usize,
 }
@@ -218,17 +219,18 @@ impl BinanceFrPositionLimitGuard {
             refresh_ctx,
         ));
         info!(
-            "Binance FR position-limit guard startup: env={} limits={} online_symbols={} missing_online={} position_rows={} bracket_rows={}",
+            "Binance FR position-limit guard startup: env={} limits={} online_symbols={} missing_online={} symbol_config_rows={} position_rows={} bracket_rows={}",
             config.env_name,
             current_limit_count(),
             refresh_result.online_symbols,
             missing_count,
+            refresh_result.symbol_config_rows,
             refresh_result.position_rows,
             refresh_result.bracket_rows
         );
         if missing_count > 0 {
             warn!(
-                "Binance FR position-limit guard online symbols missing from positionRisk snapshot: count={} samples=[{}]",
+                "Binance FR position-limit guard online symbols missing from resolved snapshots: count={} samples=[{}]",
                 missing_count,
                 refresh_result
                     .missing_online
@@ -307,11 +309,12 @@ impl BinanceFrPositionLimitGuard {
             state.last_refresh_us = get_timestamp_us();
         });
         info!(
-            "Binance FR position-limit guard refresh applied: source={} limits={} online_symbols={} missing_online={} position_rows={} bracket_rows={}",
+            "Binance FR position-limit guard refresh applied: source={} limits={} online_symbols={} missing_online={} symbol_config_rows={} position_rows={} bracket_rows={}",
             source,
             count,
             result.online_symbols,
             missing_count,
+            result.symbol_config_rows,
             result.position_rows,
             result.bracket_rows
         );
@@ -594,8 +597,17 @@ async fn refresh_binance_fr_position_limits(
         .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
         .build()
         .context("build Binance FR position-limit http client")?;
-    let positions = fetch_binance_position_limits(&client).await?;
+    let mut limits = fetch_binance_symbol_configs(&client).await?;
+    let symbol_config_rows = limits.len();
+    let positions = match fetch_binance_position_limits(&client).await {
+        Ok(positions) => positions,
+        Err(err) => {
+            warn!("Binance FR position-limit guard failed to fetch positionRisk: {err:#}");
+            fast_hash_map()
+        }
+    };
     let position_rows = positions.len();
+    merge_binance_position_limits(&mut limits, positions);
     let bracket_caps = match fetch_binance_leverage_brackets(&client).await {
         Ok(caps) => caps,
         Err(err) => {
@@ -604,7 +616,6 @@ async fn refresh_binance_fr_position_limits(
         }
     };
     let bracket_rows = bracket_caps.len();
-    let mut limits = positions;
     for (symbol, cap) in bracket_caps {
         if let Some(limit) = limits.get_mut(&symbol) {
             limit.bracket_notional_cap = Some(cap);
@@ -627,24 +638,42 @@ async fn refresh_binance_fr_position_limits(
         limits,
         online_symbols: online_symbols.len(),
         missing_online,
+        symbol_config_rows,
         position_rows,
         bracket_rows,
     })
+}
+
+async fn fetch_binance_symbol_configs(
+    client: &Client,
+) -> Result<FastHashMap<String, BinanceFrPositionLimit>> {
+    let body = binance_signed_get(client, "/papi/v1/um/symbolConfig").await?;
+    parse_binance_position_limits_response(&body, "/papi/v1/um/symbolConfig", "symbolConfig")
 }
 
 async fn fetch_binance_position_limits(
     client: &Client,
 ) -> Result<FastHashMap<String, BinanceFrPositionLimit>> {
     let body = binance_signed_get(client, "/papi/v1/um/positionRisk").await?;
+    parse_binance_position_limits_response(&body, "/papi/v1/um/positionRisk", "positionRisk")
+}
+
+fn parse_binance_position_limits_response(
+    body: &str,
+    path: &str,
+    source: &str,
+) -> Result<FastHashMap<String, BinanceFrPositionLimit>> {
     let value: Value = serde_json::from_str(&body).with_context(|| {
         format!(
-            "Binance /papi/v1/um/positionRisk response is not JSON: {}",
+            "Binance {} response is not JSON: {}",
+            path,
             truncate(&body, 500)
         )
     })?;
     let Some(items) = value.as_array() else {
         bail!(
-            "Binance /papi/v1/um/positionRisk response is not an array: {}",
+            "Binance {} response is not an array: {}",
+            path,
             truncate(&body, 500)
         );
     };
@@ -661,16 +690,34 @@ async fn fetch_binance_position_limits(
     }
     if skipped > 0 {
         warn!(
-            "Binance FR position-limit guard skipped positionRisk rows with missing/invalid symbol or maxNotionalValue: skipped={}",
+            "Binance FR position-limit guard skipped {} rows with missing/invalid symbol or maxNotionalValue: skipped={}",
+            source,
             skipped
         );
     }
     debug!(
-        "Binance FR position-limit guard fetched positionRisk: count={} skipped={}",
+        "Binance FR position-limit guard fetched {}: count={} skipped={}",
+        source,
         limits.len(),
         skipped
     );
     Ok(limits)
+}
+
+fn merge_binance_position_limits(
+    limits: &mut FastHashMap<String, BinanceFrPositionLimit>,
+    positions: FastHashMap<String, BinanceFrPositionLimit>,
+) {
+    for (symbol, position) in positions {
+        if let Some(limit) = limits.get_mut(&symbol) {
+            limit.current_notional = position.current_notional;
+            if limit.leverage.is_none() {
+                limit.leverage = position.leverage;
+            }
+        } else {
+            limits.insert(symbol, position);
+        }
+    }
 }
 
 fn parse_binance_position_limit(value: &Value) -> Option<(String, BinanceFrPositionLimit)> {
@@ -1077,6 +1124,57 @@ mod tests {
         assert_eq!(limit.max_notional_value, 50000.0);
         assert_eq!(limit.leverage, Some(5.0));
         assert_eq!(limit.current_notional, Some(-1200.5));
+    }
+
+    #[test]
+    fn keeps_symbol_config_without_position_risk_row() {
+        let symbol_config = serde_json::json!({
+            "symbol": "AGLDUSDT",
+            "leverage": 4,
+            "maxNotionalValue": "50000"
+        });
+        let (symbol, limit) =
+            parse_binance_position_limit(&symbol_config).expect("symbol config limit");
+        let mut limits = fast_hash_map();
+        limits.insert(symbol.clone(), limit);
+
+        merge_binance_position_limits(&mut limits, fast_hash_map());
+
+        let resolved = limits.get(&symbol).expect("resolved limit");
+        assert_eq!(resolved.max_notional_value, 50000.0);
+        assert_eq!(resolved.leverage, Some(4.0));
+        assert_eq!(resolved.current_notional, None);
+    }
+
+    #[test]
+    fn position_risk_only_overlays_runtime_fields() {
+        let mut limits = fast_hash_map();
+        limits.insert(
+            "HFTUSDT".to_string(),
+            BinanceFrPositionLimit {
+                max_notional_value: 50000.0,
+                leverage: Some(5.0),
+                current_notional: None,
+                bracket_notional_cap: None,
+            },
+        );
+        let mut positions = fast_hash_map();
+        positions.insert(
+            "HFTUSDT".to_string(),
+            BinanceFrPositionLimit {
+                max_notional_value: 25000.0,
+                leverage: Some(2.0),
+                current_notional: Some(-1200.5),
+                bracket_notional_cap: None,
+            },
+        );
+
+        merge_binance_position_limits(&mut limits, positions);
+
+        let resolved = limits.get("HFTUSDT").expect("resolved limit");
+        assert_eq!(resolved.max_notional_value, 50000.0);
+        assert_eq!(resolved.leverage, Some(5.0));
+        assert_eq!(resolved.current_notional, Some(-1200.5));
     }
 
     #[test]
