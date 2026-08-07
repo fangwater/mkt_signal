@@ -3,6 +3,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::{Parser, ValueEnum};
+use factor_engine::baseline::SUPPORTED_BASELINES;
 use log::info;
 use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
@@ -71,6 +72,9 @@ struct FactorPlanConfig {
     /// symbol, instead of leaving factors outside each symbol's plan as NaN.
     #[serde(default)]
     uniform_factor_shape: bool,
+    /// Append every baseline implemented by fusion_factor to each live plan.
+    #[serde(default)]
+    include_all_supported_baselines: bool,
 }
 
 impl FactorPlanConfig {
@@ -560,6 +564,14 @@ fn normalize_factor_names(scope: &str, raw: &[String]) -> Result<Vec<String>> {
     Ok(factors)
 }
 
+fn append_all_supported_baselines(factors: &mut Vec<String>) {
+    for name in SUPPORTED_BASELINES {
+        if !factors.iter().any(|factor| factor == name) {
+            factors.push((*name).to_string());
+        }
+    }
+}
+
 fn resolve_replay_plans(
     config: &Config,
     venue: TradingVenue,
@@ -588,19 +600,22 @@ fn resolve_replay_plans(
                 let item = normalized_thresholds
                     .get(symbol)
                     .with_context(|| format!("factor plan response is missing symbol {symbol}"))?;
-                let factors = normalize_factor_names(symbol, &item.factors)?;
+                let mut factors = normalize_factor_names(symbol, &item.factors)?;
+                if plan_config.include_all_supported_baselines {
+                    append_all_supported_baselines(&mut factors);
+                }
                 selected.insert(symbol.clone(), factors);
             }
-            (
-                selected,
-                format!(
-                    "{}/api/thresholds?venue={}&config_type={}",
-                    plan_config.base_url.trim_end_matches('/'),
-                    venue.data_pub_slug(),
-                    plan_config.config_type
-                ),
-                plan_config.uniform_factor_shape,
-            )
+            let mut source = format!(
+                "{}/api/thresholds?venue={}&config_type={}",
+                plan_config.base_url.trim_end_matches('/'),
+                venue.data_pub_slug(),
+                plan_config.config_type,
+            );
+            if plan_config.include_all_supported_baselines {
+                source.push_str(" + factor_engine::baseline::SUPPORTED_BASELINES");
+            }
+            (selected, source, plan_config.uniform_factor_shape)
         }
         None => {
             let factors = normalize_factor_names("config.factors", &config.factors)?;
@@ -1432,6 +1447,28 @@ mod tests {
     }
 
     #[test]
+    fn appends_every_supported_baseline_without_reordering_existing_factors() {
+        let mut factors = vec!["factor_018".to_string(), "baseline_004".to_string()];
+
+        append_all_supported_baselines(&mut factors);
+
+        assert_eq!(&factors[..2], ["factor_018", "baseline_004"]);
+        assert_eq!(
+            factors.len(),
+            SUPPORTED_BASELINES.len() + 1,
+            "the existing baseline must not be duplicated"
+        );
+        assert_eq!(SUPPORTED_BASELINES.len(), 169);
+        for name in SUPPORTED_BASELINES {
+            assert_eq!(factors.iter().filter(|factor| factor == name).count(), 1);
+        }
+        let plan = SymbolFactorPlan::from_factor_names("test", factors)
+            .expect("all supported baseline names map into fusion_factor");
+        BaselineReplayState::validate_factor_plan(&plan)
+            .expect("all selected baselines have fusion computations");
+    }
+
+    #[test]
     fn symbol_factor_plans_build_a_stable_union() {
         let symbols = vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()];
         let plans = build_replay_plans(
@@ -1556,6 +1593,7 @@ mod tests {
         assert_eq!(factor_plan.base_url, "http://52.69.209.108:6322");
         assert_eq!(factor_plan.config_type, "factor_plan");
         assert!(factor_plan.uniform_factor_shape);
+        assert!(factor_plan.include_all_supported_baselines);
         assert_eq!(config.replay_workers, 48);
         assert_eq!(config.replay_chunk_days, Some(1));
         assert_eq!(config.replay_warmup_days, Some(1));

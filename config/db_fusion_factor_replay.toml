@@ -11,12 +11,14 @@ replay_warmup_days = 1
 
 # Load the ordered per-symbol raw-factor plans used by the live 5s publisher.
 # The response is fetched once at startup and remains fixed for the whole run.
-# Build their ordered union and compute that same factor vector for every symbol.
+# Append all baseline factors currently implemented by fusion_factor, then build
+# the ordered union and compute that same factor vector for every symbol.
 [factor_plan]
 base_url = "http://52.69.209.108:6322"
 config_type = "factor_plan"
 request_timeout_ms = 30000
 uniform_factor_shape = true
+include_all_supported_baselines = true
 
 # Computed after baseline rows exist. Rows before start_date warm the rolling
 # state; insufficient history in the requested range is stored as NULL.
