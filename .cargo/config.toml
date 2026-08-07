@@ -1,3 +1,6 @@
+[build]
+target-dir = "/mnt/nvme-raid0-28t/u171/cargo-target/mkt_signal"
+
 [env]
 # Pin ONNX Runtime to repository-local third_party binaries.
 # This prevents ort/ort-sys from attempting network downloads during build.
