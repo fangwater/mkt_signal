@@ -127,83 +127,54 @@ fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only
     !use_binance_ws_margin && !reduce_only
 }
 
-const BINANCE_STANDARD_BALANCE_EPS: f64 = 1e-12;
-
-fn binance_standard_order_lock_for_asset(order: &Order, asset: &str) -> f64 {
-    if order.venue != TradingVenue::BinanceMargin
-        || order.status.is_terminal()
-        || !order.order_type.is_limit()
-    {
-        return 0.0;
-    }
-
-    let remaining_qty = (order.quantity - order.cumulative_filled_quantity).max(0.0);
-    if remaining_qty <= BINANCE_STANDARD_BALANCE_EPS {
-        return 0.0;
-    }
-
-    let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&order.symbol);
-    if order.side == Side::Buy && quote_asset.eq_ignore_ascii_case(asset) {
-        (remaining_qty * order.price).max(0.0)
-    } else if order.side == Side::Sell && base_asset.eq_ignore_ascii_case(asset) {
-        remaining_qty
-    } else {
-        0.0
-    }
-}
-
-fn binance_standard_available_after_local_locks(
-    order_manager: &OrderManager,
-    asset: &str,
-    balance_position: f64,
-) -> (f64, f64) {
-    let local_locked = order_manager
-        .get_all_ids()
-        .into_iter()
-        .filter_map(|order_id| order_manager.get(order_id))
-        .map(|order| binance_standard_order_lock_for_asset(&order, asset))
-        .sum::<f64>();
-    ((balance_position - local_locked).max(0.0), local_locked)
-}
-
-fn ensure_binance_standard_margin_open_balance(
-    order_manager: &OrderManager,
-    venue: TradingVenue,
-    symbol: &str,
-    side: Side,
-    quantity: f64,
-    price: f64,
-    reduce_only: bool,
+fn check_binance_unified_margin_balance(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
 ) -> Result<(), String> {
-    if venue != TradingVenue::BinanceMargin || !order_manager.binance_is_standard() || reduce_only {
-        return Ok(());
-    }
-
-    let (base_asset, quote_asset) = extract_assets_from_internal_symbol(symbol);
-    let (check_asset, required_amount) = match side {
-        Side::Buy => (quote_asset, quantity * price),
-        Side::Sell => (base_asset, quantity),
+    let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&order.symbol);
+    let (check_asset, required_amount) = match order.side {
+        Side::Buy => (quote_asset, order.quantity * order.price),
+        Side::Sell => (base_asset, order.quantity),
     };
 
     use crate::pre_trade::monitor_channel::MonitorChannel;
-    let balance_position =
-        MonitorChannel::instance().balance_position_for_venue(venue, &check_asset);
-    let (available_estimated, local_locked) =
-        binance_standard_available_after_local_locks(order_manager, &check_asset, balance_position);
+    let available_balance =
+        MonitorChannel::instance().balance_position_for_venue(order.venue, &check_asset);
 
-    if available_estimated + BINANCE_STANDARD_BALANCE_EPS < required_amount {
-        return Err(format!(
-            "BinanceMargin STANDARD estimated free balance insufficient: asset={} required={:.8} balance_position={:.8} local_locked={:.8} estimated_free={:.8} symbol={} side={:?} qty={:.8} price={:.8}",
-            check_asset,
-            required_amount,
-            balance_position,
-            local_locked,
-            available_estimated,
-            symbol,
-            side,
-            quantity,
-            price
-        ));
+    if available_balance < required_amount {
+        let borrow_amount = required_amount - available_balance;
+        if order.reduce_only {
+            return Err(format!(
+                "BinanceMargin order has insufficient balance: mode=UNIFIED asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} reduce_only={} qty={} price={}",
+                check_asset,
+                required_amount,
+                available_balance,
+                borrow_amount,
+                order.symbol,
+                order.side,
+                order.reduce_only,
+                resolved.quantity_text(),
+                resolved.price_text()
+            ));
+        }
+        if !suppress_pre_submit_hot_path_logs() {
+            warn!(
+                "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",
+                check_asset,
+                required_amount,
+                available_balance,
+                borrow_amount,
+                order.symbol,
+                order.side,
+                resolved.quantity_text(),
+                resolved.price_text()
+            );
+        }
+    } else if !suppress_pre_submit_hot_path_logs() {
+        info!(
+            "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
+            check_asset, required_amount, available_balance, order.symbol, order.side
+        );
     }
 
     Ok(())
@@ -406,15 +377,6 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, Bytes), String> {
-        ensure_binance_standard_margin_open_balance(
-            self,
-            venue,
-            symbol,
-            side,
-            quantity,
-            price,
-            reduce_only,
-        )?;
         self.try_create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
@@ -468,15 +430,6 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
         pre_trade_recv_t: i64,
         pre_trade_handle_t: i64,
     ) -> Result<(&'static str, PreparedTradeRequest), String> {
-        ensure_binance_standard_margin_open_balance(
-            self,
-            venue,
-            symbol,
-            side,
-            quantity,
-            price,
-            reduce_only,
-        )?;
         self.try_create_order_with_mut_normalized_symbol(
             venue,
             client_order_id,
@@ -674,80 +627,11 @@ impl PreTradeOrderRequestExt for Order {
                 let use_binance_ws_margin =
                     self.require_binance_account_mode() == BinanceAccountMode::Standard;
                 let local_create_ts = get_timestamp_us();
-                // ===== 余额检查和日志记录 =====
-                // 提取 base asset 和 quote asset
-                let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&self.symbol);
-
-                // 根据 side 确定需要检查的资产和所需金额
-                let (check_asset, required_amount) = match self.side {
-                    Side::Buy => {
-                        // BUY: 需要 quote asset (USDT) 的余额
-                        let required = self.quantity * self.price;
-                        (quote_asset, required)
-                    }
-                    Side::Sell => {
-                        // SELL: 需要 base asset 的余额
-                        (base_asset, self.quantity)
-                    }
-                };
-
-                // 从 MonitorChannel 获取 basic margin 余额（当前实现以净余额作为可用余额近似）
-                use crate::pre_trade::monitor_channel::MonitorChannel;
-                let available_balance =
-                    MonitorChannel::instance().balance_position_for_venue(self.venue, &check_asset);
-
-                // 余额判断：保留 reduce-only 防护和日志。
-                // PM REST 的 crossMarginFree 无 websocket 推送，本地净钱包余额不能可靠判断是否需要借币；
-                // 非 reduce-only PM 下单统一带 MARGIN_BUY，避免 free 被挂单占用时误走 NO_SIDE_EFFECT。
-                if available_balance < required_amount {
-                    let borrow_amount = required_amount - available_balance;
-                    if use_binance_ws_margin || self.reduce_only {
-                        return Err(format!(
-                            "BinanceMargin order has insufficient balance: mode={} asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} reduce_only={} qty={} price={}",
-                            if use_binance_ws_margin {
-                                "STANDARD"
-                            } else {
-                                "UNIFIED"
-                            },
-                            check_asset,
-                            required_amount,
-                            available_balance,
-                            borrow_amount,
-                            self.symbol,
-                            self.side,
-                            self.reduce_only,
-                            resolved.quantity_text(),
-                            resolved.price_text()
-                        ));
-                    }
-                    if !suppress_pre_submit_hot_path_logs()
-                        && !(use_binance_ws_margin && self.side == Side::Sell)
-                    {
-                        warn!(
-                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",
-                            check_asset, required_amount, available_balance, borrow_amount,
-                            self.symbol,
-                            self.side,
-                            resolved.quantity_text(),
-                            resolved.price_text()
-                        );
-                    }
-                    if use_binance_ws_margin && !suppress_pre_submit_hot_path_logs() {
-                        info!(
-                            "BinanceMargin STANDARD mode: omit sideEffectType for symbol={} side={:?}",
-                            self.symbol, self.side
-                        );
-                    }
-                } else if !suppress_pre_submit_hot_path_logs() {
-                    info!(
-                        "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
-                        check_asset, required_amount, available_balance, self.symbol, self.side
-                    );
-                    // 本地余额充足只代表净钱包口径充足；PM REST 仍可能需要自动借币。
+                if !use_binance_ws_margin {
+                    check_binance_unified_margin_balance(self, resolved)?;
                 }
                 let margin_buy =
                     binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
-                // ===== 余额检查结束 =====/
 
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
@@ -992,60 +876,8 @@ impl PreTradeOrderRequestExt for Order {
                 let use_binance_ws_margin =
                     self.require_binance_account_mode() == BinanceAccountMode::Standard;
                 let local_create_ts = get_timestamp_us();
-                let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&self.symbol);
-                let (check_asset, required_amount) = match self.side {
-                    Side::Buy => (quote_asset, self.quantity * self.price),
-                    Side::Sell => (base_asset, self.quantity),
-                };
-
-                use crate::pre_trade::monitor_channel::MonitorChannel;
-                let available_balance =
-                    MonitorChannel::instance().balance_position_for_venue(self.venue, &check_asset);
-
-                if available_balance < required_amount {
-                    let borrow_amount = required_amount - available_balance;
-                    if use_binance_ws_margin || self.reduce_only {
-                        return Err(format!(
-                            "BinanceMargin order has insufficient balance: mode={} asset={} required={:.8} available={:.8} borrow={:.8} symbol={} side={:?} reduce_only={} qty={} price={}",
-                            if use_binance_ws_margin {
-                                "STANDARD"
-                            } else {
-                                "UNIFIED"
-                            },
-                            check_asset,
-                            required_amount,
-                            available_balance,
-                            borrow_amount,
-                            self.symbol,
-                            self.side,
-                            self.reduce_only,
-                            resolved.quantity_text(),
-                            resolved.price_text()
-                        ));
-                    }
-                    if !suppress_pre_submit_hot_path_logs()
-                        && !(use_binance_ws_margin && self.side == Side::Sell)
-                    {
-                        warn!(
-                            "💰 余额不足将借币: 资产={} 需要={:.8} 可用={:.8} 需借={:.8} symbol={} side={:?} qty={} price={}",
-                            check_asset, required_amount, available_balance, borrow_amount,
-                            self.symbol,
-                            self.side,
-                            resolved.quantity_text(),
-                            resolved.price_text()
-                        );
-                    }
-                    if use_binance_ws_margin && !suppress_pre_submit_hot_path_logs() {
-                        info!(
-                            "BinanceMargin STANDARD mode: omit sideEffectType for symbol={} side={:?}",
-                            self.symbol, self.side
-                        );
-                    }
-                } else if !suppress_pre_submit_hot_path_logs() {
-                    info!(
-                        "✅ 余额充足: 资产={} 需要={:.8} 可用={:.8} symbol={} side={:?}",
-                        check_asset, required_amount, available_balance, self.symbol, self.side
-                    );
+                if !use_binance_ws_margin {
+                    check_binance_unified_margin_balance(self, resolved)?;
                 }
                 let margin_buy =
                     binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
@@ -1282,10 +1114,10 @@ impl PreTradeOrderRequestExt for Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_margin_should_use_margin_buy, binance_standard_available_after_local_locks,
-        bybit_margin_should_use_leverage, BybitNewOrderRequest, Order, OrderExecutionStatus,
-        OrderManager, OrderQuantizedValue, OrderStatus, OrderType, PreTradeOrderManagerRequestExt,
-        PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
+        binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
+        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
+        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
+        TradeUpdateSkipReason,
     };
     use order_common::{BinanceAccountMode, TradingVenue};
     use serde_json::Value;
@@ -1341,35 +1173,43 @@ mod tests {
     }
 
     #[test]
-    fn binance_standard_available_subtracts_local_open_order_locks() {
-        let mut manager = OrderManager::new(Some(BinanceAccountMode::Standard));
-        manager.create_order(
+    fn binance_standard_margin_request_builders_defer_balance_check_to_exchange() {
+        let order = Order::new(
             TradingVenue::BinanceMargin,
-            1001,
+            40,
             OrderType::Limit,
             "BTCUSDT".to_string(),
             Side::Buy,
-            2.0,
+            1.0,
             100.0,
             false,
             1.0,
+            Some(BinanceAccountMode::Standard),
+            true,
         );
-        manager.update(1001, |order| {
-            order.status = OrderExecutionStatus::Create;
-            order.cumulative_filled_quantity = 0.25;
-        });
 
-        let (available, locked) =
-            binance_standard_available_after_local_locks(&manager, "USDT", 1_000.0);
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("STANDARD spot request should not require a local balance");
+        let request = TradeRequestMsg::parse(bytes.as_ref()).expect("request should parse");
+        assert_eq!(request.req_type, TradeRequestType::BinanceWsNewMarginOrder);
+        let params_bytes = request.params_bytes();
+        let params =
+            trade_engine::trade_request::BinanceNewOrderParams::from_bytes(params_bytes.as_ref())
+                .expect("Binance params should parse");
+        assert!(!params.margin_buy);
 
-        assert!((locked - 175.0).abs() < 1e-12);
-        assert!((available - 825.0).abs() < 1e-12);
-
-        manager.update(1001, |order| order.status = OrderExecutionStatus::Cancelled);
-        let (available_after_cancel, locked_after_cancel) =
-            binance_standard_available_after_local_locks(&manager, "USDT", 1_000.0);
-        assert_eq!(locked_after_cancel, 0.0);
-        assert_eq!(available_after_cancel, 1_000.0);
+        let prepared = order
+            .get_order_request_prepared()
+            .expect("prepared STANDARD spot request should not require a local balance");
+        assert_eq!(
+            prepared.req_type(),
+            TradeRequestType::BinanceWsNewMarginOrder
+        );
+        let params =
+            trade_engine::trade_request::BinanceNewOrderParams::from_bytes(prepared.params_slice())
+                .expect("prepared Binance params should parse");
+        assert!(!params.margin_buy);
     }
 
     #[test]

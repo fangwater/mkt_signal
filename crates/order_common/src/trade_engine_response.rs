@@ -182,10 +182,7 @@ pub trait TradeEngineResponse {
     fn is_insufficient_margin(&self) -> bool {
         match self.exchange_enum() {
             Some(Exchange::Binance) => {
-                matches!(
-                    self.error_code(),
-                    -2010 | -2018 | -2019 | 51006 | 51061 | 51169
-                )
+                matches!(self.error_code(), -2018 | -2019 | 51006 | 51061 | 51169)
             }
             Some(Exchange::Okex) => matches!(self.error_code(), 51008 | 51061),
             Some(Exchange::Bybit) => matches!(
@@ -382,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn detects_binance_insufficient_margin_like_codes() {
+    fn distinguishes_binance_new_order_reject_from_insufficient_margin_codes() {
         let binance_ex = symbol_utils::Exchange::Binance as u32;
         let new_order_rejected = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2010);
         let balance_insufficient = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, -2018);
@@ -392,7 +389,7 @@ mod tests {
         let loanable_unavailable = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, 51061);
         let collateral_cap = TradeEngineResponseMessage::new(400, 1, binance_ex, 123, 51169);
 
-        assert!(new_order_rejected.is_insufficient_margin());
+        assert!(!new_order_rejected.is_insufficient_margin());
         assert!(balance_insufficient.is_insufficient_margin());
         assert!(margin_insufficient.is_insufficient_margin());
         assert!(max_borrowable_exceeded.is_insufficient_margin());

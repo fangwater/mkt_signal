@@ -12,7 +12,6 @@ use trade_signal::ArbMode;
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
 pub const INTRA_SIGNAL_THROTTLE_TTL_US: i64 = SIGNAL_THROTTLE_TTL_US;
 pub const GATE_SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
-pub const SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED: i32 = -2010;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT: i32 = -2018;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
@@ -89,8 +88,7 @@ impl SignalThrottleKey {
 
 pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bool {
     match error_code {
-        SIGNAL_THROTTLE_ERROR_CODE_BINANCE_NEW_ORDER_REJECTED
-        | SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT => {
+        SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT => {
             matches!(exchange, Some(Exchange::Binance))
         }
         SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT
@@ -492,7 +490,7 @@ mod tests {
     #[test]
     fn detects_throttle_error_code() {
         let _guard = TEST_LOCK.lock();
-        assert!(is_throttle_error_code(Some(Exchange::Binance), -2010));
+        assert!(!is_throttle_error_code(Some(Exchange::Binance), -2010));
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2018));
         assert!(is_throttle_error_code(Some(Exchange::Binance), 51169));
         assert!(is_throttle_error_code(Some(Exchange::Binance), -2019));

@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 const MAX_TRADE_RESP_ERROR_DETAIL_CHARS: usize = 512;
 const BINANCE_NEW_ORDER_REJECTED: i32 = -2010;
+const BINANCE_BALANCE_INSUFFICIENT: i32 = -2018;
 const BINANCE_POST_ONLY_REJECTED: i32 = -5022;
 
 // REST 请求执行后的输出（内部使用）
@@ -175,6 +176,11 @@ fn is_binance_post_only_reject_msg(msg: &str) -> bool {
     msg.contains("would immediately match and take") || msg.contains("post only")
 }
 
+fn is_binance_insufficient_balance_msg(msg: &str) -> bool {
+    let msg = msg.to_ascii_lowercase();
+    msg.contains("insufficient balance")
+}
+
 fn is_bitget_margin_risk_msg(msg: &str) -> bool {
     let msg = msg.to_ascii_lowercase();
     [
@@ -195,6 +201,12 @@ fn normalize_trade_error(
     if exchange == Exchange::Binance && code == BINANCE_NEW_ORDER_REJECTED {
         if msg.as_deref().is_some_and(is_binance_post_only_reject_msg) {
             return (BINANCE_POST_ONLY_REJECTED, msg);
+        }
+        if msg
+            .as_deref()
+            .is_some_and(is_binance_insufficient_balance_msg)
+        {
+            return (BINANCE_BALANCE_INSUFFICIENT, msg);
         }
     }
 
@@ -340,6 +352,19 @@ mod tests {
         assert_eq!(
             msg.as_deref(),
             Some("Order would immediately match and take.")
+        );
+    }
+
+    #[test]
+    fn normalizes_binance_spot_insufficient_balance_from_message() {
+        let body =
+            r#"{"code":-2010,"msg":"Account has insufficient balance for requested action."}"#;
+        let (code, msg) = parse_error_code_and_msg(body);
+        let (code, msg) = normalize_trade_error(Exchange::Binance, code, msg);
+        assert_eq!(code, BINANCE_BALANCE_INSUFFICIENT);
+        assert_eq!(
+            msg.as_deref(),
+            Some("Account has insufficient balance for requested action.")
         );
     }
 
