@@ -229,6 +229,8 @@ pub struct ArbHedgeStrategy {
     /// 最近一次 ArbHedge maker 单的 price_offset；taker 时为 0。供 dashboard 显示。
     last_hedge_offset: Option<f64>,
     next_query_ts_us: i64,
+    /// direct-taker 因 venue 最小下单约束会扩大量时的重试冷却。
+    direct_taker_minimum_retry_after_us: i64,
     order_seq: u32,
     hedge_order_meta: FastHashMap<i64, ArbHedgeOrderMeta>,
     orphaned_hedge_order_meta: FastHashMap<i64, ArbHedgeOrderMeta>,
@@ -445,6 +447,7 @@ impl ArbHedgeStrategy {
             last_ret_qtl: None,
             last_hedge_offset: None,
             next_query_ts_us: 0,
+            direct_taker_minimum_retry_after_us: 0,
             order_seq: 0,
             hedge_order_meta: fast_hash_map(),
             orphaned_hedge_order_meta: fast_hash_map(),
@@ -640,6 +643,12 @@ impl ArbHedgeStrategy {
 
     fn pending_hedge_usdt_with_mark_price(pending_hedge_qty: f64, mark_price: f64) -> f64 {
         pending_hedge_qty.abs() * mark_price.abs()
+    }
+
+    fn direct_taker_alignment_upsizes(due_hedge_qty: f64, aligned_base_qty: f64) -> bool {
+        let due_base_qty = due_hedge_qty.abs();
+        let tolerance = ARB_HEDGE_QTY_EPS.max(due_base_qty * 1e-12);
+        aligned_base_qty > due_base_qty + tolerance
     }
 
     fn gate_futures_query_qty_below_min(
@@ -898,6 +907,9 @@ impl ArbHedgeStrategy {
         if self.coalesce_while_hedge_query_inflight(now_ts, source) {
             return false;
         }
+        if now_ts < self.direct_taker_minimum_retry_after_us {
+            return false;
+        }
         self.last_hedge_ts_ms = Some(now_ts / 1000);
         let Some(mark_price) = self.mark_price() else {
             if !suppress_pre_submit_hot_path_logs() {
@@ -987,6 +999,41 @@ impl ArbHedgeStrategy {
             }
             return false;
         }
+
+        let aligned_base_qty =
+            MonitorChannel::instance().qty_to_base(self.hedge_venue, &self.symbol, qty);
+        if !(aligned_base_qty.is_finite() && aligned_base_qty > 0.0) {
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because aligned base qty invalid venue={:?} due_hedge_qty={:.8} aligned_order_qty={:.8} aligned_base_qty={:.8}",
+                self.strategy_id,
+                self.symbol,
+                source,
+                self.hedge_venue,
+                due_hedge_qty,
+                qty,
+                aligned_base_qty
+            );
+            return false;
+        }
+        if Self::direct_taker_alignment_upsizes(due_hedge_qty, aligned_base_qty) {
+            self.direct_taker_minimum_retry_after_us =
+                now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because venue minimum would increase hedge qty venue={:?} due_hedge_qty={:.8} aligned_order_qty={:.8} aligned_base_qty={:.8} retry_after_us={}",
+                    self.strategy_id,
+                    self.symbol,
+                    source,
+                    self.hedge_venue,
+                    due_hedge_qty,
+                    qty,
+                    aligned_base_qty,
+                    self.direct_taker_minimum_retry_after_us
+                );
+            }
+            return false;
+        }
+        self.direct_taker_minimum_retry_after_us = 0;
 
         let qty_tick = MonitorChannel::instance()
             .try_venue_min_qty_table(self.hedge_venue)
@@ -3593,6 +3640,22 @@ mod tests {
         let allowed =
             ArbHedgeStrategy::binance_futures_qty_below_min(0.001, Some(0.001), Some(0.001));
         assert!(allowed.is_none());
+    }
+
+    #[test]
+    fn direct_taker_rejects_venue_minimum_upsize() {
+        assert!(ArbHedgeStrategy::direct_taker_alignment_upsizes(1.37, 2.44));
+        assert!(ArbHedgeStrategy::direct_taker_alignment_upsizes(6.1, 10.0));
+    }
+
+    #[test]
+    fn direct_taker_allows_exact_or_floor_aligned_qty() {
+        assert!(!ArbHedgeStrategy::direct_taker_alignment_upsizes(
+            1.37, 1.37
+        ));
+        assert!(!ArbHedgeStrategy::direct_taker_alignment_upsizes(
+            1.379, 1.37
+        ));
     }
 
     #[test]
