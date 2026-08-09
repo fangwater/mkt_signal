@@ -93,8 +93,8 @@ RISK_PARAMS = {
     "max_pending_limit_orders": "10",  # 最大 live exec 限价挂单数（>=0）
     "exec_max_pending_limit_buy_orders": "10",  # Exec 买侧最大限价挂单数（>=0, 0=关闭）
     "exec_max_pending_limit_sell_orders": "10",  # Exec 卖侧最大限价挂单数（>=0, 0=关闭）
-    "exec_order_rate_limit_per_min": "0",  # Exec 60s 下单频率上限（0=关闭）
-    "exec_order_rate_limit_10s": "0",  # Exec 10s 下单频率上限（0=关闭）
+    "exec_order_rate_limit_per_min": "400",  # Exec 60s 下单频率上限（0=关闭）
+    "exec_order_rate_limit_10s": "200",  # Exec 10s 下单频率上限（0=关闭）
     "exec_max_position_imbalance_ratio": "0.8",  # 截面持仓失衡比例上限，0=关闭
 }
 
