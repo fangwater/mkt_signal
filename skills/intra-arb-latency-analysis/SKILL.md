@@ -9,7 +9,7 @@ Use repo-local parquet snapshots instead of re-reading remote persist services w
 
 ## Workflow
 
-1. Work in `/home/ubuntu/crypto_mkt/mkt_signal` unless the user points to another checkout.
+1. Work in `/home/ubuntu/mkt_signal` unless the user points to another checkout.
 2. If the user does not already have a local snapshot, fetch one first with the existing backfill script.
 3. Run the latency helper on `uniform_orders.parquet`.
 4. For same-exchange spot/futures intra analysis, report spot and futures results in one combined table, not as separate sections.
@@ -87,10 +87,12 @@ python3 skills/intra-arb-latency-analysis/scripts/analyze_intra_arb_latency.py \
 The helper matches the notebook-style latency workflow used in this repo:
 
 - Start from `status == NEW`.
-- Require `signal_ts > 0`, `mkt_ts > 0`, and `create_ts > 0`.
+- Require `signal_ts > 0`, `create_ts > 0`, and a valid market time: dual-BBO
+  `signal_open_ts`/`signal_hedge_ts` for new records, or `mkt_ts` for legacy records.
 - Default venue filter is `BybitMargin`. Pass `--venue any` to disable it.
 - Compute stats on the normal-path subset: non-negative values and `<= --normal-max-ms` for each metric.
-- Report counts and `p50/p90/p95/p99/max`, plus `>5ms` and `>10ms` ratios.
+- Report normal-path `p50/p90/p95/p99/max_ms`, full-sample `actual_max_ms`,
+  plus full-sample `>5ms` and `>10ms` counts/ratios.
 
 Subset semantics:
 
@@ -98,6 +100,53 @@ Subset semantics:
 - `new-with-fill`: those same `NEW` rows whose `client_order_id` later has any row with `amount_update > 0`.
 
 Important: `NEW.amount_update` is normally zero. "Has fill" must be derived from later rows on the same `client_order_id`, not from the `NEW` row itself.
+
+## Trigger Market-Time Rules
+
+For intra-arb open rows, prefer the decision-time BBO columns over the mutable legacy
+`mkt_ts` field:
+
+- A row is precisely classifiable as a new dual-BBO record when both
+  `signal_open_ts > 0` and `signal_hedge_ts > 0`.
+- `signal_open_ts > signal_hedge_ts`: classify it as `spot` trigger and use
+  `signal_open_ts` as `trigger_mkt_ts`.
+- `signal_hedge_ts > signal_open_ts`: classify it as `futures` trigger and use
+  `signal_hedge_ts` as `trigger_mkt_ts`.
+- Equal timestamps are a `tie`; report them separately instead of choosing a leg.
+- If the 12 `signal_bbo` parquet columns are absent, the file uses the legacy schema.
+  Fall back to `mkt_ts` and label the trigger leg unknown.
+- If the columns exist but both legs are null, label the row
+  `legacy_or_empty_signal_bbo`. Parquet cannot distinguish a historical record with
+  no binary tail from a newer empty `signal_bbo` mask.
+- If only one leg is present, label it `incomplete_signal_bbo` and do not infer the
+  spread trigger from one leg.
+
+Use `signal_ts - trigger_mkt_ts` only as exchange-event-to-signal latency. Binance
+BBO timestamps come from exchange fields `E`/`T` at millisecond resolution, so this
+metric also includes clock offset, network delivery, parsing, IPC, and decision time.
+It is not a pure system-internal latency.
+
+## Internal Signal-To-Create
+
+Use `create_ts - signal_ts` as the system-internal pre-order latency. It starts when
+`trade_signal` generates the signal and ends when `pre_trade` first publishes the
+new-order request toward `trade_engine`. It includes signal IPC/queueing, pre-trade
+checks, request construction, and publish cost, but excludes exchange and Internet
+latency.
+
+When dual-BBO fields are available, also group `create_ts - signal_ts` by `spot` or
+`futures` trigger. Trigger grouping explains which market event initiated the
+decision; it does not change the internal metric endpoints.
+
+For slow outliers, use `OpenOrderSlowTrace` to split:
+
+- `signal_to_recv_us`
+- `recv_to_handle_us`
+- `handle_to_publish_start_us`
+- `publish_start_to_done_us`
+
+Do not attribute a large `create_ts - signal_ts` value to strategy calculation when
+`signal_to_recv_us` dominates.
 
 ## Bybit Hedge Rules
 
@@ -129,8 +178,9 @@ Secondary reference metrics:
 
 ## Combined Table Meanings
 
-- `signal_ts - mkt_ts`: 行情延迟.
-- `create_ts - signal_ts`: 内部延迟.
+- `signal_ts - trigger_mkt_ts`: 按现货/合约触发源拆分的交易所行情事件到信号延迟；不是纯系统内部延迟.
+- `signal_ts - mkt_ts`: 旧记录的兼容行情延迟，触发腿未知.
+- `create_ts - signal_ts`: 信号生成到新订单请求首次 publish 的系统内部延迟.
 - `update_ts - create_ts`: 挂单延迟; for spot/open-leg analysis this is measured on the `NEW` row.
 - `local_ts - create_ts`: 完整回报延迟.
 - `futures.create_ts - margin.local_ts`: taker触发内部延迟.

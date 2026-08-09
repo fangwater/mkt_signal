@@ -19,6 +19,23 @@ TIMESTAMP_COLS = [
     "submit_ts",
     "local_ts",
     "mkt_ts",
+    "signal_open_ts",
+    "signal_hedge_ts",
+]
+
+SIGNAL_BBO_COLUMNS = [
+    "signal_open_venue",
+    "signal_open_ts",
+    "signal_open_bid_price",
+    "signal_open_bid_qty",
+    "signal_open_ask_price",
+    "signal_open_ask_qty",
+    "signal_hedge_venue",
+    "signal_hedge_ts",
+    "signal_hedge_bid_price",
+    "signal_hedge_bid_qty",
+    "signal_hedge_ask_price",
+    "signal_hedge_ask_qty",
 ]
 
 METRICS = [
@@ -71,6 +88,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_orders(path: Path) -> pd.DataFrame:
     orders = pd.read_parquet(path)
+    signal_bbo_schema_kind(orders)
     for col in TIMESTAMP_COLS + ["amount_update"]:
         if col in orders.columns:
             orders[col] = pd.to_numeric(orders[col], errors="coerce")
@@ -79,16 +97,75 @@ def load_orders(path: Path) -> pd.DataFrame:
     return orders.sort_values("ts_us").reset_index(drop=True)
 
 
+def signal_bbo_schema_kind(frame: pd.DataFrame) -> str:
+    present = set(SIGNAL_BBO_COLUMNS).intersection(frame.columns)
+    if not present:
+        return "legacy"
+    if len(present) != len(SIGNAL_BBO_COLUMNS):
+        missing = sorted(set(SIGNAL_BBO_COLUMNS) - present)
+        raise ValueError(f"incomplete signal_bbo parquet schema; missing columns: {missing}")
+    return "full"
+
+
+def classify_trigger_market_time(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    legacy_mkt_ts = pd.to_numeric(out["mkt_ts"], errors="coerce")
+    trigger_mkt_ts = legacy_mkt_ts.copy()
+    trigger_leg = pd.Series("legacy_unknown", index=out.index, dtype="object")
+
+    schema_kind = signal_bbo_schema_kind(out)
+    if schema_kind == "legacy":
+        record_kind = pd.Series("legacy_schema", index=out.index, dtype="object")
+    else:
+        open_ts = pd.to_numeric(out["signal_open_ts"], errors="coerce")
+        hedge_ts = pd.to_numeric(out["signal_hedge_ts"], errors="coerce")
+        open_valid = open_ts.notna() & open_ts.gt(0)
+        hedge_valid = hedge_ts.notna() & hedge_ts.gt(0)
+        dual_bbo = open_valid & hedge_valid
+        incomplete_bbo = open_valid ^ hedge_valid
+
+        record_kind = pd.Series(
+            "legacy_or_empty_signal_bbo", index=out.index, dtype="object"
+        )
+        record_kind.loc[incomplete_bbo] = "incomplete_signal_bbo"
+        record_kind.loc[dual_bbo] = "new_signal_bbo"
+
+        spot_trigger = dual_bbo & open_ts.gt(hedge_ts)
+        futures_trigger = dual_bbo & hedge_ts.gt(open_ts)
+        tied_trigger = dual_bbo & open_ts.eq(hedge_ts)
+        trigger_leg.loc[spot_trigger] = "spot"
+        trigger_leg.loc[futures_trigger] = "futures"
+        trigger_leg.loc[tied_trigger] = "tie"
+        trigger_mkt_ts.loc[dual_bbo] = pd.concat(
+            [open_ts.loc[dual_bbo], hedge_ts.loc[dual_bbo]], axis=1
+        ).max(axis=1)
+
+    out["trigger_record_kind"] = record_kind
+    out["trigger_leg"] = trigger_leg
+    out["trigger_mkt_ts"] = trigger_mkt_ts
+    out["signal_minus_trigger_mkt_ms"] = (
+        pd.to_numeric(out["signal_ts"], errors="coerce") - trigger_mkt_ts
+    ) / 1000.0
+    return out
+
+
 def select_new_orders(orders: pd.DataFrame, venue: str) -> pd.DataFrame:
     required = ["status", "signal_ts", "mkt_ts", "create_ts", "client_order_id"]
     missing = [col for col in required if col not in orders.columns]
     if missing:
         raise ValueError(f"missing required columns: {missing}")
 
+    legacy_mkt_ts = pd.to_numeric(orders["mkt_ts"], errors="coerce")
+    valid_market_time = legacy_mkt_ts.gt(0)
+    if signal_bbo_schema_kind(orders) == "full":
+        open_ts = pd.to_numeric(orders["signal_open_ts"], errors="coerce")
+        hedge_ts = pd.to_numeric(orders["signal_hedge_ts"], errors="coerce")
+        valid_market_time |= open_ts.gt(0) & hedge_ts.gt(0)
+
     mask = (
         orders["status"].astype(str).eq("NEW")
         & (orders["signal_ts"] > 0)
-        & (orders["mkt_ts"] > 0)
+        & valid_market_time
         & (orders["create_ts"] > 0)
     )
     if venue.lower() != "any":
@@ -101,8 +178,10 @@ def select_new_orders(orders: pd.DataFrame, venue: str) -> pd.DataFrame:
     for metric_name, lhs, rhs in METRICS:
         lhs_vals = pd.to_numeric(new_orders.get(lhs), errors="coerce")
         rhs_vals = pd.to_numeric(new_orders.get(rhs), errors="coerce")
+        if rhs == "mkt_ts":
+            rhs_vals = rhs_vals.where(rhs_vals.gt(0))
         new_orders[metric_name] = (lhs_vals - rhs_vals) / 1000.0
-    return new_orders
+    return classify_trigger_market_time(new_orders)
 
 
 def select_new_with_fill(orders: pd.DataFrame, new_orders: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -126,6 +205,14 @@ def metric_summary(frame: pd.DataFrame, value_col: str, normal_max_ms: float) ->
         "gt_normal_max_rows": int((nonneg > normal_max_ms).sum()),
         "normal_max_ms": normal_max_ms,
     }
+    if not nonneg.empty:
+        summary.update(
+            actual_max_ms=float(nonneg.max()),
+            gt5_rows=int((nonneg > 5).sum()),
+            gt10_rows=int((nonneg > 10).sum()),
+            gt5_all_pct=float((nonneg > 5).mean() * 100.0),
+            gt10_all_pct=float((nonneg > 10).mean() * 100.0),
+        )
     if normal.empty:
         return summary
 
@@ -152,7 +239,46 @@ def subset_summary(name: str, frame: pd.DataFrame, normal_max_ms: float) -> dict
     }
     for metric_name, _lhs, _rhs in METRICS:
         out["metrics"][metric_name] = metric_summary(frame, metric_name, normal_max_ms)
+    out["trigger_mkt"] = trigger_mkt_summary(frame, normal_max_ms)
     return out
+
+
+def trigger_mkt_summary(frame: pd.DataFrame, normal_max_ms: float) -> dict[str, Any]:
+    record_kind_counts = {
+        str(key): int(value)
+        for key, value in frame["trigger_record_kind"].value_counts(dropna=False).items()
+    }
+    trigger_counts = {
+        str(key): int(value)
+        for key, value in frame["trigger_leg"].value_counts(dropna=False).items()
+    }
+    groups: dict[str, Any] = {}
+    for trigger_leg in ("spot", "futures", "tie", "legacy_unknown"):
+        group = frame[frame["trigger_leg"].eq(trigger_leg)]
+        if group.empty:
+            continue
+        groups[trigger_leg] = {
+            "rows": int(len(group)),
+            "share_pct": float(len(group) / len(frame) * 100.0) if len(frame) else 0.0,
+            "signal_minus_trigger_mkt_ms": metric_summary(
+                group, "signal_minus_trigger_mkt_ms", normal_max_ms
+            ),
+            "create_minus_signal_ms": metric_summary(
+                group, "create_minus_signal_ms", normal_max_ms
+            ),
+        }
+    return {
+        "rule": {
+            "new_record": "both signal_open_ts and signal_hedge_ts are positive",
+            "spot_trigger": "signal_open_ts > signal_hedge_ts",
+            "futures_trigger": "signal_hedge_ts > signal_open_ts",
+            "tie": "signal_open_ts == signal_hedge_ts",
+            "legacy_fallback": "use mkt_ts and leave trigger_leg unknown",
+        },
+        "record_kind_counts": record_kind_counts,
+        "trigger_counts": trigger_counts,
+        "groups": groups,
+    }
 
 
 def build_result(
@@ -444,8 +570,41 @@ def print_text(result: dict[str, Any]) -> None:
                     "    "
                     f"p50={stats['p50_ms']:.3f} p90={stats['p90_ms']:.3f} "
                     f"p95={stats['p95_ms']:.3f} p99={stats['p99_ms']:.3f} "
-                    f"max={stats['max_ms']:.3f} >5ms={stats['gt5_pct']:.3f}% "
-                    f">10ms={stats['gt10_pct']:.3f}%"
+                    f"normal_max={stats['max_ms']:.3f} "
+                    f"actual_max={stats['actual_max_ms']:.3f} "
+                    f">5ms={stats['gt5_all_pct']:.3f}% "
+                    f">10ms={stats['gt10_all_pct']:.3f}%"
+                )
+        trigger_mkt = subset["trigger_mkt"]
+        print("  trigger mkt classification")
+        print(f"    record_kind_counts={trigger_mkt['record_kind_counts']}")
+        print(f"    trigger_counts={trigger_mkt['trigger_counts']}")
+        for trigger_leg, group in trigger_mkt["groups"].items():
+            trigger_stats = group["signal_minus_trigger_mkt_ms"]
+            internal_stats = group["create_minus_signal_ms"]
+            print(
+                "    "
+                f"{trigger_leg}: rows={group['rows']} share={group['share_pct']:.3f}%"
+            )
+            if "p50_ms" in trigger_stats:
+                print(
+                    "      "
+                    f"signal-trigger_mkt p50={trigger_stats['p50_ms']:.3f} "
+                    f"p90={trigger_stats['p90_ms']:.3f} "
+                    f"p95={trigger_stats['p95_ms']:.3f} "
+                    f"p99={trigger_stats['p99_ms']:.3f} "
+                    f"normal_max={trigger_stats['max_ms']:.3f} "
+                    f"actual_max={trigger_stats['actual_max_ms']:.3f}"
+                )
+            if "p50_ms" in internal_stats:
+                print(
+                    "      "
+                    f"create-signal p50={internal_stats['p50_ms']:.3f} "
+                    f"p90={internal_stats['p90_ms']:.3f} "
+                    f"p95={internal_stats['p95_ms']:.3f} "
+                    f"p99={internal_stats['p99_ms']:.3f} "
+                    f"normal_max={internal_stats['max_ms']:.3f} "
+                    f"actual_max={internal_stats['actual_max_ms']:.3f}"
                 )
     hedge = result.get("hedge")
     if hedge:

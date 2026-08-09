@@ -94,6 +94,33 @@
 | MM hedge | null | 对冲决策 BBO |
 | exec | 执行腿 BBO | null |
 
+## Intra 触发时间分类
+
+对于 intra-arb 开仓，价差信号由两腿中本次更新较新的 BBO 触发。分析时使用
+`signal_bbo` 中冻结的双腿时间，而不是可在订单生命周期中变化的 `mkt_ts`：
+
+- `signal_open_ts > signal_hedge_ts`：现货/open 腿触发，
+  `trigger_mkt_ts = signal_open_ts`。
+- `signal_hedge_ts > signal_open_ts`：合约/hedge 腿触发，
+  `trigger_mkt_ts = signal_hedge_ts`。
+- 两者相等：标记为 `tie`，不得任选一腿。
+
+新旧记录按以下规则处理：
+
+- 两腿时间戳都大于 0：`new_signal_bbo`，可以精确分类触发腿。
+- Parquet 完全没有 12 个 `signal_bbo` 列：`legacy_schema`，回退到 `mkt_ts`，
+  触发腿标记为未知。
+- 12 列存在但双腿均为空：`legacy_or_empty_signal_bbo`。Parquet 已丢失物理尾段
+  是否存在的信息，不能进一步断言是旧记录还是新记录的空 presence mask。
+- 只有一腿有效：`incomplete_signal_bbo`，不得据此推断双腿价差的触发源。
+
+延迟口径：
+
+- `signal_ts - trigger_mkt_ts` 是交易所 BBO 事件到本地信号生成的延迟。它包含
+  交易所与本机时钟差、网络、解析、IPC 和决策计算，不是纯系统内部延迟。
+- `create_ts - signal_ts` 才是信号生成到首次下单请求 publish 的系统内部延迟；
+  可以按现货触发和合约触发分组，但两组使用相同的时间端点。
+
 ## 当前策略映射
 
 ## HedgeArbStrategy
