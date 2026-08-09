@@ -1,4 +1,6 @@
-use crate::strategy::batch_exec_strategy::{BatchExecConfig, BatchExecStrategy};
+use crate::strategy::batch_exec_strategy::{
+    BatchExecConfig, BatchExecStrategy, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+};
 use crate::strategy::StrategyManager;
 use anyhow::{Context, Result};
 use log::{info, warn};
@@ -53,9 +55,14 @@ pub struct BatchExecConfigReloader {
     venue: TradingVenue,
     snapshots: BTreeMap<String, BatchExecRedisValue>,
     position_ledger: Option<BatchExecPositionLedger>,
+    pending_removals: BTreeSet<String>,
+    pending_ledger_removals: BTreeSet<String>,
+    removal_configs: BTreeMap<String, BatchExecConfig>,
+    close_configs: BTreeMap<String, BatchExecConfig>,
 }
 
 const STRATEGY_NAMES_KEY: &str = "batch_exec:strategy_names";
+const REMOVED_STRATEGY_NAMES_KEY: &str = "batch_exec:removed_strategy_names";
 const POSITION_LEDGER_KEY: &str = "batch_exec_state:position_allocations";
 const POSITION_LEDGER_VERSION: u32 = 1;
 const POSITION_ALLOCATION_EPS: f64 = 1e-10;
@@ -116,6 +123,10 @@ impl BatchExecPositionLedger {
             .or_default()
             .insert(symbol.to_string(), position_qty);
     }
+
+    fn remove_strategy(&mut self, strategy_name: &str) {
+        self.positions.remove(strategy_name);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +145,7 @@ struct PositionAllocationCandidate {
 }
 
 fn validate_strategy_name(name: &str) -> Result<()> {
-    if name == "strategy_names" {
+    if matches!(name, "strategy_names" | "removed_strategy_names") {
         anyhow::bail!("strategy_name is reserved: {name}");
     }
     let mut chars = name.chars();
@@ -145,6 +156,14 @@ fn validate_strategy_name(name: &str) -> Result<()> {
         || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
     {
         anyhow::bail!("strategy_name must match [A-Za-z0-9][A-Za-z0-9._-]*: {name}");
+    }
+    Ok(())
+}
+
+fn validate_config_strategy_name(name: &str) -> Result<()> {
+    validate_strategy_name(name)?;
+    if name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME {
+        anyhow::bail!("strategy_name is reserved: {name}");
     }
     Ok(())
 }
@@ -161,6 +180,7 @@ fn distribute_position_difference_to_target_gaps(
     let gaps: Vec<(usize, f64)> = candidates
         .iter()
         .enumerate()
+        .filter(|(_, candidate)| candidate.strategy_name != BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME)
         .filter(|(_, candidate)| !missing_only || candidate.missing_position)
         .filter_map(|(index, candidate)| {
             let gap = candidate.target_qty - candidate.position_qty;
@@ -190,28 +210,74 @@ fn distribute_position_difference_to_target_gaps(
 fn allocate_account_position(
     candidates: &mut [PositionAllocationCandidate],
     account_position_qty: f64,
-) {
+) -> f64 {
     if candidates.is_empty() {
-        return;
+        return account_position_qty;
     }
     let allocated_qty: f64 = candidates
         .iter()
         .map(|candidate| candidate.position_qty)
         .sum();
     let mut difference = account_position_qty - allocated_qty;
-    // New allocations consume same-direction target gaps first. Persisted allocations then
-    // absorb any remaining restart drift, with the first stable strategy as the final fallback.
+    // Existing strategies absorb only same-direction target gaps. Any unmatched position is
+    // returned to the caller and assigned to SYSTEM_POSITION_CLOSE.
     difference = distribute_position_difference_to_target_gaps(candidates, difference, true);
-    difference = distribute_position_difference_to_target_gaps(candidates, difference, false);
-    if difference.abs() > POSITION_ALLOCATION_EPS {
-        candidates[0].position_qty += difference;
-    }
+    distribute_position_difference_to_target_gaps(candidates, difference, false)
+}
 
-    let corrected_total: f64 = candidates
+fn assign_residual_to_position_close(
+    candidates: &mut [PositionAllocationCandidate],
+    residual: f64,
+) -> bool {
+    if residual.abs() <= POSITION_ALLOCATION_EPS {
+        return true;
+    }
+    let Some(close) = candidates
+        .iter_mut()
+        .find(|candidate| candidate.strategy_name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME)
+    else {
+        return false;
+    };
+    close.position_qty += residual;
+    true
+}
+
+fn select_requested_removals(
+    removal_requests: &BTreeSet<String>,
+    snapshot_names: &BTreeSet<String>,
+    ledger_names: &BTreeSet<String>,
+    manager_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    removal_requests
         .iter()
-        .map(|candidate| candidate.position_qty)
-        .sum();
-    candidates[0].position_qty += account_position_qty - corrected_total;
+        .filter(|name| {
+            snapshot_names.contains(*name)
+                || ledger_names.contains(*name)
+                || manager_names.contains(*name)
+        })
+        .cloned()
+        .collect()
+}
+
+fn nonzero_unmanaged_ledger_names(
+    positions: &BTreeMap<String, BTreeMap<String, f64>>,
+    active_names: &BTreeSet<String>,
+    removal_requests: &BTreeSet<String>,
+    manager_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    positions
+        .iter()
+        .filter(|(strategy_name, strategy_positions)| {
+            strategy_name.as_str() != BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME
+                && !active_names.contains(*strategy_name)
+                && !removal_requests.contains(*strategy_name)
+                && !manager_names.contains(*strategy_name)
+                && strategy_positions
+                    .values()
+                    .any(|position_qty| position_qty.abs() > POSITION_ALLOCATION_EPS)
+        })
+        .map(|(strategy_name, _)| strategy_name.clone())
+        .collect()
 }
 
 impl BatchExecConfigReloader {
@@ -222,11 +288,37 @@ impl BatchExecConfigReloader {
             venue,
             snapshots: BTreeMap::new(),
             position_ledger: None,
+            pending_removals: BTreeSet::new(),
+            pending_ledger_removals: BTreeSet::new(),
+            removal_configs: BTreeMap::new(),
+            close_configs: BTreeMap::new(),
         })
     }
 
     fn redis_key(strategy_name: &str) -> String {
         format!("batch_exec:{strategy_name}")
+    }
+
+    fn close_config_for_symbol(&self, symbol: &str) -> BatchExecConfig {
+        self.close_configs
+            .get(symbol)
+            .cloned()
+            .or_else(|| {
+                self.snapshots.values().find_map(|payload| {
+                    payload
+                        .targets
+                        .keys()
+                        .any(|candidate| normalize_symbol_for_internal(candidate) == symbol)
+                        .then(|| payload.config.clone())
+                })
+            })
+            .or_else(|| {
+                self.snapshots
+                    .values()
+                    .next()
+                    .map(|payload| payload.config.clone())
+            })
+            .unwrap_or_default()
     }
 
     async fn load_position_ledger(&mut self) -> Result<()> {
@@ -249,6 +341,288 @@ impl BatchExecConfigReloader {
         );
         self.position_ledger = Some(ledger);
         Ok(())
+    }
+
+    async fn queue_removed_strategies(
+        &mut self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        removal_requests: &BTreeSet<String>,
+    ) -> Result<()> {
+        let manager_names = {
+            let manager = strategy_mgr.borrow();
+            manager
+                .iter_ids()
+                .filter_map(|strategy_id| {
+                    manager
+                        .get(*strategy_id)?
+                        .as_any()
+                        .downcast_ref::<BatchExecStrategy>()
+                        .filter(|exec| exec.exec_venue() == self.venue)
+                        .map(|exec| exec.strategy_name().to_string())
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let snapshot_names = self.snapshots.keys().cloned().collect::<BTreeSet<_>>();
+        let ledger_names = self
+            .position_ledger
+            .as_ref()
+            .map(|ledger| ledger.positions.keys().cloned().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        let removed_names = select_requested_removals(
+            removal_requests,
+            &snapshot_names,
+            &ledger_names,
+            &manager_names,
+        );
+
+        let newly_removed = removed_names
+            .into_iter()
+            .filter(|name| self.pending_removals.insert(name.clone()))
+            .collect::<Vec<_>>();
+        if !newly_removed.is_empty() {
+            Self::begin_removal_reallocation(strategy_mgr, self.venue);
+        }
+        for strategy_name in newly_removed {
+            let payload = match self.snapshots.get(&strategy_name).cloned() {
+                Some(payload) => Some(payload),
+                None => {
+                    let key = Self::redis_key(&strategy_name);
+                    self.client
+                        .get_json::<BatchExecRedisValue>(&key)
+                        .await
+                        .with_context(|| format!("load removed BatchExec config key={key}"))?
+                }
+            };
+            if let Some(payload) = payload {
+                payload.validate().with_context(|| {
+                    format!("invalid removed BatchExec config strategy_name={strategy_name}")
+                })?;
+                self.removal_configs
+                    .insert(strategy_name.clone(), payload.config);
+            }
+            info!(
+                "BatchExec strategy removal queued: strategy_name={}",
+                strategy_name
+            );
+        }
+        Ok(())
+    }
+
+    fn unmanaged_nonzero_ledger_names(
+        &self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        active_names: &BTreeSet<String>,
+        removal_requests: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let Some(ledger) = self.position_ledger.as_ref() else {
+            return BTreeSet::new();
+        };
+        let manager_names = {
+            let manager = strategy_mgr.borrow();
+            manager
+                .iter_ids()
+                .filter_map(|strategy_id| {
+                    manager
+                        .get(*strategy_id)?
+                        .as_any()
+                        .downcast_ref::<BatchExecStrategy>()
+                        .filter(|exec| exec.exec_venue() == self.venue)
+                        .map(|exec| exec.strategy_name().to_string())
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        nonzero_unmanaged_ledger_names(
+            &ledger.positions,
+            active_names,
+            removal_requests,
+            &manager_names,
+        )
+    }
+
+    fn begin_removal_reallocation(
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        venue: TradingVenue,
+    ) -> usize {
+        let strategy_ids = {
+            let manager = strategy_mgr.borrow();
+            manager
+                .iter_ids()
+                .copied()
+                .filter(|strategy_id| {
+                    manager.get(*strategy_id).is_some_and(|strategy| {
+                        strategy
+                            .as_any()
+                            .downcast_ref::<BatchExecStrategy>()
+                            .is_some_and(|exec| exec.exec_venue() == venue)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut paused = 0usize;
+        let mut manager = strategy_mgr.borrow_mut();
+        for strategy_id in strategy_ids {
+            let Some(mut strategy) = manager.take(strategy_id) else {
+                continue;
+            };
+            if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                exec.begin_position_reallocation();
+                paused += 1;
+            }
+            manager.insert(strategy);
+        }
+        paused
+    }
+
+    fn all_batch_exec_reconciliation_settled(
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        venue: TradingVenue,
+        now_ts: i64,
+    ) -> bool {
+        let manager = strategy_mgr.borrow();
+        let settled = manager.iter_ids().copied().all(|strategy_id| {
+            manager.get(strategy_id).is_none_or(|strategy| {
+                strategy
+                    .as_any()
+                    .downcast_ref::<BatchExecStrategy>()
+                    .is_none_or(|exec| {
+                        exec.exec_venue() != venue || exec.position_reconciliation_settled(now_ts)
+                    })
+            })
+        });
+        settled
+    }
+
+    fn pending_removal_symbols(
+        &mut self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    ) -> BTreeSet<String> {
+        let mut symbols = BTreeSet::new();
+        if let Some(ledger) = self.position_ledger.as_ref() {
+            for strategy_name in &self.pending_removals {
+                let Some(positions) = ledger.positions.get(strategy_name) else {
+                    continue;
+                };
+                for (symbol, position_qty) in positions {
+                    if position_qty.abs() > POSITION_ALLOCATION_EPS {
+                        symbols.insert(symbol.clone());
+                        if let Some(config) = self.removal_configs.get(strategy_name) {
+                            self.close_configs
+                                .entry(symbol.clone())
+                                .or_insert_with(|| config.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let manager = strategy_mgr.borrow();
+        for strategy_id in manager.iter_ids().copied() {
+            let Some(strategy) = manager.get(strategy_id) else {
+                continue;
+            };
+            let Some(exec) = strategy.as_any().downcast_ref::<BatchExecStrategy>() else {
+                continue;
+            };
+            if self.pending_removals.contains(exec.strategy_name())
+                && exec
+                    .virtual_position_qty()
+                    .is_some_and(|qty| qty.abs() > POSITION_ALLOCATION_EPS)
+            {
+                let symbol = exec.exec_symbol().to_string();
+                symbols.insert(symbol.clone());
+                if let Some(config) = self.removal_configs.get(exec.strategy_name()) {
+                    self.close_configs
+                        .entry(symbol)
+                        .or_insert_with(|| config.clone());
+                }
+            }
+        }
+        symbols
+    }
+
+    fn remove_pending_strategies(&mut self, strategy_mgr: &Rc<RefCell<StrategyManager>>) -> usize {
+        let strategy_ids = {
+            let manager = strategy_mgr.borrow();
+            manager
+                .iter_ids()
+                .copied()
+                .filter(|strategy_id| {
+                    manager.get(*strategy_id).is_some_and(|strategy| {
+                        strategy
+                            .as_any()
+                            .downcast_ref::<BatchExecStrategy>()
+                            .is_some_and(|exec| {
+                                self.pending_removals.contains(exec.strategy_name())
+                            })
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut manager = strategy_mgr.borrow_mut();
+        let mut removed = 0usize;
+        for strategy_id in strategy_ids {
+            if manager.remove(strategy_id).is_some() {
+                removed += 1;
+            }
+        }
+        for strategy_name in std::mem::take(&mut self.pending_removals) {
+            self.pending_ledger_removals.insert(strategy_name.clone());
+            self.snapshots.remove(&strategy_name);
+            self.removal_configs.remove(&strategy_name);
+            info!(
+                "BatchExec strategy removed from memory; position pending reallocation: strategy_name={}",
+                strategy_name
+            );
+        }
+        removed
+    }
+
+    fn ensure_position_close_strategies(
+        &self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        symbols: &BTreeSet<String>,
+    ) -> usize {
+        let mut applied = 0usize;
+        for symbol in symbols {
+            let strategy_id = strategy_mgr
+                .borrow_mut()
+                .ensure_batch_exec_strategy_for_normalized_symbol(
+                    BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+                    symbol,
+                    self.venue,
+                    self.close_config_for_symbol(symbol),
+                );
+            let strategy = { strategy_mgr.borrow_mut().take(strategy_id) };
+            if let Some(mut strategy) = strategy {
+                if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                    if exec.target_qty() != Some(0.0) {
+                        exec.update_target(
+                            0.0,
+                            get_timestamp_us(),
+                            b"batch_exec:system_position_close".to_vec(),
+                        );
+                        applied += 1;
+                    }
+                }
+                strategy_mgr.borrow_mut().insert(strategy);
+            }
+        }
+        applied
+    }
+
+    fn persisted_position_close_symbols(&self) -> BTreeSet<String> {
+        self.position_ledger
+            .as_ref()
+            .and_then(|ledger| {
+                ledger
+                    .positions
+                    .get(BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME)
+            })
+            .into_iter()
+            .flat_map(|positions| positions.iter())
+            .filter_map(|(symbol, position_qty)| {
+                (position_qty.abs() > POSITION_ALLOCATION_EPS).then(|| symbol.clone())
+            })
+            .collect()
     }
 
     fn collect_position_candidates(
@@ -394,10 +768,8 @@ impl BatchExecConfigReloader {
         }
 
         let now_ts = get_timestamp_us();
-        let candidates = self.collect_position_candidates(strategy_mgr, now_ts);
-        if candidates.is_empty() {
-            return Ok(0);
-        }
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        let mut candidates = self.collect_position_candidates(strategy_mgr, now_ts);
         let mut groups = BTreeMap::<String, Vec<PositionAllocationCandidate>>::new();
         for candidate in &candidates {
             groups
@@ -406,7 +778,47 @@ impl BatchExecConfigReloader {
                 .push(candidate.clone());
         }
 
-        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        let mut missing_close_symbols = BTreeSet::new();
+        for (symbol, group) in &groups {
+            if group
+                .iter()
+                .any(|candidate| candidate.strategy_name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME)
+            {
+                continue;
+            }
+            let account_position_qty = monitor.get_position_qty(symbol, self.venue);
+            let allocated_qty: f64 = group.iter().map(|candidate| candidate.position_qty).sum();
+            let difference = account_position_qty - allocated_qty;
+            let needs_initialization = group.iter().any(|candidate| !candidate.allocation_ready);
+            let can_initialize = !group.iter().any(|candidate| candidate.execution_in_flight)
+                && !group.iter().any(|candidate| {
+                    candidate.has_virtual_position && !candidate.reconciliation_settled
+                });
+            let can_reconcile = group.iter().all(|candidate| candidate.reconciliation_ready);
+            if (needs_initialization && !can_initialize)
+                || (!needs_initialization
+                    && (difference.abs() <= POSITION_ALLOCATION_EPS || !can_reconcile))
+            {
+                continue;
+            }
+            let mut proposed = group.clone();
+            let residual = allocate_account_position(&mut proposed, account_position_qty);
+            if residual.abs() > POSITION_ALLOCATION_EPS {
+                missing_close_symbols.insert(symbol.clone());
+            }
+        }
+        if !missing_close_symbols.is_empty() {
+            self.ensure_position_close_strategies(strategy_mgr, &missing_close_symbols);
+            candidates = self.collect_position_candidates(strategy_mgr, now_ts);
+            groups.clear();
+            for candidate in &candidates {
+                groups
+                    .entry(candidate.symbol.clone())
+                    .or_default()
+                    .push(candidate.clone());
+            }
+        }
+
         let mut plans = Vec::new();
         for (symbol, mut group) in groups {
             let account_position_qty = monitor.get_position_qty(&symbol, self.venue);
@@ -427,13 +839,27 @@ impl BatchExecConfigReloader {
                 continue;
             }
 
-            allocate_account_position(&mut group, account_position_qty);
+            let residual = allocate_account_position(&mut group, account_position_qty);
+            if !assign_residual_to_position_close(&mut group, residual) {
+                warn!(
+                    "BatchExec position allocation deferred without close strategy: symbol={} residual_qty={:.8}",
+                    symbol, residual
+                );
+                continue;
+            }
+            let corrected_total: f64 = group.iter().map(|candidate| candidate.position_qty).sum();
+            if let Some(close) = group.iter_mut().find(|candidate| {
+                candidate.strategy_name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME
+            }) {
+                close.position_qty += account_position_qty - corrected_total;
+            }
             info!(
-                "BatchExec aggregate position allocation planned: symbol={} account_position_qty={:.8} previous_allocated_qty={:.8} strategies={}",
+                "BatchExec aggregate position allocation planned: symbol={} account_position_qty={:.8} previous_allocated_qty={:.8} strategies={} close_residual_qty={:.8}",
                 symbol,
                 account_position_qty,
                 allocated_qty,
-                group.len()
+                group.len(),
+                residual
             );
             plans.extend(group);
         }
@@ -442,6 +868,9 @@ impl BatchExecConfigReloader {
             .position_ledger
             .clone()
             .unwrap_or_else(BatchExecPositionLedger::empty);
+        for strategy_name in &self.pending_ledger_removals {
+            next_ledger.remove_strategy(strategy_name);
+        }
         for candidate in &candidates {
             next_ledger.set(
                 &candidate.strategy_name,
@@ -489,23 +918,50 @@ impl BatchExecConfigReloader {
             self.position_ledger = Some(next_ledger);
         }
 
+        self.pending_ledger_removals.clear();
+
         Self::apply_position_allocations(strategy_mgr, &plans, now_ts)
     }
 
     pub async fn reload(&mut self, strategy_mgr: &Rc<RefCell<StrategyManager>>) -> Result<usize> {
-        let mut applied = self.reconcile_position_allocations(strategy_mgr).await?;
+        self.load_position_ledger().await?;
+        let mut applied = 0usize;
         let strategy_names = self
             .client
             .get_json::<Vec<String>>(STRATEGY_NAMES_KEY)
             .await
             .with_context(|| format!("load Redis key {STRATEGY_NAMES_KEY}"))?
             .unwrap_or_default();
+        let removed_strategy_names = self
+            .client
+            .get_json::<Vec<String>>(REMOVED_STRATEGY_NAMES_KEY)
+            .await
+            .with_context(|| format!("load Redis key {REMOVED_STRATEGY_NAMES_KEY}"))?
+            .unwrap_or_default();
+        let mut removal_requests = BTreeSet::new();
+        for name in removed_strategy_names {
+            validate_config_strategy_name(&name)?;
+            if !removal_requests.insert(name.clone()) {
+                anyhow::bail!("duplicate strategy_name in {REMOVED_STRATEGY_NAMES_KEY}: {name}");
+            }
+        }
         let mut active_names = BTreeSet::new();
         for name in strategy_names {
-            validate_strategy_name(&name)?;
+            validate_config_strategy_name(&name)?;
             if !active_names.insert(name.clone()) {
                 anyhow::bail!("duplicate strategy_name in {STRATEGY_NAMES_KEY}: {name}");
             }
+        }
+        for strategy_name in active_names
+            .intersection(&removal_requests)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            warn!(
+                "BatchExec explicit removal overrides active index: strategy_name={}",
+                strategy_name
+            );
+            active_names.remove(&strategy_name);
         }
 
         let mut loaded = Vec::new();
@@ -535,7 +991,13 @@ impl BatchExecConfigReloader {
             loaded.push((strategy_name, key, payload, normalized_targets));
         }
 
+        self.queue_removed_strategies(strategy_mgr, &removal_requests)
+            .await?;
+
         for (strategy_name, key, payload, targets) in loaded {
+            if self.pending_removals.contains(&strategy_name) {
+                continue;
+            }
             let previous = self.snapshots.get(&strategy_name);
             let config_changed = previous.is_none_or(|old| old.config != payload.config);
             let previous_targets = previous
@@ -547,6 +1009,9 @@ impl BatchExecConfigReloader {
             symbols.extend(previous_targets.keys().cloned());
 
             for symbol in symbols {
+                self.close_configs
+                    .entry(symbol.clone())
+                    .or_insert_with(|| payload.config.clone());
                 let target_qty = targets.get(&symbol).copied().unwrap_or(0.0);
                 let old_target = previous_targets.get(&symbol).copied();
                 let target_changed = old_target != Some(target_qty);
@@ -588,51 +1053,34 @@ impl BatchExecConfigReloader {
             self.snapshots.insert(strategy_name, payload);
         }
 
-        let removed_names: Vec<String> = self
-            .snapshots
-            .keys()
-            .filter(|name| !active_names.contains(*name))
-            .cloned()
-            .collect();
-        for strategy_name in removed_names {
-            let Some(previous) = self.snapshots.get(&strategy_name).cloned() else {
-                continue;
-            };
-            let key = Self::redis_key(&strategy_name);
-            let targets = previous.normalized_targets()?;
-            let mut reset_snapshot = previous.clone();
-            for target in reset_snapshot.targets.values_mut() {
-                *target = 0.0;
-            }
-            for (symbol, old_target) in targets {
-                if old_target == 0.0 {
-                    continue;
-                }
-                let strategy_id = strategy_mgr
-                    .borrow_mut()
-                    .ensure_batch_exec_strategy_for_normalized_symbol(
-                        &strategy_name,
-                        &symbol,
-                        self.venue,
-                        previous.config.clone(),
-                    );
-                let strategy = { strategy_mgr.borrow_mut().take(strategy_id) };
-                if let Some(mut strategy) = strategy {
-                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
-                        exec.update_target(0.0, get_timestamp_us(), key.as_bytes().to_vec());
-                        applied += 1;
-                    }
-                    strategy_mgr.borrow_mut().insert(strategy);
-                }
-            }
-            if previous.targets != reset_snapshot.targets {
-                info!(
-                    "BatchExec strategy removed from index; targets reset to zero: strategy_name={}",
-                    strategy_name
-                );
-            }
-            self.snapshots.insert(strategy_name, reset_snapshot);
+        let unmanaged_ledger_names =
+            self.unmanaged_nonzero_ledger_names(strategy_mgr, &active_names, &removal_requests);
+        if !unmanaged_ledger_names.is_empty() {
+            anyhow::bail!(
+                "BatchExec position ledger contains non-zero strategies without an explicit removal request: {}; use DELETE /api/strategy?name=<strategy_name>",
+                unmanaged_ledger_names.into_iter().collect::<Vec<_>>().join(",")
+            );
         }
+
+        if !self.pending_removals.is_empty() {
+            Self::begin_removal_reallocation(strategy_mgr, self.venue);
+            let now_ts = get_timestamp_us();
+            if crate::pre_trade::monitor_channel::MonitorChannel::instance()
+                .exec_position_snapshot_ready()
+                && Self::all_batch_exec_reconciliation_settled(strategy_mgr, self.venue, now_ts)
+            {
+                let close_symbols = self.pending_removal_symbols(strategy_mgr);
+                applied += self.remove_pending_strategies(strategy_mgr);
+                applied += self.ensure_position_close_strategies(strategy_mgr, &close_symbols);
+            }
+            if !self.pending_removals.is_empty() {
+                return Ok(applied);
+            }
+        }
+
+        let persisted_close_symbols = self.persisted_position_close_symbols();
+        applied += self.ensure_position_close_strategies(strategy_mgr, &persisted_close_symbols);
+
         applied += self.reconcile_position_allocations(strategy_mgr).await?;
         Ok(applied)
     }
@@ -751,9 +1199,99 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_position_is_returned_for_system_close() {
+        let mut candidates = vec![
+            allocation_candidate(1, "cta_a", -1.0, 0.0, true),
+            allocation_candidate(2, "cta_b", -2.0, 0.0, true),
+        ];
+
+        let residual = allocate_account_position(&mut candidates, -5.0);
+
+        assert!((candidates[0].position_qty + 1.0).abs() < POSITION_ALLOCATION_EPS);
+        assert!((candidates[1].position_qty + 2.0).abs() < POSITION_ALLOCATION_EPS);
+        assert!((residual + 2.0).abs() < POSITION_ALLOCATION_EPS);
+    }
+
+    #[test]
+    fn system_close_receives_only_unmatched_residual() {
+        let mut candidates = vec![
+            allocation_candidate(1, "cta_a", -1.0, 0.0, true),
+            allocation_candidate(2, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME, 0.0, 0.0, true),
+        ];
+
+        let residual = allocate_account_position(&mut candidates, -3.0);
+        assert!(assign_residual_to_position_close(&mut candidates, residual));
+
+        assert!((candidates[0].position_qty + 1.0).abs() < POSITION_ALLOCATION_EPS);
+        assert!((candidates[1].position_qty + 2.0).abs() < POSITION_ALLOCATION_EPS);
+        assert!(
+            (candidates
+                .iter()
+                .map(|candidate| candidate.position_qty)
+                .sum::<f64>()
+                + 3.0)
+                .abs()
+                < POSITION_ALLOCATION_EPS
+        );
+    }
+
+    #[test]
     fn validates_strategy_name_for_redis_keys() {
         validate_strategy_name("cta.alpha_01").unwrap();
         assert!(validate_strategy_name("").is_err());
         assert!(validate_strategy_name("cta:alpha").is_err());
+        assert!(validate_strategy_name("removed_strategy_names").is_err());
+        validate_strategy_name(BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME).unwrap();
+        assert!(validate_config_strategy_name(BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME).is_err());
+    }
+
+    #[test]
+    fn only_explicit_removal_requests_select_runtime_state() {
+        let removal_requests = BTreeSet::from(["cta_removed".to_string()]);
+        let snapshot_names = BTreeSet::from([
+            "cta_removed".to_string(),
+            "cta_stopped_but_not_removed".to_string(),
+        ]);
+
+        assert_eq!(
+            select_requested_removals(
+                &removal_requests,
+                &snapshot_names,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+            ),
+            removal_requests
+        );
+    }
+
+    #[test]
+    fn unmanaged_nonzero_ledger_requires_explicit_removal() {
+        let positions = BTreeMap::from([
+            (
+                "cta_orphan".to_string(),
+                BTreeMap::from([("BTCUSDT".to_string(), 0.5)]),
+            ),
+            (
+                "cta_zero".to_string(),
+                BTreeMap::from([("ETHUSDT".to_string(), 0.0)]),
+            ),
+        ]);
+
+        assert_eq!(
+            nonzero_unmanaged_ledger_names(
+                &positions,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+            ),
+            BTreeSet::from(["cta_orphan".to_string()])
+        );
+        assert!(nonzero_unmanaged_ledger_names(
+            &positions,
+            &BTreeSet::new(),
+            &BTreeSet::from(["cta_orphan".to_string()]),
+            &BTreeSet::new(),
+        )
+        .is_empty());
     }
 }

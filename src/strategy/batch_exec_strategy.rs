@@ -36,6 +36,8 @@ const BBO_MAX_AGE_US: i64 = 2_000_000;
 const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
 const BATCH_EXEC_SIGNAL_KIND: u8 = 0;
 
+pub const BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchExecConfig {
@@ -47,6 +49,21 @@ pub struct BatchExecConfig {
     pub maker_timeout_ms: u32,
     pub max_maker_requotes: u32,
     pub target_tolerance_usdt: f64,
+}
+
+impl Default for BatchExecConfig {
+    fn default() -> Self {
+        Self {
+            single_order_usdt: 100.0,
+            orders_per_batch: 3,
+            maker_price_anchor: MakerPriceAnchor::OwnBest,
+            tick_spacing: 1,
+            batch_interval_ms: 500,
+            maker_timeout_ms: 1_000,
+            max_maker_requotes: 2,
+            target_tolerance_usdt: 10.0,
+        }
+    }
 }
 
 impl BatchExecConfig {
@@ -685,6 +702,23 @@ impl BatchExecStrategy {
 
     pub fn pause_position_allocation(&mut self) {
         self.position_allocation_ready = false;
+    }
+
+    pub fn begin_position_reallocation(&mut self) {
+        self.pause_position_allocation();
+        let batch_ids: Vec<u64> = self.batches.keys().copied().collect();
+        for batch_seq in batch_ids {
+            self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForTarget);
+        }
+
+        let orphaned_batches = self
+            .orphaned_child_orders
+            .values()
+            .map(|meta| meta.batch_seq)
+            .collect::<BTreeSet<_>>();
+        self.batches.retain(|batch_seq, batch| {
+            !batch.child_order_ids.is_empty() || orphaned_batches.contains(batch_seq)
+        });
     }
 
     pub fn position_reconciliation_settled(&self, now_ts: i64) -> bool {
@@ -2521,6 +2555,48 @@ mod tests {
         strategy.apply_position_allocation(-0.2, 200).unwrap();
         assert!(strategy.position_allocation_ready());
         assert_eq!(strategy.virtual_position_qty(), Some(-0.2));
+    }
+
+    #[test]
+    fn position_reallocation_pauses_execution_and_discards_unsubmitted_batches() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.apply_position_allocation(0.6, 100).unwrap();
+        strategy.active_target = Some(ActiveTarget {
+            target_qty: 1.0,
+            generation_time: 7,
+            from_key: b"cta_alpha".to_vec(),
+        });
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 0.4,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::ReadyToSubmit,
+                child_order_ids: BTreeSet::new(),
+                remaining_qty_by_level: BTreeMap::new(),
+                last_quote_ts: 0,
+                require_new_quote: false,
+                expires_at_us: 0,
+                from_key: b"cta_alpha".to_vec(),
+            },
+        );
+
+        strategy.begin_position_reallocation();
+
+        assert!(!strategy.position_allocation_ready());
+        assert_eq!(strategy.virtual_position_qty(), Some(0.6));
+        assert_eq!(strategy.target_qty(), Some(1.0));
+        assert!(strategy.batches.is_empty());
+        assert!(strategy.position_reconciliation_settled(100));
     }
 
     #[test]

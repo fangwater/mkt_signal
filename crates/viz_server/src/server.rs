@@ -213,10 +213,17 @@ pub async fn serve_http(
     if config_proxy_enabled {
         app = app
             .route("/config", get(config_slash_redirect))
-            .route("/config/", get(config_proxy_route).post(config_proxy_route))
+            .route(
+                "/config/",
+                get(config_proxy_route)
+                    .post(config_proxy_route)
+                    .delete(config_proxy_route),
+            )
             .route(
                 "/config/*path",
-                get(config_proxy_route).post(config_proxy_route),
+                get(config_proxy_route)
+                    .post(config_proxy_route)
+                    .delete(config_proxy_route),
             );
     }
     let app = app.with_state(state);
@@ -297,7 +304,7 @@ async fn config_proxy_route(
             return proxy_error(StatusCode::BAD_GATEWAY, "invalid config service response");
         }
     };
-    if method == Method::POST {
+    if matches!(method, Method::POST | Method::DELETE) {
         info!(
             "exec config proxy update: method={} path={} status={} response={}",
             method,

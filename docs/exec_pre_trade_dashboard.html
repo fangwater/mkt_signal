@@ -259,6 +259,7 @@
       (() => {
         const STALE_MS = 5000;
         const RECONNECT_MS = 2000;
+        const POSITION_CLOSE_STRATEGY = "SYSTEM_POSITION_CLOSE";
         const params = new URLSearchParams(location.search);
         const demoMode = params.get("demo") === "1";
         const state = {
@@ -365,6 +366,12 @@
         }
         function sumField(rows, key) {
           return rows.reduce((total, row) => total + (finite(row[key]) ? row[key] : 0), 0);
+        }
+        function isIdleZeroRow(row) {
+          const quantities = ["target_qty", "current_qty", "effective_position_qty", "live_order_qty", "pending_qty"];
+          return quantities.every((key) => !finite(row[key]) || Math.abs(row[key]) <= 1e-12)
+            && (row.active_batches || 0) === 0
+            && (row.remaining_batches || 0) === 0;
         }
         function maxField(rows, key) {
           return rows.reduce((maximum, row) => finite(row[key]) ? Math.max(maximum, row[key]) : maximum, 0);
@@ -485,9 +492,9 @@
             ? escapeHtml(row.group_detail)
             : escapeHtml(state.groupMode === "symbol" ? row.symbol : row.strategy_name);
           const positionTitle = row.aggregate ? row.position_title : "策略实际仓位";
-          const action = row.aggregate || demoMode
+          const action = row.aggregate || demoMode || row.strategy_name === POSITION_CLOSE_STRATEGY
             ? ""
-            : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">编辑</a>`;
+            : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">查看</a>`;
           return `<tr class="${rowClass}">
             <td>${primary}</td><td>${secondary}</td>
             <td><span class="status ${statusClass}" title="${escapeHtml(statusTitle)}">${status}</span></td>
@@ -513,7 +520,8 @@
         function render() {
           renderRisk();
           const entry = state.exec && state.exec.entry;
-          const allRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
+          const rawRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
+          const allRows = rawRows.filter((row) => !isIdleZeroRow(row));
           refreshStrategies(allRows);
           const rows = allRows
             .filter((row) => !state.strategy || row.strategy_name === state.strategy)
@@ -551,7 +559,11 @@
           document.querySelectorAll("[data-group-mode]:not(.group-toggle)").forEach((button) => {
             button.setAttribute("aria-pressed", String(button.dataset.groupMode === state.groupMode));
           });
-          byId("config-link").href = configUrl(state.strategy);
+          const configLink = byId("config-link");
+          configLink.href = configUrl(state.strategy);
+          configLink.style.display = !demoMode && state.strategy !== POSITION_CLOSE_STRATEGY
+            ? "inline-flex"
+            : "none";
         }
         function connect() {
           if (demoMode) {
@@ -586,7 +598,6 @@
           if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
           render();
         };
-        byId("config-link").style.display = demoMode ? "none" : "inline-flex";
         setInterval(render, 1000);
         loadSnapshot();
         connect();

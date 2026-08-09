@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GET and POST raw JSON for the Exec configuration API."""
+"""Read, publish, or explicitly remove Exec strategies through the config API."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def print_json(payload: Any, *, stream: Any = sys.stdout) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="GET or POST raw JSON for the Exec config API",
+        description="Read, publish, or remove strategies through the Exec config API",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   %(prog)s get
@@ -117,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
   %(prog)s get cta_alpha > cta_alpha.json
   %(prog)s post @cta_alpha.json
   %(prog)s post '{"strategy_name":"cta_alpha","config":{...}}'
+  %(prog)s remove cta_alpha
   cat cta_alpha.json | %(prog)s post -
 """,
     )
@@ -140,6 +141,9 @@ def build_parser() -> argparse.ArgumentParser:
         "json",
         help="inline JSON, @path/to/file.json, or - for stdin",
     )
+
+    remove_parser = commands.add_parser("remove", help="Request strategy removal")
+    remove_parser.add_argument("strategy_name")
     return parser
 
 
@@ -150,12 +154,19 @@ def run(args: argparse.Namespace) -> int:
             get_api_path(args.strategy_name),
             timeout=args.timeout,
         )
-    else:
+    elif args.command == "post":
         response = request_json(
             args.url,
             "strategy",
             method="POST",
             payload=load_json_source(args.json),
+            timeout=args.timeout,
+        )
+    else:
+        response = request_json(
+            args.url,
+            get_api_path(args.strategy_name),
+            method="DELETE",
             timeout=args.timeout,
         )
     print_json(response)

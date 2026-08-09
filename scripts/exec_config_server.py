@@ -41,14 +41,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 CLIENT_SCRIPT_PATH = Path(__file__).resolve().with_name("exec_config_client.py")
 CLIENT_SCRIPT_ROUTE = "/exec_config_client.py"
+POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
 
 
 def validate_strategy_name(raw: Any) -> str:
     name = str(raw or "").strip()
     if not STRATEGY_NAME_RE.fullmatch(name):
         raise ValueError("strategy_name must match [A-Za-z0-9][A-Za-z0-9._-]*")
-    if name == "strategy_names":
-        raise ValueError("strategy_name is reserved: strategy_names")
+    if name in {
+        "strategy_names",
+        "removed_strategy_names",
+        POSITION_CLOSE_STRATEGY_NAME,
+    }:
+        raise ValueError(f"strategy_name is reserved: {name}")
     return name
 
 
@@ -157,6 +162,7 @@ class ExecConfigStore:
             raise ValueError("venue must be binance-futures or okex-futures")
         self.prefix = f"{self.env_name}:{self.venue}:batch_exec:"
         self.index_key = f"{self.prefix}strategy_names"
+        self.removed_index_key = f"{self.prefix}removed_strategy_names"
         self._save_lock = threading.Lock()
 
     def key(self, strategy_name: str) -> str:
@@ -187,10 +193,27 @@ class ExecConfigStore:
             raise ValueError(f"Redis value is not valid JSON: {exc}") from exc
         return normalize_exec_config(decoded)
 
+    def list_removed_strategy_names(self) -> List[str]:
+        raw = self.client.get(self.removed_index_key)
+        if raw is None:
+            return []
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"removed strategy index is not valid JSON: {exc}") from exc
+        if not isinstance(decoded, list):
+            raise ValueError("removed strategy index must be a JSON array")
+        names = [validate_strategy_name(name) for name in decoded]
+        if len(names) != len(set(names)):
+            raise ValueError("removed strategy index contains duplicate names")
+        return sorted(names)
+
     def save(self, strategy_name: str, config: Any) -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
         normalized = normalize_exec_config(config)
         with self._save_lock:
+            if name in self.list_removed_strategy_names():
+                raise ValueError(f"strategy removal already requested: {name}")
             strategy_names = self.list_strategy_names()
             self.client.set(
                 self.key(name),
@@ -203,6 +226,35 @@ class ExecConfigStore:
                     json.dumps(sorted(strategy_names), ensure_ascii=False, separators=(",", ":")),
                 )
         return normalized
+
+    def remove(self, strategy_name: str) -> bool:
+        name = validate_strategy_name(strategy_name)
+        with self._save_lock:
+            strategy_names = self.list_strategy_names()
+            removed_names = self.list_removed_strategy_names()
+            if (
+                name not in strategy_names
+                and name not in removed_names
+                and self.client.get(self.key(name)) is None
+            ):
+                return False
+            if name not in removed_names:
+                removed_names.append(name)
+                self.client.set(
+                    self.removed_index_key,
+                    json.dumps(
+                        sorted(removed_names),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+            if name in strategy_names:
+                strategy_names.remove(name)
+                self.client.set(
+                    self.index_key,
+                    json.dumps(strategy_names, ensure_ascii=False, separators=(",", ":")),
+                )
+        return True
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -237,6 +289,7 @@ INDEX_HTML = r"""<!doctype html>
       button.primary { background: #087ea4; border-color: #0ea5c9; }
       button.danger { color: var(--red); }
       button:disabled { opacity: .5; cursor: wait; }
+      input:disabled, select:disabled { color: var(--text); opacity: 1; cursor: default; }
       a.command { display: inline-flex; align-items: center; text-decoration: none; }
       .new-name { width: 180px; }
       .key { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -255,7 +308,7 @@ INDEX_HTML = r"""<!doctype html>
       table { width: 100%; border-collapse: collapse; }
       th, td { height: 42px; border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; }
       th { color: var(--muted); font-size: 11px; background: var(--surface2); }
-      td:last-child, th:last-child { width: 54px; text-align: center; }
+      td:last-child, th:last-child { text-align: right; }
       tbody tr:last-child td { border-bottom: 0; }
       td input { background: var(--bg); }
       .empty { padding: 36px; text-align: center; color: var(--muted); }
@@ -268,8 +321,6 @@ INDEX_HTML = r"""<!doctype html>
     <header>
       <h1>Exec Config</h1>
       <select id="strategy"><option value="">Select strategy</option></select>
-      <input id="new-name" class="new-name" placeholder="New strategy name" />
-      <button id="add-strategy" type="button">Add</button>
       <button id="reload" type="button">Reload</button>
       <a id="dashboard" class="command" href="../">Dashboard</a>
       <span id="status" class="status">Loading</span>
@@ -279,36 +330,31 @@ INDEX_HTML = r"""<!doctype html>
       <section>
         <div class="section-head"><h2>Order Parameters</h2></div>
         <div class="param-grid">
-          <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" /></div>
-          <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" /></div>
-          <div class="field"><label>Maker Price Anchor</label><select id="maker_price_anchor"><option value="own_best">Own Best</option><option value="opposite_best_plus_one_tick">Opposite Best + 1 Tick</option></select></div>
-          <div class="field"><label>Tick Spacing</label><input id="tick_spacing" inputmode="numeric" /></div>
-          <div class="field"><label>Batch Interval ms</label><input id="batch_interval_ms" inputmode="numeric" /></div>
-          <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" /></div>
-          <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" /></div>
-          <div class="field"><label>Target Tolerance USDT</label><input id="target_tolerance_usdt" inputmode="decimal" /></div>
+          <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" disabled /></div>
+          <div class="field"><label>Maker Price Anchor</label><select id="maker_price_anchor" disabled><option value="own_best">Own Best</option><option value="opposite_best_plus_one_tick">Opposite Best + 1 Tick</option></select></div>
+          <div class="field"><label>Tick Spacing</label><input id="tick_spacing" inputmode="numeric" disabled /></div>
+          <div class="field"><label>Batch Interval ms</label><input id="batch_interval_ms" inputmode="numeric" disabled /></div>
+          <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" disabled /></div>
+          <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" disabled /></div>
+          <div class="field"><label>Target Tolerance USDT</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
         </div>
       </section>
       <section>
         <div class="section-head">
           <h2>Target Positions</h2>
-          <div class="actions"><button id="add-target" type="button">Add Symbol</button></div>
         </div>
         <div class="targets">
-          <table><thead><tr><th>Symbol</th><th>Target Qty</th><th></th></tr></thead><tbody id="target-rows"></tbody></table>
-          <div id="target-empty" class="empty">No target positions</div>
+          <table><thead><tr><th>Symbol</th><th>Target Qty</th></tr></thead><tbody id="target-rows"></tbody></table>
+          <div id="target-empty" class="empty">No non-zero target positions</div>
         </div>
       </section>
-      <div class="footer-actions">
-        <button id="discard" type="button">Discard</button>
-        <button id="save" class="primary" type="button">Save Strategy</button>
-      </div>
     </main>
     <script>
       (() => {
         const DEFAULTS = __DEFAULTS__;
         const fields = ["single_order_usdt", "orders_per_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
-        const state = { bootstrap: null, names: [], name: "", config: null, dirty: false };
+        const state = { bootstrap: null, names: [], name: "", config: null };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }
         function setStatus(text, level = "") { el("status").textContent = text; el("status").className = `status ${level}`.trim(); }
@@ -318,7 +364,6 @@ INDEX_HTML = r"""<!doctype html>
           if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
           return body;
         }
-        function markDirty() { state.dirty = true; setStatus("Unsaved changes", "warn"); }
         function strategyFromQuery() { return new URLSearchParams(location.search).get("strategy") || ""; }
         function updateQuery() { const url = new URL(location.href); state.name ? url.searchParams.set("strategy", state.name) : url.searchParams.delete("strategy"); history.replaceState(null, "", url); }
         function renderNames() {
@@ -329,44 +374,21 @@ INDEX_HTML = r"""<!doctype html>
         function renderTargets(targets) {
           const tbody = el("target-rows");
           tbody.innerHTML = "";
-          Object.entries(targets || {}).sort(([a], [b]) => a.localeCompare(b)).forEach(([symbol, qty]) => addTargetRow(symbol, qty, false));
+          Object.entries(targets || {})
+            .filter(([, qty]) => Number(qty) !== 0)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .forEach(([symbol, qty]) => {
+              const tr = document.createElement("tr");
+              tr.innerHTML = `<td>${String(symbol).replace(/&/g, "&amp;").replace(/</g, "&lt;")}</td><td>${qty}</td>`;
+              tbody.appendChild(tr);
+            });
           el("target-empty").style.display = tbody.children.length ? "none" : "block";
-        }
-        function addTargetRow(symbol = "", qty = "0", dirty = true) {
-          const tr = document.createElement("tr");
-          tr.innerHTML = `<td><input class="target-symbol" value="${String(symbol).replace(/"/g, "&quot;")}" placeholder="BTCUSDT" /></td><td><input class="target-qty" value="${qty}" inputmode="decimal" /></td><td><button class="danger remove-target" type="button" aria-label="Remove">X</button></td>`;
-          tr.querySelectorAll("input").forEach((input) => input.addEventListener("input", markDirty));
-          tr.querySelector(".remove-target").onclick = () => { tr.remove(); el("target-empty").style.display = el("target-rows").children.length ? "none" : "block"; markDirty(); };
-          el("target-rows").appendChild(tr);
-          el("target-empty").style.display = "none";
-          if (dirty) markDirty();
         }
         function renderConfig(config) {
           state.config = structuredClone(config);
-          fields.forEach((name) => { el(name).value = config[name]; });
+          fields.forEach((name) => { el(name).value = config[name]; el(name).disabled = true; });
           renderTargets(config.targets);
           el("redis-key").textContent = state.bootstrap ? `${state.bootstrap.key_prefix}${state.name}` : "-";
-          state.dirty = false;
-        }
-        function collectConfig() {
-          const targets = {};
-          el("target-rows").querySelectorAll("tr").forEach((row) => {
-            const symbol = row.querySelector(".target-symbol").value.trim().toUpperCase();
-            if (!symbol) throw new Error("Target symbol is required");
-            if (Object.prototype.hasOwnProperty.call(targets, symbol)) throw new Error(`Duplicate symbol: ${symbol}`);
-            targets[symbol] = Number(row.querySelector(".target-qty").value);
-          });
-          return {
-            single_order_usdt: Number(el("single_order_usdt").value),
-            orders_per_batch: Number(el("orders_per_batch").value),
-            maker_price_anchor: el("maker_price_anchor").value,
-            tick_spacing: Number(el("tick_spacing").value),
-            batch_interval_ms: Number(el("batch_interval_ms").value),
-            maker_timeout_ms: Number(el("maker_timeout_ms").value),
-            max_maker_requotes: Number(el("max_maker_requotes").value),
-            target_tolerance_usdt: Number(el("target_tolerance_usdt").value),
-            targets,
-          };
         }
         async function loadNames(preferred = "") {
           const payload = await request("strategies");
@@ -374,7 +396,7 @@ INDEX_HTML = r"""<!doctype html>
           if (preferred && state.names.includes(preferred)) state.name = preferred;
           else if (!state.names.includes(state.name)) state.name = state.names[0] || "";
           renderNames();
-          if (state.name) await loadStrategy(state.name); else { renderConfig(DEFAULTS); setStatus("Add a strategy", "warn"); }
+          if (state.name) await loadStrategy(state.name); else { renderConfig(DEFAULTS); setStatus("No strategies", "warn"); }
         }
         async function loadStrategy(name) {
           if (!name) return;
@@ -383,18 +405,8 @@ INDEX_HTML = r"""<!doctype html>
             const payload = await request(`strategy?name=${encodeURIComponent(name)}`);
             state.name = name;
             renderConfig(payload.config || DEFAULTS);
-            renderNames(); updateQuery(); setStatus(payload.exists ? "Loaded" : "New strategy", payload.exists ? "ok" : "warn");
+            renderNames(); updateQuery(); setStatus(payload.exists ? "Loaded" : "Strategy not found", payload.exists ? "ok" : "warn");
           } catch (error) { setStatus(error.message, "err"); }
-        }
-        async function save() {
-          if (!state.name) { setStatus("Select a strategy", "err"); return; }
-          el("save").disabled = true;
-          try {
-            const payload = await request("strategy", { method: "POST", body: JSON.stringify({ strategy_name: state.name, config: collectConfig() }) });
-            renderConfig(payload.config); if (!state.names.includes(state.name)) state.names.push(state.name); state.names.sort(); renderNames();
-            setStatus("Saved", "ok");
-          } catch (error) { setStatus(error.message, "err"); }
-          finally { el("save").disabled = false; }
         }
         async function boot() {
           try {
@@ -403,19 +415,8 @@ INDEX_HTML = r"""<!doctype html>
             await loadNames(strategyFromQuery());
           } catch (error) { setStatus(error.message, "err"); }
         }
-        fields.forEach((name) => el(name).addEventListener("input", markDirty));
-        el("strategy").onchange = (event) => { if (state.dirty && !confirm("Discard unsaved changes?")) { event.target.value = state.name; return; } loadStrategy(event.target.value); };
-        el("add-strategy").onclick = () => {
-          const name = el("new-name").value.trim();
-          if (!name) return setStatus("Enter strategy name", "err");
-          if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return setStatus("Invalid strategy name", "err");
-          state.name = name; if (!state.names.includes(name)) state.names.push(name); state.names.sort(); renderNames(); renderConfig(DEFAULTS); updateQuery(); el("new-name").value = ""; markDirty();
-        };
+        el("strategy").onchange = (event) => loadStrategy(event.target.value);
         el("reload").onclick = () => loadNames(state.name);
-        el("add-target").onclick = () => addTargetRow();
-        el("discard").onclick = () => state.name ? loadStrategy(state.name) : renderConfig(DEFAULTS);
-        el("save").onclick = save;
-        window.addEventListener("beforeunload", (event) => { if (state.dirty) { event.preventDefault(); event.returnValue = ""; } });
         boot();
       })();
     </script>
@@ -504,7 +505,14 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
                     )
                     return
                 if parsed.path == "/api/strategies":
-                    self.send_json(200, {"ok": True, "strategies": store.list_strategy_names()})
+                    self.send_json(
+                        200,
+                        {
+                            "ok": True,
+                            "strategies": store.list_strategy_names(),
+                            "removed": store.list_removed_strategy_names(),
+                        },
+                    )
                     return
                 if parsed.path == "/api/strategy":
                     query = parse_qs(parsed.query)
@@ -547,6 +555,37 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
                 self.log_update_response(200, response)
                 self.send_json(200, response)
             except (ValueError, json.JSONDecodeError) as exc:
+                response = {"ok": False, "error": str(exc)}
+                self.log_update_response(400, response)
+                self.send_json(400, response)
+            except Exception as exc:
+                response = {"ok": False, "error": str(exc)}
+                self.log_update_response(500, response)
+                self.send_json(500, response)
+
+        def do_DELETE(self) -> None:
+            parsed = urlparse(self.path)
+            try:
+                if parsed.path != "/api/strategy":
+                    response = {"ok": False, "error": "not found"}
+                    self.log_update_response(404, response)
+                    self.send_json(404, response)
+                    return
+                query = parse_qs(parsed.query)
+                name = validate_strategy_name((query.get("name") or [""])[0])
+                if not store.remove(name):
+                    response = {"ok": False, "error": "strategy is unknown"}
+                    self.log_update_response(404, response)
+                    self.send_json(404, response)
+                    return
+                response = {
+                    "ok": True,
+                    "strategy_name": name,
+                    "state": "removal_requested",
+                }
+                self.log_update_response(202, response)
+                self.send_json(202, response)
+            except ValueError as exc:
                 response = {"ok": False, "error": str(exc)}
                 self.log_update_response(400, response)
                 self.send_json(400, response)

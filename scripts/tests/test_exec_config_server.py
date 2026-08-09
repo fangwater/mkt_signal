@@ -33,6 +33,7 @@ def fake_store():
     store.venue = "binance-futures"
     store.prefix = "cta_exec_trade:binance-futures:batch_exec:"
     store.index_key = f"{store.prefix}strategy_names"
+    store.removed_index_key = f"{store.prefix}removed_strategy_names"
     store._save_lock = threading.Lock()
     return store
 
@@ -62,6 +63,28 @@ class ExecConfigServerTests(unittest.TestCase):
 
         self.assertTrue(body.startswith("#!/usr/bin/env python3"))
         self.assertIn("http://172.16.30.42:10041/config/", body)
+
+    def test_config_page_is_display_only_and_filters_zero_targets(self):
+        store = fake_store()
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/", timeout=2
+        ) as response:
+            body = response.read().decode("utf-8")
+
+        self.assertNotIn("Save Strategy", body)
+        self.assertNotIn('id="add-strategy"', body)
+        self.assertNotIn('id="add-target"', body)
+        self.assertIn('id="single_order_usdt" inputmode="decimal" disabled', body)
+        self.assertNotIn("Add a strategy", body)
+        self.assertIn('.filter(([, qty]) => Number(qty) !== 0)', body)
 
     def test_http_update_writes_redis_and_logs_response(self):
         store = fake_store()
@@ -112,6 +135,30 @@ class ExecConfigServerTests(unittest.TestCase):
             store.client.get(store.index_key), '["trend_a","trend_b"]'
         )
 
+    def test_remove_only_updates_index_and_retains_config_for_recovery(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        store.save("trend_a", config)
+
+        self.assertTrue(store.remove("trend_a"))
+        self.assertEqual(store.list_strategy_names(), [])
+        self.assertEqual(store.list_removed_strategy_names(), ["trend_a"])
+        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
+        self.assertTrue(store.remove("trend_a"))
+        with self.assertRaisesRegex(ValueError, "removal already requested"):
+            store.save("trend_a", config)
+
+    def test_remove_accepts_unindexed_strategy_with_retained_config(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        store.client.set(store.key("trend_a"), json.dumps(config))
+
+        self.assertTrue(store.remove("trend_a"))
+        self.assertEqual(store.list_removed_strategy_names(), ["trend_a"])
+        self.assertFalse(store.remove("unknown"))
+
     def test_unindexed_config_key_is_not_discovered(self):
         store = fake_store()
         store.client.set(store.key("orphan"), "{}")
@@ -120,6 +167,34 @@ class ExecConfigServerTests(unittest.TestCase):
     def test_strategy_index_name_is_reserved(self):
         with self.assertRaisesRegex(ValueError, "reserved"):
             MODULE.validate_strategy_name("strategy_names")
+        with self.assertRaisesRegex(ValueError, "reserved"):
+            MODULE.validate_strategy_name(MODULE.POSITION_CLOSE_STRATEGY_NAME)
+        with self.assertRaisesRegex(ValueError, "reserved"):
+            MODULE.validate_strategy_name("removed_strategy_names")
+
+    def test_http_delete_requests_strategy_removal(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        store.save("trend_a", config)
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/strategy?name=trend_a",
+            method="DELETE",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual(response.status, 202)
+        self.assertEqual(payload["state"], "removal_requested")
+        self.assertEqual(store.list_strategy_names(), [])
 
     def test_invalid_order_params_are_rejected(self):
         config = dict(MODULE.DEFAULT_CONFIG)

@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "exec_config_client.py"
@@ -40,6 +41,20 @@ class ExecConfigClientTests(unittest.TestCase):
                 MODULE.load_json_source(f"@{path}"),
                 {"strategy_name": "alpha", "config": {}},
             )
+
+    def test_remove_uses_delete_strategy_endpoint(self):
+        args = MODULE.build_parser().parse_args(["remove", "alpha"])
+        with mock.patch.object(
+            MODULE, "request_json", return_value={"ok": True}
+        ) as request_json:
+            self.assertEqual(MODULE.run(args), 0)
+
+        request_json.assert_called_once_with(
+            args.url,
+            "strategy?name=alpha",
+            method="DELETE",
+            timeout=args.timeout,
+        )
 
 
 if __name__ == "__main__":
