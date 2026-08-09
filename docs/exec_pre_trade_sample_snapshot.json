@@ -12,6 +12,7 @@
         "rows": [
           {
             "strategy_name": "trend_core",
+            "source_updated_at_ms": 1785916799000,
             "symbol": "BTCUSDT",
             "position_allocated": true,
             "account_position_qty": 0.3,
@@ -35,6 +36,7 @@
           },
           {
             "strategy_name": "mean_reversion",
+            "source_updated_at_ms": 1785916798000,
             "symbol": "BTCUSDT",
             "position_allocated": true,
             "account_position_qty": 0.3,
@@ -58,6 +60,7 @@
           },
           {
             "strategy_name": "trend_core",
+            "source_updated_at_ms": 1785916799000,
             "symbol": "ETHUSDT",
             "position_allocated": true,
             "account_position_qty": 5.0,
@@ -81,6 +84,7 @@
           },
           {
             "strategy_name": "carry_overlay",
+            "source_updated_at_ms": 1785916797000,
             "symbol": "ETHUSDT",
             "position_allocated": true,
             "account_position_qty": 5.0,
@@ -104,6 +108,7 @@
           },
           {
             "strategy_name": "event_driven",
+            "source_updated_at_ms": 1785916796000,
             "symbol": "SOLUSDT",
             "position_allocated": true,
             "account_position_qty": -420.0,

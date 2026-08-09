@@ -52,6 +52,23 @@
       .dot.ok { background: var(--green); }
       .dot.err { background: var(--red); }
       .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .strategy-updates {
+        order: 3;
+        flex: 1 0 100%;
+        min-width: 0;
+        display: flex;
+        gap: 18px;
+        padding-top: 9px;
+        border-top: 1px solid var(--line);
+        overflow-x: auto;
+        color: var(--muted);
+        font-size: 12px;
+        scrollbar-width: thin;
+      }
+      .strategy-update { display: inline-flex; align-items: baseline; gap: 7px; flex: 0 0 auto; }
+      .strategy-update-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .strategy-update time { color: var(--text); font-variant-numeric: tabular-nums; }
+      .strategy-update.unknown time { color: var(--amber); }
       select, input, button, a.command {
         height: 34px;
         border: 1px solid var(--line);
@@ -187,6 +204,7 @@
       }
       @media (max-width: 560px) {
         header, main { padding-left: 10px; padding-right: 10px; }
+        .strategy-update-name { max-width: 210px; }
         .risk-band { grid-template-columns: repeat(2, 1fr); }
         .metric { border-bottom: 1px solid var(--line); }
         .metric:nth-child(2n) { border-right: 0; }
@@ -209,6 +227,7 @@
         <button id="refresh" type="button">刷新</button>
         <a id="config-link" class="command" href="./config/">配置</a>
       </div>
+      <div id="strategy-updates" class="strategy-updates" aria-label="策略最后更新时间"></div>
     </header>
 
     <main>
@@ -328,6 +347,9 @@
                 if (finite(row.estimated_completion_ts_ms) && row.estimated_completion_ts_ms > 0) {
                   row.estimated_completion_ts_ms += timeOffset;
                 }
+                if (finite(row.source_updated_at_ms) && row.source_updated_at_ms > 0) {
+                  row.source_updated_at_ms += timeOffset;
+                }
               });
             });
           }
@@ -343,6 +365,44 @@
           select.innerHTML = '<option value="">全部策略</option>' + names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
           select.value = names.includes(current) ? current : "";
           state.strategy = select.value;
+        }
+        function strategyUpdateText(value) {
+          if (!finite(value) || value <= 0) return "未知";
+          const date = new Date(value);
+          const now = new Date();
+          const sameDay = date.getFullYear() === now.getFullYear()
+            && date.getMonth() === now.getMonth()
+            && date.getDate() === now.getDate();
+          return date.toLocaleString("zh-CN", {
+            month: sameDay ? undefined : "2-digit",
+            day: sameDay ? undefined : "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          });
+        }
+        function renderStrategyUpdates(rows) {
+          const updates = new Map();
+          rows.forEach((row) => {
+            const name = String(row.strategy_name || "");
+            if (!name || name === POSITION_CLOSE_STRATEGY) return;
+            const timestamp = finite(row.source_updated_at_ms) && row.source_updated_at_ms > 0
+              ? row.source_updated_at_ms
+              : 0;
+            updates.set(name, Math.max(updates.get(name) || 0, timestamp));
+          });
+          const container = byId("strategy-updates");
+          container.hidden = updates.size === 0;
+          container.innerHTML = [...updates.entries()]
+            .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
+            .map(([name, timestamp]) => {
+              const title = timestamp > 0
+                ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false })
+                : "尚未收到带时间戳的策略更新";
+              const datetime = timestamp > 0 ? new Date(timestamp).toISOString() : "";
+              return `<span class="strategy-update ${timestamp > 0 ? "" : "unknown"}" title="${escapeHtml(title)}"><span class="strategy-update-name">${escapeHtml(name)}</span><time datetime="${datetime}">${strategyUpdateText(timestamp)}</time></span>`;
+            }).join("");
         }
         function completionReasonText(reason) {
           if (reason === "target_reached") return "已达到目标仓位";
@@ -372,6 +432,12 @@
           return quantities.every((key) => !finite(row[key]) || Math.abs(row[key]) <= 1e-12)
             && (row.active_batches || 0) === 0
             && (row.remaining_batches || 0) === 0;
+        }
+        function isCompletedCloseResidual(row) {
+          if (row.strategy_name !== POSITION_CLOSE_STRATEGY || row.execution_complete !== true) return false;
+          return Math.abs(row.live_order_qty || 0) <= 1e-12
+            && Math.abs(row.live_order_usdt || 0) <= 0.01
+            && (row.active_batches || 0) === 0;
         }
         function maxField(rows, key) {
           return rows.reduce((maximum, row) => finite(row[key]) ? Math.max(maximum, row[key]) : maximum, 0);
@@ -521,7 +587,8 @@
           renderRisk();
           const entry = state.exec && state.exec.entry;
           const rawRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
-          const allRows = rawRows.filter((row) => !isIdleZeroRow(row));
+          renderStrategyUpdates(rawRows);
+          const allRows = rawRows.filter((row) => !isIdleZeroRow(row) && !isCompletedCloseResidual(row));
           refreshStrategies(allRows);
           const rows = allRows
             .filter((row) => !state.strategy || row.strategy_name === state.strategy)

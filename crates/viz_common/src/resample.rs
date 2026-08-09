@@ -135,6 +135,7 @@ pub struct PreTradeVenueRiskResampleEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecStrategyStateRow {
     pub strategy_name: String,
+    pub source_updated_at_ms: i64,
     pub symbol: String,
     pub position_allocated: bool,
     pub account_position_qty: f64,
@@ -206,6 +207,7 @@ mod tests {
             position_ready: true,
             rows: vec![ExecStrategyStateRow {
                 strategy_name: "cta_alpha".to_string(),
+                source_updated_at_ms: 1_700_000_000_000,
                 symbol: "BTCUSDT".to_string(),
                 position_allocated: true,
                 account_position_qty: 0.25,
@@ -235,6 +237,7 @@ mod tests {
         assert!(decoded.position_ready);
         assert_eq!(decoded.rows.len(), 1);
         assert_eq!(decoded.rows[0].strategy_name, "cta_alpha");
+        assert_eq!(decoded.rows[0].source_updated_at_ms, 1_700_000_000_000);
         assert_eq!(decoded.rows[0].pending_qty, 0.65);
         assert_eq!(decoded.rows[0].remaining_batches, 3);
         assert_eq!(decoded.rows[0].estimated_completion_ts_ms, 456);

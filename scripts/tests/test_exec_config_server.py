@@ -7,6 +7,7 @@ import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "exec_config_server.py"
@@ -113,9 +114,25 @@ class ExecConfigServerTests(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["config"]["targets"], {"BTCUSDT": 0.2})
+        self.assertGreater(payload["config"]["updated_at_us"], 0)
         self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
         self.assertIn("update status=200 response=", output.getvalue())
         self.assertIn(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), output.getvalue())
+
+    def test_each_publish_refreshes_strategy_update_time(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+
+        with mock.patch.object(
+            MODULE.time, "time_ns", side_effect=[1_700_000_000_000_001_000, 1_700_000_000_100_002_000]
+        ):
+            first = store.save("trend_a", config)
+            second = store.save("trend_a", config)
+
+        self.assertEqual(first["updated_at_us"], 1_700_000_000_000_001)
+        self.assertEqual(second["updated_at_us"], 1_700_000_000_100_002)
+        self.assertEqual(store.load("trend_a")["updated_at_us"], second["updated_at_us"])
 
     def test_strategy_names_write_independent_keys(self):
         store = fake_store()

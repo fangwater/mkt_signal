@@ -10,6 +10,7 @@ import math
 import os
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,7 @@ CONFIG_FIELDS = {
     "target_tolerance_usdt",
     "targets",
 }
+OPTIONAL_CONFIG_FIELDS = {"updated_at_us"}
 DEFAULT_CONFIG: Dict[str, Any] = {
     "single_order_usdt": 100.0,
     "orders_per_batch": 3,
@@ -96,7 +98,7 @@ def integer(raw: Any, field: str, *, positive: bool = False) -> int:
 def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config must be an object")
-    unknown = sorted(set(raw) - CONFIG_FIELDS)
+    unknown = sorted(set(raw) - CONFIG_FIELDS - OPTIONAL_CONFIG_FIELDS)
     missing = sorted(CONFIG_FIELDS - set(raw))
     if unknown:
         raise ValueError(f"unknown fields: {', '.join(unknown)}")
@@ -121,7 +123,7 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if tolerance < 0:
         raise ValueError("target_tolerance_usdt must be >= 0")
 
-    return {
+    normalized = {
         "single_order_usdt": finite_float(
             raw["single_order_usdt"], "single_order_usdt", positive=True
         ),
@@ -140,6 +142,14 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         "target_tolerance_usdt": tolerance,
         "targets": dict(sorted(targets.items())),
     }
+    updated_at_us = raw.get("updated_at_us")
+    if updated_at_us is not None:
+        if isinstance(updated_at_us, bool) or not isinstance(updated_at_us, int):
+            raise ValueError("updated_at_us must be an integer")
+        if updated_at_us <= 0 or updated_at_us > 9_223_372_036_854_775_807:
+            raise ValueError("updated_at_us must be a positive int64")
+        normalized["updated_at_us"] = updated_at_us
+    return normalized
 
 
 class ExecConfigStore:
@@ -215,6 +225,8 @@ class ExecConfigStore:
             if name in self.list_removed_strategy_names():
                 raise ValueError(f"strategy removal already requested: {name}")
             strategy_names = self.list_strategy_names()
+            # Receipt time is authoritative even when a publisher repeats an unchanged target map.
+            normalized["updated_at_us"] = time.time_ns() // 1_000
             self.client.set(
                 self.key(name),
                 json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),

@@ -20,11 +20,16 @@ pub struct BatchExecRedisValue {
     #[serde(flatten)]
     pub config: BatchExecConfig,
     pub targets: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub updated_at_us: Option<i64>,
 }
 
 impl BatchExecRedisValue {
     fn validate(&self) -> Result<()> {
         self.config.validate().map_err(anyhow::Error::msg)?;
+        if self.updated_at_us.is_some_and(|timestamp| timestamp <= 0) {
+            anyhow::bail!("updated_at_us must be positive when present");
+        }
         for (symbol, target_qty) in &self.targets {
             if normalize_symbol_for_internal(symbol).is_empty() {
                 anyhow::bail!("target symbol must not be empty");
@@ -1024,12 +1029,11 @@ impl BatchExecConfigReloader {
                         self.venue,
                         payload.config.clone(),
                     );
-                if target_changed {
-                    let strategy = { strategy_mgr.borrow_mut().take(strategy_id) };
-                    if let Some(mut strategy) = strategy {
-                        if let Some(exec) =
-                            strategy.as_any_mut().downcast_mut::<BatchExecStrategy>()
-                        {
+                let strategy = { strategy_mgr.borrow_mut().take(strategy_id) };
+                if let Some(mut strategy) = strategy {
+                    if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
+                        exec.set_source_updated_at_us(payload.updated_at_us.unwrap_or(0));
+                        if target_changed {
                             exec.update_target(
                                 target_qty,
                                 get_timestamp_us(),
@@ -1037,8 +1041,8 @@ impl BatchExecConfigReloader {
                             );
                             applied += 1;
                         }
-                        strategy_mgr.borrow_mut().insert(strategy);
                     }
+                    strategy_mgr.borrow_mut().insert(strategy);
                 }
             }
 
@@ -1144,6 +1148,31 @@ mod tests {
         value.validate().unwrap();
         assert_eq!(value.targets.get("BTCUSDT"), Some(&0.02));
         assert_eq!(value.config.orders_per_batch, 3);
+        assert_eq!(value.updated_at_us, None);
+    }
+
+    #[test]
+    fn redis_value_accepts_and_validates_source_update_time() {
+        let mut value: BatchExecRedisValue = serde_json::from_str(
+            r#"{
+                "single_order_usdt": 100.0,
+                "orders_per_batch": 3,
+                "maker_price_anchor": "own_best",
+                "tick_spacing": 2,
+                "batch_interval_ms": 500,
+                "maker_timeout_ms": 1000,
+                "max_maker_requotes": 2,
+                "target_tolerance_usdt": 10.0,
+                "targets": {"BTCUSDT": 0.02},
+                "updated_at_us": 1700000000000001
+            }"#,
+        )
+        .unwrap();
+        value.validate().unwrap();
+        assert_eq!(value.updated_at_us, Some(1_700_000_000_000_001));
+
+        value.updated_at_us = Some(0);
+        assert!(value.validate().is_err());
     }
 
     #[test]

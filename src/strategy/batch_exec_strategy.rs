@@ -256,6 +256,7 @@ impl BatchExecCompletionReason {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchExecSnapshot {
     pub strategy_name: String,
+    pub source_updated_at_ms: i64,
     pub symbol: String,
     pub exec_venue: TradingVenue,
     /// Physical net position shared by every BatchExec strategy on this symbol.
@@ -620,6 +621,7 @@ pub struct BatchExecStrategy {
     symbol: String,
     exec_venue: TradingVenue,
     config: BatchExecConfig,
+    source_updated_at_us: i64,
     virtual_position_qty: Option<f64>,
     position_allocation_ready: bool,
     last_position_fill_at_us: i64,
@@ -650,6 +652,7 @@ impl BatchExecStrategy {
             symbol: normalize_symbol_for_internal(&symbol.into()),
             exec_venue,
             config,
+            source_updated_at_us: 0,
             virtual_position_qty: None,
             position_allocation_ready: false,
             last_position_fill_at_us: 0,
@@ -673,6 +676,10 @@ impl BatchExecStrategy {
 
     pub fn strategy_name(&self) -> &str {
         &self.strategy_name
+    }
+
+    pub fn set_source_updated_at_us(&mut self, updated_at_us: i64) {
+        self.source_updated_at_us = updated_at_us.max(0);
     }
 
     pub fn exec_symbol(&self) -> &str {
@@ -820,6 +827,7 @@ impl BatchExecStrategy {
         };
         BatchExecSnapshot {
             strategy_name: self.strategy_name.clone(),
+            source_updated_at_ms: self.source_updated_at_us / 1_000,
             symbol: self.symbol.clone(),
             exec_venue: self.exec_venue,
             account_position_qty,
@@ -2196,6 +2204,24 @@ mod tests {
             min_notional: 20.0,
             qty_multiplier: 1.0,
         }
+    }
+
+    #[test]
+    fn source_update_time_is_observation_only() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+
+        strategy.set_source_updated_at_us(1_700_000_000_123_456);
+
+        assert_eq!(strategy.source_updated_at_us, 1_700_000_000_123_456);
+        assert!(strategy.active_target.is_none());
+        assert!(strategy.pending_target.is_none());
+        assert!(strategy.batches.is_empty());
     }
 
     #[test]
