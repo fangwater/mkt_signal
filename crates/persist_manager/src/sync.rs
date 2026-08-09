@@ -782,6 +782,7 @@ pub async fn run_verify_config(args: VerifyConfigArgs) -> Result<Vec<(String, Ve
         .clone()
         .unwrap_or_else(|| "data/persist_sync_center".to_string());
     let sync_writes = args.config.sync_writes.unwrap_or(false);
+    let center_store = open_center_store_for_config(&center_db, sync_writes, &args.config)?;
     let mut reports = Vec::new();
     for source in args.config.sources {
         if let Some(filter_id) = args.only_id.as_ref() {
@@ -789,17 +790,21 @@ pub async fn run_verify_config(args: VerifyConfigArgs) -> Result<Vec<(String, Ve
                 continue;
             }
         }
-        let report = run_verify_recent(VerifyArgs {
-            source_id: source.id.clone(),
-            manager_endpoint: source.url,
-            center_db_path: center_db.clone(),
-            cf_names: Vec::new(),
-            start_us: args.start_us,
-            end_us: args.end_us,
-            bucket_us: args.bucket_us,
-            repair: args.repair,
-            sync_writes,
-        })
+        let report = verify_recent_with_store(
+            center_store.as_ref(),
+            VerifyArgs {
+                source_id: source.id.clone(),
+                manager_endpoint: source.url,
+                center_db_path: center_db.clone(),
+                cf_names: Vec::new(),
+                start_us: args.start_us,
+                end_us: args.end_us,
+                bucket_us: args.bucket_us,
+                repair: args.repair,
+                sync_writes,
+            },
+            None,
+        )
         .await?;
         reports.push((source.id, report));
     }
@@ -2157,7 +2162,12 @@ fn hex_key(key: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_outbox_record, encode_outbox_record, SyncOutboxRecord};
+    use super::{
+        center_source_cf_name, decode_outbox_record, encode_outbox_record,
+        open_center_store_for_config, order_export_sync_column_families, MultiCollectorConfig,
+        MultiCollectorSource, SyncOutboxRecord,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn outbox_record_roundtrip() {
@@ -2177,5 +2187,50 @@ mod tests {
         assert_eq!(decoded.value, record.value);
         assert_eq!(decoded.value_crc32, record.value_crc32);
         assert_eq!(decoded.write_ts_us, record.write_ts_us);
+    }
+
+    #[test]
+    fn config_center_store_opens_every_source_column_family() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "persist_manager_verify_config_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let config = MultiCollectorConfig {
+            center_db: Some(path.display().to_string()),
+            batch_records: None,
+            batch_bytes: None,
+            reconnect_delay_ms: None,
+            status_path: None,
+            repair_enabled: None,
+            repair_interval_secs: None,
+            repair_lookback_hours: None,
+            repair_bucket_us: None,
+            sync_writes: None,
+            sources: vec![
+                MultiCollectorSource {
+                    id: "source-a".to_string(),
+                    url: "http://127.0.0.1:1".to_string(),
+                },
+                MultiCollectorSource {
+                    id: "source-b".to_string(),
+                    url: "http://127.0.0.1:2".to_string(),
+                },
+            ],
+        };
+
+        let store = open_center_store_for_config(path.to_str().unwrap(), false, &config).unwrap();
+        for source in &config.sources {
+            for base_cf in order_export_sync_column_families() {
+                let cf_name = center_source_cf_name(&source.id, base_cf);
+                store.put(&cf_name, b"key", b"value").unwrap();
+            }
+        }
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

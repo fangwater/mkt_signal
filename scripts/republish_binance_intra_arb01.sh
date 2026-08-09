@@ -5,6 +5,7 @@ set -Eeuo pipefail
 readonly ENV_NAME="binance-intra-arb01"
 readonly REPO_DIR="/home/ubuntu/mkt_signal"
 readonly ENV_DIR="/home/ubuntu/binance-intra-arb01"
+readonly PERSIST_CENTER_DIR="/home/ubuntu/persist_center"
 readonly RELEASE_DIR="${REPO_DIR}/target/release"
 readonly INTRA_SCRIPTS_DIR="${ENV_DIR}/intra_scripts"
 readonly CANCEL_SCRIPT="${ENV_DIR}/scripts/cancel_binance_std_orders.py"
@@ -25,13 +26,14 @@ usage() {
 固定目标: /home/ubuntu/binance-intra-arb01
 
 流程:
-  1. 停止 trade_engine。
-  2. 执行 Binance STANDARD Spot + UM 撤单。
-  3. 再执行一次 dry-run，并自动确认 Spot 与 UM 均为零挂单。
-  4. 停止 pre_trade 和 trade_signal。
-  5. 从 /home/ubuntu/mkt_signal/target/release 直接 cp 覆盖三个二进制，不保留备份。
-  6. 启动 trade_engine，检查进程和日志，人工确认后继续。
-  7. 启动 pre_trade，检查进程和日志，人工确认后结束。
+  1. 确认中心 persist_sync_collector/persist_read_server 与本次 release 完全一致。
+  2. 停止 trade_engine。
+  3. 执行 Binance STANDARD Spot + UM 撤单。
+  4. 再执行一次 dry-run，并自动确认 Spot 与 UM 均为零挂单。
+  5. 停止 pre_trade 和 trade_signal。
+  6. 从 /home/ubuntu/mkt_signal/target/release 直接 cp 覆盖三个二进制，不保留备份。
+  7. 启动 trade_engine，检查进程和日志，人工确认后继续。
+  8. 启动 pre_trade，检查进程和日志，人工确认后结束。
 
 最终状态:
   - trade_engine: 运行
@@ -134,6 +136,14 @@ preflight() {
   local binary
   for binary in trade_engine pre_trade trade_signal; do
     [[ -x "${RELEASE_DIR}/${binary}" ]] || die "release 二进制不存在或不可执行: ${RELEASE_DIR}/${binary}"
+  done
+
+  [[ -d "$PERSIST_CENTER_DIR" ]] || die "中心持久化目录不存在: ${PERSIST_CENTER_DIR}"
+  for binary in persist_sync_collector persist_read_server; do
+    [[ -x "${RELEASE_DIR}/${binary}" ]] || die "release 二进制不存在或不可执行: ${RELEASE_DIR}/${binary}"
+    [[ -x "${PERSIST_CENTER_DIR}/${binary}" ]] || die "中心二进制不存在或不可执行: ${PERSIST_CENTER_DIR}/${binary}"
+    cmp -s -- "${RELEASE_DIR}/${binary}" "${PERSIST_CENTER_DIR}/${binary}" || \
+      die "中心 ${binary} 与本次 release 不一致；请先更新并重启 persist_center"
   done
 
   echo "[通过] 发布前预检完成"

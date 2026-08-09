@@ -374,6 +374,18 @@ impl TableKind {
                 "from_key",
                 "from_key_hex",
                 "bbo_spread",
+                "signal_open_venue",
+                "signal_open_ts",
+                "signal_open_bid_price",
+                "signal_open_bid_qty",
+                "signal_open_ask_price",
+                "signal_open_ask_qty",
+                "signal_hedge_venue",
+                "signal_hedge_ts",
+                "signal_hedge_bid_price",
+                "signal_hedge_bid_qty",
+                "signal_hedge_ask_price",
+                "signal_hedge_ask_qty",
             ],
             Self::OrderQueuePositions => &[
                 "key",
@@ -773,4 +785,23 @@ fn internal_err(err: anyhow::Error) -> Response {
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_dataframe, TableKind};
+    use crate::parquet::RangeFilter;
+
+    #[test]
+    fn uniform_order_table_columns_match_dataframe() {
+        let table = TableKind::UniformOrders;
+        let frame = build_dataframe(table, Vec::new(), &RangeFilter::all()).unwrap();
+        let frame_columns = frame.get_column_names();
+        let table_columns = table.columns();
+
+        assert_eq!(frame_columns.len(), table_columns.len());
+        for (actual, expected) in frame_columns.iter().zip(table_columns) {
+            assert_eq!(actual.as_str(), *expected);
+        }
+    }
 }
