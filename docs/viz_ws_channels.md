@@ -150,6 +150,10 @@
 - `account_position_qty` / `account_position_usdt` 是交易所综合实仓，会在同 symbol 的
   多条 strategy row 中重复，聚合时只能取一份，不能逐行求和。
 - `position_allocated` 表示该 strategy 的分账已经完成启动恢复；未完成时不会发单。
+- `execution_complete=true` 表示该 strategy 已无活动 batch/子单，并已因达到目标、
+  进入 `target_tolerance_usdt`，或剩余量低于交易所 `minQty/minNotional` 而结束执行。
+  `completion_reason` 分别为 `target_reached`、`target_tolerance`、
+  `exchange_minimum`；结束时尾差仍保留在 delta/pending 字段中。
 - 其余字段包含目标、差额、live/pending 数量和金额以及 active batch 数量。
 
 ### 5. Exec 账户风险 `exec_pre_trade_risk`

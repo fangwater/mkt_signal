@@ -343,12 +343,22 @@
           select.value = names.includes(current) ? current : "";
           state.strategy = select.value;
         }
+        function completionReasonText(reason) {
+          if (reason === "target_reached") return "已达到目标仓位";
+          if (reason === "target_tolerance") return "剩余量已进入 Target Tolerance";
+          if (reason === "exchange_minimum") return "剩余量低于交易所 minQty / minNotional";
+          if (reason === "mixed") return "包含多种结束原因";
+          return "执行已结束";
+        }
         function rowStatus(row, ready) {
           if (!ready || row.position_allocated === false) return ["等待仓位", "wait"];
           const working = row.has_working === true
             || Math.abs(row.live_order_usdt || 0) > 0.01
             || (row.active_batches || 0) > 0;
           if (working) return ["执行中", "live"];
+          if (row.execution_complete === true) {
+            return ["执行结束", "done", completionReasonText(row.completion_reason)];
+          }
           const unsettled = row.has_unsettled === true || Math.abs(row.delta_usdt || 0) > 0.01;
           if (!unsettled) return ["已完成", "done"];
           return ["待执行", "wait"];
@@ -358,6 +368,13 @@
         }
         function maxField(rows, key) {
           return rows.reduce((maximum, row) => finite(row[key]) ? Math.max(maximum, row[key]) : maximum, 0);
+        }
+        function aggregateCompletion(rows) {
+          if (!rows.length || !rows.every((row) => row.execution_complete === true)) {
+            return { complete: false, reason: "" };
+          }
+          const reasons = [...new Set(rows.map((row) => String(row.completion_reason || "")).filter(Boolean))];
+          return { complete: true, reason: reasons.length === 1 ? reasons[0] : "mixed" };
         }
         function aggregateSymbolRows(rows, useAccountPosition) {
           const grouped = new Map();
@@ -379,6 +396,7 @@
             const accountUsdt = useAccountPosition && finite(first.account_position_usdt)
               ? first.account_position_usdt
               : sumField(children, "current_usdt");
+            const completion = aggregateCompletion(children);
             const aggregate = {
               aggregate: true,
               group_mode: "symbol",
@@ -404,6 +422,8 @@
               active_batches: sumField(children, "active_batches"),
               remaining_batches: sumField(children, "remaining_batches"),
               estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
+              execution_complete: completion.complete,
+              completion_reason: completion.reason,
             };
             return { aggregate, children };
           }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.symbol.localeCompare(b.aggregate.symbol));
@@ -421,6 +441,7 @@
             const symbols = new Set(children.map((row) => String(row.symbol || "")));
             const quantitiesComparable = symbols.size === 1;
             const qty = (key) => quantitiesComparable ? sumField(children, key) : undefined;
+            const completion = aggregateCompletion(children);
             const aggregate = {
               aggregate: true,
               group_mode: "strategy",
@@ -446,13 +467,15 @@
               active_batches: sumField(children, "active_batches"),
               remaining_batches: sumField(children, "remaining_batches"),
               estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
+              execution_complete: completion.complete,
+              completion_reason: completion.reason,
             };
             return { aggregate, children };
           }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.group_label.localeCompare(b.aggregate.group_label, "zh-CN"));
         }
 
         function renderTableRow(row, ready) {
-          const [status, statusClass] = rowStatus(row, ready);
+          const [status, statusClass, statusTitle = ""] = rowStatus(row, ready);
           const rowClass = row.aggregate ? "aggregate-row" : "detail-row";
           const collapsed = row.aggregate && state.collapsed[row.group_mode].has(row.group_key);
           const primary = row.aggregate
@@ -467,7 +490,7 @@
             : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">编辑</a>`;
           return `<tr class="${rowClass}">
             <td>${primary}</td><td>${secondary}</td>
-            <td><span class="status ${statusClass}">${status}</span></td>
+            <td><span class="status ${statusClass}" title="${escapeHtml(statusTitle)}">${status}</span></td>
             <td class="${cls(row.target_qty)}">${fmt(row.target_qty, qtyFmt)}</td>
             <td class="${cls(row.current_qty)}" title="${positionTitle}">${fmt(row.current_qty, qtyFmt)}</td>
             <td class="${cls(row.live_order_qty)}">${fmt(row.live_order_qty, qtyFmt)}</td>

@@ -29,7 +29,9 @@
             "pending_usdt": 13000.0,
             "active_batches": 1,
             "remaining_batches": 4,
-            "estimated_completion_ts_ms": 1785916806500
+            "estimated_completion_ts_ms": 1785916806500,
+            "execution_complete": false,
+            "completion_reason": ""
           },
           {
             "strategy_name": "mean_reversion",
@@ -37,20 +39,22 @@
             "position_allocated": true,
             "account_position_qty": 0.3,
             "target_qty": -0.2,
-            "current_qty": -0.2,
-            "effective_position_qty": -0.2,
-            "delta_qty": 0.0,
+            "current_qty": -0.1998,
+            "effective_position_qty": -0.1998,
+            "delta_qty": -0.0002,
             "live_order_qty": 0.0,
-            "pending_qty": 0.0,
+            "pending_qty": -0.0002,
             "account_position_usdt": 19500.0,
             "target_usdt": -13000.0,
-            "current_usdt": -13000.0,
-            "delta_usdt": 0.0,
+            "current_usdt": -12987.0,
+            "delta_usdt": -13.0,
             "live_order_usdt": 0.0,
-            "pending_usdt": 0.0,
+            "pending_usdt": -13.0,
             "active_batches": 0,
             "remaining_batches": 0,
-            "estimated_completion_ts_ms": 0
+            "estimated_completion_ts_ms": 0,
+            "execution_complete": true,
+            "completion_reason": "exchange_minimum"
           },
           {
             "strategy_name": "trend_core",
@@ -71,7 +75,9 @@
             "pending_usdt": 3500.0,
             "active_batches": 1,
             "remaining_batches": 2,
-            "estimated_completion_ts_ms": 1785916805500
+            "estimated_completion_ts_ms": 1785916805500,
+            "execution_complete": false,
+            "completion_reason": ""
           },
           {
             "strategy_name": "carry_overlay",
@@ -92,7 +98,9 @@
             "pending_usdt": -3500.0,
             "active_batches": 0,
             "remaining_batches": 1,
-            "estimated_completion_ts_ms": 1785916804000
+            "estimated_completion_ts_ms": 1785916804000,
+            "execution_complete": false,
+            "completion_reason": ""
           },
           {
             "strategy_name": "event_driven",
@@ -113,7 +121,9 @@
             "pending_usdt": -7000.0,
             "active_batches": 1,
             "remaining_batches": 3,
-            "estimated_completion_ts_ms": 1785916806000
+            "estimated_completion_ts_ms": 1785916806000,
+            "execution_complete": false,
+            "completion_reason": ""
           }
         ]
       }

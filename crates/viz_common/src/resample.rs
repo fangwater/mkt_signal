@@ -153,6 +153,8 @@ pub struct ExecStrategyStateRow {
     pub active_batches: u32,
     pub remaining_batches: u32,
     pub estimated_completion_ts_ms: i64,
+    pub execution_complete: bool,
+    pub completion_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +224,8 @@ mod tests {
                 active_batches: 1,
                 remaining_batches: 3,
                 estimated_completion_ts_ms: 456,
+                execution_complete: false,
+                completion_reason: String::new(),
             }],
         };
 
@@ -234,5 +238,7 @@ mod tests {
         assert_eq!(decoded.rows[0].pending_qty, 0.65);
         assert_eq!(decoded.rows[0].remaining_batches, 3);
         assert_eq!(decoded.rows[0].estimated_completion_ts_ms, 456);
+        assert!(!decoded.rows[0].execution_complete);
+        assert!(decoded.rows[0].completion_reason.is_empty());
     }
 }

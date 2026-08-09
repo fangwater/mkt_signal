@@ -109,6 +109,8 @@ impl ExecResampleChannel {
                     active_batches: snapshot.active_batches.min(u32::MAX as usize) as u32,
                     remaining_batches: snapshot.remaining_batches,
                     estimated_completion_ts_ms: snapshot.estimated_completion_ts_ms,
+                    execution_complete: snapshot.execution_complete,
+                    completion_reason: snapshot.completion_reason,
                 });
             }
             rows.sort_by(|lhs, rhs| {
