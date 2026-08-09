@@ -8,6 +8,7 @@ use crate::pre_trade::leverage_guard::LeverageGuard;
 use crate::pre_trade::log_throttle::{log_pending_limit_summary, log_strategy_inactive_summary};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::Side;
+use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
 use crate::pre_trade::signal_throttle::{
     check_account_signal_throttle, check_signal_throttle,
     SIGNAL_THROTTLE_ERROR_CODE_BITGET_POSITION_TIER_LIMIT,
@@ -63,6 +64,7 @@ pub const DEFAULT_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_BACKWARD_CHANNEL: &str = "trade_query";
 
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
+const ARB_OPEN_MAX_RECEIVE_LAG_US: i64 = 100;
 const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
 const SIGNAL_COUNT_BUCKETS: usize = 14;
 
@@ -255,6 +257,20 @@ fn should_drop_startup_buffered_signal(generation_time: i64, listener_start_us: 
     generation_time > 0 && generation_time < listener_start_us
 }
 
+fn stale_arb_open_receive_lag_us(
+    signal_type: &SignalType,
+    fast_poll_enabled: bool,
+    generation_time: i64,
+    receive_us: i64,
+) -> Option<i64> {
+    if !fast_poll_enabled || !matches!(signal_type, SignalType::ArbOpen) || generation_time <= 0 {
+        return None;
+    }
+
+    let receive_lag_us = receive_us.saturating_sub(generation_time);
+    (receive_lag_us >= ARB_OPEN_MAX_RECEIVE_LAG_US).then_some(receive_lag_us)
+}
+
 fn is_open_signal_type(signal_type: &SignalType) -> bool {
     matches!(signal_type, SignalType::ArbOpen | SignalType::MMOpen)
 }
@@ -417,7 +433,9 @@ pub struct SignalChannel {
 struct SignalListener {
     channel_name: String,
     listener_start_us: i64,
+    stale_arb_open_filter_enabled: bool,
     dropped_startup_buffered: usize,
+    dropped_stale_arb_open: usize,
     dropped_slow_round_open: usize,
     _node: Node<ipc::Service>,
     subscriber: Subscriber<ipc::Service, TradeSignalIpcPayload, ()>,
@@ -426,6 +444,7 @@ struct SignalListener {
 impl SignalListener {
     fn new(channel_name: &str) -> Result<Self> {
         let listener_start_us = get_timestamp_us();
+        let stale_arb_open_filter_enabled = fast_poll_hot_path_mode();
         let node_name = SignalChannel::signal_node_name(channel_name);
         let service_path = build_service_name(&format!("signal_pubs/{}", channel_name));
 
@@ -472,11 +491,17 @@ impl SignalListener {
                 channel_name, flushed
             );
         }
+        info!(
+            "signal channel {} stale ArbOpen filter configured enabled={} max_receive_lag_us={}",
+            channel_name, stale_arb_open_filter_enabled, ARB_OPEN_MAX_RECEIVE_LAG_US
+        );
 
         Ok(Self {
             channel_name: channel_name.to_string(),
             listener_start_us,
+            stale_arb_open_filter_enabled,
             dropped_startup_buffered: 0,
+            dropped_stale_arb_open: 0,
             dropped_slow_round_open: 0,
             _node: node,
             subscriber,
@@ -562,7 +587,6 @@ impl SignalListener {
                                 }
                                 continue;
                             }
-                            record_signal_count(&signal.signal_type);
                             if matches!(signal.signal_type, SignalType::ArbOpen)
                                 && signal.generation_time > 0
                             {
@@ -571,6 +595,29 @@ impl SignalListener {
                                     receive_us.saturating_sub(signal.generation_time),
                                 );
                             }
+                            if let Some(receive_lag_us) = stale_arb_open_receive_lag_us(
+                                &signal.signal_type,
+                                self.stale_arb_open_filter_enabled,
+                                signal.generation_time,
+                                receive_us,
+                            ) {
+                                self.dropped_stale_arb_open += 1;
+                                if self.dropped_stale_arb_open == 1
+                                    || self.dropped_stale_arb_open.is_multiple_of(100)
+                                {
+                                    warn!(
+                                        "signal channel {} dropped stale ArbOpen count={} generation_time={} receive_us={} receive_lag_us={} threshold_us={}",
+                                        self.channel_name,
+                                        self.dropped_stale_arb_open,
+                                        signal.generation_time,
+                                        receive_us,
+                                        receive_lag_us,
+                                        ARB_OPEN_MAX_RECEIVE_LAG_US
+                                    );
+                                }
+                                continue;
+                            }
+                            record_signal_count(&signal.signal_type);
                             handle_trade_signal_view(signal, receive_us);
                         }
                         Err(err) => warn!(
@@ -729,7 +776,7 @@ mod tests {
         is_position_reducing, normalize_fixed_symbol_for_internal,
         normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
         should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
-        OpenSignalDropReason,
+        stale_arb_open_receive_lag_us, OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
     };
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
@@ -822,6 +869,43 @@ mod tests {
             missing_ts.generation_time,
             1_000
         ));
+    }
+
+    #[test]
+    fn stale_arb_open_filter_uses_100us_boundary_when_fast_polling() {
+        assert_eq!(ARB_OPEN_MAX_RECEIVE_LAG_US, 100);
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_099),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_100),
+            Some(100)
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 1_000, 1_101),
+            Some(101)
+        );
+    }
+
+    #[test]
+    fn stale_arb_open_filter_requires_fast_poll_and_arb_open() {
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, false, 1_000, 2_000),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbClose, true, 1_000, 2_000),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::MMOpen, true, 1_000, 2_000),
+            None
+        );
+        assert_eq!(
+            stale_arb_open_receive_lag_us(&SignalType::ArbOpen, true, 0, 2_000),
+            None
+        );
     }
 
     #[test]
