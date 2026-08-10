@@ -535,6 +535,19 @@ impl RocksDbStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "persist_manager_storage_{label}_{}_{}",
+            std::process::id(),
+            unique
+        ))
+    }
 
     #[test]
     fn optional_column_family_can_be_absent() {
@@ -562,5 +575,41 @@ mod tests {
         assert!(err
             .to_string()
             .contains("required column families not found: orders"));
+    }
+
+    #[test]
+    fn writable_open_preserves_retired_column_families() {
+        let path = temp_db_path("retired_cf");
+        let path_str = path.to_str().unwrap();
+        let tuning = RocksDbTuning::default();
+
+        {
+            let store = RocksDbStore::open_with_existing_cfs_and_tuning(
+                path_str,
+                &["retired".to_string()],
+                false,
+                &tuning,
+            )
+            .unwrap();
+            store.put("retired", b"key", b"value").unwrap();
+        }
+
+        {
+            let store = RocksDbStore::open_with_existing_cfs_and_tuning(
+                path_str,
+                &["current".to_string()],
+                false,
+                &tuning,
+            )
+            .unwrap();
+            assert!(store.has_column_family("retired"));
+            assert!(store.has_column_family("current"));
+            assert_eq!(
+                store.get("retired", b"key").unwrap(),
+                Some(b"value".to_vec())
+            );
+        }
+
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

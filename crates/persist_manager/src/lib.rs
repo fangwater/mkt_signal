@@ -71,14 +71,22 @@ impl PersistManager {
     }
 
     pub async fn run(self) -> Result<()> {
-        let mut cf_names = required_column_families();
-        cf_names.extend_from_slice(sync::sync_column_families());
+        let mut cf_names = required_column_families()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        cf_names.extend(
+            sync::sync_column_families()
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
         let tuning = default_tuning();
         let sync_config = PersistSyncConfig::from_env()?;
         let sync_enabled = sync_config.as_ref().is_some_and(PersistSyncConfig::enabled);
 
-        // 打开 RocksDB
-        let store = Arc::new(RocksDbStore::open_with_tuning(
+        // Keep retired column families open so schema removals do not make an
+        // existing writable database impossible to reopen.
+        let store = Arc::new(RocksDbStore::open_with_existing_cfs_and_tuning(
             DEFAULT_DB_PATH,
             &cf_names,
             ROCKSDB_SYNC_WRITES,

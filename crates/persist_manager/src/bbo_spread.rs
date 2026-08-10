@@ -617,6 +617,13 @@ fn infer_venues(namespace: &str, key_suffix: &str) -> Option<(TradingVenue, Trad
 
 fn infer_fr_venues_from_key_suffix(key_suffix: &str) -> Option<(TradingVenue, TradingVenue)> {
     let suffix = key_suffix.trim().to_ascii_lowercase();
+    if !suffix.contains('_') {
+        let exchange = normalize_exchange_str(&suffix);
+        return Some((
+            margin_venue_for_exchange(exchange)?,
+            futures_venue_for_exchange(exchange)?,
+        ));
+    }
     let mut parts = suffix.split('_');
     let open = venue_from_slug(parts.next()?)?;
     let hedge = venue_from_slug(parts.next()?)?;
@@ -749,6 +756,15 @@ fn env_usize(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binance_fr_directory_infers_margin_and_futures_venues() {
+        let (namespace, suffix) = parse_namespace_and_key_suffix("binance_fr_arb03").unwrap();
+        let venues = infer_venues(&namespace, &suffix).unwrap();
+
+        assert_eq!(venues.0, TradingVenue::BinanceMargin);
+        assert_eq!(venues.1, TradingVenue::BinanceFutures);
+    }
 
     #[test]
     fn ring_find_le_across_wrap() {
