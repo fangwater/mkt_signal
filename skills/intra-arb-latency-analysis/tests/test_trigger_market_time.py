@@ -102,6 +102,110 @@ class TriggerMarketTimeTest(unittest.TestCase):
         self.assertTrue(pd.isna(selected.iloc[0]["signal_minus_mkt_ms"]))
         self.assertEqual(selected.iloc[0]["create_minus_signal_ms"], 0.1)
 
+    def test_trigger_summary_keeps_spot_and_futures_separate(self) -> None:
+        classified = ANALYZER.classify_trigger_market_time(full_signal_bbo_frame())
+        classified["create_minus_signal_ms"] = [0.01, 0.02, 0.03]
+
+        summary = ANALYZER.trigger_mkt_summary(classified, 100.0)
+
+        self.assertEqual(summary["trigger_counts"], {"spot": 1, "futures": 1, "tie": 1})
+        self.assertEqual(
+            list(summary["groups"]),
+            ["spot", "futures", "tie"],
+        )
+        self.assertEqual(
+            summary["groups"]["spot"]["signal_minus_trigger_mkt_ms"]["p50_ms"],
+            0.1,
+        )
+        self.assertEqual(
+            summary["groups"]["futures"]["create_minus_signal_ms"]["p50_ms"],
+            0.02,
+        )
+
+    def test_binance_hedge_maps_from_key_with_metadata_suffix(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "client_order_id": "open-1",
+                    "from_key": "",
+                    "status": "FILLED",
+                    "trading_venue": "BinanceMargin",
+                    "create_ts": 1_000,
+                    "update_ts": 2_000,
+                    "local_ts": 2_020,
+                    "ts_us": 2_021,
+                },
+                {
+                    "client_order_id": "open-1",
+                    "from_key": "",
+                    "status": "FILLED",
+                    "trading_venue": "BinanceMargin",
+                    "create_ts": 1_000,
+                    "update_ts": 2_000,
+                    "local_ts": 2_030,
+                    "ts_us": 2_031,
+                },
+                {
+                    "client_order_id": "futures-1",
+                    "from_key": (
+                        "open-1|arb_hedge_lazy_taker_direct|"
+                        "2000:ret_qtl=0.25"
+                    ),
+                    "status": "NEW",
+                    "trading_venue": "BinanceFutures",
+                    "create_ts": 2_050,
+                    "update_ts": 2_100,
+                    "local_ts": 2_120,
+                    "ts_us": 2_121,
+                },
+                {
+                    "client_order_id": "futures-1",
+                    "from_key": (
+                        "open-1|arb_hedge_lazy_taker_direct|"
+                        "2000:ret_qtl=0.25"
+                    ),
+                    "status": "FILLED",
+                    "trading_venue": "BinanceFutures",
+                    "create_ts": 2_050,
+                    "update_ts": 2_110,
+                    "local_ts": 2_130,
+                    "ts_us": 2_131,
+                },
+                {
+                    "client_order_id": "futures-2",
+                    "from_key": "open-2|arb_hedge_lazy_model_direct|3000",
+                    "status": "NEW",
+                    "trading_venue": "BinanceFutures",
+                    "create_ts": 3_050,
+                    "update_ts": 3_090,
+                    "local_ts": 3_110,
+                    "ts_us": 3_111,
+                },
+            ]
+        )
+
+        result = ANALYZER.analyze_supported_hedge(frame, 100.0)
+
+        self.assertEqual(result["analysis_kind"], "binance_create")
+        self.assertEqual(result["rows_futures"], 2)
+        self.assertEqual(result["rows_parsed"], 2)
+        self.assertEqual(result["rows_matched"], 1)
+        self.assertEqual(result["rows_unmatched"], 1)
+        self.assertEqual(result["duplicate_margin_trigger_keys"], 1)
+        self.assertEqual(result["matched_margin_status_counts"], {"FILLED": 1})
+        self.assertAlmostEqual(
+            result["metrics"]["futures_create_minus_margin_local_ms"]["p50_ms"],
+            0.03,
+        )
+        self.assertAlmostEqual(
+            result["metrics"]["futures_create_minus_margin_update_ms"]["p50_ms"],
+            0.05,
+        )
+        self.assertAlmostEqual(
+            result["metrics"]["futures_update_minus_create_ms"]["p50_ms"],
+            0.045,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

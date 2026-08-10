@@ -45,7 +45,7 @@ METRICS = [
     ("local_minus_create_ms", "local_ts", "create_ts"),
 ]
 
-HEDGE_REASON = "arb_hedge_force_taker_direct"
+BYBIT_HEDGE_REASON = "arb_hedge_force_taker_direct"
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-hedge",
         action="store_true",
-        help="Also analyze margin trigger local_ts to taker hedge submit_ts latency when futures hedge rows can be mapped from from_key.",
+        help="Also analyze supported Bybit or Binance futures hedge latency from from_key mappings.",
     )
     return parser.parse_args()
 
@@ -380,7 +380,7 @@ def analyze_bybit_taker_hedge(orders: pd.DataFrame, normal_max_ms: float) -> dic
     futures["open_client_order_id"] = parts[0].astype("string")
     futures["hedge_reason"] = parts[1].astype("string")
     futures["trigger_update_ts_from_key"] = pd.to_numeric(parts[2], errors="coerce").astype("Int64")
-    futures = futures[futures["hedge_reason"].eq(HEDGE_REASON)].copy()
+    futures = futures[futures["hedge_reason"].eq(BYBIT_HEDGE_REASON)].copy()
 
     margin_event_raw = margin[
         [
@@ -485,7 +485,8 @@ def analyze_bybit_taker_hedge(orders: pd.DataFrame, normal_max_ms: float) -> dic
     )
 
     result = {
-        "hedge_reason": HEDGE_REASON,
+        "analysis_kind": "bybit_submit",
+        "hedge_reason": BYBIT_HEDGE_REASON,
         "rows_futures": int(len(futures)),
         "rows_margin_events_raw": int(len(margin_event_raw)),
         "rows_margin_events_dedup": int(len(margin_event)),
@@ -529,6 +530,171 @@ def analyze_bybit_taker_hedge(orders: pd.DataFrame, normal_max_ms: float) -> dic
     return result
 
 
+def analyze_binance_taker_hedge(
+    orders: pd.DataFrame, normal_max_ms: float
+) -> dict[str, Any]:
+    required = {
+        "client_order_id",
+        "from_key",
+        "status",
+        "trading_venue",
+        "create_ts",
+        "update_ts",
+        "local_ts",
+        "ts_us",
+    }
+    missing = sorted(required - set(orders.columns))
+    if missing:
+        raise ValueError(f"Binance hedge analysis missing required columns: {missing}")
+
+    work = orders.copy()
+    for col in ["client_order_id", "from_key", "status", "trading_venue"]:
+        work[col] = work[col].astype("string")
+
+    margin = work[work["trading_venue"].eq("BinanceMargin")].copy()
+    futures = work[
+        work["trading_venue"].eq("BinanceFutures")
+        & work["status"].eq("NEW")
+    ].copy()
+
+    parsed = futures["from_key"].str.extract(
+        r"^(?P<open_client_order_id>[^|]+)\|"
+        r"(?P<hedge_reason>arb_hedge_[^|]+)\|"
+        r"(?P<trigger_update_ts_from_key>\d+)"
+    )
+    futures = futures.join(parsed)
+    futures["open_client_order_id"] = futures["open_client_order_id"].astype("string")
+    futures["trigger_update_ts_from_key"] = pd.to_numeric(
+        futures["trigger_update_ts_from_key"], errors="coerce"
+    ).astype("Int64")
+
+    margin_event_raw = margin[
+        ["client_order_id", "status", "update_ts", "local_ts", "ts_us"]
+    ].rename(
+        columns={
+            "client_order_id": "open_client_order_id",
+            "status": "margin_trigger_status",
+            "update_ts": "margin_trigger_update_ts",
+            "local_ts": "margin_trigger_local_ts",
+            "ts_us": "margin_ts_us",
+        }
+    )
+    margin_event_raw["open_client_order_id"] = margin_event_raw[
+        "open_client_order_id"
+    ].astype("string")
+    margin_event_raw["margin_trigger_update_ts"] = pd.to_numeric(
+        margin_event_raw["margin_trigger_update_ts"], errors="coerce"
+    ).astype("Int64")
+    margin_event = (
+        margin_event_raw.sort_values(
+            [
+                "open_client_order_id",
+                "margin_trigger_update_ts",
+                "margin_trigger_local_ts",
+                "margin_ts_us",
+            ]
+        )
+        .drop_duplicates(
+            ["open_client_order_id", "margin_trigger_update_ts"], keep="first"
+        )
+    )
+
+    hedge = futures.merge(
+        margin_event,
+        how="left",
+        left_on=["open_client_order_id", "trigger_update_ts_from_key"],
+        right_on=["open_client_order_id", "margin_trigger_update_ts"],
+        validate="many_to_one",
+    )
+    matched = hedge["margin_trigger_local_ts"].notna()
+
+    def diff_ms(lhs: pd.Series, rhs: pd.Series) -> pd.Series:
+        return (
+            pd.to_numeric(lhs, errors="coerce")
+            - pd.to_numeric(rhs, errors="coerce")
+        ) / 1000.0
+
+    hedge["futures_create_minus_margin_local_ms"] = diff_ms(
+        hedge["create_ts"], hedge["margin_trigger_local_ts"]
+    )
+    hedge["futures_create_minus_margin_update_ms"] = diff_ms(
+        hedge["create_ts"], hedge["margin_trigger_update_ts"]
+    )
+    hedge["futures_update_minus_create_ms"] = diff_ms(
+        hedge["update_ts"], hedge["create_ts"]
+    )
+    hedge["futures_local_minus_create_ms"] = diff_ms(
+        hedge["local_ts"], hedge["create_ts"]
+    )
+
+    duplicate_keys = (
+        margin_event_raw.groupby(
+            ["open_client_order_id", "margin_trigger_update_ts"]
+        )
+        .size()
+        .gt(1)
+        .sum()
+    )
+    return {
+        "analysis_kind": "binance_create",
+        "rows_futures": int(len(futures)),
+        "rows_futures_unique_client_order_id": int(
+            futures["client_order_id"].nunique()
+        ),
+        "rows_parsed": int(futures["trigger_update_ts_from_key"].notna().sum()),
+        "rows_matched": int(matched.sum()),
+        "rows_unmatched": int((~matched).sum()),
+        "matched_open_client_order_id": int(
+            hedge.loc[matched, "open_client_order_id"].nunique()
+        ),
+        "duplicate_margin_trigger_keys": int(duplicate_keys),
+        "hedge_reason_counts": {
+            str(key): int(value)
+            for key, value in futures["hedge_reason"]
+            .value_counts(dropna=False)
+            .items()
+        },
+        "matched_margin_status_counts": {
+            str(key): int(value)
+            for key, value in hedge.loc[matched, "margin_trigger_status"]
+            .value_counts(dropna=False)
+            .items()
+        },
+        "metrics": {
+            "futures_create_minus_margin_local_ms": hedge_metric_summary(
+                hedge["futures_create_minus_margin_local_ms"], normal_max_ms
+            ),
+            "futures_create_minus_margin_update_ms": hedge_metric_summary(
+                hedge["futures_create_minus_margin_update_ms"], normal_max_ms
+            ),
+            "futures_update_minus_create_ms": hedge_metric_summary(
+                hedge["futures_update_minus_create_ms"], normal_max_ms
+            ),
+            "futures_local_minus_create_ms": hedge_metric_summary(
+                hedge["futures_local_minus_create_ms"], normal_max_ms
+            ),
+        },
+    }
+
+
+def analyze_supported_hedge(
+    orders: pd.DataFrame, normal_max_ms: float
+) -> dict[str, Any]:
+    if "trading_venue" not in orders.columns:
+        raise ValueError("hedge analysis requires trading_venue")
+
+    venues = set(orders["trading_venue"].dropna().astype(str))
+    if {"BinanceMargin", "BinanceFutures"}.issubset(venues):
+        return analyze_binance_taker_hedge(orders, normal_max_ms)
+    if {"BybitMargin", "BybitFutures"}.issubset(venues):
+        return analyze_bybit_taker_hedge(orders, normal_max_ms)
+    raise ValueError(
+        "unsupported hedge venue pair; expected BinanceMargin/BinanceFutures "
+        "or BybitMargin/BybitFutures"
+    )
+
+
+
 def print_text(result: dict[str, Any]) -> None:
     print("Snapshot")
     print(f"  parquet: {result['parquet']}")
@@ -543,9 +709,9 @@ def print_text(result: dict[str, Any]) -> None:
 
     metric_labels = {
         "signal_minus_mkt_ms": "signal_ts - mkt_ts",
-        "create_minus_signal_ms": "create_ts - signal_ts",
-        "update_minus_create_ms": "update_ts - create_ts",
-        "local_minus_create_ms": "local_ts - create_ts",
+        "create_minus_signal_ms": "margin.create_ts - signal_ts",
+        "update_minus_create_ms": "margin.NEW.update_ts - margin.create_ts",
+        "local_minus_create_ms": "margin.NEW.local_ts - margin.create_ts",
     }
     for subset_name, subset in result["subsets"].items():
         print(f"Subset: {subset_name}")
@@ -613,18 +779,35 @@ def print_text(result: dict[str, Any]) -> None:
         print(f"  rows_matched: {hedge['rows_matched']}")
         print(f"  matched_open_client_order_id: {hedge['matched_open_client_order_id']}")
         print(f"  duplicate_margin_trigger_keys: {hedge['duplicate_margin_trigger_keys']}")
-        hedge_labels = {
-            "futures_submit_minus_margin_local_ms": "futures submit_ts - margin local_ts",
-            "futures_submit_minus_trigger_update_ms": "futures submit_ts - margin update_ts(from_key)",
-            "futures_local_minus_submit_ms": "futures local_ts - futures submit_ts",
-            "futures_update_minus_submit_ms": "futures update_ts - futures submit_ts",
-        }
-        for key in (
-            "futures_submit_minus_margin_local_ms",
-            "futures_submit_minus_trigger_update_ms",
-            "futures_local_minus_submit_ms",
-            "futures_update_minus_submit_ms",
-        ):
+        if "rows_unmatched" in hedge:
+            print(f"  rows_unmatched: {hedge['rows_unmatched']}")
+        if hedge.get("analysis_kind") == "binance_create":
+            hedge_labels = {
+                "futures_create_minus_margin_local_ms": "futures create_ts - margin local_ts",
+                "futures_create_minus_margin_update_ms": "futures create_ts - margin update_ts",
+                "futures_update_minus_create_ms": "futures NEW.update_ts - futures create_ts",
+                "futures_local_minus_create_ms": "futures NEW.local_ts - futures create_ts",
+            }
+            metric_order = (
+                "futures_create_minus_margin_local_ms",
+                "futures_create_minus_margin_update_ms",
+                "futures_update_minus_create_ms",
+                "futures_local_minus_create_ms",
+            )
+        else:
+            hedge_labels = {
+                "futures_submit_minus_margin_local_ms": "futures submit_ts - margin local_ts",
+                "futures_submit_minus_trigger_update_ms": "futures submit_ts - margin update_ts(from_key)",
+                "futures_local_minus_submit_ms": "futures local_ts - futures submit_ts",
+                "futures_update_minus_submit_ms": "futures update_ts - futures submit_ts",
+            }
+            metric_order = (
+                "futures_submit_minus_margin_local_ms",
+                "futures_submit_minus_trigger_update_ms",
+                "futures_local_minus_submit_ms",
+                "futures_update_minus_submit_ms",
+            )
+        for key in metric_order:
             stats = hedge["metrics"][key]
             print(f"  {hedge_labels[key]}")
             print(
@@ -670,7 +853,7 @@ def main() -> None:
         subset_mode=args.subset,
     )
     if args.include_hedge:
-        result["hedge"] = analyze_bybit_taker_hedge(orders, args.normal_max_ms)
+        result["hedge"] = analyze_supported_hedge(orders, args.normal_max_ms)
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
