@@ -606,7 +606,10 @@ fn new_ipc_spsc_queues(
     )
 }
 
-fn parse_trade_request_payload(payload: &TradeRequestIpcPayload) -> Option<TradeRequestMsg> {
+fn parse_trade_request_payload(
+    payload: &TradeRequestIpcPayload,
+    fast_poll: bool,
+) -> Option<TradeRequestMsg> {
     let Some(raw) = payload.as_request_slice() else {
         warn!(
             "invalid trade request ipc payload (capacity={})",
@@ -622,18 +625,20 @@ fn parse_trade_request_payload(payload: &TradeRequestIpcPayload) -> Option<Trade
         }
     };
     let ipc_recv = Instant::now();
-    let ipc_recv_us = get_timestamp_us();
-    let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
-    if msg.create_time > 0 && create_to_ipc_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US {
-        warn!(
-            "IpcIngressLatency: trade ipc_recv_slow req_type={:?} client_order_id={} params_len={} create_time_us={} ipc_thread_recv_us={} create_to_ipc_thread_recv_us={}",
-            msg.req_type,
-            msg.client_order_id,
-            msg.params.len(),
-            msg.create_time,
-            ipc_recv_us,
-            create_to_ipc_recv_us
-        );
+    if fast_poll {
+        let ipc_recv_us = get_timestamp_us();
+        let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
+        if msg.create_time > 0 && create_to_ipc_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US {
+            warn!(
+                "IpcIngressLatency: trade ipc_recv_slow req_type={:?} client_order_id={} params_len={} create_time_us={} ipc_thread_recv_us={} create_to_ipc_thread_recv_us={}",
+                msg.req_type,
+                msg.client_order_id,
+                msg.params.len(),
+                msg.create_time,
+                ipc_recv_us,
+                create_to_ipc_recv_us
+            );
+        }
     }
     msg.ipc_recv = Some(ipc_recv);
     Some(msg)
@@ -798,18 +803,23 @@ fn parse_query_request_payload(payload: &[u8]) -> Option<QueryRequestMsg> {
     Some(msg)
 }
 
-fn parse_internal_open_terminate_payload(payload: &[u8]) -> Option<InternalOpenTerminateMsg> {
+fn parse_internal_open_terminate_payload(
+    payload: &[u8],
+    fast_poll: bool,
+) -> Option<InternalOpenTerminateMsg> {
     let msg = InternalOpenTerminateMsg::parse(payload)?;
-    let ipc_recv_us = get_timestamp_us();
-    let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
-    if msg.create_time > 0 && create_to_ipc_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US {
-        warn!(
-            "IpcIngressLatency: internal_open_terminate ipc_recv_slow client_order_id={} create_time_us={} ipc_thread_recv_us={} create_to_ipc_thread_recv_us={}",
-            msg.client_order_id,
-            msg.create_time,
-            ipc_recv_us,
-            create_to_ipc_recv_us
-        );
+    if fast_poll {
+        let ipc_recv_us = get_timestamp_us();
+        let create_to_ipc_recv_us = ipc_recv_us.saturating_sub(msg.create_time);
+        if msg.create_time > 0 && create_to_ipc_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US {
+            warn!(
+                "IpcIngressLatency: internal_open_terminate ipc_recv_slow client_order_id={} create_time_us={} ipc_thread_recv_us={} create_to_ipc_thread_recv_us={}",
+                msg.client_order_id,
+                msg.create_time,
+                ipc_recv_us,
+                create_to_ipc_recv_us
+            );
+        }
     }
     Some(msg)
 }
@@ -860,7 +870,7 @@ fn recv_trade_req_from_ipc(
 ) -> Option<TradeRequestMsg> {
     match subscriber.receive() {
         Ok(Some(sample)) => {
-            let msg = parse_trade_request_payload(sample.payload());
+            let msg = parse_trade_request_payload(sample.payload(), false);
             drop(sample);
             msg
         }
@@ -1126,7 +1136,7 @@ fn run_te_ipc_thread(
                 match order_subscriber.receive() {
                     Ok(Some(sample)) => {
                         did_work = true;
-                        let msg = parse_trade_request_payload(sample.payload());
+                        let msg = parse_trade_request_payload(sample.payload(), fast_poll);
                         drop(sample);
                         if let Some(msg) = msg {
                             if !push_trade_req_or_pending(
@@ -1157,7 +1167,8 @@ fn run_te_ipc_thread(
                     match subscriber.receive() {
                         Ok(Some(sample)) => {
                             did_work = true;
-                            let msg = parse_internal_open_terminate_payload(sample.payload());
+                            let msg =
+                                parse_internal_open_terminate_payload(sample.payload(), fast_poll);
                             drop(sample);
                             if let Some(msg) = msg {
                                 if !push_order_control_or_pending(
