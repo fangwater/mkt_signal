@@ -6,7 +6,7 @@ use chrono::{
 };
 use clap::Parser;
 use log::info;
-use persist_manager::{self, exporter, RocksDbStore};
+use persist_manager::{self, exporter, parquet::UniformOrderExportOptions, RocksDbStore};
 
 fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -35,11 +35,13 @@ fn main() -> Result<()> {
         &tuning,
     )?;
 
-    exporter::export_window_to_dir(
+    let uniform_order_options = uniform_order_export_options(&resolved.env_name);
+    exporter::export_window_to_dir_with_options(
         &store,
         &resolved.output_dir,
         resolved.start_us,
         resolved.end_us,
+        uniform_order_options,
     )?;
 
     info!(
@@ -56,11 +58,11 @@ fn main() -> Result<()> {
 )]
 struct Args {
     /// Base directory that contains env folders like /home/ubuntu/binance_mm_alpha
-    /// or /home/ubuntu/binance_fr_trade01
+    /// or /home/ubuntu/binance_exec_trade01
     #[arg(long)]
     base_dir: Option<PathBuf>,
 
-    /// Env name, for example binance_mm_alpha or binance_fr_trade01.
+    /// Env name, for example binance_mm_alpha or binance_exec_trade01.
     /// If omitted, try to infer from cwd.
     #[arg(long)]
     env_name: Option<String>,
@@ -267,9 +269,9 @@ fn is_valid_exchange_pair_name(exchange_pair: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
-const TOKEN_GROUPS: &[(char, [&str; 3])] = &[
-    ('_', ["_mm_", "_fr_", "_intra_"]),
-    ('-', ["-mm-", "-fr-", "-intra-"]),
+const TOKEN_GROUPS: &[(char, [&str; 4])] = &[
+    ('_', ["_mm_", "_fr_", "_intra_", "_exec_"]),
+    ('-', ["-mm-", "-fr-", "-intra-", "-exec-"]),
 ];
 
 fn validate_supported_env_name(env_name: &str) -> Result<()> {
@@ -290,9 +292,17 @@ fn validate_supported_env_name(env_name: &str) -> Result<()> {
     }
 
     Err(anyhow!(
-        "env_name must match <exchange>{{_|-}}<mm|fr|intra>{{_|-}}<suffix> or <open_ex>-<hedge_ex>_cross_<suffix> (got: {})",
+        "env_name must match <exchange>{{_|-}}<mm|fr|intra|exec>{{_|-}}<suffix> or <open_ex>-<hedge_ex>_cross_<suffix> (got: {})",
         env_name
     ))
+}
+
+fn uniform_order_export_options(env_name: &str) -> UniformOrderExportOptions {
+    if env_name.contains("_exec_") || env_name.contains("-exec-") {
+        UniformOrderExportOptions::without_signal_hedge_bbo()
+    } else {
+        UniformOrderExportOptions::default()
+    }
 }
 
 fn resolve_path(
@@ -369,6 +379,25 @@ mod tests {
     }
 
     #[test]
+    fn validate_supported_env_name_accepts_exec_values() {
+        assert!(validate_supported_env_name("binance_exec_trade01").is_ok());
+        assert!(validate_supported_env_name("binance-exec-trade01").is_ok());
+        assert!(validate_supported_env_name("okex_exec_hf01").is_ok());
+    }
+
+    #[test]
+    fn exec_exports_omit_signal_hedge_bbo_columns() {
+        assert_eq!(
+            uniform_order_export_options("binance_exec_trade01"),
+            UniformOrderExportOptions::without_signal_hedge_bbo()
+        );
+        assert_eq!(
+            uniform_order_export_options("binance_fr_trade01"),
+            UniformOrderExportOptions::default()
+        );
+    }
+
+    #[test]
     fn validate_supported_env_name_accepts_fr_values() {
         assert!(validate_supported_env_name("binance_fr_trade01").is_ok());
         assert!(validate_supported_env_name("okex_fr_hf01").is_ok());
@@ -396,6 +425,8 @@ mod tests {
         assert!(validate_supported_env_name("binance_fr").is_err());
         assert!(validate_supported_env_name("binance_fr_ALPHA").is_err());
         assert!(validate_supported_env_name("binance_intra").is_err());
+        assert!(validate_supported_env_name("binance_exec").is_err());
+        assert!(validate_supported_env_name("binance_exec_ALPHA").is_err());
         assert!(validate_supported_env_name("_cross_alpha").is_err());
     }
 

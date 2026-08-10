@@ -299,9 +299,38 @@ pub fn build_parquet_order_updates(
     dataframe_to_parquet_bytes(&mut df)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UniformOrderExportOptions {
+    pub include_signal_hedge_bbo: bool,
+}
+
+impl UniformOrderExportOptions {
+    pub const fn without_signal_hedge_bbo() -> Self {
+        Self {
+            include_signal_hedge_bbo: false,
+        }
+    }
+}
+
+impl Default for UniformOrderExportOptions {
+    fn default() -> Self {
+        Self {
+            include_signal_hedge_bbo: true,
+        }
+    }
+}
+
 pub fn build_uniform_orders_df(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
+) -> Result<DataFrame> {
+    build_uniform_orders_df_with_options(entries, range, UniformOrderExportOptions::default())
+}
+
+pub fn build_uniform_orders_df_with_options(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+    options: UniformOrderExportOptions,
 ) -> Result<DataFrame> {
     let mut key_col = Vec::with_capacity(entries.len());
     let mut ts_col = Vec::with_capacity(entries.len());
@@ -438,7 +467,7 @@ pub fn build_uniform_orders_df(
         warn!("uniform order: dropped {dropped} undecodable records");
     }
 
-    Ok(DataFrame::new(vec![
+    let mut df = DataFrame::new(vec![
         Series::new("key".into(), key_col),
         Series::new("ts_us".into(), ts_col),
         Series::new("recv_ts_us".into(), recv_ts_col),
@@ -500,14 +529,37 @@ pub fn build_uniform_orders_df(
             "signal_hedge_ask_qty".into(),
             signal_hedge_ask_qty_col.as_slice(),
         ),
-    ])?)
+    ])?;
+
+    if !options.include_signal_hedge_bbo {
+        for column in [
+            "signal_hedge_venue",
+            "signal_hedge_ts",
+            "signal_hedge_bid_price",
+            "signal_hedge_bid_qty",
+            "signal_hedge_ask_price",
+            "signal_hedge_ask_qty",
+        ] {
+            let _ = df.drop_in_place(column)?;
+        }
+    }
+
+    Ok(df)
 }
 
 pub fn build_parquet_uniform_orders(
     entries: Vec<(Vec<u8>, Vec<u8>)>,
     range: &RangeFilter,
 ) -> Result<Vec<u8>> {
-    let mut df = build_uniform_orders_df(entries, range)?;
+    build_parquet_uniform_orders_with_options(entries, range, UniformOrderExportOptions::default())
+}
+
+pub fn build_parquet_uniform_orders_with_options(
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    range: &RangeFilter,
+    options: UniformOrderExportOptions,
+) -> Result<Vec<u8>> {
+    let mut df = build_uniform_orders_df_with_options(entries, range, options)?;
     dataframe_to_parquet_bytes(&mut df)
 }
 
@@ -1049,5 +1101,29 @@ mod tests {
         assert_eq!(open_bid_qty_col.get(1), Some(2.5));
         assert_eq!(hedge_ts_col.get(1), Some(102));
         assert_eq!(hedge_ask_qty_col.get(1), Some(5.5));
+    }
+
+    #[test]
+    fn uniform_orders_df_can_omit_signal_hedge_bbo_columns() {
+        let df = build_uniform_orders_df_with_options(
+            vec![(b"1000".to_vec(), uniform_payload(None))],
+            &RangeFilter::all(),
+            UniformOrderExportOptions::without_signal_hedge_bbo(),
+        )
+        .unwrap();
+
+        assert_eq!(df.height(), 1);
+        assert_eq!(df.width(), 28);
+        assert!(df.column("signal_open_venue").is_ok());
+        for column in [
+            "signal_hedge_venue",
+            "signal_hedge_ts",
+            "signal_hedge_bid_price",
+            "signal_hedge_bid_qty",
+            "signal_hedge_ask_price",
+            "signal_hedge_ask_qty",
+        ] {
+            assert!(df.column(column).is_err(), "{column} should be omitted");
+        }
     }
 }

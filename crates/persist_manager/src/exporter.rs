@@ -8,7 +8,7 @@ use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::{CF_ORDER_UPDATE, CF_ORDER_UPDATE_UNMATCHED};
 use super::parquet::{
     build_parquet_order_queue_positions, build_parquet_order_updates, build_parquet_trade_updates,
-    build_parquet_uniform_orders, RangeFilter,
+    build_parquet_uniform_orders_with_options, RangeFilter, UniformOrderExportOptions,
 };
 use super::storage::RocksDbStore;
 use super::trade_update::{CF_TRADE_UPDATE, CF_TRADE_UPDATE_UNMATCHED};
@@ -63,6 +63,22 @@ pub fn export_window_to_dir(
     start_us: u64,
     end_us: u64,
 ) -> Result<()> {
+    export_window_to_dir_with_options(
+        store,
+        output_dir,
+        start_us,
+        end_us,
+        UniformOrderExportOptions::default(),
+    )
+}
+
+pub fn export_window_to_dir_with_options(
+    store: &RocksDbStore,
+    output_dir: &Path,
+    start_us: u64,
+    end_us: u64,
+    uniform_order_options: UniformOrderExportOptions,
+) -> Result<()> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create output_dir {}", output_dir.display()))?;
 
@@ -99,7 +115,8 @@ pub fn export_window_to_dir(
         end_key.as_bytes(),
         None,
     )?;
-    let parquet = build_parquet_uniform_orders(entries, &range)?;
+    let parquet =
+        build_parquet_uniform_orders_with_options(entries, &range, uniform_order_options)?;
     write_parquet(output_dir, "uniform_orders.parquet", parquet)?;
 
     if store.has_column_family(CF_ORDER_QUEUE_POSITION) {
