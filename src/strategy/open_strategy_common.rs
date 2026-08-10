@@ -496,6 +496,14 @@ pub trait OpenStrategyCommon {
 
     fn release_close_inventory_unfilled(&self, _client_order_id: i64, _reason: &str) {}
 
+    fn force_taker_taker_hedge(&self) -> bool {
+        false
+    }
+
+    fn skip_open_total_exposure_risk_check(&self) -> bool {
+        false
+    }
+
     fn skip_open_position_risk_checks(&self) -> bool {
         false
     }
@@ -591,6 +599,17 @@ pub trait OpenStrategyCommon {
         let close_ts = self.open_terminal_close_ts();
         let strategy_mgr = MonitorChannel::instance().strategy_mgr();
         let mut strategy_mgr = strategy_mgr.borrow_mut();
+        if self.force_taker_taker_hedge()
+            && !strategy_mgr.register_force_close_open_id(symbol, open_client_order_id)
+        {
+            warn!(
+                "{}: strategy_id={} failed to register Force Close open id symbol={} open_co_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                open_client_order_id
+            );
+        }
         let updated = strategy_mgr.record_open_order_terminal(
             symbol,
             side,
@@ -1053,6 +1072,16 @@ pub trait OpenStrategyCommon {
                             e
                         ));
                         return None;
+                    }
+                    OpenExposureRiskError::Total(e)
+                        if self.skip_open_total_exposure_risk_check() =>
+                    {
+                        debug!(
+                            "{}: strategy_id={} Force Close ignores total exposure risk: {}",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            e
+                        );
                     }
                     OpenExposureRiskError::Total(e) => {
                         self.log_open_deleveraging_risk_reject(
@@ -2403,6 +2432,20 @@ pub trait OpenStrategyCommon {
         if client_order_id <= 0 {
             self.open_state_mut().alive = false;
             return false;
+        }
+        if self.force_taker_taker_hedge() {
+            if let Some(symbol) = self.open_strategy_symbol().map(str::to_string) {
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                if !strategy_mgr
+                    .borrow_mut()
+                    .register_force_close_open_id(&symbol, client_order_id)
+                {
+                    warn!(
+                        "{}: strategy_id={} failed to preserve Force Close id during orphan handoff symbol={} open_co_id={}",
+                        self.strategy_name(), self.strategy_id(), symbol, client_order_id
+                    );
+                }
+            }
         }
         let role = self.orphan_strategy_role();
         warn!(

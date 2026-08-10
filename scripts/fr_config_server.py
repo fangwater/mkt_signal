@@ -1275,6 +1275,30 @@ def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
     return normalized
 
 
+def normalize_unimmr_force_close_lines(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    trigger_field = "unimmr_force_close_line"
+    recover_field = "unimmr_force_close_recover_line"
+    if trigger_field not in normalized and recover_field not in normalized:
+        return normalized
+    if trigger_field not in normalized or recover_field not in normalized:
+        raise ValueError(
+            "unimmr_force_close_line and unimmr_force_close_recover_line must be provided together"
+        )
+    try:
+        trigger = float(str(normalized[trigger_field]).strip())
+        recover = float(str(normalized[recover_field]).strip())
+    except Exception as exc:
+        raise ValueError("unimmr force close lines must be numbers") from exc
+    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.0 < trigger < recover):
+        raise ValueError(
+            "unimmr force close lines must satisfy 1.0 < unimmr_force_close_line < unimmr_force_close_recover_line"
+        )
+    normalized[trigger_field] = f"{trigger:g}"
+    normalized[recover_field] = f"{recover:g}"
+    return normalized
+
+
 def normalize_fr_position_concentration_ratios(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     alert_field = "fr_position_concentration_alert_ratio"
@@ -2066,6 +2090,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
                 )
                 mapping = normalize_unimmr_control_lines(mapping)
+                mapping = normalize_unimmr_force_close_lines(mapping)
                 mapping = normalize_fr_position_concentration_ratios(mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))

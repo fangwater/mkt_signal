@@ -43,7 +43,7 @@ use order_common::{
 };
 use order_common::{OrderStatus, TradeRequestType, TradingVenue};
 use runtime_common::exchange::Exchange;
-use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
@@ -181,6 +181,11 @@ fn build_direct_taker_from_key(source: &str, now_ts: i64, ret_qtl: Option<f64>) 
 fn is_direct_taker_from_key(from_key: &[u8]) -> bool {
     from_key.starts_with(b"arb_hedge_force_taker_direct|")
         || from_key.starts_with(b"arb_hedge_lazy_model_direct|")
+        || from_key.starts_with(b"arb_hedge_unimmr_force_close_direct|")
+}
+
+fn is_unimmr_force_close_direct_from_key(from_key: &[u8]) -> bool {
+    from_key.starts_with(b"arb_hedge_unimmr_force_close_direct|")
 }
 
 fn order_qv_from_quantized_value(qv: QuantizedValue) -> OrderQuantizedValue {
@@ -219,6 +224,8 @@ pub struct ArbHedgeStrategy {
     pub(super) net_qty_queue: NetQtyQueue,
     /// 尚需由对冲腿覆盖的 opening-leg 成交队列，到期时间来自成交记录的 close_ts。
     pub(super) pending_hedge_queue: TimedNetQtyQueue,
+    /// Opening-leg client IDs whose pending hedge must execute as taker + reduce-only.
+    force_close_open_ids: FastHashSet<i64>,
     /// 启动时从账户快照带入的净敞口基线。这部分只作为状态展示，不反推出 hedge work。
     hedge_work_baseline_qv: f64,
     hedge_request_seq: u64,
@@ -439,6 +446,7 @@ impl ArbHedgeStrategy {
             hedge_venue,
             net_qty_queue: NetQtyQueue::new(),
             pending_hedge_queue: TimedNetQtyQueue::new(),
+            force_close_open_ids: fast_hash_set(),
             hedge_work_baseline_qv: 0.0,
             hedge_request_seq: 0,
             inflight_hedge_query: None,
@@ -557,6 +565,51 @@ impl ArbHedgeStrategy {
         self.pending_hedge_queue.due_qty(now_ts)
     }
 
+    pub fn register_force_close_open_id(&mut self, open_client_order_id: i64) -> bool {
+        if open_client_order_id <= 0 {
+            return false;
+        }
+        self.force_close_open_ids.insert(open_client_order_id);
+        true
+    }
+
+    fn due_force_close_open_id(&self, now_ts: i64) -> Option<i64> {
+        self.pending_hedge_queue
+            .due_lots(now_ts)
+            .into_iter()
+            .filter_map(|lot| lot.open_client_order_id)
+            .find(|open_id| self.force_close_open_ids.contains(open_id))
+    }
+
+    fn retire_force_close_open_id_if_unreferenced(&mut self, open_client_order_id: i64) {
+        if open_client_order_id <= 0 || !self.force_close_open_ids.contains(&open_client_order_id) {
+            return;
+        }
+        let pending = self
+            .pending_hedge_queue
+            .find_lot_by_open_id(open_client_order_id)
+            .is_some();
+        let borrowed = self
+            .hedge_order_meta
+            .values()
+            .chain(self.orphaned_hedge_order_meta.values())
+            .any(|meta| meta.bound_open_client_order_id == open_client_order_id);
+        if !pending && !borrowed {
+            self.force_close_open_ids.remove(&open_client_order_id);
+        }
+    }
+
+    fn retire_borrowed_force_close_open_ids(&mut self, lots: &[TimedNetQtyLot]) {
+        let open_ids = lots
+            .iter()
+            .filter_map(|lot| lot.open_client_order_id)
+            .filter(|open_id| self.force_close_open_ids.contains(open_id))
+            .collect::<Vec<_>>();
+        for open_id in open_ids {
+            self.retire_force_close_open_id_if_unreferenced(open_id);
+        }
+    }
+
     fn next_hedge_request_seq(&mut self) -> u64 {
         self.hedge_request_seq = self.hedge_request_seq.wrapping_add(1);
         if self.hedge_request_seq == 0 {
@@ -612,6 +665,22 @@ impl ArbHedgeStrategy {
             self.pending_hedge_queue.due_qty(now_ts)
         );
         true
+    }
+
+    fn supersede_inflight_query_for_force_close(&mut self, now_ts: i64, reason: &str) {
+        let Some(inflight) = self.inflight_hedge_query.take() else {
+            return;
+        };
+        self.next_query_ts_us = 0;
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} Force Close supersedes inflight hedge query request_seq={} sent_ts_us={} now_ts={} reason={}",
+            self.strategy_id,
+            self.symbol,
+            inflight.request_seq,
+            inflight.sent_ts_us,
+            now_ts,
+            reason
+        );
     }
 
     fn mark_price(&self) -> Option<f64> {
@@ -819,6 +888,7 @@ impl ArbHedgeStrategy {
                 release_price,
                 meta.bound_open_client_order_id,
             );
+            self.retire_force_close_open_id_if_unreferenced(meta.bound_open_client_order_id);
         }
         self.clear_order_query_state(client_order_id);
         if let Some(order_mgr) = MonitorChannel::try_order_manager() {
@@ -881,6 +951,11 @@ impl ArbHedgeStrategy {
 
     fn send_force_taker_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
         self.send_taker_hedge_direct(now_ts, due_hedge_qty, "force_taker", None)
+    }
+
+    fn send_unimmr_force_close_hedge_direct(&mut self, now_ts: i64, due_hedge_qty: f64) -> bool {
+        self.supersede_inflight_query_for_force_close(now_ts, "direct_taker");
+        self.send_taker_hedge_direct(now_ts, due_hedge_qty, "unimmr_force_close", None)
     }
 
     fn send_lazy_model_taker_hedge_direct(
@@ -1295,7 +1370,10 @@ impl ArbHedgeStrategy {
         reason: &'static str,
         throttle_on_skip: bool,
     ) -> bool {
-        if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
+        let force_close_due = self.due_force_close_open_id(now_ts).is_some();
+        if force_close_due {
+            self.supersede_inflight_query_for_force_close(now_ts, reason);
+        } else if self.coalesce_while_hedge_query_inflight(now_ts, reason) {
             return false;
         }
         let pending_hedge_qty = self.pending_hedge_queue.net_qty();
@@ -1335,7 +1413,7 @@ impl ArbHedgeStrategy {
         };
         let pending_hedge_usdt =
             Self::pending_hedge_usdt_with_mark_price(pending_hedge_qty, mark_price);
-        if pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
+        if !force_close_due && pending_hedge_usdt < ARB_HEDGE_PENDING_QUERY_MIN_USDT {
             if throttle_on_skip {
                 self.next_query_ts_us = now_ts.saturating_add(ARB_HEDGE_QUERY_INTERVAL_US);
             }
@@ -1354,6 +1432,10 @@ impl ArbHedgeStrategy {
             return false;
         }
         let force_taker = arb_hedge_force_taker();
+        if force_close_due {
+            return self.send_unimmr_force_close_hedge_direct(now_ts, due_hedge_qty);
+        }
+
         let lazy_taker = arb_hedge_lazy_taker();
         let snapshot = if lazy_taker && !force_taker {
             PreTradeTakerDecisionModel::evaluate_global(&self.symbol, due_hedge_qty)
@@ -1577,10 +1659,7 @@ impl ArbHedgeStrategy {
             return;
         }
         self.inflight_hedge_query = None;
-        self.last_hedge_is_taker = Some(ctx.is_taker());
         self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
-        // taker 时 ctx.price_offset = 0；maker 时由 trade_signal 计算的偏移量
-        self.last_hedge_offset = Some(ctx.price_offset);
 
         let Some(side) = ctx.get_side() else {
             warn!(
@@ -1611,12 +1690,7 @@ impl ArbHedgeStrategy {
             );
             return;
         }
-        let is_taker = ctx.is_taker();
-        let order_type = if is_taker {
-            OrderType::Market
-        } else {
-            OrderType::Limit
-        };
+        let ctx_is_taker = ctx.is_taker();
         let now_ts = get_timestamp_us();
         if self.is_bybit_oi_limit_blocked(side, now_ts) {
             self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
@@ -1642,11 +1716,11 @@ impl ArbHedgeStrategy {
             );
             return;
         }
-        let price = if is_taker { 0.0 } else { ctx.price_value() };
-        if !is_taker && price <= 0.0 {
+        let ctx_price = if ctx_is_taker { 0.0 } else { ctx.price_value() };
+        if !ctx_is_taker && ctx_price <= 0.0 {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} ArbHedge price invalid symbol={} price={:.8}",
-                self.strategy_id, symbol, price
+                self.strategy_id, symbol, ctx_price
             );
             return;
         }
@@ -1659,13 +1733,50 @@ impl ArbHedgeStrategy {
             );
             return;
         }
+        let pending_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
+        let borrowed = self.pending_hedge_queue.borrow(now_ts, pending_qv);
+        let force_close_open_id =
+            pick_force_close_component_open_id(&borrowed.lots, &self.force_close_open_ids);
+        // Force 成分优先绑定；未成交量回写到这个 ID 后，下一轮仍保持 Force 语义。
+        let bound_open_client_order_id = if force_close_open_id != 0 {
+            force_close_open_id
+        } else {
+            pick_main_component_open_id(&borrowed.lots)
+        };
+        let force_taker_taker =
+            is_unimmr_force_close_direct_from_key(&ctx.from_key) || force_close_open_id != 0;
+        let is_taker = ctx_is_taker || force_taker_taker;
+        let order_type = if is_taker {
+            OrderType::Market
+        } else {
+            OrderType::Limit
+        };
+        let price = if is_taker { 0.0 } else { ctx_price };
+        let price_offset = if force_taker_taker {
+            0.0
+        } else {
+            ctx.price_offset
+        };
+        let expire_ts = if is_taker { 0 } else { ctx.exp_time };
+        self.last_hedge_is_taker = Some(is_taker);
+        self.last_hedge_offset = Some(price_offset);
+
         let signed_base_qty = signed_qty_from_side(side, order_base_qty);
-        if !is_direct_taker_from_key(&ctx.from_key) {
+        if !force_taker_taker && !is_direct_taker_from_key(&ctx.from_key) {
             if let Err(err) = MonitorChannel::instance().check_arb_hedge_exposure_risk(
                 &symbol,
                 venue,
                 signed_base_qty,
             ) {
+                let release_price =
+                    Self::hedge_leg_reference_price(price, ctx.hedging_leg).unwrap_or(0.0);
+                self.release_borrowed_with_bound_id(
+                    now_ts,
+                    borrowed.qv,
+                    release_price,
+                    bound_open_client_order_id,
+                );
+                self.retire_borrowed_force_close_open_ids(&borrowed.lots);
                 warn!(
                     "ArbHedgeStrategy: strategy_id={} ArbHedge exposure risk reject symbol={} venue={:?} side={:?} base_qty={:.8} err={}",
                     self.strategy_id,
@@ -1678,32 +1789,21 @@ impl ArbHedgeStrategy {
                 return;
             }
         }
-        let pending_qv = Self::hedge_pending_qv_from_order(side, order_base_qty);
-        let borrowed = self.pending_hedge_queue.borrow(now_ts, pending_qv);
-        // 主成分：borrowed.lots 中 qty 最大的那个对应的 open client_order_id；
-        // 找不到（lot 全是 None / borrow 没拿到任何东西）时按约定用 0 兜底。
-        let bound_open_client_order_id = pick_main_component_open_id(&borrowed.lots);
         if borrowed.qty + ARB_HEDGE_QTY_EPS < order_base_qty {
             let shortfall_qty = (order_base_qty - borrowed.qty).max(0.0);
             let shortfall_usdt = Self::borrow_shortfall_usdt(shortfall_qty, price, ctx.hedging_leg);
             let allow_shortfall = borrowed.qv.abs() > ARB_HEDGE_QTY_EPS
                 && Self::borrow_shortfall_within_eps(shortfall_qty, price, ctx.hedging_leg);
             if !allow_shortfall {
-                if borrowed.qv.abs() > ARB_HEDGE_QTY_EPS {
-                    let release_price =
-                        Self::hedge_leg_reference_price(price, ctx.hedging_leg).unwrap_or(0.0);
-                    if bound_open_client_order_id != 0 {
-                        self.pending_hedge_queue.release_with_id(
-                            now_ts,
-                            borrowed.qv,
-                            release_price,
-                            bound_open_client_order_id,
-                        );
-                    } else {
-                        self.pending_hedge_queue
-                            .release(now_ts, borrowed.qv, release_price);
-                    }
-                }
+                let release_price =
+                    Self::hedge_leg_reference_price(price, ctx.hedging_leg).unwrap_or(0.0);
+                self.release_borrowed_with_bound_id(
+                    now_ts,
+                    borrowed.qv,
+                    release_price,
+                    bound_open_client_order_id,
+                );
+                self.retire_borrowed_force_close_open_ids(&borrowed.lots);
                 warn!(
                     "ArbHedgeStrategy: strategy_id={} ArbHedge borrow insufficient symbol={} request_seq={} want_qv={:.8} borrowed_qv={:.8} shortfall_qty={:.8} shortfall_usdt={:.8} max_shortfall_usdt={:.8} pending_after={:.8}",
                     self.strategy_id,
@@ -1732,8 +1832,8 @@ impl ArbHedgeStrategy {
             );
         }
 
-        let bitget_margin_lock_reduce_only =
-            self.bitget_margin_lock_reduce_only_hedge(venue, side, order_base_qty);
+        let reduce_only = force_taker_taker
+            || self.bitget_margin_lock_reduce_only_hedge(venue, side, order_base_qty);
         let client_order_id = self.next_order_id();
         let qty_multiplier = (order_base_qty / qty).max(1e-12);
         // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 ArbHedge 桶）。
@@ -1754,7 +1854,7 @@ impl ArbHedgeStrategy {
                 side,
                 qty,
                 price,
-                bitget_margin_lock_reduce_only,
+                reduce_only,
                 qty_multiplier,
                 false,
                 |order| {
@@ -1769,17 +1869,18 @@ impl ArbHedgeStrategy {
             client_order_id,
             ArbHedgeOrderMeta {
                 signal_ts: ctx.signal_ts,
-                price_offset: ctx.price_offset,
+                price_offset,
                 signal_bbo: signal_bbo_from_legs(None, Some(&ctx.hedging_leg)),
                 borrowed_qv: borrowed.qv,
                 order_base_qty,
-                expire_ts: ctx.exp_time,
-                next_expire_check_ts: ctx.exp_time,
+                expire_ts,
+                next_expire_check_ts: expire_ts,
                 cancel_requested: false,
                 bound_open_client_order_id,
                 from_key: ctx.from_key.clone(),
             },
         );
+        self.retire_borrowed_force_close_open_ids(&borrowed.lots);
 
         debug!(
             "ArbHedge订单已创建: strategy_id={} client_order_id={} symbol={} side={:?} type={:?} qty={:.8} mode={} request_seq={}",
@@ -1805,7 +1906,7 @@ impl ArbHedgeStrategy {
             price,
             if is_taker { "taker" } else { "maker" },
             ctx.request_seq,
-            ctx.exp_time
+            expire_ts
         );
 
         if let Err(err) =
@@ -1822,11 +1923,11 @@ impl ArbHedgeStrategy {
             );
             return;
         }
-        if !is_taker && ctx.exp_time > 0 {
+        if !is_taker && expire_ts > 0 {
             // Arb hedge 的 maker 对冲单也有本地生命周期。这里登记到时间轮，
             // period clock 到期后会发 cancel；等撤单终态释放 pending 后，再触发
             // 下一轮状态查询，避免旧挂单无限占用 borrowed pending。
-            self.schedule_hedge_order_expiry_check(client_order_id, ctx.exp_time);
+            self.schedule_hedge_order_expiry_check(client_order_id, expire_ts);
         }
         if !suppress_pre_submit_hot_path_logs() {
             info!(
@@ -2288,6 +2389,7 @@ impl ArbHedgeStrategy {
         let filled_base_qty = filled_base_qty.abs();
         let borrowed_base_qty = borrowed_qv.abs().min(order_base_qty);
         if order_base_qty <= TERMINAL_QTY_EPS && filled_base_qty <= TERMINAL_QTY_EPS {
+            self.retire_force_close_open_id_if_unreferenced(bound_open_client_order_id);
             return false;
         }
         let signed_base_qty = signed_qty_from_side(side, filled_base_qty);
@@ -2330,6 +2432,7 @@ impl ArbHedgeStrategy {
                 self.pending_hedge_queue.net_qty()
             );
         }
+        self.retire_force_close_open_id_if_unreferenced(bound_open_client_order_id);
         true
     }
 
@@ -2792,6 +2895,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 release_price,
                 meta.bound_open_client_order_id,
             );
+            self.retire_force_close_open_id_if_unreferenced(meta.bound_open_client_order_id);
             // 保证金已经被打满时，立刻重发等同于扔进死循环；
             // Binance PM/FR 走账户级 open block + 撤全部 ArbOpen，并跳过普通 trigger 重发。
             // 1Hz period_clock 兜底保证 pending 不会永远卡住。
@@ -2931,7 +3035,10 @@ impl Strategy for ArbHedgeStrategy {
         self.handle_expired_hedge_orders(now_ts);
         // period clock 是 close_ts 的时间轮触发器：即使刚开仓时 trigger 因 due=0
         // 没有发 query，pending_hedge_queue 到期后也必须在这里重新触发状态查询。
-        if self.next_query_ts_us > 0 && now_ts < self.next_query_ts_us {
+        if self.next_query_ts_us > 0
+            && now_ts < self.next_query_ts_us
+            && self.due_force_close_open_id(now_ts).is_none()
+        {
             return;
         }
         self.try_send_due_hedge_query(now_ts, "period_clock", true);
@@ -2967,6 +3074,7 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
     ) -> bool {
         let filled_base_qty = filled_base_qty.abs();
         if filled_base_qty <= TERMINAL_QTY_EPS {
+            self.force_close_open_ids.remove(&open_client_order_id);
             return false;
         }
 
@@ -2986,6 +3094,7 @@ impl OrderTerminalRecorder for ArbHedgeStrategy {
                 open_client_order_id,
             );
         }
+        self.retire_force_close_open_id_if_unreferenced(open_client_order_id);
         if log::log_enabled!(log::Level::Debug) {
             let pending_after = self.pending_hedge_queue.net_qty();
             let borrowed_after = self.borrowed_hedge_qv();
@@ -3074,6 +3183,27 @@ fn pick_main_component_open_id(lots: &[TimedNetQtyLot]) -> i64 {
         .unwrap_or(0)
 }
 
+fn pick_force_close_component_open_id(
+    lots: &[TimedNetQtyLot],
+    force_close_open_ids: &FastHashSet<i64>,
+) -> i64 {
+    lots.iter()
+        .filter_map(|lot| {
+            let open_id = lot.open_client_order_id?;
+            force_close_open_ids
+                .contains(&open_id)
+                .then_some((open_id, lot.qty, lot.close_ts))
+        })
+        .max_by(|(_, qty_a, close_a), (_, qty_b, close_b)| {
+            qty_a
+                .partial_cmp(qty_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| close_b.cmp(close_a))
+        })
+        .map(|(id, _, _)| id)
+        .unwrap_or(0)
+}
+
 fn create_and_send_order(
     strategy_id: i32,
     client_order_id: i64,
@@ -3142,9 +3272,10 @@ fn create_and_send_order(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_direct_taker_from_key, decide_due_hedge_route, model_percentile_to_ret_qtl,
-        pick_main_component_open_id, ArbHedgeOrderMeta, ArbHedgeStrategy, DueHedgeRoute,
-        ARB_HEDGE_QUERY_INTERVAL_US, ARB_HEDGE_QUERY_TIMEOUT_US,
+        build_direct_taker_from_key, decide_due_hedge_route, is_direct_taker_from_key,
+        is_unimmr_force_close_direct_from_key, model_percentile_to_ret_qtl,
+        pick_force_close_component_open_id, pick_main_component_open_id, ArbHedgeOrderMeta,
+        ArbHedgeStrategy, DueHedgeRoute, ARB_HEDGE_QUERY_INTERVAL_US, ARB_HEDGE_QUERY_TIMEOUT_US,
     };
     use crate::strategy::manager::{OrderTerminalRecorder, Strategy};
     use crate::strategy::net_qty_queue::TimedNetQtyLot;
@@ -3152,10 +3283,122 @@ mod tests {
     use order_common::TradingVenue;
     use order_common::{Order, OrderType, Side, TradeEngineResponseMessage, TradeRequestType};
     use runtime_common::exchange::Exchange;
+    use runtime_common::fast_hash::fast_hash_set;
     use signal_common::hedge_signal::ArbHedgeCtx;
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
+
+    #[test]
+    fn unimmr_force_close_direct_key_is_recognized_as_taker() {
+        let from_key = build_direct_taker_from_key("unimmr_force_close", 123, None);
+
+        assert_eq!(
+            String::from_utf8(from_key.clone()).expect("utf8 from_key"),
+            "arb_hedge_unimmr_force_close_direct|123"
+        );
+        assert!(is_direct_taker_from_key(&from_key));
+        assert!(is_unimmr_force_close_direct_from_key(&from_key));
+    }
+
+    #[test]
+    fn force_component_is_bound_even_when_normal_lot_is_larger() {
+        let lots = vec![
+            TimedNetQtyLot {
+                ts: 10,
+                close_ts: 10,
+                qv: 5.0,
+                qty: 5.0,
+                price: 100.0,
+                open_client_order_id: Some(OPEN_ID_A),
+            },
+            TimedNetQtyLot {
+                ts: 20,
+                close_ts: 20,
+                qv: 1.0,
+                qty: 1.0,
+                price: 101.0,
+                open_client_order_id: Some(OPEN_ID_B),
+            },
+        ];
+        let mut force_ids = fast_hash_set();
+        force_ids.insert(OPEN_ID_B);
+
+        assert_eq!(pick_main_component_open_id(&lots), OPEN_ID_A);
+        assert_eq!(
+            pick_force_close_component_open_id(&lots, &force_ids),
+            OPEN_ID_B
+        );
+    }
+
+    #[test]
+    fn registered_force_open_id_marks_only_its_due_lot() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "BTCUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        assert!(!strategy.register_force_close_open_id(0));
+        assert!(strategy.register_force_close_open_id(OPEN_ID_B));
+        assert!(strategy.register_force_close_open_id(OPEN_ID_B));
+        strategy
+            .pending_hedge_queue
+            .put_with_id(10, 100, 1.0, 100.0, OPEN_ID_A);
+        assert_eq!(strategy.due_force_close_open_id(100), None);
+        strategy
+            .pending_hedge_queue
+            .put_with_id(20, 200, 2.0, 101.0, OPEN_ID_B);
+
+        assert_eq!(strategy.due_force_close_open_id(199), None);
+        assert_eq!(strategy.due_force_close_open_id(200), Some(OPEN_ID_B));
+    }
+
+    #[test]
+    fn partial_force_hedge_release_keeps_force_id_until_fully_filled() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "BTCUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.register_force_close_open_id(OPEN_ID_B);
+        strategy
+            .pending_hedge_queue
+            .put_with_id(10, 0, 2.0, 100.0, OPEN_ID_B);
+        let borrowed = strategy.pending_hedge_queue.borrow(20, 2.0);
+
+        strategy.record_hedge_order_terminal_with_borrowed(
+            30,
+            Side::Sell,
+            2.0,
+            1.0,
+            101.0,
+            borrowed.qv,
+            OPEN_ID_B,
+        );
+
+        assert!(strategy.force_close_open_ids.contains(&OPEN_ID_B));
+        assert_eq!(
+            strategy
+                .pending_hedge_queue
+                .find_lot_by_open_id(OPEN_ID_B)
+                .map(|lot| lot.qv),
+            Some(1.0)
+        );
+
+        let borrowed = strategy.pending_hedge_queue.borrow(40, 1.0);
+        strategy.record_hedge_order_terminal_with_borrowed(
+            50,
+            Side::Sell,
+            1.0,
+            1.0,
+            102.0,
+            borrowed.qv,
+            OPEN_ID_B,
+        );
+        assert!(!strategy.force_close_open_ids.contains(&OPEN_ID_B));
+    }
 
     #[test]
     fn gate_futures_504_open_ack_is_unknown_for_arb_hedge() {

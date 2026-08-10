@@ -14,10 +14,14 @@ use runtime_common::symbol_util::normalize_symbol_for_internal;
 const REDIS_KEY_RISK_PARAMS: &str = "pre_trade_risk_params";
 
 const EXCHANGE_WARNING_MODE_UPPER_UNIMMR: f64 = 1.5;
+const LIQUIDATION_UNIMMR: f64 = 1.0;
+const DEFAULT_UNIMMR_FORCE_CLOSE_LINE: f64 = 1.3;
+const DEFAULT_UNIMMR_FORCE_CLOSE_RECOVER_LINE: f64 = 1.5;
 const DEFAULT_UNIMMR_TRIGGER_LINE: f64 = 2.0;
 const DEFAULT_UNIMMR_RECOVER_LINE: f64 = 2.2;
 const DEFAULT_MIN_NON_TRADING_POSITION_USDT: f64 = 25.0;
 const DEFAULT_ARB_ORDER_AMOUNT_U: f64 = 100.0;
+const DEFAULT_OPEN_ORDERS_PER_ROUND: u32 = 1;
 const DEFAULT_FR_POSITION_CONCENTRATION_ALERT_RATIO: f64 = 0.12;
 const DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO: f64 = 0.15;
 const DEFAULT_EXEC_MAX_POSITION_IMBALANCE_RATIO: f64 = 0.8;
@@ -37,6 +41,7 @@ struct PreTradeParamsData {
     max_pos_u_overrides: MaxPosUOverrides,
     arb_order_amount_u: f64,
     arb_amount_u_overrides: AmountUOverrideTable,
+    open_orders_per_round: u32,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
     max_leverage: f64,
@@ -44,6 +49,8 @@ struct PreTradeParamsData {
     fr_position_concentration_dump_ratio: f64,
     min_non_trading_position_usdt: f64,
     exec_max_position_imbalance_ratio: f64,
+    unimmr_force_close_line: f64,
+    unimmr_force_close_recover_line: f64,
     unimmr_trigger_line: f64,
     unimmr_recover_line: f64,
     max_pending_limit_orders: i32,
@@ -74,6 +81,7 @@ impl Default for PreTradeParamsData {
             max_pos_u_overrides: fast_hash_map(),
             arb_order_amount_u: DEFAULT_ARB_ORDER_AMOUNT_U,
             arb_amount_u_overrides: fast_hash_map(),
+            open_orders_per_round: DEFAULT_OPEN_ORDERS_PER_ROUND,
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
             max_leverage: 3.0,
@@ -81,6 +89,8 @@ impl Default for PreTradeParamsData {
             fr_position_concentration_dump_ratio: DEFAULT_FR_POSITION_CONCENTRATION_DUMP_RATIO,
             min_non_trading_position_usdt: DEFAULT_MIN_NON_TRADING_POSITION_USDT,
             exec_max_position_imbalance_ratio: DEFAULT_EXEC_MAX_POSITION_IMBALANCE_RATIO,
+            unimmr_force_close_line: DEFAULT_UNIMMR_FORCE_CLOSE_LINE,
+            unimmr_force_close_recover_line: DEFAULT_UNIMMR_FORCE_CLOSE_RECOVER_LINE,
             unimmr_trigger_line: DEFAULT_UNIMMR_TRIGGER_LINE,
             unimmr_recover_line: DEFAULT_UNIMMR_RECOVER_LINE,
             max_pending_limit_orders: 3,
@@ -253,6 +263,20 @@ fn parse_arb_order_amount_u(hash_map: &HashMap<String, String>, redis_key: &str)
     }
 }
 
+fn parse_open_orders_per_round(hash_map: &HashMap<String, String>, redis_key: &str) -> Option<u32> {
+    let raw = hash_map.get("open_orders_per_round")?;
+    match raw.parse::<u32>() {
+        Ok(value) if value > 0 => Some(value),
+        _ => {
+            warn!(
+                "strategy params key='{}' open_orders_per_round={} invalid, keeping previous or default value",
+                redis_key, raw
+            );
+            None
+        }
+    }
+}
+
 fn parse_max_pos_u_overrides(
     raw: &str,
     open_venue: TradingVenue,
@@ -320,6 +344,21 @@ fn normalize_unimmr_control_lines(trigger_line: f64, recover_line: f64) -> Optio
         && recover_line > trigger_line
     {
         Some((trigger_line, recover_line))
+    } else {
+        None
+    }
+}
+
+fn normalize_unimmr_force_close_lines(
+    force_close_line: f64,
+    force_close_recover_line: f64,
+) -> Option<(f64, f64)> {
+    if force_close_line.is_finite()
+        && force_close_recover_line.is_finite()
+        && force_close_line > LIQUIDATION_UNIMMR
+        && force_close_recover_line > force_close_line
+    {
+        Some((force_close_line, force_close_recover_line))
     } else {
         None
     }
@@ -417,6 +456,7 @@ impl PreTradeParamsLoader {
         let strategy_key = arb_strategy_params_key(open_venue, hedge_venue);
         let strategy_params = client.hgetall_map(&strategy_key).await?;
         let arb_order_amount_u = parse_arb_order_amount_u(&strategy_params, &strategy_key);
+        let open_orders_per_round = parse_open_orders_per_round(&strategy_params, &strategy_key);
         let mut amount_u_overrides = fast_hash_map();
         if let Some(override_key) = arb_amount_u_override_key(env_name, open_venue, hedge_venue) {
             if let Some(raw) = client.get_string(&override_key).await? {
@@ -433,6 +473,7 @@ impl PreTradeParamsLoader {
             hash_map,
             max_pos_u_overrides,
             arb_order_amount_u,
+            open_orders_per_round,
             amount_u_overrides,
             is_mm_pre_trade_mode(open_venue, hedge_venue),
         );
@@ -508,6 +549,7 @@ impl PreTradeParamsLoader {
         let strategy_key = arb_strategy_params_key(open_venue, hedge_venue);
         let strategy_params = client.hgetall_map(&strategy_key)?;
         let arb_order_amount_u = parse_arb_order_amount_u(&strategy_params, &strategy_key);
+        let open_orders_per_round = parse_open_orders_per_round(&strategy_params, &strategy_key);
         let mut amount_u_overrides = fast_hash_map();
         if let Some(override_key) = arb_amount_u_override_key(env_name, open_venue, hedge_venue) {
             if let Some(raw) = client.get_string(&override_key)? {
@@ -524,6 +566,7 @@ impl PreTradeParamsLoader {
             hash_map,
             max_pos_u_overrides,
             arb_order_amount_u,
+            open_orders_per_round,
             amount_u_overrides,
             is_mm_pre_trade_mode(open_venue, hedge_venue),
         );
@@ -535,6 +578,7 @@ impl PreTradeParamsLoader {
         hash_map: HashMap<String, String>,
         max_pos_u_overrides: MaxPosUOverrides,
         arb_order_amount_u: Option<f64>,
+        open_orders_per_round: Option<u32>,
         arb_amount_u_overrides: AmountUOverrideTable,
         mm_pre_trade_mode: bool,
     ) {
@@ -552,6 +596,9 @@ impl PreTradeParamsLoader {
             data.max_pos_u_overrides = max_pos_u_overrides.clone();
             if let Some(v) = arb_order_amount_u {
                 data.arb_order_amount_u = v;
+            }
+            if let Some(v) = open_orders_per_round {
+                data.open_orders_per_round = v;
             }
             data.arb_amount_u_overrides = arb_amount_u_overrides.clone();
 
@@ -616,6 +663,33 @@ impl PreTradeParamsLoader {
                 } else {
                     warn!("exec_max_position_imbalance_ratio={} 无效，需在 [0, 1] 内，忽略更新", v);
                 }
+            }
+
+            let raw_force_close_line = parse_f64("unimmr_force_close_line")
+                .unwrap_or(data.unimmr_force_close_line);
+            let raw_force_close_recover_line =
+                parse_f64("unimmr_force_close_recover_line")
+                    .unwrap_or(data.unimmr_force_close_recover_line);
+            if let Some((force_close_line, force_close_recover_line)) =
+                normalize_unimmr_force_close_lines(
+                    raw_force_close_line,
+                    raw_force_close_recover_line,
+                )
+            {
+                data.unimmr_force_close_line = force_close_line;
+                data.unimmr_force_close_recover_line = force_close_recover_line;
+            } else {
+                warn!(
+                    "unimmr force close lines invalid trigger={} recover={}，要求 {:.2} < trigger < recover，回退默认 trigger={:.2} recover={:.2}",
+                    raw_force_close_line,
+                    raw_force_close_recover_line,
+                    LIQUIDATION_UNIMMR,
+                    DEFAULT_UNIMMR_FORCE_CLOSE_LINE,
+                    DEFAULT_UNIMMR_FORCE_CLOSE_RECOVER_LINE
+                );
+                data.unimmr_force_close_line = DEFAULT_UNIMMR_FORCE_CLOSE_LINE;
+                data.unimmr_force_close_recover_line =
+                    DEFAULT_UNIMMR_FORCE_CLOSE_RECOVER_LINE;
             }
 
             let raw_unimmr_trigger_line = parse_f64("unimmr_trigger_line")
@@ -781,6 +855,10 @@ impl PreTradeParamsLoader {
             data.arb_amount_u_overrides.len()
         );
         println!(
+            "{:<40} {:>18}",
+            "open_orders_per_round", data.open_orders_per_round
+        );
+        println!(
             "{:<40} {:>18.4}",
             "max_symbol_exposure_ratio", data.max_symbol_exposure_ratio
         );
@@ -804,6 +882,14 @@ impl PreTradeParamsLoader {
         println!(
             "{:<40} {:>18.4}",
             "exec_max_position_imbalance_ratio", data.exec_max_position_imbalance_ratio
+        );
+        println!(
+            "{:<40} {:>18.2}",
+            "unimmr_force_close_line", data.unimmr_force_close_line
+        );
+        println!(
+            "{:<40} {:>18.2}",
+            "unimmr_force_close_recover_line", data.unimmr_force_close_recover_line
         );
         println!(
             "{:<40} {:>18.2}",
@@ -924,6 +1010,10 @@ impl PreTradeParamsLoader {
         })
     }
 
+    pub fn open_orders_per_round(&self) -> u32 {
+        PARAMS_DATA.with(|data| data.borrow().open_orders_per_round)
+    }
+
     /// 获取 max_symbol_exposure_ratio
     pub fn max_symbol_exposure_ratio(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().max_symbol_exposure_ratio)
@@ -953,6 +1043,16 @@ impl PreTradeParamsLoader {
 
     pub fn min_non_trading_position_usdt(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().min_non_trading_position_usdt)
+    }
+
+    /// 获取 UniMMR taker-taker 强制平仓触发线
+    pub fn unimmr_force_close_line(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().unimmr_force_close_line)
+    }
+
+    /// 获取 UniMMR taker-taker 强制平仓恢复线
+    pub fn unimmr_force_close_recover_line(&self) -> f64 {
+        PARAMS_DATA.with(|data| data.borrow().unimmr_force_close_recover_line)
     }
 
     /// 获取 UniMMR 算法平仓触发线
@@ -1111,6 +1211,7 @@ impl PreTradeParamsLoader {
             let data = data.borrow();
             PreTradeParamsSnapshot {
                 max_pos_u: data.max_pos_u,
+                open_orders_per_round: data.open_orders_per_round,
                 max_symbol_exposure_ratio: data.max_symbol_exposure_ratio,
                 max_total_exposure_ratio: data.max_total_exposure_ratio,
                 max_leverage: data.max_leverage,
@@ -1118,6 +1219,8 @@ impl PreTradeParamsLoader {
                 fr_position_concentration_dump_ratio: data.fr_position_concentration_dump_ratio,
                 min_non_trading_position_usdt: data.min_non_trading_position_usdt,
                 exec_max_position_imbalance_ratio: data.exec_max_position_imbalance_ratio,
+                unimmr_force_close_line: data.unimmr_force_close_line,
+                unimmr_force_close_recover_line: data.unimmr_force_close_recover_line,
                 unimmr_trigger_line: data.unimmr_trigger_line,
                 unimmr_recover_line: data.unimmr_recover_line,
                 max_pending_limit_orders: data.max_pending_limit_orders,
@@ -1149,6 +1252,7 @@ impl PreTradeParamsLoader {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreTradeParamsSnapshot {
     pub max_pos_u: f64,
+    pub open_orders_per_round: u32,
     pub max_symbol_exposure_ratio: f64,
     pub max_total_exposure_ratio: f64,
     pub max_leverage: f64,
@@ -1156,6 +1260,8 @@ pub struct PreTradeParamsSnapshot {
     pub fr_position_concentration_dump_ratio: f64,
     pub min_non_trading_position_usdt: f64,
     pub exec_max_position_imbalance_ratio: f64,
+    pub unimmr_force_close_line: f64,
+    pub unimmr_force_close_recover_line: f64,
     pub unimmr_trigger_line: f64,
     pub unimmr_recover_line: f64,
     pub max_pending_limit_orders: i32,
@@ -1189,6 +1295,10 @@ mod tests {
         assert_eq!(loader.max_pos_u(), 1000.0);
         assert_eq!(loader.arb_order_amount_u(), DEFAULT_ARB_ORDER_AMOUNT_U);
         assert_eq!(
+            loader.open_orders_per_round(),
+            DEFAULT_OPEN_ORDERS_PER_ROUND
+        );
+        assert_eq!(
             loader.arb_amount_u_for_symbol("BTCUSDT"),
             DEFAULT_ARB_ORDER_AMOUNT_U
         );
@@ -1210,6 +1320,14 @@ mod tests {
         assert_eq!(
             loader.exec_max_position_imbalance_ratio(),
             DEFAULT_EXEC_MAX_POSITION_IMBALANCE_RATIO
+        );
+        assert_eq!(
+            loader.unimmr_force_close_line(),
+            DEFAULT_UNIMMR_FORCE_CLOSE_LINE
+        );
+        assert_eq!(
+            loader.unimmr_force_close_recover_line(),
+            DEFAULT_UNIMMR_FORCE_CLOSE_RECOVER_LINE
         );
         assert_eq!(loader.unimmr_trigger_line(), DEFAULT_UNIMMR_TRIGGER_LINE);
         assert_eq!(loader.unimmr_recover_line(), DEFAULT_UNIMMR_RECOVER_LINE);
@@ -1239,6 +1357,10 @@ mod tests {
         let loader = PreTradeParamsLoader::instance();
         let snapshot = loader.snapshot();
         assert_eq!(snapshot.max_pos_u, 1000.0);
+        assert_eq!(
+            snapshot.open_orders_per_round,
+            DEFAULT_OPEN_ORDERS_PER_ROUND
+        );
         assert_eq!(snapshot.max_leverage, 3.0);
         assert_eq!(
             snapshot.fr_position_concentration_alert_ratio,
@@ -1251,6 +1373,14 @@ mod tests {
         assert_eq!(
             snapshot.min_non_trading_position_usdt,
             DEFAULT_MIN_NON_TRADING_POSITION_USDT
+        );
+        assert_eq!(
+            snapshot.unimmr_force_close_line,
+            DEFAULT_UNIMMR_FORCE_CLOSE_LINE
+        );
+        assert_eq!(
+            snapshot.unimmr_force_close_recover_line,
+            DEFAULT_UNIMMR_FORCE_CLOSE_RECOVER_LINE
         );
         assert_eq!(snapshot.unimmr_trigger_line, DEFAULT_UNIMMR_TRIGGER_LINE);
         assert_eq!(snapshot.unimmr_recover_line, DEFAULT_UNIMMR_RECOVER_LINE);
@@ -1357,7 +1487,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("max_pos_u".to_string(), "1234".to_string());
 
-        loader.apply_loaded_params(params, fast_hash_map(), None, fast_hash_map(), true);
+        loader.apply_loaded_params(params, fast_hash_map(), None, None, fast_hash_map(), true);
 
         assert_eq!(loader.max_pos_u(), 1234.0);
         assert_eq!(loader.arb_close_max_pending_limit_buy_orders(), 3);
@@ -1378,7 +1508,7 @@ mod tests {
             ),
         ]);
 
-        loader.apply_loaded_params(params, fast_hash_map(), None, fast_hash_map(), true);
+        loader.apply_loaded_params(params, fast_hash_map(), None, None, fast_hash_map(), true);
 
         assert_eq!(loader.exec_max_pending_limit_buy_orders(), 7);
         assert_eq!(loader.exec_max_pending_limit_sell_orders(), 4);
@@ -1395,6 +1525,7 @@ mod tests {
         loader.apply_loaded_params(
             HashMap::new(),
             fast_hash_map(),
+            None,
             None,
             fast_hash_map(),
             false,
@@ -1459,5 +1590,19 @@ mod tests {
         assert_eq!(normalize_unimmr_control_lines(2.0, 2.2), Some((2.0, 2.2)));
         assert_eq!(normalize_unimmr_control_lines(1.5, 2.2), Some((1.5, 2.2)));
         assert_eq!(normalize_unimmr_control_lines(2.2, 2.0), None);
+    }
+
+    #[test]
+    fn test_normalize_unimmr_force_close_lines_is_independent() {
+        assert_eq!(
+            normalize_unimmr_force_close_lines(2.5, 2.8),
+            Some((2.5, 2.8))
+        );
+        assert_eq!(
+            normalize_unimmr_force_close_lines(1.3, 1.5),
+            Some((1.3, 1.5))
+        );
+        assert_eq!(normalize_unimmr_force_close_lines(1.0, 1.5), None);
+        assert_eq!(normalize_unimmr_force_close_lines(1.5, 1.5), None);
     }
 }

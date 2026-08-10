@@ -115,6 +115,8 @@ pub struct PreTradeRiskResampleEntry {
     pub usdt_max_available_margin: Option<f64>,
     pub open_leg: PreTradeVenueRiskResampleEntry,
     pub hedge_leg: PreTradeVenueRiskResampleEntry,
+    pub unimmr_force_close_line: f64,
+    pub unimmr_force_close_recover_line: f64,
     pub unimmr_trigger_line: f64,
     pub unimmr_recover_line: f64,
     pub account_risks: Vec<PreTradeAccountRiskView>,

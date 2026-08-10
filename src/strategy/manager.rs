@@ -1050,6 +1050,24 @@ impl StrategyManager {
         self.ensure_arb_hedge_strategy_for_normalized_symbol(&symbol_upper)
     }
 
+    pub fn register_force_close_open_id(
+        &mut self,
+        symbol: &str,
+        open_client_order_id: i64,
+    ) -> bool {
+        let symbol_upper = normalize_symbol_for_internal(symbol);
+        let Some(strategy_id) = self.find_arb_hedge_id_for_normalized_symbol(&symbol_upper) else {
+            return false;
+        };
+        let Some(strategy) = self.strategies.get_mut(&strategy_id) else {
+            return false;
+        };
+        let Some(arb_hedge) = strategy.as_any_mut().downcast_mut::<ArbHedgeStrategy>() else {
+            return false;
+        };
+        arb_hedge.register_force_close_open_id(open_client_order_id)
+    }
+
     pub fn ensure_arb_hedge_strategy_for_normalized_symbol(&mut self, symbol_upper: &str) -> i32 {
         if let Some(id) = self.find_arb_hedge_id_for_normalized_symbol(symbol_upper) {
             return id;

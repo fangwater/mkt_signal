@@ -108,6 +108,11 @@ RISK_PARAMS = {
     "unimmr_trigger_line": "2.0",
     "unimmr_recover_line": "2.2",
 
+    # UniMMR taker-taker 强制平仓触发/恢复线；与普通两条线独立配置。
+    # 要求 1.0 < force_close < force_recover。
+    "unimmr_force_close_line": "1.3",
+    "unimmr_force_close_recover_line": "1.5",
+
     # 最大挂单数（>=0）
     "max_pending_limit_orders": "10",
 
@@ -139,6 +144,8 @@ PARAM_COMMENTS: Dict[str, str] = {
     "fr_position_concentration_dump_ratio": "单币仓位/最大容量隐式dump触发线",
     "unimmr_trigger_line": "UniMMR 算法平仓触发线（>1.5 且 < recover）",
     "unimmr_recover_line": "UniMMR 算法平仓恢复线（> trigger）",
+    "unimmr_force_close_line": "UniMMR taker-taker 强制平仓触发线（>1.0）",
+    "unimmr_force_close_recover_line": "UniMMR taker-taker 强制平仓恢复线（> force close）",
     "max_pending_limit_orders": "最大挂单数",
     "arb_max_pending_limit_buy_orders": "套利买侧最大挂单数",
     "arb_max_pending_limit_sell_orders": "套利卖侧最大挂单数",

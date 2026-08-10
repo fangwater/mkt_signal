@@ -836,6 +836,10 @@ impl QueryEngChannel {
                                                     account_scope,
                                                     &msg,
                                                 );
+                                                crate::pre_trade::unimmr_force_close::UnimmrForceClose::apply_account_risk(
+                                                    account_scope,
+                                                    &msg,
+                                                );
                                                 MonitorChannel::instance()
                                                     .apply_account_risk(account_scope, msg);
                                                 MonitorChannel::mark_basic_state_dirty();

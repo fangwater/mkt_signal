@@ -838,6 +838,8 @@ impl ResampleChannel {
             let interest_usd = open_leg.interest_usd + hedge_leg.interest_usd;
             let params = PreTradeParamsLoader::instance();
             let max_leverage = params.max_leverage();
+            let unimmr_force_close_line = params.unimmr_force_close_line();
+            let unimmr_force_close_recover_line = params.unimmr_force_close_recover_line();
             let unimmr_trigger_line = params.unimmr_trigger_line();
             let unimmr_recover_line = params.unimmr_recover_line();
             let usdt_max_available_margin = latest_usdt_max_available_margin_snapshot()
@@ -879,6 +881,8 @@ impl ResampleChannel {
                 usdt_max_available_margin,
                 open_leg,
                 hedge_leg,
+                unimmr_force_close_line,
+                unimmr_force_close_recover_line,
                 unimmr_trigger_line,
                 unimmr_recover_line,
                 account_risks,

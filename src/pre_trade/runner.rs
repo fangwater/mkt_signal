@@ -15,6 +15,7 @@ use crate::pre_trade::signal_channel::{OpenSignalDropReason, SignalChannel};
 use crate::pre_trade::signal_throttle::log_active_signal_throttles;
 use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use crate::pre_trade::trade_eng_channel::TradeEngHub;
+use crate::pre_trade::unimmr_force_close::UnimmrForceClose;
 use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
 use account_common::BinanceAccountMode;
@@ -785,6 +786,11 @@ impl PreTrade {
                 }
             } else {
                 has_work |= SignalChannel::drain_pending_with_open_drop(open_drop_reason);
+            }
+
+            let force_close_activated = UnimmrForceClose::drive(get_timestamp_us());
+            if force_close_activated > 0 {
+                has_work = true;
             }
 
             if let Some(transition) = PreTradeTakerDecisionModel::take_transition_global() {

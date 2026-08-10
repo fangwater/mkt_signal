@@ -41,5 +41,36 @@ class TestFrPositionConcentrationRatios(unittest.TestCase):
             )
 
 
+class TestUnimmrForceCloseLines(unittest.TestCase):
+    def test_accepts_force_lines_independently_from_regular_lines(self):
+        normalized = fr_cfg.normalize_unimmr_force_close_lines(
+            {
+                "unimmr_force_close_line": "2.5",
+                "unimmr_force_close_recover_line": "2.8",
+                "unimmr_trigger_line": "2.0",
+                "unimmr_recover_line": "2.2",
+            }
+        )
+        self.assertEqual(normalized["unimmr_force_close_line"], "2.5")
+        self.assertEqual(normalized["unimmr_force_close_recover_line"], "2.8")
+
+    def test_rejects_liquidation_floor_and_inverted_force_lines(self):
+        for trigger, recover in (("1.0", "1.5"), ("1.5", "1.5"), ("1.6", "1.5")):
+            with self.subTest(trigger=trigger, recover=recover):
+                with self.assertRaisesRegex(ValueError, "1.0 <"):
+                    fr_cfg.normalize_unimmr_force_close_lines(
+                        {
+                            "unimmr_force_close_line": trigger,
+                            "unimmr_force_close_recover_line": recover,
+                        }
+                    )
+
+    def test_requires_both_force_fields_together(self):
+        with self.assertRaisesRegex(ValueError, "must be provided together"):
+            fr_cfg.normalize_unimmr_force_close_lines(
+                {"unimmr_force_close_line": "1.3"}
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

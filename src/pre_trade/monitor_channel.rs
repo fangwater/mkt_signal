@@ -220,7 +220,7 @@ use order_common::{OrderUpdate, TradeUpdate, TradeUpdateLite};
 use signal_common::common::{align_price_ceil, align_price_floor};
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 const MONITOR_FAST_POLL_NORMAL_WEIGHT: usize = 16;
@@ -756,6 +756,10 @@ impl BasicAccountListener {
                         account_scope,
                         &msg,
                     );
+                    crate::pre_trade::unimmr_force_close::UnimmrForceClose::apply_account_risk(
+                        account_scope,
+                        &msg,
+                    );
                     MonitorChannel::instance().apply_account_risk(account_scope, msg);
                     MonitorChannel::mark_basic_state_dirty();
                     MONITOR_FAST_POLL_LOW_WEIGHT
@@ -1133,6 +1137,40 @@ fn missing_position_mark_assets(
         .collect::<Vec<_>>();
     missing.sort_unstable();
     missing
+}
+
+fn top_two_gross_position_symbols(positions_by_asset: &HashMap<String, f64>) -> Vec<String> {
+    const POSITION_EPSILON_USDT: f64 = 1e-6;
+    const LIMIT: usize = 2;
+
+    let mut positions_by_symbol = BTreeMap::new();
+    for (asset, position_usdt) in positions_by_asset {
+        if !(position_usdt.is_finite() && *position_usdt > POSITION_EPSILON_USDT) {
+            continue;
+        }
+        let asset = asset.trim().to_ascii_uppercase();
+        if asset.is_empty() || asset == "USDT" {
+            continue;
+        }
+        let symbol = if asset.ends_with("USDT") {
+            normalize_symbol_for_internal(&asset)
+        } else {
+            normalize_symbol_for_internal(&format!("{asset}USDT"))
+        };
+        *positions_by_symbol.entry(symbol).or_insert(0.0) += position_usdt;
+    }
+
+    let mut ranked = positions_by_symbol.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|(symbol_a, position_a), (symbol_b, position_b)| {
+        position_b
+            .total_cmp(position_a)
+            .then_with(|| symbol_a.cmp(symbol_b))
+    });
+    ranked
+        .into_iter()
+        .take(LIMIT)
+        .map(|(symbol, _)| symbol)
+        .collect()
 }
 
 impl BasicState {
@@ -2551,6 +2589,14 @@ impl MonitorChannel {
             let state = Self::basic_state_cached();
             (state.position_usdt_by_asset, state.total_position_usdt)
         })
+    }
+
+    /// Returns the two largest current gross positions in normalized symbols.
+    ///
+    /// The force-close path uses this live snapshot instead of a Redis list.
+    pub fn unimmr_force_close_symbols(&self) -> Vec<String> {
+        let (positions_by_asset, _) = self.gross_position_usdt_snapshot();
+        top_two_gross_position_symbols(&positions_by_asset)
     }
 
     /// Returns materially non-zero position assets that are still missing a
@@ -4721,6 +4767,51 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
+
+    #[test]
+    fn top_two_gross_positions_are_ranked_by_usdt_value() {
+        let positions = HashMap::from([
+            ("BTC".to_string(), 100.0),
+            ("ETH".to_string(), 300.0),
+            ("SOL".to_string(), 200.0),
+        ]);
+
+        assert_eq!(
+            top_two_gross_position_symbols(&positions),
+            vec!["ETHUSDT".to_string(), "SOLUSDT".to_string()]
+        );
+    }
+
+    #[test]
+    fn top_two_gross_positions_filter_invalid_and_zero_values() {
+        let positions = HashMap::from([
+            ("BTC".to_string(), f64::NAN),
+            ("ETH".to_string(), f64::INFINITY),
+            ("SOL".to_string(), 0.0),
+            ("XRP".to_string(), 1e-6),
+            ("USDT".to_string(), 1_000_000.0),
+            ("DOGE".to_string(), 50.0),
+        ]);
+
+        assert_eq!(
+            top_two_gross_position_symbols(&positions),
+            vec!["DOGEUSDT".to_string()]
+        );
+    }
+
+    #[test]
+    fn top_two_gross_positions_use_stable_symbol_tie_break() {
+        let positions = HashMap::from([
+            ("sol".to_string(), 100.0),
+            ("BTCUSDT".to_string(), 100.0),
+            ("eth".to_string(), 100.0),
+        ]);
+
+        assert_eq!(
+            top_two_gross_position_symbols(&positions),
+            vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()]
+        );
+    }
 
     #[test]
     fn missing_position_marks_ignore_cash_and_dust() {

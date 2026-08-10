@@ -175,6 +175,8 @@ fn spawn_pre_trade_risk_listener(
                     "usdt_max_available_margin": entry.usdt_max_available_margin,
                     "open_leg": entry.open_leg,
                     "hedge_leg": entry.hedge_leg,
+                    "unimmr_force_close_line": entry.unimmr_force_close_line,
+                    "unimmr_force_close_recover_line": entry.unimmr_force_close_recover_line,
                     "unimmr_trigger_line": entry.unimmr_trigger_line,
                     "unimmr_recover_line": entry.unimmr_recover_line,
                     "account_risks": entry.account_risks,

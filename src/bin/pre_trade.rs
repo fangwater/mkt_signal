@@ -29,6 +29,7 @@ use mkt_signal::pre_trade::signal_channel::{
     SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
 use mkt_signal::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
+use mkt_signal::pre_trade::unimmr_force_close::UnimmrForceClose;
 use mkt_signal::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 use mkt_signal::pre_trade::QueryEngHub;
 use mkt_signal::pre_trade::TradeEngHub;
@@ -709,6 +710,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 );
             }
             UnimmrOpenLock::initialize(dir_prefix.clone(), arb_mode, binance_account_mode)?;
+            UnimmrForceClose::initialize(arb_mode, binance_account_mode);
 
             if exec_pre_trade {
                 let mut batch_redis = RedisSettings::default();

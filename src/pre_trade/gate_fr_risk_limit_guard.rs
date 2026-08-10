@@ -1014,6 +1014,7 @@ mod tests {
             risk_params,
             fast_hash_map(),
             Some(100.0),
+            None,
             amount_overrides,
             false,
         );

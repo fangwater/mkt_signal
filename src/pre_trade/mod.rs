@@ -44,6 +44,7 @@ pub mod symbol_util;
 pub mod taker_decision_model;
 pub mod trade_eng_channel;
 pub mod unimmr_close_symbol_list;
+pub mod unimmr_force_close;
 pub mod unimmr_open_lock;
 pub mod usdt_balance_manager;
 pub use order_queue_position_channel::OrderQueuePositionChannel;
