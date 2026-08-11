@@ -188,6 +188,7 @@ LOCAL_RELATIVE=(
   "scripts/fr_config_server.py"
   "scripts/print_fr_risk_params.py"
   "scripts/sync_fr_risk_params.py"
+  "scripts/start_trade_engine.sh"
 )
 UPLOAD_NAMES=(
   "trade_signal"
@@ -199,6 +200,7 @@ UPLOAD_NAMES=(
   "fr_config_server.py"
   "print_fr_risk_params.py"
   "sync_fr_risk_params.py"
+  "start_trade_engine.sh"
 )
 LOCAL_PATHS=()
 for relative_path in "${LOCAL_RELATIVE[@]}"; do
@@ -301,6 +303,7 @@ publish_file persist_manager persist_manager
 publish_file fr_config_server.py scripts/fr_config_server.py
 publish_file print_fr_risk_params.py scripts/print_fr_risk_params.py
 publish_file sync_fr_risk_params.py scripts/sync_fr_risk_params.py
+publish_file start_trade_engine.sh scripts/start_trade_engine.sh
 
 rm -f "$stage/SHA256SUMS"
 rmdir "$stage"
