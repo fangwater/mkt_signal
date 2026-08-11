@@ -1,0 +1,461 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SSH_HOST="${FR_START_HOST:-jp-meta-elvpn}"
+ENV_NAME="${FR_START_ENV:-}"
+CHECK_ONLY=0
+STARTUP_WAIT_SECONDS="${FR_START_WAIT_SECONDS:-15}"
+STARTUP_SETTLE_SECONDS="${FR_START_SETTLE_SECONDS:-3}"
+LOG_LINES="${FR_START_LOG_LINES:-80}"
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/start-jp-meta-fr.sh --env-name <name> [options]
+
+Options:
+  --host <ssh-host>    SSH config host (default: jp-meta-elvpn)
+  --env-name <name>   Binance/Gate FR environment (required)
+  --check-only        Validate the target and show process state without starting
+  -h, --help          Show this help
+
+Live start order, with a process and log health check after every step:
+  1. viz_server
+  2. persist_manager
+  3. trade_engine
+  4. pre_trade
+  5. account_monitor
+
+trade_signal is never started. The script refuses to begin when trade_signal is
+already running and verifies that it remains stopped at the end.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      SSH_HOST="${2:-}"
+      shift 2
+      ;;
+    --env-name)
+      ENV_NAME="${2:-}"
+      shift 2
+      ;;
+    --check-only)
+      CHECK_ONLY=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[ERROR] unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ! "$ENV_NAME" =~ ^(binance|gate)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "[ERROR] env-name must match binance_fr_<suffix> or gate_fr_<suffix>: $ENV_NAME" >&2
+  exit 2
+fi
+EXCHANGE="${BASH_REMATCH[1]}"
+if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
+  echo "[ERROR] invalid SSH host: $SSH_HOST" >&2
+  exit 2
+fi
+
+require_positive_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] $name must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
+require_positive_integer FR_START_WAIT_SECONDS "$STARTUP_WAIT_SECONDS"
+require_positive_integer FR_START_SETTLE_SECONDS "$STARTUP_SETTLE_SECONDS"
+require_positive_integer FR_START_LOG_LINES "$LOG_LINES"
+
+if ! command -v ssh >/dev/null 2>&1; then
+  echo "[ERROR] required command not found: ssh" >&2
+  exit 1
+fi
+
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15)
+REMOTE_HOME="$("${SSH[@]}" "$SSH_HOST" 'printf "%s\n" "$HOME"')"
+if [[ "$REMOTE_HOME" != /* || "$REMOTE_HOME" == *$'\n'* ]]; then
+  echo "[ERROR] invalid remote home returned by $SSH_HOST: $REMOTE_HOME" >&2
+  exit 1
+fi
+REMOTE_DIR="${REMOTE_HOME}/${ENV_NAME}"
+REMOTE_REAL="$("${SSH[@]}" "$SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
+if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
+  echo "[ERROR] remote target mismatch: expected=$REMOTE_DIR resolved=$REMOTE_REAL" >&2
+  exit 1
+fi
+
+echo "[INFO] start target host=$SSH_HOST exchange=$EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
+"${SSH[@]}" "$SSH_HOST" bash -s -- \
+  "$REMOTE_DIR" \
+  "$EXCHANGE" \
+  "$CHECK_ONLY" \
+  "$STARTUP_WAIT_SECONDS" \
+  "$STARTUP_SETTLE_SECONDS" \
+  "$LOG_LINES" <<'REMOTE_START'
+set -euo pipefail
+
+target="$1"
+exchange="$2"
+check_only="$3"
+startup_wait_seconds="$4"
+startup_settle_seconds="$5"
+log_lines="$6"
+scripts_dir="$target/scripts"
+
+if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then
+  echo "[ERROR] invalid remote target: $target" >&2
+  exit 1
+fi
+if [[ "$(basename "$target")" != "${exchange}_fr_"* ]]; then
+  echo "[ERROR] exchange/target mismatch: exchange=$exchange target=$target" >&2
+  exit 1
+fi
+
+required_files=(
+  "$target/env.sh"
+  "$target/config/viz.toml"
+  "$scripts_dir/process_match_lib.sh"
+)
+required_executables=(
+  "$target/viz_server"
+  "$target/persist_manager"
+  "$target/trade_engine"
+  "$target/pre_trade"
+  "$target/account_monitor"
+  "$scripts_dir/start_fr_viz_server.sh"
+  "$scripts_dir/stop_fr_viz_server.sh"
+  "$scripts_dir/start_fr_persist_manager.sh"
+  "$scripts_dir/stop_fr_persist_manager.sh"
+  "$scripts_dir/start_trade_engine.sh"
+  "$scripts_dir/start_fr_pre_trade.sh"
+  "$scripts_dir/stop_fr_pre_trade.sh"
+  "$scripts_dir/start_account_monitor.sh"
+  "$scripts_dir/stop_account_monitor.sh"
+)
+for required_file in "${required_files[@]}"; do
+  if [[ ! -f "$required_file" ]]; then
+    echo "[ERROR] required remote file not found: $required_file" >&2
+    exit 1
+  fi
+done
+for required_executable in "${required_executables[@]}"; do
+  if [[ ! -x "$required_executable" ]]; then
+    echo "[ERROR] required remote executable not found: $required_executable" >&2
+    exit 1
+  fi
+done
+for required_command in bash pmdaemon ps readlink sed grep tail sleep; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    echo "[ERROR] required remote command not found: $required_command" >&2
+    exit 1
+  fi
+done
+
+short_exchange() {
+  case "$1" in
+    binance) echo "bn" ;;
+    gate) echo "gt" ;;
+    *)
+      echo "[ERROR] unsupported exchange: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
+env_basename="$(basename "$target")"
+env_tag="${env_basename#${exchange}_fr_}"
+env_tag="$(printf '%s' "$env_tag" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+if [[ -z "$env_tag" ]]; then
+  echo "[ERROR] failed to derive environment tag from: $env_basename" >&2
+  exit 1
+fi
+exchange_tag="$(short_exchange "$exchange")"
+
+labels=(
+  viz_server
+  persist_manager
+  trade_engine
+  pre_trade
+  account_monitor
+)
+binaries=(
+  "$target/viz_server"
+  "$target/persist_manager"
+  "$target/trade_engine"
+  "$target/pre_trade"
+  "$target/account_monitor"
+)
+process_names=(
+  "fr_vz_${exchange_tag}_${env_tag}"
+  "fr_pm_${exchange_tag}_${env_tag}"
+  "fr_te_${exchange_tag}_${env_tag}"
+  "fr_pt_${exchange_tag}_${env_tag}"
+  "fr_am_${exchange_tag}_${env_tag}"
+)
+start_scripts=(
+  "$scripts_dir/start_fr_viz_server.sh"
+  "$scripts_dir/start_fr_persist_manager.sh"
+  "$scripts_dir/start_trade_engine.sh"
+  "$scripts_dir/start_fr_pre_trade.sh"
+  "$scripts_dir/start_account_monitor.sh"
+)
+trade_signal_binary="$target/trade_signal"
+
+find_exact_pids() {
+  local expected="$1"
+  local expected_comm="${expected##*/}"
+  local pid=""
+  local comm=""
+  local exe=""
+
+  while read -r pid comm; do
+    [[ -n "$pid" ]] || continue
+    [[ "$comm" == "$expected_comm" ]] || continue
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    exe="${exe% (deleted)}"
+    if [[ "$exe" == "$expected" ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done < <(ps -eo pid=,comm=)
+}
+
+print_process_state() {
+  local index=""
+  local pids=()
+
+  for index in "${!labels[@]}"; do
+    mapfile -t pids < <(find_exact_pids "${binaries[$index]}")
+    if [[ "${#pids[@]}" -eq 0 ]]; then
+      echo "[STATE] ${labels[$index]} stopped"
+    else
+      echo "[STATE] ${labels[$index]} running pids=${pids[*]}"
+    fi
+  done
+  mapfile -t pids < <(find_exact_pids "$trade_signal_binary")
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    echo "[STATE] trade_signal stopped (required)"
+  else
+    echo "[STATE] trade_signal running pids=${pids[*]} (not allowed)"
+  fi
+}
+
+require_trade_signal_stopped() {
+  local pids=()
+  mapfile -t pids < <(find_exact_pids "$trade_signal_binary")
+  if [[ "${#pids[@]}" -ne 0 ]]; then
+    echo "[ERROR] trade_signal is already running (pids=${pids[*]}); refusing to start the requested subset" >&2
+    exit 3
+  fi
+}
+
+stop_existing_instances() {
+  local binary="$1"
+  local label="$2"
+  local max_attempts=$((startup_wait_seconds * 5))
+  local attempt=""
+  local pids=()
+
+  mapfile -t pids < <(find_exact_pids "$binary")
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    echo "[INFO] $label has no existing instance to stop"
+    return 0
+  fi
+
+  echo "[INFO] stopping existing $label instance(s): ${pids[*]}"
+  kill "${pids[@]}" >/dev/null 2>&1 || true
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+    mapfile -t pids < <(find_exact_pids "$binary")
+    if [[ "${#pids[@]}" -eq 0 ]]; then
+      echo "[INFO] existing $label instance(s) stopped"
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  echo "[WARN] $label did not stop after ${startup_wait_seconds}s; sending SIGKILL to exact target pids=${pids[*]}"
+  kill -9 "${pids[@]}" >/dev/null 2>&1 || true
+  sleep 1
+  mapfile -t pids < <(find_exact_pids "$binary")
+  if [[ "${#pids[@]}" -ne 0 ]]; then
+    echo "[ERROR] failed to stop existing $label instance(s): ${pids[*]}" >&2
+    return 1
+  fi
+  echo "[INFO] existing $label instance(s) stopped after SIGKILL"
+}
+
+wait_for_single_pid() {
+  local binary="$1"
+  local label="$2"
+  local max_attempts=$((startup_wait_seconds * 5))
+  local attempt=""
+  local pids=()
+
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+    mapfile -t pids < <(find_exact_pids "$binary")
+    if [[ "${#pids[@]}" -eq 1 ]]; then
+      printf '%s\n' "${pids[0]}"
+      return 0
+    fi
+    if [[ "${#pids[@]}" -gt 1 ]]; then
+      echo "[ERROR] $label has multiple processes: ${pids[*]}" >&2
+      return 1
+    fi
+    sleep 0.2
+  done
+
+  echo "[ERROR] $label did not become live within ${startup_wait_seconds}s" >&2
+  return 1
+}
+
+require_same_single_pid() {
+  local binary="$1"
+  local label="$2"
+  local expected_pid="$3"
+  local pids=()
+
+  mapfile -t pids < <(find_exact_pids "$binary")
+  if [[ "${#pids[@]}" -ne 1 ]]; then
+    echo "[ERROR] $label is not running as exactly one process after startup: ${pids[*]:-none}" >&2
+    return 1
+  fi
+  if [[ "${pids[0]}" != "$expected_pid" ]]; then
+    echo "[ERROR] $label restarted during health checks: initial_pid=$expected_pid current_pid=${pids[0]}" >&2
+    return 1
+  fi
+}
+
+check_recent_logs() {
+  local label="$1"
+  local process_name="$2"
+  local log_output=""
+  local stream_output=""
+  local display_output=""
+  local clean_output=""
+  local log_status=0
+  local logs_found=0
+  local stream=""
+  local log_path=""
+  local error_pattern='(^|[^[:alnum:]_])(ERROR|FATAL)([^[:alnum:]_]|$)|(^|[[:space:]])Error:|panicked at|fatal runtime error|[Ss]egmentation fault|[Cc]ore dumped|[Aa]ddress already in use|[Ss]tartup failed|[Ff]ailed to start|[Ee]xited unexpectedly|[Pp]rocess .*crash'
+
+  for stream in out error; do
+    log_path="$HOME/.pmdaemon/logs/${process_name}-${stream}.log"
+    echo "[LOG] $label $stream: tail -n $log_lines $log_path"
+    if [[ ! -f "$log_path" ]]; then
+      echo "[LOG] file not present: $log_path"
+      continue
+    fi
+    logs_found=1
+    set +e
+    stream_output="$(tail -n "$log_lines" -- "$log_path" 2>&1)"
+    log_status=$?
+    set -e
+    if [[ "$log_status" -ne 0 ]]; then
+      echo "[ERROR] failed to tail $label $stream log (status=$log_status)" >&2
+      return 1
+    fi
+    if [[ -n "$stream_output" ]]; then
+      display_output="$(printf '%s\n' "$stream_output" | sed -E \
+        -e 's/("(KEY|SIGN|API_KEY|API_SECRET|SECRET|SIGNATURE|TOKEN|AUTHORIZATION)"[[:space:]]*:[[:space:]]*")[^"]*"/\1<redacted>"/gI' \
+        -e "s/(first4=')[^']*(' last4=')[^']*'/\1<redacted>\2<redacted>'/g" \
+        -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]]+/\1<redacted>/gI')"
+      printf '%s\n' "$display_output"
+      log_output+="${display_output}"$'\n'
+    else
+      echo "[LOG] file is empty"
+    fi
+  done
+  if [[ "$logs_found" -ne 1 ]]; then
+    echo "[ERROR] no pmdaemon log file found for $label process=$process_name" >&2
+    return 1
+  fi
+
+  clean_output="$(printf '%s\n' "$log_output" | sed -E $'s/\033\\[[0-9;]*[[:alpha:]]//g')"
+  if grep -Eq "$error_pattern" <<<"$clean_output"; then
+    echo "[ERROR] $label recent logs contain a startup error signature" >&2
+    printf '%s\n' "$clean_output" | grep -E "$error_pattern" >&2 || true
+    return 1
+  fi
+  echo "[INFO] $label recent logs contain no fatal/error startup signature"
+}
+
+run_start_script() {
+  local label="$1"
+  local script="$2"
+
+  case "$label" in
+    viz_server)
+      bash "$script" --exchange "$exchange"
+      ;;
+    persist_manager)
+      bash "$script" --exchange "$exchange"
+      ;;
+    trade_engine)
+      bash "$script" "$exchange"
+      ;;
+    pre_trade|account_monitor)
+      bash "$script"
+      ;;
+    *)
+      echo "[ERROR] unsupported component: $label" >&2
+      return 1
+      ;;
+  esac
+}
+
+start_and_verify() {
+  local index="$1"
+  local label="${labels[$index]}"
+  local binary="${binaries[$index]}"
+  local process_name="${process_names[$index]}"
+  local start_script="${start_scripts[$index]}"
+  local pid=""
+
+  echo
+  echo "[STEP] start and verify $label"
+  stop_existing_instances "$binary" "$label"
+  run_start_script "$label" "$start_script"
+  pid="$(wait_for_single_pid "$binary" "$label")"
+  echo "[INFO] $label is live pid=$pid exe=$binary"
+
+  sleep "$startup_settle_seconds"
+  require_same_single_pid "$binary" "$label" "$pid"
+  echo "[INFO] $label survived ${startup_settle_seconds}s stability check"
+
+  check_recent_logs "$label" "$process_name"
+  require_same_single_pid "$binary" "$label" "$pid"
+  echo "[INFO] $label health check passed pid=$pid"
+}
+
+echo "[INFO] remote preflight passed"
+print_process_state
+require_trade_signal_stopped
+if [[ "$check_only" == "1" ]]; then
+  echo "[INFO] check-only complete; no process was started or restarted"
+  exit 0
+fi
+
+cd "$target"
+echo "[WARN] LIVE start begins: env=$env_basename exchange=$exchange trade_signal=stopped"
+for index in "${!labels[@]}"; do
+  start_and_verify "$index"
+done
+
+require_trade_signal_stopped
+echo
+echo "[INFO] final process state"
+print_process_state
+echo "[INFO] start complete: env=$env_basename trade_signal_started=false"
+REMOTE_START
