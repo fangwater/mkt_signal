@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SSH_HOST="${FR_PUBLISH_HOST:-jp-meta-elvpn}"
 ENV_NAME="${FR_PUBLISH_ENV:-binance_fr_arb03}"
+EXCHANGE="${FR_PUBLISH_EXCHANGE:-}"
 CHECK_ONLY=0
 
 usage() {
@@ -12,7 +13,8 @@ Usage: scripts/publish-jp-meta-fr.sh [options]
 
 Options:
   --host <ssh-host>    SSH config host (default: jp-meta-elvpn)
-  --env-name <name>   Binance FR environment (default: binance_fr_arb03)
+  --env-name <name>   Binance/Gate FR environment (default: binance_fr_arb03)
+  --exchange <name>   Exchange (binance or gate; inferred from env-name)
   --check-only        Only verify that publish target processes are stopped
   -h, --help          Show this help
 
@@ -31,6 +33,10 @@ while [[ $# -gt 0 ]]; do
       ENV_NAME="${2:-}"
       shift 2
       ;;
+    --exchange)
+      EXCHANGE="${2:-}"
+      shift 2
+      ;;
     --check-only)
       CHECK_ONLY=1
       shift
@@ -47,8 +53,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^binance_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
-  echo "[ERROR] env-name must match binance_fr_<suffix>: $ENV_NAME" >&2
+if [[ ! "$ENV_NAME" =~ ^(binance|gate)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "[ERROR] env-name must match binance_fr_<suffix> or gate_fr_<suffix>: $ENV_NAME" >&2
+  exit 2
+fi
+INFERRED_EXCHANGE="${BASH_REMATCH[1]}"
+EXCHANGE="${EXCHANGE,,}"
+if [[ -z "$EXCHANGE" ]]; then
+  EXCHANGE="$INFERRED_EXCHANGE"
+fi
+case "$EXCHANGE" in
+  binance|gate) ;;
+  *)
+    echo "[ERROR] exchange must be binance or gate: $EXCHANGE" >&2
+    exit 2
+    ;;
+esac
+if [[ "$EXCHANGE" != "$INFERRED_EXCHANGE" ]]; then
+  echo "[ERROR] exchange/env-name mismatch: exchange=$EXCHANGE env-name=$ENV_NAME" >&2
   exit 2
 fi
 if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
@@ -95,6 +117,7 @@ target_executables=(
   "$target/trade_signal"
   "$target/account_monitor"
   "$target/binance_account_monitor"
+  "$target/gate_account_monitor"
   "$target/viz_server"
   "$target/pre_trade"
   "$target/trade_engine"
@@ -105,7 +128,7 @@ found=0
 
 while read -r pid comm; do
   case "$comm" in
-    trade_signal|account_monitor|binance_acc*|viz_server|pre_trade|trade_engine|persist_manager) ;;
+    trade_signal|account_monitor|*_account*|viz_server|pre_trade|trade_engine|persist_manager) ;;
     *) continue ;;
   esac
   exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
@@ -143,7 +166,7 @@ REMOTE_CHECK
   return "$status"
 }
 
-echo "[INFO] publish target host=$SSH_HOST env=$ENV_NAME dir=$REMOTE_DIR"
+echo "[INFO] publish target host=$SSH_HOST exchange=$EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
 if check_remote_stopped; then
   :
 else
@@ -154,9 +177,10 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
+ACCOUNT_MONITOR_BIN="${EXCHANGE}_account_monitor"
 LOCAL_RELATIVE=(
   "target/release/trade_signal"
-  "target/release/binance_account_monitor"
+  "target/release/${ACCOUNT_MONITOR_BIN}"
   "target/release/viz_server"
   "target/release/pre_trade"
   "target/release/trade_engine"
@@ -167,7 +191,7 @@ LOCAL_RELATIVE=(
 )
 UPLOAD_NAMES=(
   "trade_signal"
-  "binance_account_monitor"
+  "$ACCOUNT_MONITOR_BIN"
   "viz_server"
   "pre_trade"
   "trade_engine"
@@ -235,10 +259,11 @@ else
   exit "$check_status"
 fi
 
-"${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$REMOTE_STAGE" <<'REMOTE_PUBLISH'
+"${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$REMOTE_STAGE" "$ACCOUNT_MONITOR_BIN" <<'REMOTE_PUBLISH'
 set -euo pipefail
 target="$1"
 stage="$2"
+account_monitor_upload="$3"
 case "$stage" in
   "$target"/.publish-jp-meta-fr.*) ;;
   *)
@@ -268,7 +293,7 @@ publish_file() {
 }
 
 publish_file trade_signal trade_signal
-publish_file binance_account_monitor account_monitor
+publish_file "$account_monitor_upload" account_monitor
 publish_file viz_server viz_server
 publish_file pre_trade pre_trade
 publish_file trade_engine trade_engine
