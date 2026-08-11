@@ -83,6 +83,25 @@ cd ~/gate_fr_arb01
 ./scripts/stop_account_monitor.sh
 ```
 
+## Known Exec Deployment: el01
+
+The following is a historical snapshot verified on 2026-08-10 UTC. It proves that the environment existed at that time, but it is not a statement that the same processes, binaries, ports, or configuration are still live. Re-check the remote host before any operation. The original full deployment invocation was not found; the available evidence starts with a post-deployment audit.
+
+- Connect with `ssh cta_exec`. The local SSH config resolves this alias to the `el01` target through `el01-jump`; keep raw endpoints and all credentials out of this repository.
+- Remote environment: `/home/el01/binance_exec_trade01`.
+- Venue and instance: Binance Futures, instance `01`.
+- Deployment entry point: `scripts/deploy_exec.sh --env-name binance_exec_trade01 --venue binance-futures`.
+- Independent collector/read configuration: `config/exec.toml`; do not add this source to `config/persist.toml`.
+- The standard Exec runtime consists of `exec-pre-trade`, `trade_signal`, `trade_engine`, `account_monitor`, `persist_manager`, and `viz_server`, with the matching `spread_pbs` venue deployment.
+- Instance `01` defaults to viz port `10041` and config port `18161`. `deploy_exec.sh` copies/builds the runtime but deliberately does not start processes.
+- At the 2026-08-10 audit, `persist_manager` had neither `PERSIST_SYNC_SOURCE_ID` nor `PERSIST_SYNC_BIND`, opened no TCP listener, and therefore did not expose its gRPC sync service. Do not assume that remains true without checking `env.sh`, the process environment, and listeners.
+- `order_export` was not permanently deployed. A release binary was temporarily uploaded, used to read `/home/el01/binance_exec_trade01/data/persist_manager`, and removed after the files were copied back and SHA-256 checked.
+- The one-time export remains under `data/order_exports/binance_exec_trade01/20260810T031235Z/` (normally Git-ignored): `uniform_orders.parquet`, `order_updates_unmatched.parquet`, `trade_updates_unmatched.parquet`, and `order_queue_positions.parquet`.
+- Export snapshot: `uniform_orders` had 1,141 rows covering 568 unique orders; unmatched order updates had 761 rows, unmatched trade updates had 49 rows, and queue positions had 0 rows. All unmatched order IDs were represented in `uniform_orders`; the unmatched tables are append-only audit history from restart/late/duplicate dispatch paths, not evidence of order-level loss.
+- Commit `72a4aff9` (`Trim hedge fields from exec order exports`) added Exec environment-name support and removes the six `signal_hedge_*` columns from Exec exports; the resulting `uniform_orders` file has 28 columns while retaining the same 1,141 rows.
+
+Never copy passwords, API keys, or values from the remote `env.sh` into this file, chat, commits, or command output.
+
 ## IPC And Config
 
 Processes communicate primarily through iceoryx2 shared-memory IPC, with some Redis-backed configuration/state and RocksDB persistence.
