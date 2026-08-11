@@ -532,8 +532,8 @@ impl LocalBaselineAggregator {
         completed
     }
 
-    /// Applies a trade and returns bars closed before this trade's time bucket.
-    /// Empty intervals are intentionally skipped rather than forward-filled.
+    /// Applies a trade and returns every bar closed before the containing time bucket.
+    /// Once initialized, missing intervals are emitted with causal price forward-fill.
     pub fn on_trade(
         &mut self,
         timestamp_us: i64,
@@ -584,11 +584,28 @@ impl LocalBaselineAggregator {
     pub fn flush(&mut self) -> Vec<BaselineBar> {
         let mut completed = Vec::new();
         self.finish_base_current(&mut completed);
+        self.finish_resampled_bars();
+        completed
+    }
+
+    /// Emits every initialized 5-second bucket whose start is before the exclusive end.
+    pub fn flush_until_ms(&mut self, end_exclusive_ms: i64) -> Vec<BaselineBar> {
+        let mut completed = Vec::new();
+        if self.base.current.is_some() && end_exclusive_ms > 0 {
+            let last_timestamp_ms = end_exclusive_ms.saturating_sub(1);
+            let last_timestamp_us = last_timestamp_ms.saturating_mul(1_000);
+            self.advance_to(last_timestamp_us, &mut completed);
+        }
+        self.finish_base_current(&mut completed);
+        self.finish_resampled_bars();
+        completed
+    }
+
+    fn finish_resampled_bars(&mut self) {
         self.ten_seconds.close_current();
         if let Some(bar) = self.sixty_seconds.close_current() {
             self.completed_sixty_seconds.push(bar);
         }
-        completed
     }
 
     /// Returns finalized 60-second trade bars generated from finalized 5-second bars.
@@ -607,14 +624,19 @@ impl LocalBaselineAggregator {
     fn advance_to(&mut self, timestamp_us: i64, completed: &mut Vec<BaselineBar>) -> bool {
         let timestamp_ms = timestamp_us.div_euclid(1_000);
         let target_start = align(timestamp_ms, BASELINE_BAR_MS);
-        match self.base.current.as_ref().map(|bar| bar.start_ms) {
-            Some(current_start) if target_start < current_start => false,
-            Some(current_start) if target_start > current_start => {
-                self.finish_base_current(completed);
-                true
-            }
-            _ => true,
+        let Some(mut current_start) = self.base.current.as_ref().map(|bar| bar.start_ms) else {
+            return true;
+        };
+        if target_start < current_start {
+            return false;
         }
+
+        while current_start < target_start {
+            self.finish_base_current(completed);
+            current_start = current_start.saturating_add(self.base.bar_ms);
+            self.base.current = Some(BaselineBar::new(current_start));
+        }
+        true
     }
 
     fn finish_base_current(&mut self, completed: &mut Vec<BaselineBar>) {
@@ -733,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_both_sixty_second_bars_when_gap_resumes_at_last_sub_bar() {
+    fn preserves_contiguous_sixty_second_bars_across_trade_gaps() {
         let mut agg = LocalBaselineAggregator::new();
         agg.on_trade(1, true, 100.0, 1.0);
         agg.on_trade(50_000_001, true, 100.0, 2.0);
@@ -741,11 +763,15 @@ mod tests {
         agg.on_trade(180_000_001, true, 100.0, 4.0);
 
         let completed = agg.drain_sixty_second_bars();
-        assert_eq!(completed.len(), 2);
+        assert_eq!(completed.len(), 3);
         assert_eq!(completed[0].start_ms, 0);
         assert_eq!(completed[0].amount, 300.0);
-        assert_eq!(completed[1].start_ms, 120_000);
-        assert_eq!(completed[1].amount, 300.0);
+        assert_eq!(completed[1].start_ms, 60_000);
+        assert!(!completed[1].has_trade);
+        assert_eq!(completed[1].close, 100.0);
+        assert_eq!(completed[1].amount, 0.0);
+        assert_eq!(completed[2].start_ms, 120_000);
+        assert_eq!(completed[2].amount, 300.0);
     }
 
     #[test]
@@ -801,14 +827,52 @@ mod tests {
     }
 
     #[test]
-    fn skips_missing_five_second_bars() {
+    fn forward_fills_missing_five_second_bars() {
+        let mut agg = LocalBaselineAggregator::new();
+        let mut bars = agg.on_trade(1_000, true, 100.0, 1.0);
+        bars.extend(agg.on_trade(2_000, false, 101.0, 1.0));
+        bars.extend(agg.on_trade(15_001_000, true, 110.0, 1.0));
+        bars.extend(agg.flush());
+
+        assert_eq!(
+            bars.iter().map(|bar| bar.start_ms).collect::<Vec<_>>(),
+            [0, 5_000, 10_000, 15_000]
+        );
+        assert!(bars[0].has_trade);
+        for bar in &bars[1..3] {
+            assert!(!bar.has_trade);
+            assert_eq!(bar.open, 101.0);
+            assert_eq!(bar.high, 101.0);
+            assert_eq!(bar.low, 101.0);
+            assert_eq!(bar.close, 101.0);
+            assert_eq!(bar.volume, 0.0);
+            assert_eq!(bar.count, 0);
+            assert_eq!(bar.vwap, 100.5);
+            assert_eq!(bar.buy_vwap, 100.0);
+            assert_eq!(bar.sell_vwap, 101.0);
+        }
+        assert!(bars[3].has_trade);
+
+        let stats = agg.stats();
+        assert_eq!(stats[0].closed_bars, 4);
+        assert_eq!(stats[0].traded_bars, 2);
+        assert_eq!(stats[1].closed_bars, 2);
+    }
+
+    #[test]
+    fn flush_until_emits_empty_tail_bars_before_end() {
         let mut agg = LocalBaselineAggregator::new();
         agg.on_trade(1_000, true, 100.0, 1.0);
-        agg.on_trade(15_001_000, true, 110.0, 1.0);
-        agg.flush();
-        let stats = agg.stats();
-        assert_eq!(stats[0].closed_bars, 2);
-        assert_eq!(stats[1].closed_bars, 2);
+        agg.on_trade(2_000, false, 101.0, 1.0);
+
+        let bars = agg.flush_until_ms(20_000);
+        assert_eq!(
+            bars.iter().map(|bar| bar.start_ms).collect::<Vec<_>>(),
+            [0, 5_000, 10_000, 15_000]
+        );
+        assert!(bars[0].has_trade);
+        assert!(bars[1..].iter().all(|bar| !bar.has_trade));
+        assert!(bars[1..].iter().all(|bar| bar.close == 101.0));
     }
 
     #[test]

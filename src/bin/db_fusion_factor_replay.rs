@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::{Parser, ValueEnum};
 use factor_engine::baseline::SUPPORTED_BASELINES;
-use log::info;
+use log::{info, warn};
 use mkt_parsers::msg::trade_flow_feature_msg::{
     TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
 };
@@ -24,6 +24,7 @@ const INPUT_VALUE_COUNT: usize = TRADE_FLOW_FEATURE_DIM + DEPTH_VALUE_COUNT;
 const PROGRESS_ROWS: u64 = 100_000;
 const RL_VOL_COLUMN: &str = "rl_return_volatility";
 const DAY_MS: i64 = 86_400_000;
+const REPLAY_TASK_ATTEMPTS: usize = 4;
 
 #[derive(Parser, Debug)]
 #[command(name = "db_fusion_factor_replay")]
@@ -207,6 +208,136 @@ struct InputRow {
     ts_ms: i64,
     symbol: String,
     values: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TradeFlowPriceIndices {
+    open: usize,
+    high: usize,
+    low: usize,
+    close: usize,
+    volume: usize,
+    count: usize,
+    buy_volume: usize,
+    sell_volume: usize,
+    vwap: usize,
+    buy_vwap: usize,
+    sell_vwap: usize,
+}
+
+impl TradeFlowPriceIndices {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            open: trade_flow_field_index("open")?,
+            high: trade_flow_field_index("high")?,
+            low: trade_flow_field_index("low")?,
+            close: trade_flow_field_index("close")?,
+            volume: trade_flow_field_index("volume")?,
+            count: trade_flow_field_index("count")?,
+            buy_volume: trade_flow_field_index("buy_volume")?,
+            sell_volume: trade_flow_field_index("sell_volume")?,
+            vwap: trade_flow_field_index("vwap")?,
+            buy_vwap: trade_flow_field_index("buy_vwap")?,
+            sell_vwap: trade_flow_field_index("sell_vwap")?,
+        })
+    }
+
+    fn prices(self) -> [usize; 7] {
+        [
+            self.open,
+            self.high,
+            self.low,
+            self.close,
+            self.vwap,
+            self.buy_vwap,
+            self.sell_vwap,
+        ]
+    }
+}
+
+#[derive(Debug, Default)]
+struct TradeFlowForwardFillState {
+    last_close: Option<f64>,
+    last_vwap: Option<f64>,
+    last_buy_vwap: Option<f64>,
+    last_sell_vwap: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ForwardFillOutcome {
+    publishable: bool,
+    filled_fields: usize,
+}
+
+impl TradeFlowForwardFillState {
+    fn apply(
+        &mut self,
+        row: &mut InputRow,
+        fields: TradeFlowPriceIndices,
+    ) -> Result<ForwardFillOutcome> {
+        if row.values.len() < TRADE_FLOW_FEATURE_DIM {
+            bail!(
+                "baseline row has {} trade-flow values, expected at least {}",
+                row.values.len(),
+                TRADE_FLOW_FEATURE_DIM
+            );
+        }
+
+        let mut filled_fields = 0;
+        if !positive_finite(row.values[fields.count]) {
+            if let Some(last_close) = self.last_close {
+                for index in [fields.open, fields.high, fields.low, fields.close] {
+                    filled_fields += replace_if_changed(&mut row.values[index], last_close);
+                }
+            }
+        }
+        if !positive_finite(row.values[fields.volume]) {
+            filled_fields += forward_fill_value(&mut row.values[fields.vwap], self.last_vwap);
+        }
+        if !positive_finite(row.values[fields.buy_volume]) {
+            filled_fields +=
+                forward_fill_value(&mut row.values[fields.buy_vwap], self.last_buy_vwap);
+        }
+        if !positive_finite(row.values[fields.sell_volume]) {
+            filled_fields +=
+                forward_fill_value(&mut row.values[fields.sell_vwap], self.last_sell_vwap);
+        }
+
+        update_last_valid(&mut self.last_close, row.values[fields.close]);
+        update_last_valid(&mut self.last_vwap, row.values[fields.vwap]);
+        update_last_valid(&mut self.last_buy_vwap, row.values[fields.buy_vwap]);
+        update_last_valid(&mut self.last_sell_vwap, row.values[fields.sell_vwap]);
+
+        Ok(ForwardFillOutcome {
+            publishable: fields
+                .prices()
+                .into_iter()
+                .all(|index| positive_finite(row.values[index])),
+            filled_fields,
+        })
+    }
+}
+
+fn positive_finite(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+fn replace_if_changed(target: &mut f64, replacement: f64) -> usize {
+    let changed = target.to_bits() != replacement.to_bits();
+    *target = replacement;
+    usize::from(changed)
+}
+
+fn forward_fill_value(target: &mut f64, previous: Option<f64>) -> usize {
+    previous
+        .map(|previous| replace_if_changed(target, previous))
+        .unwrap_or(0)
+}
+
+fn update_last_valid(target: &mut Option<f64>, candidate: f64) {
+    if positive_finite(candidate) {
+        *target = Some(candidate);
+    }
 }
 
 struct OutputRow {
@@ -454,18 +585,39 @@ fn replay(config: &Config) -> Result<()> {
                     .symbols
                     .get(&task.symbol)
                     .with_context(|| format!("missing resolved factor plan for {}", task.symbol))?;
-                replay_symbol(
-                    config,
-                    venue,
-                    &task.symbol,
-                    task.start_ms,
-                    task.end_ms,
-                    factors,
-                    symbol_plan,
-                    replay_version,
-                    close_field_index,
-                    warmup_lookback_ms,
-                )
+                for attempt in 1..=REPLAY_TASK_ATTEMPTS {
+                    match replay_symbol(
+                        config,
+                        venue,
+                        &task.symbol,
+                        task.start_ms,
+                        task.end_ms,
+                        factors,
+                        symbol_plan,
+                        replay_version,
+                        close_field_index,
+                        warmup_lookback_ms,
+                    ) {
+                        Ok(()) => return Ok(()),
+                        Err(err)
+                            if attempt < REPLAY_TASK_ATTEMPTS
+                                && is_retryable_clickhouse_error(&err) =>
+                        {
+                            warn!(
+                                "Retrying database fusion replay task after transient ClickHouse error: symbol={} start_ms={} end_ms={} attempt={}/{} error={:#}",
+                                task.symbol,
+                                task.start_ms,
+                                task.end_ms,
+                                attempt + 1,
+                                REPLAY_TASK_ATTEMPTS,
+                                err,
+                            );
+                            std::thread::sleep(Duration::from_secs(attempt as u64));
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                unreachable!("replay attempt loop always returns")
             })
         })?;
     info!(
@@ -476,6 +628,20 @@ fn replay(config: &Config) -> Result<()> {
         started_at.elapsed(),
     );
     Ok(())
+}
+
+fn is_retryable_clickhouse_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    [
+        "unexpected eof",
+        "error decoding response body",
+        "error reading a body",
+        "connection reset",
+        "connection closed",
+        "connection aborted",
+    ]
+    .iter()
+    .any(|candidate| message.contains(candidate))
 }
 
 fn build_replay_tasks(
@@ -804,12 +970,24 @@ fn replay_symbol(
         .with_context(|| format!("ClickHouse baseline query failed for {symbol}"))?;
 
     let mut state = BaselineReplayState::default();
+    let price_fields = TradeFlowPriceIndices::new()?;
+    let mut forward_fill_state = TradeFlowForwardFillState::default();
     let mut vol_state = config
         .rl_vol
         .enabled
         .then(|| OfflineVolState::new(&config.rl_vol))
         .transpose()?;
-    for row in warmup_rows.into_iter().rev() {
+    let symbol_factor_names: Vec<&str> = symbol_plan.factor_plan.factor_names().collect();
+    let mut warmup_skipped_rows = 0u64;
+    let mut forward_filled_fields = 0u64;
+    for mut row in warmup_rows.into_iter().rev() {
+        let outcome = forward_fill_state.apply(&mut row, price_fields)?;
+        forward_filled_fields = forward_filled_fields.saturating_add(outcome.filled_fields as u64);
+        if !outcome.publishable {
+            warmup_skipped_rows = warmup_skipped_rows.saturating_add(1);
+            continue;
+        }
+        validate_depth_input(&row)?;
         push_input_row(&mut state, venue, symbol, &row)?;
         let _ = state.factor_values(&symbol_plan.factor_plan);
         if let (Some(vol_state), Some(close_field_index)) = (vol_state.as_mut(), close_field_index)
@@ -820,9 +998,19 @@ fn replay_symbol(
     let mut batch = Vec::with_capacity(config.clickhouse.batch_rows);
     let mut read_rows = 0u64;
     let mut written_rows = 0u64;
-    while let Some(row) = read_input_row(&mut response)? {
+    let mut target_skipped_rows = 0u64;
+    while let Some(mut row) = read_input_row(&mut response)? {
+        read_rows = read_rows.saturating_add(1);
+        let outcome = forward_fill_state.apply(&mut row, price_fields)?;
+        forward_filled_fields = forward_filled_fields.saturating_add(outcome.filled_fields as u64);
+        if !outcome.publishable {
+            target_skipped_rows = target_skipped_rows.saturating_add(1);
+            continue;
+        }
+        validate_depth_input(&row)?;
         push_input_row(&mut state, venue, symbol, &row)?;
         let symbol_values = state.factor_values(&symbol_plan.factor_plan);
+        validate_finite_factor_values(symbol, row.ts_ms, &symbol_factor_names, &symbol_values)?;
         if symbol_values.len() != symbol_plan.output_indices.len() {
             bail!(
                 "factor output width mismatch for {}: values={} indices={}",
@@ -844,7 +1032,12 @@ fn replay_symbol(
             }
             _ => None,
         };
-        read_rows = read_rows.saturating_add(1);
+        validate_rl_vol_output(
+            symbol,
+            row.ts_ms,
+            config.rl_vol.enabled,
+            rl_return_volatility,
+        )?;
         batch.push(OutputRow {
             ts_ms: row.ts_ms,
             symbol: symbol.to_string(),
@@ -868,12 +1061,14 @@ fn replay_symbol(
             );
         }
     }
-    if read_rows == 0 {
+    if read_rows == 0 || read_rows == target_skipped_rows {
         bail!(
-            "no baseline rows for symbol={} in task range {}..{}",
+            "no publishable baseline rows for symbol={} in task range {}..{} (rows_read={} rows_skipped_uninitialized={})",
             symbol,
             start_ms,
-            end_ms
+            end_ms,
+            read_rows,
+            target_skipped_rows,
         );
     }
     written_rows = written_rows.saturating_add(flush_output_batch(
@@ -884,10 +1079,13 @@ fn replay_symbol(
         &mut batch,
     )?);
     info!(
-        "Database fusion replay complete: symbol={} start_ms={} end_ms={} rows_read={} rows_written={} elapsed={:.2?}",
+        "Database fusion replay complete: symbol={} start_ms={} end_ms={} rows_read={} rows_written={} warmup_rows_skipped_uninitialized={} target_rows_skipped_uninitialized={} forward_filled_fields={} elapsed={:.2?}",
         symbol, start_ms, end_ms,
         read_rows,
         written_rows,
+        warmup_skipped_rows,
+        target_skipped_rows,
+        forward_filled_fields,
         started_at.elapsed(),
     );
     Ok(())
@@ -905,6 +1103,78 @@ fn input_value(row: &InputRow, index: usize, name: &str) -> Result<f64> {
         .get(index)
         .copied()
         .with_context(|| format!("baseline row missing {name} at index {index}"))
+}
+
+fn validate_depth_input(row: &InputRow) -> Result<()> {
+    for (field, index) in [
+        ("bid_00_price", TRADE_FLOW_FEATURE_DIM),
+        (
+            "ask_00_price",
+            TRADE_FLOW_FEATURE_DIM + DEPTH_VALUE_COUNT / 2,
+        ),
+    ] {
+        let value = input_value(row, index, field)?;
+        if !positive_finite(value) {
+            bail!(
+                "invalid depth input: symbol={} ts_ms={} field={} value={}",
+                row.symbol,
+                row.ts_ms,
+                field,
+                value
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_finite_factor_values(
+    symbol: &str,
+    ts_ms: i64,
+    factor_names: &[&str],
+    values: &[f64],
+) -> Result<()> {
+    if factor_names.len() != values.len() {
+        bail!(
+            "factor output width mismatch: symbol={} ts_ms={} names={} values={}",
+            symbol,
+            ts_ms,
+            factor_names.len(),
+            values.len()
+        );
+    }
+    for (factor, value) in factor_names.iter().zip(values) {
+        if !value.is_finite() {
+            bail!(
+                "non-finite factor output: symbol={} ts_ms={} factor={} value={}",
+                symbol,
+                ts_ms,
+                factor,
+                value
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_rl_vol_output(
+    symbol: &str,
+    ts_ms: i64,
+    enabled: bool,
+    value: Option<f64>,
+) -> Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+    if value.is_some_and(f64::is_finite) {
+        return Ok(());
+    }
+    bail!(
+        "non-finite factor output: symbol={} ts_ms={} factor={} value={:?}",
+        symbol,
+        ts_ms,
+        RL_VOL_COLUMN,
+        value
+    )
 }
 
 fn push_input_row(
@@ -1288,6 +1558,54 @@ mod tests {
         }
     }
 
+    fn valid_trade_flow_row() -> InputRow {
+        let fields = TradeFlowPriceIndices::new().expect("field indices");
+        let mut values = vec![0.0; INPUT_VALUE_COUNT];
+        for index in fields.prices() {
+            values[index] = 100.0;
+        }
+        values[fields.volume] = 10.0;
+        values[fields.count] = 2.0;
+        values[fields.buy_volume] = 5.0;
+        values[fields.sell_volume] = 5.0;
+        InputRow {
+            ts_ms: 5_000,
+            symbol: "BTCUSDT".to_string(),
+            values,
+        }
+    }
+
+    #[test]
+    fn rejects_empty_depth_with_symbol_timestamp_and_field() {
+        let row = valid_trade_flow_row();
+        let error = validate_depth_input(&row).expect_err("empty depth must fail");
+        let message = error.to_string();
+        assert!(message.contains("symbol=BTCUSDT"));
+        assert!(message.contains("ts_ms=5000"));
+        assert!(message.contains("field=bid_00_price"));
+
+        let mut valid = valid_trade_flow_row();
+        valid.values[TRADE_FLOW_FEATURE_DIM] = 99.5;
+        valid.values[TRADE_FLOW_FEATURE_DIM + DEPTH_VALUE_COUNT / 2] = 100.5;
+        validate_depth_input(&valid).expect("positive finite best prices");
+    }
+
+    #[test]
+    fn reports_exact_non_finite_factor_name() {
+        let error = validate_finite_factor_values(
+            "ETHUSDT",
+            12_345,
+            &["factor_ok", "factor_bad"],
+            &[1.0, f64::NAN],
+        )
+        .expect_err("NaN factor must fail");
+        let message = error.to_string();
+        assert!(message.contains("symbol=ETHUSDT"));
+        assert!(message.contains("ts_ms=12345"));
+        assert!(message.contains("factor=factor_bad"));
+        assert!(message.contains("value=NaN"));
+    }
+
     #[test]
     fn reads_rowbinary_baseline_row() {
         let mut bytes = Vec::new();
@@ -1307,6 +1625,64 @@ mod tests {
             row.values[INPUT_VALUE_COUNT - 1],
             (INPUT_VALUE_COUNT - 1) as f64
         );
+    }
+
+    #[test]
+    fn forward_fills_missing_directional_vwap_from_past_only() {
+        let fields = TradeFlowPriceIndices::new().expect("field indices");
+        let mut state = TradeFlowForwardFillState::default();
+        let mut seed = valid_trade_flow_row();
+        seed.values[fields.buy_vwap] = 101.0;
+        seed.values[fields.sell_vwap] = 99.0;
+        assert_eq!(
+            state.apply(&mut seed, fields).expect("seed"),
+            ForwardFillOutcome {
+                publishable: true,
+                filled_fields: 0,
+            }
+        );
+
+        let mut row = valid_trade_flow_row();
+        row.ts_ms = 10_000;
+        row.values[fields.buy_volume] = 0.0;
+        row.values[fields.buy_vwap] = 0.0;
+        row.values[fields.sell_vwap] = 100.5;
+        let outcome = state.apply(&mut row, fields).expect("forward fill");
+
+        assert!(outcome.publishable);
+        assert_eq!(outcome.filled_fields, 1);
+        assert_eq!(row.values[fields.buy_vwap], 101.0);
+        assert_eq!(row.values[fields.sell_vwap], 100.5);
+    }
+
+    #[test]
+    fn forward_fill_does_not_mask_invalid_vwap_when_side_has_trades() {
+        let fields = TradeFlowPriceIndices::new().expect("field indices");
+        let mut state = TradeFlowForwardFillState::default();
+        let mut seed = valid_trade_flow_row();
+        seed.values[fields.buy_vwap] = 101.0;
+        assert!(state.apply(&mut seed, fields).expect("seed").publishable);
+
+        let mut corrupt = valid_trade_flow_row();
+        corrupt.ts_ms = 10_000;
+        corrupt.values[fields.buy_volume] = 1.0;
+        corrupt.values[fields.buy_vwap] = 0.0;
+        let outcome = state.apply(&mut corrupt, fields).expect("corrupt row");
+        assert!(!outcome.publishable);
+        assert_eq!(outcome.filled_fields, 0);
+        assert_eq!(corrupt.values[fields.buy_vwap], 0.0);
+
+        let mut missing = valid_trade_flow_row();
+        missing.ts_ms = 15_000;
+        missing.values[fields.buy_volume] = 0.0;
+        missing.values[fields.buy_vwap] = 0.0;
+        assert!(
+            state
+                .apply(&mut missing, fields)
+                .expect("missing row")
+                .publishable
+        );
+        assert_eq!(missing.values[fields.buy_vwap], 101.0);
     }
 
     #[test]
@@ -1533,6 +1909,19 @@ mod tests {
     }
 
     #[test]
+    fn retries_only_transient_clickhouse_transport_errors() {
+        let eof = anyhow!("error decoding response body: unexpected EOF during chunk size line");
+        assert!(is_retryable_clickhouse_error(&eof));
+        let reset = anyhow!("connection reset by peer");
+        assert!(is_retryable_clickhouse_error(&reset));
+        let permanent = anyhow!("non-finite factor output: factor=baseline_001 value=NaN");
+        assert!(
+            !is_retryable_clickhouse_error(&permanent),
+            "factor errors must fail without retry"
+        );
+    }
+
+    #[test]
     fn date_bounds_are_inclusive() {
         let (start, end) = date_bounds("2026-06-15", "2026-07-15").expect("dates");
         assert_eq!(end - start, 31 * 24 * 60 * 60 * 1_000);
@@ -1600,6 +1989,11 @@ mod tests {
         let warmup_query = prior_rows_query(&config.clickhouse, "XRPUSDT", Some(1_000), 2_000);
         assert!(warmup_query.contains("t.ts >= fromUnixTimestamp64Milli(1000)"));
         assert!(warmup_query.contains("t.ts < fromUnixTimestamp64Milli(2000)"));
+        assert!(!warmup_query.contains("isFinite"));
+        assert!(!warmup_query.contains("t.buy_vwap != 0"));
+        let query = input_query(&config.clickhouse, "XRPUSDT", 1_000, 2_000);
+        assert!(!query.contains("isFinite"));
+        assert!(!query.contains("t.sell_vwap != 0"));
         assert!(config.rl_vol.enabled);
         assert_eq!(config.rl_vol.bar_ms, 5_000);
         assert_eq!(config.rl_vol.pct_change_period, 12);

@@ -3869,7 +3869,7 @@ impl FusionFactorPubApp {
         let bid_std = sample_std_last(&series.total_bid20, 10, 1)?;
         let ask_std = sample_std_last(&series.total_ask20, 10, 1)?;
         if ask_std.abs() <= 1e-12 {
-            return Some(f64::NAN);
+            return Some(0.0);
         }
         finite_opt(Some(bid_std / ask_std))
     }
@@ -5525,8 +5525,11 @@ impl FusionFactorPubApp {
         let mut clv_x = Vec::with_capacity(n);
         for i in 0..n {
             let den = series.high[i] - series.low[i];
-            let raw =
-                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den;
+            let raw = if den.abs() <= 1e-12 {
+                0.0
+            } else {
+                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den
+            };
             clv_x.push(if raw.is_finite() {
                 raw * series.volume[i]
             } else {
@@ -5557,8 +5560,11 @@ impl FusionFactorPubApp {
         let mut clv_x = Vec::with_capacity(n);
         for i in 0..n {
             let den = series.high[i] - series.low[i];
-            let raw =
-                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den;
+            let raw = if den.abs() <= 1e-12 {
+                0.0
+            } else {
+                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den
+            };
             clv_x.push(if raw.is_finite() {
                 raw * series.volume[i]
             } else {
@@ -6592,6 +6598,35 @@ mod tests {
             .expect("replay message")
     }
 
+    fn zero_activity_replay_message(ts: i64) -> TradeFlowFeatureMsg {
+        let mut values = vec![0.0; TRADE_FLOW_FEATURE_DIM];
+        for name in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "vwap",
+            "buy_vwap",
+            "sell_vwap",
+        ] {
+            let index = mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES
+                .iter()
+                .position(|candidate| *candidate == name)
+                .expect("trade-flow price field");
+            values[index] = 100.0;
+        }
+        for index in 0..MAX_DEPTH_LEVELS_CACHE {
+            values.push(100.0 - index as f64 * 0.1);
+            values.push(10.0);
+        }
+        for index in 0..MAX_DEPTH_LEVELS_CACHE {
+            values.push(100.1 + index as f64 * 0.1);
+            values.push(10.0);
+        }
+        TradeFlowFeatureMsg::from_indexed_values("BTCUSDT".to_string(), 1, ts, &values)
+            .expect("zero-activity replay message")
+    }
+
     #[test]
     fn replay_factor_plan_returns_raw_values_and_advances_stateful_factor_118() {
         let plan = SymbolFactorPlan::from_factor_names(
@@ -6616,6 +6651,36 @@ mod tests {
         let values = state.factor_values(&plan);
         assert_eq!(values[0], 1.0);
         assert!(values[1].is_finite());
+    }
+
+    #[test]
+    fn zero_activity_and_flat_bars_produce_finite_ready_factors() {
+        let factor_names = vec![
+            "TP_VPI_001".to_string(),
+            "TP_VPI_002".to_string(),
+            "TD_TI_034".to_string(),
+            "TD_TI_035".to_string(),
+            "TD_MT_008".to_string(),
+            "TD_PR_016".to_string(),
+            "TP_VPI_014".to_string(),
+            "factor_021".to_string(),
+            "baseline_149".to_string(),
+        ];
+        let plan =
+            SymbolFactorPlan::from_factor_names("BTCUSDT", factor_names.clone()).expect("plan");
+        let mut state = BaselineReplayState::default();
+        let mut values = Vec::new();
+
+        for index in 0..500 {
+            state
+                .push(zero_activity_replay_message(index * 5_000))
+                .expect("push flat row");
+            values = state.factor_values(&plan);
+        }
+
+        for (name, value) in factor_names.iter().zip(values) {
+            assert!(value.is_finite(), "{name} must be finite, got {value}");
+        }
     }
 
     #[test]
@@ -6681,7 +6746,7 @@ mod tests {
     }
 
     #[test]
-    fn python_aligned_factor_nan_paths_return_nan_instead_of_zero() {
+    fn factor_nan_paths_preserve_nan_except_explicit_neutral_cases() {
         let mut state = SymbolCalcState::default();
         let depth = flat_depth();
 
@@ -6698,9 +6763,7 @@ mod tests {
         assert!(FusionFactorPubApp::compute_factor_001(&series)
             .unwrap()
             .is_nan());
-        assert!(FusionFactorPubApp::compute_factor_021(&series)
-            .unwrap()
-            .is_nan());
+        assert_eq!(FusionFactorPubApp::compute_factor_021(&series), Some(0.0));
         assert!(FusionFactorPubApp::compute_factor_052(&series)
             .unwrap()
             .is_nan());

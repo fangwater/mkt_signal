@@ -35,7 +35,6 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -468,16 +467,16 @@ impl ReplayInput {
     }
 }
 
-/// A single UTC-day L2 reconstruction. `is_snapshot` is deliberately ignored:
+/// A contiguous L2 reconstruction. `is_snapshot` is deliberately ignored:
 /// every source row is applied as a price-level update in event-time order.
-struct DailyDepthAggregator {
+struct DepthAggregator {
     orderbook: OrderBook,
     next_update_id: i64,
     next_bar_ms: i64,
     end_ms: i64,
 }
 
-impl DailyDepthAggregator {
+impl DepthAggregator {
     fn new(start_ms: i64, end_ms: i64) -> Self {
         Self {
             orderbook: OrderBook::new(),
@@ -487,9 +486,9 @@ impl DailyDepthAggregator {
         }
     }
 
-    fn on_book(&mut self, event: &BookEvent) -> Vec<(i64, [f64; 80])> {
+    fn on_book(&mut self, event: &BookEvent) -> Result<Vec<(i64, [f64; 80])>> {
         let target_ms = align_5s(event.timestamp_us.div_euclid(1_000));
-        let mut completed = self.emit_before(target_ms);
+        let completed = self.emit_before(target_ms)?;
         let bids: Vec<(f64, f64)> = event
             .bids
             .iter()
@@ -506,26 +505,33 @@ impl DailyDepthAggregator {
         if !self.orderbook.is_valid() {
             self.orderbook.prune_crossed_by_best_update_id();
         }
-        completed.shrink_to_fit();
-        completed
+        Ok(completed)
     }
 
-    fn finish(&mut self) -> Vec<(i64, [f64; 80])> {
+    fn finish(&mut self) -> Result<Vec<(i64, [f64; 80])>> {
         self.emit_before(self.end_ms)
     }
 
-    fn emit_before(&mut self, target_ms: i64) -> Vec<(i64, [f64; 80])> {
+    fn emit_before(&mut self, target_ms: i64) -> Result<Vec<(i64, [f64; 80])>> {
         let mut out = Vec::new();
         let limit = target_ms.min(self.end_ms);
         while self.next_bar_ms < limit {
-            out.push((self.next_bar_ms, self.depth_values()));
+            out.push((self.next_bar_ms, self.depth_values(self.next_bar_ms)?));
             self.next_bar_ms += 5_000;
         }
-        out
+        Ok(out)
     }
 
-    fn depth_values(&self) -> [f64; 80] {
+    fn depth_values(&self, ts_ms: i64) -> Result<[f64; 80]> {
         let (bids, asks) = self.orderbook.get_depth(20);
+        let valid_best = |levels: &[(f64, f64)]| {
+            levels.first().is_some_and(|(price, amount)| {
+                price.is_finite() && *price > 0.0 && amount.is_finite()
+            })
+        };
+        if !valid_best(&bids) || !valid_best(&asks) {
+            bail!("cannot emit depth bar from empty or invalid order book at ts_ms={ts_ms}");
+        }
         let mut values = [0.0; 80];
         for (index, (price, amount)) in bids.iter().enumerate() {
             values[index * 2] = *price;
@@ -536,7 +542,7 @@ impl DailyDepthAggregator {
             values[offset] = *price;
             values[offset + 1] = *amount;
         }
-        values
+        Ok(values)
     }
 }
 
@@ -1713,12 +1719,8 @@ fn replay_depth_only(
     )?;
     let depth_5s_sender = depth_5s_writer.sender();
     let depth_60s_sender = depth_60s_writer.sender();
-    let depth_days: Vec<&DepthReplayTask> = depth_symbols
-        .iter()
-        .flat_map(|symbol| symbol.days.iter())
-        .collect();
-    let total_days = depth_days.len();
-    let workers = config.replay_workers.min(total_days).max(1);
+    let total_days: usize = depth_symbols.iter().map(|symbol| symbol.days.len()).sum();
+    let workers = config.replay_workers.min(depth_symbols.len()).max(1);
     info!(
         "Starting depth-only Tardis staging replay: venue={} symbols={} day_tasks={} workers={} dates={:?}..{:?}",
         venue_slug,
@@ -1732,29 +1734,9 @@ fn replay_depth_only(
         .num_threads(workers)
         .build()
         .context("build depth-only replay pool")?;
-    let completed_days = AtomicUsize::new(0);
-    let source_events = AtomicU64::new(0);
-    let rows_5s = AtomicU64::new(0);
-    let started = Instant::now();
     let result: Result<()> = pool.install(|| {
-        depth_days.par_iter().try_for_each(|task| {
-            let stats = replay_depth_stage_day(task, &depth_5s_sender, &depth_60s_sender)?;
-            let events = source_events.fetch_add(stats.source_events, AtomicOrdering::Relaxed)
-                + stats.source_events;
-            let rows = rows_5s.fetch_add(stats.rows_5s, AtomicOrdering::Relaxed) + stats.rows_5s;
-            let completed = completed_days.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-            if completed == total_days || completed % workers == 0 {
-                log_stage_progress(
-                    "depth-days",
-                    "all",
-                    completed,
-                    total_days,
-                    events,
-                    rows,
-                    started.elapsed(),
-                );
-            }
-            Ok(())
+        depth_symbols.par_iter().try_for_each(|symbol| {
+            replay_depth_stage_symbol(symbol, &depth_5s_sender, &depth_60s_sender)
         })
     });
     drop(depth_5s_sender);
@@ -1819,6 +1801,7 @@ fn replay_trade_stage_symbol(
     size_thresholds: Option<&[MonthlyAmountThreshold]>,
 ) -> Result<()> {
     let data_dir = replay_data_dir(config, symbol)?;
+    let (_, replay_end_ms) = replay_time_bounds(config)?;
     let mut reader = TradeEventReader {
         records: CsvGzipReader::new(discover_files(
             data_dir,
@@ -1905,7 +1888,7 @@ fn replay_trade_stage_symbol(
             last_progress_files = files_done;
         }
     }
-    for bar in aggregator.flush() {
+    for bar in aggregator.flush_until_ms(replay_end_ms) {
         trade_5s_sender
             .send(encode_stage_row(
                 bar.start_ms,
@@ -1985,6 +1968,12 @@ fn replay_depth_stage_symbol(
     depth_5s_sender: &Sender<Bytes>,
     depth_60s_sender: &Sender<Bytes>,
 ) -> Result<()> {
+    let first_day = symbol
+        .days
+        .first()
+        .with_context(|| format!("no depth files for symbol={}", symbol.symbol))?;
+    let last_day = symbol.days.last().expect("first day checked above");
+    let mut aggregator = DepthAggregator::new(first_day.start_ms, last_day.end_ms);
     let started = Instant::now();
     let total_days = symbol.days.len();
     let mut source_events = 0u64;
@@ -2000,7 +1989,8 @@ fn replay_depth_stage_symbol(
         started.elapsed(),
     );
     for (day_index, task) in symbol.days.iter().enumerate() {
-        let day_stats = replay_depth_stage_day(task, depth_5s_sender, depth_60s_sender)?;
+        let day_stats =
+            replay_depth_stage_day(task, &mut aggregator, depth_5s_sender, depth_60s_sender)?;
         source_events += day_stats.source_events;
         rows_5s += day_stats.rows_5s;
         rows_60s += day_stats.rows_60s;
@@ -2014,6 +2004,16 @@ fn replay_depth_stage_symbol(
             started.elapsed(),
         );
     }
+    let final_stats = enqueue_depth_bars(
+        aggregator
+            .finish()
+            .with_context(|| format!("finish depth reconstruction for symbol={}", symbol.symbol))?,
+        &symbol.symbol,
+        depth_5s_sender,
+        depth_60s_sender,
+    )?;
+    rows_5s += final_stats.rows_5s;
+    rows_60s += final_stats.rows_60s;
     info!(
         "Tardis depth staging complete: symbol={} source_events={} rows_5s={} rows_60s={} elapsed={:.2?}",
         symbol.symbol,
@@ -2034,6 +2034,7 @@ struct DepthStageStats {
 
 fn replay_depth_stage_day(
     task: &DepthReplayTask,
+    aggregator: &mut DepthAggregator,
     depth_5s_sender: &Sender<Bytes>,
     depth_60s_sender: &Sender<Bytes>,
 ) -> Result<DepthStageStats> {
@@ -2042,31 +2043,38 @@ fn replay_depth_stage_day(
         pending: None,
         symbol: task.symbol.clone(),
     };
-    let mut aggregator = DailyDepthAggregator::new(task.start_ms, task.end_ms);
     let mut stats = DepthStageStats::default();
     while let Some(event) = reader.next_event()? {
-        for (ts, values) in aggregator.on_book(&event) {
-            depth_5s_sender
-                .send(encode_stage_row(ts, &task.symbol, &values))
-                .map_err(|_| anyhow!("depth staging writer stopped"))?;
-            stats.rows_5s += 1;
-            if ts.rem_euclid(60_000) == 0 {
-                depth_60s_sender
-                    .send(encode_stage_row(ts, &task.symbol, &values))
-                    .map_err(|_| anyhow!("60s depth staging writer stopped"))?;
-                stats.rows_60s += 1;
-            }
-        }
+        let bars = aggregator.on_book(&event).with_context(|| {
+            format!(
+                "reconstruct depth for symbol={} path={}",
+                task.symbol,
+                task.path.display()
+            )
+        })?;
+        let emitted = enqueue_depth_bars(bars, &task.symbol, depth_5s_sender, depth_60s_sender)?;
+        stats.rows_5s += emitted.rows_5s;
+        stats.rows_60s += emitted.rows_60s;
         stats.source_events += 1;
     }
-    for (ts, values) in aggregator.finish() {
+    Ok(stats)
+}
+
+fn enqueue_depth_bars(
+    bars: Vec<(i64, [f64; 80])>,
+    symbol: &str,
+    depth_5s_sender: &Sender<Bytes>,
+    depth_60s_sender: &Sender<Bytes>,
+) -> Result<DepthStageStats> {
+    let mut stats = DepthStageStats::default();
+    for (ts, values) in bars {
         depth_5s_sender
-            .send(encode_stage_row(ts, &task.symbol, &values))
+            .send(encode_stage_row(ts, symbol, &values))
             .map_err(|_| anyhow!("depth staging writer stopped"))?;
         stats.rows_5s += 1;
         if ts.rem_euclid(60_000) == 0 {
             depth_60s_sender
-                .send(encode_stage_row(ts, &task.symbol, &values))
+                .send(encode_stage_row(ts, symbol, &values))
                 .map_err(|_| anyhow!("60s depth staging writer stopped"))?;
             stats.rows_60s += 1;
         }
@@ -2873,7 +2881,7 @@ mod tests {
 
     #[test]
     fn daily_depth_reconstruction_ignores_snapshot_marker() {
-        let mut agg = DailyDepthAggregator::new(0, 10_000);
+        let mut agg = DepthAggregator::new(0, 10_000);
         let first = BookEvent {
             timestamp_us: 100,
             is_snapshot: false,
@@ -2881,7 +2889,7 @@ mod tests {
             bids: vec![Level::from_values(100.0, 1.0)],
             asks: vec![Level::from_values(101.0, 2.0)],
         };
-        assert!(agg.on_book(&first).is_empty());
+        assert!(agg.on_book(&first).expect("first update").is_empty());
         let second = BookEvent {
             timestamp_us: 5_000_100,
             is_snapshot: true,
@@ -2889,13 +2897,61 @@ mod tests {
             bids: vec![],
             asks: vec![],
         };
-        let bars = agg.on_book(&second);
+        let bars = agg.on_book(&second).expect("second update");
         assert_eq!(bars.len(), 1);
         assert_eq!(bars[0].0, 0);
         assert_eq!(bars[0].1[0], 100.0);
         assert_eq!(bars[0].1[1], 1.0);
         assert_eq!(bars[0].1[40], 101.0);
         assert_eq!(bars[0].1[41], 2.0);
+    }
+
+    #[test]
+    fn depth_reconstruction_carries_book_across_utc_day_boundary() {
+        let mut agg = DepthAggregator::new(86_395_000, 86_405_000);
+        let before_midnight = BookEvent {
+            timestamp_us: 86_395_000_100,
+            is_snapshot: false,
+            symbol: "BTCUSDT".to_string(),
+            bids: vec![Level::from_values(100.0, 1.0)],
+            asks: vec![Level::from_values(101.0, 2.0)],
+        };
+        assert!(agg
+            .on_book(&before_midnight)
+            .expect("seed pre-midnight book")
+            .is_empty());
+
+        let after_midnight = BookEvent {
+            timestamp_us: 86_400_000_100,
+            is_snapshot: false,
+            symbol: "BTCUSDT".to_string(),
+            bids: vec![Level::from_values(100.5, 3.0)],
+            asks: vec![],
+        };
+        let previous_day = agg.on_book(&after_midnight).expect("cross midnight");
+        assert_eq!(previous_day[0].1[0], 100.0);
+        assert_eq!(previous_day[0].1[40], 101.0);
+
+        let current_day = agg.finish().expect("finish current day");
+        assert_eq!(current_day[0].0, 86_400_000);
+        assert_eq!(current_day[0].1[0], 100.5);
+        assert_eq!(current_day[0].1[40], 101.0);
+    }
+
+    #[test]
+    fn depth_reconstruction_rejects_bar_before_book_initialization() {
+        let mut agg = DepthAggregator::new(0, 10_000);
+        let late_first_update = BookEvent {
+            timestamp_us: 5_000_100,
+            is_snapshot: false,
+            symbol: "BTCUSDT".to_string(),
+            bids: vec![Level::from_values(100.0, 1.0)],
+            asks: vec![Level::from_values(101.0, 2.0)],
+        };
+        let error = agg
+            .on_book(&late_first_update)
+            .expect_err("empty book must not produce an all-zero bar");
+        assert!(error.to_string().contains("ts_ms=0"));
     }
 
     #[test]
