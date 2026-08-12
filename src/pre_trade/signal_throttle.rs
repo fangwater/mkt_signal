@@ -118,7 +118,8 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         | gate::POSITION_MARGIN_TOO_LOW
         | gate::LIQUIDITY_NOT_ENOUGH
         | gate::AUTO_BORROW_TOO_MUCH
-        | gate::INITIAL_MARGIN_TOO_LOW => matches!(exchange, Some(Exchange::Gate)),
+        | gate::INITIAL_MARGIN_TOO_LOW
+        | gate::RISK_CHECK_MARKET_FORBIDDEN => matches!(exchange, Some(Exchange::Gate)),
         _ => false,
     }
 }
@@ -128,7 +129,10 @@ fn is_account_wide_reduce_only_error_code(exchange: Option<Exchange>, error_code
         (exchange, error_code),
         (
             Some(Exchange::Gate),
-            gate::INITIAL_MARGIN_TOO_LOW | gate::MARGIN_NOT_ENOUGH | gate::POSITION_MARGIN_TOO_LOW
+            gate::INITIAL_MARGIN_TOO_LOW
+                | gate::MARGIN_NOT_ENOUGH
+                | gate::POSITION_MARGIN_TOO_LOW
+                | gate::RISK_CHECK_MARKET_FORBIDDEN
         )
     )
 }
@@ -538,6 +542,14 @@ mod tests {
             Some(Exchange::Gate),
             gate::INITIAL_MARGIN_TOO_LOW
         ));
+        assert!(is_throttle_error_code(
+            Some(Exchange::Gate),
+            gate::RISK_CHECK_MARKET_FORBIDDEN
+        ));
+        assert!(is_account_wide_reduce_only_error_code(
+            Some(Exchange::Gate),
+            gate::RISK_CHECK_MARKET_FORBIDDEN
+        ));
         assert!(!is_account_wide_reduce_only_error_code(
             Some(Exchange::Gate),
             gate::AUTO_BORROW_TOO_MUCH
@@ -639,6 +651,41 @@ mod tests {
             check_account_signal_throttle_at(now_us + 1).expect("account throttle must be hit");
         assert_eq!(account_hit.last_error_code, gate::INITIAL_MARGIN_TOO_LOW);
         assert!(check_account_signal_throttle_at(now_us + ttl_us).is_none());
+    }
+
+    #[test]
+    fn registers_gate_market_forbidden_as_account_reduce_only_throttle() {
+        let _guard = TEST_LOCK.lock();
+        clear_all();
+        let now_us = 2_000_000;
+
+        assert!(register_signal_throttle_at(
+            "driftusdt",
+            Side::Buy,
+            Some(Exchange::Gate),
+            gate::RISK_CHECK_MARKET_FORBIDDEN,
+            now_us,
+            GATE_SIGNAL_THROTTLE_TTL_US,
+        ));
+
+        let symbol_hit = check_signal_throttle_at("DRIFTUSDT", Side::Buy, now_us + 1)
+            .expect("symbol-side throttle must be hit");
+        assert_eq!(
+            symbol_hit.last_error_code,
+            gate::RISK_CHECK_MARKET_FORBIDDEN
+        );
+        let account_hit = check_account_signal_throttle_at(now_us + 1)
+            .expect("account reduce-only throttle must be hit");
+        assert_eq!(
+            account_hit.last_error_code,
+            gate::RISK_CHECK_MARKET_FORBIDDEN
+        );
+        assert_eq!(account_hit.remaining_us, GATE_SIGNAL_THROTTLE_TTL_US - 1);
+
+        let expires_at_us = now_us + GATE_SIGNAL_THROTTLE_TTL_US;
+        assert!(check_signal_throttle_at("DRIFTUSDT", Side::Buy, expires_at_us).is_none());
+        assert!(check_account_signal_throttle_at(expires_at_us).is_none());
+        clear_all();
     }
 
     #[test]
