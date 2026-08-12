@@ -34,6 +34,7 @@ impl MarketMakerOpenStrategy {
         &mut self,
         ctx: MmOpenCtxView<'_>,
         symbol: Cow<'_, str>,
+        pending_limit_prechecked: bool,
     ) {
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
@@ -60,7 +61,7 @@ impl MarketMakerOpenStrategy {
             reduce_only: false,
             bitget_spot_order: false,
             client_order_id: None,
-            pending_limit_prechecked: false,
+            pending_limit_prechecked,
             close_ts: 0,
             mkt_ts: ctx.opening_leg.ts,
             signal_type_u8: SignalType::MMOpen as u8,

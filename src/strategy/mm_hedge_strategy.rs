@@ -36,6 +36,7 @@ use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
 use signal_common::mm_signal::MmBackwardQueryMsg;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct MmHedgeSnapshot {
@@ -58,15 +59,20 @@ pub struct HedgePlanOrder {
     pub order_type: OrderType,
     pub price: f64,
     pub qty: f64,
-    pub from_key: Vec<u8>,
-    pub mkt_ts: i64,
+    batch_meta: Rc<HedgeBatchMeta>,
+}
+
+#[derive(Debug)]
+struct HedgeBatchMeta {
+    from_key: Vec<u8>,
+    signal_bbo: Option<persist_common::SignalBbo>,
+    mkt_ts: i64,
 }
 
 #[derive(Debug, Clone)]
 struct HedgeOrderMeta {
-    from_key: Vec<u8>,
+    batch_meta: Rc<HedgeBatchMeta>,
     price_offset: f64,
-    signal_bbo: Option<persist_common::SignalBbo>,
 }
 
 /// 做市对冲策略（每个 symbol 仅一个实例）
@@ -83,7 +89,7 @@ pub struct MarketMakerHedgeStrategy {
     last_ret_qtl: Option<f64>,
     last_offset_low: Option<f64>,
     last_offset_high: Option<f64>,
-    hedge_from_key: Vec<u8>,
+    hedge_batch_meta: Option<Rc<HedgeBatchMeta>>,
     order_seq: u32,
     hedge_plan: Vec<HedgePlanOrder>,
     hedge_order_meta: FastHashMap<i64, HedgeOrderMeta>,
@@ -113,7 +119,7 @@ impl MarketMakerHedgeStrategy {
             last_ret_qtl: None,
             last_offset_low: None,
             last_offset_high: None,
-            hedge_from_key: Vec::new(),
+            hedge_batch_meta: None,
             order_seq: 0,
             hedge_plan: Vec::new(),
             hedge_order_meta: fast_hash_map(),
@@ -199,11 +205,16 @@ impl MarketMakerHedgeStrategy {
         self.hedge_order_meta.clear();
     }
 
-    fn order_from_key_bytes(&self, client_order_id: i64) -> Vec<u8> {
+    fn order_from_key(&self, client_order_id: i64) -> &[u8] {
         self.hedge_order_meta
             .get(&client_order_id)
-            .map(|meta| meta.from_key.clone())
-            .unwrap_or_else(|| self.hedge_from_key.clone())
+            .map(|meta| meta.batch_meta.from_key.as_slice())
+            .or_else(|| {
+                self.hedge_batch_meta
+                    .as_ref()
+                    .map(|meta| meta.from_key.as_slice())
+            })
+            .unwrap_or_default()
     }
 
     fn order_price_offset(&self, client_order_id: i64) -> f64 {
@@ -439,6 +450,12 @@ impl MarketMakerHedgeStrategy {
         self.hedge_plan.clear();
         self.hedge_order_meta.clear();
 
+        let batch_meta = Rc::new(HedgeBatchMeta {
+            from_key: ctx.from_key.clone(),
+            signal_bbo: signal_bbo_from_legs(None, Some(&ctx.opening_leg)),
+            mkt_ts: ctx.opening_leg.ts,
+        });
+        self.hedge_batch_meta = Some(Rc::clone(&batch_meta));
         let weighted_inventory_price = self.weighted_inventory_price();
         for HedgeSplitOrder {
             level_index,
@@ -448,24 +465,18 @@ impl MarketMakerHedgeStrategy {
         } in split_orders
         {
             let client_order_id = self.next_hedge_order_id();
-            let (order_type, order_price, order_from_key, price_offset) = if ctx.use_taker {
-                (
-                    OrderType::Market,
-                    weighted_inventory_price,
-                    ctx.from_key.clone(),
-                    0.0,
-                )
+            let (order_type, order_price, price_offset) = if ctx.use_taker {
+                (OrderType::Market, weighted_inventory_price, 0.0)
             } else {
                 let price_offset = ctx.price_offsets.get(level_index).copied().unwrap_or(0.0);
-                (OrderType::Limit, price, ctx.from_key.clone(), price_offset)
+                (OrderType::Limit, price, price_offset)
             };
 
             self.hedge_order_meta.insert(
                 client_order_id,
                 HedgeOrderMeta {
-                    from_key: order_from_key.clone(),
+                    batch_meta: Rc::clone(&batch_meta),
                     price_offset,
-                    signal_bbo: signal_bbo_from_legs(None, Some(&ctx.opening_leg)),
                 },
             );
             self.hedge_plan.push(HedgePlanOrder {
@@ -475,8 +486,7 @@ impl MarketMakerHedgeStrategy {
                 order_type,
                 price: order_price,
                 qty,
-                from_key: order_from_key,
-                mkt_ts: ctx.opening_leg.ts,
+                batch_meta: Rc::clone(&batch_meta),
             });
         }
     }
@@ -503,7 +513,6 @@ impl MarketMakerHedgeStrategy {
         }
         self.pending_hedge_request_seq = None;
         self.signal_ts = ctx.signal_ts;
-        self.hedge_from_key = ctx.from_key.clone();
         self.last_ret_qtl = parse_return_qtl_from_from_key(&ctx.from_key);
         self.last_offset_low = ctx
             .price_offsets
@@ -521,27 +530,30 @@ impl MarketMakerHedgeStrategy {
         self.pending_query = false;
         self.query_watchdog_due_ts = 0;
 
-        // 打印所有 MM 对冲策略的累积头寸（净头寸 + 买/卖累计）
-        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-        let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
-        for snap in snapshots {
+        let debug_enabled = log::log_enabled!(log::Level::Debug);
+        if debug_enabled {
+            // 打印所有 MM 对冲策略的累积头寸（净头寸 + 买/卖累计）
+            let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+            let snapshots = strategy_mgr.borrow().mm_hedge_snapshots();
+            for snap in snapshots {
+                debug!(
+                    "MMHedge snapshot: symbol={} net={:.8} buy={:.8} sell={:.8}",
+                    snap.symbol, snap.net_qty, snap.buy_qty, snap.sell_qty
+                );
+            }
+            let from_key = String::from_utf8_lossy(&ctx.from_key);
             debug!(
-                "MMHedge snapshot: symbol={} net={:.8} buy={:.8} sell={:.8}",
-                snap.symbol, snap.net_qty, snap.buy_qty, snap.sell_qty
+                "MMHedge ctx: symbol={} price_levels={} amount_levels={} offset_levels={} signal_ts={} next_query_ts={} request_seq={} from_key='{}'",
+                symbol,
+                ctx.price_qv_list.len(),
+                ctx.amount_qv_list.len(),
+                ctx.price_offsets.len(),
+                ctx.signal_ts,
+                ctx.next_query_ts,
+                ctx.request_seq,
+                from_key
             );
         }
-        let from_key = String::from_utf8_lossy(&self.hedge_from_key);
-        debug!(
-            "MMHedge ctx: symbol={} price_levels={} amount_levels={} offset_levels={} signal_ts={} next_query_ts={} request_seq={} from_key='{}'",
-            symbol,
-            ctx.price_qv_list.len(),
-            ctx.amount_qv_list.len(),
-            ctx.price_offsets.len(),
-            ctx.signal_ts,
-            ctx.next_query_ts,
-            ctx.request_seq,
-            from_key
-        );
 
         let net_qty = self.net_qty;
         let hedge_side = if net_qty > 0.0 {
@@ -587,114 +599,118 @@ impl MarketMakerHedgeStrategy {
         let total_qty = split.total_qty_base;
         let total_usdt = split.total_usdt;
 
-        let level_stats_text = split
-            .level_stats
-            .iter()
-            .map(|s| {
-                format!(
-                    "#{} p={:.8} hand_venue={:.8} hand_base={:.8} n={} out_venue={:.8} out_base={:.8}",
-                    s.level_index,
-                    s.price,
-                    s.qty_venue_one_hand,
-                    s.qty_base_one_hand,
-                    s.hand_count,
-                    s.order_qty_venue,
-                    s.order_qty_base
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" | ");
-        debug!(
-            "MMHedge split detail: symbol={} venue={:?} side={:?} net_qty_base={:.8} qty_multiplier={:.8} levels={} remaining_base={:.8} detail={}",
-            symbol,
-            venue,
-            hedge_side,
-            net_qty,
-            qty_multiplier,
-            levels.len(),
-            remaining_qty,
-            level_stats_text,
-        );
-        let level_stats_json = split
-            .level_stats
-            .iter()
-            .map(|s| {
-                format!(
-                    "{{\"idx\":{},\"price\":{:.8},\"hand_venue\":{:.8},\"hand_base\":{:.8},\"n\":{},\"out_venue\":{:.8},\"out_base\":{:.8}}}",
-                    s.level_index,
-                    s.price,
-                    s.qty_venue_one_hand,
-                    s.qty_base_one_hand,
-                    s.hand_count,
-                    s.order_qty_venue,
-                    s.order_qty_base
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        debug!(
-            "MMHedgeSplitSummary {{\"strategy_id\":{},\"symbol\":\"{}\",\"venue\":\"{:?}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"qty_multiplier\":{:.8},\"total_qty_base\":{:.8},\"total_usdt\":{:.8},\"remaining_base\":{:.8},\"levels\":[{}]}}",
-            self.strategy_id,
-            symbol,
-            venue,
-            hedge_side.map(|s| s.as_str()).unwrap_or("FLAT"),
-            net_qty,
-            qty_multiplier,
-            total_qty,
-            total_usdt,
-            remaining_qty,
-            level_stats_json,
-        );
+        if debug_enabled {
+            let level_stats_text = split
+                .level_stats
+                .iter()
+                .map(|s| {
+                    format!(
+                        "#{} p={:.8} hand_venue={:.8} hand_base={:.8} n={} out_venue={:.8} out_base={:.8}",
+                        s.level_index,
+                        s.price,
+                        s.qty_venue_one_hand,
+                        s.qty_base_one_hand,
+                        s.hand_count,
+                        s.order_qty_venue,
+                        s.order_qty_base
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            debug!(
+                "MMHedge split detail: symbol={} venue={:?} side={:?} net_qty_base={:.8} qty_multiplier={:.8} levels={} remaining_base={:.8} detail={}",
+                symbol,
+                venue,
+                hedge_side,
+                net_qty,
+                qty_multiplier,
+                levels.len(),
+                remaining_qty,
+                level_stats_text,
+            );
+            let level_stats_json = split
+                .level_stats
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{{\"idx\":{},\"price\":{:.8},\"hand_venue\":{:.8},\"hand_base\":{:.8},\"n\":{},\"out_venue\":{:.8},\"out_base\":{:.8}}}",
+                        s.level_index,
+                        s.price,
+                        s.qty_venue_one_hand,
+                        s.qty_base_one_hand,
+                        s.hand_count,
+                        s.order_qty_venue,
+                        s.order_qty_base
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            debug!(
+                "MMHedgeSplitSummary {{\"strategy_id\":{},\"symbol\":\"{}\",\"venue\":\"{:?}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"qty_multiplier\":{:.8},\"total_qty_base\":{:.8},\"total_usdt\":{:.8},\"remaining_base\":{:.8},\"levels\":[{}]}}",
+                self.strategy_id,
+                symbol,
+                venue,
+                hedge_side.map(|s| s.as_str()).unwrap_or("FLAT"),
+                net_qty,
+                qty_multiplier,
+                total_qty,
+                total_usdt,
+                remaining_qty,
+                level_stats_json,
+            );
+        }
 
         let reply_is_taker = ctx.use_taker;
         self.last_hedge_is_taker = Some(reply_is_taker);
         self.prepare_hedge_plan(&ctx, split.orders);
 
-        let mut table = String::new();
-        table.push_str(
-            "+----------------------+----------+--------------+--------------+--------------+\n",
-        );
-        table.push_str(
-            "| client_order_id      | type     | price        | qty          | usdt         |\n",
-        );
-        table.push_str(
-            "+----------------------+----------+--------------+--------------+--------------+\n",
-        );
-        for row in &self.hedge_plan {
-            let usdt = row.price * row.qty;
-            table.push_str(&format!(
-                "| {:>20} | {:>8} | {:>12.6} | {:>12.6} | {:>12.6} |\n",
-                row.client_order_id,
-                if row.order_type == OrderType::Market {
-                    "MARKET"
-                } else {
-                    "LIMIT"
-                },
-                row.price,
-                row.qty,
-                usdt
-            ));
-        }
-        table.push_str(
-            "+----------------------+----------+--------------+--------------+--------------+",
-        );
+        if debug_enabled {
+            let mut table = String::new();
+            table.push_str(
+                "+----------------------+----------+--------------+--------------+--------------+\n",
+            );
+            table.push_str(
+                "| client_order_id      | type     | price        | qty          | usdt         |\n",
+            );
+            table.push_str(
+                "+----------------------+----------+--------------+--------------+--------------+\n",
+            );
+            for row in &self.hedge_plan {
+                let usdt = row.price * row.qty;
+                table.push_str(&format!(
+                    "| {:>20} | {:>8} | {:>12.6} | {:>12.6} | {:>12.6} |\n",
+                    row.client_order_id,
+                    if row.order_type == OrderType::Market {
+                        "MARKET"
+                    } else {
+                        "LIMIT"
+                    },
+                    row.price,
+                    row.qty,
+                    usdt
+                ));
+            }
+            table.push_str(
+                "+----------------------+----------+--------------+--------------+--------------+",
+            );
 
-        let hedge_side_str = match hedge_side {
-            Some(Side::Buy) => "BUY",
-            Some(Side::Sell) => "SELL",
-            None => "FLAT",
-        };
-        debug!(
-            "MMHedge split: symbol={} side={} mode={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
-            symbol,
-            hedge_side_str,
-            if ctx.use_taker { "taker" } else { "maker" },
-            net_qty,
-            total_qty,
-            total_usdt,
-            remaining_qty,
-            table
-        );
+            let hedge_side_str = match hedge_side {
+                Some(Side::Buy) => "BUY",
+                Some(Side::Sell) => "SELL",
+                None => "FLAT",
+            };
+            debug!(
+                "MMHedge split: symbol={} side={} mode={} net_qty={:.8} total_qty={:.8} total_usdt={:.8} remain_qty={:.8}\n{}",
+                symbol,
+                hedge_side_str,
+                if ctx.use_taker { "taker" } else { "maker" },
+                net_qty,
+                total_qty,
+                total_usdt,
+                remaining_qty,
+                table
+            );
+        }
 
         if !self.hedge_plan.is_empty() {
             self.send_hedge_orders(venue, &symbol);
@@ -1021,7 +1037,7 @@ impl MarketMakerHedgeStrategy {
     }
 
     fn send_hedge_orders(&mut self, venue: TradingVenue, symbol: &str) {
-        let plans = self.hedge_plan.clone();
+        let plans = std::mem::take(&mut self.hedge_plan);
         let rate_params = PreTradeParamsLoader::instance();
         let symbol_key = min_qty_symbol_key(venue, symbol);
         let (qty_step, min_qty) = MonitorChannel::instance()
@@ -1131,95 +1147,86 @@ impl MarketMakerHedgeStrategy {
                 }
             }
 
-            MonitorChannel::instance()
-                .order_manager()
-                .borrow_mut()
-                .create_order_with_pending_limit_flag(
-                    venue,
-                    plan.client_order_id,
-                    plan.order_type,
-                    symbol.to_string(),
-                    plan.side,
-                    aligned_qty,
-                    plan.price,
-                    false,
-                    1.0,
-                    false,
-                );
-            // egress 测度：建单即落 signal 元数据，覆盖本单后续 new/cancel 两次 egress（同归 MMHedge 桶）。
             let signal_ts = self.signal_ts;
-            let _ = MonitorChannel::instance()
-                .order_manager()
-                .borrow_mut()
-                .update(plan.client_order_id, |order| {
-                    order.set_signal_meta(signal_ts, SignalType::MMHedge as u8);
-                    if plan.mkt_ts > 0 {
-                        order.set_mkt_time(plan.mkt_ts);
-                    }
-                });
-            self.hedge_order_ids.insert(plan.client_order_id);
-            self.log_hedge_order_state("order_created_local", plan.client_order_id);
-
-            let order = MonitorChannel::instance()
-                .order_manager()
-                .borrow()
-                .get(plan.client_order_id);
-            let Some(order) = order else {
-                warn!(
-                    "MarketMakerHedgeStrategy: strategy_id={} hedge order missing after create: client_order_id={}",
-                    self.strategy_id, plan.client_order_id
-                );
-                continue;
-            };
-            let exchange = order.venue.trade_engine_exchange();
-            match order.get_order_request_bytes() {
-                Ok(req_bin) => {
-                    if let Err(e) = TradeEngHub::publish_order_request_for(
+            let mkt_ts = plan.batch_meta.mkt_ts;
+            let prepared_request = {
+                let order_manager = MonitorChannel::instance().order_manager();
+                let result = order_manager
+                    .borrow_mut()
+                    .try_create_order_with_mut_normalized_symbol(
+                        venue,
                         plan.client_order_id,
-                        exchange,
-                        &req_bin,
-                    ) {
-                        warn!(
-                            "MarketMakerHedgeStrategy: strategy_id={} send hedge order failed: exchange={} client_order_id={} err={}",
-                            self.strategy_id, exchange, plan.client_order_id, e
-                        );
-                        self.release_hedge_order(plan.client_order_id, "send_failed");
-                    } else {
-                        let stats = OrderRateLimiter::record(
-                            OrderRateBucket::MmHedge,
-                            plan.client_order_id,
-                            get_timestamp_us(),
-                        );
-                        debug!(
-                            "MarketMakerHedgeStrategy: strategy_id={} MM hedge order action recorded client_order_id={} count_10s={} count_1m={}",
-                            self.strategy_id, plan.client_order_id, stats.count_10s, stats.count_1m
-                        );
-                        debug!(
-                            "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} level_index={} side={:?} price={} qty={} from_key='{}'",
-                            self.strategy_id,
-                            exchange,
-                            plan.client_order_id,
-                            plan.level_index,
-                            plan.side,
-                            qv_decimal_or_fallback(plan.price),
-                            qv_decimal_or_fallback(aligned_qty),
-                            String::from_utf8_lossy(&plan.from_key)
-                        );
-                        self.log_hedge_order_state("open_sent", plan.client_order_id);
-                        self.schedule_order_query_watchdog(
-                            plan.client_order_id,
-                            PendingOrderQueryReason::OrderWatchdog,
-                        );
-                    }
-                }
+                        plan.order_type,
+                        symbol,
+                        plan.side,
+                        aligned_qty,
+                        plan.price,
+                        false,
+                        1.0,
+                        false,
+                        |order| {
+                            order.set_signal_meta(signal_ts, SignalType::MMHedge as u8);
+                            if mkt_ts > 0 {
+                                order.set_mkt_time(mkt_ts);
+                            }
+                            order.get_order_request_prepared()
+                        },
+                    );
+                result
+            };
+            let request = match prepared_request {
+                Ok(request) => request,
                 Err(e) => {
                     warn!(
-                        "MarketMakerHedgeStrategy: strategy_id={} get hedge order bytes failed: client_order_id={} err={}",
+                        "MarketMakerHedgeStrategy: strategy_id={} build prepared hedge order failed: client_order_id={} err={}",
                         self.strategy_id, plan.client_order_id, e
                     );
                     self.release_hedge_order(plan.client_order_id, "send_build_failed");
+                    continue;
                 }
+            };
+            self.hedge_order_ids.insert(plan.client_order_id);
+            self.log_hedge_order_state("order_created_local", plan.client_order_id);
+
+            let exchange = venue.trade_engine_exchange();
+            if let Err(e) = TradeEngHub::publish_prepared_order_request_for_venue(
+                plan.client_order_id,
+                venue,
+                &request,
+            ) {
+                warn!(
+                    "MarketMakerHedgeStrategy: strategy_id={} send hedge order failed: exchange={} client_order_id={} err={}",
+                    self.strategy_id, exchange, plan.client_order_id, e
+                );
+                self.release_hedge_order(plan.client_order_id, "send_failed");
+                continue;
             }
+
+            let stats = OrderRateLimiter::record(
+                OrderRateBucket::MmHedge,
+                plan.client_order_id,
+                get_timestamp_us(),
+            );
+            debug!(
+                "MarketMakerHedgeStrategy: strategy_id={} MM hedge order action recorded client_order_id={} count_10s={} count_1m={}",
+                self.strategy_id, plan.client_order_id, stats.count_10s, stats.count_1m
+            );
+            debug!(
+                "MarketMakerHedgeStrategy: strategy_id={} hedge order sent: exchange={} client_order_id={} level_index={} side={:?} price={} qty={} from_key='{}'",
+                self.strategy_id,
+                exchange,
+                plan.client_order_id,
+                plan.level_index,
+                plan.side,
+                qv_decimal_or_fallback(plan.price),
+                qv_decimal_or_fallback(aligned_qty),
+                String::from_utf8_lossy(&plan.batch_meta.from_key)
+            );
+            self.log_hedge_order_state("open_sent", plan.client_order_id);
+            self.schedule_order_query_watchdog(
+                plan.client_order_id,
+                PendingOrderQueryReason::OrderWatchdog,
+            );
         }
     }
 
@@ -1228,14 +1235,14 @@ impl MarketMakerHedgeStrategy {
             signal_ts: self.signal_ts,
             from_key: format!(
                 "hedge|{}",
-                String::from_utf8_lossy(&self.order_from_key_bytes(client_order_id))
+                String::from_utf8_lossy(self.order_from_key(client_order_id))
             )
             .into_bytes(),
             price_offset: self.order_price_offset(client_order_id),
             signal_bbo: self
                 .hedge_order_meta
                 .get(&client_order_id)
-                .and_then(|meta| meta.signal_bbo),
+                .and_then(|meta| meta.batch_meta.signal_bbo),
         }
     }
 
@@ -1629,7 +1636,7 @@ impl MarketMakerHedgeStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::{HedgeOrderMeta, MarketMakerHedgeStrategy};
+    use super::{HedgeBatchMeta, HedgeOrderMeta, MarketMakerHedgeStrategy};
     use crate::strategy::hedge_order_reconcile::{
         HedgeOrderReconcileCommon, HedgeOrderReconcileState,
     };
@@ -1639,6 +1646,7 @@ mod tests {
     use quote_plan::hedge_split::HedgeSplitOrder;
     use runtime_common::exchange::Exchange;
     use signal_common::hedge_signal::MmHedgeCtx;
+    use std::rc::Rc;
 
     #[test]
     fn zero_net_exposure_does_not_send_hedge_query() {
@@ -1745,9 +1753,12 @@ mod tests {
         strategy.hedge_order_meta.insert(
             client_order_id,
             HedgeOrderMeta {
-                from_key: b"hedge".to_vec(),
+                batch_meta: Rc::new(HedgeBatchMeta {
+                    from_key: b"hedge".to_vec(),
+                    signal_bbo: None,
+                    mkt_ts: 0,
+                }),
                 price_offset: 1.5,
-                signal_bbo: None,
             },
         );
         strategy
@@ -1845,10 +1856,17 @@ mod tests {
             .hedge_plan
             .windows(2)
             .all(|orders| orders[0].client_order_id != orders[1].client_order_id));
+        let shared_meta = &strategy.hedge_plan[0].batch_meta;
+        assert!(strategy
+            .hedge_plan
+            .iter()
+            .all(|order| Rc::ptr_eq(&order.batch_meta, shared_meta)));
         assert!(strategy
             .hedge_order_meta
             .values()
-            .all(|meta| meta.price_offset == 0.0 && meta.from_key == b"mm_hedge"));
+            .all(|meta| meta.price_offset == 0.0
+                && meta.batch_meta.from_key == b"mm_hedge"
+                && Rc::ptr_eq(&meta.batch_meta, shared_meta)));
 
         std::mem::forget(strategy);
     }
@@ -1881,7 +1899,7 @@ mod tests {
         assert!(strategy
             .hedge_order_meta
             .values()
-            .all(|meta| meta.from_key == b"mm_hedge"));
+            .all(|meta| meta.batch_meta.from_key == b"mm_hedge"));
 
         std::mem::forget(strategy);
     }

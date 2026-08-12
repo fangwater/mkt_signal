@@ -45,7 +45,7 @@ use signal_common::hedge_signal::{ArbHedgeCtx, MmHedgeCtx};
 use signal_common::mm_signal::{
     MmCancelCandidateEntry, MmCancelCandidateQueryMsg, MmCancelTriggerCtx,
 };
-use signal_common::open_signal::{ArbOpenCtxView, MmOpenCtxView};
+use signal_common::open_signal::{ArbOpenCtxView, MmOpenBatchCtxView, MmOpenCtxView};
 use signal_common::trade_signal::{SignalType, TradeSignalView};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
@@ -272,7 +272,10 @@ fn stale_arb_open_receive_lag_us(
 }
 
 fn is_open_signal_type(signal_type: &SignalType) -> bool {
-    matches!(signal_type, SignalType::ArbOpen | SignalType::MMOpen)
+    matches!(
+        signal_type,
+        SignalType::ArbOpen | SignalType::MMOpen | SignalType::MMOpenBatch
+    )
 }
 
 fn should_drop_open_signal_for_slow_round(
@@ -346,6 +349,7 @@ pub fn take_signal_counts() -> HashMap<String, u64> {
             SignalType::MMCancelTrigger,
             SignalType::ArbCancelTrigger,
             SignalType::ArbHedge,
+            SignalType::MMOpenBatch,
         ] {
             let idx = signal_count_index(&signal_type);
             let count = counts[idx];
@@ -375,6 +379,7 @@ fn signal_count_index(signal_type: &SignalType) -> usize {
         SignalType::MMCancelTrigger => 8,
         SignalType::ArbCancelTrigger => 9,
         SignalType::ArbHedge => 10,
+        SignalType::MMOpenBatch => 11,
     }
 }
 
@@ -951,6 +956,7 @@ fn handle_trade_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
     match signal.signal_type {
         SignalType::ArbOpen => handle_arb_open_signal_view(signal, receive_us),
         SignalType::MMOpen => handle_mm_open_signal_view(signal, receive_us),
+        SignalType::MMOpenBatch => handle_mm_open_batch_signal_view(signal, receive_us),
         _ => handle_trade_signal(signal, receive_us),
     }
 }
@@ -1314,30 +1320,70 @@ fn handle_mm_open_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
         warn!("MMOpen: empty symbol");
         return;
     }
-    let Some(side) = open_ctx.get_side() else {
-        warn!("MMOpen: invalid side {}", open_ctx.side);
+    let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+    handle_mm_open_level(open_ctx, symbol, &strategy_mgr);
+}
+
+fn handle_mm_open_batch_signal_view(signal: TradeSignalView<'_>, _receive_us: i64) {
+    let monitor = MonitorChannel::instance();
+    if monitor.open_venue() != monitor.hedge_venue() {
+        debug!("MMOpenBatch ignored: pre_trade is not in MM mode");
         return;
-    };
-    if let Some(order_type) = open_ctx.get_order_type() {
-        if order_type.is_limit() {
-            if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
-                log_pending_limit_summary("MMOpen", None, &symbol, side, &e);
-                return;
-            }
+    }
+
+    let batch = match MmOpenBatchCtxView::from_bytes(signal.context) {
+        Ok(batch) => batch,
+        Err(err) => {
+            warn!("failed to decode MMOpenBatch context: {err}");
+            return;
         }
-    } else {
-        warn!("MMOpen: invalid order_type {}", open_ctx.order_type);
+    };
+    let symbol = normalize_fixed_symbol_for_internal_cow(&batch.opening_symbol);
+    if symbol.is_empty() {
+        warn!("MMOpenBatch: empty symbol");
+        return;
+    }
+    if batch.get_order_type().is_none() {
+        warn!("MMOpenBatch: invalid order_type {}", batch.order_type);
         return;
     }
 
     let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+
+    // Deliberately process every level through the existing single-order chain. Each iteration
+    // observes state changes from prior levels before checking risk and publishing its order.
+    for open_ctx in batch.levels() {
+        handle_mm_open_level(open_ctx, Cow::Borrowed(symbol.as_ref()), &strategy_mgr);
+    }
+}
+
+fn handle_mm_open_level(
+    open_ctx: MmOpenCtxView<'_>,
+    symbol: Cow<'_, str>,
+    strategy_mgr: &std::rc::Rc<RefCell<StrategyManager>>,
+) {
+    let Some(side) = open_ctx.get_side() else {
+        warn!("MMOpen: invalid side {}", open_ctx.side);
+        return;
+    };
+    let Some(order_type) = open_ctx.get_order_type() else {
+        warn!("MMOpen: invalid order_type {}", open_ctx.order_type);
+        return;
+    };
+    let pending_limit_prechecked = order_type.is_limit();
+    if pending_limit_prechecked {
+        if let Err(e) = MonitorChannel::instance().check_pending_limit_order(&symbol, side) {
+            log_pending_limit_summary("MMOpen", None, &symbol, side, &e);
+            return;
+        }
+    }
+
     let _ = strategy_mgr
         .borrow_mut()
         .ensure_mm_hedge_strategy_for_normalized_symbol(&symbol);
-
     let strategy_id = StrategyManager::generate_strategy_id();
     let mut strategy = MarketMakerOpenStrategy::new(strategy_id);
-    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol);
+    strategy.handle_mm_open_view_with_symbol(open_ctx, symbol, pending_limit_prechecked);
     if strategy.is_active() {
         debug!("MMOpen: strategy activated id={}", strategy_id);
         strategy_mgr.borrow_mut().insert(Box::new(strategy));
@@ -1357,7 +1403,7 @@ fn handle_trade_signal(signal: TradeSignalView<'_>, _receive_us: i64) {
     };
 
     match signal.signal_type {
-        SignalType::ArbOpen | SignalType::MMOpen => {
+        SignalType::ArbOpen | SignalType::MMOpen | SignalType::MMOpenBatch => {
             warn!(
                 "{} reached generic signal handler; open signals must use view fast path",
                 signal.signal_type.as_str()

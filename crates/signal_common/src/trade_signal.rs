@@ -13,6 +13,7 @@ pub enum SignalType {
     MMCancelTrigger = 8,  // 做市撤单触发信号
     ArbCancelTrigger = 9, // 套利撤单触发信号
     ArbHedge = 10,        // 套利对冲回包信号
+    MMOpenBatch = 11,     // 做市批量开仓信号
 }
 
 impl SignalType {
@@ -27,6 +28,7 @@ impl SignalType {
             SignalType::MMCancelTrigger => "MMCancelTrigger",
             SignalType::ArbCancelTrigger => "ArbCancelTrigger",
             SignalType::ArbHedge => "ArbHedge",
+            SignalType::MMOpenBatch => "MMOpenBatch",
         }
     }
 
@@ -42,6 +44,7 @@ impl SignalType {
             8 => Some(SignalType::MMCancelTrigger),
             9 => Some(SignalType::ArbCancelTrigger),
             10 => Some(SignalType::ArbHedge),
+            11 => Some(SignalType::MMOpenBatch),
             _ => None,
         }
     }

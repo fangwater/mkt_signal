@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bytes::BytesMut;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
@@ -13,7 +14,7 @@ use super::super::inline_volatility::{
 use super::super::model_output_hub::ModelOutputHub;
 use super::super::return_score_threshold::ReturnScoreCancelThresholds;
 use depth_pub_common::query_client::DepthQueryClient;
-use ipc_common::iceoryx_publisher::TradeSignalPublisher;
+use ipc_common::iceoryx_publisher::{TradeSignalPublisher, TRADE_SIGNAL_PAYLOAD};
 use order_common::TradingVenue;
 use order_common::{OrderType, Side};
 use quote_plan::open_quote_plan::MmOpenQuotePlan;
@@ -23,8 +24,8 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::{MmCancelCtx, MmCancelReason};
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::mm_signal::MmCancelTriggerCtx;
-use signal_common::open_signal::MmOpenCtx;
-use signal_common::trade_signal::SignalType;
+use signal_common::open_signal::{MmOpenBatchCtx, MmOpenBatchLevel, MmOpenCtx};
+use signal_common::trade_signal::{SignalType, TRADE_SIGNAL_HEADER_LEN};
 use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 pub(crate) const DEFAULT_PNLU_REDIS_HOST: &str = "127.0.0.1";
@@ -409,7 +410,6 @@ impl MmDecisionState {
             TARGET_FACTOR_MAX_AGE_MS,
             true,
         )?;
-
         Ok(Self {
             signal_pub,
             depth_query_client,
@@ -1228,7 +1228,7 @@ impl MmDecisionState {
         let mut zero_quantized_levels = 0usize;
         let mut tlen_filtered_levels = 0usize;
         let mut publish_failures = 0usize;
-        let mut emitted_details = Vec::new();
+        let mut emitted_details = log::log_enabled!(log::Level::Debug).then(Vec::<String>::new);
         let mut prepared = Vec::with_capacity(plan.levels.len());
         let mut buy = MmOpenSideBreakdown::default();
         let mut sell = MmOpenSideBreakdown::default();
@@ -1316,68 +1316,216 @@ impl MmDecisionState {
                 });
             }
         }
-        for item in &mut prepared {
-            item.ctx.set_from_key(from_key.as_bytes().to_vec());
-        }
-        let gated_prepared = prepared;
+        let mut gated_prepared = prepared;
 
-        for item in gated_prepared.iter() {
-            let context = item.ctx.to_bytes();
-            if let Err(err) = self.signal_pub.publish_trade_signal_parts(
-                SignalType::MMOpen,
-                now_us,
-                0.0,
-                context.as_ref(),
-            ) {
-                publish_failures += 1;
-                side_breakdown_mut(item.side, &mut buy, &mut sell).publish_failed += 1;
-                let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
-                log::warn!(
-                    "MmDecision: publish MMOpen failed symbol={} idx={} side_idx={} side={} price={:.8} qty={:.8} tick_index={} price_ticks={} qty_ticks={} offset={:.8} from_key='{}' err={:?}",
-                    plan.symbol,
-                    item.level_index,
-                    item.side_level_index,
-                    item.side.as_str(),
-                    item.aligned_price,
-                    item.aligned_qty,
-                    item.tick_index,
-                    item.price_tick_count,
-                    item.qty_tick_count,
-                    item.price_offset,
-                    from_key_str,
-                    err
-                );
-                continue;
-            }
-
-            let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
-            emitted_details.push(format!(
-                "{{idx:{},side_idx:{},side:\"{}\",price:{:.8},qty:{:.8},tick_index:{},price_ticks:{},qty_ticks:{},offset:{:.8},from_key:\"{}\"}}",
-                item.level_index,
-                item.side_level_index,
-                item.side.as_str(),
-                item.aligned_price,
-                item.aligned_qty,
-                item.tick_index,
-                item.price_tick_count,
-                item.qty_tick_count,
-                item.price_offset,
-                from_key_str
-            ));
-            sent += 1;
-            match item.side {
-                Side::Buy => {
-                    sent_buy += 1;
-                    buy.sent += 1;
+        let max_context_len = TRADE_SIGNAL_PAYLOAD - TRADE_SIGNAL_HEADER_LEN;
+        let batch_shared_fields_match = gated_prepared.first().is_none_or(|first| {
+            gated_prepared.iter().skip(1).all(|item| {
+                item.ctx.opening_leg.venue == first.ctx.opening_leg.venue
+                    && item.ctx.opening_leg.bid0.to_bits() == first.ctx.opening_leg.bid0.to_bits()
+                    && item.ctx.opening_leg.bid_qty0.to_bits()
+                        == first.ctx.opening_leg.bid_qty0.to_bits()
+                    && item.ctx.opening_leg.ask0.to_bits() == first.ctx.opening_leg.ask0.to_bits()
+                    && item.ctx.opening_leg.ask_qty0.to_bits()
+                        == first.ctx.opening_leg.ask_qty0.to_bits()
+                    && item.ctx.opening_leg.ts == first.ctx.opening_leg.ts
+                    && item.ctx.opening_symbol == first.ctx.opening_symbol
+                    && item.ctx.order_type == first.ctx.order_type
+                    && item.ctx.price_qv.get_tick_parts() == first.ctx.price_qv.get_tick_parts()
+                    && item.ctx.amount_qv.get_tick_parts() == first.ctx.amount_qv.get_tick_parts()
+                    && item.ctx.exp_time == first.ctx.exp_time
+                    && item.ctx.create_ts == first.ctx.create_ts
+            })
+        });
+        let batch_capacity = if batch_shared_fields_match {
+            gated_prepared.first().map_or(0, |first| {
+                let (price_tick_i64, price_tick_exp) = first.ctx.price_qv.get_tick_parts();
+                let (amount_tick_i64, amount_tick_exp) = first.ctx.amount_qv.get_tick_parts();
+                MmOpenBatchCtx {
+                    opening_leg: first.ctx.opening_leg,
+                    opening_symbol: first.ctx.opening_symbol,
+                    order_type: first.ctx.order_type,
+                    price_tick_i64,
+                    price_tick_exp,
+                    amount_tick_i64,
+                    amount_tick_exp,
+                    exp_time: first.ctx.exp_time,
+                    create_ts: first.ctx.create_ts,
+                    from_key: from_key.as_bytes(),
+                    levels: &[],
                 }
-                Side::Sell => {
-                    sent_sell += 1;
-                    sell.sent += 1;
+                .max_levels_for_encoded_len(max_context_len)
+            })
+        } else {
+            0
+        };
+        let publish_as_batch =
+            !gated_prepared.is_empty() && batch_shared_fields_match && batch_capacity > 0;
+        if !gated_prepared.is_empty() && !publish_as_batch {
+            let reason = if batch_shared_fields_match {
+                "shared_context_too_large"
+            } else {
+                "shared_fields_mismatch"
+            };
+            warn!(
+                "MmDecision: MMOpenBatch unavailable reason={} context_limit={} symbol={} from_key_len={}; falling back to legacy MMOpen",
+                reason,
+                max_context_len,
+                plan.symbol,
+                from_key.len()
+            );
+            for item in gated_prepared.iter_mut() {
+                item.ctx.set_from_key(from_key.as_bytes().to_vec());
+            }
+        }
+
+        if publish_as_batch {
+            let mut context = BytesMut::with_capacity(max_context_len);
+            let mut levels =
+                Vec::<MmOpenBatchLevel>::with_capacity(batch_capacity.min(gated_prepared.len()));
+            for chunk in gated_prepared.chunks(batch_capacity) {
+                levels.clear();
+                levels.extend(chunk.iter().map(|item| MmOpenBatchLevel {
+                    side: item.ctx.side,
+                    price_count: item.ctx.price_count(),
+                    amount_count: item.ctx.amount_count(),
+                    price_offset: item.ctx.price_offset,
+                }));
+                let first = &chunk[0];
+                let (price_tick_i64, price_tick_exp) = first.ctx.price_qv.get_tick_parts();
+                let (amount_tick_i64, amount_tick_exp) = first.ctx.amount_qv.get_tick_parts();
+                let batch = MmOpenBatchCtx {
+                    opening_leg: first.ctx.opening_leg,
+                    opening_symbol: first.ctx.opening_symbol,
+                    order_type: first.ctx.order_type,
+                    price_tick_i64,
+                    price_tick_exp,
+                    amount_tick_i64,
+                    amount_tick_exp,
+                    exp_time: first.ctx.exp_time,
+                    create_ts: first.ctx.create_ts,
+                    from_key: from_key.as_bytes(),
+                    levels: &levels,
+                };
+                context.clear();
+                let result = batch.write_to(&mut context).and_then(|()| {
+                    self.signal_pub
+                        .publish_trade_signal_parts(
+                            SignalType::MMOpenBatch,
+                            now_us,
+                            0.0,
+                            context.as_ref(),
+                        )
+                        .map_err(|err| err.to_string())
+                });
+                if let Err(err) = result {
+                    publish_failures += chunk.len();
+                    for item in chunk {
+                        side_breakdown_mut(item.side, &mut buy, &mut sell).publish_failed += 1;
+                    }
+                    warn!(
+                        "MmDecision: publish MMOpenBatch failed symbol={} levels={} first_idx={} last_idx={} payload_bytes={} from_key_len={} err={}",
+                        plan.symbol,
+                        chunk.len(),
+                        first.level_index,
+                        chunk.last().map_or(first.level_index, |item| item.level_index),
+                        context.len(),
+                        from_key.len(),
+                        err
+                    );
+                    continue;
+                }
+
+                for item in chunk {
+                    if let Some(details) = emitted_details.as_mut() {
+                        details.push(format!(
+                            "{{idx:{},side_idx:{},side:\"{}\",price:{:.8},qty:{:.8},tick_index:{},price_ticks:{},qty_ticks:{},offset:{:.8},from_key:\"{}\"}}",
+                            item.level_index,
+                            item.side_level_index,
+                            item.side.as_str(),
+                            item.aligned_price,
+                            item.aligned_qty,
+                            item.tick_index,
+                            item.price_tick_count,
+                            item.qty_tick_count,
+                            item.price_offset,
+                            from_key
+                        ));
+                    }
+                    sent += 1;
+                    match item.side {
+                        Side::Buy => {
+                            sent_buy += 1;
+                            buy.sent += 1;
+                        }
+                        Side::Sell => {
+                            sent_sell += 1;
+                            sell.sent += 1;
+                        }
+                    }
+                }
+            }
+        } else {
+            for item in gated_prepared.iter() {
+                let context = item.ctx.to_bytes();
+                if let Err(err) = self.signal_pub.publish_trade_signal_parts(
+                    SignalType::MMOpen,
+                    now_us,
+                    0.0,
+                    context.as_ref(),
+                ) {
+                    publish_failures += 1;
+                    side_breakdown_mut(item.side, &mut buy, &mut sell).publish_failed += 1;
+                    let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
+                    log::warn!(
+                        "MmDecision: publish MMOpen failed symbol={} idx={} side_idx={} side={} price={:.8} qty={:.8} tick_index={} price_ticks={} qty_ticks={} offset={:.8} from_key='{}' err={:?}",
+                        plan.symbol,
+                        item.level_index,
+                        item.side_level_index,
+                        item.side.as_str(),
+                        item.aligned_price,
+                        item.aligned_qty,
+                        item.tick_index,
+                        item.price_tick_count,
+                        item.qty_tick_count,
+                        item.price_offset,
+                        from_key_str,
+                        err
+                    );
+                    continue;
+                }
+
+                if let Some(details) = emitted_details.as_mut() {
+                    let from_key_str = String::from_utf8_lossy(&item.ctx.from_key);
+                    details.push(format!(
+                        "{{idx:{},side_idx:{},side:\"{}\",price:{:.8},qty:{:.8},tick_index:{},price_ticks:{},qty_ticks:{},offset:{:.8},from_key:\"{}\"}}",
+                        item.level_index,
+                        item.side_level_index,
+                        item.side.as_str(),
+                        item.aligned_price,
+                        item.aligned_qty,
+                        item.tick_index,
+                        item.price_tick_count,
+                        item.qty_tick_count,
+                        item.price_offset,
+                        from_key_str
+                    ));
+                }
+                sent += 1;
+                match item.side {
+                    Side::Buy => {
+                        sent_buy += 1;
+                        buy.sent += 1;
+                    }
+                    Side::Sell => {
+                        sent_sell += 1;
+                        sell.sent += 1;
+                    }
                 }
             }
         }
 
-        if !emitted_details.is_empty() {
+        if let Some(emitted_details) = emitted_details.filter(|details| !details.is_empty()) {
             log::debug!(
                 "MmDecision: MMOpenPlan symbol={} bid={:.8} ask={:.8} mid={:.8} volatility={:.8} price_tick={:.8} qty_tick={:.8} sent={} buy={} sell={} details=[{}]",
                 plan.symbol,
