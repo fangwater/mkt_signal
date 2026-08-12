@@ -18,12 +18,13 @@ Options:
   --check-only        Validate the target and show process state without starting
   -h, --help          Show this help
 
-Live start order, with a process and log health check after every step:
-  1. viz_server
-  2. persist_manager
-  3. trade_engine
-  4. pre_trade
-  5. account_monitor
+Live start order, with a health check after every step:
+  1. config_server
+  2. viz_server
+  3. persist_manager
+  4. trade_engine
+  5. pre_trade
+  6. account_monitor
 
 trade_signal is never started. The script refuses to begin when trade_signal is
 already running and verifies that it remains stopped at the end.
@@ -127,7 +128,9 @@ fi
 required_files=(
   "$target/env.sh"
   "$target/config/viz.toml"
+  "$target/config/fr_config_server.env"
   "$scripts_dir/process_match_lib.sh"
+  "$scripts_dir/fr_config_server.py"
 )
 required_executables=(
   "$target/viz_server"
@@ -137,6 +140,8 @@ required_executables=(
   "$target/account_monitor"
   "$scripts_dir/start_fr_viz_server.sh"
   "$scripts_dir/stop_fr_viz_server.sh"
+  "$scripts_dir/start_fr_config_server.sh"
+  "$scripts_dir/stop_fr_config_server.sh"
   "$scripts_dir/start_fr_persist_manager.sh"
   "$scripts_dir/stop_fr_persist_manager.sh"
   "$scripts_dir/start_trade_engine.sh"
@@ -157,7 +162,7 @@ for required_executable in "${required_executables[@]}"; do
     exit 1
   fi
 done
-for required_command in bash pmdaemon ps readlink sed grep tail sleep; do
+for required_command in bash curl pmdaemon npx ps readlink sed grep ss tail sleep; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "[ERROR] required remote command not found: $required_command" >&2
     exit 1
@@ -183,6 +188,17 @@ if [[ -z "$env_tag" ]]; then
   exit 1
 fi
 exchange_tag="$(short_exchange "$exchange")"
+config_server_script="$scripts_dir/fr_config_server.py"
+config_server_port="$(
+  unset PORT
+  # shellcheck disable=SC1090
+  source "$target/config/fr_config_server.env"
+  printf '%s\n' "${PORT:-}"
+)"
+if [[ ! "$config_server_port" =~ ^[1-9][0-9]{0,4}$ ]] || ((10#$config_server_port > 65535)); then
+  echo "[ERROR] invalid config server PORT in $target/config/fr_config_server.env: $config_server_port" >&2
+  exit 1
+fi
 
 labels=(
   viz_server
@@ -232,9 +248,52 @@ find_exact_pids() {
   done < <(ps -eo pid=,comm=)
 }
 
+find_config_server_pids() {
+  local pid=""
+  local args=""
+
+  while read -r pid args; do
+    [[ -n "$pid" ]] || continue
+    if [[ "$args" == *"$config_server_script"* ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done < <(ps -eo pid=,args=)
+}
+
+config_server_port_is_listening() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\\])${config_server_port}\$"
+}
+
+config_server_is_healthy() {
+  local http_code=""
+
+  config_server_port_is_listening || return 1
+  http_code="$(
+    curl --silent --show-error \
+      --output /dev/null \
+      --write-out '%{http_code}' \
+      --max-time 2 \
+      "http://127.0.0.1:${config_server_port}/" 2>/dev/null || true
+  )"
+  [[ "$http_code" == "200" ]]
+}
+
 print_process_state() {
   local index=""
   local pids=()
+
+  mapfile -t pids < <(find_config_server_pids)
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    if config_server_port_is_listening; then
+      echo "[STATE] config_server stopped but port=${config_server_port} is occupied"
+    else
+      echo "[STATE] config_server stopped (port=${config_server_port})"
+    fi
+  elif config_server_is_healthy; then
+    echo "[STATE] config_server running pids=${pids[*]} port=${config_server_port} http=200"
+  else
+    echo "[STATE] config_server unhealthy pids=${pids[*]} port=${config_server_port}"
+  fi
 
   for index in "${!labels[@]}"; do
     mapfile -t pids < <(find_exact_pids "${binaries[$index]}")
@@ -250,6 +309,90 @@ print_process_state() {
   else
     echo "[STATE] trade_signal running pids=${pids[*]} (not allowed)"
   fi
+}
+
+stop_existing_config_server() {
+  local max_attempts=$((startup_wait_seconds * 5))
+  local attempt=""
+  local pids=()
+
+  mapfile -t pids < <(find_config_server_pids)
+  if [[ "${#pids[@]}" -gt 0 ]]; then
+    echo "[INFO] stopping existing config_server instance(s): ${pids[*]}"
+  else
+    echo "[INFO] config_server has no existing process"
+  fi
+
+  # Clear both a live process and any stale PM2 entry before a fresh start.
+  bash "$scripts_dir/stop_fr_config_server.sh"
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+    mapfile -t pids < <(find_config_server_pids)
+    if [[ "${#pids[@]}" -eq 0 ]]; then
+      echo "[INFO] existing config_server instance(s) stopped"
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  echo "[ERROR] config_server did not stop after ${startup_wait_seconds}s: ${pids[*]}" >&2
+  return 1
+}
+
+wait_for_config_server() {
+  local max_attempts=$((startup_wait_seconds * 5))
+  local attempt=""
+  local pids=()
+
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+    mapfile -t pids < <(find_config_server_pids)
+    if [[ "${#pids[@]}" -eq 1 ]] && config_server_is_healthy; then
+      printf '%s\n' "${pids[0]}"
+      return 0
+    fi
+    if [[ "${#pids[@]}" -gt 1 ]]; then
+      echo "[ERROR] config_server has multiple processes: ${pids[*]}" >&2
+      return 1
+    fi
+    sleep 0.2
+  done
+
+  echo "[ERROR] config_server did not become healthy on port ${config_server_port} within ${startup_wait_seconds}s" >&2
+  return 1
+}
+
+require_same_config_server() {
+  local expected_pid="$1"
+  local pids=()
+
+  mapfile -t pids < <(find_config_server_pids)
+  if [[ "${#pids[@]}" -ne 1 ]]; then
+    echo "[ERROR] config_server is not running as exactly one process after startup: ${pids[*]:-none}" >&2
+    return 1
+  fi
+  if [[ "${pids[0]}" != "$expected_pid" ]]; then
+    echo "[ERROR] config_server restarted during health checks: initial_pid=$expected_pid current_pid=${pids[0]}" >&2
+    return 1
+  fi
+  if ! config_server_is_healthy; then
+    echo "[ERROR] config_server process=$expected_pid is live but port=${config_server_port} is unhealthy" >&2
+    return 1
+  fi
+}
+
+start_and_verify_config_server() {
+  local pid=""
+
+  echo
+  echo "[STEP] start and verify config_server"
+  stop_existing_config_server
+  bash "$scripts_dir/start_fr_config_server.sh"
+  pid="$(wait_for_config_server)"
+  echo "[INFO] config_server is live pid=$pid port=${config_server_port} http=200"
+
+  sleep "$startup_settle_seconds"
+  require_same_config_server "$pid"
+  echo "[INFO] config_server survived ${startup_settle_seconds}s stability check"
+  echo "[INFO] config_server health check passed pid=$pid port=${config_server_port}"
 }
 
 require_trade_signal_stopped() {
@@ -449,6 +592,7 @@ fi
 
 cd "$target"
 echo "[WARN] LIVE start begins: env=$env_basename exchange=$exchange trade_signal=stopped"
+start_and_verify_config_server
 for index in "${!labels[@]}"; do
   start_and_verify "$index"
 done
@@ -457,5 +601,5 @@ require_trade_signal_stopped
 echo
 echo "[INFO] final process state"
 print_process_state
-echo "[INFO] start complete: env=$env_basename trade_signal_started=false"
+echo "[INFO] start complete: env=$env_basename config_server_started=true trade_signal_started=false"
 REMOTE_START
