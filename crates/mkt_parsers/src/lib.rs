@@ -6,4 +6,5 @@ pub mod gate;
 pub mod msg;
 pub mod okex;
 mod raw_json;
+pub use raw_json::{raw_json_levels_iter, RawJsonLevel, RawJsonLevelIter};
 pub mod symbol_match;

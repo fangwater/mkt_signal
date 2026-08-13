@@ -17,7 +17,8 @@ use rolling_common::latency_snapshot::{
 use runtime_common::time_util::get_timestamp_us;
 
 use crate::spread_pbs::adapter::{
-    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, RawIncremental, RawIncrementalView,
+    TradeFrame, VenueAdapter,
 };
 use crate::spread_pbs::binance::{
     binance_futures_mm_ws_enabled, binance_futures_standard_ws_url,
@@ -2283,85 +2284,19 @@ fn make_replacement_handler(
     state: Rc<RefCell<SharedState>>,
 ) -> FrameHandler {
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
-        if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
-            let mut symbol_slot = |symbol: &str| adapter.symbol_slot_index(symbol);
-            if let Some(encoded) = adapter.parse_derivatives_raw(raw, &mut symbol_slot) {
-                let mut s = state.borrow_mut();
-                for bytes in encoded {
-                    process_derivatives_bytes(&mut s, derivatives_publisher, &bytes);
-                }
-                return;
-            }
-            if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
-                return;
-            }
+        if process_raw_replacement_frame(
+            adapter.as_ref(),
+            raw,
+            trade_publisher.as_ref(),
+            incremental_publisher.as_ref(),
+            derivatives_publisher.as_ref(),
+            incremental_max_levels,
+            &state,
+        ) {
+            return;
         }
-
-        if derivatives_publisher.is_none() {
-            if let Some(incremental_publisher) = incremental_publisher.as_ref() {
-                if let Some(book) = adapter.parse_incremental_raw(raw) {
-                    match book {
-                        mkt_parsers::binance::RawBookParse::Parsed(book) => {
-                            let slot_index = adapter.symbol_slot_index(book.symbol);
-                            let mut s = state.borrow_mut();
-                            process_incremental_fields(
-                                &mut s,
-                                incremental_publisher,
-                                slot_index,
-                                book.symbol,
-                                book.timestamp_us,
-                                book.seq_id,
-                                book.prev_seq_id,
-                                book.first_update_id,
-                                book.final_update_id,
-                                book.gap_check,
-                                book.is_snapshot,
-                                book.bids.as_slice(),
-                                book.asks.as_slice(),
-                                incremental_max_levels,
-                            );
-                        }
-                        mkt_parsers::binance::RawBookParse::View(book) => {
-                            let slot_index = adapter.symbol_slot_index(book.symbol);
-                            let mut s = state.borrow_mut();
-                            process_incremental_view(
-                                &mut s,
-                                incremental_publisher,
-                                slot_index,
-                                book,
-                                incremental_max_levels,
-                            );
-                        }
-                    }
-                    return;
-                }
-                if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
-                    return;
-                }
-            } else if let (Some(trade_publisher), Some(trade)) = (
-                trade_publisher.as_ref(),
-                adapter.parse_trade_raw_borrowed(raw),
-            ) {
-                let slot_index = adapter.symbol_slot_index(trade.symbol);
-                let mut s = state.borrow_mut();
-                process_trade_fields(
-                    &mut s,
-                    trade_publisher,
-                    slot_index,
-                    trade.symbol,
-                    trade.seq_id,
-                    trade.trade_id,
-                    trade.timestamp_us,
-                    trade.side,
-                    trade.price,
-                    trade.amount,
-                );
-                return;
-            } else if trade_publisher.is_some()
-                && should_drop_json_after_raw_miss(adapter.as_ref(), raw)
-            {
-                return;
-            }
+        if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
+            return;
         }
 
         let mut emit_noop = |_frame: BboFrame| Ok(());
@@ -2402,6 +2337,90 @@ fn make_replacement_handler(
     })
 }
 
+fn process_raw_replacement_frame(
+    adapter: &dyn VenueAdapter,
+    raw: &[u8],
+    trade_publisher: Option<&Rc<SpreadTradePublisher>>,
+    incremental_publisher: Option<&Rc<SpreadIncrementalPublisher>>,
+    derivatives_publisher: Option<&Rc<SpreadDerivativesPublisher>>,
+    incremental_max_levels: Option<usize>,
+    state: &Rc<RefCell<SharedState>>,
+) -> bool {
+    if let Some(publisher) = derivatives_publisher {
+        let mut symbol_slot = |symbol: &str| adapter.symbol_slot_index(symbol);
+        if let Some(encoded) = adapter.parse_derivatives_raw(raw, &mut symbol_slot) {
+            let mut s = state.borrow_mut();
+            for bytes in encoded {
+                process_derivatives_bytes(&mut s, publisher, &bytes);
+            }
+            return true;
+        }
+    }
+
+    if let Some(publisher) = incremental_publisher {
+        if let Some(book) = adapter.parse_incremental_raw(raw) {
+            match book {
+                RawIncremental::Parsed(book) => {
+                    let slot_index = adapter.symbol_slot_index(book.symbol);
+                    let mut s = state.borrow_mut();
+                    process_incremental_fields(
+                        &mut s,
+                        publisher,
+                        slot_index,
+                        book.symbol,
+                        book.timestamp_us,
+                        book.seq_id,
+                        book.prev_seq_id,
+                        book.first_update_id,
+                        book.final_update_id,
+                        book.gap_check,
+                        book.is_snapshot,
+                        book.bids.as_slice(),
+                        book.asks.as_slice(),
+                        incremental_max_levels,
+                    );
+                }
+                RawIncremental::View(book) => {
+                    let slot_index = adapter.symbol_slot_index(book.symbol);
+                    let mut s = state.borrow_mut();
+                    process_incremental_view(
+                        &mut s,
+                        publisher,
+                        slot_index,
+                        book,
+                        incremental_max_levels,
+                    );
+                }
+            }
+            return true;
+        }
+    }
+
+    if let Some(publisher) = trade_publisher {
+        let mut emit = |trade: crate::spread_pbs::adapter::RawTradeFrame<'_>| {
+            let slot_index = adapter.symbol_slot_index(trade.symbol);
+            let mut s = state.borrow_mut();
+            process_trade_fields(
+                &mut s,
+                publisher,
+                slot_index,
+                trade.symbol,
+                trade.seq_id,
+                trade.trade_id,
+                trade.timestamp_us,
+                trade.side,
+                trade.price,
+                trade.amount,
+            );
+        };
+        if adapter.parse_trades_raw_borrowed(raw, &mut emit) {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn make_handler(
     label: String,
     adapter: Rc<dyn VenueAdapter>,
@@ -2427,13 +2446,24 @@ fn make_handler(
                 bbo.symbol,
                 bbo.timestamp_us,
                 bbo.seq_id,
-                false,
+                bbo.reset_seq,
                 bbo.bid_price,
                 bbo.bid_amount,
                 bbo.ask_price,
                 bbo.ask_amount,
                 source,
             );
+            return;
+        }
+        if process_raw_replacement_frame(
+            adapter.as_ref(),
+            raw,
+            trade_publisher.as_ref(),
+            incremental_publisher.as_ref(),
+            derivatives_publisher.as_ref(),
+            incremental_max_levels,
+            &state,
+        ) {
             return;
         }
         if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
@@ -2708,7 +2738,7 @@ fn process_incremental_view(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
     slot_index: Option<usize>,
-    book: mkt_parsers::binance::RawBookView<'_>,
+    book: RawIncrementalView<'_>,
     max_levels: Option<usize>,
 ) {
     let slot = slot_index
@@ -2731,10 +2761,10 @@ fn process_incremental_view(
     }
 
     let total_levels = book.bids_count + book.asks_count;
-    let Some(mut bids_iter) = mkt_parsers::binance::raw_levels_iter(book.bids_raw) else {
+    let Some(mut bids_iter) = mkt_parsers::raw_json_levels_iter(book.bids_raw) else {
         return;
     };
-    let Some(mut asks_iter) = mkt_parsers::binance::raw_levels_iter(book.asks_raw) else {
+    let Some(mut asks_iter) = mkt_parsers::raw_json_levels_iter(book.asks_raw) else {
         return;
     };
     match max_levels {
@@ -2830,11 +2860,11 @@ fn publish_incremental_chunk<B: PayloadLevel, A: PayloadLevel>(
 fn publish_incremental_view_chunk(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
-    book: &mkt_parsers::binance::RawBookView<'_>,
+    book: &RawIncrementalView<'_>,
     _slot_index: Option<usize>,
-    bids: &mut mkt_parsers::binance::RawLevelIter<'_>,
+    bids: &mut mkt_parsers::RawJsonLevelIter<'_>,
     bids_count: usize,
-    asks: &mut mkt_parsers::binance::RawLevelIter<'_>,
+    asks: &mut mkt_parsers::RawJsonLevelIter<'_>,
     asks_count: usize,
     chunk_idx: usize,
     total_chunks: usize,
@@ -3136,6 +3166,18 @@ fn should_drop_bbo_fields(slot: &SymbolSlot, ts_us: i64, seq_id: i64, reset_seq:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spread_pbs::bybit::BybitAdapter;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_test_service_root(label: &str) -> String {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "{}_{}_{}",
+            label,
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+    }
 
     fn test_state(now_us: i64) -> SharedState {
         SharedState {
@@ -3452,6 +3494,65 @@ mod tests {
             &raw_only,
             &[64, 0, 1, 0, 1, 0, 3, 0]
         ));
+    }
+
+    #[test]
+    fn bybit_shared_raw_handler_keeps_trade_and_incremental_frames() {
+        let symbols = vec!["BTCUSDT".to_string()];
+        let adapter = BybitAdapter::new(TradingVenue::BybitFutures);
+        adapter.seed_symbols(&symbols);
+
+        let root = unique_test_service_root("bybit_raw_mix");
+        let trade_publisher = Rc::new(
+            SpreadTradePublisher::new_open_or_create_with_root("bybit-test", &root)
+                .expect("trade publisher"),
+        );
+        let incremental_publisher = Rc::new(
+            SpreadIncrementalPublisher::new_open_or_create_with_root("bybit-test", &root)
+                .expect("incremental publisher"),
+        );
+        trade_publisher.seed_symbols(&symbols).unwrap();
+        incremental_publisher.seed_symbols(&symbols).unwrap();
+
+        let mut initial_state = test_state(1_000_000);
+        initial_state.symbol_state.ensure_symbols(&symbols);
+        let state = Rc::new(RefCell::new(initial_state));
+
+        let trades = br#"{
+            "topic":"publicTrade.BTCUSDT",
+            "data":[
+                {"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.5","i":"9001","seq":77},
+                {"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"0.2","p":"100.6","i":"9002","seq":77}
+            ]
+        }"#;
+        assert!(process_raw_replacement_frame(
+            &adapter,
+            trades,
+            Some(&trade_publisher),
+            Some(&incremental_publisher),
+            None,
+            None,
+            &state,
+        ));
+        assert_eq!(state.borrow().trades_published, 2);
+        assert_eq!(state.borrow().incremental_published, 0);
+
+        let depth = br#"{
+            "topic":"orderbook.1000.BTCUSDT","type":"delta",
+            "ts":1700000000999,"cts":1700000000123,
+            "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","3"]],"u":12345}
+        }"#;
+        assert!(process_raw_replacement_frame(
+            &adapter,
+            depth,
+            Some(&trade_publisher),
+            Some(&incremental_publisher),
+            None,
+            None,
+            &state,
+        ));
+        assert_eq!(state.borrow().trades_published, 2);
+        assert_eq!(state.borrow().incremental_published, 1);
     }
 
     #[test]

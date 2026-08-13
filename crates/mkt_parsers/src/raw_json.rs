@@ -143,9 +143,9 @@ pub(crate) fn parse_raw_number(raw: &[u8], pos: &mut usize) -> Option<f64> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct RawJsonLevel {
-    pub(crate) price: f64,
-    pub(crate) amount: f64,
+pub struct RawJsonLevel {
+    pub price: f64,
+    pub amount: f64,
 }
 
 pub(crate) fn raw_json_top_level(raw: &[u8]) -> Option<RawJsonLevel> {
@@ -188,11 +188,11 @@ pub(crate) fn raw_json_levels_count(raw: &[u8]) -> Option<usize> {
     }
 }
 
-pub(crate) fn raw_json_levels_iter(raw: &[u8]) -> Option<RawJsonLevelIter<'_>> {
+pub fn raw_json_levels_iter(raw: &[u8]) -> Option<RawJsonLevelIter<'_>> {
     RawJsonLevelIter::new(raw)
 }
 
-pub(crate) struct RawJsonLevelIter<'a> {
+pub struct RawJsonLevelIter<'a> {
     raw: &'a [u8],
     pos: usize,
     done: bool,

@@ -18,10 +18,13 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use crate::spread_pbs::adapter::{
-    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    BboFrame, IncrementalFrame, KeepaliveSpec, RawBboFrame, RawIncremental, RawIncrementalView,
+    RawTradeFrame, TradeFrame, VenueAdapter,
 };
 use mkt_parsers::msg::mkt_msg::{
-    FundingRateMsg, IndexPriceMsg, Level, LiquidationMsg, MarkPriceMsg,
+    funding_rate_msg_bytes_borrowed, index_price_msg_bytes_borrowed,
+    liquidation_msg_bytes_borrowed, mark_price_msg_bytes_borrowed, FundingRateMsg, IndexPriceMsg,
+    Level, LiquidationMsg, MarkPriceMsg,
 };
 use order_common::TradingVenue;
 
@@ -44,6 +47,7 @@ struct BboCacheEntry {
 pub struct BybitAdapter {
     venue: TradingVenue,
     cache: RefCell<BybitBboCache>,
+    symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,
 }
 
 impl BybitAdapter {
@@ -51,6 +55,7 @@ impl BybitAdapter {
         Self {
             venue,
             cache: RefCell::new(BybitBboCache::with_capacity(2048)),
+            symbol_slot_by_symbol: RefCell::new(fast_hash_map_with_capacity(2048)),
         }
     }
 }
@@ -134,6 +139,98 @@ impl VenueAdapter for BybitAdapter {
 
     fn seed_symbols(&self, symbols: &[String]) {
         self.cache.borrow_mut().seed_symbols(symbols);
+        let mut slots = self.symbol_slot_by_symbol.borrow_mut();
+        for symbol in symbols {
+            let next_idx = slots.len();
+            slots.entry(symbol.to_ascii_uppercase()).or_insert(next_idx);
+        }
+    }
+
+    fn symbol_slot_index(&self, symbol: &str) -> Option<usize> {
+        self.symbol_slot_by_symbol.borrow().get(symbol).copied()
+    }
+
+    fn parse_bbo_raw(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<bool> {
+        let Some(bbo) = self.parse_bbo_raw_borrowed(raw) else {
+            return Ok(false);
+        };
+        emit(BboFrame {
+            symbol: bbo.symbol.to_string(),
+            ts_us: bbo.timestamp_us,
+            seq_id: bbo.seq_id,
+            reset_seq: bbo.reset_seq,
+            bid_price: bbo.bid_price,
+            bid_amount: bbo.bid_amount,
+            ask_price: bbo.ask_price,
+            ask_amount: bbo.ask_amount,
+        })?;
+        Ok(true)
+    }
+
+    fn parse_bbo_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<RawBboFrame<'a>> {
+        let update = bybit_codec::parse_bbo_update_raw_borrowed(raw)?;
+        if update.seq_id == 0 {
+            return None;
+        }
+        let merged = merge_bbo_update(
+            &self.cache,
+            update.symbol,
+            update.reset_seq,
+            update.bid,
+            update.ask,
+        )?;
+        Some(RawBboFrame {
+            symbol: update.symbol,
+            timestamp_us: update.timestamp_us,
+            seq_id: update.seq_id,
+            reset_seq: update.reset_seq,
+            bid_price: merged.bid_price,
+            bid_amount: merged.bid_amount,
+            ask_price: merged.ask_price,
+            ask_amount: merged.ask_amount,
+        })
+    }
+
+    fn parse_trades_raw_borrowed<'a>(
+        &self,
+        raw: &'a [u8],
+        emit: &mut dyn FnMut(RawTradeFrame<'a>),
+    ) -> bool {
+        bybit_codec::parse_trades_raw_borrowed(raw, |trade| {
+            emit(RawTradeFrame {
+                symbol: trade.symbol,
+                timestamp_us: trade.timestamp_us,
+                seq_id: trade.seq_id,
+                trade_id: trade.trade_id,
+                side: trade.side,
+                price: trade.price,
+                amount: trade.amount,
+            });
+            Some(())
+        })
+        .is_some()
+    }
+
+    fn parse_incremental_raw<'a>(&self, raw: &'a [u8]) -> Option<RawIncremental<'a>> {
+        let book = bybit_codec::parse_incremental_raw_view(raw)?;
+        Some(RawIncremental::View(RawIncrementalView {
+            symbol: book.symbol,
+            timestamp_us: book.timestamp_us,
+            seq_id: book.seq_id,
+            prev_seq_id: book.prev_seq_id,
+            first_update_id: book.first_update_id,
+            final_update_id: book.final_update_id,
+            gap_check: book.gap_check,
+            is_snapshot: book.is_snapshot,
+            bids_raw: book.bids_raw,
+            asks_raw: book.asks_raw,
+            bids_count: book.bids_count,
+            asks_count: book.asks_count,
+        }))
     }
 
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
@@ -154,6 +251,29 @@ impl VenueAdapter for BybitAdapter {
         emit: &mut dyn FnMut(BboFrame) -> Result<()>,
     ) -> Result<()> {
         parse_bbo_frame(value, &self.cache, emit)
+    }
+
+    fn skip_json_fallback_after_raw_miss(&self) -> bool {
+        true
+    }
+
+    fn parse_derivatives_raw(
+        &self,
+        raw: &[u8],
+        symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
+    ) -> Option<Vec<Bytes>> {
+        if self.venue != TradingVenue::BybitFutures {
+            return None;
+        }
+        let mut encoded = Vec::new();
+        let parsed = bybit_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
+            let symbol = raw_derivative_symbol(&derivative);
+            if symbol_slot(symbol).is_some() {
+                encoded.extend(raw_derivative_to_bytes(derivative));
+            }
+            Some(())
+        });
+        parsed.map(|_| encoded)
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -208,39 +328,15 @@ fn parse_bbo_frame(
         return Ok(());
     }
 
-    let mut cache = cache.borrow_mut();
-    let entry = cache.entry_mut(&update.symbol);
-
-    if update.reset_seq {
-        *entry = BboCacheEntry::default();
-    }
-
-    if let Some(bid) = update.bid {
-        entry.bid_price = bid.price;
-        entry.bid_amount = bid.amount;
-    }
-    if let Some(ask) = update.ask {
-        entry.ask_price = ask.price;
-        entry.ask_amount = ask.amount;
-    }
-
-    if update.reset_seq {
-        // snapshot 必须同时给齐两侧
-        if entry.bid_price > 0.0 && entry.ask_price > 0.0 {
-            entry.seeded = true;
-        }
-    }
-
-    if !entry.seeded {
+    let Some(entry) = merge_bbo_update(
+        cache,
+        &update.symbol,
+        update.reset_seq,
+        update.bid,
+        update.ask,
+    ) else {
         return Ok(());
-    }
-    if entry.bid_price <= 0.0
-        || entry.ask_price <= 0.0
-        || entry.bid_amount <= 0.0
-        || entry.ask_amount <= 0.0
-    {
-        return Ok(());
-    }
+    };
 
     emit(BboFrame {
         symbol: update.symbol,
@@ -253,6 +349,37 @@ fn parse_bbo_frame(
         ask_amount: entry.ask_amount,
     })?;
     Ok(())
+}
+
+fn merge_bbo_update(
+    cache: &RefCell<BybitBboCache>,
+    symbol: &str,
+    reset_seq: bool,
+    bid: Option<bybit_codec::Level>,
+    ask: Option<bybit_codec::Level>,
+) -> Option<BboCacheEntry> {
+    let mut cache = cache.borrow_mut();
+    let entry = cache.entry_mut(symbol);
+    if reset_seq {
+        *entry = BboCacheEntry::default();
+    }
+    if let Some(bid) = bid {
+        entry.bid_price = bid.price;
+        entry.bid_amount = bid.amount;
+    }
+    if let Some(ask) = ask {
+        entry.ask_price = ask.price;
+        entry.ask_amount = ask.amount;
+    }
+    if reset_seq && entry.bid_price > 0.0 && entry.ask_price > 0.0 {
+        entry.seeded = true;
+    }
+    (entry.seeded
+        && entry.bid_price > 0.0
+        && entry.ask_price > 0.0
+        && entry.bid_amount > 0.0
+        && entry.ask_amount > 0.0)
+        .then_some(*entry)
 }
 
 fn parse_trade_frame(value: &Value) -> Result<Vec<TradeFrame>> {
@@ -322,6 +449,56 @@ fn derivative_to_bytes(derivative: bybit_codec::Derivative) -> Bytes {
             price,
             timestamp_us,
         } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
+    }
+}
+
+fn raw_derivative_symbol<'a>(derivative: &'a bybit_codec::RawDerivative<'a>) -> &'a str {
+    match derivative {
+        bybit_codec::RawDerivative::Ticker { symbol, .. }
+        | bybit_codec::RawDerivative::Liquidation { symbol, .. } => symbol,
+    }
+}
+
+fn raw_derivative_to_bytes(derivative: bybit_codec::RawDerivative<'_>) -> Vec<Bytes> {
+    match derivative {
+        bybit_codec::RawDerivative::Ticker {
+            symbol,
+            mark_price,
+            index_price,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => {
+            let mut encoded = Vec::with_capacity(3);
+            if let Some(price) = mark_price.filter(|price| *price > 0.0) {
+                encoded.push(mark_price_msg_bytes_borrowed(symbol, price, timestamp_us));
+            }
+            if let Some(price) = index_price.filter(|price| *price > 0.0) {
+                encoded.push(index_price_msg_bytes_borrowed(symbol, price, timestamp_us));
+            }
+            if let Some(rate) = funding_rate {
+                encoded.push(funding_rate_msg_bytes_borrowed(
+                    symbol,
+                    rate,
+                    next_funding_time_us.unwrap_or(0),
+                    timestamp_us,
+                ));
+            }
+            encoded
+        }
+        bybit_codec::RawDerivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => vec![liquidation_msg_bytes_borrowed(
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        )],
     }
 }
 
@@ -397,6 +574,31 @@ mod tests {
     }
 
     #[test]
+    fn raw_bbo_cache_merges_delta_and_preserves_snapshot_reset() {
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        let snapshot = br#"{
+            "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1700000000000,
+            "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
+        }"#;
+        let bbo = a
+            .parse_bbo_raw_borrowed(snapshot)
+            .expect("raw snapshot BBO");
+        assert!(bbo.reset_seq);
+        assert_eq!(bbo.seq_id, 1);
+        assert_eq!((bbo.bid_price, bbo.ask_price), (100.0, 101.0));
+
+        let delta = br#"{
+            "topic":"orderbook.1.BTCUSDT","type":"delta","ts":1700000000001,
+            "data":{"s":"BTCUSDT","b":[],"a":[["101.5","3"]],"u":2}
+        }"#;
+        let bbo = a.parse_bbo_raw_borrowed(delta).expect("raw merged BBO");
+        assert!(!bbo.reset_seq);
+        assert_eq!(bbo.seq_id, 2);
+        assert_eq!((bbo.bid_price, bbo.bid_amount), (100.0, 1.0));
+        assert_eq!((bbo.ask_price, bbo.ask_amount), (101.5, 3.0));
+    }
+
+    #[test]
     fn missing_u_field_is_an_error() {
         let raw = r#"{
             "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1,
@@ -460,6 +662,24 @@ mod tests {
     }
 
     #[test]
+    fn raw_trade_hook_emits_entire_batch() {
+        let raw = br#"{
+            "topic":"publicTrade.BTCUSDT",
+            "data":[
+                {"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.5","i":"9001","seq":77},
+                {"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"0.2","p":"100.6","i":"9002","seq":77}
+            ]
+        }"#;
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        let mut trades = Vec::new();
+        assert!(a.parse_trades_raw_borrowed(raw, &mut |trade| trades.push(trade)));
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].trade_id, 9001);
+        assert_eq!(trades[1].trade_id, 9002);
+        assert_ne!(trades[0].seq_id, trades[1].seq_id);
+    }
+
+    #[test]
     fn decodes_incremental_orderbook_directly_with_microsecond_ts() {
         let raw = r#"{
             "topic":"orderbook.1000.BTCUSDT","type":"snapshot","ts":1700000000999,"cts":1700000000123,
@@ -493,6 +713,22 @@ mod tests {
         assert_eq!(asks.len(), 1);
         assert!((bids[0].price - 100.0).abs() < 1e-9);
         assert!((asks[0].amount - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_incremental_hook_returns_borrowed_view() {
+        let raw = br#"{
+            "topic":"orderbook.1000.BTCUSDT","type":"delta","ts":1700000000999,"cts":1700000000123,
+            "data":{"s":"BTCUSDT","b":[["100","1"],["99","2"]],"a":[["101","3"]],"u":12345}
+        }"#;
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        let RawIncremental::View(book) = a.parse_incremental_raw(raw).expect("raw depth") else {
+            panic!("expected borrowed raw depth view");
+        };
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.timestamp_us, 1_700_000_000_123_000);
+        assert_eq!((book.bids_count, book.asks_count), (2, 1));
+        assert!(!book.is_snapshot);
     }
 
     #[test]
@@ -546,6 +782,41 @@ mod tests {
             FundingRateMsg::get_timestamp(&bytes[1]),
             1_700_000_000_456_000
         );
+    }
+
+    #[test]
+    fn raw_derivatives_hook_encodes_ticker_and_liquidation() {
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        a.seed_symbols(&["BTCUSDT".to_string(), "HOMEUSDT".to_string()]);
+
+        let ticker = br#"{
+            "topic":"tickers.HOMEUSDT","type":"delta","ts":1700000000456,
+            "data":{"symbol":"HOMEUSDT","fundingRate":"-0.00054238","markPrice":"0.0279"}
+        }"#;
+        let bytes = a
+            .parse_derivatives_raw(ticker, &mut |symbol| a.symbol_slot_index(symbol))
+            .expect("raw ticker");
+        assert_eq!(bytes.len(), 2);
+        assert_eq!(get_msg_type(&bytes[0]), MktMsgType::MarkPrice);
+        assert_eq!(get_msg_type(&bytes[1]), MktMsgType::FundingRate);
+        assert_eq!(FundingRateMsg::get_next_funding_time(&bytes[1]), 0);
+
+        let liquidation = br#"{
+            "topic":"allLiquidation.BTCUSDT","ts":1700000000999,
+            "data":[{"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"1.5","p":"98.7"}]
+        }"#;
+        let bytes = a
+            .parse_derivatives_raw(liquidation, &mut |symbol| a.symbol_slot_index(symbol))
+            .expect("raw liquidation");
+        assert_eq!(bytes.len(), 1);
+        assert_eq!(get_msg_type(&bytes[0]), MktMsgType::LiquidationOrder);
+        assert_eq!(liquidation_timestamp(&bytes[0]), 1_700_000_000_124_000);
+    }
+
+    #[test]
+    fn both_bybit_venues_are_raw_only() {
+        assert!(BybitAdapter::new(TradingVenue::BybitMargin).skip_json_fallback_after_raw_miss());
+        assert!(BybitAdapter::new(TradingVenue::BybitFutures).skip_json_fallback_after_raw_miss());
     }
 
     #[test]

@@ -181,6 +181,16 @@ impl PayloadLevel for mkt_parsers::binance::Level {
     }
 }
 
+impl PayloadLevel for mkt_parsers::RawJsonLevel {
+    fn price(&self) -> f64 {
+        self.price
+    }
+
+    fn amount(&self) -> f64 {
+        self.amount
+    }
+}
+
 #[inline]
 fn write_symbol(buf: &mut [u8], offset: &mut usize, symbol: &str) -> Result<()> {
     anyhow::ensure!(
@@ -679,7 +689,7 @@ fn write_incremental_payload_from_levels_with_prefix<B: PayloadLevel, A: Payload
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_incremental_payload_from_iter<B, A>(
+fn write_incremental_payload_from_iter<B, A, BL, AL>(
     buf: &mut [u8],
     symbol: &str,
     first_update_id: i64,
@@ -694,8 +704,10 @@ fn write_incremental_payload_from_iter<B, A>(
     total_chunks: usize,
 ) -> Result<usize>
 where
-    B: IntoIterator<Item = mkt_parsers::binance::Level>,
-    A: IntoIterator<Item = mkt_parsers::binance::Level>,
+    B: IntoIterator<Item = BL>,
+    A: IntoIterator<Item = AL>,
+    BL: PayloadLevel,
+    AL: PayloadLevel,
 {
     let mut off = 0usize;
     write_u32_le(buf, &mut off, MktMsgType::OrderBookInc as u32);
@@ -710,18 +722,18 @@ where
     write_u32_le(buf, &mut off, bids_count as u32);
     write_u32_le(buf, &mut off, asks_count as u32);
     for level in bids {
-        write_f64_le(buf, &mut off, level.price);
-        write_f64_le(buf, &mut off, level.amount);
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
     }
     for level in asks {
-        write_f64_le(buf, &mut off, level.price);
-        write_f64_le(buf, &mut off, level.amount);
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
     }
     Ok(off)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_incremental_payload_from_iter_with_prefix<B, A>(
+fn write_incremental_payload_from_iter_with_prefix<B, A, BL, AL>(
     buf: &mut [u8],
     prefix: &IncrementalPayloadPrefix,
     first_update_id: i64,
@@ -736,8 +748,10 @@ fn write_incremental_payload_from_iter_with_prefix<B, A>(
     total_chunks: usize,
 ) -> usize
 where
-    B: IntoIterator<Item = mkt_parsers::binance::Level>,
-    A: IntoIterator<Item = mkt_parsers::binance::Level>,
+    B: IntoIterator<Item = BL>,
+    A: IntoIterator<Item = AL>,
+    BL: PayloadLevel,
+    AL: PayloadLevel,
 {
     let mut off = write_incremental_header_with_prefix(
         buf,
@@ -752,12 +766,12 @@ where
         total_chunks,
     );
     for level in bids {
-        write_f64_le(buf, &mut off, level.price);
-        write_f64_le(buf, &mut off, level.amount);
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
     }
     for level in asks {
-        write_f64_le(buf, &mut off, level.price);
-        write_f64_le(buf, &mut off, level.amount);
+        write_f64_le(buf, &mut off, level.price());
+        write_f64_le(buf, &mut off, level.amount());
     }
     off
 }
@@ -1549,7 +1563,7 @@ impl SpreadIncrementalPublisher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn publish_chunk_from_iter<B, A>(
+    pub fn publish_chunk_from_iter<B, A, BL, AL>(
         &self,
         symbol: &str,
         first_update_id: i64,
@@ -1564,8 +1578,10 @@ impl SpreadIncrementalPublisher {
         total_chunks: usize,
     ) -> Result<()>
     where
-        B: IntoIterator<Item = mkt_parsers::binance::Level>,
-        A: IntoIterator<Item = mkt_parsers::binance::Level>,
+        B: IntoIterator<Item = BL>,
+        A: IntoIterator<Item = AL>,
+        BL: PayloadLevel,
+        AL: PayloadLevel,
     {
         let min_len = incremental_payload_len(symbol, bids_count, asks_count);
         publish_write(&self.publisher, min_len, "incremental", |buf| {
@@ -1587,7 +1603,7 @@ impl SpreadIncrementalPublisher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn publish_chunk_from_iter_for_slot<B, A>(
+    pub fn publish_chunk_from_iter_for_slot<B, A, BL, AL>(
         &self,
         slot_index: usize,
         symbol: &str,
@@ -1603,8 +1619,10 @@ impl SpreadIncrementalPublisher {
         total_chunks: usize,
     ) -> Result<()>
     where
-        B: IntoIterator<Item = mkt_parsers::binance::Level>,
-        A: IntoIterator<Item = mkt_parsers::binance::Level>,
+        B: IntoIterator<Item = BL>,
+        A: IntoIterator<Item = AL>,
+        BL: PayloadLevel,
+        AL: PayloadLevel,
     {
         let cache = self.incremental_prefix_by_index.borrow();
         if let Some(Some(prefix)) = cache.get(slot_index) {

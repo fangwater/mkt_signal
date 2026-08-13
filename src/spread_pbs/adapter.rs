@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
-use mkt_parsers::binance::{RawBbo, RawBookParse, RawTrade};
+use mkt_parsers::binance::RawBook;
 use serde_json::Value;
 
 use mkt_parsers::msg::mkt_msg::Level;
@@ -34,6 +34,18 @@ pub struct BboFrame {
     pub ask_amount: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawBboFrame<'a> {
+    pub symbol: &'a str,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub reset_seq: bool,
+    pub bid_price: f64,
+    pub bid_amount: f64,
+    pub ask_price: f64,
+    pub ask_amount: f64,
+}
+
 /// 各家逐笔成交解析后的统一中间表示。
 #[derive(Debug, Clone)]
 pub struct TradeFrame {
@@ -46,6 +58,38 @@ pub struct TradeFrame {
     pub side: char,
     pub price: f64,
     pub amount: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawTradeFrame<'a> {
+    pub symbol: &'a str,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub trade_id: i64,
+    pub side: char,
+    pub price: f64,
+    pub amount: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawIncrementalView<'a> {
+    pub symbol: &'a str,
+    pub timestamp_us: i64,
+    pub seq_id: i64,
+    pub prev_seq_id: i64,
+    pub first_update_id: i64,
+    pub final_update_id: i64,
+    pub gap_check: bool,
+    pub is_snapshot: bool,
+    pub bids_raw: &'a [u8],
+    pub asks_raw: &'a [u8],
+    pub bids_count: usize,
+    pub asks_count: usize,
+}
+
+pub enum RawIncremental<'a> {
+    Parsed(RawBook<'a>),
+    View(RawIncrementalView<'a>),
 }
 
 /// SBE incremental orderbook event decoded to the existing dat_pbs IncMsg semantics.
@@ -154,17 +198,31 @@ pub trait VenueAdapter {
     }
     /// Optional borrowed raw BBO parser for hot paths that can consume fields
     /// directly and avoid allocating the intermediate `BboFrame.symbol`.
-    fn parse_bbo_raw_borrowed<'a>(&self, _raw: &'a [u8]) -> Option<RawBbo<'a>> {
+    fn parse_bbo_raw_borrowed<'a>(&self, _raw: &'a [u8]) -> Option<RawBboFrame<'a>> {
         None
     }
-    /// Optional borrowed raw trade parser for hot paths that can consume fields
-    /// directly and avoid `serde_json::Value`, `Vec<TradeFrame>`, and symbol `String`.
-    fn parse_trade_raw_borrowed<'a>(&self, _raw: &'a [u8]) -> Option<RawTrade<'a>> {
+    /// Optional borrowed raw trade parser. The callback supports venues that
+    /// batch multiple trades in one WebSocket frame without allocating a Vec.
+    fn parse_trades_raw_borrowed<'a>(
+        &self,
+        raw: &'a [u8],
+        emit: &mut dyn FnMut(RawTradeFrame<'a>),
+    ) -> bool {
+        if let Some(trade) = self.parse_trade_raw_borrowed(raw) {
+            emit(trade);
+            true
+        } else {
+            false
+        }
+    }
+    /// Backwards-compatible single-trade hook used by venues whose frames
+    /// always contain exactly one trade.
+    fn parse_trade_raw_borrowed<'a>(&self, _raw: &'a [u8]) -> Option<RawTradeFrame<'a>> {
         None
     }
     /// Optional borrowed raw incremental parser for fixed-shape orderbook deltas.
     /// This lets callers publish directly from stack-backed levels.
-    fn parse_incremental_raw<'a>(&self, _raw: &'a [u8]) -> Option<RawBookParse<'a>> {
+    fn parse_incremental_raw<'a>(&self, _raw: &'a [u8]) -> Option<RawIncremental<'a>> {
         None
     }
     fn parse_trade_frame(&self, _value: &Value) -> Result<Vec<TradeFrame>> {

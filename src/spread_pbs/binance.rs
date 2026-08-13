@@ -12,7 +12,8 @@ use serde_json::Value;
 use std::cell::RefCell;
 
 use crate::spread_pbs::adapter::{
-    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    BboFrame, IncrementalFrame, KeepaliveSpec, RawBboFrame, RawIncremental, RawIncrementalView,
+    RawTradeFrame, TradeFrame, VenueAdapter,
 };
 use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, LiquidationMsg, MarkPriceMsg};
 use order_common::TradingVenue;
@@ -247,25 +248,43 @@ impl VenueAdapter for BinanceAdapter {
         Ok(true)
     }
 
-    fn parse_bbo_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawBbo<'a>> {
+    fn parse_bbo_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<RawBboFrame<'a>> {
         if self.venue != TradingVenue::BinanceFutures {
             return None;
         }
-        binance_codec::parse_bbo_raw_borrowed(raw)
+        binance_codec::parse_bbo_raw_borrowed(raw).map(raw_bbo_to_raw_frame)
     }
 
-    fn parse_trade_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawTrade<'a>> {
+    fn parse_trade_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<RawTradeFrame<'a>> {
         if self.venue != TradingVenue::BinanceFutures {
             return None;
         }
-        binance_codec::parse_trade_raw_borrowed(raw)
+        binance_codec::parse_trade_raw_borrowed(raw).map(raw_trade_to_frame)
     }
 
-    fn parse_incremental_raw<'a>(&self, raw: &'a [u8]) -> Option<binance_codec::RawBookParse<'a>> {
+    fn parse_incremental_raw<'a>(&self, raw: &'a [u8]) -> Option<RawIncremental<'a>> {
         if self.venue != TradingVenue::BinanceFutures {
             return None;
         }
-        binance_codec::parse_incremental_raw(raw)
+        match binance_codec::parse_incremental_raw(raw)? {
+            binance_codec::RawBookParse::Parsed(book) => Some(RawIncremental::Parsed(book)),
+            binance_codec::RawBookParse::View(book) => {
+                Some(RawIncremental::View(RawIncrementalView {
+                    symbol: book.symbol,
+                    timestamp_us: book.timestamp_us,
+                    seq_id: book.seq_id,
+                    prev_seq_id: book.prev_seq_id,
+                    first_update_id: book.first_update_id,
+                    final_update_id: book.final_update_id,
+                    gap_check: book.gap_check,
+                    is_snapshot: book.is_snapshot,
+                    bids_raw: book.bids_raw,
+                    asks_raw: book.asks_raw,
+                    bids_count: book.bids_count,
+                    asks_count: book.asks_count,
+                }))
+            }
+        }
     }
 
     fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
@@ -433,16 +452,41 @@ fn bbo_to_frame(bbo: binance_codec::Bbo) -> BboFrame {
     }
 }
 
-fn raw_bbo_to_frame(bbo: binance_codec::RawBbo<'_>) -> BboFrame {
-    BboFrame {
-        symbol: bbo.symbol.to_ascii_uppercase(),
-        ts_us: bbo.timestamp_us,
+fn raw_bbo_to_raw_frame(bbo: binance_codec::RawBbo<'_>) -> RawBboFrame<'_> {
+    RawBboFrame {
+        symbol: bbo.symbol,
+        timestamp_us: bbo.timestamp_us,
         seq_id: bbo.seq_id,
         reset_seq: false,
         bid_price: bbo.bid_price,
         bid_amount: bbo.bid_amount,
         ask_price: bbo.ask_price,
         ask_amount: bbo.ask_amount,
+    }
+}
+
+fn raw_bbo_to_frame(bbo: RawBboFrame<'_>) -> BboFrame {
+    BboFrame {
+        symbol: bbo.symbol.to_ascii_uppercase(),
+        ts_us: bbo.timestamp_us,
+        seq_id: bbo.seq_id,
+        reset_seq: bbo.reset_seq,
+        bid_price: bbo.bid_price,
+        bid_amount: bbo.bid_amount,
+        ask_price: bbo.ask_price,
+        ask_amount: bbo.ask_amount,
+    }
+}
+
+fn raw_trade_to_frame(trade: binance_codec::RawTrade<'_>) -> RawTradeFrame<'_> {
+    RawTradeFrame {
+        symbol: trade.symbol,
+        timestamp_us: trade.timestamp_us,
+        seq_id: trade.seq_id,
+        trade_id: trade.trade_id,
+        side: trade.side,
+        price: trade.price,
+        amount: trade.amount,
     }
 }
 

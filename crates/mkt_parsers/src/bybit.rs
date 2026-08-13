@@ -1219,6 +1219,48 @@ mod tests {
     }
 
     #[test]
+    fn parses_bbo_snapshot_and_one_sided_delta_raw() {
+        let snapshot = br#"{
+            "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1700000000000,
+            "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
+        }"#;
+        let update = parse_bbo_update_raw_borrowed(snapshot).expect("raw snapshot");
+        assert_eq!(update.symbol, "BTCUSDT");
+        assert_eq!(update.timestamp_us, 1_700_000_000_000_000);
+        assert_eq!(update.seq_id, 1);
+        assert!(update.reset_seq);
+        assert_eq!(
+            update.bid,
+            Some(Level {
+                price: 100.0,
+                amount: 1.0
+            })
+        );
+        assert_eq!(
+            update.ask,
+            Some(Level {
+                price: 101.0,
+                amount: 2.0
+            })
+        );
+
+        let delta = br#"{
+            "topic":"orderbook.1.BTCUSDT","type":"delta","ts":1700000000001,
+            "data":{"s":"BTCUSDT","b":[],"a":[["101.5","3"]],"u":2}
+        }"#;
+        let update = parse_bbo_update_raw_borrowed(delta).expect("raw delta");
+        assert!(!update.reset_seq);
+        assert_eq!(update.bid, None);
+        assert_eq!(
+            update.ask,
+            Some(Level {
+                price: 101.5,
+                amount: 3.0
+            })
+        );
+    }
+
+    #[test]
     fn parses_trade_json_with_uuid_id_as_us() {
         let raw = r#"{
             "topic":"publicTrade.BTCUSDT",
@@ -1230,6 +1272,30 @@ mod tests {
         assert_eq!(trades[0].timestamp_us, 1_700_000_000_123_000);
         assert_eq!(trades[0].seq_id, 77_000_000);
         assert_eq!(trades[0].side, 'S');
+    }
+
+    #[test]
+    fn parses_every_trade_in_raw_batch() {
+        let raw = br#"{
+            "topic":"publicTrade.BTCUSDT",
+            "data":[
+                {"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.5","i":"9001","seq":77},
+                {"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"0.2","p":"100.6","i":"11111111-2222-3333-4444-555555556666","seq":77}
+            ]
+        }"#;
+        let mut trades = Vec::new();
+        assert_eq!(
+            parse_trades_raw_borrowed(raw, |trade| {
+                trades.push(trade);
+                Some(())
+            }),
+            Some(2)
+        );
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].trade_id, 9001);
+        assert_eq!(trades[0].seq_id, 77_000_000);
+        assert_eq!(trades[1].seq_id, 77_000_001);
+        assert_eq!(trades[1].side, 'S');
     }
 
     #[test]
@@ -1245,6 +1311,48 @@ mod tests {
         assert!(book.is_snapshot);
         assert_eq!(book.bids.len(), 2);
         assert_eq!(book.asks.len(), 1);
+    }
+
+    #[test]
+    fn parses_incremental_snapshot_and_levels_raw() {
+        let raw = br#"{
+            "topic":"orderbook.1000.BTCUSDT","type":"snapshot",
+            "ts":1700000000999,"cts":1700000000123,
+            "data":{"s":"BTCUSDT","b":[["100","1"],["99","2"]],"a":[["101","3"]],"u":12345}
+        }"#;
+        let book = parse_incremental_raw_view(raw).expect("raw incremental");
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.timestamp_us, 1_700_000_000_123_000);
+        assert_eq!(book.seq_id, 12345);
+        assert!(book.is_snapshot);
+        assert_eq!((book.bids_count, book.asks_count), (2, 1));
+        let bids = raw_levels_iter(book.bids_raw)
+            .expect("bid levels")
+            .collect::<Vec<_>>();
+        let asks = raw_levels_iter(book.asks_raw)
+            .expect("ask levels")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bids[0],
+            Level {
+                price: 100.0,
+                amount: 1.0
+            }
+        );
+        assert_eq!(
+            bids[1],
+            Level {
+                price: 99.0,
+                amount: 2.0
+            }
+        );
+        assert_eq!(
+            asks[0],
+            Level {
+                price: 101.0,
+                amount: 3.0
+            }
+        );
     }
 
     #[test]
@@ -1288,6 +1396,56 @@ mod tests {
                 next_funding_time_us: 0,
                 timestamp_us: 1_700_000_000_456_000,
             } if symbol == "HOMEUSDT" && (*funding_rate + 0.00054238).abs() < 1e-12
+        ));
+    }
+
+    #[test]
+    fn parses_ticker_delta_and_liquidation_raw() {
+        let ticker = br#"{
+            "topic":"tickers.HOMEUSDT","type":"delta","ts":1700000000456,
+            "data":{"symbol":"HOMEUSDT","fundingRate":"-0.00054238","markPrice":"0.0279"}
+        }"#;
+        let mut ticker_out = Vec::new();
+        assert_eq!(
+            parse_derivatives_raw_borrowed(ticker, |derivative| {
+                ticker_out.push(derivative);
+                Some(())
+            }),
+            Some(1)
+        );
+        assert!(matches!(
+            ticker_out[0],
+            RawDerivative::Ticker {
+                symbol: "HOMEUSDT",
+                mark_price: Some(mark),
+                funding_rate: Some(rate),
+                next_funding_time_us: None,
+                timestamp_us: 1_700_000_000_456_000,
+                ..
+            } if (mark - 0.0279).abs() < 1e-12 && (rate + 0.00054238).abs() < 1e-12
+        ));
+
+        let liquidation = br#"{
+            "topic":"allLiquidation.BTCUSDT","ts":1700000000999,
+            "data":[{"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"1.5","p":"98.7"}]
+        }"#;
+        let mut liquidation_out = Vec::new();
+        assert_eq!(
+            parse_derivatives_raw_borrowed(liquidation, |derivative| {
+                liquidation_out.push(derivative);
+                Some(())
+            }),
+            Some(1)
+        );
+        assert!(matches!(
+            liquidation_out[0],
+            RawDerivative::Liquidation {
+                symbol: "BTCUSDT",
+                side: 'S',
+                amount,
+                price,
+                timestamp_us: 1_700_000_000_124_000,
+            } if (amount - 1.5).abs() < 1e-12 && (price - 98.7).abs() < 1e-12
         ));
     }
 
