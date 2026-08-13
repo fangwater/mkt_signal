@@ -6,6 +6,7 @@ SSH_HOST="${FR_PUBLISH_HOST:-jp-meta-elvpn}"
 ENV_NAME="${FR_PUBLISH_ENV:-binance_fr_arb03}"
 EXCHANGE="${FR_PUBLISH_EXCHANGE:-}"
 CHECK_ONLY=0
+SKIP_BUILD=0
 
 usage() {
   cat <<'USAGE'
@@ -16,8 +17,11 @@ Options:
   --env-name <name>   Binance/Gate FR environment (default: binance_fr_arb03)
   --exchange <name>   Exchange (binance or gate; inferred from env-name)
   --check-only        Only verify that publish target processes are stopped
+  --skip-build        Reuse binaries built by update-jp-meta-fr.sh
   -h, --help          Show this help
 
+Unless --check-only or --skip-build is used, all required release binaries are
+built before the first remote process check.
 The publish aborts before SCP when any target process is running. It checks
 again immediately before replacing files to close the check/upload race.
 USAGE
@@ -39,6 +43,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --check-only)
       CHECK_ONLY=1
+      shift
+      ;;
+    --skip-build)
+      SKIP_BUILD=1
       shift
       ;;
     -h|--help)
@@ -76,6 +84,10 @@ fi
 if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
   echo "[ERROR] invalid SSH host: $SSH_HOST" >&2
   exit 2
+fi
+
+if [[ "$CHECK_ONLY" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
+  "$ROOT_DIR/scripts/build-jp-meta-binaries.sh" --exchange "$EXCHANGE"
 fi
 
 SSH=(ssh -o BatchMode=yes)

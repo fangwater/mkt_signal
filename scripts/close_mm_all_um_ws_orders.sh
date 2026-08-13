@@ -209,7 +209,9 @@ case "$EXCHANGE" in
     exec "$PYTHON_BIN" "$SCRIPT_DIR/okx_swap_open_orders.py" "${OKX_ARGS[@]}"
     ;;
   bybit)
-    exec "$PYTHON_BIN" "$SCRIPT_DIR/bybit_cancel_all_um_orders.py" "${PASS_ARGS[@]}"
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/bybit_cancel_all_um_orders.py" \
+      --env-dir "$ENV_DIR" \
+      "${PASS_ARGS[@]}"
     ;;
   bitget)
     exec "$PYTHON_BIN" "$SCRIPT_DIR/bitget_cancel_all_um_orders.py" "${PASS_ARGS[@]}"

@@ -14,9 +14,50 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    from binance_local_ip import resolve_local_address
+except ModuleNotFoundError:  # Preserve old standalone deployments until the helper is synced.
+    def resolve_local_address(
+        *,
+        explicit_local_address: Optional[str] = None,
+        trade_engine_config: Optional[str] = None,
+        env_dir: Optional[str] = None,
+        cwd: Optional[str] = None,
+    ) -> tuple[Optional[str], str]:
+        del trade_engine_config, env_dir, cwd
+        value = (explicit_local_address or "").strip()
+        if value and value not in {"0.0.0.0", "::"}:
+            return value, "cli --local-address"
+        return None, "system-default (binance_local_ip.py unavailable)"
 
 HOST = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com").rstrip("/")
 RECV_WINDOW_MS = "5000"
+REQUEST_TIMEOUT_SECONDS = 15
+
+
+class SourceAddressAdapter(HTTPAdapter):
+    def __init__(self, source_address: str, **kwargs):
+        self._source_address = (source_address, 0)
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs["source_address"] = self._source_address
+        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        proxy_kwargs["source_address"] = self._source_address
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+
+def build_session(local_address: Optional[str]) -> requests.Session:
+    session = requests.Session()
+    if local_address:
+        adapter = SourceAddressAdapter(local_address, max_retries=0)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+    return session
 
 
 def load_credentials() -> tuple[str, str]:
@@ -63,6 +104,7 @@ def sign(api_key: str, api_secret: str, timestamp_ms: str, payload: str) -> str:
 
 
 def request(
+    session: requests.Session,
     api_key: str,
     api_secret: str,
     method: str,
@@ -85,7 +127,13 @@ def request(
         "X-BAPI-RECV-WINDOW": RECV_WINDOW_MS,
         "Content-Type": "application/json",
     }
-    resp = requests.request(method.upper(), url, headers=headers, data=body)
+    resp = session.request(
+        method.upper(),
+        url,
+        headers=headers,
+        data=body,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
     try:
         data = resp.json()
     except ValueError:
@@ -95,7 +143,12 @@ def request(
     return data
 
 
-def fetch_open_orders(api_key: str, api_secret: str, symbol: Optional[str]) -> List[Dict[str, Any]]:
+def fetch_open_orders(
+    session: requests.Session,
+    api_key: str,
+    api_secret: str,
+    symbol: Optional[str],
+) -> List[Dict[str, Any]]:
     cursor = ""
     orders: List[Dict[str, Any]] = []
     while True:
@@ -107,7 +160,7 @@ def fetch_open_orders(api_key: str, api_secret: str, symbol: Optional[str]) -> L
         if cursor:
             params.append(("cursor", cursor))
         query = "&".join(f"{k}={v}" for k, v in params)
-        data = request(api_key, api_secret, "GET", "/v5/order/realtime", query=query)
+        data = request(session, api_key, api_secret, "GET", "/v5/order/realtime", query=query)
         result = data.get("result") or {}
         batch = result.get("list") or []
         if not isinstance(batch, list):
@@ -120,14 +173,19 @@ def fetch_open_orders(api_key: str, api_secret: str, symbol: Optional[str]) -> L
     return orders
 
 
-def cancel_all(api_key: str, api_secret: str, symbol: Optional[str]) -> Dict[str, Any]:
+def cancel_all(
+    session: requests.Session,
+    api_key: str,
+    api_secret: str,
+    symbol: Optional[str],
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"category": "linear"}
     if symbol:
         payload["symbol"] = symbol
     else:
         payload["settleCoin"] = "USDT"
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
-    return request(api_key, api_secret, "POST", "/v5/order/cancel-all", body=body)
+    return request(session, api_key, api_secret, "POST", "/v5/order/cancel-all", body=body)
 
 
 def parse_args() -> argparse.Namespace:
@@ -139,6 +197,26 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Comma/space separated symbol list, e.g. BTCUSDT,ETHUSDT.",
     )
+    parser.add_argument(
+        "--env-dir",
+        default="",
+        help="Environment directory containing trade_engine.toml for source-IP selection.",
+    )
+    parser.add_argument(
+        "--trade-engine-config",
+        default="",
+        help="Explicit trade_engine.toml path for source-IP selection.",
+    )
+    parser.add_argument(
+        "--local-address",
+        default="",
+        help="Explicit local source IP; overrides config discovery.",
+    )
+    parser.add_argument(
+        "--require-local-address",
+        action="store_true",
+        help="Fail before any API request unless a local source IP is resolved.",
+    )
     parser.add_argument("--execute", action="store_true", help="Actually cancel orders.")
     return parser.parse_args()
 
@@ -147,13 +225,30 @@ def main() -> int:
     args = parse_args()
     api_key, api_secret = load_credentials()
     symbols = parse_symbol_filters(args)
+    local_address, local_address_source = resolve_local_address(
+        explicit_local_address=args.local_address,
+        trade_engine_config=args.trade_engine_config,
+        env_dir=args.env_dir,
+        cwd=os.getcwd(),
+    )
+    if args.require_local_address and not local_address:
+        print(
+            f"[ERROR] no local source IP resolved: {local_address_source}",
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        f"[bybit] local source address: {local_address or '<system-default>'} "
+        f"({local_address_source})"
+    )
+    session = build_session(local_address)
 
     if symbols:
         all_orders: List[Dict[str, Any]] = []
         for symbol in symbols:
-            all_orders.extend(fetch_open_orders(api_key, api_secret, symbol))
+            all_orders.extend(fetch_open_orders(session, api_key, api_secret, symbol))
     else:
-        all_orders = fetch_open_orders(api_key, api_secret, None)
+        all_orders = fetch_open_orders(session, api_key, api_secret, None)
 
     print(f"[bybit] open linear orders: {len(all_orders)}")
     for order in all_orders:
@@ -179,7 +274,7 @@ def main() -> int:
 
     if symbols:
         for symbol in symbols:
-            result = cancel_all(api_key, api_secret, symbol)
+            result = cancel_all(session, api_key, api_secret, symbol)
             print(
                 json.dumps(
                     {"symbol": symbol, "result": result.get("result")},
@@ -188,7 +283,7 @@ def main() -> int:
                 )
             )
     else:
-        result = cancel_all(api_key, api_secret, None)
+        result = cancel_all(session, api_key, api_secret, None)
         print(json.dumps({"scope": "USDT", "result": result.get("result")}, ensure_ascii=True, sort_keys=True))
     return 0
 

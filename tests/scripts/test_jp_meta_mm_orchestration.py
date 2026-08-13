@@ -328,7 +328,12 @@ class JPMetaMMOrchestrationTests(unittest.TestCase):
                 env_name = f"{exchange}_mm_publish"
                 target = self.remote_home / env_name
                 target.mkdir()
-                result = self._run(local_script, "--env-name", env_name)
+                result = self._run(
+                    local_script,
+                    "--env-name",
+                    env_name,
+                    "--skip-build",
+                )
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(
                     (target / "account_monitor").read_text(encoding="utf-8"),
