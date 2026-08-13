@@ -578,7 +578,7 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         )
         return remote_dir, remote_env
 
-    def test_start_health_checks_every_component_and_starts_signal_last(self) -> None:
+    def test_start_health_checks_base_stack_and_keeps_signal_stopped(self) -> None:
         _, remote_env = self._prepare_start_remote()
         result = self._run(
             START_SCRIPT,
@@ -593,10 +593,27 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(
             self.action_log.read_text(encoding="utf-8").splitlines(),
-            ["config", "viz", "persist", "engine", "pre-trade", "monitor", "signal"],
+            ["config", "viz", "persist", "engine", "pre-trade", "monitor"],
         )
-        self.assertIn("trade_signal health check passed", result.stdout)
-        self.assertIn("trade_signal=last", result.stdout)
+        self.assertIn("trade_signal_started=false", result.stdout)
+        self.assertNotIn("trade_signal health check passed", result.stdout)
+
+    def test_start_refuses_running_trade_signal_before_starting_base_stack(self) -> None:
+        _, remote_env = self._prepare_start_remote()
+        (Path(remote_env["FAKE_MARKER_DIR"]) / "signal").touch()
+        result = self._run(
+            START_SCRIPT,
+            "--host",
+            "fake-sg",
+            "--key",
+            str(self.key),
+            "--env-name",
+            "bybit-intra-arb01",
+            env_overrides=remote_env,
+        )
+        self.assertEqual(result.returncode, 3, result.stdout)
+        self.assertFalse(self.action_log.exists())
+        self.assertIn("trade_signal is already running", result.stdout)
 
     def test_start_rejects_wrong_config_port_before_starting_any_process(self) -> None:
         remote_dir, remote_env = self._prepare_start_remote()

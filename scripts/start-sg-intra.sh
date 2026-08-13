@@ -29,9 +29,10 @@ Live start order, with a stability check after every step:
   4. trade_engine
   5. pre_trade
   6. account_monitor
-  7. trade_signal (always last)
 
-Normal start requires the selected environment's stack to be fully stopped.
+trade_signal is never started. The script refuses to begin when trade_signal is
+running and verifies that it remains stopped at the end. Normal start requires
+the selected environment's base stack to be fully stopped.
 USAGE
 }
 
@@ -175,8 +176,6 @@ required_executables=(
   "$intra_scripts_dir/stop_intra_pre_trade.sh"
   "$intra_scripts_dir/start_intra_monitors.sh"
   "$intra_scripts_dir/stop_intra_monitors.sh"
-  "$intra_scripts_dir/start_intra_trade_signal.sh"
-  "$intra_scripts_dir/stop_intra_trade_signal.sh"
 )
 for required_file in "${required_files[@]}"; do
   if [[ ! -f "$required_file" ]]; then
@@ -244,7 +243,6 @@ labels=(
   trade_engine
   pre_trade
   account_monitor
-  trade_signal
 )
 binaries=(
   "$target/viz_server"
@@ -252,7 +250,6 @@ binaries=(
   "$target/trade_engine"
   "$target/pre_trade"
   "$target/account_monitor_bybit"
-  "$target/trade_signal"
 )
 start_scripts=(
   "$intra_scripts_dir/start_intra_viz_server.sh"
@@ -260,8 +257,8 @@ start_scripts=(
   "$intra_scripts_dir/start_intra_trade_engine.sh"
   "$intra_scripts_dir/start_intra_pre_trade.sh"
   "$intra_scripts_dir/start_intra_monitors.sh"
-  "$intra_scripts_dir/start_intra_trade_signal.sh"
 )
+trade_signal_binary="$target/trade_signal"
 config_server_script="$scripts_dir/intra_config_server.py"
 
 find_exact_pids() {
@@ -316,6 +313,21 @@ print_process_state() {
       echo "[STATE] ${labels[$index]} running pids=${pids[*]}"
     fi
   done
+  mapfile -t pids < <(find_exact_pids "$trade_signal_binary")
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    echo "[STATE] trade_signal stopped (required)"
+  else
+    echo "[STATE] trade_signal running pids=${pids[*]} (not allowed)"
+  fi
+}
+
+require_trade_signal_stopped() {
+  local pids=()
+  mapfile -t pids < <(find_exact_pids "$trade_signal_binary")
+  if [[ "${#pids[@]}" -ne 0 ]]; then
+    echo "[ERROR] trade_signal is already running (pids=${pids[*]}); refusing to start the base Intra stack" >&2
+    exit 3
+  fi
 }
 
 require_all_stopped() {
@@ -431,6 +443,7 @@ start_and_verify_binary() {
 
 echo "[INFO] remote preflight passed"
 print_process_state
+require_trade_signal_stopped
 if [[ "$check_only" == "1" ]]; then
   echo "[INFO] check-only complete; no process was started"
   exit 0
@@ -438,7 +451,7 @@ fi
 
 require_all_stopped
 cd "$target"
-echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=bybit"
+echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=bybit trade_signal=stopped"
 start_and_verify_config_server
 for index in "${!labels[@]}"; do
   start_and_verify_binary \
@@ -447,6 +460,9 @@ for index in "${!labels[@]}"; do
     "${start_scripts[$index]}"
 done
 
+require_trade_signal_stopped
 echo
-echo "[INFO] start complete: env=$(basename "$target") components=7 trade_signal=last persist_manager=included"
+echo "[INFO] final process state"
+print_process_state
+echo "[INFO] start complete: env=$(basename "$target") components=6 trade_signal_started=false persist_manager=included"
 REMOTE_START

@@ -22,7 +22,7 @@ Live update order:
   1. Build every required release binary locally, including persist_manager
   2. For each selected environment: stop engine, cancel/verify orders, stop stack
   3. Publish the already-built files with SHA-256 verification
-  4. Start and health-check the stack, with trade_signal last
+  4. Start and health-check the base stack; keep trade_signal stopped
 
 With --all the binaries are built once and the environments are updated
 sequentially. If the local build fails, no SSH connection or live action occurs.
@@ -97,7 +97,7 @@ for env_name in "${ENV_NAMES[@]}"; do
     --key "$SSH_KEY" \
     --env-name "$env_name"
 
-  echo "[ENV] update complete: host=$SSH_HOST env=$env_name persist_manager=included"
+  echo "[ENV] update complete: host=$SSH_HOST env=$env_name trade_signal_started=false persist_manager=included"
 done
 
 echo

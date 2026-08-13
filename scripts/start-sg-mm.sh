@@ -29,11 +29,11 @@ Live start order, with a stability check after every step:
   4. trade_engine
   5. pre_trade
   6. account_monitor
-  7. trade_signal (always last)
 
-manual_mm_signal is not part of the standard Bybit MM deployment and is never
-started. Normal start requires the selected environment's stack to be fully
-stopped.
+trade_signal and manual_mm_signal are never started. The script refuses to
+begin when either signal process is running and verifies that both remain
+stopped at the end. Normal start requires the selected environment's base
+stack to be fully stopped.
 USAGE
 }
 
@@ -171,8 +171,6 @@ required_executables=(
   "$scripts_dir/stop_mm_config_server.sh"
   "$scripts_dir/start_account_monitor.sh"
   "$scripts_dir/stop_account_monitor.sh"
-  "$scripts_dir/start_trade_signal.sh"
-  "$scripts_dir/stop_trade_signal.sh"
   "$mm_scripts_dir/start_mm_viz_server.sh"
   "$mm_scripts_dir/stop_mm_viz_server.sh"
   "$mm_scripts_dir/start_mm_persist_manager.sh"
@@ -248,7 +246,6 @@ labels=(
   trade_engine
   pre_trade
   account_monitor
-  trade_signal
 )
 binaries=(
   "$target/viz_server"
@@ -256,9 +253,9 @@ binaries=(
   "$target/trade_engine"
   "$target/pre_trade"
   "$target/account_monitor"
-  "$target/trade_signal"
 )
-manual_signal_binary="$target/manual_mm_signal"
+signal_labels=(trade_signal manual_mm_signal)
+signal_binaries=("$target/trade_signal" "$target/manual_mm_signal")
 config_server_script="$scripts_dir/mm_config_server.py"
 
 find_exact_pids() {
@@ -327,12 +324,26 @@ print_process_state() {
       echo "[STATE] ${labels[$index]} running pids=${pids[*]}"
     fi
   done
-  mapfile -t pids < <(find_exact_pids "$manual_signal_binary")
-  if [[ "${#pids[@]}" -eq 0 ]]; then
-    echo "[STATE] manual_mm_signal stopped or not deployed"
-  else
-    echo "[STATE] manual_mm_signal running pids=${pids[*]} (not allowed)"
-  fi
+  for index in "${!signal_labels[@]}"; do
+    mapfile -t pids < <(find_exact_pids "${signal_binaries[$index]}")
+    if [[ "${#pids[@]}" -eq 0 ]]; then
+      echo "[STATE] ${signal_labels[$index]} stopped or not deployed (required)"
+    else
+      echo "[STATE] ${signal_labels[$index]} running pids=${pids[*]} (not allowed)"
+    fi
+  done
+}
+
+require_signals_stopped() {
+  local index=""
+  local pids=()
+  for index in "${!signal_labels[@]}"; do
+    mapfile -t pids < <(find_exact_pids "${signal_binaries[$index]}")
+    if [[ "${#pids[@]}" -ne 0 ]]; then
+      echo "[ERROR] ${signal_labels[$index]} is already running (pids=${pids[*]}); refusing to start the base MM stack" >&2
+      exit 3
+    fi
+  done
 }
 
 require_all_stopped() {
@@ -359,11 +370,6 @@ require_all_stopped() {
       found=1
     fi
   done
-  mapfile -t pids < <(find_exact_pids "$manual_signal_binary")
-  if [[ "${#pids[@]}" -ne 0 ]]; then
-    echo "[ERROR] manual_mm_signal is already running: ${pids[*]}" >&2
-    found=1
-  fi
   if [[ "$found" -ne 0 ]]; then
     echo "[ERROR] start requires a fully stopped target; run stop-sg-mm.sh first" >&2
     exit 3
@@ -436,7 +442,6 @@ run_start_script() {
     trade_engine) bash "$mm_scripts_dir/start_mm_trade_engine.sh" bybit ;;
     pre_trade) bash "$mm_scripts_dir/start_mm_pre_trade.sh" ;;
     account_monitor) bash "$scripts_dir/start_account_monitor.sh" ;;
-    trade_signal) bash "$scripts_dir/start_trade_signal.sh" bybit ;;
     *) echo "[ERROR] unsupported start label: $label" >&2; return 1 ;;
   esac
 }
@@ -465,6 +470,7 @@ start_and_verify_binary() {
 
 echo "[INFO] remote preflight passed"
 print_process_state
+require_signals_stopped
 if [[ "$check_only" == "1" ]]; then
   echo "[INFO] check-only complete; no process was started"
   exit 0
@@ -472,12 +478,15 @@ fi
 
 require_all_stopped
 cd "$target"
-echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=bybit"
+echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=bybit signal_processes=stopped"
 start_and_verify_config_server
 for index in "${!labels[@]}"; do
   start_and_verify_binary "${labels[$index]}" "${binaries[$index]}"
 done
 
+require_signals_stopped
 echo
-echo "[INFO] start complete: env=$(basename "$target") components=7 trade_signal=last persist_manager=included"
+echo "[INFO] final process state"
+print_process_state
+echo "[INFO] start complete: env=$(basename "$target") components=6 signal_processes_started=false persist_manager=included"
 REMOTE_START
