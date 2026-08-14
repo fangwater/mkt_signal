@@ -348,15 +348,12 @@ impl FuturesFusionState {
 }
 
 fn domestic_formula_values(input: &FuturesFusionInput) -> [f64; FUTURES_TRADE_FIELD_COUNT] {
-    const VOLUME: usize = 4;
     const VWAP: usize = 23;
     const BUY_VWAP: usize = 24;
     const SELL_VWAP: usize = 25;
 
     let mut values = input.trade.values;
-    let volume = values[VOLUME];
-
-    if !input.volume_multiple_verified || volume <= 0.0 {
+    if !input.volume_multiple_verified {
         values[VWAP] = f64::NAN;
         values[BUY_VWAP] = f64::NAN;
         values[SELL_VWAP] = f64::NAN;
@@ -599,17 +596,13 @@ mod tests {
 
         let mut clean = FuturesFusionState::default();
         let mut missing = FuturesFusionState::default();
-        for index in 0..800 {
+        for index in 0..=800 {
             let row = varied_input(index);
             clean.push(row.clone()).unwrap();
-            missing.push(row).unwrap();
+            let mut missing_row = row;
+            missing_row.depth = None;
+            missing.push(missing_row).unwrap();
         }
-
-        let clean_row = varied_input(800);
-        let mut missing_row = clean_row.clone();
-        missing_row.depth = None;
-        clean.push(clean_row).unwrap();
-        missing.push(missing_row).unwrap();
 
         let clean_values = clean.factor_values(&plan).unwrap();
         let missing_values = missing.factor_values(&plan).unwrap();
@@ -629,6 +622,57 @@ mod tests {
                 "{name} changed after an unrelated missing book: clean={clean_value} missing={missing_value}"
             );
         }
+    }
+
+    #[test]
+    fn missing_book_nulls_every_legacy_book_factor() {
+        let names: Vec<String> = review_manifest::LEGACY_BOOK_FACTORS
+            .iter()
+            .map(|name| format!("cn_features_{}", name.to_ascii_lowercase()))
+            .collect();
+        let plan = FuturesFactorPlan::from_factor_names(names).unwrap();
+        assert_eq!(plan.len(), 177);
+
+        let mut clean = FuturesFusionState::default();
+        let mut missing = FuturesFusionState::default();
+        for index in 0..800 {
+            let row = varied_input(index);
+            clean.push(row.clone()).unwrap();
+            missing.push(row).unwrap();
+            let _ = clean.factor_values(&plan).unwrap();
+            let _ = missing.factor_values(&plan).unwrap();
+        }
+
+        let clean_row = varied_input(800);
+        let mut missing_row = clean_row.clone();
+        missing_row.depth = None;
+        clean.push(clean_row).unwrap();
+        missing.push(missing_row).unwrap();
+
+        let clean_values = clean.factor_values(&plan).unwrap();
+        let missing_values = missing.factor_values(&plan).unwrap();
+        let mut not_warmed = Vec::new();
+        let mut leaked = Vec::new();
+        for ((name, clean_value), missing_value) in review_manifest::LEGACY_BOOK_FACTORS
+            .iter()
+            .zip(clean_values)
+            .zip(missing_values)
+        {
+            if clean_value.is_none() {
+                not_warmed.push(*name);
+            }
+            if missing_value.is_some() {
+                leaked.push(*name);
+            }
+        }
+        assert!(
+            not_warmed.is_empty(),
+            "book factors not finite after deterministic warm-up: {not_warmed:?}"
+        );
+        assert!(
+            leaked.is_empty(),
+            "book factors remained finite with a missing current book: {leaked:?}"
+        );
     }
 
     #[test]
@@ -815,6 +859,21 @@ mod tests {
         assert!(values[24].is_nan());
         assert!(values[25].is_nan());
     }
+
+    #[test]
+    fn verified_zero_volume_preserves_compatibility_filled_vwap_inputs() {
+        let mut row = input(1_000, 20251103, 0, 100.0);
+        row.trade.values[4] = 0.0;
+        row.trade.values[5] = 0.0;
+        row.trade.values[23] = 99.5;
+        row.trade.values[24] = 99.25;
+        row.trade.values[25] = 99.75;
+
+        let values = domestic_formula_values(&row);
+        assert_eq!(values[23], 99.5);
+        assert_eq!(values[24], 99.25);
+        assert_eq!(values[25], 99.75);
+    }
     #[test]
     fn every_cn_factor_has_a_computation_path() {
         let missing: Vec<&str> = CnFactorId::ALL
@@ -872,14 +931,7 @@ mod tests {
         .unwrap();
         let mut state = FuturesFusionState::default();
         for index in 0..320 {
-            state
-                .push(input(
-                    (index as i64 + 1) * 1_000,
-                    20251103,
-                    0,
-                    100.0 + index as f64,
-                ))
-                .unwrap();
+            state.push(varied_input(index)).unwrap();
         }
         let values = state.factor_values(&plan).unwrap();
         let missing: Vec<&str> = ids

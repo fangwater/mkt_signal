@@ -543,22 +543,6 @@ fn directional_movement_series(series: &CnSeries<'_>) -> Option<(Vec<f64>, Vec<f
     Some((plus_dm, minus_dm))
 }
 
-fn rolling_ratio_mean(
-    numerators: &(impl F64SeriesView + ?Sized),
-    denominators: &(impl F64SeriesView + ?Sized),
-    window: usize,
-) -> Option<f64> {
-    let n = numerators.len().min(denominators.len());
-    if window == 0 || n < window {
-        return None;
-    }
-    let mut sum = 0.0;
-    for i in n - window..n {
-        sum += safe_ratio(numerators.value_at(i), denominators.value_at(i))?;
-    }
-    finite_opt(Some(sum / window as f64))
-}
-
 fn activity_ratio(values: &(impl F64SeriesView + ?Sized), window: usize) -> Option<f64> {
     let current = current_value(values)?;
     let mean = rolling_mean_last(values, window).ok().flatten()?;
@@ -655,7 +639,9 @@ fn compute_baseline_044(series: &CnSeries<'_>) -> Option<f64> {
 }
 
 fn compute_baseline_048(series: &CnSeries<'_>) -> Option<f64> {
-    rolling_ratio_mean(&series.buy_volume, &series.volume, 30)
+    rolling_mean_last(&series.active_buy_ratio_5m, 30)
+        .ok()
+        .flatten()
 }
 
 fn compute_baseline_050(series: &CnSeries<'_>) -> Option<f64> {
@@ -671,11 +657,11 @@ fn compute_baseline_064(series: &CnSeries<'_>) -> Option<f64> {
 }
 
 fn compute_baseline_075(series: &CnSeries<'_>) -> Option<f64> {
-    activity_ratio(&series.volume, 300)
+    activity_ratio(&series.large_pct_30m, 300)
 }
 
 fn compute_baseline_078(series: &CnSeries<'_>) -> Option<f64> {
-    activity_ratio(&series.amount, 300)
+    activity_ratio(&series.large_pct_120m, 300)
 }
 
 fn compute_baseline_084(series: &CnSeries<'_>) -> Option<f64> {
@@ -689,11 +675,11 @@ fn compute_baseline_089(series: &CnSeries<'_>) -> Option<f64> {
 }
 
 fn compute_baseline_094(series: &CnSeries<'_>) -> Option<f64> {
-    activity_ratio(&series.volume, 300)
+    activity_ratio(&series.small_pct_30m, 300)
 }
 
 fn compute_baseline_095(series: &CnSeries<'_>) -> Option<f64> {
-    activity_ratio(&series.amount, 300)
+    activity_ratio(&series.small_pct_120m, 300)
 }
 
 fn compute_baseline_097(series: &CnSeries<'_>) -> Option<f64> {
@@ -701,7 +687,9 @@ fn compute_baseline_097(series: &CnSeries<'_>) -> Option<f64> {
 }
 
 fn compute_baseline_102(series: &CnSeries<'_>) -> Option<f64> {
-    rolling_mean_last(&series.net_buy_pct, 120).ok().flatten()
+    rolling_mean_last(&series.net_buy_small_pct_15m, 120)
+        .ok()
+        .flatten()
 }
 
 fn compute_baseline_106(series: &CnSeries<'_>) -> Option<f64> {
@@ -741,7 +729,9 @@ fn compute_baseline_150(series: &CnSeries<'_>) -> Option<f64> {
 }
 
 fn compute_baseline_155(series: &CnSeries<'_>) -> Option<f64> {
-    rolling_ratio_mean(&series.buy_volume, &series.volume, 150)
+    rolling_mean_last(&series.active_buy_ratio_240m, 150)
+        .ok()
+        .flatten()
 }
 
 fn compute_baseline_165(series: &CnSeries<'_>) -> Option<f64> {

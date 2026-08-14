@@ -56,6 +56,11 @@ const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
+const CN_5M_ROWS: usize = 5 * 60 / 5;
+const CN_15M_ROWS: usize = 15 * 60 / 5;
+const CN_30M_ROWS: usize = 30 * 60 / 5;
+const CN_120M_ROWS: usize = 120 * 60 / 5;
+const CN_240M_ROWS: usize = 240 * 60 / 5;
 const FIELD_OPEN: usize = 0;
 const FIELD_HIGH: usize = 1;
 const FIELD_LOW: usize = 2;
@@ -271,6 +276,185 @@ impl CnDepthStats5 {
     }
 }
 
+#[derive(Clone)]
+struct StrictRollingSum {
+    values: VecDeque<f64>,
+    capacity: usize,
+    finite_sum: f64,
+    invalid_count: usize,
+}
+
+impl StrictRollingSum {
+    fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "rolling-sum capacity must be positive");
+        Self {
+            values: VecDeque::with_capacity(capacity),
+            capacity,
+            finite_sum: 0.0,
+            invalid_count: 0,
+        }
+    }
+
+    fn push(&mut self, value: f64) {
+        if self.values.len() == self.capacity {
+            let removed = self.values.pop_front().expect("full rolling sum");
+            if removed.is_finite() {
+                self.finite_sum -= removed;
+            } else {
+                self.invalid_count = self.invalid_count.saturating_sub(1);
+            }
+        }
+        if value.is_finite() {
+            self.finite_sum += value;
+        } else {
+            self.invalid_count += 1;
+        }
+        self.values.push_back(value);
+    }
+
+    fn value(&self) -> Option<f64> {
+        if self.values.is_empty() || self.invalid_count > 0 || !self.finite_sum.is_finite() {
+            None
+        } else {
+            Some(self.finite_sum)
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CnTimeAggregateState {
+    buy_amount_5m: StrictRollingSum,
+    sell_amount_5m: StrictRollingSum,
+    net_buy_small_15m: StrictRollingSum,
+    small_order_15m: StrictRollingSum,
+    large_order_30m: StrictRollingSum,
+    medium_order_30m: StrictRollingSum,
+    small_order_30m: StrictRollingSum,
+    large_order_120m: StrictRollingSum,
+    medium_order_120m: StrictRollingSum,
+    small_order_120m: StrictRollingSum,
+    buy_amount_240m: StrictRollingSum,
+    sell_amount_240m: StrictRollingSum,
+}
+
+impl Default for CnTimeAggregateState {
+    fn default() -> Self {
+        Self {
+            buy_amount_5m: StrictRollingSum::new(CN_5M_ROWS),
+            sell_amount_5m: StrictRollingSum::new(CN_5M_ROWS),
+            net_buy_small_15m: StrictRollingSum::new(CN_15M_ROWS),
+            small_order_15m: StrictRollingSum::new(CN_15M_ROWS),
+            large_order_30m: StrictRollingSum::new(CN_30M_ROWS),
+            medium_order_30m: StrictRollingSum::new(CN_30M_ROWS),
+            small_order_30m: StrictRollingSum::new(CN_30M_ROWS),
+            large_order_120m: StrictRollingSum::new(CN_120M_ROWS),
+            medium_order_120m: StrictRollingSum::new(CN_120M_ROWS),
+            small_order_120m: StrictRollingSum::new(CN_120M_ROWS),
+            buy_amount_240m: StrictRollingSum::new(CN_240M_ROWS),
+            sell_amount_240m: StrictRollingSum::new(CN_240M_ROWS),
+        }
+    }
+}
+
+struct CnTimeAggregateValues {
+    active_buy_ratio_5m: f64,
+    large_pct_30m: f64,
+    large_pct_120m: f64,
+    small_pct_30m: f64,
+    small_pct_120m: f64,
+    net_buy_small_pct_15m: f64,
+    active_buy_ratio_240m: f64,
+}
+
+impl CnTimeAggregateState {
+    fn push(&mut self, values: &[f64; TRADE_FLOW_FEATURE_DIM]) -> CnTimeAggregateValues {
+        self.buy_amount_5m.push(values[FIELD_BUY_AMOUNT]);
+        self.sell_amount_5m.push(values[FIELD_SELL_AMOUNT]);
+        self.net_buy_small_15m.push(values[FIELD_NET_BUY_SMALL]);
+        self.small_order_15m.push(values[FIELD_SMALL_ORDER]);
+        self.large_order_30m.push(values[FIELD_LARGE_ORDER]);
+        self.medium_order_30m.push(values[FIELD_MEDIUM_ORDER]);
+        self.small_order_30m.push(values[FIELD_SMALL_ORDER]);
+        self.large_order_120m.push(values[FIELD_LARGE_ORDER]);
+        self.medium_order_120m.push(values[FIELD_MEDIUM_ORDER]);
+        self.small_order_120m.push(values[FIELD_SMALL_ORDER]);
+        self.buy_amount_240m.push(values[FIELD_BUY_AMOUNT]);
+        self.sell_amount_240m.push(values[FIELD_SELL_AMOUNT]);
+
+        CnTimeAggregateValues {
+            active_buy_ratio_5m: rolling_share(
+                self.buy_amount_5m.value(),
+                sum_options(self.buy_amount_5m.value(), self.sell_amount_5m.value()),
+                0.5,
+            ),
+            large_pct_30m: rolling_share(
+                self.large_order_30m.value(),
+                sum_three_options(
+                    self.large_order_30m.value(),
+                    self.medium_order_30m.value(),
+                    self.small_order_30m.value(),
+                ),
+                0.0,
+            ),
+            large_pct_120m: rolling_share(
+                self.large_order_120m.value(),
+                sum_three_options(
+                    self.large_order_120m.value(),
+                    self.medium_order_120m.value(),
+                    self.small_order_120m.value(),
+                ),
+                0.0,
+            ),
+            small_pct_30m: rolling_share(
+                self.small_order_30m.value(),
+                sum_three_options(
+                    self.large_order_30m.value(),
+                    self.medium_order_30m.value(),
+                    self.small_order_30m.value(),
+                ),
+                0.0,
+            ),
+            small_pct_120m: rolling_share(
+                self.small_order_120m.value(),
+                sum_three_options(
+                    self.large_order_120m.value(),
+                    self.medium_order_120m.value(),
+                    self.small_order_120m.value(),
+                ),
+                0.0,
+            ),
+            net_buy_small_pct_15m: rolling_share(
+                self.net_buy_small_15m.value(),
+                self.small_order_15m.value(),
+                0.0,
+            ),
+            active_buy_ratio_240m: rolling_share(
+                self.buy_amount_240m.value(),
+                sum_options(self.buy_amount_240m.value(), self.sell_amount_240m.value()),
+                0.5,
+            ),
+        }
+    }
+}
+
+fn sum_options(lhs: Option<f64>, rhs: Option<f64>) -> Option<f64> {
+    finite_opt(Some(lhs? + rhs?))
+}
+
+fn sum_three_options(first: Option<f64>, second: Option<f64>, third: Option<f64>) -> Option<f64> {
+    finite_opt(Some(first? + second? + third?))
+}
+
+fn rolling_share(numerator: Option<f64>, denominator: Option<f64>, zero_default: f64) -> f64 {
+    match (numerator, denominator) {
+        (Some(_), Some(denominator)) if denominator.abs() <= 1e-12 => zero_default,
+        (Some(numerator), Some(denominator)) => {
+            finite_opt(Some(numerator / denominator)).unwrap_or(f64::NAN)
+        }
+        _ => f64::NAN,
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct CnCalcState {
     pub factor_118_mid_price_diffs: VecDeque<f64>,
@@ -307,6 +491,13 @@ pub struct CnCalcState {
     pub net_buy_medium: VecDeque<f64>,
     pub net_buy_small: VecDeque<f64>,
     pub net_buy_amount: VecDeque<f64>,
+    pub active_buy_ratio_5m: VecDeque<f64>,
+    pub large_pct_30m: VecDeque<f64>,
+    pub large_pct_120m: VecDeque<f64>,
+    pub small_pct_30m: VecDeque<f64>,
+    pub small_pct_120m: VecDeque<f64>,
+    pub net_buy_small_pct_15m: VecDeque<f64>,
+    pub active_buy_ratio_240m: VecDeque<f64>,
     pub bid0v: VecDeque<f64>,
     pub mid_price: VecDeque<f64>,
     pub spread: VecDeque<f64>,
@@ -353,6 +544,7 @@ pub struct CnCalcState {
     pub bid_price_level_hist5: [VecDeque<f64>; CN_DEPTH_LEVELS],
     pub ask_price_level_hist5: [VecDeque<f64>; CN_DEPTH_LEVELS],
     pub corr_close_volume_14_last: Option<f64>,
+    time_aggregates: CnTimeAggregateState,
 }
 
 struct CnRollingStats {
@@ -506,6 +698,24 @@ impl CnCalcState {
         push_with_limit(&mut self.net_buy_medium, values[FIELD_NET_BUY_MEDIUM]);
         push_with_limit(&mut self.net_buy_small, values[FIELD_NET_BUY_SMALL]);
         push_with_limit(&mut self.net_buy_amount, values[FIELD_NET_BUY_AMOUNT]);
+
+        let aggregates = self.time_aggregates.push(values);
+        push_with_limit(
+            &mut self.active_buy_ratio_5m,
+            aggregates.active_buy_ratio_5m,
+        );
+        push_with_limit(&mut self.large_pct_30m, aggregates.large_pct_30m);
+        push_with_limit(&mut self.large_pct_120m, aggregates.large_pct_120m);
+        push_with_limit(&mut self.small_pct_30m, aggregates.small_pct_30m);
+        push_with_limit(&mut self.small_pct_120m, aggregates.small_pct_120m);
+        push_with_limit(
+            &mut self.net_buy_small_pct_15m,
+            aggregates.net_buy_small_pct_15m,
+        );
+        push_with_limit(
+            &mut self.active_buy_ratio_240m,
+            aggregates.active_buy_ratio_240m,
+        );
     }
 
     pub fn push_depth_metrics(&mut self, depth: &CnDepthSnapshot5) {
@@ -1825,6 +2035,13 @@ impl CnFactorEngine {
             net_buy_medium: SplitSlice::from_parts(state.net_buy_medium.as_slices()),
             net_buy_small: SplitSlice::from_parts(state.net_buy_small.as_slices()),
             net_buy_amount: SplitSlice::from_parts(state.net_buy_amount.as_slices()),
+            active_buy_ratio_5m: SplitSlice::from_parts(state.active_buy_ratio_5m.as_slices()),
+            large_pct_30m: SplitSlice::from_parts(state.large_pct_30m.as_slices()),
+            large_pct_120m: SplitSlice::from_parts(state.large_pct_120m.as_slices()),
+            small_pct_30m: SplitSlice::from_parts(state.small_pct_30m.as_slices()),
+            small_pct_120m: SplitSlice::from_parts(state.small_pct_120m.as_slices()),
+            net_buy_small_pct_15m: SplitSlice::from_parts(state.net_buy_small_pct_15m.as_slices()),
+            active_buy_ratio_240m: SplitSlice::from_parts(state.active_buy_ratio_240m.as_slices()),
             bid0v: SplitSlice::from_parts(state.bid0v.as_slices()),
             mid_price: SplitSlice::from_parts(state.mid_price.as_slices()),
             spread: SplitSlice::from_parts(state.spread.as_slices()),
@@ -3832,6 +4049,10 @@ impl CnFactorEngine {
         if n < 300 {
             return None;
         }
+        let required_price_start = n.saturating_sub(301);
+        if (required_price_start..n).any(|i| !series.mean_ask_price5[i].is_finite()) {
+            return None;
+        }
         let mut neg_diff = Vec::with_capacity(n);
         neg_diff.push(0.0);
         for i in 1..n {
@@ -5422,6 +5643,89 @@ mod tests {
             CnFormulaPlan::from_factor_names("missing-level", vec!["factor_013".to_string()])
                 .unwrap();
         assert!(replay.factor_values(&plan)[0].is_nan());
+    }
+
+    #[test]
+    fn reconstructed_time_aggregates_match_source_preprocessing() {
+        let mut values = [0.0; TRADE_FLOW_FEATURE_DIM];
+        values[FIELD_BUY_AMOUNT] = 30.0;
+        values[FIELD_SELL_AMOUNT] = 70.0;
+        values[FIELD_LARGE_ORDER] = 50.0;
+        values[FIELD_MEDIUM_ORDER] = 30.0;
+        values[FIELD_SMALL_ORDER] = 20.0;
+        values[FIELD_NET_BUY_SMALL] = 5.0;
+
+        let aggregate = CnTimeAggregateState::default().push(&values);
+        assert!((aggregate.active_buy_ratio_5m - 0.3).abs() < 1e-12);
+        assert!((aggregate.active_buy_ratio_240m - 0.3).abs() < 1e-12);
+        assert!((aggregate.large_pct_30m - 0.5).abs() < 1e-12);
+        assert!((aggregate.large_pct_120m - 0.5).abs() < 1e-12);
+        assert!((aggregate.small_pct_30m - 0.2).abs() < 1e-12);
+        assert!((aggregate.small_pct_120m - 0.2).abs() < 1e-12);
+        assert!((aggregate.net_buy_small_pct_15m - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reconstructed_time_aggregates_use_source_zero_activity_defaults() {
+        let aggregate = CnTimeAggregateState::default().push(&[0.0; TRADE_FLOW_FEATURE_DIM]);
+        assert_eq!(aggregate.active_buy_ratio_5m, 0.5);
+        assert_eq!(aggregate.active_buy_ratio_240m, 0.5);
+        assert_eq!(aggregate.large_pct_30m, 0.0);
+        assert_eq!(aggregate.large_pct_120m, 0.0);
+        assert_eq!(aggregate.small_pct_30m, 0.0);
+        assert_eq!(aggregate.small_pct_120m, 0.0);
+        assert_eq!(aggregate.net_buy_small_pct_15m, 0.0);
+    }
+
+    #[test]
+    fn reconstructed_time_aggregate_windows_evict_old_rows_exactly() {
+        let mut state = CnTimeAggregateState::default();
+        let mut values = [0.0; TRADE_FLOW_FEATURE_DIM];
+        values[FIELD_BUY_AMOUNT] = 1.0;
+        values[FIELD_SELL_AMOUNT] = 0.0;
+        for _ in 0..CN_5M_ROWS {
+            let aggregate = state.push(&values);
+            assert_eq!(aggregate.active_buy_ratio_5m, 1.0);
+        }
+
+        values[FIELD_BUY_AMOUNT] = 0.0;
+        values[FIELD_SELL_AMOUNT] = 1.0;
+        let aggregate = state.push(&values);
+        assert!(
+            (aggregate.active_buy_ratio_5m - (CN_5M_ROWS - 1) as f64 / CN_5M_ROWS as f64).abs()
+                < 1e-12
+        );
+        for _ in 1..CN_5M_ROWS {
+            state.push(&values);
+        }
+        assert_eq!(state.push(&values).active_buy_ratio_5m, 0.0);
+    }
+
+    #[test]
+    fn strict_rolling_sum_recovers_only_after_missing_value_leaves_window() {
+        let mut sum = StrictRollingSum::new(3);
+        sum.push(1.0);
+        sum.push(f64::NAN);
+        sum.push(3.0);
+        assert_eq!(sum.value(), None);
+        sum.push(4.0);
+        assert_eq!(sum.value(), None);
+        sum.push(5.0);
+        assert_eq!(sum.value(), Some(12.0));
+    }
+
+    #[test]
+    fn factor_052_checks_the_left_input_of_its_300_difference_window() {
+        let mut state = CnCalcState::default();
+        state
+            .mean_ask_price5
+            .extend((0..301).map(|index| 1_000.0 - index as f64));
+        let series = CnFactorEngine::build_symbol_series_from_state(&mut state);
+        assert!(CnFactorEngine::compute_factor_052(&series).is_some());
+
+        state.mean_ask_price5[0] = f64::NAN;
+        let series = CnFactorEngine::build_symbol_series_from_state(&mut state);
+        assert_eq!(CnFactorEngine::compute_factor_052(&series), None);
     }
 
     #[test]

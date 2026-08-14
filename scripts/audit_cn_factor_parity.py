@@ -16,7 +16,6 @@ import pandas as pd
 from generate_cn_factor_review import (
     FORMULA_REPAIRS,
     SOURCE_PATH,
-    SUBSTITUTIONS,
     analyze,
 )
 
@@ -91,7 +90,29 @@ def deterministic_frame(rows: int = 800) -> pd.DataFrame:
         data[f"ask{level}v"] = (
             8.0 + level * 2.0 + (index % (level + 4)) * 0.6
         )
-    return pd.DataFrame(data)
+    frame = pd.DataFrame(data)
+    windows = {
+        "5m": 60,
+        "15m": 180,
+        "30m": 360,
+        "120m": 1_440,
+        "240m": 2_880,
+    }
+    for name, size in windows.items():
+        large_sum = frame["large_order"].rolling(size, min_periods=1).sum()
+        medium_sum = frame["medium_order"].rolling(size, min_periods=1).sum()
+        small_sum = frame["small_order"].rolling(size, min_periods=1).sum()
+        total = large_sum + medium_sum + small_sum
+        frame[f"large_pct_{name}"] = (large_sum / total).fillna(0.0)
+        frame[f"small_pct_{name}"] = (small_sum / total).fillna(0.0)
+
+        net_buy_small_sum = frame["net_buy_small"].rolling(size, min_periods=1).sum()
+        frame[f"net_buy_small_pct_{name}"] = (net_buy_small_sum / small_sum).fillna(0.0)
+
+        buy_sum = frame["buy_amount"].rolling(size, min_periods=1).sum()
+        sell_sum = frame["sell_amount"].rolling(size, min_periods=1).sum()
+        frame[f"active_buy_ratio_{name}"] = (buy_sum / (buy_sum + sell_sum)).fillna(0.5)
+    return frame
 
 
 def load_python_source():
@@ -137,11 +158,10 @@ def main() -> int:
         name
         for name in names
         if dependencies[name].depth <= 5
-        and name not in SUBSTITUTIONS
         and name not in FORMULA_REPAIRS
     ]
-    if len(candidates) != 499:
-        raise RuntimeError(f"expected 499 preserved formulas, found {len(candidates)}")
+    if len(candidates) != 506:
+        raise RuntimeError(f"expected 506 preserved formulas, found {len(candidates)}")
 
     frame = deterministic_frame()
     source = load_python_source()

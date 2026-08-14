@@ -16,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "final_factor_pool_update20260123.py"
 DOC_PATH = ROOT / "docs/cn_features_factor_review.md"
 MANIFEST_PATH = ROOT / "src/factor_pub/cn_features/review_manifest.rs"
+RUST_FACTOR_ENUM_PATH = ROOT / "src/factor_pub/cn_features/factor_enum.rs"
+RUST_BASELINES_PATH = ROOT / "src/factor_pub/cn_features/baselines.rs"
+RUST_OPV_PATH = ROOT / "src/factor_pub/cn_features/opv_factors.rs"
+RUST_PLAIN_PATH = ROOT / "src/factor_pub/cn_features/plain_factors.rs"
+RUST_APP_PATH = ROOT / "src/factor_pub/cn_features/app.rs"
 
 TARGET_NAME = re.compile(
     r"^(?:factor_\d{3}|factor_trades_\d{3}|baseline_\d{3}|"
@@ -60,7 +65,7 @@ TRADE_FIELDS = (
 )
 TRADE_FIELD_ORDER = {name: index for index, name in enumerate(TRADE_FIELDS)}
 
-MISSING_UPSTREAM = {
+DERIVED_AGGREGATE_FIELDS = {
     "active_buy_ratio_5m",
     "large_pct_30m",
     "large_pct_120m",
@@ -69,7 +74,7 @@ MISSING_UPSTREAM = {
     "net_buy_small_pct_15m",
     "active_buy_ratio_240m",
 }
-KNOWN_DATA_FIELDS = set(TRADE_FIELDS) | MISSING_UPSTREAM
+KNOWN_DATA_FIELDS = set(TRADE_FIELDS) | DERIVED_AGGREGATE_FIELDS
 
 DIRECTION_FIELDS = {
     "buy_amount",
@@ -100,34 +105,34 @@ ORDER_SIZE_FIELDS = {
 OHLC_APPROX_FIELDS = {"open", "high", "low"}
 VWAP_FIELDS = {"vwap", "buy_vwap", "sell_vwap"}
 
-SUBSTITUTIONS = {
+RECONSTRUCTED_AGGREGATES = {
     "baseline_048": (
         "active_buy_ratio_5m",
-        "30-row mean of buy_volume / volume; source aggregation and horizon changed",
+        "5-minute buy_amount share reconstructed from 60 five-second rows before the source 30-row mean",
     ),
     "baseline_075": (
         "large_pct_30m",
-        "volume / mean(volume, 300); large-order meaning is lost",
+        "30-minute large_order share reconstructed from 360 five-second rows before the source 300-row ratio",
     ),
     "baseline_078": (
         "large_pct_120m",
-        "amount / mean(amount, 300); large-order meaning and horizon are lost",
+        "120-minute large_order share reconstructed from 1,440 five-second rows before the source 300-row ratio",
     ),
     "baseline_094": (
         "small_pct_30m",
-        "volume / mean(volume, 300); small-order meaning is lost",
+        "30-minute small_order share reconstructed from 360 five-second rows before the source 300-row ratio",
     ),
     "baseline_095": (
         "small_pct_120m",
-        "amount / mean(amount, 300); small-order meaning and horizon are lost",
+        "120-minute small_order share reconstructed from 1,440 five-second rows before the source 300-row ratio",
     ),
     "baseline_102": (
         "net_buy_small_pct_15m",
-        "120-row mean of net_buy_pct; small-order meaning and horizon changed",
+        "15-minute net_buy_small / small_order reconstructed from 180 five-second rows before the source 120-row mean",
     ),
     "baseline_155": (
         "active_buy_ratio_240m",
-        "150-row mean of buy_volume / volume; upstream 240-minute aggregate is unavailable",
+        "240-minute buy_amount share reconstructed from 2,880 five-second rows before the source 150-row mean",
     ),
 }
 
@@ -149,7 +154,10 @@ RESTORED_IMPLEMENTATIONS = {
     "factor_049": "restored source five-level bid-price mean before the 30-row sample std",
     "factor_050": "restored source five-level ask-price mean before the 30-row sample std",
     "factor_051": "restored source five-level ask-price mean",
-    "factor_052": "restored source five-level ask-price mean",
+    "factor_052": (
+        "restored source five-level ask-price mean; its 300-difference window "
+        "rejects missing observations instead of masking NaN comparisons as zero"
+    ),
     "factor_093": "restored source five-level ask-price mean",
     "factor_094": "restored source five-level ask-price mean",
     "factor_118": "restored source second-level mid and native five-level bid VWAP",
@@ -158,6 +166,12 @@ RESTORED_IMPLEMENTATIONS = {
 }
 
 EXPECTED_DEPTH_COUNTS = Counter({0: 455, 1: 23, 5: 32, 10: 54, 15: 17, 20: 51})
+EXPECTED_RUST_ROUTE_COUNTS = {
+    "baselines": 200,
+    "opv": 205,
+    "plain": 59,
+    "direct": 168,
+}
 
 
 @dataclass(frozen=True)
@@ -370,6 +384,97 @@ def analyze(source: str) -> tuple[list[str], dict[str, Dependencies]]:
     return target_names, dependencies
 
 
+def _assert_unique(label: str, values: list[str]) -> None:
+    duplicates = sorted(name for name, count in Counter(values).items() if count != 1)
+    if duplicates:
+        raise RuntimeError(f"duplicate {label} entries: {duplicates}")
+
+
+def audit_rust_routes(source_names: list[str]) -> None:
+    """Require every source factor to have exactly one Rust dispatcher owner."""
+    factor_enum = RUST_FACTOR_ENUM_PATH.read_text()
+    variant_pairs = re.findall(
+        r'Self::([A-Za-z0-9]+)\s*=>\s*"([^"]+)"', factor_enum
+    )
+    variants = [variant for variant, _ in variant_pairs]
+    rust_names = [name for _, name in variant_pairs]
+    _assert_unique("CnFactorId variant", variants)
+    _assert_unique("CnFactorId source name", rust_names)
+    variant_to_name = dict(variant_pairs)
+
+    baselines_source = RUST_BASELINES_PATH.read_text()
+    supported_match = re.search(
+        r"pub const SUPPORTED_BASELINES:.*?=\s*&\[(.*?)\];",
+        baselines_source,
+        re.DOTALL,
+    )
+    if supported_match is None:
+        raise RuntimeError("could not locate SUPPORTED_BASELINES")
+    supported_baselines = re.findall(
+        r'"(baseline_\d{3})"', supported_match.group(1)
+    )
+    baseline_routes = re.findall(
+        r'^\s*"(baseline_\d{3})"\s*=>\s*compute_baseline_',
+        baselines_source,
+        re.MULTILINE,
+    )
+    if supported_baselines != baseline_routes:
+        raise RuntimeError(
+            "SUPPORTED_BASELINES and compute_baseline dispatch differ: "
+            f"supported_only={sorted(set(supported_baselines) - set(baseline_routes))}, "
+            f"dispatch_only={sorted(set(baseline_routes) - set(supported_baselines))}"
+        )
+
+    route_variants = {
+        "opv": re.findall(
+            r"^\s*([A-Za-z][A-Za-z0-9]+)\s*=>\s*compute_[a-z0-9_]+,\s*$",
+            RUST_OPV_PATH.read_text(),
+            re.MULTILINE,
+        ),
+        "plain": re.findall(
+            r"^\s*([A-Za-z][A-Za-z0-9]+)\s*=>\s*compute_[a-z0-9_]+\([a-z]+\),\s*$",
+            RUST_PLAIN_PATH.read_text(),
+            re.MULTILINE,
+        ),
+        "direct": re.findall(
+            r"^\s*Some\(CnFactorId::([A-Za-z0-9]+)\)\s*=>\s*\{",
+            RUST_APP_PATH.read_text(),
+            re.MULTILINE,
+        ),
+    }
+    routes: dict[str, list[str]] = {"baselines": baseline_routes}
+    for label, route in route_variants.items():
+        _assert_unique(f"{label} dispatcher", route)
+        unknown = sorted(set(route) - set(variant_to_name))
+        if unknown:
+            raise RuntimeError(f"unknown CnFactorId variants in {label} dispatcher: {unknown}")
+        routes[label] = [variant_to_name[variant] for variant in route]
+
+    for label, expected_count in EXPECTED_RUST_ROUTE_COUNTS.items():
+        _assert_unique(f"{label} route", routes[label])
+        if len(routes[label]) != expected_count:
+            raise RuntimeError(
+                f"expected {expected_count} {label} routes, found {len(routes[label])}"
+            )
+
+    ownership = Counter(name for route in routes.values() for name in route)
+    duplicate_owners = sorted(name for name, count in ownership.items() if count != 1)
+    source_set = set(source_names)
+    rust_set = set(rust_names)
+    if rust_set != source_set:
+        raise RuntimeError(
+            "CnFactorId/source factor mismatch: "
+            f"source_only={sorted(source_set - rust_set)}, rust_only={sorted(rust_set - source_set)}"
+        )
+    missing = sorted(source_set - set(ownership))
+    extra = sorted(set(ownership) - source_set)
+    if duplicate_owners or missing or extra:
+        raise RuntimeError(
+            "Rust factor route ownership mismatch: "
+            f"duplicate={duplicate_owners}, missing={missing}, extra={extra}"
+        )
+
+
 def _book_dependency_summary(fields: frozenset[str]) -> str:
     if not fields:
         return ""
@@ -410,10 +515,10 @@ def _status_and_reason(name: str, item: Dependencies) -> tuple[str, str]:
     reasons: list[str] = []
     fields = set(item.data_fields)
 
-    if name in SUBSTITUTIONS:
-        missing, replacement = SUBSTITUTIONS[name]
-        statuses.append("upstream substitution")
-        reasons.append(f"missing `{missing}`; CN uses {replacement}")
+    if name in RECONSTRUCTED_AGGREGATES:
+        field, reconstruction = RECONSTRUCTED_AGGREGATES[name]
+        statuses.append("upstream reconstruction")
+        reasons.append(f"`{field}` is not stored in the 32-field input; CN uses {reconstruction}")
 
     if item.depth > 5:
         statuses.append("five-level redefinition")
@@ -491,7 +596,8 @@ def render_document(names: list[str], dependencies: dict[str, Dependencies]) -> 
         f"- {deep_count} source factors used more than five levels and therefore have a material five-level redefinition.",
         "- `structure preserved` means field selection and operation structure are preserved. It is not a claim of predictive value.",
         "- `weakened trade semantics` identifies inferred direction, inferred counts, or inferred order-size buckets.",
-        "- `upstream substitution`, `five-level redefinition`, and `formula repair` require explicit research approval.",
+        "- `upstream reconstruction` restores the source preprocessing formula from five-second CN trade fields; its economic meaning still inherits the documented CN trade approximations.",
+        "- `five-level redefinition` and `formula repair` require explicit research approval.",
         "- A missing required input remains NULL. Missing book data does not invalidate source trade/bar-only factors.",
         "",
         "Legacy source-depth distribution:",
@@ -553,6 +659,7 @@ def render_document(names: list[str], dependencies: dict[str, Dependencies]) -> 
 
 def render_manifest(names: list[str], dependencies: dict[str, Dependencies]) -> str:
     trade_only = [name for name in names if dependencies[name].depth == 0]
+    book = [name for name in names if dependencies[name].depth > 0]
     lines = [
         "// @generated by scripts/generate_cn_factor_review.py; do not edit.",
         "// Test-only metadata. Runtime factor dispatch must not depend on this list.",
@@ -560,6 +667,9 @@ def render_manifest(names: list[str], dependencies: dict[str, Dependencies]) -> 
         "pub(super) const LEGACY_TRADE_ONLY_FACTORS: &[&str] = &[",
     ]
     lines.extend(f'    "{name}",' for name in trade_only)
+    lines.extend(["];"])
+    lines.extend(["", "pub(super) const LEGACY_BOOK_FACTORS: &[&str] = &["])
+    lines.extend(f'    "{name}",' for name in book)
     lines.extend(["];"])
     lines.append("")
     return "\n".join(lines)
@@ -583,6 +693,7 @@ def main() -> int:
     args = parser.parse_args()
 
     names, dependencies = analyze(SOURCE_PATH.read_text())
+    audit_rust_routes(names)
     changed = False
     changed |= update(DOC_PATH, render_document(names, dependencies), args.check)
     changed |= update(MANIFEST_PATH, render_manifest(names, dependencies), args.check)

@@ -131,23 +131,32 @@ fields remain missing; they are not reconstructed from volume or split into
 fixed proportions. Zero volume or amount is not rewritten to an epsilon, and a
 missing trade field does not cause the whole row to be dropped.
 
-`vwap`, `buy_vwap`, and `sell_vwap` are hidden when the volume multiple is not
-verified or when the row has no volume. Factors that require those fields then
-return NULL. The factor engine does not infer a multiplier from depth.
+`vwap`, `buy_vwap`, and `sell_vwap` are hidden only when the volume multiple is
+not verified. A legitimate no-trade row can carry the baseline contract's
+same-segment compatibility-filled VWAP values; those inputs are preserved even
+when `volume == 0`. An input VWAP that is itself `NaN` still propagates. The
+factor engine does not infer a multiplier from depth.
 
-Seven legacy baselines referenced feature columns that are not present in the
-domestic 32-field input. They are registered, but their CN definitions are
-material substitutions and therefore need explicit factor-by-factor approval:
+Seven legacy baselines reference time-aggregate columns that are not stored in
+the domestic 32-field row. The CN engine reconstructs them in state from the
+same five-second trade fields and upstream preprocessing formulas before
+applying each baseline formula:
 
-| Factor | Missing legacy input | Current CN definition | Review concern |
+| Factor | Reconstructed input | Five-second reconstruction | Baseline operation |
 | --- | --- | --- | --- |
-| `baseline_048` | `active_buy_ratio_5m` | 30-row mean of `buy_volume / volume` | Horizon and source aggregation changed |
-| `baseline_075` | `large_pct_30m` | `volume / mean(volume, 300)` | Large-order meaning is lost |
-| `baseline_078` | `large_pct_120m` | `amount / mean(amount, 300)` | Large-order meaning and horizon are lost |
-| `baseline_094` | `small_pct_30m` | `volume / mean(volume, 300)` | Small-order meaning is lost; duplicates `baseline_075` |
-| `baseline_095` | `small_pct_120m` | `amount / mean(amount, 300)` | Small-order meaning is lost; duplicates `baseline_078` |
-| `baseline_102` | `net_buy_small_pct_15m` | 120-row mean of `net_buy_pct` | Small-order and horizon meaning changed |
-| `baseline_155` | `active_buy_ratio_240m` | 150-row mean of `buy_volume / volume` | Upstream 240-minute aggregation is unavailable |
+| `baseline_048` | `active_buy_ratio_5m` | `sum_60(buy_amount) / (sum_60(buy_amount) + sum_60(sell_amount))` | 30-row mean |
+| `baseline_075` | `large_pct_30m` | `sum_360(large_order) / sum_360(large_order + medium_order + small_order)` | value / 300-row mean |
+| `baseline_078` | `large_pct_120m` | `sum_1440(large_order) / sum_1440(large_order + medium_order + small_order)` | value / 300-row mean |
+| `baseline_094` | `small_pct_30m` | `sum_360(small_order) / sum_360(large_order + medium_order + small_order)` | value / 300-row mean |
+| `baseline_095` | `small_pct_120m` | `sum_1440(small_order) / sum_1440(large_order + medium_order + small_order)` | value / 300-row mean |
+| `baseline_102` | `net_buy_small_pct_15m` | `sum_180(net_buy_small) / sum_180(small_order)` | 120-row mean |
+| `baseline_155` | `active_buy_ratio_240m` | `sum_2880(buy_amount) / (sum_2880(buy_amount) + sum_2880(sell_amount))` | 150-row mean |
+
+The aggregate windows use `min_periods=1` at segment start. A zero activity
+denominator maps to `0.5` for active-buy ratios and to `0` for order-size
+shares, matching the upstream preprocessing defaults. A missing required CN
+field is not skipped: the reconstructed value stays missing until that row
+leaves its aggregate window. Segment and trading-day resets clear these states.
 
 Four additional source formulas were repaired rather than copied literally:
 
@@ -162,9 +171,9 @@ Four additional source formulas were repaired rather than copied literally:
   be reviewed for research value.
 
 All other factors retain their legacy field selection and operation structure,
-subject to the explicit five-level changes, upstream substitutions, and formula
-repairs above. They can still return NULL if a field they actually read is
-absent in the domestic baseline.
+subject to the explicit five-level changes, reconstructed upstream aggregates,
+and formula repairs above. They can still return NULL if a field they actually
+read is absent in the domestic baseline.
 
 ## Formula and missing-value verification
 
@@ -180,13 +189,21 @@ fallback values. The implementation audit restored these source definitions:
 - `TD_TI_033` honors `rolling(300, min_periods=100)`; the shared rolling
   correlation operator now applies its `min_periods` argument.
 
-The generated test-only manifest contains the 455 source trade/bar-only
-factors. After 800 deterministic warm-up rows, a branch with no book must keep
-every one of those factors finite and numerically equal to a branch with a
-valid book. Separate exhaustive tests inject `NaN` into each native depth field
-and verify that any factor which remains available does not skip or consume the
-missing value. Representative side/level tests additionally verify that an
-unrelated ask side or inner level remains available.
+The generated test-only manifest partitions all 632 source factors into 455
+trade/bar-only factors and 177 book factors. A branch with no book from its
+first row must keep every trade/bar-only factor finite and numerically equal to
+a valid-book branch after deterministic warm-up. Removing the current whole
+book after warm-up must make all 177 book factors NULL. Separate exhaustive
+tests inject `NaN` into each native depth field and verify that any factor which
+remains available does not skip or consume the missing value. Representative
+side/level tests additionally verify that an unrelated ask side or inner level
+remains available. `factor_052` explicitly checks all price inputs required by
+its 300-difference ask-price window rather than converting `NaN < 0` to a zero
+contribution.
+
+The review generator also audits Rust dispatcher ownership. The current route
+partition is 200 baseline, 205 OPV, 59 plain, and 168 direct implementations;
+every source factor must appear in exactly one route.
 
 For formulas whose source used at most five levels and that were not explicitly
 redefined or repaired, run the reproducible Python/Rust audit in an environment
@@ -196,10 +213,11 @@ with NumPy and pandas:
 python3 scripts/audit_cn_factor_parity.py
 ```
 
-The current audit covers 499 factors at rows 199, 399, and 799. All 1,497
-comparisons pass with a relative tolerance of `1e-8`. The 122 deep-book
-redefinitions, seven upstream substitutions, and five deliberate formula
-repairs are excluded from parity by definition and are itemized in the review.
+The current audit covers 506 factors at rows 199, 399, and 799. All 1,518
+comparisons pass with a relative tolerance of `1e-8`. This includes the seven
+reconstructed upstream aggregates. The 122 deep-book redefinitions and five
+deliberate formula repairs are excluded from legacy-formula parity by
+definition and are itemized in the review; these sets overlap by one factor.
 
 ## Trading day and output
 
