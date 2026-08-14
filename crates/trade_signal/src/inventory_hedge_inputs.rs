@@ -18,13 +18,12 @@ thread_local! {
 
 pub fn resolve_inventory_hedge_signal_inputs(
     factor_value_hub: &mut FactorValueHub,
-    model_output_hub: &mut ModelOutputHub,
-    model_service: &str,
+    model_output_hub: Option<&mut ModelOutputHub>,
+    model_service: Option<&str>,
     symbol: &str,
     venue: TradingVenue,
     enable_return_score_adjust_hedge: bool,
 ) -> Result<(f64, Option<f64>, f64), String> {
-    let score_lookup = model_output_hub.lookup_score(model_service, symbol, venue);
     let factor_lookup =
         factor_value_hub.lookup_factor_value_with_last_valid_fallback(symbol, venue);
     let volatility = factor_lookup
@@ -36,41 +35,67 @@ pub fn resolve_inventory_hedge_signal_inputs(
                 factor_lookup.key, factor_lookup.note
             )
         })?;
-    let signal = if enable_return_score_adjust_hedge {
-        if score_lookup.score.filter(|v| v.is_finite()).is_none()
-            && should_log_missing_hedge_score(
-                symbol,
-                &score_lookup.service_name,
-                &score_lookup.note,
-            )
-        {
-            warn!(
-                "InventoryHedge missing return_score, fallback to neutral symbol={} venue={:?} service={} note={} volatility={:.8} signal_qtl={:.2}",
-                symbol,
-                venue,
-                score_lookup.service_name,
-                score_lookup.note,
-                volatility,
-                INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE
-            );
-        }
-        resolve_inventory_hedge_effective_signal(
-            enable_return_score_adjust_hedge,
-            score_lookup.score,
-            Some(volatility),
-            &score_lookup.service_name,
-            &score_lookup.note,
-        )?
-    } else {
-        INVENTORY_HEDGE_NEUTRAL_SIGNAL
-    };
+
+    let (signal, signal_qtl) = resolve_inventory_hedge_model_inputs(
+        model_output_hub,
+        model_service,
+        symbol,
+        venue,
+        enable_return_score_adjust_hedge,
+        volatility,
+    )?;
+    Ok((signal, signal_qtl, volatility))
+}
+
+fn resolve_inventory_hedge_model_inputs(
+    model_output_hub: Option<&mut ModelOutputHub>,
+    model_service: Option<&str>,
+    symbol: &str,
+    venue: TradingVenue,
+    enable_return_score_adjust_hedge: bool,
+    volatility: f64,
+) -> Result<(f64, Option<f64>), String> {
+    if !enable_return_score_adjust_hedge {
+        return Ok((
+            INVENTORY_HEDGE_NEUTRAL_SIGNAL,
+            Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE),
+        ));
+    }
+
+    let model_output_hub = model_output_hub.ok_or_else(|| {
+        "model_output_hub unavailable while return score adjust is enabled".to_string()
+    })?;
+    let model_service = model_service.ok_or_else(|| {
+        "return_model_service unavailable while return score adjust is enabled".to_string()
+    })?;
+    let score_lookup = model_output_hub.lookup_score(model_service, symbol, venue);
+    if score_lookup.score.filter(|v| v.is_finite()).is_none()
+        && should_log_missing_hedge_score(symbol, &score_lookup.service_name, &score_lookup.note)
+    {
+        warn!(
+            "InventoryHedge missing return_score, fallback to neutral symbol={} venue={:?} service={} note={} volatility={:.8} signal_qtl={:.2}",
+            symbol,
+            venue,
+            score_lookup.service_name,
+            score_lookup.note,
+            volatility,
+            INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE
+        );
+    }
+    let signal = resolve_inventory_hedge_effective_signal(
+        enable_return_score_adjust_hedge,
+        score_lookup.score,
+        Some(volatility),
+        &score_lookup.service_name,
+        &score_lookup.note,
+    )?;
     let signal_qtl = resolve_inventory_hedge_signal_quantile(
         enable_return_score_adjust_hedge,
         score_lookup.score,
         score_lookup.score_quantile,
         Some(volatility),
     );
-    Ok((signal, signal_qtl, volatility))
+    Ok((signal, signal_qtl))
 }
 
 fn should_log_missing_hedge_score(symbol: &str, service_name: &str, note: &str) -> bool {
@@ -156,5 +181,21 @@ mod tests {
             resolve_inventory_hedge_signal_quantile(true, Some(0.2), Some(0.9), Some(0.001)),
             None
         );
+    }
+
+    #[test]
+    fn disabled_return_score_adjust_does_not_require_model() {
+        let (signal, signal_qtl) = resolve_inventory_hedge_model_inputs(
+            None,
+            None,
+            "BTCUSDT",
+            TradingVenue::OkexFutures,
+            false,
+            0.001,
+        )
+        .unwrap();
+
+        assert_eq!(signal, INVENTORY_HEDGE_NEUTRAL_SIGNAL);
+        assert_eq!(signal_qtl, Some(INVENTORY_HEDGE_NEUTRAL_SIGNAL_QUANTILE));
     }
 }

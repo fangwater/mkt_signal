@@ -2015,11 +2015,16 @@ fn resolve_arb_hedge_build_params(
     hedge_venue: TradingVenue,
 ) -> Option<ArbHedgeBuildParams> {
     match ArbDecision::with_state_mut(|arb| {
-        let model_service = arb
-            .return_model_service
-            .clone()
-            .ok_or_else(|| "return_model_service unavailable".to_string())?;
         let enable_return_score_adjust_hedge = arb.enable_return_score_adjust_hedge;
+        let model_service = if enable_return_score_adjust_hedge {
+            Some(
+                arb.return_model_service
+                    .clone()
+                    .ok_or_else(|| "return_model_service unavailable".to_string())?,
+            )
+        } else {
+            None
+        };
         let amount_cap_u = arb.resolve_order_amount_u(symbol);
         let hedge_vol_multiplier = arb.hedge_vol_multiplier;
         let hedge_offset_ratio = arb.hedge_offset_ratio;
@@ -2033,14 +2038,19 @@ fn resolve_arb_hedge_build_params(
             .hedge_factor_value_hub
             .as_mut()
             .ok_or_else(|| "hedge_factor_value_hub unavailable".to_string())?;
-        let model_output_hub = arb
-            .model_output_hub
-            .as_mut()
-            .ok_or_else(|| "model_output_hub unavailable".to_string())?;
+        let model_output_hub = if enable_return_score_adjust_hedge {
+            Some(
+                arb.model_output_hub
+                    .as_mut()
+                    .ok_or_else(|| "model_output_hub unavailable".to_string())?,
+            )
+        } else {
+            None
+        };
         let (signal, signal_qtl, volatility) = resolve_inventory_hedge_signal_inputs(
             hedge_factor_value_hub,
             model_output_hub,
-            &model_service,
+            model_service.as_deref(),
             symbol,
             hedge_venue,
             enable_return_score_adjust_hedge,

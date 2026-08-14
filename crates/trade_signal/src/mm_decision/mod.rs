@@ -548,8 +548,8 @@ impl MmDecision {
         let model_service = self.state.return_model_service.clone();
         let (signal, signal_qtl, volatility) = match resolve_inventory_hedge_signal_inputs(
             &mut self.state.factor_value_hub,
-            &mut self.state.model_output_hub,
-            model_service.as_deref().unwrap_or("-"),
+            Some(&mut self.state.model_output_hub),
+            Some(model_service.as_deref().unwrap_or("-")),
             &symbol,
             self.state.hedge_venue,
             self.state.enable_return_score_adjust_hedge,
