@@ -1,19 +1,15 @@
-//! Fusion Factor 数据通路应用
+//! 国内期货因子数据通路应用
 //!
-//! 订阅 trade_flow_feature（包含 trade + depth）并触发融合因子计算。
-//! 当前先落地 factor_118，后续在同一框架上扩展全部因子。
+//! 使用独立的成交字段和原生五档盘口计算完整 `cn_features` 注册表。
 
 #![allow(clippy::needless_range_loop)]
 
 use super::baselines as baseline_engine;
 use super::math::{
-    pct_change_last, rolling_corr_last, rolling_kurt_last, rolling_mean_at_from_series,
-    rolling_mean_last, rolling_mean_last_opt_from_series, rolling_mean_last_with_min_periods,
-    rolling_mean_series, rolling_mean_series_opt, rolling_rank_last, rolling_skew_last,
-    rolling_std_last, rolling_sum_at_from_series, rolling_sum_at_opt_from_series,
-    rolling_sum_last_from_series, rolling_sum_last_opt_from_series,
-    rolling_sum_last_with_min_periods, rolling_sum_series, rolling_sum_series_opt,
-    tail_skew_last_opt,
+    pct_change_last, rolling_kurt_last, rolling_mean_at_from_series, rolling_mean_last,
+    rolling_mean_last_opt_from_series, rolling_mean_last_with_min_periods, rolling_rank_last,
+    rolling_skew_last, rolling_std_last, rolling_sum_at_opt_from_series,
+    rolling_sum_last_with_min_periods, tail_skew_last_opt,
 };
 use super::view::{CnSeries, F64SeriesView, OptF64SeriesView, SplitSlice};
 use anyhow::{bail, Context, Result};
@@ -60,8 +56,6 @@ const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
 const ROLLING_CORR_CLOSE_VOLUME_14_WINDOW: usize = 14;
-const ROLLING_CORR_OPEN_VOLUME_300_WINDOW: usize = 300;
-const ROLLING_CORR_MID_MIDVOL_300_WINDOW: usize = 300;
 const FIELD_OPEN: usize = 0;
 const FIELD_HIGH: usize = 1;
 const FIELD_LOW: usize = 2;
@@ -330,14 +324,12 @@ pub struct CnCalcState {
     pub outer_ask_price: VecDeque<f64>,
     pub outer_level_volume: VecDeque<f64>,
     pub mean_bid_amount5: VecDeque<f64>,
-    pub mean_bid_price3: VecDeque<f64>,
     pub mean_bid_price5: VecDeque<f64>,
-    pub avg_ask_price3: VecDeque<f64>,
     pub mean_ask_price5: VecDeque<f64>,
     pub ask_pv5_mean: VecDeque<f64>,
     pub bid_pv5_mean: VecDeque<f64>,
     pub factor_031_ratio: VecDeque<f64>,
-    pub factor_119_mid_minus_ask_vwap3: VecDeque<f64>,
+    pub factor_119_mid_minus_ask_vwap5: VecDeque<f64>,
     pub total_volume5_sum: VecDeque<f64>,
     pub median_all_price10: VecDeque<f64>,
     pub factor_152_prev_price_diff5: Option<[f64; CN_DEPTH_LEVELS]>,
@@ -361,14 +353,10 @@ pub struct CnCalcState {
     pub bid_price_level_hist5: [VecDeque<f64>; CN_DEPTH_LEVELS],
     pub ask_price_level_hist5: [VecDeque<f64>; CN_DEPTH_LEVELS],
     pub corr_close_volume_14_last: Option<f64>,
-    pub corr_open_volume_300_last: Option<f64>,
-    pub corr_mid_midvol_300_last: Option<f64>,
 }
 
 struct CnRollingStats {
     corr_close_volume_14: RollingWelfordCovariance,
-    corr_open_volume_300: RollingWelfordCovariance,
-    corr_mid_midvol_300: RollingWelfordCovariance,
 }
 
 impl Default for CnRollingStats {
@@ -377,10 +365,6 @@ impl Default for CnRollingStats {
             corr_close_volume_14: RollingWelfordCovariance::new(
                 ROLLING_CORR_CLOSE_VOLUME_14_WINDOW,
             ),
-            corr_open_volume_300: RollingWelfordCovariance::new(
-                ROLLING_CORR_OPEN_VOLUME_300_WINDOW,
-            ),
-            corr_mid_midvol_300: RollingWelfordCovariance::new(ROLLING_CORR_MID_MIDVOL_300_WINDOW),
         }
     }
 }
@@ -416,38 +400,17 @@ impl CnReplayState {
         let depth = depth.map(|snapshot| CnDepthStats5::from_snapshot(&snapshot));
         self.state.push_native_bar(ts_ms, values);
         self.state.push_optional_depth_stats(depth.as_ref());
-        self.update_native_rolling(values, depth.as_ref());
+        self.update_native_rolling(values);
         self.latest_depth = depth;
         Ok(())
     }
 
-    fn update_native_rolling(
-        &mut self,
-        values: &[f64; TRADE_FLOW_FEATURE_DIM],
-        depth: Option<&CnDepthStats5>,
-    ) {
-        let open = values[FIELD_OPEN];
+    fn update_native_rolling(&mut self, values: &[f64; TRADE_FLOW_FEATURE_DIM]) {
         let close = values[FIELD_CLOSE];
         let volume = values[FIELD_VOLUME];
-        self.rolling.corr_open_volume_300.push(open, volume);
         self.rolling.corr_close_volume_14.push(close, volume);
-        self.state.corr_open_volume_300_last =
-            finite_opt(self.rolling.corr_open_volume_300.corr_strict());
         self.state.corr_close_volume_14_last =
             finite_opt(self.rolling.corr_close_volume_14.corr_strict());
-
-        if let Some(depth) = depth {
-            let (bid0p, bid0v) = depth.best_bid();
-            let (ask0p, ask0v) = depth.best_ask();
-            self.rolling
-                .corr_mid_midvol_300
-                .push((ask0p + bid0p) / 2.0, (bid0v + ask0v) / 2.0);
-            self.state.corr_mid_midvol_300_last =
-                finite_opt(self.rolling.corr_mid_midvol_300.corr_strict());
-        } else {
-            self.rolling.corr_mid_midvol_300.push(f64::NAN, f64::NAN);
-            self.state.corr_mid_midvol_300_last = None;
-        }
     }
 
     pub fn baseline_values(&mut self, names: &[String]) -> Vec<f64> {
@@ -576,14 +539,12 @@ impl CnCalcState {
             &mut self.outer_ask_price,
             &mut self.outer_level_volume,
             &mut self.mean_bid_amount5,
-            &mut self.mean_bid_price3,
             &mut self.mean_bid_price5,
-            &mut self.avg_ask_price3,
             &mut self.mean_ask_price5,
             &mut self.ask_pv5_mean,
             &mut self.bid_pv5_mean,
             &mut self.factor_031_ratio,
-            &mut self.factor_119_mid_minus_ask_vwap3,
+            &mut self.factor_119_mid_minus_ask_vwap5,
             &mut self.total_volume5_sum,
             &mut self.median_all_price10,
             &mut self.ask_vwap5,
@@ -661,12 +622,10 @@ impl CnCalcState {
             &mut self.mean_bid_amount5,
             depth.mean_bid_amount(CN_DEPTH_LEVELS),
         );
-        push_with_limit(&mut self.mean_bid_price3, depth.mean_bid_price(3));
         push_with_limit(
             &mut self.mean_bid_price5,
             depth.mean_bid_price(CN_DEPTH_LEVELS),
         );
-        push_with_limit(&mut self.avg_ask_price3, depth.mean_ask_price(3));
         push_with_limit(
             &mut self.mean_ask_price5,
             depth.mean_ask_price(CN_DEPTH_LEVELS),
@@ -710,11 +669,12 @@ impl CnCalcState {
         };
         push_with_limit(&mut self.ask_vwap_diff_3_5, ask_vwap_diff);
         push_with_limit(&mut self.ask_vwap5, ask_vwap5.unwrap_or(f64::NAN));
-        let factor_119_diff = ask_vwap3
-            .map(|v| mid - v)
+        let second_level_mid = (depth.bid_price(1) + depth.ask_price(1)) / 2.0;
+        let factor_119_diff = ask_vwap5
+            .map(|v| second_level_mid - v)
             .filter(|v| v.is_finite())
             .unwrap_or(f64::NAN);
-        push_with_limit(&mut self.factor_119_mid_minus_ask_vwap3, factor_119_diff);
+        push_with_limit(&mut self.factor_119_mid_minus_ask_vwap5, factor_119_diff);
 
         let ask_mean5 = depth.mean_ask_amount(CN_DEPTH_LEVELS);
         push_with_limit(&mut self.ask_mean_amount5, ask_mean5);
@@ -1491,28 +1451,12 @@ impl CnFactorEngine {
         state: &mut CnCalcState,
         rolling: &mut CnRollingStats,
         msg: &TradeFlowFeatureMsg,
-        depth: Option<&CnDepthStats5>,
     ) {
-        let open = msg.values[FIELD_OPEN];
         let close = msg.values[FIELD_CLOSE];
         let volume = msg.values[FIELD_VOLUME];
 
-        rolling.corr_open_volume_300.push(open, volume);
         rolling.corr_close_volume_14.push(close, volume);
-        state.corr_open_volume_300_last = finite_opt(rolling.corr_open_volume_300.corr_strict());
         state.corr_close_volume_14_last = finite_opt(rolling.corr_close_volume_14.corr_strict());
-
-        if let Some(depth) = depth {
-            let (bid0p, bid0v) = depth.best_bid();
-            let (ask0p, ask0v) = depth.best_ask();
-            let mid = (ask0p + bid0p) / 2.0;
-            let mid_vol = (bid0v + ask0v) / 2.0;
-            rolling.corr_mid_midvol_300.push(mid, mid_vol);
-            state.corr_mid_midvol_300_last = finite_opt(rolling.corr_mid_midvol_300.corr_strict());
-        } else {
-            rolling.corr_mid_midvol_300.push(f64::NAN, f64::NAN);
-            state.corr_mid_midvol_300_last = None;
-        }
     }
 
     fn on_trade_flow(
@@ -1553,7 +1497,7 @@ impl CnFactorEngine {
             let rolling = symbol_rolling_stats.entry(symbol.clone()).or_default();
             state.push_trade_flow(&msg);
             state.push_optional_depth_stats(depth_opt);
-            Self::update_symbol_rolling_stats(state, rolling, &msg, depth_opt);
+            Self::update_symbol_rolling_stats(state, rolling, &msg);
         }
 
         if emit_output {
@@ -1898,15 +1842,13 @@ impl CnFactorEngine {
             outer_ask_price: SplitSlice::from_parts(state.outer_ask_price.as_slices()),
             outer_level_volume: SplitSlice::from_parts(state.outer_level_volume.as_slices()),
             mean_bid_amount5: SplitSlice::from_parts(state.mean_bid_amount5.as_slices()),
-            mean_bid_price3: SplitSlice::from_parts(state.mean_bid_price3.as_slices()),
             mean_bid_price5: SplitSlice::from_parts(state.mean_bid_price5.as_slices()),
-            avg_ask_price3: SplitSlice::from_parts(state.avg_ask_price3.as_slices()),
             mean_ask_price5: SplitSlice::from_parts(state.mean_ask_price5.as_slices()),
             ask_pv5_mean: SplitSlice::from_parts(state.ask_pv5_mean.as_slices()),
             bid_pv5_mean: SplitSlice::from_parts(state.bid_pv5_mean.as_slices()),
             factor_031_ratio: SplitSlice::from_parts(state.factor_031_ratio.as_slices()),
-            factor_119_mid_minus_ask_vwap3: SplitSlice::from_parts(
-                state.factor_119_mid_minus_ask_vwap3.as_slices(),
+            factor_119_mid_minus_ask_vwap5: SplitSlice::from_parts(
+                state.factor_119_mid_minus_ask_vwap5.as_slices(),
             ),
             total_volume5_sum: SplitSlice::from_parts(state.total_volume5_sum.as_slices()),
             median_all_price10: SplitSlice::from_parts(state.median_all_price10.as_slices()),
@@ -1935,8 +1877,6 @@ impl CnFactorEngine {
                 state.factor_160_pct_change_mean.as_slices(),
             ),
             corr_close_volume_14_last: state.corr_close_volume_14_last,
-            corr_open_volume_300_last: state.corr_open_volume_300_last,
-            corr_mid_midvol_300_last: state.corr_mid_midvol_300_last,
         }
     }
 
@@ -2220,221 +2160,6 @@ impl CnFactorEngine {
             Some(CnFactorId::FactorTrades050) => {
                 return Some(Self::wrap_factor_value(
                     series.and_then(Self::compute_factor_trades_050),
-                ));
-            }
-            Some(CnFactorId::TdTi010) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_010),
-                ));
-            }
-            Some(CnFactorId::TdTi015) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_015),
-                ));
-            }
-            Some(CnFactorId::TdTi026) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_026),
-                ));
-            }
-            Some(CnFactorId::TdTi031) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_031),
-                ));
-            }
-            Some(CnFactorId::TdTi033) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_033),
-                ));
-            }
-            Some(CnFactorId::TdTi034) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_034),
-                ));
-            }
-            Some(CnFactorId::TdTi036) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_036),
-                ));
-            }
-            Some(CnFactorId::TdTi037) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ti_037),
-                ));
-            }
-            Some(CnFactorId::TdMt003) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_mt_003),
-                ));
-            }
-            Some(CnFactorId::TdMt008) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_mt_008),
-                ));
-            }
-            Some(CnFactorId::TdMt014) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_mt_014),
-                ));
-            }
-            Some(CnFactorId::TdMt015) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_mt_015),
-                ));
-            }
-            Some(CnFactorId::TdMt039) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_mt_039),
-                ));
-            }
-            Some(CnFactorId::TpVpi004) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_004),
-                ));
-            }
-            Some(CnFactorId::TpVpi006) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_006),
-                ));
-            }
-            Some(CnFactorId::TpVpi001) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_001),
-                ));
-            }
-            Some(CnFactorId::TpVpi002) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_002),
-                ));
-            }
-            Some(CnFactorId::TpVpi005) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_005),
-                ));
-            }
-            Some(CnFactorId::TpVpi015) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_015),
-                ));
-            }
-            Some(CnFactorId::TpVpi014) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_014),
-                ));
-            }
-            Some(CnFactorId::TpVpi017) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_tp_vpi_017),
-                ));
-            }
-            Some(CnFactorId::TdPt001) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pt_001),
-                ));
-            }
-            Some(CnFactorId::TdPt002) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pt_002),
-                ));
-            }
-            Some(CnFactorId::TdPt003) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pt_003),
-                ));
-            }
-            Some(CnFactorId::TdPt004) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pt_004),
-                ));
-            }
-            Some(CnFactorId::TdPt010) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pt_010),
-                ));
-            }
-            Some(CnFactorId::TdPt027) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pt_027),
-                ));
-            }
-            Some(CnFactorId::TdVi010) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_vi_010),
-                ));
-            }
-            Some(CnFactorId::TdVi011) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_vi_011),
-                ));
-            }
-            Some(CnFactorId::TdVi025) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_vi_025),
-                ));
-            }
-            Some(CnFactorId::TdVi026) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_vi_026),
-                ));
-            }
-            Some(CnFactorId::TdVi028) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_vi_028),
-                ));
-            }
-            Some(CnFactorId::TdCi007) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ci_007),
-                ));
-            }
-            Some(CnFactorId::TdCi003) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ci_003),
-                ));
-            }
-            Some(CnFactorId::TdCi008) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_ci_008),
-                ));
-            }
-            Some(CnFactorId::TdPr001) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_001),
-                ));
-            }
-            Some(CnFactorId::TdPr002) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_002),
-                ));
-            }
-            Some(CnFactorId::TdPr005) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_005),
-                ));
-            }
-            Some(CnFactorId::TdPr006) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_006),
-                ));
-            }
-            Some(CnFactorId::TdPr007) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_007),
-                ));
-            }
-            Some(CnFactorId::TdPr015) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_015),
-                ));
-            }
-            Some(CnFactorId::TdPr016) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_016),
-                ));
-            }
-            Some(CnFactorId::TdPr017) => {
-                return Some(Self::wrap_factor_value(
-                    series.and_then(Self::compute_td_pr_017),
                 ));
             }
             Some(CnFactorId::Factor001) => {
@@ -4088,12 +3813,12 @@ impl CnFactorEngine {
     }
 
     fn compute_factor_049(series: &CnSeries<'_>) -> Option<f64> {
-        rolling_std_last(&series.mean_bid_price3, 30).ok().flatten()
+        rolling_std_last(&series.mean_bid_price5, 30).ok().flatten()
     }
 
     fn compute_factor_051(series: &CnSeries<'_>) -> Option<f64> {
-        let last = *series.avg_ask_price3.last()?;
-        let ma = rolling_mean_last(&series.avg_ask_price3, 300)
+        let last = *series.mean_ask_price5.last()?;
+        let ma = rolling_mean_last(&series.mean_ask_price5, 300)
             .ok()
             .flatten()?;
         if ma.abs() <= 1e-12 {
@@ -4103,14 +3828,14 @@ impl CnFactorEngine {
     }
 
     fn compute_factor_052(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.avg_ask_price3.len();
+        let n = series.mean_ask_price5.len();
         if n < 300 {
             return None;
         }
         let mut neg_diff = Vec::with_capacity(n);
         neg_diff.push(0.0);
         for i in 1..n {
-            let d = series.avg_ask_price3[i] - series.avg_ask_price3[i - 1];
+            let d = series.mean_ask_price5[i] - series.mean_ask_price5[i - 1];
             neg_diff.push(if d < 0.0 { d } else { 0.0 });
         }
         let ma30 = rolling_mean_last(&neg_diff, 30).ok().flatten()?;
@@ -4398,11 +4123,11 @@ impl CnFactorEngine {
     }
 
     fn compute_factor_093(series: &CnSeries<'_>) -> Option<f64> {
-        tail_quantile_last(&series.avg_ask_price3, 360, 0.5)
+        tail_quantile_last(&series.mean_ask_price5, 360, 0.5)
     }
 
     fn compute_factor_094(series: &CnSeries<'_>) -> Option<f64> {
-        tail_quantile_last(&series.avg_ask_price3, 100, 0.1)
+        tail_quantile_last(&series.mean_ask_price5, 100, 0.1)
     }
 
     fn compute_factor_095(depth: &CnDepthStats5) -> Option<f64> {
@@ -4553,8 +4278,8 @@ impl CnFactorEngine {
     }
 
     fn compute_factor_119(series: &CnSeries<'_>) -> Option<f64> {
-        let last = *series.factor_119_mid_minus_ask_vwap3.last()?;
-        let ma = rolling_mean_last(&series.factor_119_mid_minus_ask_vwap3, 120)
+        let last = *series.factor_119_mid_minus_ask_vwap5.last()?;
+        let ma = rolling_mean_last(&series.factor_119_mid_minus_ask_vwap5, 120)
             .ok()
             .flatten()?;
         if ma.abs() <= 1e-12 {
@@ -4808,1101 +4533,6 @@ impl CnFactorEngine {
         finite_opt(Some(bid0v / ask0v))
     }
 
-    fn compute_td_ti_010(series: &CnSeries<'_>) -> Option<f64> {
-        let ema1 = rolling_mean_series(&series.close, 30, 30).ok()?;
-        let ema2 = rolling_mean_series_opt(&ema1, 30, 30).ok()?;
-        rolling_mean_last_opt_from_series(&ema2, 30, 30)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_td_ti_015(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.high.len())
-            .min(series.low.len());
-        if n < 39 {
-            return None;
-        }
-        let ratio1: Vec<f64> = (0..n)
-            .map(|i| {
-                let den = series.open[i];
-                if den.abs() > 1e-12 {
-                    series.close[i] / den
-                } else {
-                    f64::NAN
-                }
-            })
-            .collect();
-        let ratio2: Vec<f64> = (0..n)
-            .map(|i| {
-                let den = series.low[i];
-                if den.abs() > 1e-12 {
-                    series.high[i] / den
-                } else {
-                    f64::NAN
-                }
-            })
-            .collect();
-        let mut sum = 0.0;
-        for j in n - 20..n {
-            let mb = sample_std_last(&ratio1[..=j], 20, 20)?;
-            let sd = sample_std_last(&ratio2[..=j], 20, 20)?;
-            sum += mb - sd;
-        }
-        finite_opt(Some(sum))
-    }
-
-    fn compute_td_ti_031(series: &CnSeries<'_>) -> Option<f64> {
-        corr_last_with_min_periods(&series.large_order, &series.small_order, 60, 10)
-    }
-
-    fn compute_td_ti_036(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.high.len();
-        let period = 14usize;
-        if n < period + 1 {
-            return None;
-        }
-        let start = n - (period + 1);
-        let mut argmax = 0usize;
-        let mut best = f64::NEG_INFINITY;
-        for i in start..n {
-            let v = series.high[i];
-            if v > best {
-                best = v;
-                argmax = i - start;
-            }
-        }
-        finite_opt(Some(100.0 * argmax as f64 / period as f64))
-    }
-
-    fn compute_td_ti_037(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.low.len();
-        let period = 14usize;
-        if n < period + 1 {
-            return None;
-        }
-        let start = n - (period + 1);
-        let mut argmin = 0usize;
-        let mut best = f64::INFINITY;
-        for i in start..n {
-            let v = series.low[i];
-            if v < best {
-                best = v;
-                argmin = i - start;
-            }
-        }
-        finite_opt(Some(100.0 * argmin as f64 / period as f64))
-    }
-
-    fn compute_td_mt_003(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n < 90 {
-            return None;
-        }
-        let mut sum = 0.0;
-        for i in n - 30..n {
-            sum += series.close[i] - series.close[i - 60];
-        }
-        finite_opt(Some(sum / 30.0))
-    }
-
-    fn compute_td_mt_008(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 14 {
-            return None;
-        }
-        let mut plus_dm = vec![0.0; n];
-        let mut minus_dm = vec![0.0; n];
-        let mut tr = vec![f64::NAN; n];
-        for i in 1..n {
-            let high = series.high[i];
-            let previous_high = series.high[i - 1];
-            let low = series.low[i];
-            let previous_low = series.low[i - 1];
-            let previous_close = series.close[i - 1];
-            if !high.is_finite()
-                || !previous_high.is_finite()
-                || !low.is_finite()
-                || !previous_low.is_finite()
-                || !previous_close.is_finite()
-            {
-                plus_dm[i] = f64::NAN;
-                minus_dm[i] = f64::NAN;
-                tr[i] = f64::NAN;
-                continue;
-            }
-            let hd = high - previous_high;
-            let ld = low - previous_low;
-            plus_dm[i] = if hd > ld { hd } else { 0.0 };
-            minus_dm[i] = if ld > hd { ld } else { 0.0 };
-            tr[i] = (high - low)
-                .max((high - previous_close).abs())
-                .max((low - previous_close).abs());
-        }
-        let plus_ma = rolling_mean_last(&plus_dm, 14).ok().flatten()?;
-        let minus_ma = rolling_mean_last(&minus_dm, 14).ok().flatten()?;
-        let tr_ma = rolling_mean_last_with_min_periods(&tr, 14, 14)
-            .ok()
-            .flatten()?;
-        if tr_ma.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let plus_di = 100.0 * plus_ma / tr_ma;
-        let minus_di = 100.0 * minus_ma / tr_ma;
-        let den = plus_di + minus_di;
-        if den.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some((plus_di - minus_di).abs() / den * 100.0))
-    }
-
-    fn compute_td_mt_014(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n == 0 {
-            return None;
-        }
-        let fast = rolling_mean_series(&series.close, 12, 1).ok()?;
-        let slow = rolling_mean_series(&series.close, 26, 1).ok()?;
-        let macd: Vec<Option<f64>> = (0..n)
-            .map(|i| match (fast[i], slow[i]) {
-                (Some(f), Some(s)) => finite_opt(Some(f - s)),
-                _ => Some(0.0),
-            })
-            .collect();
-        let signal = rolling_mean_series_opt(&macd, 9, 1).ok()?;
-        let m = last_opt(&macd)?;
-        let s = last_opt(&signal)?;
-        finite_opt(Some(m - s))
-    }
-
-    fn compute_td_mt_015(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 15 {
-            return None;
-        }
-        let mut minus_dm = vec![0.0; n];
-        let mut tr = vec![f64::NAN; n];
-        for i in 1..n {
-            let high = series.high[i];
-            let previous_high = series.high[i - 1];
-            let low = series.low[i];
-            let previous_low = series.low[i - 1];
-            let previous_close = series.close[i - 1];
-            if !high.is_finite()
-                || !previous_high.is_finite()
-                || !low.is_finite()
-                || !previous_low.is_finite()
-                || !previous_close.is_finite()
-            {
-                minus_dm[i] = f64::NAN;
-                tr[i] = f64::NAN;
-                continue;
-            }
-            let hd = high - previous_high;
-            let ld = low - previous_low;
-            minus_dm[i] = if ld > hd { ld } else { 0.0 };
-            tr[i] = (high - low)
-                .max((high - previous_close).abs())
-                .max((low - previous_close).abs());
-        }
-        let Some(m) = rolling_mean_last(&minus_dm, 14).ok().flatten() else {
-            return Some(f64::NAN);
-        };
-        let Some(t) = rolling_mean_last_with_min_periods(&tr, 14, 14)
-            .ok()
-            .flatten()
-        else {
-            return Some(f64::NAN);
-        };
-        if t.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        finite_opt(Some(100.0 * m / t))
-    }
-
-    fn compute_td_mt_039(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len().min(series.low.len());
-        if n < 10 {
-            return None;
-        }
-        let mut sum = 0.0;
-        for i in n - 10..n {
-            sum += series.close[i] - series.low[i];
-        }
-        finite_opt(Some(sum))
-    }
-
-    fn compute_td_vi_010(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.high.len().min(series.low.len());
-        if n < 2 {
-            return None;
-        }
-        if !series.high[n - 1].is_finite()
-            || !series.high[n - 2].is_finite()
-            || !series.low[n - 1].is_finite()
-            || !series.low[n - 2].is_finite()
-        {
-            return None;
-        }
-        let hd = series.high[n - 1] - series.high[n - 2];
-        let ld = series.low[n - 1] - series.low[n - 2];
-        finite_opt(Some(if hd > ld { hd } else { 0.0 }))
-    }
-
-    fn compute_td_vi_011(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.high.len().min(series.low.len());
-        if n < 2 {
-            return None;
-        }
-        let mut plus_dm = vec![0.0; n];
-        for (i, v) in plus_dm.iter_mut().enumerate().take(n).skip(1) {
-            if !series.high[i].is_finite()
-                || !series.high[i - 1].is_finite()
-                || !series.low[i].is_finite()
-                || !series.low[i - 1].is_finite()
-            {
-                *v = f64::NAN;
-                continue;
-            }
-            let hd = series.high[i] - series.high[i - 1];
-            let ld = series.low[i] - series.low[i - 1];
-            *v = if hd > ld { hd } else { 0.0 };
-        }
-        rolling_sum_last_with_min_periods(&plus_dm, 14, 1)
-            .ok()
-            .flatten()
-    }
-
-    fn compute_td_vi_025(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len());
-        if n < 2 {
-            return None;
-        }
-        let mut bp = vec![0.0; n];
-        let mut tr = vec![0.0; n];
-        for i in 1..n {
-            bp[i] = series.close[i] - series.low[i].min(series.close[i - 1]);
-            tr[i] = (series.high[i] - series.low[i])
-                .max((series.high[i] - series.close[i - 1]).abs())
-                .max((series.low[i] - series.close[i - 1]).abs());
-        }
-        let avg = |w: usize| -> Option<f64> {
-            let b = rolling_sum_last_with_min_periods(&bp, w, 1)
-                .ok()
-                .flatten()?;
-            let t = rolling_sum_last_with_min_periods(&tr, w, 1)
-                .ok()
-                .flatten()?;
-            if t.abs() <= 1e-12 {
-                Some(0.0)
-            } else {
-                Some(b / t)
-            }
-        };
-        let a7 = avg(7)?;
-        let a14 = avg(14)?;
-        let a28 = avg(28)?;
-        finite_opt(Some((4.0 * a7 + 2.0 * a14 + a28) / 7.0))
-    }
-
-    fn compute_td_vi_026(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len())
-            .min(series.open.len());
-        if n == 0 {
-            return None;
-        }
-        let mut x = Vec::with_capacity(n);
-        for i in 0..n {
-            if !series.high[i].is_finite()
-                || !series.low[i].is_finite()
-                || !series.close[i].is_finite()
-                || !series.open[i].is_finite()
-            {
-                x.push(f64::NAN);
-                continue;
-            }
-            let upper = series.high[i] - series.close[i].max(series.open[i]);
-            let lower = series.close[i].min(series.open[i]) - series.low[i];
-            let body = (series.close[i] - series.open[i]).abs();
-            x.push(upper - lower - body);
-        }
-        rolling_sum_last_with_min_periods(&x, 14, 1).ok().flatten()
-    }
-
-    fn compute_td_vi_028(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.close.len())
-            .min(series.open.len());
-        if n == 0 {
-            return None;
-        }
-        let x: Vec<f64> = (0..n)
-            .map(|i| {
-                if !series.high[i].is_finite()
-                    || !series.close[i].is_finite()
-                    || !series.open[i].is_finite()
-                {
-                    f64::NAN
-                } else {
-                    series.high[i] - series.close[i].max(series.open[i])
-                }
-            })
-            .collect();
-        rolling_sum_last_with_min_periods(&x, 14, 1).ok().flatten()
-    }
-
-    fn compute_td_pt_001(series: &CnSeries<'_>) -> Option<f64> {
-        finite_opt(series.close.last().copied().map(f64::sin))
-    }
-
-    fn compute_td_pt_002(series: &CnSeries<'_>) -> Option<f64> {
-        finite_opt(series.close.last().copied().map(f64::cos))
-    }
-
-    fn compute_td_pt_010(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.high.len())
-            .min(series.low.len());
-        if n < 15 {
-            return None;
-        }
-        let mid = (series.close[n - 1] + series.high[n - 1] + series.low[n - 1]) / 3.0;
-        let mut llv_low = f64::INFINITY;
-        let mut llv_high = f64::INFINITY;
-        for i in n - 15..n {
-            llv_low = f64::min(llv_low, series.low[i]);
-            llv_high = f64::min(llv_high, series.high[i]);
-        }
-        let zc2 = mid - llv_high + llv_low;
-        finite_opt(Some(series.close[n - 1] - zc2))
-    }
-
-    fn compute_td_pt_027(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n < 14 {
-            return None;
-        }
-        let start = n - 14;
-        let mut idx = 0usize;
-        let mut best = f64::INFINITY;
-        for i in start..n {
-            let v = series.close[i];
-            if v < best {
-                best = v;
-                idx = i - start;
-            }
-        }
-        Some(idx as f64)
-    }
-
-    fn compute_td_ci_007(series: &CnSeries<'_>) -> Option<f64> {
-        let ma = rolling_mean_last_with_min_periods(&series.close, 30, 1)
-            .ok()
-            .flatten()?;
-        finite_opt(Some(ma.sin()))
-    }
-
-    fn compute_td_ci_008(series: &CnSeries<'_>) -> Option<f64> {
-        let ma = rolling_mean_last_with_min_periods(&series.close, 30, 1)
-            .ok()
-            .flatten()?;
-        finite_opt(Some(ma.cos()))
-    }
-
-    fn compute_td_pr_001(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.high.len())
-            .min(series.low.len());
-        if n == 0 {
-            return None;
-        }
-        let i = n - 1;
-        if !series.close[i].is_finite()
-            || !series.open[i].is_finite()
-            || !series.high[i].is_finite()
-            || !series.low[i].is_finite()
-        {
-            return None;
-        }
-        let body = (series.close[i] - series.open[i]).abs();
-        let upper = series.high[i] - series.close[i].max(series.open[i]);
-        let lower = series.close[i].min(series.open[i]) - series.low[i];
-        let inv_hammer = (upper > 2.0 * body) && (lower < 0.1 * body);
-        Some(if inv_hammer { 1.0 } else { 0.0 })
-    }
-
-    fn compute_td_pr_002(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.high.len())
-            .min(series.low.len());
-        if n == 0 {
-            return None;
-        }
-        let i = n - 1;
-        if !series.close[i].is_finite()
-            || !series.open[i].is_finite()
-            || !series.high[i].is_finite()
-            || !series.low[i].is_finite()
-        {
-            return None;
-        }
-        let body = (series.close[i] - series.open[i]).abs();
-        let upper = series.high[i] - series.close[i].max(series.open[i]);
-        let lower = series.close[i].min(series.open[i]) - series.low[i];
-        let hammer = (lower > 2.0 * body) && (upper < 0.1 * body);
-        Some(if hammer { 1.0 } else { 0.0 })
-    }
-
-    fn compute_td_pr_007(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len().min(series.open.len());
-        if n < 2 {
-            return None;
-        }
-        let i = n - 1;
-        if !series.close[i - 1].is_finite()
-            || !series.open[i - 1].is_finite()
-            || !series.close[i].is_finite()
-            || !series.open[i].is_finite()
-        {
-            return None;
-        }
-        let prev_bull = series.close[i - 1] > series.open[i - 1];
-        let open_gap = series.open[i] > series.close[i - 1];
-        let prev_mid = series.open[i - 1] + (series.close[i - 1] - series.open[i - 1]) / 2.0;
-        let close_below_mid = series.close[i] < prev_mid;
-        let curr_bear = series.close[i] < series.open[i];
-        Some(if prev_bull && open_gap && close_below_mid && curr_bear {
-            1.0
-        } else {
-            0.0
-        })
-    }
-
-    fn compute_td_pr_015(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .open
-            .len()
-            .min(series.low.len())
-            .min(series.high.len());
-        if n == 0 {
-            return None;
-        }
-        let i = n - 1;
-        if !series.open[i].is_finite() || !series.low[i].is_finite() || !series.high[i].is_finite()
-        {
-            return None;
-        }
-        Some(
-            if series.open[i] == series.low[i] || series.open[i] == series.high[i] {
-                100.0
-            } else {
-                0.0
-            },
-        )
-    }
-
-    fn compute_td_pr_016(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .open
-            .len()
-            .min(series.close.len())
-            .min(series.volume.len());
-        if n < 90 {
-            return None;
-        }
-        let i = n - 1;
-        let oc = series.open[i] - series.close[i];
-        let var1 = if oc > 0.0 {
-            -1.0
-        } else if oc < 0.0 {
-            1.0
-        } else {
-            0.0
-        };
-        let oc_ma = rolling_mean_last(
-            &(0..n)
-                .map(|k| series.open[k] - series.close[k])
-                .collect::<Vec<_>>(),
-            90,
-        )
-        .ok()
-        .flatten()?;
-        let vol_ma = rolling_mean_last(&series.volume, 90).ok().flatten()?;
-        if oc_ma.abs() <= 1e-12 || vol_ma.abs() <= 1e-12 {
-            return Some(0.0);
-        }
-        let var2 = oc / oc_ma;
-        let var3 = series.volume[i] / vol_ma;
-        finite_opt(Some(var1 * var2 * var3))
-    }
-
-    fn compute_td_pr_017(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .open
-            .len()
-            .min(series.close.len())
-            .min(series.low.len())
-            .min(series.high.len());
-        if n == 0 {
-            return None;
-        }
-        let i = n - 1;
-        if !series.open[i].is_finite()
-            || !series.close[i].is_finite()
-            || !series.low[i].is_finite()
-            || !series.high[i].is_finite()
-        {
-            return None;
-        }
-        let range = series.high[i] - series.low[i];
-        let takuri = (series.open[i] == series.close[i])
-            && (series.low[i] < series.open[i])
-            && (series.close[i] - series.low[i] > 0.5 * range);
-        Some(if takuri { 100.0 } else { 0.0 })
-    }
-
-    fn compute_tp_vpi_006(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len().min(series.volume.len());
-        if n < 373 {
-            return None;
-        }
-        let mut obv_delta = Vec::with_capacity(n);
-        obv_delta.push(0.0);
-        for i in 1..n {
-            let d = series.close[i] - series.close[i - 1];
-            let volume = series.volume[i];
-            let v = if !d.is_finite() || !volume.is_finite() {
-                f64::NAN
-            } else if d > 0.0 {
-                volume
-            } else if d < 0.0 {
-                -volume
-            } else {
-                0.0
-            };
-            obv_delta.push(v);
-        }
-        let start = n - 14;
-        let mut obv_tail = Vec::with_capacity(14);
-        for end in start + 1..=n {
-            obv_tail.push(
-                rolling_sum_at_from_series(&obv_delta, end, 360, 360)
-                    .ok()
-                    .flatten(),
-            );
-        }
-        rolling_mean_last_opt_from_series(&obv_tail, 14, 14)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_tp_vpi_014(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.volume.len();
-        if n < 39 {
-            return None;
-        }
-        let start = n - 20;
-        let mut ratio_tail = Vec::with_capacity(20);
-        for end in start + 1..=n {
-            let ratio = rolling_mean_at_from_series(&series.volume, end, 20, 20)
-                .ok()
-                .flatten()
-                .and_then(|v| finite_opt(Some(v)))
-                .and_then(|m| {
-                    if m.abs() <= 1e-12 {
-                        return Some(0.0);
-                    }
-                    finite_opt(Some(series.volume[end - 1] / m))
-                });
-            ratio_tail.push(ratio);
-        }
-        rolling_mean_last_opt_from_series(&ratio_tail, 20, 20)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_tp_vpi_017(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .high
-            .len()
-            .min(series.low.len())
-            .min(series.close.len())
-            .min(series.volume.len());
-        if n < 14 {
-            return None;
-        }
-        let mut pos = vec![0.0; n];
-        let mut neg = vec![0.0; n];
-        let mut tp = Vec::with_capacity(n);
-        for i in 0..n {
-            tp.push((series.high[i] + series.low[i] + series.close[i]) / 3.0);
-        }
-        for i in 1..n {
-            if !tp[i].is_finite()
-                || !tp[i - 1].is_finite()
-                || !series.close[i].is_finite()
-                || !series.close[i - 1].is_finite()
-                || !series.volume[i].is_finite()
-            {
-                pos[i] = f64::NAN;
-                neg[i] = f64::NAN;
-                continue;
-            }
-            let money_flow = tp[i] * series.volume[i];
-            if series.close[i] - series.close[i - 1] > 0.0 {
-                pos[i] = money_flow;
-            } else if series.close[i] - series.close[i - 1] < 0.0 {
-                neg[i] = money_flow;
-            }
-        }
-        let pos_sum = rolling_sum_last_with_min_periods(&pos, 14, 14)
-            .ok()
-            .flatten()?;
-        let neg_sum = rolling_sum_last_with_min_periods(&neg, 14, 14)
-            .ok()
-            .flatten()?;
-        finite_opt(Some(pos_sum - neg_sum))
-    }
-
-    fn compute_td_ti_026(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.high.len())
-            .min(series.low.len());
-        if n == 0 {
-            return None;
-        }
-        let close_last = series.close[n - 1];
-        let close_prev = if n >= 2 {
-            series.close[n - 2]
-        } else {
-            f64::NAN
-        };
-        let sar = if close_prev < close_last {
-            series.high[n - 1]
-        } else {
-            series.low[n - 1]
-        };
-        let value = close_last - sar;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_td_ti_033(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.open.len().min(series.volume.len());
-        if n < 100 {
-            return None;
-        }
-        finite_opt(series.corr_open_volume_300_last).or_else(|| {
-            let window = n.min(300);
-            rolling_corr_last(&series.open, &series.volume, window, 1)
-                .ok()
-                .flatten()
-        })
-    }
-
-    fn compute_td_ti_034(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.net_buy_large.len().min(series.net_buy_small.len());
-        if n < 2 {
-            return None;
-        }
-        let high_diff = series.net_buy_large[n - 1] - series.net_buy_large[n - 2];
-        let low_diff = series.net_buy_small[n - 1] - series.net_buy_small[n - 2];
-        let value = high_diff / low_diff;
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_tp_vpi_004(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.high.len())
-            .min(series.low.len())
-            .min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-
-        let mut clv_x = Vec::with_capacity(n);
-        for i in 0..n {
-            let high = series.high[i];
-            let low = series.low[i];
-            let close = series.close[i];
-            let volume = series.volume[i];
-            if !high.is_finite() || !low.is_finite() || !close.is_finite() || !volume.is_finite() {
-                clv_x.push(f64::NAN);
-                continue;
-            }
-            let den = high - low;
-            let clv = if den.abs() <= 1e-12 {
-                0.0
-            } else {
-                ((close - low) - (high - close)) / den
-            };
-            clv_x.push(clv * volume);
-        }
-        let clv_x_opt: Vec<Option<f64>> = clv_x.into_iter().map(Some).collect();
-        let ad = rolling_sum_series_opt(&clv_x_opt, 360, 360).ok()?;
-        let fast = rolling_mean_series_opt(&ad, 12, 1).ok()?;
-        let slow = rolling_mean_series_opt(&ad, 26, 1).ok()?;
-        finite_opt(Some(last_opt(&fast)? - last_opt(&slow)?))
-    }
-
-    fn compute_tp_vpi_001(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.high.len())
-            .min(series.low.len())
-            .min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-
-        let mut clv_x = Vec::with_capacity(n);
-        for i in 0..n {
-            let den = series.high[i] - series.low[i];
-            let raw = if den.abs() <= 1e-12 {
-                0.0
-            } else {
-                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den
-            };
-            clv_x.push(if raw.is_finite() {
-                raw * series.volume[i]
-            } else {
-                f64::NAN
-            });
-        }
-        let clv_x_opt: Vec<Option<f64>> = clv_x
-            .into_iter()
-            .map(|v| if v.is_finite() { Some(v) } else { None })
-            .collect();
-        rolling_sum_last_opt_from_series(&clv_x_opt, 360, 360)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_tp_vpi_002(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.high.len())
-            .min(series.low.len())
-            .min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-
-        let mut clv_x = Vec::with_capacity(n);
-        for i in 0..n {
-            let den = series.high[i] - series.low[i];
-            let raw = if den.abs() <= 1e-12 {
-                0.0
-            } else {
-                ((series.close[i] - series.low[i]) - (series.high[i] - series.close[i])) / den
-            };
-            clv_x.push(if raw.is_finite() {
-                raw * series.volume[i]
-            } else {
-                f64::NAN
-            });
-        }
-        let clv_x_opt: Vec<Option<f64>> = clv_x
-            .into_iter()
-            .map(|v| if v.is_finite() { Some(v) } else { None })
-            .collect();
-        let start = n.saturating_sub(14);
-        let mut ad_tail = Vec::with_capacity(n - start);
-        for end in start + 1..=n {
-            ad_tail.push(
-                rolling_sum_at_opt_from_series(&clv_x_opt, end, 360, 360)
-                    .ok()
-                    .flatten(),
-            );
-        }
-        rolling_mean_last_opt_from_series(&ad_tail, 14, 14)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_tp_vpi_005(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len().min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-
-        let mut obv_delta = Vec::with_capacity(n);
-        obv_delta.push(0.0);
-        for i in 1..n {
-            let price_diff = series.close[i] - series.close[i - 1];
-            let delta = if price_diff > 0.0 {
-                series.volume[i]
-            } else if price_diff < 0.0 {
-                -series.volume[i]
-            } else {
-                0.0
-            };
-            obv_delta.push(delta);
-        }
-        rolling_sum_last_from_series(&obv_delta, 360, 360)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_tp_vpi_015(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-        let value = (series.close[n - 1] - series.open[n - 1]) / series.volume[n - 1];
-        if value.is_finite() {
-            Some(value)
-        } else {
-            Some(0.0)
-        }
-    }
-
-    fn compute_td_pt_003(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.amount.len().min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-
-        let vwap: Vec<Option<f64>> = (0..n)
-            .map(|i| {
-                let vol = series.volume[i];
-                if vol.abs() > 1e-12 {
-                    let value = series.amount[i] / vol;
-                    finite_opt(Some(value))
-                } else {
-                    Some(0.0)
-                }
-            })
-            .collect();
-        let numerator = rolling_mean_series_opt(&vwap, 6, 6).ok()?;
-        let amount_roll = rolling_sum_series(&series.amount, 6, 6).ok()?;
-        let volume_roll = rolling_sum_series(&series.volume, 6, 6).ok()?;
-
-        let denominator: Vec<Option<f64>> = amount_roll
-            .iter()
-            .zip(volume_roll.iter())
-            .map(|(a, v)| {
-                let a = finite_opt(*a)?;
-                let v = finite_opt(*v)?;
-                if v.abs() > 1e-12 {
-                    finite_opt(Some(a / v))
-                } else {
-                    Some(0.0)
-                }
-            })
-            .collect();
-
-        let apb: Vec<Option<f64>> = numerator
-            .iter()
-            .zip(denominator.iter())
-            .map(|(num, den)| {
-                let num = finite_opt(*num)?;
-                let den = finite_opt(*den)?;
-                if den.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                let ratio = num / den;
-                if ratio > 0.0 {
-                    finite_opt(Some(ratio.ln()))
-                } else {
-                    Some(0.0)
-                }
-            })
-            .collect();
-
-        rolling_mean_last_opt_from_series(&apb, 18, 18)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_td_pt_004(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.high.len())
-            .min(series.low.len())
-            .min(series.volume.len());
-        if n == 0 {
-            return None;
-        }
-
-        let vol_ma = rolling_mean_series(&series.volume, 120, 120).ok()?;
-        let var1: Vec<Option<f64>> = (0..n)
-            .map(|i| {
-                if !series.close[i].is_finite()
-                    || !series.open[i].is_finite()
-                    || !series.high[i].is_finite()
-                    || !series.low[i].is_finite()
-                    || !series.volume[i].is_finite()
-                {
-                    return Some(f64::NAN);
-                }
-                let hl = series.high[i] - series.low[i];
-                let vol_ma_i = match vol_ma[i] {
-                    Some(value) if value.is_finite() => value,
-                    Some(_) => return Some(f64::NAN),
-                    None => return None,
-                };
-                if hl.abs() <= 1e-12 || vol_ma_i.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                let value = (series.close[i] - series.open[i]) / hl * (series.volume[i] / vol_ma_i);
-                finite_opt(Some(value))
-            })
-            .collect();
-
-        let accum = rolling_sum_series_opt(&var1, 60, 60).ok()?;
-        let sma_fast = rolling_mean_series_opt(&accum, 9, 1).ok()?;
-        let sma_slow = rolling_mean_series_opt(&accum, 25, 1).ok()?;
-        let fast = last_opt(&sma_fast)?;
-        let slow = last_opt(&sma_slow)?;
-        finite_opt(Some(fast - slow))
-    }
-
-    fn compute_td_ci_003(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len();
-        if n == 0 {
-            return None;
-        }
-
-        let mut close_diff: Vec<Option<f64>> = Vec::with_capacity(n);
-        close_diff.push(None);
-        for i in 1..n {
-            close_diff.push(finite_opt(Some(series.close[i] - series.close[i - 1])));
-        }
-
-        let diff_sma = rolling_mean_series_opt(&close_diff, 30, 1).ok()?;
-        let close_sma = rolling_mean_series(&series.close, 30, 1).ok()?;
-        let phase: Vec<Option<f64>> = diff_sma
-            .iter()
-            .zip(close_sma.iter())
-            .map(|(d, c)| {
-                let d = finite_opt(*d)?;
-                let c = finite_opt(*c)?;
-                if c.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                finite_opt(Some((d / c).atan()))
-            })
-            .collect();
-        let inv_phase: Vec<Option<f64>> = phase
-            .iter()
-            .map(|p| {
-                let p = finite_opt(*p)?;
-                if p.abs() <= 1e-12 {
-                    return Some(0.0);
-                }
-                finite_opt(Some((2.0 * std::f64::consts::PI) / p))
-            })
-            .collect();
-        rolling_mean_last_opt_from_series(&inv_phase, 30, 1)
-            .ok()
-            .flatten()
-            .and_then(|v| finite_opt(Some(v)))
-    }
-
-    fn compute_td_pr_005(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series
-            .close
-            .len()
-            .min(series.open.len())
-            .min(series.high.len())
-            .min(series.low.len());
-        if n < 3 {
-            return None;
-        }
-
-        let i = n - 1;
-        if !series.close[i - 2].is_finite()
-            || !series.open[i - 2].is_finite()
-            || !series.close[i - 1].is_finite()
-            || !series.open[i - 1].is_finite()
-            || !series.high[i - 1].is_finite()
-            || !series.low[i - 1].is_finite()
-            || !series.close[i].is_finite()
-            || !series.open[i].is_finite()
-        {
-            return None;
-        }
-        let small_body = (series.close[i - 1] - series.open[i - 1]).abs()
-            < (series.high[i - 1] - series.low[i - 1]) * 0.1;
-        let first_down = series.close[i - 2] < series.open[i - 2];
-        let third_up = series.close[i] > series.open[i];
-        let morning_star = first_down && small_body && third_up;
-        Some(if morning_star { 1.0 } else { 0.0 })
-    }
-
-    fn compute_td_pr_006(series: &CnSeries<'_>) -> Option<f64> {
-        let n = series.close.len().min(series.open.len());
-        if n < 3 {
-            return None;
-        }
-        let i = n - 1;
-        if (i - 2..=i)
-            .any(|index| !series.close[index].is_finite() || !series.open[index].is_finite())
-        {
-            return None;
-        }
-        let three_black_crows = (series.close[i - 2] < series.open[i - 2])
-            && (series.close[i - 1] < series.open[i - 1])
-            && (series.close[i] < series.open[i]);
-        Some(if three_black_crows { 1.0 } else { 0.0 })
-    }
-
     fn compute_factor_118(
         &mut self,
         symbol: &str,
@@ -6016,14 +4646,14 @@ async fn load_online_symbols_from_tlen_server(
 }
 
 fn compute_mid_price_minus_bid_vwap(depth: &CnDepthStats5) -> Option<f64> {
-    let bid1 = depth.bids.first()?;
-    let ask1 = depth.asks.first()?;
-    if !bid1.price.is_finite() || !ask1.price.is_finite() || bid1.price <= 0.0 || ask1.price <= 0.0
+    let bid2 = depth.bids.get(1)?;
+    let ask2 = depth.asks.get(1)?;
+    if !bid2.price.is_finite() || !ask2.price.is_finite() || bid2.price <= 0.0 || ask2.price <= 0.0
     {
         return None;
     }
 
-    let mid_price = (bid1.price + ask1.price) / 2.0;
+    let mid_price = (bid2.price + ask2.price) / 2.0;
     if !mid_price.is_finite() || mid_price <= 0.0 {
         return None;
     }
@@ -6295,53 +4925,6 @@ fn rank_last_average(values: &[f64], min_periods: usize) -> Option<f64> {
         return None;
     }
     Some(lt as f64 + (eq as f64 + 1.0) / 2.0)
-}
-
-fn corr_last_with_min_periods(
-    xs: &(impl F64SeriesView + ?Sized),
-    ys: &(impl F64SeriesView + ?Sized),
-    window: usize,
-    min_periods: usize,
-) -> Option<f64> {
-    if window == 0 || min_periods == 0 {
-        return None;
-    }
-    let n = xs.len().min(ys.len());
-    if n < min_periods {
-        return None;
-    }
-    let start = n.saturating_sub(window);
-    let mut x = Vec::new();
-    let mut y = Vec::new();
-    for i in start..n {
-        let xv = xs.value_at(i);
-        let yv = ys.value_at(i);
-        if !xv.is_finite() || !yv.is_finite() {
-            return None;
-        }
-        x.push(xv);
-        y.push(yv);
-    }
-    if x.len() < min_periods {
-        return None;
-    }
-    let mean_x = x.iter().sum::<f64>() / x.len() as f64;
-    let mean_y = y.iter().sum::<f64>() / y.len() as f64;
-    let mut cov = 0.0;
-    let mut var_x = 0.0;
-    let mut var_y = 0.0;
-    for i in 0..x.len() {
-        let dx = x[i] - mean_x;
-        let dy = y[i] - mean_y;
-        cov += dx * dy;
-        var_x += dx * dx;
-        var_y += dy * dy;
-    }
-    if var_x.abs() <= 1e-12 || var_y.abs() <= 1e-12 {
-        return Some(0.0);
-    }
-    let out = cov / (var_x.sqrt() * var_y.sqrt());
-    finite_opt(Some(out))
 }
 
 fn strict_corr_last_slices(xs: &[f64], ys: &[f64], window: usize) -> Option<f64> {
@@ -7148,6 +5731,30 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "diagnostic output for the Python/Rust formula audit"]
+    fn dump_deterministic_factor_values() {
+        let factor_names: Vec<String> = CnFactorId::ALL
+            .iter()
+            .map(|factor| factor.as_name().to_string())
+            .collect();
+        let plan = CnFormulaPlan::from_factor_names("python-audit", factor_names).unwrap();
+        let mut state = CnReplayState::default();
+
+        for index in 0..800 {
+            let (values, depth) = varied_native_row(index);
+            state
+                .push_native(index as i64 * 1_000, &values, Some(depth))
+                .unwrap();
+            let factor_values = state.factor_values(&plan);
+            if [199, 399, 799].contains(&index) {
+                for (binding, value) in plan.ordered_factors.iter().zip(factor_values) {
+                    println!("CN_FACTOR_AUDIT\t{index}\t{}\t{value:.17e}", binding.name);
+                }
+            }
+        }
+    }
+
     fn replay_message(ts: i64) -> TradeFlowFeatureMsg {
         let mut values = vec![1.0; TRADE_FLOW_FEATURE_DIM];
         for index in 0..CN_DEPTH_LEVELS {
@@ -7384,7 +5991,7 @@ mod tests {
         state.bid_vwap5.extend([100.0, 100.0, 100.0]);
         state.total_bid5.extend([10.0; 10]);
         state.total_ask5.extend([10.0; 10]);
-        state.avg_ask_price3.extend([100.0; 300]);
+        state.mean_ask_price5.extend([100.0; 300]);
         state.bid0v.extend([10.0; 300]);
         state.ask0v.extend([10.0; 300]);
         state.mid_price.extend([100.0; 300]);
@@ -7405,6 +6012,50 @@ mod tests {
         assert!(CnFactorEngine::compute_factor_134(&series)
             .unwrap()
             .is_nan());
+    }
+
+    #[test]
+    fn factors_118_and_119_use_second_level_mid_and_five_level_vwap() {
+        let snapshot = CnDepthSnapshot5 {
+            bids: std::array::from_fn(|level| CnDepthLevel {
+                price: 100.0 - level as f64,
+                amount: 10.0 + level as f64,
+            }),
+            asks: std::array::from_fn(|level| CnDepthLevel {
+                price: 102.0 + 2.0 * level as f64,
+                amount: 8.0 + 2.0 * level as f64,
+            }),
+        };
+        let depth = CnDepthStats5::from_snapshot(&snapshot);
+        let second_level_mid = (depth.bid_price(1) + depth.ask_price(1)) / 2.0;
+        let expected_118 = second_level_mid - depth.bid_vwap(CN_DEPTH_LEVELS).unwrap();
+        let expected_119 = second_level_mid - depth.ask_vwap(CN_DEPTH_LEVELS).unwrap();
+
+        let actual_118 = compute_mid_price_minus_bid_vwap(&depth).unwrap();
+        assert!((actual_118 - expected_118).abs() < 1e-12);
+
+        let mut state = CnCalcState::default();
+        state.push_depth_stats(&depth);
+        let actual_119 = *state.factor_119_mid_minus_ask_vwap5.back().unwrap();
+        assert!((actual_119 - expected_119).abs() < 1e-12);
+    }
+
+    #[test]
+    fn td_ti_033_honors_its_100_row_minimum() {
+        let plan = CnFormulaPlan::from_factor_names("td-ti-033", vec!["TD_TI_033".into()]).unwrap();
+        let mut replay = CnReplayState::default();
+
+        for index in 0..99 {
+            let (values, depth) = varied_native_row(index);
+            replay
+                .push_native(index as i64 * 1_000, &values, Some(depth))
+                .unwrap();
+            assert!(replay.factor_values(&plan)[0].is_nan());
+        }
+
+        let (values, depth) = varied_native_row(99);
+        replay.push_native(99_000, &values, Some(depth)).unwrap();
+        assert!(replay.factor_values(&plan)[0].is_finite());
     }
 
     #[test]

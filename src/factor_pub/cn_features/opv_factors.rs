@@ -1214,8 +1214,6 @@ fn compute_td_mt_016(series: &CnSeries<'_>) -> Option<f64> {
     let tp = zip_map3_opt(&series.high, &series.low, &series.close, |h, l, c| {
         finite_opt(Some((h + l + c) / 3.0))
     });
-    let tp_shift = pct_change_last_opt(&tp, 1); // placeholder to align lengths
-    let _ = tp_shift;
     let n = tp.len().min(series.volume.len());
     let mut pos = vec![None; n];
     let mut neg = vec![None; n];

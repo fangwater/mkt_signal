@@ -258,7 +258,7 @@ fn compute_factor_044(depth: &CnDepthStats5) -> Option<f64> {
 }
 
 fn compute_factor_050(series: &CnSeries<'_>) -> Option<f64> {
-    rolling_std_last(&series.avg_ask_price3, 30).ok().flatten()
+    rolling_std_last(&series.mean_ask_price5, 30).ok().flatten()
 }
 
 fn compute_factor_071(depth: &CnDepthStats5) -> Option<f64> {

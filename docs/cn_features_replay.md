@@ -41,8 +41,16 @@ compatibility layer.
 
 Complete registration means that every factor has a CN computation path. It
 does not mean that every inherited formula has passed an economic-meaning
-review. The material reinterpretations are listed below so they can be
-reviewed one by one.
+review. The generated
+[factor-by-factor review](cn_features_factor_review.md) lists source inputs,
+legacy depth, CN status, and the reason for all 632 factors. The review has no
+runtime role and cannot filter or overwrite outputs.
+
+The source classification is exhaustive: all `factor_001..177` functions read
+book fields, while the other 455 factors are trade/bar-only. There is no
+separate `DepthDerived` class. Of the 177 book factors, 122 used more than five
+levels in the source and are materially redefined for the native five-level
+book.
 
 ## Native depth contract
 
@@ -100,8 +108,12 @@ number at replay time.
 
 Notable definitions are:
 
-- `factor_118` uses the native five-level bid VWAP and requires all five input
-  price/amount pairs.
+- `factor_118` uses the second-level bid/ask mid and the native five-level bid
+  VWAP. It requires the two second-level prices and all five bid price/amount
+  pairs.
+- `factor_119` uses the second-level bid/ask mid and the native five-level ask
+  VWAP. It requires the two second-level prices and all five ask price/amount
+  pairs.
 - `factor_157`, `factor_158`, and `factor_159` use five-level cross-sectional
   inputs.
 - `factor_160` computes the mean percentage change of the five per-level bid
@@ -150,8 +162,44 @@ Four additional source formulas were repaired rather than copied literally:
   be reviewed for research value.
 
 All other factors retain their legacy field selection and operation structure,
-subject to the explicit five-level changes above. They can still return NULL if
-their source trade field is absent in the domestic baseline.
+subject to the explicit five-level changes, upstream substitutions, and formula
+repairs above. They can still return NULL if a field they actually read is
+absent in the domestic baseline.
+
+## Formula and missing-value verification
+
+Corrections are made in the factor implementation or shared mathematical
+operator. Replay does not contain factor-number filters, output overrides, or
+fallback values. The implementation audit restored these source definitions:
+
+- `factor_049` uses the five-level bid-price mean.
+- `factor_050`, `factor_051`, `factor_052`, `factor_093`, and `factor_094` use
+  the five-level ask-price mean.
+- `factor_118` and `factor_119` use the source's second-level mid and full
+  five-level side VWAP.
+- `TD_TI_033` honors `rolling(300, min_periods=100)`; the shared rolling
+  correlation operator now applies its `min_periods` argument.
+
+The generated test-only manifest contains the 455 source trade/bar-only
+factors. After 800 deterministic warm-up rows, a branch with no book must keep
+every one of those factors finite and numerically equal to a branch with a
+valid book. Separate exhaustive tests inject `NaN` into each native depth field
+and verify that any factor which remains available does not skip or consume the
+missing value. Representative side/level tests additionally verify that an
+unrelated ask side or inner level remains available.
+
+For formulas whose source used at most five levels and that were not explicitly
+redefined or repaired, run the reproducible Python/Rust audit in an environment
+with NumPy and pandas:
+
+```bash
+python3 scripts/audit_cn_factor_parity.py
+```
+
+The current audit covers 499 factors at rows 199, 399, and 799. All 1,497
+comparisons pass with a relative tolerance of `1e-8`. The 122 deep-book
+redefinitions, seven upstream substitutions, and five deliberate formula
+repairs are excluded from parity by definition and are itemized in the review.
 
 ## Trading day and output
 

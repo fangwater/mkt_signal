@@ -23,6 +23,9 @@ mod plain_factors;
 mod plan;
 #[path = "cn_features/publisher.rs"]
 mod publisher;
+#[cfg(test)]
+#[path = "cn_features/review_manifest.rs"]
+mod review_manifest;
 #[path = "cn_features/view.rs"]
 mod view;
 #[path = "cn_features/zscore.rs"]
@@ -434,6 +437,86 @@ mod tests {
         }
     }
 
+    fn varied_input(index: usize) -> FuturesFusionInput {
+        let phase = index as f64;
+        let close = 100.0 + phase * 0.002 + (phase * 0.17).sin() * 0.3;
+        let open = close - (phase * 0.11).cos() * 0.08;
+        let high = open.max(close) + 0.2 + (index % 7) as f64 * 0.01;
+        let low = open.min(close) - 0.2 - (index % 5) as f64 * 0.01;
+        let volume = 20.0 + (index % 13) as f64;
+        let buy_volume = volume * (0.42 + (index % 5) as f64 * 0.025);
+        let sell_volume = volume - buy_volume;
+        let amount = close * volume * 10.0;
+        let buy_amount = close * buy_volume * 10.0 * 1.001;
+        let sell_amount = amount - buy_amount;
+        let count = 5.0 + (index % 9) as f64;
+        let buy_count = 2.0 + (index % 4) as f64;
+        let sell_count = count - buy_count;
+
+        let mut values = [0.0; FUTURES_TRADE_FIELD_COUNT];
+        values[0] = open;
+        values[1] = high;
+        values[2] = low;
+        values[3] = close;
+        values[4] = volume;
+        values[5] = amount;
+        values[6] = amount / count;
+        values[7] = count;
+        values[8] = buy_count;
+        values[9] = sell_count;
+        values[10] = buy_amount;
+        values[11] = sell_amount;
+        values[12] = buy_volume;
+        values[13] = sell_volume;
+        values[14] = amount * 0.45;
+        values[15] = amount * 0.35;
+        values[16] = amount * 0.20;
+        values[17] = buy_amount * 0.45;
+        values[18] = sell_amount * 0.45;
+        values[19] = buy_amount * 0.35;
+        values[20] = sell_amount * 0.35;
+        values[21] = buy_amount * 0.20;
+        values[22] = sell_amount * 0.20;
+        values[23] = amount / volume / 10.0;
+        values[24] = buy_amount / buy_volume / 10.0;
+        values[25] = sell_amount / sell_volume / 10.0;
+        values[26] = buy_amount - sell_amount;
+        values[27] = buy_volume - sell_volume;
+        values[28] = (buy_volume - sell_volume) / volume;
+        values[29] = values[17] - values[18];
+        values[30] = values[19] - values[20];
+        values[31] = values[21] - values[22];
+
+        let bid_prices = std::array::from_fn(|level| {
+            close - 0.5 - level as f64 * (0.08 + (index % 3) as f64 * 0.005)
+        });
+        let bid_amounts = std::array::from_fn(|level| {
+            10.0 + level as f64 * 3.0 + (index % (level + 3)) as f64 * 0.7
+        });
+        let ask_prices = std::array::from_fn(|level| {
+            close + 0.5 + level as f64 * (0.09 + (index % 4) as f64 * 0.004)
+        });
+        let ask_amounts = std::array::from_fn(|level| {
+            8.0 + level as f64 * 2.0 + (index % (level + 4)) as f64 * 0.6
+        });
+
+        FuturesFusionInput {
+            ts_ms: index as i64 * 1_000 + 1_000,
+            symbol: "AP2601".to_string(),
+            trading_day: 20251103,
+            trade: FuturesTradeBar { values },
+            depth: Some(FuturesDepth5 {
+                bid_prices,
+                bid_amounts,
+                ask_prices,
+                ask_amounts,
+            }),
+            quality_flags: 0,
+            volume_multiple: 10.0,
+            volume_multiple_verified: true,
+        }
+    }
+
     #[test]
     fn rejects_any_non_five_depth_shape() {
         for levels in [4, 6, 20] {
@@ -503,6 +586,49 @@ mod tests {
         assert_eq!(values[1], None);
         assert_eq!(values[2], None);
         assert!(values[3].is_some());
+    }
+
+    #[test]
+    fn missing_book_preserves_every_legacy_trade_only_factor() {
+        let names: Vec<String> = review_manifest::LEGACY_TRADE_ONLY_FACTORS
+            .iter()
+            .map(|name| format!("cn_features_{}", name.to_ascii_lowercase()))
+            .collect();
+        let plan = FuturesFactorPlan::from_factor_names(names).unwrap();
+        assert_eq!(plan.len(), 455);
+
+        let mut clean = FuturesFusionState::default();
+        let mut missing = FuturesFusionState::default();
+        for index in 0..800 {
+            let row = varied_input(index);
+            clean.push(row.clone()).unwrap();
+            missing.push(row).unwrap();
+        }
+
+        let clean_row = varied_input(800);
+        let mut missing_row = clean_row.clone();
+        missing_row.depth = None;
+        clean.push(clean_row).unwrap();
+        missing.push(missing_row).unwrap();
+
+        let clean_values = clean.factor_values(&plan).unwrap();
+        let missing_values = missing.factor_values(&plan).unwrap();
+        for ((name, clean_value), missing_value) in review_manifest::LEGACY_TRADE_ONLY_FACTORS
+            .iter()
+            .zip(clean_values)
+            .zip(missing_values)
+        {
+            let clean_value = clean_value
+                .unwrap_or_else(|| panic!("{name} must be finite after deterministic warm-up"));
+            let missing_value = missing_value.unwrap_or_else(|| {
+                panic!("{name} was incorrectly invalidated by an unrelated missing book")
+            });
+            let tolerance = 1e-12 * clean_value.abs().max(1.0);
+            assert!(
+                (missing_value - clean_value).abs() <= tolerance,
+                "{name} changed after an unrelated missing book: clean={clean_value} missing={missing_value}"
+            );
+        }
     }
 
     #[test]

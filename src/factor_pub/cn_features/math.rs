@@ -654,17 +654,15 @@ pub fn rolling_corr_last(
     xs: &(impl F64SeriesView + ?Sized),
     ys: &(impl F64SeriesView + ?Sized),
     window: usize,
-    _ddof: u8,
+    min_periods: usize,
 ) -> Result<Option<f64>> {
-    if window == 0 {
+    if window == 0 || min_periods == 0 {
         return Ok(None);
     }
     let n = xs.len().min(ys.len());
-    if n < window {
+    let Some((start, end)) = tail_with_min_periods_bounds(n, window, min_periods) else {
         return Ok(None);
-    }
-    let start = n - window;
-    let end = n;
+    };
 
     for i in start..end {
         if !xs.value_at(i).is_finite() || !ys.value_at(i).is_finite() {
