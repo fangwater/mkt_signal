@@ -49,6 +49,8 @@ scripts/gate_full_cleanup_collect.py
 cmd.md
 # latency CSV capture runtime output
 /data/
+# generated exchange instrument snapshots and raw API responses
+/data/instrument_snapshots/
 data/latency_csv/
 latency_csv/
 

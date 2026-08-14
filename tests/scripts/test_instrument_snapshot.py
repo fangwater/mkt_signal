@@ -48,6 +48,15 @@ def raw_response(
     )
 
 
+class HeaderFilteringTests(unittest.TestCase):
+    def test_sensitive_response_headers_are_not_archived(self) -> None:
+        filtered = sync.safe_response_headers(
+            {"Content-Type": "application/json", "Set-Cookie": "secret", "authorization": "secret"}
+        )
+        self.assertEqual(filtered, {"Content-Type": "application/json"})
+
+
+
 class DecimalEncodingTests(unittest.TestCase):
     def test_non_power_of_ten_tick_preserves_raw_and_integer_parts(self) -> None:
         fields = snapshot.decimal_fields("0.2500", positive=True, integer_parts=True)

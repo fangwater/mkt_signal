@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 STRATEGY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SYMBOL_RE = re.compile(r"^[A-Z0-9]+$")
-CONFIG_FIELDS = {
+ORDER_PARAMETER_FIELDS = (
     "single_order_usdt",
     "orders_per_batch",
     "maker_price_anchor",
@@ -27,8 +27,8 @@ CONFIG_FIELDS = {
     "maker_timeout_ms",
     "max_maker_requotes",
     "target_tolerance_usdt",
-    "targets",
-}
+)
+CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets"}
 OPTIONAL_CONFIG_FIELDS = {"updated_at_us"}
 DEFAULT_CONFIG: Dict[str, Any] = {
     "single_order_usdt": 100.0,
@@ -44,6 +44,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 CLIENT_SCRIPT_PATH = Path(__file__).resolve().with_name("exec_config_client.py")
 CLIENT_SCRIPT_ROUTE = "/exec_config_client.py"
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
+
+
+class ConfigVersionConflict(ValueError):
+    """Raised when an editor tries to overwrite a newer Redis value."""
 
 
 def validate_strategy_name(raw: Any) -> str:
@@ -152,6 +156,56 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     return normalized
 
 
+def normalize_order_parameters(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("order_parameters must be an object")
+    allowed = set(ORDER_PARAMETER_FIELDS)
+    unknown = sorted(set(raw) - allowed)
+    missing = sorted(allowed - set(raw))
+    if unknown:
+        raise ValueError(f"unknown order parameter fields: {', '.join(unknown)}")
+    if missing:
+        raise ValueError(f"missing order parameter fields: {', '.join(missing)}")
+
+    normalized = normalize_exec_config({**raw, "targets": {}})
+    return {field: normalized[field] for field in ORDER_PARAMETER_FIELDS}
+
+
+def normalize_expected_updated_at_us(raw: Any) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("expected_updated_at_us must be an integer or null")
+    if raw <= 0 or raw > 9_223_372_036_854_775_807:
+        raise ValueError("expected_updated_at_us must be a positive int64")
+    return raw
+
+
+def decode_strategy_names(raw: Any, label: str) -> List[str]:
+    if raw is None:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(decoded, list):
+        raise ValueError(f"{label} must be a JSON array")
+    names = [validate_strategy_name(name) for name in decoded]
+    if len(names) != len(set(names)):
+        raise ValueError(f"{label} contains duplicate names")
+    return sorted(names)
+
+
+def decode_stored_exec_config(raw: Any) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Redis value is not valid JSON: {exc}") from exc
+    return normalize_exec_config(decoded)
+
+
 class ExecConfigStore:
     def __init__(
         self,
@@ -164,6 +218,7 @@ class ExecConfigStore:
         except ImportError as exc:
             raise RuntimeError("redis package is required: pip install redis") from exc
         self.client = redis.Redis.from_url(redis_url, decode_responses=True)
+        self._watch_error = redis.exceptions.WatchError
         self.env_name = str(env_name).strip()
         self.venue = str(venue).strip()
         if not self.env_name or not self.venue:
@@ -179,44 +234,15 @@ class ExecConfigStore:
         return f"{self.prefix}{validate_strategy_name(strategy_name)}"
 
     def list_strategy_names(self) -> List[str]:
-        raw = self.client.get(self.index_key)
-        if raw is None:
-            return []
-        try:
-            decoded = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"strategy index is not valid JSON: {exc}") from exc
-        if not isinstance(decoded, list):
-            raise ValueError("strategy index must be a JSON array")
-        names = [validate_strategy_name(name) for name in decoded]
-        if len(names) != len(set(names)):
-            raise ValueError("strategy index contains duplicate names")
-        return sorted(names)
+        return decode_strategy_names(self.client.get(self.index_key), "strategy index")
 
     def load(self, strategy_name: str) -> Optional[Dict[str, Any]]:
-        raw = self.client.get(self.key(strategy_name))
-        if raw is None:
-            return None
-        try:
-            decoded = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Redis value is not valid JSON: {exc}") from exc
-        return normalize_exec_config(decoded)
+        return decode_stored_exec_config(self.client.get(self.key(strategy_name)))
 
     def list_removed_strategy_names(self) -> List[str]:
-        raw = self.client.get(self.removed_index_key)
-        if raw is None:
-            return []
-        try:
-            decoded = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"removed strategy index is not valid JSON: {exc}") from exc
-        if not isinstance(decoded, list):
-            raise ValueError("removed strategy index must be a JSON array")
-        names = [validate_strategy_name(name) for name in decoded]
-        if len(names) != len(set(names)):
-            raise ValueError("removed strategy index contains duplicate names")
-        return sorted(names)
+        return decode_strategy_names(
+            self.client.get(self.removed_index_key), "removed strategy index"
+        )
 
     def save(self, strategy_name: str, config: Any) -> Dict[str, Any]:
         name = validate_strategy_name(strategy_name)
@@ -225,8 +251,16 @@ class ExecConfigStore:
             if name in self.list_removed_strategy_names():
                 raise ValueError(f"strategy removal already requested: {name}")
             strategy_names = self.list_strategy_names()
+            current = self.load(name) if name in strategy_names else None
+            if current is not None:
+                # Existing strategy publishers own targets; the Config page owns order params.
+                for field in ORDER_PARAMETER_FIELDS:
+                    normalized[field] = current[field]
             # Receipt time is authoritative even when a publisher repeats an unchanged target map.
-            normalized["updated_at_us"] = time.time_ns() // 1_000
+            next_version = time.time_ns() // 1_000
+            if current is not None and current.get("updated_at_us") is not None:
+                next_version = max(next_version, current["updated_at_us"] + 1)
+            normalized["updated_at_us"] = next_version
             self.client.set(
                 self.key(name),
                 json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
@@ -238,6 +272,67 @@ class ExecConfigStore:
                     json.dumps(sorted(strategy_names), ensure_ascii=False, separators=(",", ":")),
                 )
         return normalized
+
+    def save_order_parameters(
+        self,
+        strategy_name: str,
+        order_parameters: Any,
+        expected_updated_at_us: Any,
+    ) -> Dict[str, Any]:
+        name = validate_strategy_name(strategy_name)
+        normalized_parameters = normalize_order_parameters(order_parameters)
+        expected_version = normalize_expected_updated_at_us(expected_updated_at_us)
+        config_key = self.key(name)
+        with self._save_lock:
+            try:
+                with self.client.pipeline() as pipeline:
+                    pipeline.watch(
+                        self.index_key,
+                        self.removed_index_key,
+                        config_key,
+                    )
+                    strategy_names = decode_strategy_names(
+                        pipeline.get(self.index_key), "strategy index"
+                    )
+                    removed_names = decode_strategy_names(
+                        pipeline.get(self.removed_index_key),
+                        "removed strategy index",
+                    )
+                    current = decode_stored_exec_config(pipeline.get(config_key))
+
+                    if name in removed_names:
+                        raise ValueError(f"strategy removal already requested: {name}")
+                    if name not in strategy_names:
+                        raise ValueError(f"strategy is not active: {name}")
+                    if current is None:
+                        raise ValueError(f"strategy config is missing: {name}")
+                    current_version = current.get("updated_at_us")
+                    if current_version != expected_version:
+                        raise ConfigVersionConflict(
+                            "strategy config changed after it was loaded; reload before saving"
+                        )
+
+                    updated = dict(current)
+                    updated.update(normalized_parameters)
+                    next_version = time.time_ns() // 1_000
+                    if current_version is not None:
+                        next_version = max(next_version, current_version + 1)
+                    updated["updated_at_us"] = next_version
+                    pipeline.multi()
+                    pipeline.set(
+                        config_key,
+                        json.dumps(
+                            updated,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    )
+                    pipeline.execute()
+            except self._watch_error as exc:
+                raise ConfigVersionConflict(
+                    "strategy config changed while it was being saved; reload before saving"
+                ) from exc
+        return updated
 
     def remove(self, strategy_name: str) -> bool:
         name = validate_strategy_name(strategy_name)
@@ -299,9 +394,11 @@ INDEX_HTML = r"""<!doctype html>
       input { width: 100%; }
       button, a.command { cursor: pointer; }
       button.primary { background: #087ea4; border-color: #0ea5c9; }
+      button.secondary { background: var(--surface2); }
       button.danger { color: var(--red); }
-      button:disabled { opacity: .5; cursor: wait; }
+      button:disabled { opacity: .5; cursor: not-allowed; }
       input:disabled, select:disabled { color: var(--text); opacity: 1; cursor: default; }
+      input.is-dirty, select.is-dirty { border-color: var(--cyan); box-shadow: 0 0 0 1px #0e7490; }
       a.command { display: inline-flex; align-items: center; text-decoration: none; }
       .new-name { width: 180px; }
       .key { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -312,6 +409,7 @@ INDEX_HTML = r"""<!doctype html>
       .section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
       .section-head h2 { margin: 0; font-size: 15px; }
       .section-head .actions { margin-left: auto; display: flex; gap: 8px; }
+      .readonly-state { color: var(--muted); font-size: 11px; }
       .param-grid { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)); gap: 12px; }
       .field { min-width: 0; }
       .field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; }
@@ -326,7 +424,14 @@ INDEX_HTML = r"""<!doctype html>
       .empty { padding: 36px; text-align: center; color: var(--muted); }
       .footer-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
       @media (max-width: 860px) { .param-grid { grid-template-columns: repeat(2, 1fr); } .status { width: 100%; margin-left: 0; } }
-      @media (max-width: 520px) { header, main { padding-left: 10px; padding-right: 10px; } .param-grid { grid-template-columns: 1fr; } select { min-width: 150px; flex: 1; } }
+      @media (max-width: 520px) {
+        header, main { padding-left: 10px; padding-right: 10px; }
+        .section-head { flex-wrap: wrap; }
+        .section-head .actions { width: 100%; margin-left: 0; }
+        .section-head .actions button { flex: 1; min-width: 0; }
+        .param-grid { grid-template-columns: 1fr; }
+        select { min-width: 150px; flex: 1; }
+      }
     </style>
   </head>
   <body>
@@ -340,7 +445,13 @@ INDEX_HTML = r"""<!doctype html>
     <main>
       <div id="redis-key" class="key">-</div>
       <section>
-        <div class="section-head"><h2>Order Parameters</h2></div>
+        <div class="section-head">
+          <h2>Order Parameters</h2>
+          <div class="actions">
+            <button id="reset-order-parameters" class="secondary" type="button" disabled>Reset</button>
+            <button id="save-order-parameters" class="primary" type="button" disabled>Save Order Parameters</button>
+          </div>
+        </div>
         <div class="param-grid">
           <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
           <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" disabled /></div>
@@ -355,6 +466,7 @@ INDEX_HTML = r"""<!doctype html>
       <section>
         <div class="section-head">
           <h2>Target Positions</h2>
+          <span class="readonly-state">Read only</span>
         </div>
         <div class="targets">
           <table><thead><tr><th>Symbol</th><th>Target Qty</th></tr></thead><tbody id="target-rows"></tbody></table>
@@ -366,7 +478,7 @@ INDEX_HTML = r"""<!doctype html>
       (() => {
         const DEFAULTS = __DEFAULTS__;
         const fields = ["single_order_usdt", "orders_per_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
-        const state = { bootstrap: null, names: [], name: "", config: null };
+        const state = { bootstrap: null, names: [], name: "", config: null, exists: false, saving: false };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }
         function setStatus(text, level = "") { el("status").textContent = text; el("status").className = `status ${level}`.trim(); }
@@ -378,6 +490,39 @@ INDEX_HTML = r"""<!doctype html>
         }
         function strategyFromQuery() { return new URLSearchParams(location.search).get("strategy") || ""; }
         function updateQuery() { const url = new URL(location.href); state.name ? url.searchParams.set("strategy", state.name) : url.searchParams.delete("strategy"); history.replaceState(null, "", url); }
+        function fieldChanged(name) {
+          return state.config !== null && String(state.config[name]) !== el(name).value.trim();
+        }
+        function hasOrderParameterChanges() {
+          return state.exists && fields.some(fieldChanged);
+        }
+        function updateEditorState() {
+          const dirty = hasOrderParameterChanges();
+          fields.forEach((name) => {
+            el(name).disabled = !state.exists || state.saving;
+            el(name).classList.toggle("is-dirty", state.exists && fieldChanged(name));
+          });
+          el("reset-order-parameters").disabled = !dirty || state.saving;
+          el("save-order-parameters").disabled = !dirty || state.saving;
+        }
+        function collectOrderParameters() {
+          const parameters = {};
+          fields.forEach((name) => {
+            if (name === "maker_price_anchor") {
+              parameters[name] = el(name).value;
+              return;
+            }
+            const raw = el(name).value.trim();
+            if (!raw) throw new Error(`${name} is required`);
+            const value = Number(raw);
+            if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
+            parameters[name] = value;
+          });
+          return parameters;
+        }
+        function confirmDiscard() {
+          return !hasOrderParameterChanges() || window.confirm("Discard unsaved order parameter changes?");
+        }
         function renderNames() {
           const select = el("strategy");
           select.innerHTML = '<option value="">Select strategy</option>' + state.names.map((name) => `<option value="${name}">${name}</option>`).join("");
@@ -396,11 +541,13 @@ INDEX_HTML = r"""<!doctype html>
             });
           el("target-empty").style.display = tbody.children.length ? "none" : "block";
         }
-        function renderConfig(config) {
+        function renderConfig(config, exists = false) {
           state.config = structuredClone(config);
-          fields.forEach((name) => { el(name).value = config[name]; el(name).disabled = true; });
+          state.exists = exists;
+          fields.forEach((name) => { el(name).value = config[name]; });
           renderTargets(config.targets);
           el("redis-key").textContent = state.bootstrap ? `${state.bootstrap.key_prefix}${state.name}` : "-";
+          updateEditorState();
         }
         async function loadNames(preferred = "") {
           const payload = await request("strategies");
@@ -408,7 +555,7 @@ INDEX_HTML = r"""<!doctype html>
           if (preferred && state.names.includes(preferred)) state.name = preferred;
           else if (!state.names.includes(state.name)) state.name = state.names[0] || "";
           renderNames();
-          if (state.name) await loadStrategy(state.name); else { renderConfig(DEFAULTS); setStatus("No strategies", "warn"); }
+          if (state.name) await loadStrategy(state.name); else { renderConfig(DEFAULTS, false); setStatus("No strategies", "warn"); }
         }
         async function loadStrategy(name) {
           if (!name) return;
@@ -416,9 +563,36 @@ INDEX_HTML = r"""<!doctype html>
           try {
             const payload = await request(`strategy?name=${encodeURIComponent(name)}`);
             state.name = name;
-            renderConfig(payload.config || DEFAULTS);
+            renderConfig(payload.config || DEFAULTS, payload.exists === true);
             renderNames(); updateQuery(); setStatus(payload.exists ? "Loaded" : "Strategy not found", payload.exists ? "ok" : "warn");
           } catch (error) { setStatus(error.message, "err"); }
+        }
+        async function saveOrderParameters() {
+          if (!state.name || !state.exists || state.saving) return;
+          let orderParameters;
+          try { orderParameters = collectOrderParameters(); }
+          catch (error) { setStatus(error.message, "err"); return; }
+          state.saving = true; updateEditorState(); setStatus("Saving");
+          try {
+            const payload = await request("order-parameters", {
+              method: "POST",
+              body: JSON.stringify({
+                strategy_name: state.name,
+                expected_updated_at_us: state.config.updated_at_us ?? null,
+                order_parameters: orderParameters,
+              }),
+            });
+            renderConfig({
+              ...state.config,
+              ...payload.order_parameters,
+              updated_at_us: payload.updated_at_us,
+            }, true);
+            setStatus("Saved", "ok");
+          } catch (error) {
+            setStatus(error.message, "err");
+          } finally {
+            state.saving = false; updateEditorState();
+          }
         }
         async function boot() {
           try {
@@ -427,8 +601,15 @@ INDEX_HTML = r"""<!doctype html>
             await loadNames(strategyFromQuery());
           } catch (error) { setStatus(error.message, "err"); }
         }
-        el("strategy").onchange = (event) => loadStrategy(event.target.value);
-        el("reload").onclick = () => loadNames(state.name);
+        el("strategy").onchange = (event) => {
+          if (!confirmDiscard()) { event.target.value = state.name; return; }
+          loadStrategy(event.target.value);
+        };
+        el("reload").onclick = () => { if (confirmDiscard()) loadNames(state.name); };
+        el("reset-order-parameters").onclick = () => { if (state.config) renderConfig(state.config, state.exists); setStatus("Reset", "ok"); };
+        el("save-order-parameters").onclick = saveOrderParameters;
+        fields.forEach((name) => { el(name).oninput = updateEditorState; el(name).onchange = updateEditorState; });
+        window.addEventListener("beforeunload", (event) => { if (hasOrderParameterChanges()) { event.preventDefault(); event.returnValue = ""; } });
         boot();
       })();
     </script>
@@ -550,12 +731,46 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             try:
-                if parsed.path != "/api/strategy":
+                if parsed.path not in {"/api/strategy", "/api/order-parameters"}:
                     response = {"ok": False, "error": "not found"}
                     self.log_update_response(404, response)
                     self.send_json(404, response)
                     return
                 payload = self.read_json()
+                if parsed.path == "/api/order-parameters":
+                    required = {
+                        "strategy_name",
+                        "expected_updated_at_us",
+                        "order_parameters",
+                    }
+                    unknown = sorted(set(payload) - required)
+                    missing = sorted(required - set(payload))
+                    if unknown:
+                        raise ValueError(
+                            f"unknown request fields: {', '.join(unknown)}"
+                        )
+                    if missing:
+                        raise ValueError(
+                            f"missing request fields: {', '.join(missing)}"
+                        )
+                    name = validate_strategy_name(payload["strategy_name"])
+                    config = store.save_order_parameters(
+                        name,
+                        payload["order_parameters"],
+                        payload["expected_updated_at_us"],
+                    )
+                    response = {
+                        "ok": True,
+                        "strategy_name": name,
+                        "key": store.key(name),
+                        "order_parameters": {
+                            field: config[field] for field in ORDER_PARAMETER_FIELDS
+                        },
+                        "updated_at_us": config["updated_at_us"],
+                    }
+                    self.log_update_response(200, response)
+                    self.send_json(200, response)
+                    return
                 name = validate_strategy_name(payload.get("strategy_name"))
                 config = store.save(name, payload.get("config"))
                 response = {
@@ -566,6 +781,10 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
                 }
                 self.log_update_response(200, response)
                 self.send_json(200, response)
+            except ConfigVersionConflict as exc:
+                response = {"ok": False, "error": str(exc)}
+                self.log_update_response(409, response)
+                self.send_json(409, response)
             except (ValueError, json.JSONDecodeError) as exc:
                 response = {"ok": False, "error": str(exc)}
                 self.log_update_response(400, response)

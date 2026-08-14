@@ -36,6 +36,20 @@ PG_URL_QUERY_ENV = {
     "sslmode": "PGSSLMODE",
     "sslrootcert": "PGSSLROOTCERT",
 }
+SENSITIVE_RESPONSE_HEADERS = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "set-cookie",
+}
+
+
+def safe_response_headers(headers: Any) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in SENSITIVE_RESPONSE_HEADERS
+    }
 
 
 def add_query_param(url: str, name: str, value: str) -> str:
@@ -67,7 +81,7 @@ def fetch_page(
             with urllib.request.urlopen(request, timeout=timeout_sec) as response:
                 body = response.read()
                 status = int(response.status)
-                response_headers = {key: value for key, value in response.headers.items()}
+                response_headers = safe_response_headers(response.headers)
                 final_url = response.geturl()
             if status < 200 or status >= 300:
                 raise snapshot.SnapshotError(f"{source.source_id}: HTTP {status} from {final_url}")
@@ -265,6 +279,7 @@ def build_snapshot_tree(
         "effective_from": effective_from,
         "collector_host": snapshot.socket.gethostname(),
         "collector_script_sha256": script_sha256,
+        "collector_runner_sha256": snapshot.sha256_file(Path(__file__).resolve()),
         "exchanges": list(exchanges),
         "market_types": list(market_types),
         "raw_response_count": len(responses),
