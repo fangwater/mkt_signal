@@ -3,9 +3,9 @@
 instance = "sg"
 
 # ZMQ source. endpoint takes precedence if set; otherwise endpoint is built as tcp://<ip>:<port>.
-ip = "47.131.162.78"
+ip = "47.128.92.224"
 port = 6370
-# endpoint = "tcp://47.131.162.78:6370"
+# endpoint = "tcp://47.128.92.224:6370"
 
 topic = "latency."
 

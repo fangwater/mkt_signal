@@ -8,7 +8,7 @@ ConditionPathExists=/sys/class/net/%i
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/default/pin-aws-ena-irq-%i
-ExecStart=/usr/local/sbin/pin_aws_ena_irq_affinity.sh --iface %i --cpus ${IRQ_CPUS} --stop-irqbalance --execute
+ExecStart=/usr/local/sbin/pin_aws_ena_irq_affinity.sh --iface %i --cpus ${IRQ_CPUS} --stop-irqbalance --allow-pending-effective --execute
 RemainAfterExit=yes
 
 [Install]

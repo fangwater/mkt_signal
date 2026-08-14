@@ -33,5 +33,5 @@ routes:
       size: 2048
     to:
       type: zmq
-      endpoint: "tcp://47.131.162.78:6360"
+      endpoint: "tcp://47.128.92.224:6360"
       size: 2048

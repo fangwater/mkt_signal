@@ -7,10 +7,11 @@ RELEASE_DIR="$TARGET_DIR/release"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/build-sg-intra-binaries.sh
+Usage: scripts/build-intra-binaries.sh
 
-Builds every release binary used by the SG Bybit Intra stack. Artifacts are
-written to target/release so publish-sg-intra.sh consumes exactly this build.
+Builds every release binary used by the supported Bybit, OKX, and Binance
+Intra stacks. Artifacts are written to target/release so publish-intra.sh
+consumes exactly this build.
 USAGE
 }
 
@@ -28,12 +29,14 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[INFO] building SG Bybit Intra release binaries"
+echo "[INFO] building Intra release binaries"
 (
   cd "$ROOT_DIR"
   cargo build --release --target-dir "$TARGET_DIR" \
     -p mkt_signal \
     --bin bybit_account_monitor \
+    --bin okex_account_monitor \
+    --bin binance_account_monitor \
     --bin pre_trade \
     --bin trade_engine
   cargo build --release --target-dir "$TARGET_DIR" \
@@ -50,6 +53,8 @@ echo "[INFO] building SG Bybit Intra release binaries"
 
 required_binaries=(
   "$RELEASE_DIR/bybit_account_monitor"
+  "$RELEASE_DIR/okex_account_monitor"
+  "$RELEASE_DIR/binance_account_monitor"
   "$RELEASE_DIR/pre_trade"
   "$RELEASE_DIR/trade_engine"
   "$RELEASE_DIR/trade_signal"
@@ -63,4 +68,4 @@ for binary in "${required_binaries[@]}"; do
   fi
 done
 
-echo "[INFO] SG Bybit Intra release build complete; binaries=${#required_binaries[@]} persist_manager=included"
+echo "[INFO] Intra release build complete; binaries=${#required_binaries[@]} persist_manager=included"

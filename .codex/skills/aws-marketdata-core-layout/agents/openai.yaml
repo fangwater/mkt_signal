@@ -1,4 +1,4 @@
 interface:
-  display_name: "AWS Marketdata Core Layout"
-  short_description: "Pin market-data cores and split dual-ENI traffic"
-  default_prompt: "Use $aws-marketdata-core-layout to operate market-data publishers with the host's CPU and dual-ENI lane assignments."
+  display_name: "AWS Marketdata And Dual-ENI Layout"
+  short_description: "Audit JP/SG traffic lanes, cores, and ENA IRQs"
+  default_prompt: "Use $aws-marketdata-core-layout to audit or operate the JP/SG CPU and dual-ENI traffic-lane assignments."

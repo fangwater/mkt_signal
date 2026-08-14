@@ -1,9 +1,19 @@
 ---
 name: aws-marketdata-core-layout
-description: AWS market-data deployment and dual-ENI layout for mkt_signal. Use when operating or documenting spread_pbs, depth_pub, and model-input processes on the current market-data host, especially publisher CPU bindings or market-data versus order-traffic separation across ens42 and ens41.
+description: AWS market-data and trading-host dual-ENI layouts for mkt_signal. Use when operating, auditing, or documenting the JP market-data host or the SG execution host, especially spread_pbs/depth_pub CPU bindings, account_monitor and trade_engine source-IP isolation, default-route migration, source-policy routing, service listeners, cross-host endpoint changes, or ENA IRQ affinity.
 ---
 
 # AWS Marketdata Core Layout
+
+## Host Variants
+
+Identify the target host before applying any layout. For the SG execution host reached through
+the `sg` SSH alias, read [references/sg-dual-eni-layout.md](references/sg-dual-eni-layout.md) in
+full before auditing or changing networking, application binds, remote endpoints, IRQs, or trading
+startup. The SG reference records the applied layout, current startup gates, and historical audit;
+always re-check live state.
+
+The remainder of this file describes the current JP market-data-host layout.
 
 ## Scope
 
@@ -100,7 +110,7 @@ Other market-data egress and relay processes use the following assignments:
 | `bridge_sg_model_sender/ipc_bridge` | Outgoing ZMQ TCP source `172.31.46.90` via top-level `zmq_source_ip` | `pmdaemon` process `bridge_sg_model_sender` |
 | `spread_bbo_zmq_pub` (`binance-futures`) | Listen on `172.31.46.90:6320`; peers connect through the EIP associated with that private address | PM2 process `sbbzp_bn_fu` in namespace `spread_bbo_zmq_pub`, CPU `5` |
 | `rclone-gdrive` | Google Drive HTTPS source `172.31.46.92` via `rclone --bind` | systemd `rclone-gdrive.service`; drop-in `/etc/systemd/system/rclone-gdrive.service.d/ens42-bind.conf` |
-| `persist_sync_collector` SG sources | Collector connects to `127.0.0.1:50551-50553`; nginx binds `172.31.46.93` and proxies to `47.131.162.78:6351-6353` | PM2 `persist_center_persist_sync_collector`; nginx config `/etc/nginx/stream-enabled/persist_center_sg_ens42.conf` |
+| `persist_sync_collector` SG sources | Collector connects to `127.0.0.1:50551-50553`; nginx binds `172.31.46.93` and proxies to the SG `行情网卡` EIP `47.128.92.224:6351-6353` | PM2 `persist_center_persist_sync_collector`; nginx config `/etc/nginx/stream-enabled/persist_center_sg_ens42.conf` |
 
 `172.31.46.93` is assigned to non-exchange service egress through explicit
 per-service binds. Review existing consumers before adding another service to it.

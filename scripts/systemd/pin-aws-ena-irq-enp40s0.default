@@ -1,0 +1,2 @@
+# SG 行情网卡 ENA IRQ CPU, shared with the trade_engine IPC thread by design.
+IRQ_CPUS=15

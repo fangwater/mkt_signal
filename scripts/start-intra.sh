@@ -2,25 +2,30 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SSH_HOST="${SG_INTRA_START_HOST:-ubuntu@47.131.162.78}"
-SSH_KEY="${SG_INTRA_START_KEY:-$ROOT_DIR/aws-sg.pem}"
+# shellcheck source=scripts/intra_orchestration_lib.sh
+source "$ROOT_DIR/scripts/intra_orchestration_lib.sh"
+
+SSH_KEY=""
 ENV_NAME=""
 ALL_ENVS=0
 CHECK_ONLY=0
-STARTUP_WAIT_SECONDS="${SG_INTRA_START_WAIT_SECONDS:-15}"
-STARTUP_SETTLE_SECONDS="${SG_INTRA_START_SETTLE_SECONDS:-2}"
+STARTUP_WAIT_SECONDS="${INTRA_START_WAIT_SECONDS:-15}"
+STARTUP_SETTLE_SECONDS="${INTRA_START_SETTLE_SECONDS:-2}"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/start-sg-intra.sh (--env-name <name> | --all) [options]
+Usage: scripts/start-intra.sh (--env-name <name> | --all) [options]
 
 Options:
-  --host <ssh-host>    SSH target (default: ubuntu@47.131.162.78)
-  --key <identity>     SSH private key (default: ./aws-sg.pem)
-  --env-name <name>   Exactly bybit-intra-arb01 or bybit-intra-arb02
-  --all                Start arb01, then arb02
+  --key <identity>     Optional Bybit/SG SSH identity override
+  --env-name <name>   One supported Intra environment
+  --all                Start every supported Intra environment
   --check-only        Validate target and show process state; start nothing
   -h, --help           Show this help
+
+Supported environments:
+  bybit-intra-arb01, bybit-intra-arb02 -> SG
+  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
 
 Live start order, with a stability check after every step:
   1. config_server
@@ -38,7 +43,6 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --host) SSH_HOST="${2:-}"; shift 2 ;;
     --key) SSH_KEY="${2:-}"; shift 2 ;;
     --env-name) ENV_NAME="${2:-}"; shift 2 ;;
     --all) ALL_ENVS=1; shift ;;
@@ -58,40 +62,32 @@ if [[ "$ALL_ENVS" -eq 0 && -z "$ENV_NAME" ]]; then
   exit 2
 fi
 if [[ -n "$ENV_NAME" ]]; then
-  case "$ENV_NAME" in
-    bybit-intra-arb01|bybit-intra-arb02) ;;
-    *) echo "[ERROR] unsupported SG Intra environment: $ENV_NAME" >&2; exit 2 ;;
-  esac
+  intra_configure_env "$ENV_NAME"
 fi
-if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
-  echo "[ERROR] invalid SSH host: $SSH_HOST" >&2
-  exit 2
+if [[ -n "$SSH_KEY" ]]; then
+  if [[ ! -r "$SSH_KEY" ]]; then
+    echo "[ERROR] SSH identity is not readable: $SSH_KEY" >&2
+    exit 2
+  fi
+  SSH_KEY="$(readlink -f -- "$SSH_KEY")"
 fi
-if [[ ! -r "$SSH_KEY" ]]; then
-  echo "[ERROR] SSH identity is not readable: $SSH_KEY" >&2
-  exit 2
+if [[ -n "$ENV_NAME" ]]; then
+  intra_validate_explicit_key "$SSH_KEY"
 fi
-SSH_KEY="$(readlink -f -- "$SSH_KEY")"
 
 if [[ "$ALL_ENVS" -eq 1 ]]; then
-  for env_name in bybit-intra-arb01 bybit-intra-arb02; do
-    child_args=(
-      --host "$SSH_HOST"
-      --key "$SSH_KEY"
-      --env-name "$env_name"
-    )
+  for env_name in "${INTRA_ORCHESTRATION_ENVS[@]}"; do
+    child_args=(--env-name "$env_name")
+    if [[ -n "$SSH_KEY" && "$env_name" == bybit-* ]]; then
+      child_args+=(--key "$SSH_KEY")
+    fi
     if [[ "$CHECK_ONLY" -eq 1 ]]; then
       child_args+=(--check-only)
     fi
-    "$ROOT_DIR/scripts/start-sg-intra.sh" "${child_args[@]}"
+    "$ROOT_DIR/scripts/start-intra.sh" "${child_args[@]}"
   done
   exit 0
 fi
-
-case "$ENV_NAME" in
-  bybit-intra-arb01) CONFIG_PORT=19191; VIZ_PORT=10174 ;;
-  bybit-intra-arb02) CONFIG_PORT=19192; VIZ_PORT=10175 ;;
-esac
 
 require_positive_integer() {
   local name="$1"
@@ -101,43 +97,52 @@ require_positive_integer() {
     exit 2
   fi
 }
-require_positive_integer SG_INTRA_START_WAIT_SECONDS "$STARTUP_WAIT_SECONDS"
-require_positive_integer SG_INTRA_START_SETTLE_SECONDS "$STARTUP_SETTLE_SECONDS"
+require_positive_integer INTRA_START_WAIT_SECONDS "$STARTUP_WAIT_SECONDS"
+require_positive_integer INTRA_START_SETTLE_SECONDS "$STARTUP_SETTLE_SECONDS"
 
 if ! command -v ssh >/dev/null 2>&1; then
   echo "[ERROR] required command not found: ssh" >&2
   exit 1
 fi
 
-SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=15)
-REMOTE_HOME="$("${SSH[@]}" "$SSH_HOST" 'printf "%s\n" "$HOME"')"
+intra_configure_transport "$ROOT_DIR" "$SSH_KEY"
+SSH=("${INTRA_SSH[@]}")
+REMOTE_HOME="$("${SSH[@]}" "$INTRA_SSH_HOST" 'printf "%s\n" "$HOME"')"
 if [[ "$REMOTE_HOME" != /* || "$REMOTE_HOME" == *$'\n'* ]]; then
-  echo "[ERROR] invalid remote home returned by $SSH_HOST: $REMOTE_HOME" >&2
+  echo "[ERROR] invalid remote home returned by $INTRA_SSH_HOST: $REMOTE_HOME" >&2
   exit 1
 fi
 REMOTE_DIR="${REMOTE_HOME}/${ENV_NAME}"
-REMOTE_REAL="$("${SSH[@]}" "$SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
+REMOTE_REAL="$("${SSH[@]}" "$INTRA_SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
 if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
   echo "[ERROR] remote target mismatch: expected=$REMOTE_DIR resolved=$REMOTE_REAL" >&2
   exit 1
 fi
 
-echo "[INFO] start target host=$SSH_HOST exchange=bybit env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$SSH_HOST" bash -s -- \
+echo "[INFO] start target host=$INTRA_SSH_HOST exchange=$INTRA_EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
+"${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
   "$REMOTE_DIR" \
+  "$ENV_NAME" \
+  "$INTRA_EXCHANGE" \
+  "$INTRA_ACCOUNT_MONITOR_DEST" \
+  "$INTRA_ACCOUNT_MONITOR_BIN" \
   "$CHECK_ONLY" \
-  "$CONFIG_PORT" \
-  "$VIZ_PORT" \
+  "$INTRA_CONFIG_PORT" \
+  "$INTRA_VIZ_PORT" \
   "$STARTUP_WAIT_SECONDS" \
   "$STARTUP_SETTLE_SECONDS" <<'REMOTE_START'
 set -euo pipefail
 
 target="$1"
-check_only="$2"
-config_port="$3"
-viz_port="$4"
-startup_wait_seconds="$5"
-startup_settle_seconds="$6"
+env_name="$2"
+exchange="$3"
+account_monitor_dest="$4"
+account_monitor_bin="$5"
+check_only="$6"
+config_port="$7"
+viz_port="$8"
+startup_wait_seconds="$9"
+startup_settle_seconds="${10}"
 scripts_dir="$target/scripts"
 intra_scripts_dir="$target/intra_scripts"
 
@@ -145,10 +150,10 @@ if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then
   echo "[ERROR] invalid remote target: $target" >&2
   exit 1
 fi
-case "$(basename "$target"):$config_port:$viz_port" in
-  bybit-intra-arb01:19191:10174|bybit-intra-arb02:19192:10175) ;;
-  *) echo "[ERROR] target/port mismatch: target=$target config=$config_port viz=$viz_port" >&2; exit 1 ;;
-esac
+if [[ "$(basename "$target")" != "$env_name" || "$env_name" != "${exchange}-intra-"* ]]; then
+  echo "[ERROR] exchange/target mismatch: exchange=$exchange env=$env_name target=$target" >&2
+  exit 1
+fi
 
 required_files=(
   "$target/env.sh"
@@ -159,7 +164,7 @@ required_files=(
 )
 required_executables=(
   "$target/trade_signal"
-  "$target/account_monitor_bybit"
+  "$target/$account_monitor_dest"
   "$target/viz_server"
   "$target/pre_trade"
   "$target/trade_engine"
@@ -224,18 +229,32 @@ if [[ "$configured_viz_port" != "$viz_port" ]]; then
   exit 1
 fi
 
-if ! (
+(
   set +u
   set -a
   # shellcheck disable=SC1090
   source "$target/env.sh" >/dev/null 2>&1
   set +a
-  [[ -n "${IPC_NAMESPACE:-}" ]]
-  [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]]
-); then
-  echo "[ERROR] env.sh must provide IPC_NAMESPACE, BYBIT_API_KEY, and BYBIT_API_SECRET" >&2
+  [[ -n "${IPC_NAMESPACE:-}" ]] || exit 1
+  case "$exchange" in
+    bybit)
+      [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]]
+      ;;
+    okex)
+      [[ -n "${OKX_API_KEY:-}" && -n "${OKX_API_SECRET:-}" && -n "${OKX_PASSPHRASE:-}" ]]
+      ;;
+    binance)
+      [[ -n "${BINANCE_API_KEY:-}" && -n "${BINANCE_API_SECRET:-}" ]]
+      [[ "${BINANCE_ACCOUNT_MODE:-}" == "STANDARD" ]]
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+) || {
+  echo "[ERROR] env.sh is missing IPC namespace, $exchange credentials, or required account mode" >&2
   exit 1
-fi
+}
 
 labels=(
   viz_server
@@ -249,7 +268,7 @@ binaries=(
   "$target/persist_manager"
   "$target/trade_engine"
   "$target/pre_trade"
-  "$target/account_monitor_bybit"
+  "$target/$account_monitor_dest"
 )
 start_scripts=(
   "$intra_scripts_dir/start_intra_viz_server.sh"
@@ -259,6 +278,7 @@ start_scripts=(
   "$intra_scripts_dir/start_intra_monitors.sh"
 )
 trade_signal_binary="$target/trade_signal"
+legacy_account_monitor_binary="$target/$account_monitor_bin"
 config_server_script="$scripts_dir/intra_config_server.py"
 
 find_exact_pids() {
@@ -313,6 +333,10 @@ print_process_state() {
       echo "[STATE] ${labels[$index]} running pids=${pids[*]}"
     fi
   done
+  mapfile -t pids < <(find_exact_pids "$legacy_account_monitor_binary")
+  if [[ "${#pids[@]}" -ne 0 ]]; then
+    echo "[STATE] legacy account_monitor running pids=${pids[*]} path=$legacy_account_monitor_binary"
+  fi
   mapfile -t pids < <(find_exact_pids "$trade_signal_binary")
   if [[ "${#pids[@]}" -eq 0 ]]; then
     echo "[STATE] trade_signal stopped (required)"
@@ -354,8 +378,13 @@ require_all_stopped() {
       found=1
     fi
   done
+  mapfile -t pids < <(find_exact_pids "$legacy_account_monitor_binary")
+  if [[ "${#pids[@]}" -ne 0 ]]; then
+    echo "[ERROR] legacy account_monitor is already running: ${pids[*]} path=$legacy_account_monitor_binary" >&2
+    found=1
+  fi
   if [[ "$found" -ne 0 ]]; then
-    echo "[ERROR] start requires a fully stopped target; run stop-sg-intra.sh first" >&2
+    echo "[ERROR] start requires a fully stopped target; run stop-intra.sh first" >&2
     exit 3
   fi
 }
@@ -451,7 +480,7 @@ fi
 
 require_all_stopped
 cd "$target"
-echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=bybit trade_signal=stopped"
+echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=$exchange trade_signal=stopped"
 start_and_verify_config_server
 for index in "${!labels[@]}"; do
   start_and_verify_binary \

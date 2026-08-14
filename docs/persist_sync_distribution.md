@@ -21,6 +21,8 @@ Rules:
 - Bind formula: `bind_port = 50000 + public_port - 6300`.
 - Nginx stream mapping format: `<public_port> <bind_host>:<bind_port>`.
 - `source_id` defaults to the env directory basename.
+- SG persist traffic uses the 行情网卡 EIP `47.128.92.224`; keep the 下单网卡/SSH EIP
+  `47.131.162.78` out of collector URLs.
 
 Regions:
 
@@ -28,7 +30,7 @@ Regions:
 | --- | --- | --- |
 | jp | `54.64.147.69` | `http://54.64.147.69` |
 | hk | `47.238.128.48` | `http://47.238.128.48` |
-| sg | `47.131.162.78` | `http://47.131.162.78` |
+| sg | `47.128.92.224` | `http://47.128.92.224` |
 
 ## Allocations
 
@@ -36,7 +38,9 @@ Regions:
 | ---: | --- | --- | --- | --- | --- | --- | --- |
 | 6340 | jp | fr | `gate_fr_arb01` | `gate_fr_arb01` | `http://54.64.147.69:6340` | `127.0.0.1:50040` | planned |
 | 6341 | jp | fr | `bitget_fr_arb02` | `bitget_fr_arb02` | `http://54.64.147.69:6341` | `127.0.0.1:50041` | planned |
-| 6351 | sg | intra | `bybit-intra-arb01` | `bybit-intra-arb01` | `http://47.131.162.78:6351` | `127.0.0.1:50051` | fixed |
+| 6351 | sg | intra | `bybit-intra-arb01` | `bybit-intra-arb01` | `http://47.128.92.224:6351` | `127.0.0.1:50051` | fixed |
+| 6352 | sg | mm | `bybit_mm_alpha` | `bybit_mm_alpha` | `http://47.128.92.224:6352` | `127.0.0.1:50052` | fixed |
+| 6353 | sg | intra | `bybit-intra-arb02` | `bybit-intra-arb02` | `http://47.128.92.224:6353` | `127.0.0.1:50053` | fixed |
 | 6354 | hk | intra | `okex-intra-arb01` | `okex-intra-arb01` | `http://47.238.128.48:6354` | `127.0.0.1:50054` | planned |
 
 ## Setup Notes

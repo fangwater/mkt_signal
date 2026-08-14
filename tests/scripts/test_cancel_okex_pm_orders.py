@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +15,36 @@ spec.loader.exec_module(mod)
 
 
 class TestCancelOkexPmOrders(unittest.TestCase):
+    def test_private_request_sets_explicit_user_agent(self):
+        with patch.object(mod, "http_request", return_value=(200, '{"code":"0"}')) as request:
+            mod.okx_private(
+                "GET",
+                mod.OKX_ORDERS_PENDING_PATH,
+                "key",
+                "secret",
+                "passphrase",
+                params={"instType": "SWAP"},
+            )
+
+        headers = request.call_args.kwargs["headers"]
+        self.assertEqual(headers["User-Agent"], mod.USER_AGENT)
+
+    def test_fetch_open_fails_closed_on_http_error(self):
+        with patch.object(mod, "okx_private", return_value=(403, "error code: 1010")):
+            with self.assertRaisesRegex(mod.OkxQueryError, "status=403"):
+                mod.fetch_open("key", "secret", "passphrase", "SWAP")
+
+    def test_fetch_open_fails_closed_on_invalid_json(self):
+        with patch.object(mod, "okx_private", return_value=(200, "not-json")):
+            with self.assertRaisesRegex(mod.OkxQueryError, "invalid JSON"):
+                mod.fetch_open("key", "secret", "passphrase", "SWAP")
+
+    def test_fetch_open_fails_closed_on_okx_error(self):
+        body = json.dumps({"code": "50113", "msg": "Invalid Sign", "data": []})
+        with patch.object(mod, "okx_private", return_value=(200, body)):
+            with self.assertRaisesRegex(mod.OkxQueryError, "failed"):
+                mod.fetch_open("key", "secret", "passphrase", "SWAP")
+
     def test_margin_scope_reads_spot_cross_orders(self):
         def fake_fetch_open(_api_key, _api_secret, _passphrase, inst_type):
             self.assertEqual(inst_type, "SPOT")

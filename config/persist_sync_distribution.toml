@@ -31,8 +31,9 @@ host = "47.238.128.48"
 base_url = "http://47.238.128.48"
 
 [regions.sg]
-host = "47.131.162.78"
-base_url = "http://47.131.162.78"
+# SG 行情网卡 data-plane EIP. SSH may still use 47.131.162.78 on 下单网卡.
+host = "47.128.92.224"
+base_url = "http://47.128.92.224"
 
 # Local intra/cross arb01 sources on this machine.
 [[allocations]]
@@ -82,7 +83,7 @@ region = "sg"
 strategy = "intra"
 env = "bybit-intra-arb01"
 source_id = "bybit-intra-arb01"
-public_url = "http://47.131.162.78:6351"
+public_url = "http://47.128.92.224:6351"
 bind = "127.0.0.1:50051"
 status = "fixed"
 
@@ -92,7 +93,7 @@ region = "sg"
 strategy = "intra"
 env = "bybit-intra-arb02"
 source_id = "bybit-intra-arb02"
-public_url = "http://47.131.162.78:6353"
+public_url = "http://47.128.92.224:6353"
 bind = "127.0.0.1:50053"
 status = "fixed"
 
@@ -103,7 +104,7 @@ region = "sg"
 strategy = "mm"
 env = "bybit_mm_alpha"
 source_id = "bybit_mm_alpha"
-public_url = "http://47.131.162.78:6352"
+public_url = "http://47.128.92.224:6352"
 bind = "127.0.0.1:50052"
 status = "fixed"
 

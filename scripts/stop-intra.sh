@@ -2,27 +2,32 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SSH_HOST="${SG_INTRA_STOP_HOST:-ubuntu@47.131.162.78}"
-SSH_KEY="${SG_INTRA_STOP_KEY:-$ROOT_DIR/aws-sg.pem}"
+# shellcheck source=scripts/intra_orchestration_lib.sh
+source "$ROOT_DIR/scripts/intra_orchestration_lib.sh"
+
+SSH_KEY=""
 ENV_NAME=""
 ALL_ENVS=0
 CHECK_ONLY=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/stop-sg-intra.sh (--env-name <name> | --all) [options]
+Usage: scripts/stop-intra.sh (--env-name <name> | --all) [options]
 
 Options:
-  --host <ssh-host>    SSH target (default: ubuntu@47.131.162.78)
-  --key <identity>     SSH private key (default: ./aws-sg.pem)
-  --env-name <name>   Exactly bybit-intra-arb01 or bybit-intra-arb02
-  --all                Stop arb01, then arb02
+  --key <identity>     Optional Bybit/SG SSH identity override
+  --env-name <name>   One supported Intra environment
+  --all                Stop every supported Intra environment
   --check-only        Validate target and show matching processes; change nothing
   -h, --help           Show this help
 
+Supported environments:
+  bybit-intra-arb01, bybit-intra-arb02 -> SG
+  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
+
 Live stop order:
   1. trade_engine, followed by an executable-level stopped check
-  2. cancel and verify all Bybit linear and every spot order-filter order
+  2. cancel and verify every futures and spot/margin order for the exchange
   3. trade_signal
   4. pre_trade
   5. account_monitor
@@ -30,15 +35,13 @@ Live stop order:
   7. persist_manager
   8. viz_server
 
-Cancellation runs from the selected environment directory as:
-  python3 scripts/cancel_bybit_pm_orders.py --scope both \
-    --spot-order-filters all --execute
+The exchange is inferred from env-name. Bybit targets SG; OKX and Binance
+always target the jp-meta-elvpn SSH alias.
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --host) SSH_HOST="${2:-}"; shift 2 ;;
     --key) SSH_KEY="${2:-}"; shift 2 ;;
     --env-name) ENV_NAME="${2:-}"; shift 2 ;;
     --all) ALL_ENVS=1; shift ;;
@@ -58,32 +61,29 @@ if [[ "$ALL_ENVS" -eq 0 && -z "$ENV_NAME" ]]; then
   exit 2
 fi
 if [[ -n "$ENV_NAME" ]]; then
-  case "$ENV_NAME" in
-    bybit-intra-arb01|bybit-intra-arb02) ;;
-    *) echo "[ERROR] unsupported SG Intra environment: $ENV_NAME" >&2; exit 2 ;;
-  esac
+  intra_configure_env "$ENV_NAME"
 fi
-if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
-  echo "[ERROR] invalid SSH host: $SSH_HOST" >&2
-  exit 2
+if [[ -n "$SSH_KEY" ]]; then
+  if [[ ! -r "$SSH_KEY" ]]; then
+    echo "[ERROR] SSH identity is not readable: $SSH_KEY" >&2
+    exit 2
+  fi
+  SSH_KEY="$(readlink -f -- "$SSH_KEY")"
 fi
-if [[ ! -r "$SSH_KEY" ]]; then
-  echo "[ERROR] SSH identity is not readable: $SSH_KEY" >&2
-  exit 2
+if [[ -n "$ENV_NAME" ]]; then
+  intra_validate_explicit_key "$SSH_KEY"
 fi
-SSH_KEY="$(readlink -f -- "$SSH_KEY")"
 
 if [[ "$ALL_ENVS" -eq 1 ]]; then
-  for env_name in bybit-intra-arb01 bybit-intra-arb02; do
-    child_args=(
-      --host "$SSH_HOST"
-      --key "$SSH_KEY"
-      --env-name "$env_name"
-    )
+  for env_name in "${INTRA_ORCHESTRATION_ENVS[@]}"; do
+    child_args=(--env-name "$env_name")
+    if [[ -n "$SSH_KEY" && "$env_name" == bybit-* ]]; then
+      child_args+=(--key "$SSH_KEY")
+    fi
     if [[ "$CHECK_ONLY" -eq 1 ]]; then
       child_args+=(--check-only)
     fi
-    "$ROOT_DIR/scripts/stop-sg-intra.sh" "${child_args[@]}"
+    "$ROOT_DIR/scripts/stop-intra.sh" "${child_args[@]}"
   done
   exit 0
 fi
@@ -93,36 +93,65 @@ if ! command -v ssh >/dev/null 2>&1; then
   exit 1
 fi
 
-SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=15)
-REMOTE_HOME="$("${SSH[@]}" "$SSH_HOST" 'printf "%s\n" "$HOME"')"
+intra_configure_transport "$ROOT_DIR" "$SSH_KEY"
+SSH=("${INTRA_SSH[@]}")
+REMOTE_HOME="$("${SSH[@]}" "$INTRA_SSH_HOST" 'printf "%s\n" "$HOME"')"
 if [[ "$REMOTE_HOME" != /* || "$REMOTE_HOME" == *$'\n'* ]]; then
-  echo "[ERROR] invalid remote home returned by $SSH_HOST: $REMOTE_HOME" >&2
+  echo "[ERROR] invalid remote home returned by $INTRA_SSH_HOST: $REMOTE_HOME" >&2
   exit 1
 fi
 REMOTE_DIR="${REMOTE_HOME}/${ENV_NAME}"
-REMOTE_REAL="$("${SSH[@]}" "$SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
+REMOTE_REAL="$("${SSH[@]}" "$INTRA_SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
 if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
   echo "[ERROR] remote target mismatch: expected=$REMOTE_DIR resolved=$REMOTE_REAL" >&2
   exit 1
 fi
 
-echo "[INFO] stop target host=$SSH_HOST exchange=bybit env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$CHECK_ONLY" <<'REMOTE_STOP'
+echo "[INFO] stop target host=$INTRA_SSH_HOST exchange=$INTRA_EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
+"${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
+  "$REMOTE_DIR" "$ENV_NAME" "$INTRA_EXCHANGE" \
+  "$INTRA_ACCOUNT_MONITOR_DEST" "$INTRA_ACCOUNT_MONITOR_BIN" \
+  "$CHECK_ONLY" <<'REMOTE_STOP'
 set -euo pipefail
 
 target="$1"
-check_only="$2"
+env_name="$2"
+exchange="$3"
+account_monitor_dest="$4"
+account_monitor_bin="$5"
+check_only="$6"
 scripts_dir="$target/scripts"
 intra_scripts_dir="$target/intra_scripts"
-cancel_script="$scripts_dir/cancel_bybit_pm_orders.py"
 
 if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then
   echo "[ERROR] invalid remote target: $target" >&2
   exit 1
 fi
-case "$(basename "$target")" in
-  bybit-intra-arb01|bybit-intra-arb02) ;;
-  *) echo "[ERROR] unsupported remote target: $target" >&2; exit 1 ;;
+if [[ "$(basename "$target")" != "$env_name" || "$env_name" != "${exchange}-intra-"* ]]; then
+  echo "[ERROR] exchange/target mismatch: exchange=$exchange env=$env_name target=$target" >&2
+  exit 1
+fi
+
+case "$exchange" in
+  bybit)
+    cancel_script="$scripts_dir/cancel_bybit_pm_orders.py"
+    cancel_args=(--scope both --spot-order-filters all)
+    cancel_scope="linear_and_all_spot_filters"
+    ;;
+  okex)
+    cancel_script="$scripts_dir/cancel_okex_pm_orders.py"
+    cancel_args=(--scope both)
+    cancel_scope="swap_and_margin_spot"
+    ;;
+  binance)
+    cancel_script="$scripts_dir/cancel_binance_std_orders.py"
+    cancel_args=(--scope both)
+    cancel_scope="standard_um_and_spot"
+    ;;
+  *)
+    echo "[ERROR] unsupported exchange: $exchange" >&2
+    exit 1
+    ;;
 esac
 
 required_files=(
@@ -137,6 +166,13 @@ required_files=(
   "$intra_scripts_dir/stop_intra_persist_manager.sh"
   "$intra_scripts_dir/stop_intra_viz_server.sh"
 )
+if [[ "$exchange" == "binance" ]]; then
+  required_files+=(
+    "$scripts_dir/binance_cancel_all_std_spot_orders.py"
+    "$scripts_dir/binance_cancel_all_std_um_ws_orders.py"
+    "$scripts_dir/binance_local_ip.py"
+  )
+fi
 for required_file in "${required_files[@]}"; do
   if [[ ! -f "$required_file" ]]; then
     echo "[ERROR] required remote file not found: $required_file" >&2
@@ -150,22 +186,33 @@ for required_command in bash python3 pmdaemon npx ps readlink grep; do
   fi
 done
 
-if ! (
+(
   set +u
   set -a
   # shellcheck disable=SC1090
   source "$target/env.sh" >/dev/null 2>&1
   set +a
-  [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]]
-); then
-  echo "[ERROR] $target/env.sh does not provide BYBIT_API_KEY and BYBIT_API_SECRET" >&2
+  case "$exchange" in
+    bybit)
+      [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]]
+      ;;
+    okex)
+      [[ -n "${OKX_API_KEY:-}" && -n "${OKX_API_SECRET:-}" && -n "${OKX_PASSPHRASE:-}" ]]
+      ;;
+    binance)
+      [[ -n "${BINANCE_API_KEY:-}" && -n "${BINANCE_API_SECRET:-}" ]]
+      [[ "${BINANCE_ACCOUNT_MODE:-}" == "STANDARD" ]]
+      ;;
+  esac
+) || {
+  echo "[ERROR] $target/env.sh does not provide valid $exchange credentials/account mode" >&2
   exit 1
-fi
+}
 
 target_executables=(
   "$target/trade_signal"
-  "$target/account_monitor_bybit"
-  "$target/bybit_account_monitor"
+  "$target/$account_monitor_dest"
+  "$target/$account_monitor_bin"
   "$target/account_monitor"
   "$target/viz_server"
   "$target/pre_trade"
@@ -238,7 +285,7 @@ run_step() {
 }
 
 cd "$target"
-echo "[WARN] LIVE stop begins: env=$(basename "$target") exchange=bybit order_scope=linear_and_all_spot_filters"
+echo "[WARN] LIVE stop begins: env=$(basename "$target") exchange=$exchange order_scope=$cancel_scope"
 run_step "stop trade_engine" bash "$intra_scripts_dir/stop_intra_trade_engine.sh"
 if exact_executable_running "$target/trade_engine"; then
   echo "[ERROR] trade_engine is still running; refusing to cancel while it can place orders" >&2
@@ -247,12 +294,9 @@ fi
 echo "[INFO] trade_engine confirmed stopped"
 
 echo
-echo "[STEP] cancel and verify all Bybit linear and spot open orders"
+echo "[STEP] cancel all $exchange futures and spot/margin open orders"
 set +e
-cancel_output="$(python3 "$cancel_script" \
-  --scope both \
-  --spot-order-filters all \
-  --execute 2>&1)"
+cancel_output="$(python3 "$cancel_script" "${cancel_args[@]}" --execute 2>&1)"
 cancel_status=$?
 set -e
 if [[ -n "$cancel_output" ]]; then
@@ -262,15 +306,44 @@ if [[ "$cancel_status" -ne 0 ]]; then
   echo "[ERROR] cancel script failed with status=$cancel_status; stopping sequence" >&2
   exit "$cancel_status"
 fi
-if grep -Eq '(\[WARN\]|WARN:|\[ERROR\])' <<<"$cancel_output"; then
+if grep -Eq '(\[WARN\]|WARN:|\[ERROR\]|ERROR:)' <<<"$cancel_output"; then
   echo "[ERROR] cancel script reported a warning/error; stopping sequence" >&2
   exit 1
 fi
-if ! grep -Eq '(Verification passed: no residual active orders in scope\.|\[plan\] no open orders in scope\. Nothing to do\.)' <<<"$cancel_output"; then
-  echo "[ERROR] cancel script did not confirm an empty order scope" >&2
+
+echo
+echo "[STEP] verify $exchange futures and spot/margin order scopes are empty"
+set +e
+verify_output="$(python3 "$cancel_script" "${cancel_args[@]}" 2>&1)"
+verify_status=$?
+set -e
+if [[ -n "$verify_output" ]]; then
+  printf '%s\n' "$verify_output"
+fi
+if [[ "$verify_status" -ne 0 ]]; then
+  echo "[ERROR] post-cancel verification failed with status=$verify_status; stopping sequence" >&2
+  exit "$verify_status"
+fi
+if grep -Eq '(\[WARN\]|WARN:|\[ERROR\]|ERROR:)' <<<"$verify_output"; then
+  echo "[ERROR] post-cancel verification reported a warning/error; stopping sequence" >&2
   exit 1
 fi
-echo "[INFO] all Bybit linear and spot open orders confirmed empty"
+case "$exchange" in
+  bybit|okex)
+    if ! grep -Fq '[plan] no open orders in scope. Nothing to do.' <<<"$verify_output"; then
+      echo "[ERROR] post-cancel verification found residual or unconfirmed orders" >&2
+      exit 1
+    fi
+    ;;
+  binance)
+    if ! grep -Fq '[plan] symbols=0 open_orders=0 execute=False' <<<"$verify_output" || \
+       ! grep -Fq '[plan] no open UM futures orders found' <<<"$verify_output"; then
+      echo "[ERROR] post-cancel verification did not confirm empty Binance Spot and UM scopes" >&2
+      exit 1
+    fi
+    ;;
+esac
+echo "[INFO] all $exchange futures and spot/margin open orders confirmed empty"
 
 run_step "stop trade_signal" bash "$intra_scripts_dir/stop_intra_trade_signal.sh"
 run_step "stop pre_trade" bash "$intra_scripts_dir/stop_intra_pre_trade.sh"

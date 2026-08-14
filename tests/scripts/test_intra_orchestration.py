@@ -10,14 +10,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD_SCRIPT = ROOT / "scripts" / "build-sg-intra-binaries.sh"
-PUBLISH_SCRIPT = ROOT / "scripts" / "publish-sg-intra.sh"
-START_SCRIPT = ROOT / "scripts" / "start-sg-intra.sh"
-STOP_SCRIPT = ROOT / "scripts" / "stop-sg-intra.sh"
-UPDATE_SCRIPT = ROOT / "scripts" / "update-sg-intra.sh"
+BUILD_SCRIPT = ROOT / "scripts" / "build-intra-binaries.sh"
+PUBLISH_SCRIPT = ROOT / "scripts" / "publish-intra.sh"
+START_SCRIPT = ROOT / "scripts" / "start-intra.sh"
+STOP_SCRIPT = ROOT / "scripts" / "stop-intra.sh"
+UPDATE_SCRIPT = ROOT / "scripts" / "update-intra.sh"
+ORCHESTRATION_LIB = ROOT / "scripts" / "intra_orchestration_lib.sh"
 
 
-class SGIntraOrchestrationTests(unittest.TestCase):
+class IntraOrchestrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)
@@ -46,6 +47,8 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         destination = repo / "scripts" / source.name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+        if source != BUILD_SCRIPT:
+            shutil.copy2(ORCHESTRATION_LIB, repo / "scripts" / ORCHESTRATION_LIB.name)
         return destination
 
     def _run(
@@ -160,6 +163,8 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         commands = cargo_log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(commands), 4)
         self.assertIn("--bin bybit_account_monitor", commands[0])
+        self.assertIn("--bin okex_account_monitor", commands[0])
+        self.assertIn("--bin binance_account_monitor", commands[0])
         self.assertIn("--bin pre_trade", commands[0])
         self.assertIn("--bin trade_engine", commands[0])
         self.assertIn("-p trade_signal --bin trade_signal", commands[1])
@@ -167,7 +172,7 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self.assertIn("-p persist_manager --features runtime --bin persist_manager", commands[3])
         self.assertIn("persist_manager=included", result.stdout)
 
-    def test_every_entrypoint_rejects_arb03_before_ssh(self) -> None:
+    def test_every_entrypoint_rejects_unsupported_env_before_ssh(self) -> None:
         self._write(
             self.fake_bin / "ssh",
             "#!/usr/bin/env bash\nprintf 'unexpected\\n' >>\"$FAKE_ACTION_LOG\"\nexit 99\n",
@@ -181,10 +186,72 @@ class SGIntraOrchestrationTests(unittest.TestCase):
                     "--key",
                     str(self.key),
                     "--env-name",
-                    "bybit-intra-arb03",
+                    "okex-intra-arb02",
                 )
                 self.assertEqual(result.returncode, 2, result.stdout)
                 self.assertFalse(self.action_log.exists())
+
+    def test_every_entrypoint_rejects_host_override_before_ssh(self) -> None:
+        self._write(
+            self.fake_bin / "ssh",
+            "#!/usr/bin/env bash\nprintf 'unexpected\n' >>\"$FAKE_ACTION_LOG\"\nexit 99\n",
+            executable=True,
+        )
+        for script in (PUBLISH_SCRIPT, START_SCRIPT, STOP_SCRIPT, UPDATE_SCRIPT):
+            with self.subTest(script=script.name):
+                self.action_log.unlink(missing_ok=True)
+                result = self._run(
+                    script,
+                    "--host",
+                    "somewhere-else",
+                    "--env-name",
+                    "okex-intra-arb01",
+                )
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("unknown argument: --host", result.stdout)
+                self.assertFalse(self.action_log.exists())
+
+    def test_every_entrypoint_rejects_key_for_jp_before_build_or_ssh(self) -> None:
+        for script in (PUBLISH_SCRIPT, START_SCRIPT, STOP_SCRIPT, UPDATE_SCRIPT):
+            with self.subTest(script=script.name):
+                repo = self.temp_path / f"jp-key-{script.stem}"
+                copied_script = self._copy_script(script, repo)
+                result = self._run(
+                    copied_script,
+                    "--key",
+                    str(self.key),
+                    "--env-name",
+                    "okex-intra-arb01",
+                )
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("--key is only valid for Bybit/SG", result.stdout)
+
+    def test_jp_environments_always_use_jp_meta_elvpn(self) -> None:
+        self._install_remote_ssh(execute_remote=False)
+        ssh_log = Path(f"{self.action_log}.ssh")
+        for env_name in ("okex-intra-arb01", "binance-intra-arb01"):
+            for script in (PUBLISH_SCRIPT, START_SCRIPT, STOP_SCRIPT):
+                with self.subTest(env_name=env_name, script=script.name):
+                    ssh_log.unlink(missing_ok=True)
+                    _, remote_env = self._remote_env(env_name)
+                    result = self._run(
+                        script,
+                        "--env-name",
+                        env_name,
+                        "--check-only",
+                        env_overrides=remote_env,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
+                    self.assertGreaterEqual(len(ssh_calls), 3)
+                    self.assertTrue(
+                        all("jp-meta-elvpn" in call for call in ssh_calls),
+                        ssh_calls,
+                    )
+                    self.assertTrue(
+                        all(" -i " not in call for call in ssh_calls),
+                        ssh_calls,
+                    )
 
     def _install_update_fakes(self, repo: Path, *, build_status: int = 0, stop_status: int = 0) -> None:
         statuses = {
@@ -206,15 +273,13 @@ class SGIntraOrchestrationTests(unittest.TestCase):
                 executable=True,
             )
 
-    def test_update_all_builds_once_then_updates_arb01_and_arb02(self) -> None:
+    def test_update_all_builds_once_then_updates_every_supported_env(self) -> None:
         repo = self.temp_path / "update-repo"
         self._install_update_fakes(repo)
         script = self._copy_script(UPDATE_SCRIPT, repo)
 
         result = self._run(
             script,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--all",
@@ -224,25 +289,31 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self.assertEqual(
             self.action_log.read_text(encoding="utf-8").splitlines(),
             [
-                "build-sg-intra-binaries:",
-                f"stop-sg-intra:--host fake-sg --key {key} --env-name bybit-intra-arb01",
-                f"publish-sg-intra:--host fake-sg --key {key} --env-name bybit-intra-arb01 --skip-build",
-                f"start-sg-intra:--host fake-sg --key {key} --env-name bybit-intra-arb01",
-                f"stop-sg-intra:--host fake-sg --key {key} --env-name bybit-intra-arb02",
-                f"publish-sg-intra:--host fake-sg --key {key} --env-name bybit-intra-arb02 --skip-build",
-                f"start-sg-intra:--host fake-sg --key {key} --env-name bybit-intra-arb02",
+                "build-intra-binaries:",
+                f"stop-intra:--key {key} --env-name bybit-intra-arb01",
+                f"publish-intra:--key {key} --env-name bybit-intra-arb01 --skip-build",
+                f"start-intra:--key {key} --env-name bybit-intra-arb01",
+                f"stop-intra:--key {key} --env-name bybit-intra-arb02",
+                f"publish-intra:--key {key} --env-name bybit-intra-arb02 --skip-build",
+                f"start-intra:--key {key} --env-name bybit-intra-arb02",
+                "stop-intra:--env-name okex-intra-arb01",
+                "publish-intra:--env-name okex-intra-arb01 --skip-build",
+                "start-intra:--env-name okex-intra-arb01",
+                "stop-intra:--env-name binance-intra-arb01",
+                "publish-intra:--env-name binance-intra-arb01 --skip-build",
+                "start-intra:--env-name binance-intra-arb01",
             ],
         )
 
     def test_update_failure_never_advances_to_live_next_step(self) -> None:
         for build_status, stop_status, expected in (
-            (23, 0, ["build-sg-intra-binaries:"]),
+            (23, 0, ["build-intra-binaries:"]),
             (
                 0,
                 24,
                 [
-                    "build-sg-intra-binaries:",
-                    f"stop-sg-intra:--host fake-sg --key {self.key.resolve()} --env-name bybit-intra-arb01",
+                    "build-intra-binaries:",
+                    f"stop-intra:--key {self.key.resolve()} --env-name bybit-intra-arb01",
                 ],
             ),
         ):
@@ -257,8 +328,6 @@ class SGIntraOrchestrationTests(unittest.TestCase):
                 script = self._copy_script(UPDATE_SCRIPT, repo)
                 result = self._run(
                     script,
-                    "--host",
-                    "fake-sg",
                     "--key",
                     str(self.key),
                     "--env-name",
@@ -305,8 +374,6 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self._install_remote_ssh(execute_remote=False)
         result = self._run(
             PUBLISH_SCRIPT,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--env-name",
@@ -320,8 +387,6 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self._install_remote_ssh(execute_remote=False, check_status=3)
         failed = self._run(
             PUBLISH_SCRIPT,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--env-name",
@@ -332,28 +397,65 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 3, failed.stdout)
         self.assertFalse(self.action_log.exists())
 
-    def _prepare_stop_remote(self, *, warning: bool = False) -> tuple[Path, dict[str, str]]:
-        remote_dir, remote_env = self._remote_env()
+    def _prepare_stop_remote(
+        self,
+        exchange: str = "bybit",
+        *,
+        warning: bool = False,
+    ) -> tuple[Path, dict[str, str]]:
+        metadata = {
+            "bybit": (
+                "bybit-intra-arb01",
+                "cancel_bybit_pm_orders.py",
+                "export BYBIT_API_KEY='test-key'\nexport BYBIT_API_SECRET='test-secret'\n",
+                "[plan] no open orders in scope. Nothing to do.",
+            ),
+            "okex": (
+                "okex-intra-arb01",
+                "cancel_okex_pm_orders.py",
+                "export OKX_API_KEY='test-key'\n"
+                "export OKX_API_SECRET='test-secret'\n"
+                "export OKX_PASSPHRASE='test-passphrase'\n",
+                "[plan] no open orders in scope. Nothing to do.",
+            ),
+            "binance": (
+                "binance-intra-arb01",
+                "cancel_binance_std_orders.py",
+                "export BINANCE_API_KEY='test-key'\n"
+                "export BINANCE_API_SECRET='test-secret'\n"
+                "export BINANCE_ACCOUNT_MODE='STANDARD'\n",
+                "[plan] symbols=0 open_orders=0 execute=False\n"
+                "[plan] no open UM futures orders found",
+            ),
+        }
+        env_name, cancel_name, credentials, verify_body = metadata[exchange]
+        remote_dir, remote_env = self._remote_env(env_name)
         scripts_dir = remote_dir / "scripts"
         intra_dir = remote_dir / "intra_scripts"
-        self._write(
-            remote_dir / "env.sh",
-            "export BYBIT_API_KEY='test-key'\nexport BYBIT_API_SECRET='test-secret'\n",
-        )
+        self._write(remote_dir / "env.sh", credentials)
         self._write(scripts_dir / "process_match_lib.sh", "#!/usr/bin/env bash\n")
-        cancel_body = "[WARN] fake Bybit query failure" if warning else "Verification passed: no residual active orders in scope."
         self._write(
-            scripts_dir / "cancel_bybit_pm_orders.py",
+            scripts_dir / cancel_name,
             textwrap.dedent(
                 f"""\
                 import os
                 import sys
                 with open(os.environ["FAKE_ACTION_LOG"], "a", encoding="utf-8") as handle:
-                    handle.write("cancel:" + " ".join(sys.argv[1:]) + "\\n")
-                print({cancel_body!r})
+                    handle.write("cancel-{exchange}:" + " ".join(sys.argv[1:]) + "\\n")
+                if "--execute" in sys.argv:
+                    print({"[WARN] fake query failure" if warning else "cancel submitted"!r})
+                else:
+                    print({verify_body!r})
                 """
             ),
         )
+        if exchange == "binance":
+            for dependency in (
+                "binance_cancel_all_std_spot_orders.py",
+                "binance_cancel_all_std_um_ws_orders.py",
+                "binance_local_ip.py",
+            ):
+                self._write(scripts_dir / dependency, "# test dependency\n")
         wrappers = {
             scripts_dir / "stop_intra_config_server.sh": "stop-config",
             intra_dir / "stop_intra_trade_engine.sh": "stop-engine",
@@ -387,43 +489,53 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self._install_remote_ssh(execute_remote=True)
         return remote_dir, remote_env
 
-    def test_stop_confirms_engine_before_execute_cancel_and_stops_persist_manager(self) -> None:
-        _, remote_env = self._prepare_stop_remote()
-        result = self._run(
-            STOP_SCRIPT,
-            "--host",
-            "fake-sg",
-            "--key",
-            str(self.key),
-            "--env-name",
-            "bybit-intra-arb01",
-            env_overrides=remote_env,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(
-            self.action_log.read_text(encoding="utf-8").splitlines(),
-            [
-                "stop-engine",
-                "cancel:--scope both --spot-order-filters all --execute",
-                "stop-signal",
-                "stop-pre-trade",
-                "stop-monitor",
-                "stop-config",
-                "stop-persist",
-                "stop-viz",
-            ],
-        )
-        self.assertLess(
-            result.stdout.index("trade_engine confirmed stopped"),
-            result.stdout.index("cancel and verify all Bybit"),
-        )
+    def test_stop_uses_exchange_cancel_then_verifies_before_stopping_stack(self) -> None:
+        expected_cancel_args = {
+            "bybit": "--scope both --spot-order-filters all",
+            "okex": "--scope both",
+            "binance": "--scope both",
+        }
+        for exchange in ("bybit", "okex", "binance"):
+            with self.subTest(exchange=exchange):
+                self.action_log.unlink(missing_ok=True)
+                _, remote_env = self._prepare_stop_remote(exchange)
+                key_args = ["--key", str(self.key)] if exchange == "bybit" else []
+                result = self._run(
+                    STOP_SCRIPT,
+                    *key_args,
+                    "--env-name",
+                    remote_env["FAKE_ENV_NAME"],
+                    env_overrides=remote_env,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                cancel_args = expected_cancel_args[exchange]
+                self.assertEqual(
+                    self.action_log.read_text(encoding="utf-8").splitlines(),
+                    [
+                        "stop-engine",
+                        f"cancel-{exchange}:{cancel_args} --execute",
+                        f"cancel-{exchange}:{cancel_args}",
+                        "stop-signal",
+                        "stop-pre-trade",
+                        "stop-monitor",
+                        "stop-config",
+                        "stop-persist",
+                        "stop-viz",
+                    ],
+                )
+                self.assertLess(
+                    result.stdout.index("trade_engine confirmed stopped"),
+                    result.stdout.index(f"cancel all {exchange}"),
+                )
+                self.assertLess(
+                    result.stdout.index(f"cancel all {exchange}"),
+                    result.stdout.index(f"verify {exchange}"),
+                )
 
     def test_cancel_warning_aborts_remaining_stop_sequence(self) -> None:
         _, remote_env = self._prepare_stop_remote(warning=True)
         result = self._run(
             STOP_SCRIPT,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--env-name",
@@ -435,34 +547,65 @@ class SGIntraOrchestrationTests(unittest.TestCase):
             self.action_log.read_text(encoding="utf-8").splitlines(),
             [
                 "stop-engine",
-                "cancel:--scope both --spot-order-filters all --execute",
+                "cancel-bybit:--scope both --spot-order-filters all --execute",
             ],
         )
         self.assertIn("cancel script reported a warning/error", result.stdout)
 
-    def _prepare_start_remote(self) -> tuple[Path, dict[str, str]]:
-        remote_dir, remote_env = self._remote_env()
-        marker_dir = self.temp_path / "markers"
+    def _prepare_start_remote(
+        self,
+        exchange: str = "bybit",
+    ) -> tuple[Path, dict[str, str]]:
+        metadata = {
+            "bybit": (
+                "bybit-intra-arb01",
+                "export IPC_NAMESPACE='test-intra'\n"
+                "export BYBIT_API_KEY='test-key'\n"
+                "export BYBIT_API_SECRET='test-secret'\n",
+                19191,
+                10174,
+            ),
+            "okex": (
+                "okex-intra-arb01",
+                "export IPC_NAMESPACE='test-intra'\n"
+                "export OKX_API_KEY='test-key'\n"
+                "export OKX_API_SECRET='test-secret'\n"
+                "export OKX_PASSPHRASE='test-passphrase'\n",
+                19181,
+                10171,
+            ),
+            "binance": (
+                "binance-intra-arb01",
+                "export IPC_NAMESPACE='test-intra'\n"
+                "export BINANCE_API_KEY='test-key'\n"
+                "export BINANCE_API_SECRET='test-secret'\n"
+                "export BINANCE_ACCOUNT_MODE='STANDARD'\n",
+                19171,
+                10180,
+            ),
+        }
+        env_name, env_contents, config_port, viz_port = metadata[exchange]
+        account_monitor_dest = f"account_monitor_{exchange}"
+        remote_dir, remote_env = self._remote_env(env_name)
+        marker_dir = self.temp_path / f"markers-{exchange}"
         marker_dir.mkdir()
         scripts_dir = remote_dir / "scripts"
         intra_dir = remote_dir / "intra_scripts"
-        self._write(
-            remote_dir / "env.sh",
-            "export IPC_NAMESPACE='test-intra'\n"
-            "export BYBIT_API_KEY='test-key'\n"
-            "export BYBIT_API_SECRET='test-secret'\n",
-        )
+        self._write(remote_dir / "env.sh", env_contents)
         self._write(
             remote_dir / "config" / "viz.toml",
-            "[[servers]]\n[servers.http]\nbind = \"0.0.0.0\"\nport = 10174\n",
+            f"[[servers]]\n[servers.http]\nbind = \"0.0.0.0\"\nport = {viz_port}\n",
         )
-        self._write(remote_dir / "config" / "intra_config_server.env", "PORT=19191\n")
+        self._write(
+            remote_dir / "config" / "intra_config_server.env",
+            f"PORT={config_port}\n",
+        )
         self._write(scripts_dir / "intra_config_server.py", "# test marker\n")
         self._write(scripts_dir / "process_match_lib.sh", "#!/usr/bin/env bash\n")
 
         binary_names = (
             "trade_signal",
-            "account_monitor_bybit",
+            account_monitor_dest,
             "viz_server",
             "pre_trade",
             "trade_engine",
@@ -541,7 +684,7 @@ class SGIntraOrchestrationTests(unittest.TestCase):
                   /proc/902/exe) echo "$FAKE_REMOTE_DIR/persist_manager" ;;
                   /proc/903/exe) echo "$FAKE_REMOTE_DIR/trade_engine" ;;
                   /proc/904/exe) echo "$FAKE_REMOTE_DIR/pre_trade" ;;
-                  /proc/905/exe) echo "$FAKE_REMOTE_DIR/account_monitor_bybit" ;;
+                  /proc/905/exe) echo "$FAKE_REMOTE_DIR/$FAKE_ACCOUNT_MONITOR_DEST" ;;
                   /proc/906/exe) echo "$FAKE_REMOTE_DIR/trade_signal" ;;
                   *) exec /usr/bin/readlink "$@" ;;
                 esac
@@ -555,10 +698,10 @@ class SGIntraOrchestrationTests(unittest.TestCase):
                 """\
                 #!/usr/bin/env bash
                 if [[ -f "$FAKE_MARKER_DIR/config" ]]; then
-                  echo 'LISTEN 0 128 0.0.0.0:19191 0.0.0.0:*'
+                  echo "LISTEN 0 128 0.0.0.0:$FAKE_CONFIG_PORT 0.0.0.0:*"
                 fi
                 if [[ -f "$FAKE_MARKER_DIR/viz" ]]; then
-                  echo 'LISTEN 0 128 0.0.0.0:10174 0.0.0.0:*'
+                  echo "LISTEN 0 128 0.0.0.0:$FAKE_VIZ_PORT 0.0.0.0:*"
                 fi
                 """
             ),
@@ -572,39 +715,41 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         remote_env.update(
             {
                 "FAKE_MARKER_DIR": str(marker_dir),
-                "SG_INTRA_START_WAIT_SECONDS": "1",
-                "SG_INTRA_START_SETTLE_SECONDS": "1",
+                "FAKE_ACCOUNT_MONITOR_DEST": account_monitor_dest,
+                "FAKE_CONFIG_PORT": str(config_port),
+                "FAKE_VIZ_PORT": str(viz_port),
+                "INTRA_START_WAIT_SECONDS": "1",
+                "INTRA_START_SETTLE_SECONDS": "1",
             }
         )
         return remote_dir, remote_env
 
     def test_start_health_checks_base_stack_and_keeps_signal_stopped(self) -> None:
-        _, remote_env = self._prepare_start_remote()
-        result = self._run(
-            START_SCRIPT,
-            "--host",
-            "fake-sg",
-            "--key",
-            str(self.key),
-            "--env-name",
-            "bybit-intra-arb01",
-            env_overrides=remote_env,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(
-            self.action_log.read_text(encoding="utf-8").splitlines(),
-            ["config", "viz", "persist", "engine", "pre-trade", "monitor"],
-        )
-        self.assertIn("trade_signal_started=false", result.stdout)
-        self.assertNotIn("trade_signal health check passed", result.stdout)
+        for exchange in ("bybit", "okex", "binance"):
+            with self.subTest(exchange=exchange):
+                self.action_log.unlink(missing_ok=True)
+                _, remote_env = self._prepare_start_remote(exchange)
+                key_args = ["--key", str(self.key)] if exchange == "bybit" else []
+                result = self._run(
+                    START_SCRIPT,
+                    *key_args,
+                    "--env-name",
+                    remote_env["FAKE_ENV_NAME"],
+                    env_overrides=remote_env,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(
+                    self.action_log.read_text(encoding="utf-8").splitlines(),
+                    ["config", "viz", "persist", "engine", "pre-trade", "monitor"],
+                )
+                self.assertIn("trade_signal_started=false", result.stdout)
+                self.assertNotIn("trade_signal health check passed", result.stdout)
 
     def test_start_refuses_running_trade_signal_before_starting_base_stack(self) -> None:
         _, remote_env = self._prepare_start_remote()
         (Path(remote_env["FAKE_MARKER_DIR"]) / "signal").touch()
         result = self._run(
             START_SCRIPT,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--env-name",
@@ -620,8 +765,6 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         self._write(remote_dir / "config" / "intra_config_server.env", "PORT=19192\n")
         result = self._run(
             START_SCRIPT,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--env-name",
@@ -640,8 +783,6 @@ class SGIntraOrchestrationTests(unittest.TestCase):
         )
         result = self._run(
             START_SCRIPT,
-            "--host",
-            "fake-sg",
             "--key",
             str(self.key),
             "--env-name",
@@ -654,10 +795,19 @@ class SGIntraOrchestrationTests(unittest.TestCase):
 
     def test_publish_maps_monitor_and_keeps_persist_manager_without_env_or_config_upload(self) -> None:
         publish = PUBLISH_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('"target/release/bybit_account_monitor"', publish)
-        self.assertIn("publish_file bybit_account_monitor account_monitor_bybit", publish)
+        self.assertIn('"target/release/${INTRA_ACCOUNT_MONITOR_BIN}"', publish)
+        self.assertIn('publish_file "$account_monitor_bin" "$account_monitor_dest"', publish)
         self.assertIn('"target/release/persist_manager"', publish)
         self.assertIn("publish_file persist_manager persist_manager", publish)
+        for cancel_dependency in (
+            "cancel_bybit_pm_orders.py",
+            "cancel_okex_pm_orders.py",
+            "cancel_binance_std_orders.py",
+            "binance_cancel_all_std_spot_orders.py",
+            "binance_cancel_all_std_um_ws_orders.py",
+            "binance_local_ip.py",
+        ):
+            self.assertIn(cancel_dependency, publish)
         for dependency in (
             "arb_per_symbol_overrides.py",
             "sync_intra_risk_params.py",

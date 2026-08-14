@@ -42,6 +42,11 @@ ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 BATCH_LIMIT = 20
 MARGIN_SPOT_TD_MODES = {"cross", "isolated"}
+USER_AGENT = "mkt-signal-okx-order-cancel/1.0"
+
+
+class OkxQueryError(RuntimeError):
+    """Raised when an open-order scope cannot be verified."""
 
 
 def utc_timestamp() -> str:
@@ -82,6 +87,7 @@ def okx_private(method, path, api_key, api_secret, passphrase, *, params=None, b
         "OK-ACCESS-TIMESTAMP": timestamp,
         "OK-ACCESS-PASSPHRASE": passphrase,
         "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
     }
     return http_request(
         f"{OKX_BASE}{request_path}",
@@ -173,13 +179,26 @@ def fetch_open(api_key, api_secret, passphrase, inst_type: str) -> List[Dict[str
             params["after"] = after
         status, body = okx_private("GET", OKX_ORDERS_PENDING_PATH, api_key, api_secret, passphrase, params=params)
         if not (200 <= status < 300):
-            sys.stderr.write(f"[WARN] orders-pending {inst_type} status={status} body={body}\n")
-            return out
-        parsed = json.loads(body)
+            raise OkxQueryError(
+                f"orders-pending {inst_type} status={status} body={body}"
+            )
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise OkxQueryError(
+                f"orders-pending {inst_type} returned invalid JSON: {body}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise OkxQueryError(
+                f"orders-pending {inst_type} returned a non-object response: {body}"
+            )
         if str(parsed.get("code", "")) != "0":
-            sys.stderr.write(f"[WARN] orders-pending {inst_type}: {body}\n")
-            return out
-        rows = parsed.get("data", []) or []
+            raise OkxQueryError(f"orders-pending {inst_type} failed: {body}")
+        rows = parsed.get("data", [])
+        if not isinstance(rows, list):
+            raise OkxQueryError(
+                f"orders-pending {inst_type} returned invalid data: {body}"
+            )
         if not rows:
             break
         out.extend(rows)
@@ -270,9 +289,13 @@ def main() -> None:
 
     print(f"[info] env={env_name} scope={args.scope} execute={args.execute}")
 
-    swap_to_cancel, margin_to_cancel = collect_orders_to_cancel(
-        api_key, api_secret, passphrase, args.scope, wanted_symbols
-    )
+    try:
+        swap_to_cancel, margin_to_cancel = collect_orders_to_cancel(
+            api_key, api_secret, passphrase, args.scope, wanted_symbols
+        )
+    except OkxQueryError as exc:
+        print(f"[ERROR] unable to verify open orders: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     all_items = swap_to_cancel + margin_to_cancel
     if not all_items:

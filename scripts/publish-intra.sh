@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SSH_HOST="${SG_INTRA_PUBLISH_HOST:-ubuntu@47.131.162.78}"
-SSH_KEY="${SG_INTRA_PUBLISH_KEY:-$ROOT_DIR/aws-sg.pem}"
+# shellcheck source=scripts/intra_orchestration_lib.sh
+source "$ROOT_DIR/scripts/intra_orchestration_lib.sh"
+
+SSH_KEY=""
 ENV_NAME=""
 ALL_ENVS=0
 CHECK_ONLY=0
@@ -11,16 +13,19 @@ SKIP_BUILD=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/publish-sg-intra.sh (--env-name <name> | --all) [options]
+Usage: scripts/publish-intra.sh (--env-name <name> | --all) [options]
 
 Options:
-  --host <ssh-host>    SSH target (default: ubuntu@47.131.162.78)
-  --key <identity>     SSH private key (default: ./aws-sg.pem)
-  --env-name <name>   Exactly bybit-intra-arb01 or bybit-intra-arb02
-  --all                Publish arb01, then arb02
+  --key <identity>     Optional Bybit/SG SSH identity override
+  --env-name <name>   One supported Intra environment
+  --all                Publish every supported Intra environment
   --check-only        Verify that all publish targets are stopped; change nothing
-  --skip-build        Reuse binaries built by update-sg-intra.sh
+  --skip-build        Reuse binaries built by update-intra.sh
   -h, --help           Show this help
+
+Supported environments:
+  bybit-intra-arb01, bybit-intra-arb02 -> SG
+  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
 
 Unless --check-only or --skip-build is used, every required release binary is
 built before the first SSH call. Files are staged, SHA-256 checked, rechecked
@@ -31,7 +36,6 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --host) SSH_HOST="${2:-}"; shift 2 ;;
     --key) SSH_KEY="${2:-}"; shift 2 ;;
     --env-name) ENV_NAME="${2:-}"; shift 2 ;;
     --all) ALL_ENVS=1; shift ;;
@@ -52,43 +56,40 @@ if [[ "$ALL_ENVS" -eq 0 && -z "$ENV_NAME" ]]; then
   exit 2
 fi
 if [[ -n "$ENV_NAME" ]]; then
-  case "$ENV_NAME" in
-    bybit-intra-arb01|bybit-intra-arb02) ;;
-    *) echo "[ERROR] unsupported SG Intra environment: $ENV_NAME" >&2; exit 2 ;;
-  esac
+  intra_configure_env "$ENV_NAME"
 fi
-if [[ -z "$SSH_HOST" || "$SSH_HOST" == -* ]]; then
-  echo "[ERROR] invalid SSH host: $SSH_HOST" >&2
-  exit 2
+if [[ -n "$SSH_KEY" ]]; then
+  if [[ ! -r "$SSH_KEY" ]]; then
+    echo "[ERROR] SSH identity is not readable: $SSH_KEY" >&2
+    exit 2
+  fi
+  SSH_KEY="$(readlink -f -- "$SSH_KEY")"
 fi
-if [[ ! -r "$SSH_KEY" ]]; then
-  echo "[ERROR] SSH identity is not readable: $SSH_KEY" >&2
-  exit 2
+if [[ -n "$ENV_NAME" ]]; then
+  intra_validate_explicit_key "$SSH_KEY"
 fi
-SSH_KEY="$(readlink -f -- "$SSH_KEY")"
 
 if [[ "$ALL_ENVS" -eq 1 ]]; then
   if [[ "$CHECK_ONLY" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
-    "$ROOT_DIR/scripts/build-sg-intra-binaries.sh"
+    "$ROOT_DIR/scripts/build-intra-binaries.sh"
   fi
-  for env_name in bybit-intra-arb01 bybit-intra-arb02; do
-    child_args=(
-      --host "$SSH_HOST"
-      --key "$SSH_KEY"
-      --env-name "$env_name"
-    )
+  for env_name in "${INTRA_ORCHESTRATION_ENVS[@]}"; do
+    child_args=(--env-name "$env_name")
+    if [[ -n "$SSH_KEY" && "$env_name" == bybit-* ]]; then
+      child_args+=(--key "$SSH_KEY")
+    fi
     if [[ "$CHECK_ONLY" -eq 1 ]]; then
       child_args+=(--check-only)
     else
       child_args+=(--skip-build)
     fi
-    "$ROOT_DIR/scripts/publish-sg-intra.sh" "${child_args[@]}"
+    "$ROOT_DIR/scripts/publish-intra.sh" "${child_args[@]}"
   done
   exit 0
 fi
 
 if [[ "$CHECK_ONLY" -eq 0 && "$SKIP_BUILD" -eq 0 ]]; then
-  "$ROOT_DIR/scripts/build-sg-intra-binaries.sh"
+  "$ROOT_DIR/scripts/build-intra-binaries.sh"
 fi
 
 for command_name in ssh scp sha256sum awk mktemp readlink; do
@@ -98,38 +99,44 @@ for command_name in ssh scp sha256sum awk mktemp readlink; do
   fi
 done
 
-SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=15)
-SCP=(scp -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=15)
+intra_configure_transport "$ROOT_DIR" "$SSH_KEY"
+SSH=("${INTRA_SSH[@]}")
+SCP=("${INTRA_SCP[@]}")
 
-REMOTE_HOME="$("${SSH[@]}" "$SSH_HOST" 'printf "%s\n" "$HOME"')"
+REMOTE_HOME="$("${SSH[@]}" "$INTRA_SSH_HOST" 'printf "%s\n" "$HOME"')"
 if [[ "$REMOTE_HOME" != /* || "$REMOTE_HOME" == *$'\n'* ]]; then
-  echo "[ERROR] invalid remote home returned by $SSH_HOST: $REMOTE_HOME" >&2
+  echo "[ERROR] invalid remote home returned by $INTRA_SSH_HOST: $REMOTE_HOME" >&2
   exit 1
 fi
 REMOTE_DIR="${REMOTE_HOME}/${ENV_NAME}"
-REMOTE_REAL="$("${SSH[@]}" "$SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
+REMOTE_REAL="$("${SSH[@]}" "$INTRA_SSH_HOST" "readlink -f -- '$REMOTE_DIR'")"
 if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
   echo "[ERROR] remote target mismatch: expected=$REMOTE_DIR resolved=$REMOTE_REAL" >&2
   exit 1
 fi
 
 check_remote_stopped() {
-  "${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" <<'REMOTE_CHECK'
+  "${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
+    "$REMOTE_DIR" "$ENV_NAME" "$INTRA_ACCOUNT_MONITOR_DEST" \
+    "$INTRA_ACCOUNT_MONITOR_BIN" <<'REMOTE_CHECK'
 set -euo pipefail
 target="$1"
+env_name="$2"
+account_monitor_dest="$3"
+account_monitor_bin="$4"
 if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then
   echo "[ERROR] invalid remote environment: $target" >&2
   exit 1
 fi
-case "$(basename "$target")" in
-  bybit-intra-arb01|bybit-intra-arb02) ;;
-  *) echo "[ERROR] unsupported remote environment: $target" >&2; exit 1 ;;
-esac
+if [[ "$(basename "$target")" != "$env_name" ]]; then
+  echo "[ERROR] remote environment mismatch: expected=$env_name target=$target" >&2
+  exit 1
+fi
 
 target_executables=(
   "$target/trade_signal"
-  "$target/account_monitor_bybit"
-  "$target/bybit_account_monitor"
+  "$target/$account_monitor_dest"
+  "$target/$account_monitor_bin"
   "$target/account_monitor"
   "$target/viz_server"
   "$target/pre_trade"
@@ -169,7 +176,7 @@ echo "[INFO] all publish target processes are stopped"
 REMOTE_CHECK
 }
 
-echo "[INFO] publish target host=$SSH_HOST env=$ENV_NAME dir=$REMOTE_DIR"
+echo "[INFO] publish target host=$INTRA_SSH_HOST exchange=$INTRA_EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
 check_remote_stopped
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   echo "[INFO] check-only complete; no files or processes were changed"
@@ -178,7 +185,7 @@ fi
 
 LOCAL_RELATIVE=(
   "target/release/trade_signal"
-  "target/release/bybit_account_monitor"
+  "target/release/${INTRA_ACCOUNT_MONITOR_BIN}"
   "target/release/viz_server"
   "target/release/pre_trade"
   "target/release/trade_engine"
@@ -194,7 +201,6 @@ LOCAL_RELATIVE=(
   "scripts/start_intra_config_server.sh"
   "scripts/stop_intra_config_server.sh"
   "scripts/process_match_lib.sh"
-  "scripts/cancel_bybit_pm_orders.py"
   "intra_scripts/intra_monitor_process_lib.sh"
   "intra_scripts/start_intra_monitors.sh"
   "intra_scripts/stop_intra_monitors.sh"
@@ -211,7 +217,7 @@ LOCAL_RELATIVE=(
 )
 UPLOAD_NAMES=(
   "trade_signal"
-  "bybit_account_monitor"
+  "$INTRA_ACCOUNT_MONITOR_BIN"
   "viz_server"
   "pre_trade"
   "trade_engine"
@@ -227,7 +233,6 @@ UPLOAD_NAMES=(
   "start_intra_config_server.sh"
   "stop_intra_config_server.sh"
   "process_match_lib.sh"
-  "cancel_bybit_pm_orders.py"
   "intra_monitor_process_lib.sh"
   "start_intra_monitors.sh"
   "stop_intra_monitors.sh"
@@ -242,6 +247,34 @@ UPLOAD_NAMES=(
   "start_intra_viz_server.sh"
   "stop_intra_viz_server.sh"
 )
+case "$INTRA_EXCHANGE" in
+  bybit)
+    LOCAL_RELATIVE+=("scripts/cancel_bybit_pm_orders.py")
+    UPLOAD_NAMES+=("cancel_bybit_pm_orders.py")
+    ;;
+  okex)
+    LOCAL_RELATIVE+=("scripts/cancel_okex_pm_orders.py")
+    UPLOAD_NAMES+=("cancel_okex_pm_orders.py")
+    ;;
+  binance)
+    LOCAL_RELATIVE+=(
+      "scripts/cancel_binance_std_orders.py"
+      "scripts/binance_cancel_all_std_spot_orders.py"
+      "scripts/binance_cancel_all_std_um_ws_orders.py"
+      "scripts/binance_local_ip.py"
+    )
+    UPLOAD_NAMES+=(
+      "cancel_binance_std_orders.py"
+      "binance_cancel_all_std_spot_orders.py"
+      "binance_cancel_all_std_um_ws_orders.py"
+      "binance_local_ip.py"
+    )
+    ;;
+esac
+if [[ "${#LOCAL_RELATIVE[@]}" -ne "${#UPLOAD_NAMES[@]}" ]]; then
+  echo "[ERROR] internal publish manifest length mismatch" >&2
+  exit 1
+fi
 LOCAL_PATHS=()
 for relative_path in "${LOCAL_RELATIVE[@]}"; do
   local_path="$ROOT_DIR/$relative_path"
@@ -257,12 +290,12 @@ REMOTE_STAGE=""
 cleanup() {
   rm -f "$MANIFEST" >/dev/null 2>&1 || true
   if [[ -n "$REMOTE_STAGE" ]]; then
-    "${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$REMOTE_STAGE" <<'REMOTE_CLEANUP' >/dev/null 2>&1 || true
+    "${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- "$REMOTE_DIR" "$REMOTE_STAGE" <<'REMOTE_CLEANUP' >/dev/null 2>&1 || true
 set -euo pipefail
 target="$1"
 stage="$2"
 case "$stage" in
-  "$target"/.publish-sg-intra.*) ;;
+  "$target"/.publish-intra.*) ;;
   *) exit 1 ;;
 esac
 if [[ -d "$stage" ]]; then
@@ -279,26 +312,31 @@ for index in "${!LOCAL_PATHS[@]}"; do
   printf '%s  %s\n' "$file_hash" "${UPLOAD_NAMES[$index]}" >>"$MANIFEST"
 done
 
-REMOTE_STAGE="$("${SSH[@]}" "$SSH_HOST" "mktemp -d '$REMOTE_DIR/.publish-sg-intra.XXXXXX'")"
+REMOTE_STAGE="$("${SSH[@]}" "$INTRA_SSH_HOST" "mktemp -d '$REMOTE_DIR/.publish-intra.XXXXXX'")"
 case "$REMOTE_STAGE" in
-  "$REMOTE_DIR"/.publish-sg-intra.*) ;;
+  "$REMOTE_DIR"/.publish-intra.*) ;;
   *) echo "[ERROR] invalid remote staging path: $REMOTE_STAGE" >&2; exit 1 ;;
 esac
 
-echo "[INFO] SCP ${#LOCAL_PATHS[@]} files to $SSH_HOST:$REMOTE_STAGE"
-"${SCP[@]}" "${LOCAL_PATHS[@]}" "${SSH_HOST}:${REMOTE_STAGE}/"
-"${SCP[@]}" "$MANIFEST" "${SSH_HOST}:${REMOTE_STAGE}/SHA256SUMS"
-"${SSH[@]}" "$SSH_HOST" "cd '$REMOTE_STAGE' && sha256sum -c SHA256SUMS"
+echo "[INFO] SCP ${#LOCAL_PATHS[@]} files to $INTRA_SSH_HOST:$REMOTE_STAGE"
+"${SCP[@]}" "${LOCAL_PATHS[@]}" "${INTRA_SSH_HOST}:${REMOTE_STAGE}/"
+"${SCP[@]}" "$MANIFEST" "${INTRA_SSH_HOST}:${REMOTE_STAGE}/SHA256SUMS"
+"${SSH[@]}" "$INTRA_SSH_HOST" "cd '$REMOTE_STAGE' && sha256sum -c SHA256SUMS"
 
 echo "[INFO] rechecking target processes before replacement"
 check_remote_stopped
 
-"${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$REMOTE_STAGE" <<'REMOTE_PUBLISH'
+"${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
+  "$REMOTE_DIR" "$REMOTE_STAGE" "$INTRA_EXCHANGE" \
+  "$INTRA_ACCOUNT_MONITOR_BIN" "$INTRA_ACCOUNT_MONITOR_DEST" <<'REMOTE_PUBLISH'
 set -euo pipefail
 target="$1"
 stage="$2"
+exchange="$3"
+account_monitor_bin="$4"
+account_monitor_dest="$5"
 case "$stage" in
-  "$target"/.publish-sg-intra.*) ;;
+  "$target"/.publish-intra.*) ;;
   *) echo "[ERROR] invalid staging path: $stage" >&2; exit 1 ;;
 esac
 [[ "$(readlink -f -- "$target")" == "$target" ]]
@@ -324,7 +362,7 @@ publish_file() {
 }
 
 publish_file trade_signal trade_signal
-publish_file bybit_account_monitor account_monitor_bybit
+publish_file "$account_monitor_bin" "$account_monitor_dest"
 publish_file viz_server viz_server
 publish_file pre_trade pre_trade
 publish_file trade_engine trade_engine
@@ -340,7 +378,6 @@ publish_file sync_rolling_metrics_params.py scripts/sync_rolling_metrics_params.
 publish_file start_intra_config_server.sh scripts/start_intra_config_server.sh
 publish_file stop_intra_config_server.sh scripts/stop_intra_config_server.sh
 publish_file process_match_lib.sh scripts/process_match_lib.sh
-publish_file cancel_bybit_pm_orders.py scripts/cancel_bybit_pm_orders.py
 publish_file intra_monitor_process_lib.sh intra_scripts/intra_monitor_process_lib.sh
 publish_file start_intra_monitors.sh intra_scripts/start_intra_monitors.sh
 publish_file stop_intra_monitors.sh intra_scripts/stop_intra_monitors.sh
@@ -355,9 +392,28 @@ publish_file stop_intra_persist_manager.sh intra_scripts/stop_intra_persist_mana
 publish_file start_intra_viz_server.sh intra_scripts/start_intra_viz_server.sh
 publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
 
+case "$exchange" in
+  bybit)
+    publish_file cancel_bybit_pm_orders.py scripts/cancel_bybit_pm_orders.py
+    ;;
+  okex)
+    publish_file cancel_okex_pm_orders.py scripts/cancel_okex_pm_orders.py
+    ;;
+  binance)
+    publish_file cancel_binance_std_orders.py scripts/cancel_binance_std_orders.py
+    publish_file binance_cancel_all_std_spot_orders.py scripts/binance_cancel_all_std_spot_orders.py
+    publish_file binance_cancel_all_std_um_ws_orders.py scripts/binance_cancel_all_std_um_ws_orders.py
+    publish_file binance_local_ip.py scripts/binance_local_ip.py
+    ;;
+  *)
+    echo "[ERROR] unsupported exchange in publish stage: $exchange" >&2
+    exit 1
+    ;;
+esac
+
 rm -f "$stage/SHA256SUMS"
 rmdir "$stage"
 REMOTE_PUBLISH
 
 REMOTE_STAGE=""
-echo "[INFO] publish complete: $SSH_HOST:$REMOTE_DIR"
+echo "[INFO] publish complete: $INTRA_SSH_HOST:$REMOTE_DIR"

@@ -419,7 +419,7 @@ routes:
             .routes
             .iter()
             .filter(|r| r.from.kind == EndpointType::Ipc && r.to.kind == EndpointType::Zmq)
-            .filter(|r| r.to.endpoint.contains("47.131.162.78"))
+            .filter(|r| r.to.endpoint.contains("47.128.92.224"))
             .map(|r| r.id.clone())
             .collect();
         let sg_incoming: HashSet<String> = sg

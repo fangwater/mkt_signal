@@ -5,11 +5,12 @@ IFACE=""
 CPUS=""
 EXECUTE=0
 STOP_IRQBALANCE=0
+ALLOW_PENDING_EFFECTIVE=0
 
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/pin_aws_ena_irq_affinity.sh --iface <interface> --cpus <cpu-list> [--stop-irqbalance] [--execute]
+  scripts/pin_aws_ena_irq_affinity.sh --iface <interface> --cpus <cpu-list> [--stop-irqbalance] [--allow-pending-effective] [--execute]
 
 Default is dry-run. Add --execute to write /proc/irq/*/smp_affinity_list.
 
@@ -31,6 +32,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stop-irqbalance)
       STOP_IRQBALANCE=1
+      shift
+      ;;
+    --allow-pending-effective)
+      ALLOW_PENDING_EFFECTIVE=1
       shift
       ;;
     --execute)
@@ -158,31 +163,67 @@ if [[ "$STOP_IRQBALANCE" -eq 1 ]]; then
   fi
 fi
 
+declare -A PREVIOUS_AFFINITY=()
 for irq in "${IRQS[@]}"; do
   current="$(cat "/proc/irq/$irq/smp_affinity_list" 2>/dev/null || echo "?")"
+  PREVIOUS_AFFINITY["$irq"]="$current"
   if [[ "$EXECUTE" -eq 1 ]]; then
     printf '%s\n' "$CPUS" | run_root tee "/proc/irq/$irq/smp_affinity_list" >/dev/null
     updated="$(cat "/proc/irq/$irq/smp_affinity_list" 2>/dev/null || echo "?")"
-    effective="$(cat "/proc/irq/$irq/effective_affinity_list" 2>/dev/null || echo "?")"
     updated_normalized="$(normalize_cpu_list "$updated" 2>/dev/null || true)"
-    effective_normalized="$(normalize_cpu_list "$effective" 2>/dev/null || true)"
-    effective_is_subset=1
-    IFS=',' read -r -a EFFECTIVE_CPU_ARRAY <<<"$effective_normalized"
-    for cpu in "${EFFECTIVE_CPU_ARRAY[@]}"; do
-      if [[ ",$REQUESTED_CPUS," != *",$cpu,"* ]]; then
-        effective_is_subset=0
-        break
-      fi
-    done
-    if [[ "$updated_normalized" != "$REQUESTED_CPUS" || -z "$effective_normalized" || "$effective_is_subset" -ne 1 ]]; then
+    if [[ "$updated_normalized" != "$REQUESTED_CPUS" ]]; then
+      effective="$(cat "/proc/irq/$irq/effective_affinity_list" 2>/dev/null || echo "?")"
       echo "[ERROR] irq=$irq requested=$CPUS configured=$updated effective=$effective" >&2
       exit 1
     fi
-    echo "[SET] irq=$irq $current -> configured=$updated effective=$effective"
+    echo "[SET] irq=$irq $current -> configured=$updated"
   else
     echo "[DRY-RUN] irq=$irq $current -> $CPUS"
   fi
 done
+
+if [[ "$EXECUTE" -eq 1 ]]; then
+  pending_effective=()
+  for irq in "${IRQS[@]}"; do
+    updated="$(cat "/proc/irq/$irq/smp_affinity_list" 2>/dev/null || echo "?")"
+    # The kernel can update effective_affinity_list shortly after accepting the write.
+    effective="?"
+    effective_normalized=""
+    effective_is_subset=0
+    for ((attempt = 1; attempt <= 50; attempt++)); do
+      effective="$(cat "/proc/irq/$irq/effective_affinity_list" 2>/dev/null || echo "?")"
+      effective_normalized="$(normalize_cpu_list "$effective" 2>/dev/null || true)"
+      if [[ -n "$effective_normalized" ]]; then
+        effective_is_subset=1
+        IFS=',' read -r -a EFFECTIVE_CPU_ARRAY <<<"$effective_normalized"
+        for cpu in "${EFFECTIVE_CPU_ARRAY[@]}"; do
+          if [[ ",$REQUESTED_CPUS," != *",$cpu,"* ]]; then
+            effective_is_subset=0
+            break
+          fi
+        done
+      fi
+      if [[ "$effective_is_subset" -eq 1 ]]; then
+        break
+      fi
+      sleep 0.02
+    done
+    if [[ "$effective_is_subset" -ne 1 ]]; then
+      pending_effective+=("$irq")
+      echo "[PENDING] irq=$irq requested=$CPUS configured=$updated effective=$effective" >&2
+      continue
+    fi
+    echo "[VERIFY] irq=$irq configured=$updated effective=$effective"
+  done
+
+  if [[ "${#pending_effective[@]}" -gt 0 ]]; then
+    if [[ "$ALLOW_PENDING_EFFECTIVE" -eq 0 ]]; then
+      echo "[ERROR] effective affinity did not converge for IRQs: ${pending_effective[*]}" >&2
+      exit 1
+    fi
+    echo "[WARN] configured affinity is persistent, but inactive IRQs may keep their previous effective CPU until their next interrupt: ${pending_effective[*]}" >&2
+  fi
+fi
 
 echo "[INFO] matching /proc/interrupts rows:"
 awk -v iface="$IFACE" 'index($0, iface "-Tx-Rx-") { print }' /proc/interrupts

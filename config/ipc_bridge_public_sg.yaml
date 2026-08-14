@@ -96,7 +96,7 @@ routes:
   - id: public_binance_futures_direction_model_output_sg
     from:
       type: zmq
-      endpoint: "tcp://0.0.0.0:6360"
+      endpoint: "tcp://172.31.10.217:6360"
       size: 2048
     to:
       type: ipc
