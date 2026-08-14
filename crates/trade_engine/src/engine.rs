@@ -2052,7 +2052,15 @@ impl TradeEngine {
             // 前置校验：账号必须升级到 UTA 且开启 spot margin，否则 isLeverage=1 的现货单会被交易所直接拒
             let bybit_precheck_creds = account_common::bybit_auth::BybitCredentials::from_env()
                 .context("bybit precheck: BYBIT_API_KEY/BYBIT_API_SECRET not set")?;
-            let bybit_precheck_http = reqwest::Client::new();
+            let bybit_rest_local_ip = self.local_ips.first().copied();
+            let bybit_precheck_http =
+                crate::bybit_query::build_bybit_rest_client(bybit_rest_local_ip)?;
+            info!(
+                "bybit precheck REST source local IP: {}",
+                bybit_rest_local_ip
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "system default".to_string())
+            );
             crate::bybit_precheck::ensure_uta_and_spot_margin(
                 &bybit_precheck_http,
                 &bybit_precheck_creds,
@@ -3000,6 +3008,8 @@ impl TradeEngine {
             let shutdown_for_query_router = shutdown.clone();
             let fast_poll_for_query_router = fast_poll;
             let router_idle_spin_iters_for_query_router = router_idle_spin_iters;
+            let bybit_rest_local_ip = self.local_ips.first().copied();
+            let bybit_http = crate::bybit_query::build_bybit_rest_client(bybit_rest_local_ip)?;
             let query_router = tokio::task::spawn_local(async move {
                 let ltp_rest = if use_ltp_backend_for_query_router {
                     Some(
@@ -3011,7 +3021,6 @@ impl TradeEngine {
                 };
                 let okex_http = reqwest::Client::new();
                 let okex_creds = account_common::okex_auth::OkexCredentials::from_env().ok();
-                let bybit_http = reqwest::Client::new();
                 let bybit_creds = account_common::bybit_auth::BybitCredentials::from_env().ok();
                 let bitget_http = reqwest::Client::new();
                 let bitget_creds = account_common::bitget_auth::BitgetCredentials::from_env().ok();

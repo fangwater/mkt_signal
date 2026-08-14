@@ -5,6 +5,7 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
+use std::net::IpAddr;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -12,6 +13,14 @@ const BYBIT_REST_BASE: &str = "https://api.bybit.com";
 const BYBIT_RECV_WINDOW_MS: i64 = 5_000;
 const BYBIT_POSITION_PAGE_LIMIT: &str = "200";
 const BYBIT_POSITION_MAX_PAGES: usize = 20;
+
+pub fn build_bybit_rest_client(local_ip: Option<IpAddr>) -> Result<Client> {
+    let mut builder = Client::builder();
+    if let Some(local_ip) = local_ip {
+        builder = builder.local_address(local_ip);
+    }
+    Ok(builder.build()?)
+}
 
 fn build_bybit_sign(
     timestamp_ms: i64,
@@ -194,6 +203,16 @@ pub async fn bybit_rest_post(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builds_rest_client_with_explicit_local_address() {
+        build_bybit_rest_client(Some("127.0.0.1".parse().unwrap())).unwrap();
+    }
+
+    #[test]
+    fn builds_rest_client_with_default_local_address() {
+        build_bybit_rest_client(None).unwrap();
+    }
 
     #[test]
     fn appends_limit_when_missing() {
