@@ -176,6 +176,14 @@ name = "tardis_ipc_replay"
 path = "src/bin/tardis_ipc_replay.rs"
 
 [[bin]]
+name = "tonglian_baseline_replay"
+path = "src/bin/tonglian_baseline_replay.rs"
+
+[[bin]]
+name = "cn_features_replay"
+path = "src/bin/futures_fusion_factor_replay.rs"
+
+[[bin]]
 name = "db_fusion_factor_replay"
 path = "src/bin/db_fusion_factor_replay.rs"
 
@@ -326,12 +334,14 @@ anyhow = "1.0"
 futures = "0.3"
 bytes = { version = "1.0", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.8"
 async-trait = "0.1"
 iceoryx2 = "0.8.1"
 uuid = { version = "1.17.0", features = ["v4"] }
 sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = { version = "0.12.19", features = ["json", "blocking"] }
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
 prettytable = "0.10.0"
 comfy-table = "=7.1.1"
 native-tls = "0.2"
@@ -354,6 +364,7 @@ prost = "0.13"
 tokio-stream = "0.1"
 crc32fast = "1.4"
 csv = "1.3"
+zip = { version = "4.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors"] }

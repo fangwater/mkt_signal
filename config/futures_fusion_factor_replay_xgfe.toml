@@ -1,0 +1,28 @@
+# China-futures cn_features replay. This path is independent from crypto fusion.
+# Empty symbols selects every contract present in the trading-day range.
+exchange = "xgfe"
+feature_set = "cn_features"
+symbols = []
+start_date = "2025-11-03"
+end_date = "2025-11-03"
+
+# Only cn_features names are accepted. Crypto baseline_NNN names fail.
+# These native-book primitives bootstrap the separate registry; the broader
+# China-futures feature pool remains subject to formula-by-formula review.
+factors = [
+    "cn_features_book_mid_price",
+    "cn_features_book_spread",
+    "cn_features_book_imbalance_5",
+]
+
+replay_workers = 1
+dry_run = true
+
+[clickhouse]
+url = "http://127.0.0.1:18123"
+input_database = "baseline"
+input_trade_table = "baseline_xgfe_future_5s_trade"
+input_depth_table = "baseline_xgfe_future_5s_depth"
+output_database = "cn_features"
+output_table = "cn_features_xgfe_5s"
+batch_rows = 10000

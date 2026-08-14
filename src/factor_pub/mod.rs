@@ -1,5 +1,7 @@
 //! Factor Publisher 模块
 
+#[path = "futures_fusion_factor_pub.rs"]
+pub mod cn_features;
 pub mod factor_test;
 pub mod fusion_factor_pub;
 pub(crate) mod kline_factors;

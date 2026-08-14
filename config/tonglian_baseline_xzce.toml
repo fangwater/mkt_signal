@@ -1,0 +1,40 @@
+# Tonglian domestic-futures baseline replay. This template is deliberately a
+# one-day dry run; widen the dates and set dry_run=false only after reviewing
+# the quality counters. The source ZIP is streamed and never extracted.
+exchange = "xzce"
+data_root = "/mnt/nfs/30.3_tonglian_comm_l2"
+start_date = "2025-11-03"
+end_date = "2025-11-03"
+
+# Empty means every ordinary future contract in the selected exchange files.
+symbols = []
+
+# A larger source-time gap ends quote/direction/VWAP forward-fill continuity.
+# Cumulative Volume and Turnover states remain independent and trading-day scoped.
+max_continuous_gap_ms = 30000
+
+# Auction matching minutes are consumed for cumulative baselines but do not
+# create bars. Keep this list exchange/product-date aware as rules are audited.
+excluded_local_minutes = ["08:59", "20:59"]
+
+replay_workers = 1
+dry_run = true
+overwrite_existing = false
+# For a quick real-file smoke test, pass --max-source-rows-per-file on the CLI.
+
+[volume_multiplier_postgres]
+host = "/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run"
+port = 5433
+user = "u171"
+database = "market_metadata"
+connect_timeout_secs = 5
+# This is explicitly validated replay coverage for the undated snapshot.
+effective_from = "2025-11-03"
+effective_to = "2025-11-04"
+
+[clickhouse]
+url = "http://127.0.0.1:18123"
+database = "baseline"
+batch_rows = 10000
+flush_ms = 1000
+queue_capacity = 100000

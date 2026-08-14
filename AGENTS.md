@@ -102,6 +102,12 @@ The following is a historical snapshot verified on 2026-08-10 UTC. It proves tha
 
 Never copy passwords, API keys, or values from the remote `env.sh` into this file, chat, commits, or command output.
 
+## Domestic Futures Baseline Replay
+
+`tonglian_baseline_replay` is a bounded offline batch tool. Its `volume_multiple` values and `verified` state must come only from the read-only PostgreSQL table `market_metadata.public.domestic_future_product_multipliers` through Unix socket `/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not restore inline product maps, DataGateway or exchange-API calls, turnover inference, or a default of `1`. A product missing from the loaded catalog must panic with identifying context. This explicit batch-tool rule is an exception to the long-running-service panic guidance below. Never write to this metadata instance and never use the read-only PostgreSQL standby on port `5432` for this workflow.
+
+The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
+
 ## IPC And Config
 
 Processes communicate primarily through iceoryx2 shared-memory IPC, with some Redis-backed configuration/state and RocksDB persistence.
