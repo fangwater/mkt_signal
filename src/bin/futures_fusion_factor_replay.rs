@@ -4,6 +4,8 @@ use anyhow::{bail, Context, Result};
 use chrono::{Datelike, NaiveDate, Utc};
 use clap::Parser;
 use log::info;
+#[cfg(test)]
+use mkt_signal::factor_pub::cn_features::SUPPORTED_FUTURES_FACTOR_COUNT;
 use mkt_signal::factor_pub::cn_features::{
     FuturesDepth5, FuturesFactorPlan, FuturesFusionInput, FuturesFusionState, FuturesTradeBar,
     FUTURES_DEPTH_LEVELS, FUTURES_TRADE_FIELD_COUNT, FUTURES_TRADE_FIELD_NAMES,
@@ -399,11 +401,9 @@ fn discover_symbols(
     end_trading_day: u32,
 ) -> Result<Vec<String>> {
     let query = format!(
-        "SELECT DISTINCT t.symbol FROM {}.{} AS t INNER JOIN {}.{} AS d USING (symbol, ts) WHERE t.trading_day >= {} AND t.trading_day <= {} ORDER BY t.symbol FORMAT TabSeparatedRaw",
+        "SELECT DISTINCT t.symbol FROM {}.{} AS t WHERE t.trading_day >= {} AND t.trading_day <= {} ORDER BY t.symbol FORMAT TabSeparatedRaw",
         config.input_database,
         config.input_trade_table,
-        config.input_database,
-        config.input_depth_table,
         start_trading_day,
         end_trading_day,
     );
@@ -455,7 +455,7 @@ fn input_query(
     end_trading_day: u32,
 ) -> String {
     format!(
-        "SELECT {} FROM {}.{} AS t INNER JOIN {}.{} AS d USING (symbol, ts) WHERE t.symbol = '{}' AND t.trading_day >= {} AND t.trading_day <= {} ORDER BY t.ts FORMAT RowBinary",
+        "SELECT {} FROM {}.{} AS t LEFT JOIN {}.{} AS d USING (symbol, ts) WHERE t.symbol = '{}' AND t.trading_day >= {} AND t.trading_day <= {} ORDER BY t.ts FORMAT RowBinary",
         input_columns_sql(),
         config.input_database,
         config.input_trade_table,
@@ -469,7 +469,7 @@ fn input_query(
 
 fn prior_rows_query(config: &ClickHouseConfig, symbol: &str, start_trading_day: u32) -> String {
     format!(
-        "SELECT {} FROM {}.{} AS t INNER JOIN {}.{} AS d USING (symbol, ts) WHERE t.symbol = '{}' AND t.trading_day < {} ORDER BY t.ts DESC LIMIT {} FORMAT RowBinary",
+        "SELECT {} FROM {}.{} AS t LEFT JOIN {}.{} AS d USING (symbol, ts) WHERE t.symbol = '{}' AND t.trading_day < {} ORDER BY t.ts DESC LIMIT {} FORMAT RowBinary",
         input_columns_sql(),
         config.input_database,
         config.input_trade_table,
@@ -494,17 +494,37 @@ fn read_input_row(reader: &mut impl Read) -> Result<Option<InputRow>> {
     let quality_flags = read_u32(reader)?;
     let volume_multiple = read_f64(reader)?;
     let volume_multiple_verified = read_u8(reader)? != 0;
-    let bid_prices = read_depth_array5(reader, "bid_prices")?;
-    let bid_amounts = read_depth_array5(reader, "bid_amounts")?;
-    let ask_prices = read_depth_array5(reader, "ask_prices")?;
-    let ask_amounts = read_depth_array5(reader, "ask_amounts")?;
+    let bid_prices = read_native_depth_array(reader, "bid_prices")?;
+    let bid_amounts = read_native_depth_array(reader, "bid_amounts")?;
+    let ask_prices = read_native_depth_array(reader, "ask_prices")?;
+    let ask_amounts = read_native_depth_array(reader, "ask_amounts")?;
+    let lengths = [
+        bid_prices.len(),
+        bid_amounts.len(),
+        ask_prices.len(),
+        ask_amounts.len(),
+    ];
+    let depth = if lengths.iter().all(|length| *length == 0) {
+        None
+    } else if lengths.iter().all(|length| *length == FUTURES_DEPTH_LEVELS) {
+        Some(FuturesDepth5::from_slices(
+            &bid_prices,
+            &bid_amounts,
+            &ask_prices,
+            &ask_amounts,
+        )?)
+    } else {
+        bail!(
+            "native depth arrays must be all empty or all exactly {FUTURES_DEPTH_LEVELS} levels, got {lengths:?}"
+        );
+    };
 
     let input = FuturesFusionInput {
         ts_ms,
         symbol,
         trading_day,
         trade: FuturesTradeBar::from_slice(&trade_values)?,
-        depth: FuturesDepth5::from_slices(&bid_prices, &bid_amounts, &ask_prices, &ask_amounts)?,
+        depth,
         quality_flags,
         volume_multiple,
         volume_multiple_verified,
@@ -513,17 +533,17 @@ fn read_input_row(reader: &mut impl Read) -> Result<Option<InputRow>> {
     Ok(Some(InputRow { input }))
 }
 
-fn read_depth_array5(reader: &mut impl Read, name: &str) -> Result<[f64; FUTURES_DEPTH_LEVELS]> {
+fn read_native_depth_array(reader: &mut impl Read, name: &str) -> Result<Vec<f64>> {
     let len = usize::try_from(read_var_uint(reader)?)
         .with_context(|| format!("RowBinary {name} length exceeds usize"))?;
-    if len != FUTURES_DEPTH_LEVELS {
+    if len != 0 && len != FUTURES_DEPTH_LEVELS {
         bail!(
-            "RowBinary {name} must contain exactly {FUTURES_DEPTH_LEVELS} native levels, got {len}"
+            "RowBinary {name} must be empty or contain exactly {FUTURES_DEPTH_LEVELS} native levels, got {len}"
         );
     }
-    let mut values = [f64::NAN; FUTURES_DEPTH_LEVELS];
-    for value in &mut values {
-        *value = read_f64(reader)?;
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        values.push(read_f64(reader)?);
     }
     Ok(values)
 }
@@ -779,19 +799,21 @@ mod tests {
         let row = read_input_row(&mut Cursor::new(bytes))
             .unwrap()
             .expect("row");
-        assert_eq!(row.input.depth.bid_prices.len(), 5);
-        assert_eq!(row.input.depth.ask_amounts.len(), 5);
-        assert_eq!(row.input.depth.bid_prices[4], 96.0);
+        assert_eq!(row.input.depth.as_ref().unwrap().bid_prices.len(), 5);
+        assert_eq!(row.input.depth.as_ref().unwrap().ask_amounts.len(), 5);
+        assert_eq!(row.input.depth.as_ref().unwrap().bid_prices[4], 96.0);
     }
 
     #[test]
     fn rowbinary_input_rejects_non_five_depth_without_padding() {
-        for levels in [4, 20] {
+        for levels in [4, 6, 20] {
             let mut bytes = Vec::new();
             append_input_row(&mut bytes, levels);
             let error = read_input_row(&mut Cursor::new(bytes)).unwrap_err();
             assert!(
-                error.to_string().contains("exactly 5 native levels"),
+                error
+                    .to_string()
+                    .contains("empty or contain exactly 5 native levels"),
                 "levels={levels} error={error:#}"
             );
         }
@@ -809,6 +831,7 @@ mod tests {
             batch_rows: 100,
         };
         let query = input_query(&config, "AP2601", 20251103, 20251103);
+        assert!(query.contains("LEFT JOIN"));
         assert!(query.contains("d.bid_prices"));
         assert!(query.contains("t.trading_day >= 20251103"));
         assert!(!query.contains("bid_00_price"));
@@ -839,7 +862,7 @@ mod tests {
             let validated = validate_config(&config).unwrap();
             assert!(DOMESTIC_EXCHANGES.contains(&validated.exchange.as_str()));
             assert!(config.dry_run);
-            assert_eq!(validated.factor_plan.len(), 3);
+            assert_eq!(validated.factor_plan.len(), SUPPORTED_FUTURES_FACTOR_COUNT);
         }
     }
 }

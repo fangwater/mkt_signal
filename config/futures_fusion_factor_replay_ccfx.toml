@@ -6,14 +6,9 @@ symbols = []
 start_date = "2025-11-03"
 end_date = "2025-11-03"
 
-# Only cn_features names are accepted. Crypto baseline_NNN names fail.
-# These native-book primitives bootstrap the separate registry; the broader
-# China-futures feature pool remains subject to formula-by-formula review.
-factors = [
-    "cn_features_book_mid_price",
-    "cn_features_book_spread",
-    "cn_features_book_imbalance_5",
-]
+# cn_features_all expands to all 632 independently named CN migrations.
+# Bare crypto names remain invalid.
+factors = ["cn_features_all"]
 
 replay_workers = 1
 dry_run = true

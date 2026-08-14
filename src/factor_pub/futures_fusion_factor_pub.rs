@@ -1,11 +1,39 @@
 //! China-futures features with a native five-level order book.
 //!
-//! This module intentionally does not reuse the crypto fusion message, state,
-//! factor identifiers, or formulas. New cn_features factors must be registered and
-//! reviewed here even when a similarly named crypto factor exists.
+//! Input, state, registry, formulas, replay, and output are independent from
+//! crypto. Every formula is registered here against the native five-level book.
+
+#[path = "cn_features/app.rs"]
+mod app;
+#[path = "cn_features/baselines.rs"]
+mod baselines;
+#[path = "cn_features/cfg.rs"]
+mod cfg;
+#[path = "cn_features/factor_enum.rs"]
+mod factor_enum;
+#[path = "cn_features/intermediates.rs"]
+mod intermediates;
+#[path = "cn_features/math.rs"]
+mod math;
+#[path = "cn_features/opv_factors.rs"]
+mod opv_factors;
+#[path = "cn_features/plain_factors.rs"]
+mod plain_factors;
+#[path = "cn_features/plan.rs"]
+mod plan;
+#[path = "cn_features/publisher.rs"]
+mod publisher;
+#[path = "cn_features/view.rs"]
+mod view;
+#[path = "cn_features/zscore.rs"]
+mod zscore;
 
 use anyhow::{bail, Context, Result};
 use std::collections::{HashSet, VecDeque};
+
+use self::app::{CnDepthLevel, CnDepthSnapshot5, CnReplayState};
+use self::factor_enum::{CnFactorId, CN_FACTOR_COUNT};
+use self::plan::CnFormulaPlan;
 
 pub const FUTURES_DEPTH_LEVELS: usize = 5;
 pub const FUTURES_TRADE_FIELD_COUNT: usize = 32;
@@ -47,11 +75,8 @@ pub const FUTURES_TRADE_FIELD_NAMES: [&str; FUTURES_TRADE_FIELD_COUNT] = [
     "net_buy_small",
 ];
 
-pub const SUPPORTED_FUTURES_FACTORS: [&str; 3] = [
-    "cn_features_book_mid_price",
-    "cn_features_book_spread",
-    "cn_features_book_imbalance_5",
-];
+pub const SUPPORTED_FUTURES_FACTOR_COUNT: usize = CN_FACTOR_COUNT;
+pub const CN_ALL_FACTORS: &str = "cn_features_all";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuturesDepth5 {
@@ -74,49 +99,38 @@ impl FuturesDepth5 {
             ask_prices: exact_depth_array("ask_prices", ask_prices)?,
             ask_amounts: exact_depth_array("ask_amounts", ask_amounts)?,
         };
-        depth.validate_best_book()?;
+        depth.validate_levels()?;
         Ok(depth)
     }
 
-    fn validate_best_book(&self) -> Result<()> {
+    fn validate_levels(&self) -> Result<()> {
+        for (name, values) in [
+            ("bid_prices", &self.bid_prices),
+            ("ask_prices", &self.ask_prices),
+        ] {
+            for (index, value) in values.iter().copied().enumerate() {
+                if !value.is_nan() && !positive_finite(value) {
+                    bail!("{name}[{index}] must be NaN or finite and positive, got {value}");
+                }
+            }
+        }
+        for (name, values) in [
+            ("bid_amounts", &self.bid_amounts),
+            ("ask_amounts", &self.ask_amounts),
+        ] {
+            for (index, value) in values.iter().copied().enumerate() {
+                if !value.is_nan() && !nonnegative_finite(value) {
+                    bail!("{name}[{index}] must be NaN or finite and non-negative, got {value}");
+                }
+            }
+        }
+
         let best_bid = self.bid_prices[0];
         let best_ask = self.ask_prices[0];
-        let best_bid_amount = self.bid_amounts[0];
-        let best_ask_amount = self.ask_amounts[0];
-        if !positive_finite(best_bid) {
-            bail!("bid_prices[0] must be finite and positive, got {best_bid}");
-        }
-        if !positive_finite(best_ask) {
-            bail!("ask_prices[0] must be finite and positive, got {best_ask}");
-        }
-        if !nonnegative_finite(best_bid_amount) {
-            bail!("bid_amounts[0] must be finite and non-negative, got {best_bid_amount}");
-        }
-        if !nonnegative_finite(best_ask_amount) {
-            bail!("ask_amounts[0] must be finite and non-negative, got {best_ask_amount}");
-        }
-        if best_bid > best_ask {
+        if best_bid.is_finite() && best_ask.is_finite() && best_bid > best_ask {
             bail!("crossed best book: bid={best_bid} ask={best_ask}");
         }
         Ok(())
-    }
-
-    fn mid_price(&self) -> Option<f64> {
-        finite_value((self.bid_prices[0] + self.ask_prices[0]) / 2.0)
-    }
-
-    fn spread(&self) -> Option<f64> {
-        finite_value(self.ask_prices[0] - self.bid_prices[0])
-    }
-
-    fn imbalance_5(&self) -> Option<f64> {
-        let bid = complete_amount_sum(&self.bid_amounts)?;
-        let ask = complete_amount_sum(&self.ask_amounts)?;
-        let total = bid + ask;
-        if total <= 0.0 {
-            return None;
-        }
-        finite_value((bid - ask) / total)
     }
 }
 
@@ -150,7 +164,7 @@ pub struct FuturesFusionInput {
     pub symbol: String,
     pub trading_day: u32,
     pub trade: FuturesTradeBar,
-    pub depth: FuturesDepth5,
+    pub depth: Option<FuturesDepth5>,
     pub quality_flags: u32,
     pub volume_multiple: f64,
     pub volume_multiple_verified: bool,
@@ -175,76 +189,97 @@ impl FuturesFusionInput {
                 self.volume_multiple
             );
         }
-        self.depth.validate_best_book()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FuturesFactorId {
-    BookMidPrice,
-    BookSpread,
-    BookImbalance5,
-}
-
-impl FuturesFactorId {
-    fn parse(name: &str) -> Result<Self> {
-        match name {
-            "cn_features_book_mid_price" => Ok(Self::BookMidPrice),
-            "cn_features_book_spread" => Ok(Self::BookSpread),
-            "cn_features_book_imbalance_5" => Ok(Self::BookImbalance5),
-            _ => bail!(
-                "unsupported cn_features factor {name}; supported factors: {}",
-                SUPPORTED_FUTURES_FACTORS.join(", ")
-            ),
+        if let Some(depth) = self.depth.as_ref() {
+            depth.validate_levels()?;
         }
+        Ok(())
     }
 }
+
+const CN_FACTOR_PREFIX: &str = "cn_features_";
 
 #[derive(Debug, Clone)]
 pub struct FuturesFactorPlan {
     names: Vec<String>,
-    ids: Vec<FuturesFactorId>,
+    formula_plan: CnFormulaPlan,
 }
 
 impl FuturesFactorPlan {
-    pub fn from_factor_names(names: Vec<String>) -> Result<Self> {
-        if names.is_empty() {
+    pub fn from_factor_names(raw_names: Vec<String>) -> Result<Self> {
+        if raw_names.is_empty() {
             bail!("at least one cn_features factor is required");
         }
-        let mut seen = HashSet::with_capacity(names.len());
-        let mut normalized = Vec::with_capacity(names.len());
-        let mut ids = Vec::with_capacity(names.len());
-        for raw_name in names {
-            let name = raw_name.trim().to_string();
+        let requested = if raw_names.len() == 1 && raw_names[0].trim() == CN_ALL_FACTORS {
+            CnFactorId::ALL
+                .iter()
+                .copied()
+                .map(canonical_cn_name)
+                .collect()
+        } else {
+            raw_names
+        };
+
+        let mut seen = HashSet::with_capacity(requested.len());
+        let mut names = Vec::with_capacity(requested.len());
+        let mut source_names = Vec::with_capacity(requested.len());
+        for raw_name in requested {
+            let name = raw_name.trim();
             if name.is_empty() {
                 bail!("cn_features factor name must not be empty");
             }
-            if !seen.insert(name.clone()) {
-                bail!("duplicate cn_features factor: {name}");
+            let id = parse_cn_factor_name(name)?;
+            let canonical = canonical_cn_name(id);
+            if !seen.insert(canonical.clone()) {
+                bail!("duplicate cn_features factor: {canonical}");
             }
-            ids.push(FuturesFactorId::parse(&name)?);
-            normalized.push(name);
+            names.push(canonical);
+            source_names.push(id.as_name().to_string());
         }
+
+        let formula_plan = CnFormulaPlan::from_factor_names("cn_features", source_names)?;
         Ok(Self {
-            names: normalized,
-            ids,
+            names,
+            formula_plan,
         })
     }
 
-    pub fn factor_names(&self) -> impl Iterator<Item = &str> {
+    pub fn factor_names(&self) -> impl ExactSizeIterator<Item = &str> {
         self.names.iter().map(String::as_str)
     }
 
     pub fn len(&self) -> usize {
         self.names.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
 }
 
-#[derive(Debug, Default)]
+fn canonical_cn_name(id: CnFactorId) -> String {
+    format!("{CN_FACTOR_PREFIX}{}", id.as_name().to_ascii_lowercase())
+}
+
+fn parse_cn_factor_name(name: &str) -> Result<CnFactorId> {
+    let suffix = name.strip_prefix(CN_FACTOR_PREFIX).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported cn_features factor {name}; expected {CN_FACTOR_PREFIX}<legacy_factor_name>"
+        )
+    })?;
+    CnFactorId::ALL
+        .iter()
+        .copied()
+        .find(|id| id.as_name().eq_ignore_ascii_case(suffix))
+        .ok_or_else(|| anyhow::anyhow!("unsupported cn_features factor {name}"))
+}
+
+#[derive(Default)]
 pub struct FuturesFusionState {
     symbol: Option<String>,
+    trading_day: Option<u32>,
     last_ts_ms: Option<i64>,
     history: VecDeque<FuturesFusionInput>,
+    formula_state: CnReplayState,
 }
 
 impl FuturesFusionState {
@@ -268,9 +303,23 @@ impl FuturesFusionState {
                 );
             }
         }
-        if input.quality_flags & QUALITY_SEGMENT_BREAK != 0 {
+
+        let reset = input.quality_flags & QUALITY_SEGMENT_BREAK != 0
+            || self
+                .trading_day
+                .is_some_and(|trading_day| trading_day != input.trading_day);
+        if reset {
             self.history.clear();
+            self.formula_state = CnReplayState::default();
         }
+
+        let formula_values = domestic_formula_values(&input);
+        let depth = input.depth.as_ref().map(native_depth_snapshot);
+        self.formula_state
+            .push_native(input.ts_ms, &formula_values, depth)
+            .context("push domestic-futures formula row")?;
+
+        self.trading_day = Some(input.trading_day);
         self.last_ts_ms = Some(input.ts_ms);
         self.history.push_back(input);
         if self.history.len() > MAX_FUTURES_HISTORY {
@@ -279,25 +328,49 @@ impl FuturesFusionState {
         Ok(())
     }
 
-    pub fn factor_values(&self, plan: &FuturesFactorPlan) -> Result<Vec<Option<f64>>> {
-        let latest = self
-            .history
+    pub fn factor_values(&mut self, plan: &FuturesFactorPlan) -> Result<Vec<Option<f64>>> {
+        self.history
             .back()
             .context("cannot compute futures factors before an input row is pushed")?;
-        Ok(plan
-            .ids
-            .iter()
-            .map(|factor| match factor {
-                FuturesFactorId::BookMidPrice => latest.depth.mid_price(),
-                FuturesFactorId::BookSpread => latest.depth.spread(),
-                FuturesFactorId::BookImbalance5 => latest.depth.imbalance_5(),
-            })
+        let values = self.formula_state.factor_values(&plan.formula_plan);
+        Ok(values
+            .into_iter()
+            .map(|value| value.is_finite().then_some(value))
             .collect())
     }
 
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
+}
+
+fn domestic_formula_values(input: &FuturesFusionInput) -> [f64; FUTURES_TRADE_FIELD_COUNT] {
+    const VOLUME: usize = 4;
+    const VWAP: usize = 23;
+    const BUY_VWAP: usize = 24;
+    const SELL_VWAP: usize = 25;
+
+    let mut values = input.trade.values;
+    let volume = values[VOLUME];
+
+    if !input.volume_multiple_verified || volume <= 0.0 {
+        values[VWAP] = f64::NAN;
+        values[BUY_VWAP] = f64::NAN;
+        values[SELL_VWAP] = f64::NAN;
+    }
+    values
+}
+
+fn native_depth_snapshot(depth: &FuturesDepth5) -> CnDepthSnapshot5 {
+    let bids = std::array::from_fn(|index| CnDepthLevel {
+        price: depth.bid_prices[index],
+        amount: depth.bid_amounts[index],
+    });
+    let asks = std::array::from_fn(|index| CnDepthLevel {
+        price: depth.ask_prices[index],
+        amount: depth.ask_amounts[index],
+    });
+    CnDepthSnapshot5 { bids, asks }
 }
 
 fn exact_depth_array(name: &str, values: &[f64]) -> Result<[f64; FUTURES_DEPTH_LEVELS]> {
@@ -317,19 +390,6 @@ fn nonnegative_finite(value: f64) -> bool {
     value.is_finite() && value >= 0.0
 }
 
-fn complete_amount_sum(values: &[f64; FUTURES_DEPTH_LEVELS]) -> Option<f64> {
-    values
-        .iter()
-        .try_fold(0.0, |sum, value| {
-            nonnegative_finite(*value).then_some(sum + value)
-        })
-        .and_then(finite_value)
-}
-
-fn finite_value(value: f64) -> Option<f64> {
-    value.is_finite().then_some(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,66 +404,249 @@ mod tests {
         .unwrap()
     }
 
-    fn input(ts_ms: i64, quality_flags: u32) -> FuturesFusionInput {
+    fn input(ts_ms: i64, trading_day: u32, quality_flags: u32, close: f64) -> FuturesFusionInput {
+        let mut values = [0.0; FUTURES_TRADE_FIELD_COUNT];
+        values[0] = close;
+        values[1] = close + 1.0;
+        values[2] = close - 1.0;
+        values[3] = close;
+        values[4] = 3.0;
+        values[5] = close * 30.0;
+        values[10] = close * 20.0;
+        values[11] = close * 10.0;
+        values[12] = 2.0;
+        values[13] = 1.0;
+        values[23] = close;
+        values[24] = close;
+        values[25] = close;
+        values[26] = close * 10.0;
+        values[27] = 1.0;
+        values[28] = 1.0 / 3.0;
         FuturesFusionInput {
             ts_ms,
             symbol: "AP2601".to_string(),
-            trading_day: 20251103,
-            trade: FuturesTradeBar::from_slice(&[0.0; FUTURES_TRADE_FIELD_COUNT]).unwrap(),
-            depth: depth(),
+            trading_day,
+            trade: FuturesTradeBar::from_slice(&values).unwrap(),
+            depth: Some(depth()),
             quality_flags,
-            volume_multiple: 1.0,
-            volume_multiple_verified: false,
+            volume_multiple: 10.0,
+            volume_multiple_verified: true,
         }
     }
 
     #[test]
     fn rejects_any_non_five_depth_shape() {
-        let error =
-            FuturesDepth5::from_slices(&[100.0; 4], &[1.0; 4], &[101.0; 4], &[1.0; 4]).unwrap_err();
-        assert!(error.to_string().contains("exactly 5 native levels"));
-
-        let error =
-            FuturesDepth5::from_slices(&[100.0; 6], &[1.0; 6], &[101.0; 6], &[1.0; 6]).unwrap_err();
-        assert!(error.to_string().contains("exactly 5 native levels"));
+        for levels in [4, 6, 20] {
+            let error = FuturesDepth5::from_slices(
+                &vec![100.0; levels],
+                &vec![1.0; levels],
+                &vec![101.0; levels],
+                &vec![1.0; levels],
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("exactly 5 native levels"),
+                "levels={levels} error={error:#}"
+            );
+        }
     }
 
     #[test]
-    fn computes_only_explicit_native_five_level_factors() {
-        let plan = FuturesFactorPlan::from_factor_names(
-            SUPPORTED_FUTURES_FACTORS
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect(),
-        )
+    fn all_selector_expands_to_every_migrated_factor() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![CN_ALL_FACTORS.to_string()]).unwrap();
+        assert_eq!(plan.len(), SUPPORTED_FUTURES_FACTOR_COUNT);
+        assert_eq!(plan.len(), 632);
+        let names: Vec<&str> = plan.factor_names().collect();
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len());
+        assert!(names.iter().all(|name| name.starts_with(CN_FACTOR_PREFIX)));
+    }
+
+    #[test]
+    fn known_formula_repairs_are_computable() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_166".to_string(),
+            "cn_features_baseline_159".to_string(),
+            "cn_features_baseline_160".to_string(),
+        ])
         .unwrap();
         let mut state = FuturesFusionState::default();
-        state.push(input(1_000, 0)).unwrap();
+        state.push(input(1_000, 20251103, 0, 100.0)).unwrap();
+        let _ = state.factor_values(&plan).unwrap();
+        state.push(input(2_000, 20251103, 0, 101.0)).unwrap();
         let values = state.factor_values(&plan).unwrap();
-        assert_eq!(values[0], Some(100.5));
-        assert_eq!(values[1], Some(1.0));
-        assert!((values[2].unwrap() - 125.0 / 175.0).abs() < 1e-12);
+
+        assert!((values[0].unwrap() - 125.0 / 175.0).abs() < 1e-12);
+        let log_return = (101.0_f64 / 100.0).ln();
+        assert!((values[1].unwrap() - log_return.sin()).abs() < 1e-12);
+        assert!((values[2].unwrap() - log_return.cos()).abs() < 1e-12);
     }
 
     #[test]
-    fn missing_native_level_does_not_affect_level_one_factors() {
-        let mut depth = depth();
-        depth.bid_amounts[4] = f64::NAN;
-        let mut row = input(1_000, 0);
-        row.depth = depth;
-        let plan = FuturesFactorPlan::from_factor_names(
-            SUPPORTED_FUTURES_FACTORS
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect(),
-        )
+    fn missing_book_preserves_trade_factors() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_001".to_string(),
+            "cn_features_factor_007".to_string(),
+            "cn_features_factor_166".to_string(),
+            "cn_features_baseline_159".to_string(),
+        ])
         .unwrap();
+        let mut state = FuturesFusionState::default();
+        state.push(input(1_000, 20251103, 0, 100.0)).unwrap();
+        let _ = state.factor_values(&plan).unwrap();
+        let mut row = input(2_000, 20251103, 0, 101.0);
+        row.depth = None;
+        state.push(row).unwrap();
+        let values = state.factor_values(&plan).unwrap();
+
+        assert_eq!(values[0], None);
+        assert_eq!(values[1], None);
+        assert_eq!(values[2], None);
+        assert!(values[3].is_some());
+    }
+
+    #[test]
+    fn missing_book_nulls_warmed_depth_windows_without_hiding_trade_factors() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_050".to_string(),
+            "cn_features_baseline_159".to_string(),
+        ])
+        .unwrap();
+        let mut state = FuturesFusionState::default();
+        for index in 0..30 {
+            let price = 100.0 + index as f64 * 0.01;
+            state
+                .push(input(index * 1_000 + 1_000, 20251103, 0, price))
+                .unwrap();
+        }
+        assert!(state.factor_values(&plan).unwrap()[0].is_some());
+
+        let mut row = input(31_000, 20251103, 0, 101.0);
+        row.depth = None;
+        state.push(row).unwrap();
+        let values = state.factor_values(&plan).unwrap();
+
+        assert_eq!(values[0], None);
+        assert!(values[1].is_some());
+    }
+
+    #[test]
+    fn missing_outer_level_only_nulls_factors_that_use_it() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_009".to_string(),
+            "cn_features_factor_013".to_string(),
+            "cn_features_factor_002".to_string(),
+            "cn_features_factor_017".to_string(),
+            "cn_features_factor_054".to_string(),
+            "cn_features_factor_062".to_string(),
+            "cn_features_factor_139".to_string(),
+            "cn_features_factor_144".to_string(),
+            "cn_features_factor_072".to_string(),
+        ])
+        .unwrap();
+        let mut row = input(1_000, 20251103, 0, 100.0);
+        let depth = row.depth.as_mut().unwrap();
+        depth.bid_prices[4] = f64::NAN;
+        depth.bid_amounts[4] = f64::NAN;
         let mut state = FuturesFusionState::default();
         state.push(row).unwrap();
         let values = state.factor_values(&plan).unwrap();
-        assert_eq!(values[0], Some(100.5));
-        assert_eq!(values[1], Some(1.0));
-        assert_eq!(values[2], None);
+
+        assert!(values[0].is_some(), "BBO-only factor must remain available");
+        assert_eq!(values[1], None, "full-book concentration needs level 5");
+        assert_eq!(values[2], None, "full-book ratio needs level 5");
+        for (index, name) in [
+            "factor_017",
+            "factor_054",
+            "factor_062",
+            "factor_139",
+            "factor_144",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(values[index + 3], None, "{name} must not skip level 5");
+        }
+        assert!(values[8].is_some(), "ask-only factor must remain available");
+    }
+
+    #[test]
+    fn missing_best_bid_only_nulls_factors_that_read_it() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_071".to_string(),
+            "cn_features_factor_072".to_string(),
+            "cn_features_factor_166".to_string(),
+            "cn_features_baseline_159".to_string(),
+        ])
+        .unwrap();
+        let mut state = FuturesFusionState::default();
+        state.push(input(1_000, 20251103, 0, 100.0)).unwrap();
+        let _ = state.factor_values(&plan).unwrap();
+
+        let mut row = input(2_000, 20251103, 0, 101.0);
+        let depth = row.depth.as_mut().unwrap();
+        depth.bid_prices[0] = f64::NAN;
+        depth.bid_amounts[0] = f64::NAN;
+        state.push(row).unwrap();
+        let values = state.factor_values(&plan).unwrap();
+
+        assert_eq!(values[0], None, "bid-side factor needs the missing bid");
+        assert!(values[1].is_some(), "ask-only factor must remain available");
+        assert_eq!(values[2], None, "two-sided imbalance needs the missing bid");
+        assert!(
+            values[3].is_some(),
+            "trade-only factor must remain available"
+        );
+    }
+
+    #[test]
+    fn five_level_adaptations_use_only_native_observations() {
+        let plan = FuturesFactorPlan::from_factor_names(vec![
+            "cn_features_factor_013".to_string(),
+            "cn_features_factor_014".to_string(),
+            "cn_features_factor_025".to_string(),
+            "cn_features_factor_026".to_string(),
+            "cn_features_factor_096".to_string(),
+            "cn_features_factor_102".to_string(),
+        ])
+        .unwrap();
+        let mut state = FuturesFusionState::default();
+        state.push(input(1_000, 20251103, 0, 100.0)).unwrap();
+        let values = state.factor_values(&plan).unwrap();
+
+        assert!((values[0].unwrap() - 60.0 / 150.0).abs() < 1e-12);
+        assert!((values[1].unwrap() - 15.0 / 25.0).abs() < 1e-12);
+        assert!((values[2].unwrap() - 60.0 / 90.0).abs() < 1e-12);
+        assert!((values[3].unwrap() - 15.0 / 10.0).abs() < 1e-12);
+        assert_eq!(values[4], Some(5.0));
+        let harmonic_bid = 5.0 / (1.0 / 10.0 + 1.0 / 20.0 + 1.0 / 30.0 + 1.0 / 40.0 + 1.0 / 50.0);
+        assert!((values[5].unwrap() - harmonic_bid).abs() < 1e-12);
+    }
+
+    #[test]
+    fn domestic_formula_values_preserve_source_trade_semantics() {
+        let mut row = input(1_000, 20251103, 0, 100.0);
+        let original = row.trade.values;
+        let values = domestic_formula_values(&row);
+        assert_eq!(values, original);
+
+        for index in 6..=9 {
+            row.trade.values[index] = f64::NAN;
+        }
+        for index in 14..=22 {
+            row.trade.values[index] = f64::NAN;
+        }
+        for index in 29..=31 {
+            row.trade.values[index] = f64::NAN;
+        }
+        let values = domestic_formula_values(&row);
+        for index in [6, 7, 8, 9, 14, 15, 16, 17, 18, 19, 20, 21, 22, 29, 30, 31] {
+            assert!(
+                values[index].is_nan(),
+                "field {} must not be proxied",
+                FUTURES_TRADE_FIELD_NAMES[index]
+            );
+        }
     }
 
     #[test]
@@ -414,12 +657,113 @@ mod tests {
     }
 
     #[test]
-    fn segment_break_clears_only_futures_history() {
+    fn segment_and_trading_day_changes_reset_formula_history() {
+        let plan =
+            FuturesFactorPlan::from_factor_names(vec!["cn_features_baseline_159".to_string()])
+                .unwrap();
         let mut state = FuturesFusionState::default();
-        state.push(input(1_000, 0)).unwrap();
-        state.push(input(2_000, 0)).unwrap();
-        assert_eq!(state.history_len(), 2);
-        state.push(input(3_000, QUALITY_SEGMENT_BREAK)).unwrap();
+        state.push(input(1_000, 20251103, 0, 100.0)).unwrap();
+        assert_eq!(state.factor_values(&plan).unwrap()[0], None);
+        state.push(input(2_000, 20251103, 0, 101.0)).unwrap();
+        assert!(state.factor_values(&plan).unwrap()[0].is_some());
+
+        state.push(input(3_000, 20251104, 0, 102.0)).unwrap();
         assert_eq!(state.history_len(), 1);
+        assert_eq!(state.factor_values(&plan).unwrap()[0], None);
+
+        state.push(input(4_000, 20251104, 0, 103.0)).unwrap();
+        assert!(state.factor_values(&plan).unwrap()[0].is_some());
+        state
+            .push(input(5_000, 20251104, QUALITY_SEGMENT_BREAK, 104.0))
+            .unwrap();
+        assert_eq!(state.history_len(), 1);
+        assert_eq!(state.factor_values(&plan).unwrap()[0], None);
+    }
+
+    #[test]
+    fn unverified_multiplier_hides_vwap_family_inputs() {
+        let mut row = input(1_000, 20251103, 0, 100.0);
+        row.volume_multiple_verified = false;
+        let values = domestic_formula_values(&row);
+        assert!(values[23].is_nan());
+        assert!(values[24].is_nan());
+        assert!(values[25].is_nan());
+    }
+    #[test]
+    fn every_cn_factor_has_a_computation_path() {
+        let missing: Vec<&str> = CnFactorId::ALL
+            .iter()
+            .copied()
+            .filter(|id| {
+                let plan =
+                    CnFormulaPlan::from_factor_names("coverage", vec![id.as_name().to_string()])
+                        .unwrap();
+                CnReplayState::validate_factor_plan(&plan).is_err()
+            })
+            .map(CnFactorId::as_name)
+            .collect();
+        assert!(missing.is_empty(), "missing CN computations: {missing:?}");
+    }
+
+    #[test]
+    fn repaired_baselines_compute_directly_after_warmup() {
+        let ids = [
+            CnFactorId::Baseline023,
+            CnFactorId::Baseline030,
+            CnFactorId::Baseline033,
+            CnFactorId::Baseline037,
+            CnFactorId::Baseline041,
+            CnFactorId::Baseline044,
+            CnFactorId::Baseline048,
+            CnFactorId::Baseline050,
+            CnFactorId::Baseline056,
+            CnFactorId::Baseline064,
+            CnFactorId::Baseline075,
+            CnFactorId::Baseline078,
+            CnFactorId::Baseline084,
+            CnFactorId::Baseline089,
+            CnFactorId::Baseline094,
+            CnFactorId::Baseline095,
+            CnFactorId::Baseline097,
+            CnFactorId::Baseline102,
+            CnFactorId::Baseline106,
+            CnFactorId::Baseline108,
+            CnFactorId::Baseline130,
+            CnFactorId::Baseline142,
+            CnFactorId::Baseline144,
+            CnFactorId::Baseline147,
+            CnFactorId::Baseline150,
+            CnFactorId::Baseline155,
+            CnFactorId::Baseline165,
+            CnFactorId::Baseline176,
+            CnFactorId::Baseline183,
+            CnFactorId::Baseline186,
+            CnFactorId::Baseline197,
+        ];
+        let plan = FuturesFactorPlan::from_factor_names(
+            ids.iter().copied().map(canonical_cn_name).collect(),
+        )
+        .unwrap();
+        let mut state = FuturesFusionState::default();
+        for index in 0..320 {
+            state
+                .push(input(
+                    (index as i64 + 1) * 1_000,
+                    20251103,
+                    0,
+                    100.0 + index as f64,
+                ))
+                .unwrap();
+        }
+        let values = state.factor_values(&plan).unwrap();
+        let missing: Vec<&str> = ids
+            .iter()
+            .zip(values.iter())
+            .filter_map(|(id, value)| value.is_none().then_some(id.as_name()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "warm factors returned NULL: {missing:?}"
+        );
     }
 }
