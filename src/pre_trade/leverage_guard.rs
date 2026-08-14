@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::net::IpAddr;
 use std::time::Duration;
+use trade_engine::bybit_query::build_bybit_rest_client_with_timeout;
 use trade_signal::ArbMode;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -198,6 +200,7 @@ struct GuardStartupConfig {
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
+    bybit_rest_local_ip: Option<IpAddr>,
     target_venues: Vec<TradingVenue>,
     request_sleep_ms: u64,
 }
@@ -249,6 +252,7 @@ impl LeverageGuard {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
         binance_account_mode: Option<BinanceAccountMode>,
+        bybit_rest_local_ip: Option<IpAddr>,
     ) -> Result<()> {
         if open_venue == hedge_venue {
             install_guard_state(LeverageGuardState::disabled());
@@ -267,7 +271,8 @@ impl LeverageGuard {
         };
 
         let target_venues =
-            resolve_target_futures_venues(arb_mode, open_venue, hedge_venue).await?;
+            resolve_target_futures_venues(arb_mode, open_venue, hedge_venue, bybit_rest_local_ip)
+                .await?;
         if target_venues.is_empty() {
             install_guard_state(LeverageGuardState::disabled());
             info!(
@@ -283,6 +288,7 @@ impl LeverageGuard {
             open_venue,
             hedge_venue,
             binance_account_mode,
+            bybit_rest_local_ip,
             target_venues,
             request_sleep_ms: request_sleep_ms(),
         };
@@ -590,6 +596,17 @@ async fn refresh_guard_targets_with_state(
         .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
         .build()
         .context("build leverage guard http client")?;
+    let bybit_client = refresh_ctx
+        .config
+        .bybit_rest_local_ip
+        .map(|local_ip| {
+            build_bybit_rest_client_with_timeout(
+                Some(local_ip),
+                Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS),
+            )
+            .context("build Bybit leverage guard http client")
+        })
+        .transpose()?;
 
     let mut statuses = existing_targets;
 
@@ -600,7 +617,12 @@ async fn refresh_guard_targets_with_state(
             continue;
         }
         retried_targets += 1;
-        let status = set_target_with_fallback(&client, &refresh_ctx.config, target).await;
+        let target_client = if target.venue == TradingVenue::BybitFutures {
+            bybit_client.as_ref().unwrap_or(&client)
+        } else {
+            &client
+        };
+        let status = set_target_with_fallback(target_client, &refresh_ctx.config, target).await;
         statuses.insert(target.clone(), status);
         if idx + 1 < desired_targets_len && refresh_ctx.config.request_sleep_ms > 0 {
             tokio::time::sleep(Duration::from_millis(refresh_ctx.config.request_sleep_ms)).await;
@@ -633,10 +655,11 @@ async fn resolve_target_futures_venues(
     arb_mode: ArbMode,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    bybit_rest_local_ip: Option<IpAddr>,
 ) -> Result<Vec<TradingVenue>> {
     let mut venues = target_futures_venues(arb_mode, open_venue, hedge_venue);
     if venues.contains(&TradingVenue::BybitFutures) {
-        match bybit_account_is_pm().await {
+        match bybit_account_is_pm(bybit_rest_local_ip).await {
             Ok(true) => {
                 info!(
                     "ArbOpen leverage guard skips BybitFutures set-leverage: account is Portfolio Margin"
@@ -667,12 +690,13 @@ fn target_futures_venues(
     venues
 }
 
-async fn bybit_account_is_pm() -> Result<bool> {
+async fn bybit_account_is_pm(local_ip: Option<IpAddr>) -> Result<bool> {
     let credentials = BybitCredentials::from_env()?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
-        .build()
-        .context("build bybit account info http client")?;
+    let client = build_bybit_rest_client_with_timeout(
+        local_ip,
+        Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS),
+    )
+    .context("build bybit account info http client")?;
     let base = env_or("BYBIT_API_BASE", "https://api.bybit.com");
     let timestamp = Utc::now().timestamp_millis().to_string();
     let recv_window = "5000";
@@ -1455,6 +1479,7 @@ mod tests {
             open_venue,
             hedge_venue,
             binance_account_mode: None,
+            bybit_rest_local_ip: None,
             target_venues: target_futures_venues(arb_mode, open_venue, hedge_venue),
             request_sleep_ms: 0,
         }

@@ -40,8 +40,10 @@ use mkt_signal::pre_trade::{
 use mkt_signal::strategy::StrategyManager;
 use order_common::TradingVenue;
 use runtime_common::affinity::maybe_pin_current_thread;
+use runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use runtime_common::redis_client::RedisSettings;
 use std::cell::RefCell;
+use std::net::IpAddr;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -526,6 +528,22 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     } else {
         None
     };
+    let bybit_in_play = open_venue.trade_engine_exchange() == "bybit"
+        || hedge_venue.trade_engine_exchange() == "bybit";
+    let bybit_rest_local_ip = if bybit_in_play {
+        let (raw_ip, source) = load_primary_local_ip_from_trade_engine_sync()
+            .context("load pre_trade Bybit REST local IP from trade_engine config")?;
+        let local_ip = raw_ip.parse::<IpAddr>().with_context(|| {
+            format!("invalid pre_trade Bybit REST local IP {raw_ip} from {source}")
+        })?;
+        info!(
+            "pre_trade Bybit REST source local IP: {} ({})",
+            local_ip, source
+        );
+        Some(local_ip)
+    } else {
+        None
+    };
     let mut required_env: Vec<&str> = Vec::new();
     if open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance"
@@ -788,7 +806,10 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     || matches!(hedge_venue, TradingVenue::BybitMargin)
                 {
                     match BybitCredentials::from_env() {
-                        Ok(creds) => repay_svc.register(Box::new(BybitRepayer::new(creds))),
+                        Ok(creds) => repay_svc.register(Box::new(BybitRepayer::new(
+                            creds,
+                            bybit_rest_local_ip,
+                        )?)),
                         Err(e) => {
                             warn!("bybit auto-repay disabled: {e}");
                         }
@@ -855,6 +876,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 open_venue,
                 hedge_venue,
                 binance_account_mode,
+                bybit_rest_local_ip,
             )
             .await?;
             info!("ArbOpen leverage guard initialized");

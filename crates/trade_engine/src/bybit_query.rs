@@ -6,6 +6,7 @@ use reqwest::Client;
 use serde_json::Value;
 use sha2::Sha256;
 use std::net::IpAddr;
+use std::time::Duration;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -14,12 +15,25 @@ const BYBIT_RECV_WINDOW_MS: i64 = 5_000;
 const BYBIT_POSITION_PAGE_LIMIT: &str = "200";
 const BYBIT_POSITION_MAX_PAGES: usize = 20;
 
-pub fn build_bybit_rest_client(local_ip: Option<IpAddr>) -> Result<Client> {
+fn bybit_rest_client_builder(local_ip: Option<IpAddr>) -> reqwest::ClientBuilder {
     let mut builder = Client::builder();
     if let Some(local_ip) = local_ip {
         builder = builder.local_address(local_ip);
     }
-    Ok(builder.build()?)
+    builder
+}
+
+pub fn build_bybit_rest_client(local_ip: Option<IpAddr>) -> Result<Client> {
+    Ok(bybit_rest_client_builder(local_ip).build()?)
+}
+
+pub fn build_bybit_rest_client_with_timeout(
+    local_ip: Option<IpAddr>,
+    timeout: Duration,
+) -> Result<Client> {
+    Ok(bybit_rest_client_builder(local_ip)
+        .timeout(timeout)
+        .build()?)
 }
 
 fn build_bybit_sign(
@@ -212,6 +226,15 @@ mod tests {
     #[test]
     fn builds_rest_client_with_default_local_address() {
         build_bybit_rest_client(None).unwrap();
+    }
+
+    #[test]
+    fn builds_rest_client_with_timeout_and_explicit_local_address() {
+        build_bybit_rest_client_with_timeout(
+            Some("127.0.0.1".parse().unwrap()),
+            Duration::from_secs(1),
+        )
+        .unwrap();
     }
 
     #[test]
