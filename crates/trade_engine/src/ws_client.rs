@@ -231,7 +231,7 @@ fn format_ws_error(err: &WsError) -> String {
 
 const DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS: u32 = 30_000;
 
-fn trade_engine_tcp_tuning() -> TcpSocketTuning {
+pub(crate) fn trade_engine_tcp_tuning() -> TcpSocketTuning {
     TcpSocketTuning {
         user_timeout_ms: Some(DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS),
         busy_poll_us: Some(DEFAULT_WS_BUSY_POLL_US),

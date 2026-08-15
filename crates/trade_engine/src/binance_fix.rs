@@ -7,6 +7,7 @@ use crate::trade_request::{
     BinanceCancelOrderParamsRef, BinanceNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
+use crate::ws_client::trade_engine_tcp_tuning;
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
@@ -17,6 +18,7 @@ use openssl::pkey::{Id as PKeyId, PKey, Private};
 use openssl::sign::Signer;
 use order_common::{OrderExecutionStatus, OrderType, Side};
 use runtime_common::exchange::Exchange;
+use runtime_common::socket_tuning::tune_tcp_stream;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -30,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 pub const BINANCE_SPOT_FIX_ENABLED_ENV: &str = "BINANCE_SPOT_FIX_ENABLED";
+pub const BINANCE_FIX_OE_SESSIONS_ENV: &str = "BINANCE_FIX_OE_SESSIONS";
 
 const SOH: char = '\x01';
 const SOH_BYTE: u8 = 0x01;
@@ -38,6 +41,9 @@ const DEFAULT_TARGET_COMP_ID: &str = "SPOT";
 const DEFAULT_HEARTBTINT: u64 = 30;
 const DEFAULT_RECV_WINDOW_MS: &str = "5000";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
+// Binance FIX OE 每账户最多 10 条并发连接（连接尝试限额 15 次/30s）。
+const DEFAULT_FIX_OE_SESSIONS: usize = 2;
+const MAX_FIX_OE_SESSIONS: usize = 10;
 
 type FixField = (u32, String);
 type BinanceFixStream = TlsStream<TcpStream>;
@@ -123,6 +129,33 @@ pub(crate) fn spot_fix_enabled_from_env() -> Result<bool> {
     }
 }
 
+pub(crate) fn spot_fix_sessions_from_env() -> Result<usize> {
+    let Ok(raw) = std::env::var(BINANCE_FIX_OE_SESSIONS_ENV) else {
+        return Ok(DEFAULT_FIX_OE_SESSIONS);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_FIX_OE_SESSIONS);
+    }
+    let sessions = trimmed.parse::<usize>().map_err(|_| {
+        anyhow!(
+            "invalid {}='{}', expected integer 1-{}",
+            BINANCE_FIX_OE_SESSIONS_ENV,
+            raw,
+            MAX_FIX_OE_SESSIONS
+        )
+    })?;
+    if sessions == 0 || sessions > MAX_FIX_OE_SESSIONS {
+        return Err(anyhow!(
+            "invalid {}={}, expected 1-{}",
+            BINANCE_FIX_OE_SESSIONS_ENV,
+            sessions,
+            MAX_FIX_OE_SESSIONS
+        ));
+    }
+    Ok(sessions)
+}
+
 pub(crate) fn is_binance_spot_fix_trade_request(req_type: TradeRequestType) -> bool {
     matches!(
         req_type,
@@ -159,7 +192,12 @@ pub(crate) fn spawn_binance_spot_fix_client(
 }
 
 impl BinanceSpotFixConfig {
-    pub fn from_env(_api_key: String, default_source_ip: Option<IpAddr>) -> Result<Self> {
+    pub fn from_env(
+        _api_key: String,
+        default_source_ip: Option<IpAddr>,
+        session_index: usize,
+        session_count: usize,
+    ) -> Result<Self> {
         let api_key = std::env::var(BINANCE_ED25519_API_KEY_ENV)
             .ok()
             .map(|v| v.trim().to_string())
@@ -188,11 +226,16 @@ impl BinanceSpotFixConfig {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| DEFAULT_FIX_OE_URL.to_string());
-        let sender_comp_id = std::env::var("BINANCE_FIX_SENDER_COMP_ID")
+        // SenderCompID 必须在账户活跃会话间唯一；多会话时基于 env 值派生后缀。
+        let sender_comp_id = match std::env::var("BINANCE_FIX_SENDER_COMP_ID")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .unwrap_or_else(generate_sender_comp_id);
+        {
+            Some(base) if session_count <= 1 => base,
+            Some(base) => derive_session_comp_id(&base, session_index),
+            None => generate_sender_comp_id(),
+        };
         validate_comp_id("BINANCE_FIX_SENDER_COMP_ID", &sender_comp_id)?;
         let source_ip = match std::env::var("BINANCE_LOCAL_SOURCE_IP") {
             Ok(value) if !value.trim().is_empty() => Some(
@@ -279,6 +322,13 @@ impl BinanceSpotFixClient {
                 .unwrap_or_else(|| "system-default".to_string())
         );
         let tcp = connect_tcp(&host, port, self.config.source_ip).await?;
+        // 与 WS 下单连接相同的 socket 调优：NODELAY + QUICKACK + USER_TIMEOUT + SO_BUSY_POLL。
+        // 缺 NODELAY 时 Nagle 会把 burst 中的第二条小包扣在内核等 ACK，直接抬高挂单延迟尾部。
+        tune_tcp_stream(
+            &tcp,
+            "trade_engine binance_spot_fix",
+            trade_engine_tcp_tuning(),
+        );
         let connector = NativeTlsConnector::builder()
             .build()
             .context("build native TLS connector for Binance Spot FIX")?;
@@ -742,7 +792,12 @@ impl BinanceSpotFixClient {
         fields.push((108, self.config.heartbtint.to_string()));
         fields.push((141, "Y".to_string()));
         fields.push((553, self.config.api_key.clone()));
-        fields.push((25035, "2".to_string()));
+        // MessageHandling=UNORDERED：官方文档明确多消息 in-flight 时性能更好；
+        // SEQUENTIAL 会在网关侧按 MsgSeqNum 串行化，惩罚撤改单 burst。
+        fields.push((25035, "1".to_string()));
+        // ResponseMode=ONLY_ACKS：只接收本会话请求的 ack，关闭全账户 ER 推送
+        // （成交/订单状态由 account_monitor user stream 全量覆盖）。
+        fields.push((25036, "2".to_string()));
         Ok(build_fix_message(&fields))
     }
 
@@ -1105,6 +1160,14 @@ fn generate_sender_comp_id() -> String {
     format!("C{}", &id[..7])
 }
 
+/// 多会话时从固定 base 派生唯一 SenderCompID：截断到 7 字符 + 会话序号（0-9）。
+fn derive_session_comp_id(base: &str, session_index: usize) -> String {
+    debug_assert!(session_index < MAX_FIX_OE_SESSIONS);
+    let mut out: String = base.chars().take(7).collect();
+    out.push_str(&session_index.to_string());
+    out
+}
+
 fn current_fix_time() -> String {
     Utc::now().format("%Y%m%d-%H:%M:%S%.3f").to_string()
 }
@@ -1206,5 +1269,31 @@ mod tests {
         std::env::set_var(BINANCE_SPOT_FIX_ENABLED_ENV, "off");
         assert!(!spot_fix_enabled_from_env().unwrap());
         std::env::remove_var(BINANCE_SPOT_FIX_ENABLED_ENV);
+    }
+
+    #[test]
+    fn parses_fix_session_count() {
+        std::env::remove_var(BINANCE_FIX_OE_SESSIONS_ENV);
+        assert_eq!(spot_fix_sessions_from_env().unwrap(), 2);
+        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "3");
+        assert_eq!(spot_fix_sessions_from_env().unwrap(), 3);
+        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "0");
+        assert!(spot_fix_sessions_from_env().is_err());
+        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "11");
+        assert!(spot_fix_sessions_from_env().is_err());
+        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "abc");
+        assert!(spot_fix_sessions_from_env().is_err());
+        std::env::remove_var(BINANCE_FIX_OE_SESSIONS_ENV);
+    }
+
+    #[test]
+    fn derives_unique_session_comp_ids() {
+        assert_eq!(derive_session_comp_id("MYCOMPID", 0), "MYCOMPI0");
+        assert_eq!(derive_session_comp_id("MYCOMPID", 3), "MYCOMPI3");
+        assert_eq!(derive_session_comp_id("AB", 1), "AB1");
+        for idx in 0..MAX_FIX_OE_SESSIONS {
+            let comp_id = derive_session_comp_id("LONGBASEID", idx);
+            validate_comp_id("test", &comp_id).expect("derived comp id must stay valid");
+        }
     }
 }

@@ -1890,31 +1890,38 @@ impl TradeEngine {
         // dispatch 路由才允许 TCP 丢包健康度真正驱动 pause/reconnect（配合 act 模式）。
         let ws_route_dispatch = self.ws_route.route == WsRouteKind::Dispatch;
 
-        let mut binance_spot_fix_handle: Option<BinanceSpotFixHandle> = None;
+        let mut binance_spot_fix_handles: Vec<BinanceSpotFixHandle> = Vec::new();
         if binance_spot_fix_enabled {
             let creds = self
                 .accounts
                 .first()
                 .ok_or_else(|| anyhow!("Binance Spot FIX requires Binance API key"))?;
-            let cfg = BinanceSpotFixConfig::from_env(
-                creds.key.trim().to_string(),
-                self.local_ips.first().copied(),
-            )?;
-            info!(
-                "spawning Binance Spot FIX client url={} sender_comp_id={} source_ip={}",
-                cfg.url(),
-                cfg.sender_comp_id(),
-                cfg.source_ip()
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_else(|| "system-default".to_string())
-            );
-            let (handle, task) = crate::binance_fix::spawn_binance_spot_fix_client(
-                cfg,
-                trade_resp_sink.clone(),
-                shutdown.clone(),
-            );
-            worker_handles.push(("binance_spot_fix_client", task));
-            binance_spot_fix_handle = Some(handle);
+            let session_count = crate::binance_fix::spot_fix_sessions_from_env()?;
+            for session_index in 0..session_count {
+                let cfg = BinanceSpotFixConfig::from_env(
+                    creds.key.trim().to_string(),
+                    self.local_ips.first().copied(),
+                    session_index,
+                    session_count,
+                )?;
+                info!(
+                    "spawning Binance Spot FIX client session={}/{} url={} sender_comp_id={} source_ip={}",
+                    session_index,
+                    session_count,
+                    cfg.url(),
+                    cfg.sender_comp_id(),
+                    cfg.source_ip()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_else(|| "system-default".to_string())
+                );
+                let (handle, task) = crate::binance_fix::spawn_binance_spot_fix_client(
+                    cfg,
+                    trade_resp_sink.clone(),
+                    shutdown.clone(),
+                );
+                worker_handles.push(("binance_spot_fix_client", task));
+                binance_spot_fix_handles.push(handle);
+            }
         }
         let mut gate_futures_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
         let mut binance_spot_ws_endpoints: Option<Vec<WsEndpointHandle>> = None;
@@ -2524,7 +2531,7 @@ impl TradeEngine {
 
         // Spawn unified request router
         let ws_endpoints_for_req_worker = ws_endpoints.clone();
-        let binance_spot_fix_handle_for_req_worker = binance_spot_fix_handle.clone();
+        let binance_spot_fix_handles_for_req_worker = binance_spot_fix_handles.clone();
         let gate_futures_ws_endpoints_for_req_worker = gate_futures_ws_endpoints.clone();
         let binance_spot_ws_endpoints_for_req_worker = binance_spot_ws_endpoints.clone();
         let binance_um_ws_endpoint_groups_for_req_worker = binance_um_ws_endpoint_groups.clone();
@@ -2541,12 +2548,13 @@ impl TradeEngine {
         let router_idle_spin_iters_for_req_worker = router_idle_spin_iters;
         let req_worker = tokio::task::spawn_local(async move {
             let mut ws_endpoints = ws_endpoints_for_req_worker;
-            let binance_spot_fix_handle = binance_spot_fix_handle_for_req_worker;
+            let binance_spot_fix_handles = binance_spot_fix_handles_for_req_worker;
             let mut gate_futures_ws_endpoints = gate_futures_ws_endpoints_for_req_worker;
             let mut binance_spot_ws_endpoints = binance_spot_ws_endpoints_for_req_worker;
             let mut binance_um_ws_endpoint_groups = binance_um_ws_endpoint_groups_for_req_worker;
             let ws_route = ws_route_for_req_worker;
             let mut ws_rr_cursor = 0usize; // 轮询计数器
+            let mut fix_rr_cursor = 0usize; // FIX 多会话轮询计数器
             let rest_dispatcher = rest_dispatcher_for_orders;
             let mut order_req_ingress = order_req_ingress;
             let mut order_control_ingress = order_control_ingress;
@@ -2616,16 +2624,22 @@ impl TradeEngine {
 
                 if exchange_for_req_worker == Exchange::Binance
                     && is_binance_spot_fix_trade_request(msg.req_type)
-                    && binance_spot_fix_handle.is_some()
+                    && !binance_spot_fix_handles.is_empty()
                 {
-                    let handle = binance_spot_fix_handle.as_ref().expect("checked is_some");
-                    if handle.is_available() {
+                    // 多会话 RR：从游标起选第一条已 logon 的会话；全部不可用才报 503。
+                    let session_count = binance_spot_fix_handles.len();
+                    let start = fix_rr_cursor;
+                    fix_rr_cursor = (fix_rr_cursor + 1) % session_count;
+                    let selected = (0..session_count)
+                        .map(|offset| (start + offset) % session_count)
+                        .find(|idx| binance_spot_fix_handles[*idx].is_available());
+                    if let Some(session_idx) = selected {
                         let client_order_id = msg.client_order_id;
-                        match handle.enqueue(msg) {
+                        match binance_spot_fix_handles[session_idx].enqueue(msg) {
                             Ok(()) => {
                                 debug!(
-                                    "routed Binance spot order to FIX client_order_id={}",
-                                    client_order_id
+                                    "routed Binance spot order to FIX session={} client_order_id={}",
+                                    session_idx, client_order_id
                                 );
                             }
                             Err(msg) => {
@@ -2651,12 +2665,13 @@ impl TradeEngine {
                             }
                         }
                     } else {
-                        let last_error = handle
-                            .last_error()
+                        let last_error = binance_spot_fix_handles
+                            .iter()
+                            .find_map(|handle| handle.last_error())
                             .unwrap_or_else(|| "not logged on".to_string());
                         warn!(
-                            "Binance Spot FIX unavailable for client_order_id={} last_error={}",
-                            msg.client_order_id, last_error
+                            "Binance Spot FIX unavailable ({} sessions) for client_order_id={} last_error={}",
+                            session_count, msg.client_order_id, last_error
                         );
                         let body = serde_json::json!({
                             "transport": "fix",
