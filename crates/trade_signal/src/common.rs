@@ -318,9 +318,10 @@ pub fn build_decision_from_key_base(
     env_threshold: Option<f64>,
 ) -> String {
     use std::fmt::Write;
-    // now_us (~19 chars) + 5 labeled `{:.8}` fields ≈ 130 bytes; one buffer,
-    // no per-field intermediate `String`, no trailing `format!`.
-    let mut out = String::with_capacity(160);
+    // now_us (~19 chars) + 5 labeled `{:.8}` fields ≈ 130 bytes；开仓路径随后还会
+    // 原地追加 vol_band_scale / spread_fr / tlen_thr 等后缀（合计 ~210 bytes），
+    // 一次性预留 256 避免追加期 realloc。
+    let mut out = String::with_capacity(256);
     // `write!` into a `String` (fmt::Write) is infallible and byte-identical to
     // the previous `format!` layout.
     let _ = write!(out, "{now_us}");
@@ -361,6 +362,29 @@ pub fn append_key_value_fields(base: String, fields: &[(&str, String)]) -> Strin
     out
 }
 
+/// 热路径版 `append_key_value_fields` + `format_from_key_optional_value`：
+/// 直接把 `:key=<value|NA>` 原地写进 base，不产生中间 String，输出逐字节一致。
+pub fn append_optional_value_field(
+    base: String,
+    key: &str,
+    value: Option<f64>,
+    precision: usize,
+) -> String {
+    use std::fmt::Write;
+
+    let mut out = base;
+    out.push(':');
+    out.push_str(key);
+    out.push('=');
+    match value.filter(|v| v.is_finite()) {
+        Some(v) => {
+            let _ = write!(out, "{v:.precision$}");
+        }
+        None => out.push_str("NA"),
+    }
+    out
+}
+
 pub fn append_tlen_threshold(mut base: String, threshold: Option<f64>) -> String {
     use std::fmt::Write;
 
@@ -384,20 +408,25 @@ pub fn build_open_from_key_base(
     env_score: Option<f64>,
     env_threshold: Option<f64>,
 ) -> String {
-    let vol_band_scale_text = vol_band_scale
-        .map(|[lo, hi]| format!("{lo:.4},{hi:.4}"))
-        .unwrap_or_else(|| "-".to_string());
-    append_key_value_fields(
-        build_decision_from_key_base(
-            now_us,
-            return_qtl,
-            return_threshold,
-            volatility,
-            env_score,
-            env_threshold,
-        ),
-        &[("vol_band_scale", vol_band_scale_text)],
-    )
+    use std::fmt::Write;
+
+    let mut out = build_decision_from_key_base(
+        now_us,
+        return_qtl,
+        return_threshold,
+        volatility,
+        env_score,
+        env_threshold,
+    );
+    // vol_band_scale 原地写入，与旧的 format! 中间 String 拼接逐字节一致。
+    out.push_str(":vol_band_scale=");
+    match vol_band_scale {
+        Some([lo, hi]) => {
+            let _ = write!(out, "{lo:.4},{hi:.4}");
+        }
+        None => out.push('-'),
+    }
+    out
 }
 
 pub fn append_dump_suffix(base: String) -> String {
@@ -583,6 +612,80 @@ mod tests {
                         "mismatch now={now} a={a:?} b={b:?}",
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn build_open_from_key_base_matches_legacy_composition() {
+        fn legacy(
+            now_us: i64,
+            return_qtl: Option<f64>,
+            return_threshold: Option<f64>,
+            volatility: Option<f64>,
+            vol_band_scale: Option<[f64; 2]>,
+            env_score: Option<f64>,
+            env_threshold: Option<f64>,
+        ) -> String {
+            let vol_band_scale_text = vol_band_scale
+                .map(|[lo, hi]| format!("{lo:.4},{hi:.4}"))
+                .unwrap_or_else(|| "-".to_string());
+            append_key_value_fields(
+                build_decision_from_key_base(
+                    now_us,
+                    return_qtl,
+                    return_threshold,
+                    volatility,
+                    env_score,
+                    env_threshold,
+                ),
+                &[("vol_band_scale", vol_band_scale_text)],
+            )
+        }
+        let bands = [
+            None,
+            Some([0.0, 0.0]),
+            Some([-1.5, 2.25]),
+            Some([0.1234, 987.6543]),
+        ];
+        for now in [0i64, 1_783_331_226_376_757] {
+            for value in [None, Some(0.5), Some(f64::NAN)] {
+                for band in bands {
+                    assert_eq!(
+                        build_open_from_key_base(now, value, value, value, band, value, value),
+                        legacy(now, value, value, value, band, value, value),
+                        "mismatch now={now} value={value:?} band={band:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn append_optional_value_field_matches_legacy_pair() {
+        let values = [
+            None,
+            Some(0.0),
+            Some(-0.0),
+            Some(1.234_567_891),
+            Some(-42.5),
+            Some(f64::INFINITY),
+            Some(f64::NAN),
+        ];
+        for value in values {
+            for precision in [6usize, 8] {
+                let legacy = append_key_value_fields(
+                    "base".to_string(),
+                    &[(
+                        "spread_fr",
+                        format_from_key_optional_value(value, precision),
+                    )],
+                );
+                assert_eq!(
+                    append_optional_value_field("base".to_string(), "spread_fr", value, precision),
+                    legacy,
+                    "mismatch value={value:?} precision={precision}",
+                );
             }
         }
     }

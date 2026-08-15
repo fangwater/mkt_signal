@@ -1,8 +1,6 @@
 use order_common::TradingVenue;
 
-use super::common::{
-    append_key_value_fields, build_open_from_key_base, format_from_key_optional_value,
-};
+use super::common::{append_optional_value_field, build_open_from_key_base};
 
 pub fn build_spread_decision_from_key_base(
     now: i64,
@@ -23,10 +21,7 @@ pub fn build_spread_decision_from_key_base(
         env_score,
         env_threshold,
     );
-    append_key_value_fields(
-        base,
-        &[("spread_fr", format_from_key_optional_value(spread_fr, 6))],
-    )
+    append_optional_value_field(base, "spread_fr", spread_fr, 6)
 }
 pub fn build_funding_decision_from_key_base(
     now: i64,
@@ -50,13 +45,7 @@ pub fn build_funding_decision_from_key_base(
         env_score,
         env_threshold,
     );
-    append_key_value_fields(
-        base,
-        &[(
-            "premium_rate",
-            format_from_key_optional_value(premium_rate, 6),
-        )],
-    )
+    append_optional_value_field(base, "premium_rate", premium_rate, 6)
 }
 
 pub fn build_funding_decision_from_key(

@@ -288,16 +288,24 @@ pt_receive_minus_generation    18     合计（与 jp2 部署期 14-16us 同量�
 ```
 
 结论：14-18us 的大头（9-10us）是 trade_signal 决策路径内部的计算成本，
-不是调度/IPC 问题。已在 spread-arb open 路径加三段拆分埋点（纯观测）：
+不是调度/IPC 问题。按运维决定不加拆分埋点，直接对嫌疑最大的分配点做了
+输出逐字节一致的优化：
 
-```text
-ts_open_from_key_base_cost    from_key 字符串构建
-ts_open_state_and_plan_cost   状态查表 + quote plan 构建
-ts_open_context_build_cost    symbol 规整 + tlen 查表 + context 构造
-```
+- `build_open_from_key_base`：vol_band_scale 原地写入，消掉 format!
+  中间 String；`build_decision_from_key_base` 预留容量 160 -> 256，
+  开仓 from_key 追加 spread_fr/tlen_thr 后缀不再 realloc。
+- 新增 `append_optional_value_field`（原地写 `:key=<value|NA>`），替换
+  spread 开仓/平仓与 funding from_key 路径上的
+  `append_key_value_fields + format_from_key_optional_value` 组合，
+  每处少 1-2 次分配（含等价测试）。
+- `emit_levels_as_signals` 的序列化缓冲改 thread_local 复用，
+  每个 emit 批次少一次 payload 级分配。
 
-部署后看一轮日志即可归因；预期 from_key 格式化与 per-level context
-分配是主要嫌疑，届时做针对性优化（复用 buffer / 减少 format!）。
+未动的部分及原因：per-level `from_key.to_vec()`（每 ctx 必须持有自己的
+拷贝，改 `Bytes` 会波及 pre_trade 策略层几十处 `Vec<u8>` 语义的用法）；
+`normalize_symbol_for_venue`/`min_qty_symbol_key` 返回 String（调用面
+太广）。剩余的 9-10us 主体预计在 quote plan 构建、环境信号评估与状态
+查表等纯计算上，需要 profile 后再做针对性优化。
 
 ## 主机核查结果（jp-meta / ip-172-31-35-228，2026-08-15）
 

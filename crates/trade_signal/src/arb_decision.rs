@@ -3128,14 +3128,12 @@ fn emit_spread_arb_open_signals(
         Some(environment_score),
         environment_threshold,
     );
-    let from_key_base = super::common::append_key_value_fields(
+    let from_key_base = super::common::append_optional_value_field(
         base_from_key,
-        &[(
-            "spread_fr",
-            super::common::format_from_key_optional_value(open_filter_value, 6),
-        )],
+        "spread_fr",
+        open_filter_value,
+        6,
     );
-    let from_key_base_done_us = get_timestamp_us();
     let order_amount = ArbDecision::with_state_mut(|arb| arb.resolve_order_amount_u(open_symbol))
         .expect("ArbDecisionState should be initialized");
     let open_orders_per_round = ArbDecision::with_state_mut(|arb| arb.open_orders_per_round)
@@ -3182,7 +3180,6 @@ fn emit_spread_arb_open_signals(
             return Ok(());
         }
     };
-    let quote_plan_done_us = get_timestamp_us();
 
     // Venue-normalized symbols + min-qty key are batch-invariant: compute once
     // here instead of re-allocating them inside build_ctx for every price level.
@@ -3244,20 +3241,6 @@ fn emit_spread_arb_open_signals(
                 .expect("missing open-side depth query client")
         };
         let tlen_start_us = get_timestamp_us();
-        // 把 ts_open_before_tlen（决策打点到 tlen gate 前）拆成三段可归因成本：
-        // from_key 字符串构建 / 状态查表+quote plan / symbol 规整+context 构造。
-        record_arb_open_latency(
-            "ts_open_from_key_base_cost",
-            from_key_base_done_us.saturating_sub(batch_ts),
-        );
-        record_arb_open_latency(
-            "ts_open_state_and_plan_cost",
-            quote_plan_done_us.saturating_sub(from_key_base_done_us),
-        );
-        record_arb_open_latency(
-            "ts_open_context_build_cost",
-            tlen_start_us.saturating_sub(quote_plan_done_us),
-        );
         record_arb_open_latency(
             "ts_open_before_tlen",
             tlen_start_us.saturating_sub(batch_ts),
@@ -3378,7 +3361,7 @@ fn emit_spread_arb_close_signals(
         hedge_venue,
     )
     .map(|(value, _)| value);
-    let from_key = super::common::append_dump_suffix(super::common::append_key_value_fields(
+    let from_key = super::common::append_dump_suffix(super::common::append_optional_value_field(
         super::common::build_open_from_key_base(
             batch_ts,
             snapshot.return_qtl,
@@ -3388,10 +3371,9 @@ fn emit_spread_arb_close_signals(
             snapshot.env_score,
             snapshot.env_threshold,
         ),
-        &[(
-            "spread_fr",
-            super::common::format_from_key_optional_value(spread_fr, 6),
-        )],
+        "spread_fr",
+        spread_fr,
+        6,
     ));
     let volatility = ArbDecision::with_state_mut(|arb| {
         arb.lookup_hedge_factor_value(hedge_symbol, hedge_venue)
