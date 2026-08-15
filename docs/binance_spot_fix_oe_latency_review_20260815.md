@@ -236,21 +236,32 @@ req_worker 把订单 push 进连接任务队列并 notify 后不会立刻让出�
 大 JSON 解析/重连卡住几百微秒时持续排空 iceoryx，避免 pre_trade 发布端
 队列打满。
 
-两条演进路线（先埋 send_start/send_done trace 再选）：
+演进路线评估：
 
-1. 合并单线程：req_worker 直接 poll iceoryx，省掉 SPSC 一跳；空出的
-   core 20 最优用途是承接 ens41 下单队列的 IRQ/XPS（替换当前跨 L3 的
-   core 45），把网络唤醒路径变成同 L3。延迟中性偏正，改动涉及全交易所
-   ingest。
-2. 重划职责（终局形态）：保留双线程，但改成"热/冷"切分——ingest +
-   路由 + socket 写在一个线程，读/解析/重连/REST 在另一个线程。这才能
-   把"解析卡顿拖累下单"的尾延迟路径真正消掉；代价是 TLS/WS 状态跨线程
-   共享（真锁 + Send 化），工程量大。
-3. 不建议：保持现有职责、仅把写半移到 te-ipc 线程。锁争用与重连协调的
+1. 合并单线程（**已实施**）：req_worker/query router 直接 poll iceoryx，
+   省掉 SPSC 一跳；空出的核最优用途是承接 ens41 下单队列的 IRQ/XPS
+   （替换当前跨 L3 的 core 45），把网络唤醒路径变成同 L3。
+2. 重划职责（远期备选）：双线程改"热/冷"切分——ingest + 路由 +
+   socket 写在一个线程，读/解析/重连/REST 在另一个线程，消掉"解析卡顿
+   拖累下单"的尾延迟路径；代价是 TLS/WS 状态跨线程共享（真锁 +
+   Send 化），工程量大，等 send_start/send_done trace 证明需要再做。
+3. 不建议：保持原职责、仅把写半移到 te-ipc 线程。锁争用与重连协调的
    复杂度都来了，却只省半微秒。
 
-选择依据：trace 若显示"路由完成 -> socket 写开始"p99 有百微秒级毛刺
-（解析卡顿证据）-> 路线 2；若干净 -> 路线 1 或维持现状。
+### 已实施：单线程 ingest
+
+- fast/非 fast poll 拓扑统一为路由任务直连 iceoryx 订阅（非 fast poll
+  的 FR 部署本来就跑这条路径，等于把 fast poll 切到久经生产验证的拓扑，
+  只保留 idle 策略差异：spin/yield vs 1ms sleep）。
+- `order_controls`（internal open terminate）新增直连订阅，仍仅在
+  fast_poll 部署启用。
+- te-ipc 线程、SPSC 队列、`TE_IPC_REQ_QUEUE_CAP` 全部移除；
+  `trade_engine_<exchange>_ipc` iceoryx node 不再创建。
+- `--ipc-core` / `TRADE_ENGINE_IPC_CORE` 保留兼容但忽略并告警；部署时
+  从 env.sh 移除该变量，把空出的核转作 ens41 IRQ/XPS 或 spare。
+- 背压语义变化：入站缓冲从 SPSC 4096 + 订阅 256 变为仅订阅 256
+  （safe-overflow 覆盖最旧样本）。订单/查询突发远小于 256，与线上
+  FR 环境现行为一致。
 
 ## pre_trade / trade_signal 同构复查结论
 

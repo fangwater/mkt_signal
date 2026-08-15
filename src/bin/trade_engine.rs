@@ -3,7 +3,7 @@ use account_common::{init_binance_account_mode, BinanceAccountMode};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use hmac::{Hmac, Mac};
-use log::{error, info};
+use log::{error, info, warn};
 use runtime_common::affinity::{maybe_pin_current_thread, resolve_core};
 use runtime_common::exchange::Exchange;
 use runtime_common::mkt_cfg::{
@@ -59,8 +59,8 @@ struct Args {
     #[arg(long)]
     core: Option<usize>,
 
-    /// 绑定 te-ipc 线程（iceoryx 桥接 busy-poll）到指定 CPU 核（可选）；
-    /// 未提供则尝试 TRADE_ENGINE_IPC_CORE 环境变量
+    /// 已废弃：trade_engine 现为单线程 ingest，te-ipc 线程已移除。
+    /// 保留该参数只为兼容旧启动脚本，传入值会被忽略并告警。
     #[arg(long)]
     ipc_core: Option<usize>,
 }
@@ -344,7 +344,12 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "TRADE_ENGINE_CORE")?;
-    let ipc_core = resolve_core(args.ipc_core, "TRADE_ENGINE_IPC_CORE");
+    if let Some(ipc_core) = resolve_core(args.ipc_core, "TRADE_ENGINE_IPC_CORE") {
+        warn!(
+            "trade_engine is single-threaded now; ignoring ipc core {} (unbind TRADE_ENGINE_IPC_CORE / --ipc-core and repurpose the core)",
+            ipc_core
+        );
+    }
     let exchange_name = args.exchange.as_str();
     let exchange = Exchange::from_str(exchange_name)
         .ok_or_else(|| anyhow::anyhow!("Invalid exchange name: {}", exchange_name))?;
@@ -575,7 +580,6 @@ async fn main() -> Result<()> {
     let engine = TradeEngine::new(
         local_ips,
         accounts,
-        ipc_core,
         binance_um_whitelist_ip,
         local_ip_cfg.ws_route,
     );

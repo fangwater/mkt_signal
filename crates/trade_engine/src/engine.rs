@@ -69,8 +69,6 @@ use rolling_common::health_snapshot::{
     HEALTH_SNAPSHOT_PAYLOAD_LEN, HEALTH_STATE_DISCONNECTED, HEALTH_STATE_DRAINING,
     HEALTH_STATE_HEALTHY, HEALTH_STATE_PAUSED, HEALTH_STATE_PROTECTED, HEALTH_STATE_RECONNECTING,
 };
-use rtrb::{Consumer, PopError, Producer, PushError, RingBuffer};
-use runtime_common::affinity::pin_to_core;
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
@@ -79,15 +77,12 @@ use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
 use std::net::IpAddr;
 use std::rc::Rc;
-use std::thread;
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
 
 const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
-const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
-const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
-const IPC_THREAD_DRAIN_BUDGET: usize = 64;
+const ORDER_CONTROL_DRAIN_BUDGET: usize = 64;
 // 单线程 runtime 上路由任务每次 poll 会连续空转这么多轮才 yield；期间连接任务
 // 与 IO driver 都无法运行。64 轮把 idle 时对同线程任务的最大阻塞压到 ~2-3us，
 // 同时保持 SPSC 拾取仍是亚微秒级。可用 TE_ROUTER_IDLE_SPIN_ITERS 覆盖。
@@ -475,31 +470,20 @@ struct InternalOpenTerminateOrderMeta {
     qty: f64,
 }
 
-struct IpcThreadQueues {
-    order_req_producer: Producer<TradeRequestMsg>,
-    query_req_producer: Producer<QueryRequestMsg>,
-    order_control_producer: Option<Producer<InternalOpenTerminateMsg>>,
+// 单线程 ingest：路由任务直接 poll iceoryx 订阅（无 te-ipc 线程、无 SPSC 中转）。
+// fast_poll 只影响 idle 策略（spin/yield vs sleep）与慢接收告警，不再影响拓扑。
+struct OrderReqIngress {
+    subscriber: Subscriber<ipc::Service, TradeRequestIpcPayload, ()>,
+    fast_poll: bool,
 }
 
-struct AsyncThreadQueues {
-    order_req_consumer: Consumer<TradeRequestMsg>,
-    query_req_consumer: Consumer<QueryRequestMsg>,
-    order_control_consumer: Option<Consumer<InternalOpenTerminateMsg>>,
-}
-
-enum OrderReqIngress {
-    Spsc(Consumer<TradeRequestMsg>),
-    Ipc(Subscriber<ipc::Service, TradeRequestIpcPayload, ()>),
-}
-
-enum QueryReqIngress {
-    Spsc(Consumer<QueryRequestMsg>),
-    Ipc(Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>),
+struct QueryReqIngress {
+    subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>,
 }
 
 enum OrderControlIngress {
     Disabled,
-    Spsc(Consumer<InternalOpenTerminateMsg>),
+    Ipc(Subscriber<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()>),
 }
 
 fn env_usize_or(name: &str, default: usize) -> usize {
@@ -574,38 +558,6 @@ fn router_idle_spin_iters(fast_poll: bool) -> usize {
     env_usize_or(
         "TE_ROUTER_IDLE_SPIN_ITERS",
         DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
-    )
-}
-
-fn new_ipc_spsc_queues(
-    internal_open_terminate_enabled: bool,
-) -> (IpcThreadQueues, AsyncThreadQueues) {
-    let req_cap = env_usize_or("TE_IPC_REQ_QUEUE_CAP", DEFAULT_TE_IPC_REQ_QUEUE_CAP);
-    info!(
-        "trade_engine ipc spsc queues: req_cap={} internal_open_terminate_enabled={}",
-        req_cap, internal_open_terminate_enabled
-    );
-
-    let (order_req_producer, order_req_consumer) = RingBuffer::new(req_cap);
-    let (query_req_producer, query_req_consumer) = RingBuffer::new(req_cap);
-    let (order_control_producer, order_control_consumer) = if internal_open_terminate_enabled {
-        let (producer, consumer) = RingBuffer::new(req_cap);
-        (Some(producer), Some(consumer))
-    } else {
-        (None, None)
-    };
-
-    (
-        IpcThreadQueues {
-            order_req_producer,
-            query_req_producer,
-            order_control_producer,
-        },
-        AsyncThreadQueues {
-            order_req_consumer,
-            query_req_consumer,
-            order_control_consumer,
-        },
     )
 }
 
@@ -827,53 +779,13 @@ fn parse_internal_open_terminate_payload(
     Some(msg)
 }
 
-fn pop_trade_req_for_async(consumer: &mut Consumer<TradeRequestMsg>) -> Option<TradeRequestMsg> {
-    match consumer.pop() {
-        Ok(mut msg) => {
-            let async_recv_us = get_timestamp_us();
-            let create_to_async_recv_us = async_recv_us.saturating_sub(msg.create_time);
-            if msg.create_time > 0 && create_to_async_recv_us >= TRADE_REQ_IPC_RECV_SLOW_WARN_US {
-                warn!(
-                    "SpscIngressLatency: trade async_recv_slow req_type={:?} client_order_id={} params_len={} create_time_us={} async_thread_recv_us={} create_to_async_thread_recv_us={}",
-                    msg.req_type,
-                    msg.client_order_id,
-                    msg.params.len(),
-                    msg.create_time,
-                    async_recv_us,
-                    create_to_async_recv_us
-                );
-            }
-            if msg.ipc_recv.is_none() {
-                msg.ipc_recv = Some(Instant::now());
-            }
-            Some(msg)
-        }
-        Err(PopError::Empty) => None,
-    }
-}
-
-fn pop_query_req_for_async(consumer: &mut Consumer<QueryRequestMsg>) -> Option<QueryRequestMsg> {
-    match consumer.pop() {
-        Ok(msg) => Some(msg),
-        Err(PopError::Empty) => None,
-    }
-}
-
-fn pop_order_control_for_async(
-    consumer: &mut Consumer<InternalOpenTerminateMsg>,
-) -> Option<InternalOpenTerminateMsg> {
-    match consumer.pop() {
-        Ok(msg) => Some(msg),
-        Err(PopError::Empty) => None,
-    }
-}
-
 fn recv_trade_req_from_ipc(
     subscriber: &Subscriber<ipc::Service, TradeRequestIpcPayload, ()>,
+    fast_poll: bool,
 ) -> Option<TradeRequestMsg> {
     match subscriber.receive() {
         Ok(Some(sample)) => {
-            let msg = parse_trade_request_payload(sample.payload(), false);
+            let msg = parse_trade_request_payload(sample.payload(), fast_poll);
             drop(sample);
             msg
         }
@@ -902,21 +814,33 @@ fn recv_query_req_from_ipc(
     }
 }
 
+fn recv_order_control_from_ipc(
+    subscriber: &Subscriber<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()>,
+) -> Option<InternalOpenTerminateMsg> {
+    match subscriber.receive() {
+        Ok(Some(sample)) => {
+            // control ingress 只在 fast_poll 部署下启用，慢接收告警恒开。
+            let msg = parse_internal_open_terminate_payload(sample.payload(), true);
+            drop(sample);
+            msg
+        }
+        Ok(None) => None,
+        Err(err) => {
+            warn!("internal open terminate receive error: {err}");
+            None
+        }
+    }
+}
+
 impl OrderReqIngress {
     fn try_recv(&mut self) -> Option<TradeRequestMsg> {
-        match self {
-            Self::Spsc(consumer) => pop_trade_req_for_async(consumer),
-            Self::Ipc(subscriber) => recv_trade_req_from_ipc(subscriber),
-        }
+        recv_trade_req_from_ipc(&self.subscriber, self.fast_poll)
     }
 }
 
 impl QueryReqIngress {
     fn try_recv(&mut self) -> Option<QueryRequestMsg> {
-        match self {
-            Self::Spsc(consumer) => pop_query_req_for_async(consumer),
-            Self::Ipc(subscriber) => recv_query_req_from_ipc(subscriber),
-        }
+        recv_query_req_from_ipc(&self.subscriber)
     }
 }
 
@@ -924,310 +848,9 @@ impl OrderControlIngress {
     fn try_recv(&mut self) -> Option<InternalOpenTerminateMsg> {
         match self {
             Self::Disabled => None,
-            Self::Spsc(consumer) => pop_order_control_for_async(consumer),
+            Self::Ipc(subscriber) => recv_order_control_from_ipc(subscriber),
         }
     }
-}
-
-fn push_trade_req_or_pending(
-    producer: &mut Producer<TradeRequestMsg>,
-    msg: TradeRequestMsg,
-    pending: &mut Option<TradeRequestMsg>,
-    full_count: &mut u64,
-) -> bool {
-    match producer.push(msg) {
-        Ok(()) => {
-            *pending = None;
-            true
-        }
-        Err(PushError::Full(returned)) => {
-            *full_count = full_count.saturating_add(1);
-            if *full_count % SPSC_QUEUE_FULL_WARN_INTERVAL == 1 {
-                warn!(
-                    "TE IPC order_req SPSC full; keeping pending client_order_id={} full_count={}",
-                    returned.client_order_id, *full_count
-                );
-            }
-            *pending = Some(returned);
-            false
-        }
-    }
-}
-
-fn push_query_req_or_pending(
-    producer: &mut Producer<QueryRequestMsg>,
-    msg: QueryRequestMsg,
-    pending: &mut Option<QueryRequestMsg>,
-    full_count: &mut u64,
-) -> bool {
-    match producer.push(msg) {
-        Ok(()) => {
-            *pending = None;
-            true
-        }
-        Err(PushError::Full(returned)) => {
-            *full_count = full_count.saturating_add(1);
-            if *full_count % SPSC_QUEUE_FULL_WARN_INTERVAL == 1 {
-                warn!(
-                    "TE IPC query_req SPSC full; keeping pending client_query_id={} full_count={}",
-                    returned.client_query_id, *full_count
-                );
-            }
-            *pending = Some(returned);
-            false
-        }
-    }
-}
-
-fn push_order_control_or_pending(
-    producer: &mut Producer<InternalOpenTerminateMsg>,
-    msg: InternalOpenTerminateMsg,
-    pending: &mut Option<InternalOpenTerminateMsg>,
-    full_count: &mut u64,
-) -> bool {
-    match producer.push(msg) {
-        Ok(()) => {
-            *pending = None;
-            true
-        }
-        Err(PushError::Full(returned)) => {
-            *full_count = full_count.saturating_add(1);
-            if *full_count % SPSC_QUEUE_FULL_WARN_INTERVAL == 1 {
-                warn!(
-                    "TE IPC order_control SPSC full; keeping pending client_order_id={} full_count={}",
-                    returned.client_order_id, *full_count
-                );
-            }
-            *pending = Some(returned);
-            false
-        }
-    }
-}
-
-fn spawn_te_ipc_thread(
-    exchange_name: String,
-    order_req_service: String,
-    order_control_service: Option<String>,
-    query_req_service: String,
-    mut queues: IpcThreadQueues,
-    shutdown: CancellationToken,
-    ipc_core: Option<usize>,
-    fast_poll: bool,
-) -> Result<thread::JoinHandle<()>> {
-    let handle = thread::Builder::new()
-        .name("te-ipc".to_string())
-        .spawn(move || {
-            if let Some(c) = ipc_core {
-                if let Err(err) = pin_to_core(c) {
-                    warn!(
-                        "te-ipc thread pin to core {} failed: {:#}; continuing without affinity",
-                        c, err
-                    );
-                }
-            }
-            if let Err(err) = run_te_ipc_thread(
-                &exchange_name,
-                &order_req_service,
-                order_control_service.as_deref(),
-                &query_req_service,
-                &mut queues,
-                shutdown.clone(),
-                fast_poll,
-            ) {
-                warn!("trade_engine IPC thread exited with error: {:#}", err);
-                shutdown.cancel();
-            }
-        })
-        .context("spawn trade_engine IPC thread failed")?;
-    Ok(handle)
-}
-
-fn run_te_ipc_thread(
-    exchange_name: &str,
-    order_req_service: &str,
-    order_control_service: Option<&str>,
-    query_req_service: &str,
-    queues: &mut IpcThreadQueues,
-    shutdown: CancellationToken,
-    fast_poll: bool,
-) -> Result<()> {
-    let node_name = format!("trade_engine_{}_ipc", exchange_name);
-    let node = NodeBuilder::new()
-        .name(&NodeName::new(&node_name)?)
-        .create::<ipc::Service>()?;
-
-    let order_service = node
-        .service_builder(&ServiceName::new(order_req_service)?)
-        .publish_subscribe::<TradeRequestIpcPayload>()
-        .subscriber_max_buffer_size(256)
-        .open_or_create()?;
-    let order_subscriber: Subscriber<ipc::Service, TradeRequestIpcPayload, ()> =
-        order_service.subscriber_builder().create()?;
-
-    let order_control_subscriber = if let Some(order_control_service) = order_control_service {
-        let control_service = node
-            .service_builder(&ServiceName::new(order_control_service)?)
-            .publish_subscribe::<[u8; ORDER_TERMINATE_PAYLOAD_LEN]>()
-            .subscriber_max_buffer_size(256)
-            .open_or_create()?;
-        let subscriber: Subscriber<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()> =
-            control_service.subscriber_builder().create()?;
-        Some(subscriber)
-    } else {
-        None
-    };
-
-    let query_service = node
-        .service_builder(&ServiceName::new(query_req_service)?)
-        .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-        .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
-        .open_or_create()?;
-    let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
-        query_service.subscriber_builder().create()?;
-
-    info!(
-        "trade_engine IPC thread started; order_req='{}' order_control='{}' query_req='{}' fast_poll={} idle_policy=spin",
-        order_req_service,
-        order_control_service.unwrap_or("-"),
-        query_req_service,
-        fast_poll
-    );
-
-    let mut pending_order_req: Option<TradeRequestMsg> = None;
-    let mut pending_order_control: Option<InternalOpenTerminateMsg> = None;
-    let mut pending_query_req: Option<QueryRequestMsg> = None;
-    let mut order_req_full_count = 0u64;
-    let mut order_control_full_count = 0u64;
-    let mut query_req_full_count = 0u64;
-
-    while !shutdown.is_cancelled() {
-        let mut did_work = false;
-
-        if let Some(msg) = pending_order_req.take() {
-            did_work = true;
-            push_trade_req_or_pending(
-                &mut queues.order_req_producer,
-                msg,
-                &mut pending_order_req,
-                &mut order_req_full_count,
-            );
-        }
-        if let (Some(producer), Some(msg)) = (
-            queues.order_control_producer.as_mut(),
-            pending_order_control.take(),
-        ) {
-            did_work = true;
-            push_order_control_or_pending(
-                producer,
-                msg,
-                &mut pending_order_control,
-                &mut order_control_full_count,
-            );
-        }
-        if let Some(msg) = pending_query_req.take() {
-            did_work = true;
-            push_query_req_or_pending(
-                &mut queues.query_req_producer,
-                msg,
-                &mut pending_query_req,
-                &mut query_req_full_count,
-            );
-        }
-
-        if pending_order_req.is_none() {
-            loop {
-                match order_subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        did_work = true;
-                        let msg = parse_trade_request_payload(sample.payload(), fast_poll);
-                        drop(sample);
-                        if let Some(msg) = msg {
-                            if !push_trade_req_or_pending(
-                                &mut queues.order_req_producer,
-                                msg,
-                                &mut pending_order_req,
-                                &mut order_req_full_count,
-                            ) {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!("trade request receive error: {err}");
-                        break;
-                    }
-                }
-            }
-        }
-
-        if let (Some(producer), Some(subscriber)) = (
-            queues.order_control_producer.as_mut(),
-            order_control_subscriber.as_ref(),
-        ) {
-            if pending_order_control.is_none() {
-                for _ in 0..IPC_THREAD_DRAIN_BUDGET {
-                    match subscriber.receive() {
-                        Ok(Some(sample)) => {
-                            did_work = true;
-                            let msg =
-                                parse_internal_open_terminate_payload(sample.payload(), fast_poll);
-                            drop(sample);
-                            if let Some(msg) = msg {
-                                if !push_order_control_or_pending(
-                                    producer,
-                                    msg,
-                                    &mut pending_order_control,
-                                    &mut order_control_full_count,
-                                ) {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(err) => {
-                            warn!("internal open terminate receive error: {err}");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if pending_query_req.is_none() {
-            for _ in 0..IPC_THREAD_DRAIN_BUDGET {
-                match query_subscriber.receive() {
-                    Ok(Some(sample)) => {
-                        did_work = true;
-                        let msg = parse_query_request_payload(sample.payload());
-                        drop(sample);
-                        if let Some(msg) = msg {
-                            if !push_query_req_or_pending(
-                                &mut queues.query_req_producer,
-                                msg,
-                                &mut pending_query_req,
-                                &mut query_req_full_count,
-                            ) {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        warn!("query request receive error: {err}");
-                        break;
-                    }
-                }
-            }
-        }
-
-        if !did_work || fast_poll {
-            std::hint::spin_loop();
-        }
-    }
-
-    info!("trade_engine IPC thread exiting");
-    Ok(())
 }
 
 fn request_payload_len(payload: &[u8]) -> Option<usize> {
@@ -1315,7 +938,7 @@ fn drain_order_control_ingress(
     let mut did_work = false;
     let now_us = get_timestamp_us();
     prune_internal_open_terminates(internal_terminates, now_us);
-    for _ in 0..IPC_THREAD_DRAIN_BUDGET {
+    for _ in 0..ORDER_CONTROL_DRAIN_BUDGET {
         let Some(msg) = ingress.try_recv() else {
             break;
         };
@@ -1557,7 +1180,6 @@ async fn join_or_abort(name: &str, mut handle: tokio::task::JoinHandle<()>) {
 pub struct TradeEngine {
     local_ips: Vec<IpAddr>,
     accounts: Vec<ApiKey>,
-    ipc_core: Option<usize>,
     binance_um_whitelist_ip: Option<IpAddr>,
     ws_route: WsRouteConfig,
 }
@@ -1566,14 +1188,12 @@ impl TradeEngine {
     pub fn new(
         local_ips: Vec<IpAddr>,
         accounts: Vec<ApiKey>,
-        ipc_core: Option<usize>,
         binance_um_whitelist_ip: Option<IpAddr>,
         ws_route: WsRouteConfig,
     ) -> Self {
         Self {
             local_ips,
             accounts,
-            ipc_core,
             binance_um_whitelist_ip,
             ws_route,
         }
@@ -1673,68 +1293,71 @@ impl TradeEngine {
         debug!("publisher created for service: {}", health_service);
         // 直接使用传入的 exchange 枚举
 
-        // Async thread publishes responses directly to iceoryx; inbound requests still come from SPSC.
+        // 出站响应与入站请求都在本线程直连 iceoryx。
 
         if exchange == Exchange::Binance && !use_ltp_backend && self.accounts.is_empty() {
             return Err(anyhow!("Binance requires API keys in config"));
         }
 
-        let (order_req_ingress, order_control_ingress, query_req_ingress, ipc_thread_handle) =
-            if fast_poll {
-                let (ipc_queues, async_queues) =
-                    new_ipc_spsc_queues(internal_open_terminate_enabled);
-                let ipc_thread_handle = spawn_te_ipc_thread(
-                    canonical_exchange.to_string(),
-                    order_req_service.clone(),
-                    internal_open_terminate_enabled.then(|| order_control_service.clone()),
-                    query_req_service.clone(),
-                    ipc_queues,
-                    shutdown.clone(),
-                    self.ipc_core,
-                    fast_poll,
-                )?;
-                let AsyncThreadQueues {
-                    order_req_consumer,
-                    query_req_consumer,
-                    order_control_consumer,
-                } = async_queues;
-                (
-                    OrderReqIngress::Spsc(order_req_consumer),
-                    order_control_consumer
-                        .map(OrderControlIngress::Spsc)
-                        .unwrap_or(OrderControlIngress::Disabled),
-                    QueryReqIngress::Spsc(query_req_consumer),
-                    Some(ipc_thread_handle),
-                )
-            } else {
-                let order_service = node
-                    .service_builder(&ServiceName::new(&order_req_service)?)
-                    .publish_subscribe::<TradeRequestIpcPayload>()
+        // 单线程 ingest：路由任务直接 poll iceoryx（fast/非 fast poll 拓扑一致，
+        // 只有 idle 策略不同）。原 te-ipc 线程与 SPSC 中转已移除，
+        // TRADE_ENGINE_IPC_CORE 不再需要。
+        let (order_req_ingress, order_control_ingress, query_req_ingress) = {
+            let order_service = node
+                .service_builder(&ServiceName::new(&order_req_service)?)
+                .publish_subscribe::<TradeRequestIpcPayload>()
+                .subscriber_max_buffer_size(256)
+                .open_or_create()?;
+            let order_subscriber: Subscriber<ipc::Service, TradeRequestIpcPayload, ()> =
+                order_service.subscriber_builder().create()?;
+
+            let order_control_ingress = if internal_open_terminate_enabled {
+                let control_service = node
+                    .service_builder(&ServiceName::new(&order_control_service)?)
+                    .publish_subscribe::<[u8; ORDER_TERMINATE_PAYLOAD_LEN]>()
                     .subscriber_max_buffer_size(256)
                     .open_or_create()?;
-                let order_subscriber: Subscriber<ipc::Service, TradeRequestIpcPayload, ()> =
-                    order_service.subscriber_builder().create()?;
-
-                let query_service = node
-                    .service_builder(&ServiceName::new(&query_req_service)?)
-                    .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-                    .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
-                    .open_or_create()?;
-                let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
-                    query_service.subscriber_builder().create()?;
-
-                info!(
-                    "trade_engine ingress running on async thread; order_req='{}' query_req='{}'",
-                    order_req_service, query_req_service
-                );
-
-                (
-                    OrderReqIngress::Ipc(order_subscriber),
-                    OrderControlIngress::Disabled,
-                    QueryReqIngress::Ipc(query_subscriber),
-                    None,
-                )
+                let control_subscriber: Subscriber<
+                    ipc::Service,
+                    [u8; ORDER_TERMINATE_PAYLOAD_LEN],
+                    (),
+                > = control_service.subscriber_builder().create()?;
+                OrderControlIngress::Ipc(control_subscriber)
+            } else {
+                OrderControlIngress::Disabled
             };
+
+            let query_service = node
+                .service_builder(&ServiceName::new(&query_req_service)?)
+                .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
+                .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
+                .open_or_create()?;
+            let query_subscriber: Subscriber<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()> =
+                query_service.subscriber_builder().create()?;
+
+            info!(
+                "trade_engine single-thread ingress; order_req='{}' order_control='{}' query_req='{}' fast_poll={}",
+                order_req_service,
+                if internal_open_terminate_enabled {
+                    order_control_service.as_str()
+                } else {
+                    "-"
+                },
+                query_req_service,
+                fast_poll
+            );
+
+            (
+                OrderReqIngress {
+                    subscriber: order_subscriber,
+                    fast_poll,
+                },
+                order_control_ingress,
+                QueryReqIngress {
+                    subscriber: query_subscriber,
+                },
+            )
+        };
 
         let health_registry = WsHealthRegistry::default();
 
@@ -4463,12 +4086,6 @@ impl TradeEngine {
             }
         }
         drop(ws_endpoints);
-
-        if let Some(ipc_thread_handle) = ipc_thread_handle {
-            if let Err(err) = ipc_thread_handle.join() {
-                warn!("trade_engine IPC thread join failed: {:?}", err);
-            }
-        }
 
         for (name, handle) in worker_handles {
             join_or_abort(name, handle).await;
