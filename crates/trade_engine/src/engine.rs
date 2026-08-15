@@ -88,7 +88,10 @@ const TRADE_REQ_IPC_RECV_SLOW_WARN_US: i64 = 50_000;
 const DEFAULT_TE_IPC_REQ_QUEUE_CAP: usize = 4096;
 const SPSC_QUEUE_FULL_WARN_INTERVAL: u64 = 100_000;
 const IPC_THREAD_DRAIN_BUDGET: usize = 64;
-const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 1024;
+// 单线程 runtime 上路由任务每次 poll 会连续空转这么多轮才 yield；期间连接任务
+// 与 IO driver 都无法运行。64 轮把 idle 时对同线程任务的最大阻塞压到 ~2-3us，
+// 同时保持 SPSC 拾取仍是亚微秒级。可用 TE_ROUTER_IDLE_SPIN_ITERS 覆盖。
+const DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS: usize = 64;
 const NON_FAST_POLL_IDLE_SLEEP: Duration = Duration::from_millis(1);
 const INTERNAL_OPEN_TERMINATE_SUMMARY_INTERVAL_SECS: u64 = 60;
 const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
@@ -2561,6 +2564,7 @@ impl TradeEngine {
             let internal_open_terminates = internal_open_terminates_for_req_worker;
             let internal_open_terminate_summary = internal_open_terminate_summary_for_req_worker;
             let mut idle_spin_count = 0usize;
+            let mut routed_since_yield = false;
 
             loop {
                 if shutdown_for_req_worker.is_cancelled() {
@@ -2571,6 +2575,15 @@ impl TradeEngine {
                     &internal_open_terminates,
                 );
                 let Some(msg) = order_req_ingress.try_recv() else {
+                    // SPSC 排空后，若本轮 yield 周期内路由过消息，立刻让出线程：
+                    // 单线程 runtime 上被 notify 的 WS/FIX 任务要拿到 CPU 才能真正
+                    // 写 socket，继续空转等于把发送推迟整个 spin 窗口。
+                    if routed_since_yield {
+                        routed_since_yield = false;
+                        idle_spin_count = 0;
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
                     if fast_poll_for_req_worker {
                         if idle_spin_count < router_idle_spin_iters_for_req_worker {
                             idle_spin_count += 1;
@@ -2586,6 +2599,7 @@ impl TradeEngine {
                     continue;
                 };
                 idle_spin_count = 0;
+                routed_since_yield = true;
                 let _ = drain_order_control_ingress(
                     &mut order_control_ingress,
                     &internal_open_terminates,
@@ -3048,12 +3062,21 @@ impl TradeEngine {
                 let mut bitget_query_rate_limiter = BitgetQueryRateLimiter::default();
                 let mut query_req_ingress = query_req_ingress;
                 let mut idle_spin_count = 0usize;
+                let mut routed_since_yield = false;
 
                 'query_router: loop {
                     if shutdown_for_query_router.is_cancelled() {
                         break;
                     }
                     let Some(msg) = query_req_ingress.try_recv() else {
+                        // 与 req_worker 相同：路由过消息就先让出线程，
+                        // 让 WS 任务/IO driver 及时处理刚入队的查询。
+                        if routed_since_yield {
+                            routed_since_yield = false;
+                            idle_spin_count = 0;
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
                         if fast_poll_for_query_router {
                             if idle_spin_count < router_idle_spin_iters_for_query_router {
                                 idle_spin_count += 1;
@@ -3069,6 +3092,7 @@ impl TradeEngine {
                         continue;
                     };
                     idle_spin_count = 0;
+                    routed_since_yield = true;
                     debug!(
                         "routing query: type={:?} client_query_id={}",
                         msg.req_type, msg.client_query_id

@@ -176,6 +176,122 @@ socket 读写分离改造。req_worker 到 FIX/WS 任务之间的一次队列 + 
 - 会话数固定 2 条：连接尝试限额 15 次/30s，会话过多在网络抖动集中重连时
   可能触发 -1034。
 
+## trade_engine 线程模型评审与路由调度修复
+
+### 现有模型
+
+- 主线程（`TRADE_ENGINE_CORE`）：current_thread tokio + LocalSet，运行
+  req_worker、query router、全部 WS/FIX 连接任务、响应 publish。
+- te-ipc 线程（`TRADE_ENGINE_IPC_CORE`）：busy-poll iceoryx 订阅，经 SPSC
+  队列交给主线程。
+
+模型本身合理：ingest 与网络工作隔离，SPSC 拾取亚微秒级，同 L3 绑核让
+跨核缓存行传递成本最低。真正的问题在主线程内部的协作调度。
+
+### 发现：路由任务的 spin 窗口阻塞发送与响应（已修复）
+
+req_worker 把订单 push 进连接任务队列并 notify 后不会立刻让出线程，而是
+回到循环头继续空转，需空转满 `TE_ROUTER_IDLE_SPIN_ITERS`（原默认 1024）
+次才 `yield_now` 一次。每次空转迭代含 control drain + SPSC try_recv
+（约 20-50ns），1024 次约 20-50us。单线程 runtime 上：
+
+- 被 notify 的 WS/FIX 任务拿不到 CPU，socket 写被推迟整个 spin 窗口；
+- IO driver 只在任务 poll 边界运行，交易所 ack 的本地处理同样被推迟；
+- query router 是第二个同构自旋任务，最坏情况两个窗口叠加。
+
+因此"路由到发送"的真实手递延迟最坏是几十微秒量级，远大于队列 + 唤醒
+本身的 ~0.3-0.5us。修复（`engine.rs`，req_worker 与 query router 同改）：
+
+1. 路由过消息后，SPSC 一排空立即 `yield_now`（burst 仍先排空再让出，
+   不损失批量性）；
+2. 空转预算默认 1024 -> 64，idle 时对同线程任务的最大阻塞从 ~40us 压到
+   ~2-3us，SPSC 拾取仍是亚微秒级；`TE_ROUTER_IDLE_SPIN_ITERS` 可覆盖。
+
+注：tokio 的 `yield_now` 唤醒是 deferred 语义（先跑 driver 和其他就绪
+任务），所以 yield 循环不会饿死 IO driver，此修复同时改善发送和响应两个
+方向。pre_trade / trade_signal 存在同构的 fast-poll spin 结构
+（`pt_receive_minus_generation` p50 14-16us 可能同源），建议后续按同样
+思路复查。
+
+### 读写分离内联 send 的结论：暂缓
+
+调度修复后，req_worker 到连接任务的残余成本只剩一次本地任务切换
+（~0.3-0.5us）。读写分离要解决的正是这半微秒，但代价是：
+
+- tungstenite 无锁 split 需要"共享流 + 每次 poll 内短借用（poll_fn）+
+  路由器驱动写完成"的结构，Binance session-logon 门控、断线 pending
+  队列、限频冷却、ping/pong、查询发送都要跟着改所有权；
+- ws_client.rs 被五个交易所共用，回归面大，属于实盘核心路径。
+
+判定：收益 <=0.5us、风险高，先不做。触发条件：按
+`docs/order_latency_chain_test_plan.md` 加上 `send_start/send_done`
+埋点后，若"路由完成 -> socket 写开始"仍稳定 >1us 再启动。设计要点已在
+上文（共享流、per-poll 借用、单写者出站字节队列由路由循环驱动）。
+
+### 其他可选演进（按收益/风险排序，均先埋点再动）
+
+1. req_worker 直接 poll iceoryx（合并 te-ipc 线程）：消掉 SPSC 一跳和
+   19<->20 的缓存行往返（~0.2-0.5us），空出的核可给 ens41 下单队列做
+   同 L3 的 XPS/IRQ。改动涉及所有交易所 ingest，需要单独验证。
+2. 不建议：把写半移到 te-ipc 线程内联发送。TLS/WS 状态跨线程需要真锁，
+   与读侧争用，重连协调复杂化，无明确收益。
+
+## 主机核查结果（jp-meta / ip-172-31-35-228，2026-08-15）
+
+只读检查，未做任何变更。
+
+### clocksource：已是 tsc，无需处理
+
+```text
+/sys/devices/system/clocksource/clocksource0/current_clocksource = tsc
+available = tsc hpet acpi_pm
+CPU = Intel Xeon Platinum 8488C
+flags: constant_tsc nonstop_tsc tsc_known_freq rdtscp
+```
+
+注意 sysfs 正确路径是 `/sys/devices/system/clocksource/`（不带 `cpu/`）。
+
+### GRO：两块网卡都开着，建议关（未执行）
+
+```text
+ens41: generic-receive-offload on, tcp-segmentation-offload off, LRO off[fixed]
+ens42: 同上
+```
+
+GRO 会把 ack/小包在 NAPI 层聚合，推迟 epoll 唤醒。下单 lane（ens41）
+优先关；行情 lane（ens42）同样受益于更低的单包时延，但包率高、CPU 开销
+会上升，建议分开评估。执行命令（需要时）：
+
+```bash
+sudo ethtool -K ens41 gro off
+sudo ethtool -K ens42 gro off   # 观察 CPU 后再定
+```
+
+持久化：并入现有 `hfq-low-latency-network.service` 的 ExecStart，或按
+接口加一条 systemd oneshot。回滚 `gro on` 即可。
+
+### C1：热核未禁用，建议按核禁（未执行）
+
+```text
+cpuidle driver = intel_idle
+所有核: state0=POLL(0us) state1=C1(1us, disable=0)
+governor = performance
+```
+
+busy-poll 的核（te-ipc、spread_pbs、路由自旋）几乎不进 idle，此项主要
+保护偶发让出 CPU 的时刻（tokio park、行情间隙）。只禁热路径核，保持
+其他核可进 C1，避免全机 POLL 的功耗/发热问题：
+
+```bash
+# binance-intra-arb01: 16-20; binance_mm_alpha: 27-31（按需扩展其他环境块）
+for c in 16 17 18 19 20 27 28 29 30 31; do
+  echo 1 | sudo tee /sys/devices/system/cpu/cpu$c/cpuidle/state1/disable
+done
+```
+
+持久化用 systemd oneshot；回滚写 0。`/dev/cpu_dma_latency` 为 root-only
+（600），如走 PM QoS 路线需要进程以特权持有 fd，不如按核禁用直接。
+
 ## 附：架构与线上 layout 评审要点（同日评审）
 
 整体判断：进程按 signal → pre_trade → trade_engine 拆分、全链路 iceoryx2
@@ -196,6 +312,5 @@ busy_read/busy_poll=50 + ENA adaptive off，方向正确，无需推倒。
    pre_trade）：同 L3 iceoryx2 SPSC 双端 busy poll 理论上 1-3us，需用订单链路
    trace 埋点拆解（signal 侧 publish 前工作 vs pre_trade 轮询预算被其他
    channel 占用）。
-5. 主机层可选项：确认 clocksource 为 tsc（Nitro 默认可能是 kvm-clock）；
-   下单网卡关 GRO/LRO；热路径核 per-CPU 禁 C1 或进程持有
-   `/dev/cpu_dma_latency`；kTLS TX offload 收益 1-3us 放最后。
+5. 主机层可选项：clocksource / GRO / C1 已核查，见上文"主机核查结果"；
+   kTLS TX offload 收益 1-3us 放最后。
