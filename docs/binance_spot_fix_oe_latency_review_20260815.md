@@ -209,9 +209,8 @@ req_worker 把订单 push 进连接任务队列并 notify 后不会立刻让出�
 
 注：tokio 的 `yield_now` 唤醒是 deferred 语义（先跑 driver 和其他就绪
 任务），所以 yield 循环不会饿死 IO driver，此修复同时改善发送和响应两个
-方向。pre_trade / trade_signal 存在同构的 fast-poll spin 结构
-（`pt_receive_minus_generation` p50 14-16us 可能同源），建议后续按同样
-思路复查。
+方向。pre_trade / trade_signal 的同构复查已完成，结论见下文专节：
+两者结构不同，无同类病灶。
 
 ### 读写分离内联 send 的结论：暂缓
 
@@ -228,13 +227,66 @@ req_worker 把订单 push 进连接任务队列并 notify 后不会立刻让出�
 埋点后，若"路由完成 -> socket 写开始"仍稳定 >1us 再启动。设计要点已在
 上文（共享流、per-poll 借用、单写者出站字节队列由路由循环驱动）。
 
-### 其他可选演进（按收益/风险排序，均先埋点再动）
+### te-ipc 双线程双核的定性结论
 
-1. req_worker 直接 poll iceoryx（合并 te-ipc 线程）：消掉 SPSC 一跳和
-   19<->20 的缓存行往返（~0.2-0.5us），空出的核可给 ens41 下单队列做
-   同 L3 的 XPS/IRQ。改动涉及所有交易所 ingest，需要单独验证。
-2. 不建议：把写半移到 te-ipc 线程内联发送。TLS/WS 状态跨线程需要真锁，
-   与读侧争用，重连协调复杂化，无明确收益。
+以当前职责划分（te-ipc 只做 iceoryx -> SPSC 搬运），第二个线程对下单
+延迟的贡献约等于零：订单真正等待的是主线程空闲（req_worker 与连接任务
+都在主线程），te-ipc 提前搬运并不改变这一点，反而增加一跳 SPSC 和
+19<->20 的缓存行往返（~0.2-0.5us）。它的真实价值只剩背压隔离：主线程被
+大 JSON 解析/重连卡住几百微秒时持续排空 iceoryx，避免 pre_trade 发布端
+队列打满。
+
+两条演进路线（先埋 send_start/send_done trace 再选）：
+
+1. 合并单线程：req_worker 直接 poll iceoryx，省掉 SPSC 一跳；空出的
+   core 20 最优用途是承接 ens41 下单队列的 IRQ/XPS（替换当前跨 L3 的
+   core 45），把网络唤醒路径变成同 L3。延迟中性偏正，改动涉及全交易所
+   ingest。
+2. 重划职责（终局形态）：保留双线程，但改成"热/冷"切分——ingest +
+   路由 + socket 写在一个线程，读/解析/重连/REST 在另一个线程。这才能
+   把"解析卡顿拖累下单"的尾延迟路径真正消掉；代价是 TLS/WS 状态跨线程
+   共享（真锁 + Send 化），工程量大。
+3. 不建议：保持现有职责、仅把写半移到 te-ipc 线程。锁争用与重连协调的
+   复杂度都来了，却只省半微秒。
+
+选择依据：trace 若显示"路由完成 -> socket 写开始"p99 有百微秒级毛刺
+（解析卡顿证据）-> 路线 2；若干净 -> 路线 1 或维持现状。
+
+## pre_trade / trade_signal 同构复查结论
+
+结构判定：两者都没有 trade_engine 那种"路由 spin 阻塞发送任务"的病灶，
+不需要同类修复。
+
+- pre_trade 是单个内联 reactor：每轮循环按优先级直接排空全部 iceoryx
+  通道（signal 优先级最高），idle spin 不挡拾取——下一轮迭代就会重新
+  poll 全部通道。1024 空转只推迟冷路径 tokio 任务（通知、shutdown），
+  不动。
+- trade_signal 是多监听任务 + 决策后内联 publish：无 spin 阶梯（纯
+  yield 循环），publish 不经队列手递。
+
+实测拆段（jp-meta 在线日志 `arb_open_path`，2026-08-15 ~11:09 UTC，
+p50，微秒）：
+
+```text
+ts_publish_minus_generation   12-15   trade_signal 决策打点->publish 开始（大头）
+  其中 ts_open_before_tlen     9-10   决策计算：from_key/查表/quote plan/context
+  其中 ts_open_tlen_query_gate  2     tlen gate 查询
+ts_signal_publish_cost          1     iceoryx publish 本身
+iceoryx 传输 + pre_trade 拾取  2-5    由 pt_receive(18) 减上述得出，健康
+pt_receive_minus_generation    18     合计（与 jp2 部署期 14-16us 同量级）
+```
+
+结论：14-18us 的大头（9-10us）是 trade_signal 决策路径内部的计算成本，
+不是调度/IPC 问题。已在 spread-arb open 路径加三段拆分埋点（纯观测）：
+
+```text
+ts_open_from_key_base_cost    from_key 字符串构建
+ts_open_state_and_plan_cost   状态查表 + quote plan 构建
+ts_open_context_build_cost    symbol 规整 + tlen 查表 + context 构造
+```
+
+部署后看一轮日志即可归因；预期 from_key 格式化与 per-level context
+分配是主要嫌疑，届时做针对性优化（复用 buffer / 减少 format!）。
 
 ## 主机核查结果（jp-meta / ip-172-31-35-228，2026-08-15）
 
@@ -308,9 +360,8 @@ busy_read/busy_poll=50 + ENA adaptive off，方向正确，无需推倒。
    提升中断路径 cache 命中；给下单核所在 TX 队列设 XPS 减少跨核 doorbell。
 3. model_pub（core 47）与 ENA IRQ 核 45/46 同 L3 岛：ONNX 推理吃 L3/带宽，
    若行情尾延迟与推理负载相关则挪走。
-4. jp2 记录的 `pt_receive_minus_generation` p50 约 14-16us（trade_signal →
-   pre_trade）：同 L3 iceoryx2 SPSC 双端 busy poll 理论上 1-3us，需用订单链路
-   trace 埋点拆解（signal 侧 publish 前工作 vs pre_trade 轮询预算被其他
-   channel 占用）。
+4. `pt_receive_minus_generation` 14-18us 已用在线指标拆解完毕，见上文
+   "pre_trade / trade_signal 同构复查结论"：大头在 trade_signal 决策计算
+   （9-10us），IPC 与 pre_trade 拾取只占 2-5us。
 5. 主机层可选项：clocksource / GRO / C1 已核查，见上文"主机核查结果"；
    kTLS TX offload 收益 1-3us 放最后。
