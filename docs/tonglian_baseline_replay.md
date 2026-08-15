@@ -61,8 +61,10 @@ A PostgreSQL connection or query failure aborts startup. If a replayed instrumen
   without a joined native five-level book and does not compute factors on a
   disconnected depth.
 - Source gaps and configured auction minutes end forward-fill and direction
-  continuity. Auction snapshots still update cumulative baselines but do not
-  create auction bars.
+  continuity. Auction snapshots still update same-`TradDay` cumulative
+  `Volume`/`Turnover` baselines but never emit auction bars or seed the first
+  continuous bar. This matches the preprocess contract: skip all call-auction
+  output when building baseline data.
 - Only source-covered buckets are emitted. The replay does not synthesize long
   closed-market grids.
 
