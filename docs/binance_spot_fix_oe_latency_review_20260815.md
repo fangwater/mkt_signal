@@ -133,17 +133,22 @@ BINANCE_FIX_SENDER_COMP_ID=<可选>    # 既有；多会话时自动派生唯一
 BINANCE_FIX_OE_URL=<可选>            # 既有，默认 tcp+tls://fix-oe.binance.com:9000
 ```
 
-## 后续微秒级优化（第二批）
+## 微秒级优化（第二批，已实施）
 
-- FIX 报文构造换 `itoa` + 预分配复用 buffer（含 tag 编号本身的 itoa 化），
-  价格/数量用 `QuantizedValue::write_decimal_to` 直写，去掉热路径所有
-  中间 String。
-- SendingTime 格式化缓存日期前缀（`YYYYMMDD-`），每条消息只格式化
-  时分秒毫秒。
-- inflight 登记改 `FastHashMap<i64, _>`（`client_order_id` 本来就是 i64），
-  seq 存进 inflight 记录做双向索引，删除 O(1)。
-- 读缓冲改读指针（consumed offset），只在有跨 read 残留时做一次小搬移，
-  消掉每条消息的头部 memmove。
+- FIX 报文构造改为 `FixMessageWriter`：body/out 双缓冲复用，tag 与整数经
+  `itoa` 写入，价格/数量用 `QuantizedValue::write_decimal_to` 直写，
+  热路径（新单/撤单）零中间 String 分配；logon/logout/heartbeat 冷路径
+  保持原一次性构造。
+- SendingTime 改 `FixTimeFormatter`：缓存 `YYYYMMDD-` 日期前缀（每 UTC 日
+  重算一次），每条消息只手工格式化 HH:MM:SS.mmm，输出与 chrono
+  `%Y%m%d-%H:%M:%S%.3f` 逐字节一致（有对照测试）。
+- inflight 登记改 `InflightFixTable`：三个 `FastHashMap<i64, _>`
+  （`client_order_id` 本来就是 i64），seq 内嵌在记录里做双向索引，
+  任一键删除 O(1)；原 `remove_seq_for_key` O(n) 扫描删除。
+- 读缓冲改 `FixReadBuffer`（读指针 + 按需 compact）：取走一条消息只前移
+  指针，仅在跨 read 有残留时做一次小段搬移，消掉每条消息的头部 memmove。
+- 参数校验通过后才分配 MsgSeqNum，避免校验失败烧号造成 seq gap
+  （保持原语义）。
 
 明确不做（除非后续 trace 埋点证明值得）：req_worker 直接内联 send 的
 socket 读写分离改造。req_worker 到 FIX/WS 任务之间的一次队列 + 唤醒约

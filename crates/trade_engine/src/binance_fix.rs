@@ -18,7 +18,9 @@ use openssl::pkey::{Id as PKeyId, PKey, Private};
 use openssl::sign::Signer;
 use order_common::{OrderExecutionStatus, OrderType, Side};
 use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::socket_tuning::tune_tcp_stream;
+use signal_common::tick_math::QuantizedValue;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -87,18 +89,54 @@ impl BinanceSpotFixHandle {
     }
 }
 
-#[derive(Debug, Clone)]
+/// cl_ord_id 即 `client_order_id`（本系统的 clOrdId 全部为整数），
+/// seq_num 内嵌后按任一键删除都是 O(1)。
+#[derive(Debug, Clone, Copy)]
 struct InflightFixRequest {
     req_type: TradeRequestType,
     client_order_id: i64,
-    cl_ord_id: String,
-    orig_cl_ord_id: Option<String>,
+    orig_client_order_id: Option<i64>,
+    seq_num: i64,
 }
 
-struct FixOutboundRequest {
-    message: String,
-    seq_num: i64,
-    inflight: InflightFixRequest,
+/// 在途请求登记：cl_ord_id 主索引 + orig->cancel、seq->cl_ord_id 两个辅助索引。
+#[derive(Default)]
+struct InflightFixTable {
+    by_cl_ord_id: FastHashMap<i64, InflightFixRequest>,
+    by_orig_cl_ord_id: FastHashMap<i64, i64>,
+    by_seq: FastHashMap<i64, i64>,
+}
+
+impl InflightFixTable {
+    fn new() -> Self {
+        Self {
+            by_cl_ord_id: fast_hash_map(),
+            by_orig_cl_ord_id: fast_hash_map(),
+            by_seq: fast_hash_map(),
+        }
+    }
+
+    fn insert(&mut self, inflight: InflightFixRequest) {
+        let key = inflight.client_order_id;
+        if let Some(orig) = inflight.orig_client_order_id {
+            self.by_orig_cl_ord_id.insert(orig, key);
+        }
+        self.by_seq.insert(inflight.seq_num, key);
+        self.by_cl_ord_id.insert(key, inflight);
+    }
+
+    fn remove(&mut self, key: i64) -> Option<InflightFixRequest> {
+        let inflight = self.by_cl_ord_id.remove(&key)?;
+        if let Some(orig) = inflight.orig_client_order_id {
+            self.by_orig_cl_ord_id.remove(&orig);
+        }
+        self.by_seq.remove(&inflight.seq_num);
+        Some(inflight)
+    }
+
+    fn key_by_seq(&self, seq: i64) -> Option<i64> {
+        self.by_seq.get(&seq).copied()
+    }
 }
 
 struct BinanceSpotFixClient {
@@ -108,6 +146,8 @@ struct BinanceSpotFixClient {
     shutdown: CancellationToken,
     state: Rc<RefCell<BinanceSpotFixRuntimeState>>,
     next_seq_num: i64,
+    msg_writer: FixMessageWriter,
+    time_fmt: FixTimeFormatter,
 }
 
 pub(crate) fn spot_fix_enabled_from_env() -> Result<bool> {
@@ -184,6 +224,8 @@ pub(crate) fn spawn_binance_spot_fix_client(
         shutdown,
         state,
         next_seq_num: 1,
+        msg_writer: FixMessageWriter::with_capacity(512),
+        time_fmt: FixTimeFormatter::new(),
     };
     let task = tokio::task::spawn_local(async move {
         client.run().await;
@@ -337,7 +379,7 @@ impl BinanceSpotFixClient {
             .connect(&host, tcp)
             .await
             .with_context(|| format!("TLS connect Binance Spot FIX host={host}"))?;
-        let mut buffer = Vec::with_capacity(4096);
+        let mut buffer = FixReadBuffer::with_capacity(4096);
         let logon = self.build_logon()?;
         send_fix_message(&mut stream, "Logon<A>", &logon).await?;
 
@@ -374,10 +416,8 @@ impl BinanceSpotFixClient {
     }
 
     async fn process_session(&mut self, stream: &mut BinanceFixStream) -> Result<()> {
-        let mut buffer = Vec::with_capacity(8192);
-        let mut inflight_by_cl_ord_id: HashMap<String, InflightFixRequest> = HashMap::new();
-        let mut inflight_by_orig_cl_ord_id: HashMap<String, String> = HashMap::new();
-        let mut inflight_by_seq: HashMap<i64, String> = HashMap::new();
+        let mut buffer = FixReadBuffer::with_capacity(8192);
+        let mut inflight = InflightFixTable::new();
 
         loop {
             tokio::select! {
@@ -392,22 +432,12 @@ impl BinanceSpotFixClient {
                         return Ok(());
                     };
                     match self.build_order_request(&msg) {
-                        Ok(outbound) => {
-                            let key = outbound.inflight.cl_ord_id.clone();
-                            if let Some(orig) = outbound.inflight.orig_cl_ord_id.clone() {
-                                inflight_by_orig_cl_ord_id.insert(orig, key.clone());
-                            }
-                            inflight_by_seq.insert(outbound.seq_num, key.clone());
-                            inflight_by_cl_ord_id.insert(key, outbound.inflight);
-                            if let Err(err) = send_fix_message(stream, "Order", &outbound.message).await {
-                                let key = inflight_by_seq.remove(&outbound.seq_num);
-                                if let Some(key) = key {
-                                    if let Some(inflight) = inflight_by_cl_ord_id.remove(&key) {
-                                        if let Some(orig) = inflight.orig_cl_ord_id.as_ref() {
-                                            inflight_by_orig_cl_ord_id.remove(orig);
-                                        }
-                                        self.publish_transport_error(inflight, format!("send Binance Spot FIX order failed: {err:#}"));
-                                    }
+                        Ok(entry) => {
+                            let key = entry.client_order_id;
+                            inflight.insert(entry);
+                            if let Err(err) = send_fix_message(stream, "Order", self.msg_writer.message()).await {
+                                if let Some(entry) = inflight.remove(key) {
+                                    self.publish_transport_error(entry, format!("send Binance Spot FIX order failed: {err:#}"));
                                 }
                                 return Err(err);
                             }
@@ -425,13 +455,7 @@ impl BinanceSpotFixClient {
                 raw = read_fix_message(stream, &mut buffer) => {
                     let raw = raw?;
                     let msg = FixMessage::parse(&raw);
-                    if !self.handle_incoming(
-                        stream,
-                        &msg,
-                        &mut inflight_by_cl_ord_id,
-                        &mut inflight_by_orig_cl_ord_id,
-                        &mut inflight_by_seq,
-                    ).await? {
+                    if !self.handle_incoming(stream, &msg, &mut inflight).await? {
                         return Ok(());
                     }
                 }
@@ -443,9 +467,7 @@ impl BinanceSpotFixClient {
         &mut self,
         stream: &mut BinanceFixStream,
         msg: &FixMessage,
-        inflight_by_cl_ord_id: &mut HashMap<String, InflightFixRequest>,
-        inflight_by_orig_cl_ord_id: &mut HashMap<String, String>,
-        inflight_by_seq: &mut HashMap<i64, String>,
+        inflight: &mut InflightFixTable,
     ) -> Result<bool> {
         match msg.msg_type() {
             Some("0") => Ok(true),
@@ -468,30 +490,15 @@ impl BinanceSpotFixClient {
                 Ok(false)
             }
             Some("8") => {
-                self.handle_execution_report(
-                    msg,
-                    inflight_by_cl_ord_id,
-                    inflight_by_orig_cl_ord_id,
-                    inflight_by_seq,
-                );
+                self.handle_execution_report(msg, inflight);
                 Ok(true)
             }
             Some("9") => {
-                self.handle_cancel_reject(
-                    msg,
-                    inflight_by_cl_ord_id,
-                    inflight_by_orig_cl_ord_id,
-                    inflight_by_seq,
-                );
+                self.handle_cancel_reject(msg, inflight);
                 Ok(true)
             }
             Some("3") => {
-                self.handle_reject(
-                    msg,
-                    inflight_by_cl_ord_id,
-                    inflight_by_orig_cl_ord_id,
-                    inflight_by_seq,
-                );
+                self.handle_reject(msg, inflight);
                 Ok(true)
             }
             other => {
@@ -501,16 +508,8 @@ impl BinanceSpotFixClient {
         }
     }
 
-    fn handle_execution_report(
-        &self,
-        msg: &FixMessage,
-        inflight_by_cl_ord_id: &mut HashMap<String, InflightFixRequest>,
-        inflight_by_orig_cl_ord_id: &mut HashMap<String, String>,
-        inflight_by_seq: &mut HashMap<i64, String>,
-    ) {
-        let Some(key) =
-            self.execution_report_key(msg, inflight_by_cl_ord_id, inflight_by_orig_cl_ord_id)
-        else {
+    fn handle_execution_report(&self, msg: &FixMessage, inflight: &mut InflightFixTable) {
+        let Some(key) = execution_report_key(msg, inflight) else {
             debug!(
                 "Binance Spot FIX ignoring unsolicited ExecutionReport cl_ord_id={:?} orig_cl_ord_id={:?} exec_type={:?}",
                 msg.get(11),
@@ -519,13 +518,9 @@ impl BinanceSpotFixClient {
             );
             return;
         };
-        let Some(inflight) = inflight_by_cl_ord_id.remove(&key) else {
+        let Some(entry) = inflight.remove(key) else {
             return;
         };
-        if let Some(orig) = inflight.orig_cl_ord_id.as_ref() {
-            inflight_by_orig_cl_ord_id.remove(orig);
-        }
-        remove_seq_for_key(inflight_by_seq, &key);
 
         let error_code = msg.get(25016).and_then(parse_i32).unwrap_or(0);
         let exec_type = msg.get(150).unwrap_or("");
@@ -539,15 +534,15 @@ impl BinanceSpotFixClient {
             "ordStatus": ord_status,
             "code": error_code,
             "msg": msg.get(58).unwrap_or(""),
-            "clientOrderId": inflight.client_order_id,
+            "clientOrderId": entry.client_order_id,
             "clOrdId": msg.get(11).unwrap_or(""),
             "origClOrdId": msg.get(41).unwrap_or(""),
             "orderId": msg.get(37).unwrap_or("0"),
         })
         .to_string();
         let outcome = TradeExecOutcome {
-            req_type: inflight.req_type,
-            client_order_id: inflight.client_order_id,
+            req_type: entry.req_type,
+            client_order_id: entry.client_order_id,
             status,
             body,
             exchange: Exchange::Binance,
@@ -564,72 +559,38 @@ impl BinanceSpotFixClient {
         let _ = self.sink.send(outcome);
     }
 
-    fn execution_report_key(
-        &self,
-        msg: &FixMessage,
-        inflight_by_cl_ord_id: &HashMap<String, InflightFixRequest>,
-        inflight_by_orig_cl_ord_id: &HashMap<String, String>,
-    ) -> Option<String> {
-        if let Some(cl_ord_id) = msg.get(11) {
-            if inflight_by_cl_ord_id.contains_key(cl_ord_id) {
-                return Some(cl_ord_id.to_string());
-            }
-            if let Some(cancel_key) = inflight_by_orig_cl_ord_id.get(cl_ord_id) {
-                return Some(cancel_key.clone());
-            }
-        }
-        if let Some(orig_cl_ord_id) = msg.get(41) {
-            if let Some(cancel_key) = inflight_by_orig_cl_ord_id.get(orig_cl_ord_id) {
-                return Some(cancel_key.clone());
-            }
-            if inflight_by_cl_ord_id.contains_key(orig_cl_ord_id) {
-                return Some(orig_cl_ord_id.to_string());
-            }
-        }
-        None
-    }
-
-    fn handle_cancel_reject(
-        &self,
-        msg: &FixMessage,
-        inflight_by_cl_ord_id: &mut HashMap<String, InflightFixRequest>,
-        inflight_by_orig_cl_ord_id: &mut HashMap<String, String>,
-        inflight_by_seq: &mut HashMap<i64, String>,
-    ) {
+    fn handle_cancel_reject(&self, msg: &FixMessage, inflight: &mut InflightFixTable) {
         let key = msg
             .get(11)
-            .filter(|cl| inflight_by_cl_ord_id.contains_key(*cl))
-            .map(ToString::to_string)
+            .and_then(parse_i64)
+            .filter(|cl| inflight.by_cl_ord_id.contains_key(cl))
             .or_else(|| {
                 msg.get(41)
-                    .and_then(|orig| inflight_by_orig_cl_ord_id.get(orig).cloned())
+                    .and_then(parse_i64)
+                    .and_then(|orig| inflight.by_orig_cl_ord_id.get(&orig).copied())
             });
         let Some(key) = key else {
             debug!("Binance Spot FIX ignoring unsolicited OrderCancelReject");
             return;
         };
-        let Some(inflight) = inflight_by_cl_ord_id.remove(&key) else {
+        let Some(entry) = inflight.remove(key) else {
             return;
         };
-        if let Some(orig) = inflight.orig_cl_ord_id.as_ref() {
-            inflight_by_orig_cl_ord_id.remove(orig);
-        }
-        remove_seq_for_key(inflight_by_seq, &key);
         let error_code = msg.get(25016).and_then(parse_i32).unwrap_or(-2011);
         let body = serde_json::json!({
             "transport": "fix",
             "msgType": "9",
             "code": error_code,
             "msg": msg.get(58).unwrap_or(""),
-            "clientOrderId": inflight.client_order_id,
+            "clientOrderId": entry.client_order_id,
             "clOrdId": msg.get(11).unwrap_or(""),
             "origClOrdId": msg.get(41).unwrap_or(""),
             "orderId": msg.get(37).unwrap_or("0"),
         })
         .to_string();
         let _ = self.sink.send(TradeExecOutcome {
-            req_type: inflight.req_type,
-            client_order_id: inflight.client_order_id,
+            req_type: entry.req_type,
+            client_order_id: entry.client_order_id,
             status: 400,
             body,
             exchange: Exchange::Binance,
@@ -641,17 +602,11 @@ impl BinanceSpotFixClient {
         });
     }
 
-    fn handle_reject(
-        &self,
-        msg: &FixMessage,
-        inflight_by_cl_ord_id: &mut HashMap<String, InflightFixRequest>,
-        inflight_by_orig_cl_ord_id: &mut HashMap<String, String>,
-        inflight_by_seq: &mut HashMap<i64, String>,
-    ) {
+    fn handle_reject(&self, msg: &FixMessage, inflight: &mut InflightFixTable) {
         let key = msg
             .get(45)
             .and_then(parse_i64)
-            .and_then(|seq| inflight_by_seq.remove(&seq));
+            .and_then(|seq| inflight.key_by_seq(seq));
         let Some(key) = key else {
             warn!(
                 "Binance Spot FIX session Reject without matching request ref_seq={:?} text={}",
@@ -660,12 +615,9 @@ impl BinanceSpotFixClient {
             );
             return;
         };
-        let Some(inflight) = inflight_by_cl_ord_id.remove(&key) else {
+        let Some(entry) = inflight.remove(key) else {
             return;
         };
-        if let Some(orig) = inflight.orig_cl_ord_id.as_ref() {
-            inflight_by_orig_cl_ord_id.remove(orig);
-        }
         let error_code = msg
             .get(25016)
             .or_else(|| msg.get(373))
@@ -676,14 +628,14 @@ impl BinanceSpotFixClient {
             "msgType": "3",
             "code": error_code,
             "msg": msg.get(58).unwrap_or(""),
-            "clientOrderId": inflight.client_order_id,
+            "clientOrderId": entry.client_order_id,
             "refSeqNum": msg.get(45).unwrap_or(""),
             "refMsgType": msg.get(372).unwrap_or(""),
         })
         .to_string();
         let _ = self.sink.send(TradeExecOutcome {
-            req_type: inflight.req_type,
-            client_order_id: inflight.client_order_id,
+            req_type: entry.req_type,
+            client_order_id: entry.client_order_id,
             status: 400,
             body,
             exchange: Exchange::Binance,
@@ -695,7 +647,9 @@ impl BinanceSpotFixClient {
         });
     }
 
-    fn build_order_request(&mut self, msg: &TradeRequestMsg) -> Result<FixOutboundRequest> {
+    /// 构造完成后报文位于 `self.msg_writer.message()`，随后立即发送；
+    /// 返回值只携带在途登记所需的元数据，热路径零中间 String 分配。
+    fn build_order_request(&mut self, msg: &TradeRequestMsg) -> Result<InflightFixRequest> {
         match msg.req_type {
             TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceWsNewMarginOrder => {
                 self.build_new_order_request(msg)
@@ -709,7 +663,7 @@ impl BinanceSpotFixClient {
         }
     }
 
-    fn build_new_order_request(&mut self, msg: &TradeRequestMsg) -> Result<FixOutboundRequest> {
+    fn build_new_order_request(&mut self, msg: &TradeRequestMsg) -> Result<InflightFixRequest> {
         let params = BinanceNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
             anyhow!(
                 "Binance Spot FIX new order requires typed params, req_type={:?}",
@@ -722,67 +676,67 @@ impl BinanceSpotFixClient {
             ));
         }
         let ord_type = fix_ord_type(params.order_type)?;
-        let cl_ord_id = msg.client_order_id.to_string();
+        // 参数校验通过后才分配 seq，避免校验失败烧掉序号造成 gap。
         let seq_num = self.next_seq_num();
-        let sending_time = current_fix_time();
-        let mut fields = self.standard_header_fields("D", seq_num, &sending_time);
-        fields.push((11, cl_ord_id.clone()));
-        fields.push((38, params.quantity_qv.decimal_string()));
-        fields.push((40, ord_type.to_string()));
+        self.write_message_header("D", seq_num);
+        self.msg_writer.field_i64(11, msg.client_order_id);
+        self.msg_writer.field_decimal(38, &params.quantity_qv);
+        self.msg_writer.field_str(40, ord_type);
         if params.order_type.is_limit() {
-            fields.push((44, params.price_qv.decimal_string()));
+            self.msg_writer.field_decimal(44, &params.price_qv);
         }
-        fields.push((54, fix_side(params.side).to_string()));
-        fields.push((55, params.symbol.to_string()));
+        self.msg_writer.field_str(54, fix_side(params.side));
+        self.msg_writer.field_str(55, params.symbol);
         if params.order_type == OrderType::Limit && params.ws_margin_limit_maker {
-            fields.push((18, "6".to_string()));
+            self.msg_writer.field_str(18, "6");
         } else if params.order_type.is_limit() {
-            fields.push((59, "1".to_string()));
+            self.msg_writer.field_str(59, "1");
         }
-        let message = build_fix_message(&fields);
-        Ok(FixOutboundRequest {
-            message,
+        self.msg_writer.finish();
+        Ok(InflightFixRequest {
+            req_type: msg.req_type,
+            client_order_id: msg.client_order_id,
+            orig_client_order_id: None,
             seq_num,
-            inflight: InflightFixRequest {
-                req_type: msg.req_type,
-                client_order_id: msg.client_order_id,
-                cl_ord_id,
-                orig_cl_ord_id: None,
-            },
         })
     }
 
-    fn build_cancel_order_request(&mut self, msg: &TradeRequestMsg) -> Result<FixOutboundRequest> {
+    fn build_cancel_order_request(&mut self, msg: &TradeRequestMsg) -> Result<InflightFixRequest> {
         let params = BinanceCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
             anyhow!(
                 "Binance Spot FIX cancel order requires typed params, req_type={:?}",
                 msg.req_type
             )
         })?;
-        let cl_ord_id = msg.client_order_id.to_string();
-        let orig_cl_ord_id = params.orig_client_order_id.to_string();
         let seq_num = self.next_seq_num();
-        let sending_time = current_fix_time();
-        let mut fields = self.standard_header_fields("F", seq_num, &sending_time);
-        fields.push((11, cl_ord_id.clone()));
-        fields.push((41, orig_cl_ord_id.clone()));
-        fields.push((55, params.symbol.to_string()));
-        let message = build_fix_message(&fields);
-        Ok(FixOutboundRequest {
-            message,
+        self.write_message_header("F", seq_num);
+        self.msg_writer.field_i64(11, msg.client_order_id);
+        self.msg_writer.field_i64(41, params.orig_client_order_id);
+        self.msg_writer.field_str(55, params.symbol);
+        self.msg_writer.finish();
+        Ok(InflightFixRequest {
+            req_type: msg.req_type,
+            client_order_id: msg.client_order_id,
+            orig_client_order_id: Some(params.orig_client_order_id),
             seq_num,
-            inflight: InflightFixRequest {
-                req_type: msg.req_type,
-                client_order_id: msg.client_order_id,
-                cl_ord_id,
-                orig_cl_ord_id: Some(orig_cl_ord_id),
-            },
         })
+    }
+
+    /// 标准头（35/34/49/52/56），SendingTime 经缓存日期前缀的格式化器直写。
+    fn write_message_header(&mut self, msg_type: &str, seq_num: i64) {
+        let writer = &mut self.msg_writer;
+        writer.begin(msg_type);
+        writer.field_i64(34, seq_num);
+        writer.field_str(49, &self.config.sender_comp_id);
+        writer.begin_field(52);
+        self.time_fmt.write_now_into(&mut writer.body);
+        writer.end_field();
+        writer.field_str(56, &self.config.target_comp_id);
     }
 
     fn build_logon(&mut self) -> Result<String> {
         let seq_num = self.next_seq_num();
-        let sending_time = current_fix_time();
+        let sending_time = self.time_fmt.now_string();
         let raw_data = self.sign_logon(seq_num, &sending_time)?;
         let mut fields = self.standard_header_fields("A", seq_num, &sending_time);
         fields.push((25000, self.config.recv_window_ms.clone()));
@@ -803,7 +757,7 @@ impl BinanceSpotFixClient {
 
     fn build_logout(&mut self, text: &str) -> String {
         let seq_num = self.next_seq_num();
-        let sending_time = current_fix_time();
+        let sending_time = self.time_fmt.now_string();
         let mut fields = self.standard_header_fields("5", seq_num, &sending_time);
         fields.push((58, text.to_string()));
         build_fix_message(&fields)
@@ -815,7 +769,7 @@ impl BinanceSpotFixClient {
         test_req_id: Option<&str>,
     ) -> Result<()> {
         let seq_num = self.next_seq_num();
-        let sending_time = current_fix_time();
+        let sending_time = self.time_fmt.now_string();
         let mut fields = self.standard_header_fields("0", seq_num, &sending_time);
         if let Some(test_req_id) = test_req_id {
             fields.push((112, test_req_id.to_string()));
@@ -1012,52 +966,95 @@ async fn send_fix_message(stream: &mut BinanceFixStream, label: &str, message: &
     Ok(())
 }
 
-async fn read_fix_message(stream: &mut BinanceFixStream, buffer: &mut Vec<u8>) -> Result<String> {
+/// FIX 读缓冲：读指针替代每条消息的 `Vec::drain` 头部搬移。
+/// 取走一条消息只前移 `pos`；仅在需要继续读 socket 且存在跨 read 残留时
+/// 做一次小段 compact（残留通常远小于整批消息）。
+struct FixReadBuffer {
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl FixReadBuffer {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
+            pos: 0,
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.pos == 0 {
+            return;
+        }
+        if self.pos == self.buf.len() {
+            self.buf.clear();
+        } else {
+            self.buf.copy_within(self.pos.., 0);
+            let remain = self.buf.len() - self.pos;
+            self.buf.truncate(remain);
+        }
+        self.pos = 0;
+    }
+
+    fn extend(&mut self, chunk: &[u8]) {
+        self.buf.extend_from_slice(chunk);
+    }
+}
+
+async fn read_fix_message(
+    stream: &mut BinanceFixStream,
+    buffer: &mut FixReadBuffer,
+) -> Result<String> {
     loop {
         if let Some(msg) = try_take_fix_message(buffer)? {
             return Ok(msg);
         }
+        buffer.compact();
         let mut chunk = [0u8; 4096];
         let n = stream.read(&mut chunk).await?;
         if n == 0 {
             return Err(anyhow!("Binance Spot FIX socket closed"));
         }
-        buffer.extend_from_slice(&chunk[..n]);
+        buffer.extend(&chunk[..n]);
     }
 }
 
-fn try_take_fix_message(buffer: &mut Vec<u8>) -> Result<Option<String>> {
-    let Some(start) = find_bytes(buffer, b"8=FIX.4.4\x01") else {
-        if buffer.len() > 64 {
-            let keep_from = buffer.len() - 64;
-            buffer.drain(..keep_from);
-        }
+fn try_take_fix_message(buffer: &mut FixReadBuffer) -> Result<Option<String>> {
+    let unread = &buffer.buf[buffer.pos..];
+    let Some(start_rel) = find_bytes(unread, b"8=FIX.4.4\x01") else {
+        // 未见消息头：只保留末尾 64 字节等待与后续数据拼接。
+        let keep = unread.len().min(64);
+        buffer.pos = buffer.buf.len() - keep;
         return Ok(None);
     };
-    if start > 0 {
-        buffer.drain(..start);
-    }
-    let Some(first_soh) = buffer.iter().position(|b| *b == SOH_BYTE) else {
+    let msg_start = buffer.pos + start_rel;
+    let data = &buffer.buf[msg_start..];
+    let Some(first_soh) = data.iter().position(|b| *b == SOH_BYTE) else {
+        buffer.pos = msg_start;
         return Ok(None);
     };
-    if buffer.get(first_soh + 1..first_soh + 3) != Some(b"9=") {
+    if data.get(first_soh + 1..first_soh + 3) != Some(b"9=") {
         return Err(anyhow!("invalid FIX message: BodyLength tag missing"));
     }
-    let Some(second_soh_rel) = buffer[first_soh + 1..].iter().position(|b| *b == SOH_BYTE) else {
+    let Some(second_soh_rel) = data[first_soh + 1..].iter().position(|b| *b == SOH_BYTE) else {
+        buffer.pos = msg_start;
         return Ok(None);
     };
     let second_soh = first_soh + 1 + second_soh_rel;
-    let body_len_raw = std::str::from_utf8(&buffer[first_soh + 3..second_soh])?;
+    let body_len_raw = std::str::from_utf8(&data[first_soh + 3..second_soh])?;
     let body_len = body_len_raw
         .parse::<usize>()
         .with_context(|| format!("parse FIX BodyLength={body_len_raw}"))?;
     let body_start = second_soh + 1;
     let total_len = body_start + body_len + b"10=000\x01".len();
-    if buffer.len() < total_len {
+    if data.len() < total_len {
+        buffer.pos = msg_start;
         return Ok(None);
     }
-    let raw = buffer.drain(..total_len).collect::<Vec<u8>>();
-    let msg = String::from_utf8(raw).context("FIX message must be ASCII/UTF-8")?;
+    let msg = std::str::from_utf8(&data[..total_len])
+        .context("FIX message must be ASCII/UTF-8")?
+        .to_string();
+    buffer.pos = msg_start + total_len;
     Ok(Some(msg))
 }
 
@@ -1067,26 +1064,105 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// 冷路径（logon/logout/heartbeat）使用的一次性构造；热路径见 `FixMessageWriter`。
 fn build_fix_message(fields: &[FixField]) -> String {
     debug_assert!(fields.first().is_some_and(|(tag, _)| *tag == 35));
-    let mut body = String::new();
-    for (tag, value) in fields {
-        push_fix_field(&mut body, *tag, value);
+    let mut writer = FixMessageWriter::with_capacity(256);
+    let (_, msg_type) = &fields[0];
+    writer.begin(msg_type);
+    for (tag, value) in &fields[1..] {
+        writer.field_str(*tag, value);
     }
-    let mut out = String::new();
-    push_fix_field(&mut out, 8, "FIX.4.4");
-    push_fix_field(&mut out, 9, &body.len().to_string());
-    out.push_str(&body);
-    let checksum = checksum(&out);
-    push_fix_field(&mut out, 10, &format!("{checksum:03}"));
-    out
+    writer.finish().to_string()
+}
+
+/// 可复用的 FIX 报文构造器：body/out 双缓冲循环使用，tag 与整数经 itoa 写入，
+/// 价格/数量经 `QuantizedValue::write_decimal_to` 直写，热路径零中间 String 分配。
+struct FixMessageWriter {
+    body: String,
+    out: String,
+}
+
+impl FixMessageWriter {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            body: String::with_capacity(capacity),
+            out: String::with_capacity(capacity + 32),
+        }
+    }
+
+    fn begin(&mut self, msg_type: &str) {
+        self.body.clear();
+        push_fix_field(&mut self.body, 35, msg_type);
+    }
+
+    fn field_str(&mut self, tag: u32, value: &str) {
+        push_fix_field(&mut self.body, tag, value);
+    }
+
+    fn field_i64(&mut self, tag: u32, value: i64) {
+        let mut digits = itoa::Buffer::new();
+        push_fix_field(&mut self.body, tag, digits.format(value));
+    }
+
+    fn field_decimal(&mut self, tag: u32, value: &QuantizedValue) {
+        self.begin_field(tag);
+        value
+            .write_decimal_to(&mut self.body)
+            .expect("write decimal to String cannot fail");
+        self.end_field();
+    }
+
+    fn begin_field(&mut self, tag: u32) {
+        let mut digits = itoa::Buffer::new();
+        self.body.push_str(digits.format(tag));
+        self.body.push('=');
+    }
+
+    fn end_field(&mut self) {
+        self.body.push(SOH);
+    }
+
+    /// 补齐 8/9 头与 10 校验和，报文落在 `self.out`，通过 `message()` 读取。
+    fn finish(&mut self) -> &str {
+        self.out.clear();
+        self.out.push_str("8=FIX.4.4\x01");
+        self.out.push_str("9=");
+        let mut digits = itoa::Buffer::new();
+        self.out.push_str(digits.format(self.body.len()));
+        self.out.push(SOH);
+        self.out.push_str(&self.body);
+        let sum = checksum(&self.out);
+        self.out.push_str("10=");
+        push_three_digits(&mut self.out, sum);
+        self.out.push(SOH);
+        &self.out
+    }
+
+    fn message(&self) -> &str {
+        &self.out
+    }
 }
 
 fn push_fix_field(out: &mut String, tag: u32, value: &str) {
-    out.push_str(&tag.to_string());
+    let mut digits = itoa::Buffer::new();
+    out.push_str(digits.format(tag));
     out.push('=');
     out.push_str(value);
     out.push(SOH);
+}
+
+fn push_two_digits(out: &mut String, value: u32) {
+    debug_assert!(value < 100);
+    out.push((b'0' + (value / 10) as u8) as char);
+    out.push((b'0' + (value % 10) as u8) as char);
+}
+
+fn push_three_digits(out: &mut String, value: u32) {
+    debug_assert!(value < 1000);
+    out.push((b'0' + (value / 100) as u8) as char);
+    out.push((b'0' + ((value / 10) % 10) as u8) as char);
+    out.push((b'0' + (value % 10) as u8) as char);
 }
 
 fn checksum(raw_without_checksum: &str) -> u32 {
@@ -1168,8 +1244,55 @@ fn derive_session_comp_id(base: &str, session_index: usize) -> String {
     out
 }
 
-fn current_fix_time() -> String {
-    Utc::now().format("%Y%m%d-%H:%M:%S%.3f").to_string()
+/// SendingTime(52) 格式化器：缓存 `YYYYMMDD-` 日期前缀（每 UTC 日重算一次），
+/// 每条消息只手工格式化 HH:MM:SS.mmm，避免热路径走 chrono 完整 format。
+struct FixTimeFormatter {
+    cached_day: i64,
+    prefix: [u8; 9],
+}
+
+impl FixTimeFormatter {
+    fn new() -> Self {
+        Self {
+            cached_day: i64::MIN,
+            prefix: [0u8; 9],
+        }
+    }
+
+    fn write_now_into(&mut self, out: &mut String) {
+        self.write_ms_into(Utc::now().timestamp_millis(), out);
+    }
+
+    fn write_ms_into(&mut self, epoch_ms: i64, out: &mut String) {
+        const MS_PER_DAY: i64 = 86_400_000;
+        let day = epoch_ms.div_euclid(MS_PER_DAY);
+        if day != self.cached_day {
+            self.refresh_prefix(day);
+        }
+        out.push_str(std::str::from_utf8(&self.prefix).expect("date prefix is ASCII"));
+        let ms_of_day = epoch_ms.rem_euclid(MS_PER_DAY);
+        push_two_digits(out, (ms_of_day / 3_600_000) as u32);
+        out.push(':');
+        push_two_digits(out, ((ms_of_day / 60_000) % 60) as u32);
+        out.push(':');
+        push_two_digits(out, ((ms_of_day / 1_000) % 60) as u32);
+        out.push('.');
+        push_three_digits(out, (ms_of_day % 1_000) as u32);
+    }
+
+    fn refresh_prefix(&mut self, day: i64) {
+        let date = chrono::DateTime::<Utc>::from_timestamp(day * 86_400, 0)
+            .expect("epoch day within chrono range");
+        let formatted = date.format("%Y%m%d-").to_string();
+        self.prefix.copy_from_slice(formatted.as_bytes());
+        self.cached_day = day;
+    }
+
+    fn now_string(&mut self) -> String {
+        let mut out = String::with_capacity(21);
+        self.write_now_into(&mut out);
+        out
+    }
 }
 
 fn fix_side(side: Side) -> &'static str {
@@ -1221,13 +1344,26 @@ fn parse_fix_time_ms(raw: &str) -> Option<i64> {
         .map(|dt| dt.and_utc().timestamp_millis())
 }
 
-fn remove_seq_for_key(map: &mut HashMap<i64, String>, key: &str) {
-    if let Some(seq) = map
-        .iter()
-        .find_map(|(seq, value)| (value == key).then_some(*seq))
-    {
-        map.remove(&seq);
+/// ExecutionReport 归属：优先 clOrdId(11) 命中在途请求或作为撤单目标，
+/// 再看 origClOrdId(41)。非整数 id 一定不是本系统的单，直接判为 unsolicited。
+fn execution_report_key(msg: &FixMessage, inflight: &InflightFixTable) -> Option<i64> {
+    if let Some(cl_ord_id) = msg.get(11).and_then(parse_i64) {
+        if inflight.by_cl_ord_id.contains_key(&cl_ord_id) {
+            return Some(cl_ord_id);
+        }
+        if let Some(cancel_key) = inflight.by_orig_cl_ord_id.get(&cl_ord_id) {
+            return Some(*cancel_key);
+        }
     }
+    if let Some(orig_cl_ord_id) = msg.get(41).and_then(parse_i64) {
+        if let Some(cancel_key) = inflight.by_orig_cl_ord_id.get(&orig_cl_ord_id) {
+            return Some(*cancel_key);
+        }
+        if inflight.by_cl_ord_id.contains_key(&orig_cl_ord_id) {
+            return Some(orig_cl_ord_id);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1295,5 +1431,127 @@ mod tests {
             let comp_id = derive_session_comp_id("LONGBASEID", idx);
             validate_comp_id("test", &comp_id).expect("derived comp id must stay valid");
         }
+    }
+
+    #[test]
+    fn message_writer_produces_consistent_body_length_and_checksum() {
+        let mut writer = FixMessageWriter::with_capacity(64);
+        writer.begin("D");
+        writer.field_i64(34, 7);
+        writer.field_str(49, "ABC");
+        writer.field_str(52, "20260815-10:00:00.123");
+        writer.field_str(56, "SPOT");
+        writer.field_i64(11, 123456789);
+        let msg = writer.finish().to_string();
+
+        assert!(msg.starts_with("8=FIX.4.4\x019="));
+        assert!(msg.ends_with(SOH));
+
+        let body_len: usize = message_field(&msg, 9).unwrap().parse().unwrap();
+        let body_start = msg.find("9=").unwrap() + format!("9={body_len}\x01").len();
+        let trailer_start = msg.rfind("10=").unwrap();
+        assert_eq!(trailer_start - body_start, body_len);
+
+        let expected_sum = checksum(&msg[..trailer_start]);
+        assert_eq!(
+            message_field(&msg, 10).unwrap(),
+            format!("{expected_sum:03}")
+        );
+        assert_eq!(message_field(&msg, 11).unwrap(), "123456789");
+    }
+
+    #[test]
+    fn field_decimal_matches_decimal_string() {
+        let mut writer = FixMessageWriter::with_capacity(64);
+        for qv in [
+            QuantizedValue::from_parts(15, -2, 3),
+            QuantizedValue::from_parts(1, 0, 250),
+            QuantizedValue::zero(),
+        ] {
+            writer.begin("D");
+            writer.field_decimal(38, &qv);
+            let msg = writer.finish().to_string();
+            assert_eq!(
+                message_field(&msg, 38).unwrap(),
+                qv.decimal_string(),
+                "qv={qv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fix_time_formatter_matches_chrono_format() {
+        let mut formatter = FixTimeFormatter::new();
+        for epoch_ms in [
+            0i64,
+            86_399_999,                // 日末最后一毫秒
+            86_400_000,                // 跨日边界，触发前缀重算
+            1_755_244_800_123,         // 2026-08-15 附近
+            1_755_244_800_000 + 3_601, // 非整秒毫秒位
+        ] {
+            let mut out = String::new();
+            formatter.write_ms_into(epoch_ms, &mut out);
+            let expected = chrono::DateTime::<Utc>::from_timestamp_millis(epoch_ms)
+                .unwrap()
+                .format("%Y%m%d-%H:%M:%S%.3f")
+                .to_string();
+            assert_eq!(out, expected, "epoch_ms={epoch_ms}");
+        }
+    }
+
+    #[test]
+    fn read_buffer_extracts_messages_and_skips_garbage() {
+        let msg1 = build_fix_message(&[(35, "0".to_string()), (34, "2".to_string())]);
+        let msg2 = build_fix_message(&[(35, "0".to_string()), (34, "3".to_string())]);
+
+        let mut buffer = FixReadBuffer::with_capacity(64);
+        buffer.extend(b"garbage-prefix");
+        buffer.extend(msg1.as_bytes());
+        let split = msg2.len() / 2;
+        buffer.extend(&msg2.as_bytes()[..split]);
+
+        let taken1 = try_take_fix_message(&mut buffer).unwrap();
+        assert_eq!(taken1.as_deref(), Some(msg1.as_str()));
+
+        // msg2 只有一半：解析挂起，pos 停在 msg2 起点。
+        assert!(try_take_fix_message(&mut buffer).unwrap().is_none());
+        buffer.compact();
+        assert_eq!(buffer.pos, 0);
+        assert_eq!(buffer.buf.len(), split);
+
+        buffer.extend(&msg2.as_bytes()[split..]);
+        let taken2 = try_take_fix_message(&mut buffer).unwrap();
+        assert_eq!(taken2.as_deref(), Some(msg2.as_str()));
+
+        // 全部消费后 compact 直接清空，无残留搬移。
+        buffer.compact();
+        assert!(buffer.buf.is_empty());
+        assert_eq!(buffer.pos, 0);
+
+        // 纯垃圾且无消息头：只保留末尾 64 字节。
+        let mut garbage_buffer = FixReadBuffer::with_capacity(64);
+        garbage_buffer.extend(&[b'x'; 200]);
+        assert!(try_take_fix_message(&mut garbage_buffer).unwrap().is_none());
+        assert_eq!(garbage_buffer.buf.len() - garbage_buffer.pos, 64);
+    }
+
+    #[test]
+    fn inflight_table_removes_all_indexes() {
+        let mut table = InflightFixTable::new();
+        table.insert(InflightFixRequest {
+            req_type: TradeRequestType::BinanceWsCancelMarginOrder,
+            client_order_id: 42,
+            orig_client_order_id: Some(41),
+            seq_num: 7,
+        });
+        assert_eq!(table.key_by_seq(7), Some(42));
+        assert_eq!(table.by_orig_cl_ord_id.get(&41).copied(), Some(42));
+
+        let removed = table.remove(42).expect("entry exists");
+        assert_eq!(removed.seq_num, 7);
+        assert!(table.by_cl_ord_id.is_empty());
+        assert!(table.by_orig_cl_ord_id.is_empty());
+        assert!(table.by_seq.is_empty());
+        assert!(table.remove(42).is_none());
     }
 }
