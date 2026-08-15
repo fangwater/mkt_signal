@@ -589,11 +589,16 @@ impl CnReplayState {
         values: &[f64; TRADE_FLOW_FEATURE_DIM],
         depth: Option<CnDepthSnapshot5>,
     ) -> Result<()> {
-        let depth = depth.map(|snapshot| CnDepthStats5::from_snapshot(&snapshot));
+        let Some(snapshot) = depth else {
+            bail!(
+                "cn_features rejects rows without a native five-level book: ts_ms={ts_ms}"
+            );
+        };
+        let depth = CnDepthStats5::from_snapshot(&snapshot);
         self.state.push_native_bar(ts_ms, values);
-        self.state.push_optional_depth_stats(depth.as_ref());
+        self.state.push_depth_stats(&depth);
         self.update_native_rolling(values);
-        self.latest_depth = depth;
+        self.latest_depth = Some(depth);
         Ok(())
     }
 
@@ -1643,17 +1648,20 @@ impl CnFactorEngine {
         msg: &TradeFlowFeatureMsg,
     ) -> Result<(), String> {
         let width = msg.values.len();
-        if width != TRADE_FLOW_FEATURE_DIM
-            && width != TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_VALUES
-        {
+        let expected = TRADE_FLOW_FEATURE_DIM + APPENDED_DEPTH_VALUES;
+        if width != expected {
             return Err(format!(
-                "cn_features input rejected: venue={venue_slug} symbol={symbol} ts={} expected {TRADE_FLOW_FEATURE_DIM} trade fields with either no book or exactly {CN_DEPTH_LEVELS} native levels, got {width} values",
+                "cn_features input rejected: venue={venue_slug} symbol={symbol} ts={} expected {TRADE_FLOW_FEATURE_DIM} trade fields plus exactly {CN_DEPTH_LEVELS} native book levels ({expected} values total), got {width} values; disconnected or missing depth is not allowed",
                 msg.ts
             ));
         }
-        if let Some(depth) = parse_embedded_depth(msg) {
-            validate_native_depth(&depth)?;
-        }
+        let depth = parse_embedded_depth(msg).ok_or_else(|| {
+            format!(
+                "cn_features input rejected: venue={venue_slug} symbol={symbol} ts={} native five-level book is required",
+                msg.ts
+            )
+        })?;
+        validate_native_depth(&depth)?;
         Ok(())
     }
 
@@ -1696,30 +1704,25 @@ impl CnFactorEngine {
             self.trigger_count = self.trigger_count.saturating_add(1);
         }
 
-        let depth_stats = parse_embedded_depth(&msg)
-            .as_ref()
-            .map(CnDepthStats5::from_snapshot);
-        let depth_opt = depth_stats.as_ref();
+        // validate_trade_flow_shape already requires an embedded native five-level book.
+        let depth_snapshot = parse_embedded_depth(&msg).expect("validated native five-level book");
+        let depth_stats = CnDepthStats5::from_snapshot(&depth_snapshot);
         {
             let (symbol_states, symbol_rolling_stats) =
                 (&mut self.symbol_states, &mut self.symbol_rolling_stats);
             let state = symbol_states.entry(symbol.clone()).or_default();
             let rolling = symbol_rolling_stats.entry(symbol.clone()).or_default();
             state.push_trade_flow(&msg);
-            state.push_optional_depth_stats(depth_opt);
+            state.push_depth_stats(&depth_stats);
             Self::update_symbol_rolling_stats(state, rolling, &msg);
         }
 
         if emit_output {
-            if depth_opt.is_none() {
-                self.missing_depth_count = self.missing_depth_count.saturating_add(1);
-            } else {
-                self.depth_attached_count = self.depth_attached_count.saturating_add(1);
-            }
+            self.depth_attached_count = self.depth_attached_count.saturating_add(1);
         }
 
         let eval_started = Instant::now();
-        let Some(eval_result) = self.evaluate_ordered_factors(&symbol, depth_opt) else {
+        let Some(eval_result) = self.evaluate_ordered_factors(&symbol, Some(&depth_stats)) else {
             if emit_output {
                 debug!(
                     "fusion-trigger: venue={} symbol={} trade_ts={} reason=missing_symbol_factor_plan",
@@ -5729,28 +5732,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_book_advances_depth_history_without_blanketing_trade_history() {
-        let (first_values, first_depth) = varied_native_row(0);
-        let (second_values, _) = varied_native_row(1);
-        let first_stats = CnDepthStats5::from_snapshot(&first_depth);
-        let mut state = CnCalcState::default();
-
-        state.push_native_bar(0, &first_values);
-        state.push_optional_depth_stats(Some(&first_stats));
-        state.push_native_bar(1_000, &second_values);
-        state.push_optional_depth_stats(None);
-
-        assert_eq!(state.close.len(), 2);
-        assert!(state.close.back().unwrap().is_finite());
-        assert_eq!(state.mid_price.len(), 2);
-        assert!(state.mid_price.back().unwrap().is_nan());
-        assert_eq!(state.factor_113_bid_price_pct_hmean.len(), 2);
-        assert!(state
-            .factor_113_bid_price_pct_hmean
-            .back()
-            .unwrap()
-            .unwrap()
-            .is_nan());
+    fn push_native_rejects_rows_without_a_native_five_level_book() {
+        let (values, _) = varied_native_row(0);
+        let mut state = CnReplayState::default();
+        let error = state.push_native(1_000, &values, None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("rejects rows without a native five-level book"),
+            "{error:#}"
+        );
+        assert!(state.state.close.is_empty());
+        assert!(state.latest_depth.is_none());
     }
 
     #[test]
@@ -5891,38 +5884,8 @@ mod tests {
             }
         }
 
-        let mut clean_history = replay_branch_from(&warmed);
-        let mut missing_history = replay_branch_from(&warmed);
-        let final_recovery = *STRICT_MISSING_RECOVERY_CHECKPOINTS
-            .last()
-            .expect("strict missing recovery checkpoints");
-        for recovery in 0..=final_recovery {
-            let index = final_index + recovery;
-            let (values, depth) = varied_native_row(index);
-            clean_history
-                .push_native(index as i64 * 1_000, &values, Some(depth.clone()))
-                .unwrap();
-            missing_history
-                .push_native(
-                    index as i64 * 1_000,
-                    &values,
-                    (recovery != 0).then_some(depth),
-                )
-                .unwrap();
-            if recovery == 0 || STRICT_MISSING_RECOVERY_CHECKPOINTS.contains(&recovery) {
-                let clean_values = clean_history.factor_values(&all_plan);
-                let missing_values = missing_history.factor_values(&all_plan);
-                assert_finite_missing_outputs_match(
-                    &all_plan,
-                    clean_values,
-                    missing_values,
-                    &format!("whole book missing {recovery} rows ago"),
-                );
-            } else {
-                let _ = clean_history.factor_values(&factor_118_plan);
-                let _ = missing_history.factor_values(&factor_118_plan);
-            }
-        }
+        // Whole-book absence is a hard reject on live and replay paths; only
+        // in-book field NaNs remain in the missingness contract above.
     }
 
     #[test]
@@ -6103,11 +6066,14 @@ mod tests {
     }
 
     fn push_replay_message(state: &mut CnReplayState, msg: TradeFlowFeatureMsg) -> Result<()> {
+        CnFactorEngine::validate_trade_flow_shape("test", "BTCUSDT", &msg)
+            .map_err(|err| anyhow::anyhow!(err))?;
         let values: [f64; TRADE_FLOW_FEATURE_DIM] = msg.values[..TRADE_FLOW_FEATURE_DIM]
             .try_into()
             .expect("trade-flow values");
-        let depth = parse_embedded_depth(&msg);
-        state.push_native(msg.ts, &values, depth)
+        let depth = parse_embedded_depth(&msg)
+            .expect("validated native five-level book");
+        state.push_native(msg.ts, &values, Some(depth))
     }
 
     fn message_with_depth_levels(levels: usize) -> TradeFlowFeatureMsg {
@@ -6125,13 +6091,19 @@ mod tests {
     }
 
     #[test]
-    fn live_input_accepts_only_no_book_or_native_five_level_book() {
-        assert!(CnFactorEngine::validate_trade_flow_shape(
+    fn live_input_requires_native_five_level_book() {
+        let missing = CnFactorEngine::validate_trade_flow_shape(
             "xzce",
             "AP2601",
             &message_with_depth_levels(0),
         )
-        .is_ok());
+        .unwrap_err();
+        assert!(
+            missing.contains("exactly 5 native book levels")
+                || missing.contains("disconnected or missing depth"),
+            "{missing}"
+        );
+
         assert!(CnFactorEngine::validate_trade_flow_shape(
             "xzce",
             "AP2601",
@@ -6145,7 +6117,11 @@ mod tests {
                 &message_with_depth_levels(levels),
             )
             .unwrap_err();
-            assert!(error.contains("exactly 5 native levels"), "{error}");
+            assert!(
+                error.contains("exactly 5 native book levels")
+                    || error.contains("disconnected or missing depth"),
+                "levels={levels} error={error}"
+            );
         }
     }
 

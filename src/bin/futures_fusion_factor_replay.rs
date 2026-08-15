@@ -504,20 +504,25 @@ fn read_input_row(reader: &mut impl Read) -> Result<Option<InputRow>> {
         ask_prices.len(),
         ask_amounts.len(),
     ];
-    let depth = if lengths.iter().all(|length| *length == 0) {
-        None
-    } else if lengths.iter().all(|length| *length == FUTURES_DEPTH_LEVELS) {
-        Some(FuturesDepth5::from_slices(
-            &bid_prices,
-            &bid_amounts,
-            &ask_prices,
-            &ask_amounts,
-        )?)
-    } else {
+    if lengths.iter().any(|length| *length == 0) {
         bail!(
-            "native depth arrays must be all empty or all exactly {FUTURES_DEPTH_LEVELS} levels, got {lengths:?}"
+            "cn_features replay rejects trade rows without a joined native five-level book: symbol={symbol} ts_ms={ts_ms} trading_day={trading_day} depth_lengths={lengths:?}"
         );
-    };
+    }
+    if !lengths
+        .iter()
+        .all(|length| *length == FUTURES_DEPTH_LEVELS)
+    {
+        bail!(
+            "native depth arrays must all contain exactly {FUTURES_DEPTH_LEVELS} levels, got {lengths:?}"
+        );
+    }
+    let depth = Some(FuturesDepth5::from_slices(
+        &bid_prices,
+        &bid_amounts,
+        &ask_prices,
+        &ask_amounts,
+    )?);
 
     let input = FuturesFusionInput {
         ts_ms,
@@ -536,6 +541,8 @@ fn read_input_row(reader: &mut impl Read) -> Result<Option<InputRow>> {
 fn read_native_depth_array(reader: &mut impl Read, name: &str) -> Result<Vec<f64>> {
     let len = usize::try_from(read_var_uint(reader)?)
         .with_context(|| format!("RowBinary {name} length exceeds usize"))?;
+    // Empty arrays are accepted only so the row decoder can reject the whole trade
+    // row after all four columns are read; factor replay never continues on them.
     if len != 0 && len != FUTURES_DEPTH_LEVELS {
         bail!(
             "RowBinary {name} must be empty or contain exactly {FUTURES_DEPTH_LEVELS} native levels, got {len}"
@@ -820,6 +827,19 @@ mod tests {
     }
 
     #[test]
+    fn rowbinary_input_rejects_trade_rows_without_joined_depth() {
+        let mut bytes = Vec::new();
+        append_input_row(&mut bytes, 0);
+        let error = read_input_row(&mut Cursor::new(bytes)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("rejects trade rows without a joined native five-level book"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn input_query_is_futures_specific_and_has_no_wide_depth_columns() {
         let config = ClickHouseConfig {
             url: "http://localhost".to_string(),
@@ -831,6 +851,7 @@ mod tests {
             batch_rows: 100,
         };
         let query = input_query(&config, "AP2601", 20251103, 20251103);
+        // LEFT JOIN is only the physical read shape; missing depth rows are hard errors.
         assert!(query.contains("LEFT JOIN"));
         assert!(query.contains("d.bid_prices"));
         assert!(query.contains("t.trading_day >= 20251103"));

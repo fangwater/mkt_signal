@@ -192,9 +192,15 @@ impl FuturesFusionInput {
                 self.volume_multiple
             );
         }
-        if let Some(depth) = self.depth.as_ref() {
-            depth.validate_levels()?;
-        }
+        let Some(depth) = self.depth.as_ref() else {
+            bail!(
+                "cn_features replay rejects rows without a native five-level book: symbol={} ts_ms={} trading_day={}",
+                self.symbol,
+                self.ts_ms,
+                self.trading_day
+            );
+        };
+        depth.validate_levels()?;
         Ok(())
     }
 }
@@ -563,141 +569,20 @@ mod tests {
     }
 
     #[test]
-    fn missing_book_preserves_trade_factors() {
-        let plan = FuturesFactorPlan::from_factor_names(vec![
-            "cn_features_factor_001".to_string(),
-            "cn_features_factor_007".to_string(),
-            "cn_features_factor_166".to_string(),
-            "cn_features_baseline_159".to_string(),
-        ])
-        .unwrap();
+    fn rejects_rows_without_a_native_five_level_book() {
         let mut state = FuturesFusionState::default();
         state.push(input(1_000, 20251103, 0, 100.0)).unwrap();
-        let _ = state.factor_values(&plan).unwrap();
+
         let mut row = input(2_000, 20251103, 0, 101.0);
         row.depth = None;
-        state.push(row).unwrap();
-        let values = state.factor_values(&plan).unwrap();
-
-        assert_eq!(values[0], None);
-        assert_eq!(values[1], None);
-        assert_eq!(values[2], None);
-        assert!(values[3].is_some());
-    }
-
-    #[test]
-    fn missing_book_preserves_every_legacy_trade_only_factor() {
-        let names: Vec<String> = review_manifest::LEGACY_TRADE_ONLY_FACTORS
-            .iter()
-            .map(|name| format!("cn_features_{}", name.to_ascii_lowercase()))
-            .collect();
-        let plan = FuturesFactorPlan::from_factor_names(names).unwrap();
-        assert_eq!(plan.len(), 455);
-
-        let mut clean = FuturesFusionState::default();
-        let mut missing = FuturesFusionState::default();
-        for index in 0..=800 {
-            let row = varied_input(index);
-            clean.push(row.clone()).unwrap();
-            let mut missing_row = row;
-            missing_row.depth = None;
-            missing.push(missing_row).unwrap();
-        }
-
-        let clean_values = clean.factor_values(&plan).unwrap();
-        let missing_values = missing.factor_values(&plan).unwrap();
-        for ((name, clean_value), missing_value) in review_manifest::LEGACY_TRADE_ONLY_FACTORS
-            .iter()
-            .zip(clean_values)
-            .zip(missing_values)
-        {
-            let clean_value = clean_value
-                .unwrap_or_else(|| panic!("{name} must be finite after deterministic warm-up"));
-            let missing_value = missing_value.unwrap_or_else(|| {
-                panic!("{name} was incorrectly invalidated by an unrelated missing book")
-            });
-            let tolerance = 1e-12 * clean_value.abs().max(1.0);
-            assert!(
-                (missing_value - clean_value).abs() <= tolerance,
-                "{name} changed after an unrelated missing book: clean={clean_value} missing={missing_value}"
-            );
-        }
-    }
-
-    #[test]
-    fn missing_book_nulls_every_legacy_book_factor() {
-        let names: Vec<String> = review_manifest::LEGACY_BOOK_FACTORS
-            .iter()
-            .map(|name| format!("cn_features_{}", name.to_ascii_lowercase()))
-            .collect();
-        let plan = FuturesFactorPlan::from_factor_names(names).unwrap();
-        assert_eq!(plan.len(), 177);
-
-        let mut clean = FuturesFusionState::default();
-        let mut missing = FuturesFusionState::default();
-        for index in 0..800 {
-            let row = varied_input(index);
-            clean.push(row.clone()).unwrap();
-            missing.push(row).unwrap();
-            let _ = clean.factor_values(&plan).unwrap();
-            let _ = missing.factor_values(&plan).unwrap();
-        }
-
-        let clean_row = varied_input(800);
-        let mut missing_row = clean_row.clone();
-        missing_row.depth = None;
-        clean.push(clean_row).unwrap();
-        missing.push(missing_row).unwrap();
-
-        let clean_values = clean.factor_values(&plan).unwrap();
-        let missing_values = missing.factor_values(&plan).unwrap();
-        let mut not_warmed = Vec::new();
-        let mut leaked = Vec::new();
-        for ((name, clean_value), missing_value) in review_manifest::LEGACY_BOOK_FACTORS
-            .iter()
-            .zip(clean_values)
-            .zip(missing_values)
-        {
-            if clean_value.is_none() {
-                not_warmed.push(*name);
-            }
-            if missing_value.is_some() {
-                leaked.push(*name);
-            }
-        }
+        let error = state.push(row).unwrap_err();
         assert!(
-            not_warmed.is_empty(),
-            "book factors not finite after deterministic warm-up: {not_warmed:?}"
+            error
+                .to_string()
+                .contains("rejects rows without a native five-level book"),
+            "{error:#}"
         );
-        assert!(
-            leaked.is_empty(),
-            "book factors remained finite with a missing current book: {leaked:?}"
-        );
-    }
-
-    #[test]
-    fn missing_book_nulls_warmed_depth_windows_without_hiding_trade_factors() {
-        let plan = FuturesFactorPlan::from_factor_names(vec![
-            "cn_features_factor_050".to_string(),
-            "cn_features_baseline_159".to_string(),
-        ])
-        .unwrap();
-        let mut state = FuturesFusionState::default();
-        for index in 0..30 {
-            let price = 100.0 + index as f64 * 0.01;
-            state
-                .push(input(index * 1_000 + 1_000, 20251103, 0, price))
-                .unwrap();
-        }
-        assert!(state.factor_values(&plan).unwrap()[0].is_some());
-
-        let mut row = input(31_000, 20251103, 0, 101.0);
-        row.depth = None;
-        state.push(row).unwrap();
-        let values = state.factor_values(&plan).unwrap();
-
-        assert_eq!(values[0], None);
-        assert!(values[1].is_some());
+        assert_eq!(state.history_len(), 1);
     }
 
     #[test]

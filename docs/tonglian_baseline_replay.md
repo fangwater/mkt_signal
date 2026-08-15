@@ -56,7 +56,10 @@ A PostgreSQL connection or query failure aborts startup. If a replayed instrumen
 - A cumulative high/low new extreme supplements interval high/low. A field
   reset does not create an extreme.
 - Depth at bar timestamp `t` is the last valid snapshot strictly before `t`.
-  The first bar without a causal prior book has no depth row.
+  The first bar without a causal prior book has no depth row. Those trade-only
+  bars must not enter `cn_features_replay`: factor replay hard-rejects any row
+  without a joined native five-level book and does not compute factors on a
+  disconnected depth.
 - Source gaps and configured auction minutes end forward-fill and direction
   continuity. Auction snapshots still update cumulative baselines but do not
   create auction bars.

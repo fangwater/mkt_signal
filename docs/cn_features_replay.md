@@ -65,10 +65,17 @@ ask_amounts Array(Float64)
 
 The structural contract is strict:
 
-- All four arrays empty means that the row has no book.
-- Otherwise every array must contain exactly five elements.
-- Four, six, or twenty levels are input errors; mixed empty/five-level arrays
-  are also input errors.
+- Every row that enters factor calculation must carry a native five-level book.
+  All four arrays must contain exactly five elements. Live `CnFactorEngine`
+  messages must be the 32 trade fields plus an embedded native five-level book;
+  trade-only width is rejected.
+- Physically the offline reader may `LEFT JOIN` trade and depth tables, but a
+  missing depth row, any empty depth array, mixed empty/five-level lengths, or a
+  live message without the embedded book is a hard input error. Replay and live
+  must reject the row immediately. They must not compute trade-only factors on a
+  bookless row, must not emit book factors as NULL for a disconnected book, and
+  must not advance formula state on that row.
+- Four, six, or twenty levels are input errors.
 - There is no 20-level representation, padding, or fabricated level 6-20.
 
 Within a valid five-element array, `NaN` means that the individual field is
@@ -76,16 +83,15 @@ missing. It is not converted to zero and does not invalidate unrelated sides or
 levels. Infinite values, finite non-positive prices, finite negative amounts,
 and a crossed finite best book are input errors.
 
-Missing values propagate according to each formula's actual dependencies:
+After the whole-book presence check passes, missing values propagate according
+to each formula's actual dependencies:
 
-- A missing whole book makes book factors NULL while trade-only factors still
-  evaluate and advance their own history.
 - A missing fifth level leaves BBO and first-three-level factors available, but
   makes five-level aggregates that include it NULL.
 - A missing bid field does not by itself make an ask-only factor NULL.
 - A rolling book factor is NULL while a required missing observation remains in
   its window. Rolling helpers do not skip the missing row.
-- Cross-snapshot formulas do not bridge an unavailable required book state.
+- Cross-snapshot formulas do not bridge an unavailable required book field.
 
 All output factor columns are `Nullable(Float64)`. Unavailable required input
 and incomplete warm-up produce NULL. A genuine mathematical zero remains zero;
@@ -190,10 +196,10 @@ fallback values. The implementation audit restored these source definitions:
   correlation operator now applies its `min_periods` argument.
 
 The generated test-only manifest partitions all 632 source factors into 455
-trade/bar-only factors and 177 book factors. A branch with no book from its
-first row must keep every trade/bar-only factor finite and numerically equal to
-a valid-book branch after deterministic warm-up. Removing the current whole
-book after warm-up must make all 177 book factors NULL. Separate exhaustive
+trade/bar-only factors and 177 book factors for review and field-level missing
+tests only. Replay, `FuturesFusionInput::validate`, live trade-flow shape checks,
+and `CnReplayState::push_native` all reject any row without a native five-level
+book; state must not advance on that row. Separate exhaustive
 tests inject `NaN` into each native depth field and verify that any factor which
 remains available does not skip or consume the missing value. Representative
 side/level tests additionally verify that an unrelated ask side or inner level
