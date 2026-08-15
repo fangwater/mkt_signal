@@ -1896,7 +1896,7 @@ impl TradeEngine {
                 .accounts
                 .first()
                 .ok_or_else(|| anyhow!("Binance Spot FIX requires Binance API key"))?;
-            let session_count = crate::binance_fix::spot_fix_sessions_from_env()?;
+            let session_count = crate::binance_fix::FIX_OE_SESSIONS;
             for session_index in 0..session_count {
                 let cfg = BinanceSpotFixConfig::from_env(
                     creds.key.trim().to_string(),

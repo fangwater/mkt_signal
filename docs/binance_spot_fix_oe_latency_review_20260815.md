@@ -116,10 +116,10 @@ FIX 会话只需要请求 ack；全账户 ER 推送在一个未调优 socket 上
    ExecutionReport、OrderCancelReject）仍会返回，只是不再推送全账户 ER；
    现有代码对首个 ack 之后的 ER 本来就按 unsolicited 丢弃，行为不变。
 3. 多会话 RR（`binance_fix.rs` + `engine.rs`）：
-   - 新增 env `BINANCE_FIX_OE_SESSIONS`，默认 2，范围 1-10（官方并发上限）。
+   - 会话数固定 2 条（代码常量 `FIX_OE_SESSIONS`，不做 env 开关）。
    - 每条会话独立 TCP + Logon + seq 空间，SenderCompID 唯一：未设置
-     `BINANCE_FIX_SENDER_COMP_ID` 时每会话随机生成；设置了且会话数 >1 时，
-     截断到 7 字符后追加会话序号。
+     `BINANCE_FIX_SENDER_COMP_ID` 时每会话随机生成；设置了则截断到
+     7 字符后追加会话序号。
    - `engine.rs` req_worker 对 FIX 请求按 round-robin 选第一条
      `logged_on` 的会话入队；全部不可用才回 503（原行为是单会话不可用即 503，
      多会话同时提升了可用性）。
@@ -128,10 +128,11 @@ FIX 会话只需要请求 ack；全账户 ER 推送在一个未调优 socket 上
 
 ```bash
 BINANCE_SPOT_FIX_ENABLED=on          # 既有开关，默认 off
-BINANCE_FIX_OE_SESSIONS=2            # 新增，FIX OE 会话数，默认 2，1-10
-BINANCE_FIX_SENDER_COMP_ID=<可选>    # 既有；多会话时自动派生唯一后缀
+BINANCE_FIX_SENDER_COMP_ID=<可选>    # 既有；每会话自动派生唯一后缀
 BINANCE_FIX_OE_URL=<可选>            # 既有，默认 tcp+tls://fix-oe.binance.com:9000
 ```
+
+会话数写死在代码里（`FIX_OE_SESSIONS = 2`），无运行时开关。
 
 ## 微秒级优化（第二批，已实施）
 
@@ -170,13 +171,10 @@ socket 读写分离改造。req_worker 到 FIX/WS 任务之间的一次队列 + 
 
 ## 风险提示
 
-- FIX OE 是 spot-only。`margin_buy=true`（sideEffectType 自动借贷）的单被
-  路由到 FIX 后会直接 400 拒绝，**不会回退 WS**。若策略未来启用自动借贷
-  开仓，需先在 req_worker 的 FIX 分支对 `margin_buy` 单分流回 WS。
 - News<B> 当前按会话终止处理（触发重连）。官方语义是维护前每 10s 推送一次、
   持续 10 分钟，期望客户端重建会话，现行为可接受。
-- 多会话数不要一次拉满 10：连接尝试限额 15 次/30s，网络抖动引发的集中重连
-  可能触发 -1034。默认 2 条是安全值。
+- 会话数固定 2 条：连接尝试限额 15 次/30s，会话过多在网络抖动集中重连时
+  可能触发 -1034。
 
 ## 附：架构与线上 layout 评审要点（同日评审）
 

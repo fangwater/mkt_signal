@@ -34,7 +34,6 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 pub const BINANCE_SPOT_FIX_ENABLED_ENV: &str = "BINANCE_SPOT_FIX_ENABLED";
-pub const BINANCE_FIX_OE_SESSIONS_ENV: &str = "BINANCE_FIX_OE_SESSIONS";
 
 const SOH: char = '\x01';
 const SOH_BYTE: u8 = 0x01;
@@ -43,9 +42,9 @@ const DEFAULT_TARGET_COMP_ID: &str = "SPOT";
 const DEFAULT_HEARTBTINT: u64 = 30;
 const DEFAULT_RECV_WINDOW_MS: &str = "5000";
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
-// Binance FIX OE 每账户最多 10 条并发连接（连接尝试限额 15 次/30s）。
-const DEFAULT_FIX_OE_SESSIONS: usize = 2;
-const MAX_FIX_OE_SESSIONS: usize = 10;
+// FIX OE 固定 2 条会话做 RR。官方限制：每账户最多 10 条并发连接、
+// 连接尝试 15 次/30s，会话过多在集中重连时可能触发 -1034。
+pub(crate) const FIX_OE_SESSIONS: usize = 2;
 
 type FixField = (u32, String);
 type BinanceFixStream = TlsStream<TcpStream>;
@@ -167,33 +166,6 @@ pub(crate) fn spot_fix_enabled_from_env() -> Result<bool> {
             value
         )),
     }
-}
-
-pub(crate) fn spot_fix_sessions_from_env() -> Result<usize> {
-    let Ok(raw) = std::env::var(BINANCE_FIX_OE_SESSIONS_ENV) else {
-        return Ok(DEFAULT_FIX_OE_SESSIONS);
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(DEFAULT_FIX_OE_SESSIONS);
-    }
-    let sessions = trimmed.parse::<usize>().map_err(|_| {
-        anyhow!(
-            "invalid {}='{}', expected integer 1-{}",
-            BINANCE_FIX_OE_SESSIONS_ENV,
-            raw,
-            MAX_FIX_OE_SESSIONS
-        )
-    })?;
-    if sessions == 0 || sessions > MAX_FIX_OE_SESSIONS {
-        return Err(anyhow!(
-            "invalid {}={}, expected 1-{}",
-            BINANCE_FIX_OE_SESSIONS_ENV,
-            sessions,
-            MAX_FIX_OE_SESSIONS
-        ));
-    }
-    Ok(sessions)
 }
 
 pub(crate) fn is_binance_spot_fix_trade_request(req_type: TradeRequestType) -> bool {
@@ -1238,7 +1210,7 @@ fn generate_sender_comp_id() -> String {
 
 /// 多会话时从固定 base 派生唯一 SenderCompID：截断到 7 字符 + 会话序号（0-9）。
 fn derive_session_comp_id(base: &str, session_index: usize) -> String {
-    debug_assert!(session_index < MAX_FIX_OE_SESSIONS);
+    debug_assert!(session_index < 10, "single-digit session suffix");
     let mut out: String = base.chars().take(7).collect();
     out.push_str(&session_index.to_string());
     out
@@ -1408,26 +1380,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_fix_session_count() {
-        std::env::remove_var(BINANCE_FIX_OE_SESSIONS_ENV);
-        assert_eq!(spot_fix_sessions_from_env().unwrap(), 2);
-        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "3");
-        assert_eq!(spot_fix_sessions_from_env().unwrap(), 3);
-        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "0");
-        assert!(spot_fix_sessions_from_env().is_err());
-        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "11");
-        assert!(spot_fix_sessions_from_env().is_err());
-        std::env::set_var(BINANCE_FIX_OE_SESSIONS_ENV, "abc");
-        assert!(spot_fix_sessions_from_env().is_err());
-        std::env::remove_var(BINANCE_FIX_OE_SESSIONS_ENV);
-    }
-
-    #[test]
     fn derives_unique_session_comp_ids() {
         assert_eq!(derive_session_comp_id("MYCOMPID", 0), "MYCOMPI0");
         assert_eq!(derive_session_comp_id("MYCOMPID", 3), "MYCOMPI3");
         assert_eq!(derive_session_comp_id("AB", 1), "AB1");
-        for idx in 0..MAX_FIX_OE_SESSIONS {
+        for idx in 0..FIX_OE_SESSIONS {
             let comp_id = derive_session_comp_id("LONGBASEID", idx);
             validate_comp_id("test", &comp_id).expect("derived comp id must stay valid");
         }
