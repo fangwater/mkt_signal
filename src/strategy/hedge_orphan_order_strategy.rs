@@ -5,8 +5,8 @@ use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::orphan_order_common::{
     commit_query_policy_for, format_orphan_query_table, infer_query_time_in_force,
-    order_query_time_utc, orphan_initial_query_ticks_for, standard_commit_query_policy,
-    ORPHAN_QUERY_LOG_THRESHOLD,
+    order_query_time_utc, orphan_initial_query_ticks_for, query_backoff_ticks,
+    standard_commit_query_policy, COMMIT_QUERY_BACKOFF_SHIFT, ORPHAN_QUERY_LOG_THRESHOLD,
 };
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -105,12 +105,12 @@ impl HedgeOrphanOrderStrategy {
     }
 
     fn commit_next_query_ticks(base_ticks: u32, query_count: u8) -> u32 {
-        let multiplier = 1_u32
-            .checked_shl(query_count.min(31) as u32)
-            .unwrap_or(u32::MAX);
-        base_ticks
-            .saturating_mul(multiplier)
-            .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
+        query_backoff_ticks(
+            base_ticks,
+            HEDGE_ORPHAN_QUERY_MAX_TICKS,
+            query_count,
+            COMMIT_QUERY_BACKOFF_SHIFT,
+        )
     }
 
     fn commit_query_policy_for_order(

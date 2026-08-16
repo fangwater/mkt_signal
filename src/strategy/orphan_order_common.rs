@@ -20,6 +20,9 @@ use runtime_common::time_util::get_timestamp_us;
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
 pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 50;
+/// Commit 查询每档 ×4（`4^query_count`）；非 commit orphan 仍 ×2。
+pub(crate) const COMMIT_QUERY_BACKOFF_SHIFT: u32 = 2;
+pub(crate) const ORPHAN_QUERY_BACKOFF_SHIFT: u32 = 1;
 pub(crate) const BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS: u32 = 100;
 pub(crate) const BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS: u8 = 6;
 pub(crate) const BINANCE_PM_COMMIT_QUERY_BASE_TICKS: u32 = 500;
@@ -208,8 +211,12 @@ impl OrphanOrderTracker {
         }
         let next_query_count = query_state.query_count.saturating_add(1);
         query_state.query_count = next_query_count;
-        query_state.ticks_until_next_query =
-            Self::next_query_ticks(query_base_ticks, query_max_ticks, next_query_count);
+        query_state.ticks_until_next_query = query_backoff_ticks(
+            query_base_ticks,
+            query_max_ticks,
+            next_query_count,
+            ORPHAN_QUERY_BACKOFF_SHIFT,
+        );
         true
     }
 
@@ -243,8 +250,12 @@ impl OrphanOrderTracker {
         }
 
         query_state.query_count = query_state.query_count.saturating_add(1);
-        query_state.ticks_until_next_query =
-            Self::next_query_ticks(policy.base_ticks, query_max_ticks, query_state.query_count);
+        query_state.ticks_until_next_query = query_backoff_ticks(
+            policy.base_ticks,
+            query_max_ticks,
+            query_state.query_count,
+            COMMIT_QUERY_BACKOFF_SHIFT,
+        );
         Some(CommitQueryAction::Query {
             query_count: query_state.query_count,
             budget_exhausted,
@@ -981,15 +992,23 @@ impl OrphanOrderTracker {
         );
         let _ = self.apply_order_update(strategy_role, strategy_id, &update);
     }
+}
 
-    fn next_query_ticks(query_base_ticks: u32, query_max_ticks: u32, query_count: u8) -> u32 {
-        let multiplier = 1_u32
-            .checked_shl(query_count.min(31) as u32)
-            .unwrap_or(u32::MAX);
-        query_base_ticks
-            .saturating_mul(multiplier)
-            .min(query_max_ticks)
-    }
+/// `min(base * 2^(query_count * shift_per_attempt), max)`。
+/// `shift_per_attempt=1` → ×2，`shift_per_attempt=2` → ×4。
+pub(crate) fn query_backoff_ticks(
+    query_base_ticks: u32,
+    query_max_ticks: u32,
+    query_count: u8,
+    shift_per_attempt: u32,
+) -> u32 {
+    let shift = (query_count as u32)
+        .saturating_mul(shift_per_attempt)
+        .min(31);
+    let multiplier = 1_u32.checked_shl(shift).unwrap_or(u32::MAX);
+    query_base_ticks
+        .saturating_mul(multiplier)
+        .min(query_max_ticks)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1125,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_query_budget_uses_exponential_backoff_from_one_second() {
+    fn commit_query_budget_uses_x4_backoff_from_one_second() {
         let client_order_id = 42;
         let mut tracker =
             OrphanOrderTracker::new(COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_BASE_TICKS, 3_200);
@@ -1133,8 +1152,8 @@ mod tests {
 
         let expected_waits = [
             COMMIT_QUERY_BASE_TICKS,
-            COMMIT_QUERY_BASE_TICKS * 2,
             COMMIT_QUERY_BASE_TICKS * 4,
+            COMMIT_QUERY_BASE_TICKS * 16,
         ];
         for (expected_query_count, wait_ticks) in
             (1..=COMMIT_QUERY_MAX_ATTEMPTS).zip(expected_waits)
@@ -1151,7 +1170,7 @@ mod tests {
             );
         }
 
-        for _ in 0..COMMIT_QUERY_BASE_TICKS * 8 {
+        for _ in 0..COMMIT_QUERY_BASE_TICKS * 64 {
             assert_eq!(tracker.commit_query_due_now(client_order_id), None);
         }
         assert_eq!(
