@@ -55,6 +55,8 @@ Deployed environments normally live in `$HOME/<env-name>` and include:
 
 Most runtime wrappers source `env.sh` automatically from the environment directory. Do not hard-code credentials or account-specific values in repo files.
 
+Current production SSH hosts are only `jp-meta-elvpn` (Japan) and `sg` / `ubuntu@47.131.162.78` (Singapore). Do not use retired aliases such as `jp2`.
+
 Common FR scripts:
 
 ```bash
@@ -155,6 +157,15 @@ Never revert user or operator changes in environment directories unless explicit
 - Preserve microsecond timestamp conventions.
 - Keep exchange-specific quirks local to the relevant exchange module when possible.
 - For Python operational scripts, keep dry-run behavior and explicit `--execute` semantics intact.
+
+## Ops Docs
+
+Living inventories (no date in the filename). Update them in the same change as the deploy:
+
+- `docs/core_allocation.md`: isolated-core bindings on `jp-meta-elvpn` and `sg`.
+- `docs/jp-meta-elvpn_ip_binding.md`: private/public IPv4 to strategy env on `jp-meta-elvpn`. Update whenever `trade_engine.toml local_ips` change, an EIP is assigned, or an env that owns a source IP is added or retired.
+
+Do not create a new dated copy. Edit the living file and bump its `最后更新` line.
 
 ## Git Hygiene
 

@@ -1,6 +1,7 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
 最后更新:2026-08-16。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+公网/私网 IP 与策略环境对应关系见 `docs/jp-meta-elvpn_ip_binding.md`；改 `local_ips` 或分配 EIP 时同步更新那份表。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
 
