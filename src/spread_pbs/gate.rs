@@ -13,7 +13,7 @@ use bytes::Bytes;
 use mkt_parsers::gate as gate_codec;
 use serde_json::Value;
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite_v030::tungstenite::Message;
 
 use crate::spread_pbs::adapter::{
     BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
@@ -150,7 +150,7 @@ impl VenueAdapter for GateAdapter {
                 "time": timestamp,
                 "channel": channel.clone(),
             });
-            Message::Text(body.to_string())
+            Message::Text(body.to_string().into())
         }))
     }
 }

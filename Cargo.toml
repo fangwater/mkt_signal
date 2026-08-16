@@ -143,6 +143,10 @@ name = "okex_am_latency_probe"
 path = "src/bin/okex_am_latency_probe.rs"
 
 [[bin]]
+name = "binance_fix_er_probe"
+path = "src/bin/binance_fix_er_probe.rs"
+
+[[bin]]
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 
@@ -323,6 +327,11 @@ local-ip-address = "0.6"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+# spread_pbs 热路径专用新版 WS 栈:Bytes 载荷减分配 + rustls/aws-lc TLS。
+# connection/ 等旧模块仍用上面的 0.20/native-tls,全部迁移后可移除双版本。
+tokio-tungstenite-v030 = { package = "tokio-tungstenite", version = "0.30", features = ["rustls-tls-native-roots"] }
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

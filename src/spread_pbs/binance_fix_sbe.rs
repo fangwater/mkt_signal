@@ -8,7 +8,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use log::{debug, info, warn};
-use native_tls::TlsConnector as NativeTlsConnector;
 use openssl::pkey::{Id as PKeyId, PKey, Private};
 use openssl::sign::Signer;
 use std::collections::HashMap;
@@ -18,10 +17,12 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::watch;
-use tokio_native_tls::{TlsConnector, TlsStream};
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
 use uuid::Uuid;
 
-use crate::spread_pbs::ws::FrameHandler;
+use crate::spread_pbs::ws::{shared_rustls_config, FrameHandler};
 use mkt_parsers::binance::Level;
 use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
 use runtime_common::time_util::get_timestamp_us;
@@ -226,12 +227,12 @@ async fn run_fix_md_session(
             ..TcpSocketTuning::default()
         },
     );
-    let native = NativeTlsConnector::builder()
-        .build()
-        .context("build TLS connector for Binance FIX MD")?;
-    let connector = TlsConnector::from(native);
+    let config = shared_rustls_config().context("build TLS config for Binance FIX MD")?;
+    let connector = TlsConnector::from(config);
+    let server_name = ServerName::try_from(host.clone())
+        .with_context(|| format!("invalid TLS server name {host}"))?;
     let mut stream = connector
-        .connect(&host, tcp)
+        .connect(server_name, tcp)
         .await
         .with_context(|| format!("TLS connect Binance FIX MD host={host}"))?;
 

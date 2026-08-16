@@ -8,20 +8,22 @@
 use anyhow::{Context, Result};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use native_tls::TlsConnector as NativeTlsConnector;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tokio_native_tls::TlsConnector as TokioTlsConnector;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::{
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
+use tokio_tungstenite_v030::tungstenite::Message;
+use tokio_tungstenite_v030::tungstenite::{
     client::IntoClientRequest,
     http::{HeaderName, HeaderValue},
 };
-use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite_v030::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use crate::spread_pbs::adapter::KeepaliveSpec;
@@ -34,6 +36,33 @@ type WsSink = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
 
 const RECONNECT_BACKOFF_SECS: u64 = 3;
+
+/// 进程内共享的 rustls `ClientConfig`(aws-lc provider + 系统根证书)。
+/// 只在首次连接时构建;交易所证书链都是公共 CA,系统根证书与原 native-tls 行为一致。
+pub(crate) fn shared_rustls_config() -> Result<Arc<ClientConfig>> {
+    static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    if let Some(config) = CONFIG.get() {
+        return Ok(config.clone());
+    }
+    let loaded = rustls_native_certs::load_native_certs();
+    for err in &loaded.errors {
+        log::warn!("spread_pbs rustls native cert load warning: {err}");
+    }
+    let mut roots = RootCertStore::empty();
+    let (added, ignored) = roots.add_parsable_certificates(loaded.certs);
+    if added == 0 {
+        anyhow::bail!("no usable native root certificates (ignored={ignored})");
+    }
+    let provider = Arc::new(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider());
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .context("rustls default protocol versions")?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let config = Arc::new(config);
+    let _ = CONFIG.set(config.clone());
+    Ok(config)
+}
 
 /// 帧处理回调：`(recv_us, payload_bytes)`。`recv_us` 是 `read.next()` 命中那一刻
 /// 立即抓的本地微秒时间戳，下游可用作"纯网络延迟"统计的端点。
@@ -166,7 +195,7 @@ async fn connect_and_subscribe(
     let (mut sink, read) = stream.split();
     for msg in subscribe_msgs {
         let payload = msg.to_string();
-        sink.send(Message::Text(payload))
+        sink.send(Message::Text(payload.into()))
             .await
             .with_context(|| "send subscribe payload")?;
     }
@@ -227,7 +256,8 @@ async fn open_ws(
         },
     );
 
-    let mut request = parsed.clone().into_client_request()?;
+    // tungstenite 0.21+ 移除了 url::Url 的 IntoClientRequest 实现,直接用原始字符串。
+    let mut request = url.into_client_request()?;
     for (name, value) in headers {
         let name = HeaderName::from_bytes(name.as_bytes())
             .with_context(|| format!("invalid ws header name: {}", name))?;
@@ -237,15 +267,14 @@ async fn open_ws(
     }
 
     let stream = if scheme.eq_ignore_ascii_case("wss") {
-        let native = NativeTlsConnector::builder()
-            .build()
-            .with_context(|| "build native-tls connector")?;
-        let connector = TokioTlsConnector::from(native);
+        let connector = TlsConnector::from(shared_rustls_config()?);
+        let server_name = ServerName::try_from(host.clone())
+            .with_context(|| format!("invalid TLS server name {}", host))?;
         let tls_stream = connector
-            .connect(&host, tcp)
+            .connect(server_name, tcp)
             .await
             .with_context(|| "TLS handshake")?;
-        let wrapped = MaybeTlsStream::NativeTls(tls_stream);
+        let wrapped = MaybeTlsStream::Rustls(tls_stream);
         let (ws_stream, _resp) = client_async(request, wrapped).await?;
         ws_stream
     } else {
@@ -403,7 +432,7 @@ async fn run_session(
                     Some(Ok(Message::Binary(bin))) => {
                         business_idle_deadline =
                             business_idle_timeout.map(|timeout| Instant::now() + timeout);
-                        handler(recv_us, bin.as_slice());
+                        handler(recv_us, bin.as_ref());
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = sink.send(Message::Pong(payload)).await;

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use mkt_parsers::msg::mkt_msg::Level;
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite_v030::tungstenite::{Message, Utf8Bytes};
 
 /// 各家 spread 解析后的统一中间表示。
 #[derive(Debug, Clone)]
@@ -123,7 +123,8 @@ pub struct KeepaliveSpec {
 
 impl KeepaliveSpec {
     pub fn text(interval: Duration, payload: impl Into<String>) -> Self {
-        let s = payload.into();
+        // 预转换为 Utf8Bytes(引用计数 Bytes),每次心跳 clone 零分配。
+        let s: Utf8Bytes = payload.into().into();
         Self {
             interval,
             build: Box::new(move || Message::Text(s.clone())),
