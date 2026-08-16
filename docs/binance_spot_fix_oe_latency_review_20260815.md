@@ -408,8 +408,18 @@ ACCOUNT_MONITOR_CORE 绑核；user stream 走 `runtime_common::ws_connection`
 - Response Mode："By default, all concurrent order entry sessions
   receive all of the account's successful ExecutionReport<8> ...
   including those in response to orders placed from other FIX sessions
-  and via non-FIX APIs."——OE 会话 EVERYTHING 模式收全账户 ER，
-  含非 FIX 渠道（WS/REST）下的单。
+  and via non-FIX APIs."——OE 会话 EVERYTHING 模式收该 API key
+  **现货账户**的全部 ER，含非 FIX 渠道（spot WS API/REST）下的单。
+- 范围界定：FIX API 只覆盖现货交易所（spot symbol、FIX_API 权限），
+  "account" 指现货账户；cross margin（sapi）、PM margin（papi）、
+  futures（fapi/dapi）账户的订单/成交不在推送范围。
+- 部署适配（2026-08-16 线上核实）：STANDARD 模式 intra/mm 环境的
+  maker 腿实际成交在现货账户——jp-meta binance-intra-arb01 的
+  account_monitor 只连 fapi + spot ws-api（/api/v3/userDataStream）
+  两组用户流，无 sapi margin 流；下单走 spot ws-api order.place /
+  FIX OE（FIX A/B 期间有真实成交即为证）。方案适用。
+  UNIFIED/PM 模式的 FR 环境 margin 单走 /papi/v1/margin/order
+  （PM 账户），FIX 不可见，方案不适用。
 - 官方性能表述（唯一一句）："FIX API should give better performance
   for ExecutionReport <8> push."——注意是 "should"，期望性表述非承诺。
 - **Drop Copy 出局**：新版文档明确 "Data in Drop Copy sessions is
