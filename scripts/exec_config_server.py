@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import math
 import os
@@ -44,6 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 CLIENT_SCRIPT_PATH = Path(__file__).resolve().with_name("exec_config_client.py")
 CLIENT_SCRIPT_ROUTE = "/exec_config_client.py"
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
+ORDER_PARAMETER_TOKEN_ENV = "CRYPTO_CTA_MANAGER_WRITE_TOKEN"
 
 
 class ConfigVersionConflict(ValueError):
@@ -394,11 +396,9 @@ INDEX_HTML = r"""<!doctype html>
       input { width: 100%; }
       button, a.command { cursor: pointer; }
       button.primary { background: #087ea4; border-color: #0ea5c9; }
-      button.secondary { background: var(--surface2); }
       button.danger { color: var(--red); }
-      button:disabled { opacity: .5; cursor: not-allowed; }
+      button:disabled { opacity: .5; cursor: wait; }
       input:disabled, select:disabled { color: var(--text); opacity: 1; cursor: default; }
-      input.is-dirty, select.is-dirty { border-color: var(--cyan); box-shadow: 0 0 0 1px #0e7490; }
       a.command { display: inline-flex; align-items: center; text-decoration: none; }
       .new-name { width: 180px; }
       .key { color: var(--muted); font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -426,9 +426,6 @@ INDEX_HTML = r"""<!doctype html>
       @media (max-width: 860px) { .param-grid { grid-template-columns: repeat(2, 1fr); } .status { width: 100%; margin-left: 0; } }
       @media (max-width: 520px) {
         header, main { padding-left: 10px; padding-right: 10px; }
-        .section-head { flex-wrap: wrap; }
-        .section-head .actions { width: 100%; margin-left: 0; }
-        .section-head .actions button { flex: 1; min-width: 0; }
         .param-grid { grid-template-columns: 1fr; }
         select { min-width: 150px; flex: 1; }
       }
@@ -445,13 +442,7 @@ INDEX_HTML = r"""<!doctype html>
     <main>
       <div id="redis-key" class="key">-</div>
       <section>
-        <div class="section-head">
-          <h2>Order Parameters</h2>
-          <div class="actions">
-            <button id="reset-order-parameters" class="secondary" type="button" disabled>Reset</button>
-            <button id="save-order-parameters" class="primary" type="button" disabled>Save Order Parameters</button>
-          </div>
-        </div>
+        <div class="section-head"><h2>Order Parameters</h2></div>
         <div class="param-grid">
           <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
           <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" disabled /></div>
@@ -478,7 +469,7 @@ INDEX_HTML = r"""<!doctype html>
       (() => {
         const DEFAULTS = __DEFAULTS__;
         const fields = ["single_order_usdt", "orders_per_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
-        const state = { bootstrap: null, names: [], name: "", config: null, exists: false, saving: false };
+        const state = { bootstrap: null, names: [], name: "", config: null };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }
         function setStatus(text, level = "") { el("status").textContent = text; el("status").className = `status ${level}`.trim(); }
@@ -490,39 +481,6 @@ INDEX_HTML = r"""<!doctype html>
         }
         function strategyFromQuery() { return new URLSearchParams(location.search).get("strategy") || ""; }
         function updateQuery() { const url = new URL(location.href); state.name ? url.searchParams.set("strategy", state.name) : url.searchParams.delete("strategy"); history.replaceState(null, "", url); }
-        function fieldChanged(name) {
-          return state.config !== null && String(state.config[name]) !== el(name).value.trim();
-        }
-        function hasOrderParameterChanges() {
-          return state.exists && fields.some(fieldChanged);
-        }
-        function updateEditorState() {
-          const dirty = hasOrderParameterChanges();
-          fields.forEach((name) => {
-            el(name).disabled = !state.exists || state.saving;
-            el(name).classList.toggle("is-dirty", state.exists && fieldChanged(name));
-          });
-          el("reset-order-parameters").disabled = !dirty || state.saving;
-          el("save-order-parameters").disabled = !dirty || state.saving;
-        }
-        function collectOrderParameters() {
-          const parameters = {};
-          fields.forEach((name) => {
-            if (name === "maker_price_anchor") {
-              parameters[name] = el(name).value;
-              return;
-            }
-            const raw = el(name).value.trim();
-            if (!raw) throw new Error(`${name} is required`);
-            const value = Number(raw);
-            if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
-            parameters[name] = value;
-          });
-          return parameters;
-        }
-        function confirmDiscard() {
-          return !hasOrderParameterChanges() || window.confirm("Discard unsaved order parameter changes?");
-        }
         function renderNames() {
           const select = el("strategy");
           select.innerHTML = '<option value="">Select strategy</option>' + state.names.map((name) => `<option value="${name}">${name}</option>`).join("");
@@ -541,13 +499,11 @@ INDEX_HTML = r"""<!doctype html>
             });
           el("target-empty").style.display = tbody.children.length ? "none" : "block";
         }
-        function renderConfig(config, exists = false) {
+        function renderConfig(config) {
           state.config = structuredClone(config);
-          state.exists = exists;
-          fields.forEach((name) => { el(name).value = config[name]; });
+          fields.forEach((name) => { el(name).value = config[name]; el(name).disabled = true; });
           renderTargets(config.targets);
           el("redis-key").textContent = state.bootstrap ? `${state.bootstrap.key_prefix}${state.name}` : "-";
-          updateEditorState();
         }
         async function loadNames(preferred = "") {
           const payload = await request("strategies");
@@ -555,7 +511,7 @@ INDEX_HTML = r"""<!doctype html>
           if (preferred && state.names.includes(preferred)) state.name = preferred;
           else if (!state.names.includes(state.name)) state.name = state.names[0] || "";
           renderNames();
-          if (state.name) await loadStrategy(state.name); else { renderConfig(DEFAULTS, false); setStatus("No strategies", "warn"); }
+          if (state.name) await loadStrategy(state.name); else { renderConfig(DEFAULTS); setStatus("No strategies", "warn"); }
         }
         async function loadStrategy(name) {
           if (!name) return;
@@ -563,36 +519,9 @@ INDEX_HTML = r"""<!doctype html>
           try {
             const payload = await request(`strategy?name=${encodeURIComponent(name)}`);
             state.name = name;
-            renderConfig(payload.config || DEFAULTS, payload.exists === true);
+            renderConfig(payload.config || DEFAULTS);
             renderNames(); updateQuery(); setStatus(payload.exists ? "Loaded" : "Strategy not found", payload.exists ? "ok" : "warn");
           } catch (error) { setStatus(error.message, "err"); }
-        }
-        async function saveOrderParameters() {
-          if (!state.name || !state.exists || state.saving) return;
-          let orderParameters;
-          try { orderParameters = collectOrderParameters(); }
-          catch (error) { setStatus(error.message, "err"); return; }
-          state.saving = true; updateEditorState(); setStatus("Saving");
-          try {
-            const payload = await request("order-parameters", {
-              method: "POST",
-              body: JSON.stringify({
-                strategy_name: state.name,
-                expected_updated_at_us: state.config.updated_at_us ?? null,
-                order_parameters: orderParameters,
-              }),
-            });
-            renderConfig({
-              ...state.config,
-              ...payload.order_parameters,
-              updated_at_us: payload.updated_at_us,
-            }, true);
-            setStatus("Saved", "ok");
-          } catch (error) {
-            setStatus(error.message, "err");
-          } finally {
-            state.saving = false; updateEditorState();
-          }
         }
         async function boot() {
           try {
@@ -601,15 +530,8 @@ INDEX_HTML = r"""<!doctype html>
             await loadNames(strategyFromQuery());
           } catch (error) { setStatus(error.message, "err"); }
         }
-        el("strategy").onchange = (event) => {
-          if (!confirmDiscard()) { event.target.value = state.name; return; }
-          loadStrategy(event.target.value);
-        };
-        el("reload").onclick = () => { if (confirmDiscard()) loadNames(state.name); };
-        el("reset-order-parameters").onclick = () => { if (state.config) renderConfig(state.config, state.exists); setStatus("Reset", "ok"); };
-        el("save-order-parameters").onclick = saveOrderParameters;
-        fields.forEach((name) => { el(name).oninput = updateEditorState; el(name).onchange = updateEditorState; });
-        window.addEventListener("beforeunload", (event) => { if (hasOrderParameterChanges()) { event.preventDefault(); event.returnValue = ""; } });
+        el("strategy").onchange = (event) => loadStrategy(event.target.value);
+        el("reload").onclick = () => loadNames(state.name);
         boot();
       })();
     </script>
@@ -617,7 +539,11 @@ INDEX_HTML = r"""<!doctype html>
 </html>"""
 
 
-def make_handler(store: ExecConfigStore, dashboard_url: str):
+def make_handler(
+    store: ExecConfigStore,
+    dashboard_url: str,
+    order_parameter_token: Optional[str] = None,
+):
     html = INDEX_HTML.replace(
         "__DEFAULTS__", json.dumps(DEFAULT_CONFIG, ensure_ascii=False)
     ).encode("utf-8")
@@ -736,6 +662,25 @@ def make_handler(store: ExecConfigStore, dashboard_url: str):
                     self.log_update_response(404, response)
                     self.send_json(404, response)
                     return
+                if parsed.path == "/api/order-parameters":
+                    if not order_parameter_token:
+                        response = {
+                            "ok": False,
+                            "error": "order parameter writes are not configured",
+                        }
+                        self.log_update_response(503, response)
+                        self.send_json(503, response)
+                        return
+                    authorization = self.headers.get("Authorization", "")
+                    expected = f"Bearer {order_parameter_token}"
+                    if not hmac.compare_digest(authorization, expected):
+                        response = {
+                            "ok": False,
+                            "error": "write authorization is required",
+                        }
+                        self.log_update_response(401, response)
+                        self.send_json(401, response)
+                        return
                 payload = self.read_json()
                 if parsed.path == "/api/order-parameters":
                     required = {
@@ -846,14 +791,53 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-name", default=os.environ.get("ENV_NAME", ""))
     parser.add_argument("--venue", default=os.environ.get("VENUE", ""))
     parser.add_argument("--dashboard-url", default=os.environ.get("DASHBOARD_URL", "../"))
+    parser.add_argument(
+        "--order-parameter-token-file",
+        default=os.environ.get("ORDER_PARAMETER_TOKEN_FILE", ""),
+    )
     return parser.parse_args()
+
+
+def load_order_parameter_token(raw_path: str) -> Optional[str]:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text)
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise ValueError("order parameter token file must not be accessible by group or other")
+    contents = path.read_text(encoding="utf-8")
+    assignments = []
+    for raw_line in contents.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").lstrip()
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == ORDER_PARAMETER_TOKEN_ENV:
+            assignments.append(value.strip())
+    if len(assignments) > 1:
+        raise ValueError(f"duplicate {ORDER_PARAMETER_TOKEN_ENV} assignments")
+    token = assignments[0] if assignments else contents.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        token = token[1:-1]
+    if len(token) < 32 or any(character.isspace() for character in token):
+        raise ValueError(
+            "order parameter token must contain at least 32 non-whitespace characters"
+        )
+    return token
 
 
 def main() -> int:
     args = parse_args()
     store = ExecConfigStore(args.redis_url, args.env_name, args.venue)
+    order_parameter_token = load_order_parameter_token(
+        args.order_parameter_token_file
+    )
     server = ThreadingHTTPServer(
-        (args.bind, args.port), make_handler(store, args.dashboard_url)
+        (args.bind, args.port),
+        make_handler(store, args.dashboard_url, order_parameter_token),
     )
     print(
         f"[exec-config] listening http://{args.bind}:{args.port} "

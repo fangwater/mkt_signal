@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import tempfile
 import threading
 import unittest
 import urllib.request
@@ -16,6 +17,8 @@ SPEC = importlib.util.spec_from_file_location("exec_config_server", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
+
+WRITE_TOKEN = "manager-write-token-for-tests-0123456789"
 
 
 class FakeWatchError(Exception):
@@ -102,7 +105,7 @@ class ExecConfigServerTests(unittest.TestCase):
     def test_client_script_is_downloadable(self):
         store = fake_store()
         server = ThreadingHTTPServer(
-            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -124,7 +127,7 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertTrue(body.startswith("#!/usr/bin/env python3"))
         self.assertIn("http://172.16.30.42:10041/config/", body)
 
-    def test_config_page_edits_only_order_parameters_and_filters_zero_targets(self):
+    def test_config_page_is_display_only_and_filters_zero_targets(self):
         store = fake_store()
         server = ThreadingHTTPServer(
             ("127.0.0.1", 0), MODULE.make_handler(store, "../")
@@ -142,8 +145,8 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertNotIn("Save Strategy", body)
         self.assertNotIn('id="add-strategy"', body)
         self.assertNotIn('id="add-target"', body)
-        self.assertIn('id="save-order-parameters"', body)
-        self.assertIn('id="reset-order-parameters"', body)
+        self.assertNotIn('id="save-order-parameters"', body)
+        self.assertNotIn('id="reset-order-parameters"', body)
         self.assertIn("Target Positions", body)
         self.assertIn("Read only", body)
         self.assertIn('id="single_order_usdt" inputmode="decimal" disabled', body)
@@ -243,7 +246,10 @@ class ExecConfigServerTests(unittest.TestCase):
             data=json.dumps(
                 {"strategy_name": "trend_a", "config": config}
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {WRITE_TOKEN}",
+            },
             method="POST",
         )
         output = io.StringIO()
@@ -266,7 +272,7 @@ class ExecConfigServerTests(unittest.TestCase):
         parameters = order_parameters(current)
         parameters["orders_per_batch"] = 5
         server = ThreadingHTTPServer(
-            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -282,7 +288,10 @@ class ExecConfigServerTests(unittest.TestCase):
                     "order_parameters": parameters,
                 }
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {WRITE_TOKEN}",
+            },
             method="POST",
         )
         output = io.StringIO()
@@ -323,7 +332,7 @@ class ExecConfigServerTests(unittest.TestCase):
         current = store.save("trend_a", config)
         raw_before = store.client.get(store.key("trend_a"))
         server = ThreadingHTTPServer(
-            ("127.0.0.1", 0), MODULE.make_handler(store, "../")
+            ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -339,7 +348,10 @@ class ExecConfigServerTests(unittest.TestCase):
                     "order_parameters": order_parameters(current),
                 }
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {WRITE_TOKEN}",
+            },
             method="POST",
         )
         with self.assertRaises(HTTPError) as raised:
@@ -349,6 +361,49 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 409)
         self.assertIn("reload before saving", payload["error"])
         self.assertEqual(store.client.get(store.key("trend_a")), raw_before)
+
+    def test_http_order_parameter_save_requires_configured_bearer_token(self):
+        store = fake_store()
+        current = store.save("trend_a", dict(MODULE.DEFAULT_CONFIG))
+        raw_before = store.client.get(store.key("trend_a"))
+        payload = json.dumps(
+            {
+                "strategy_name": "trend_a",
+                "expected_updated_at_us": current["updated_at_us"],
+                "order_parameters": order_parameters(current),
+            }
+        ).encode()
+
+        for token, expected_status in ((WRITE_TOKEN, 401), (None, 503)):
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), MODULE.make_handler(store, "../", token)
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/api/order-parameters",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=2)
+            self.assertEqual(raised.exception.code, expected_status)
+
+        self.assertEqual(store.client.get(store.key("trend_a")), raw_before)
+
+    def test_token_loader_accepts_systemd_environment_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = pathlib.Path(temp_dir) / "config-write.env"
+            path.write_text(
+                f"# manager write access\n{MODULE.ORDER_PARAMETER_TOKEN_ENV}={WRITE_TOKEN}\n",
+                encoding="utf-8",
+            )
+            path.chmod(0o600)
+
+            self.assertEqual(MODULE.load_order_parameter_token(str(path)), WRITE_TOKEN)
 
     def test_each_publish_refreshes_strategy_update_time(self):
         store = fake_store()

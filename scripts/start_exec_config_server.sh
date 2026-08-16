@@ -35,6 +35,10 @@ PORT="${PORT:-18161}"
 REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
 DASHBOARD_URL="${DASHBOARD_URL:-../}"
 APP_NAME="${PMDAEMON_NAME:-exec_cfg_${dir_tag}}"
+DEFAULT_ORDER_PARAMETER_TOKEN_FILE="${HOME}/.config/crypto-cta-manager/config-write.env"
+if [[ -z "${ORDER_PARAMETER_TOKEN_FILE:-}" && -f "$DEFAULT_ORDER_PARAMETER_TOKEN_FILE" ]]; then
+  ORDER_PARAMETER_TOKEN_FILE="$DEFAULT_ORDER_PARAMETER_TOKEN_FILE"
+fi
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   if [[ -x "${HOME}/.venvs/default/bin/python" ]]; then
@@ -70,8 +74,13 @@ json_redis="$(json_escape "$REDIS_URL")"
 json_env_name="$(json_escape "$ENV_NAME")"
 json_venue="$(json_escape "$VENUE")"
 json_dashboard="$(json_escape "$DASHBOARD_URL")"
+json_token_args=""
+if [[ -n "${ORDER_PARAMETER_TOKEN_FILE:-}" ]]; then
+  json_token_file="$(json_escape "$ORDER_PARAMETER_TOKEN_FILE")"
+  json_token_args=",\"--order-parameter-token-file\",\"${json_token_file}\""
+fi
 cat >"$cfg_file" <<JSON
-{"apps":[{"name":"${json_name}","script":"${json_python}","args":["${json_script}","--bind","${json_bind}","--port","${json_port}","--redis-url","${json_redis}","--env-name","${json_env_name}","--venue","${json_venue}","--dashboard-url","${json_dashboard}"],"cwd":"${json_base}"}]}
+{"apps":[{"name":"${json_name}","script":"${json_python}","args":["${json_script}","--bind","${json_bind}","--port","${json_port}","--redis-url","${json_redis}","--env-name","${json_env_name}","--venue","${json_venue}","--dashboard-url","${json_dashboard}"${json_token_args}],"cwd":"${json_base}"}]}
 JSON
 
 echo "[INFO] Starting exec_config_server env=${ENV_NAME} venue=${VENUE} port=${PORT}"
