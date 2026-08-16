@@ -154,13 +154,9 @@ if [[ -n "${TRADE_ENGINE_CORE:-}" ]]; then
   core_args+=(--core "$TRADE_ENGINE_CORE")
   echo "[INFO] core bind ${TRADE_ENGINE_CORE} (main thread, from $ENV_FILE:TRADE_ENGINE_CORE)"
 fi
+# trade_engine 现为单线程，TRADE_ENGINE_IPC_CORE 已废弃并被忽略。
 if [[ -n "${TRADE_ENGINE_IPC_CORE:-}" ]]; then
-  if [[ ! "$TRADE_ENGINE_IPC_CORE" =~ ^[0-9]+$ ]]; then
-    echo "[ERROR] TRADE_ENGINE_IPC_CORE 必须为单个整数 (got: $TRADE_ENGINE_IPC_CORE)" >&2
-    exit 1
-  fi
-  core_args+=(--ipc-core "$TRADE_ENGINE_IPC_CORE")
-  echo "[INFO] core bind ${TRADE_ENGINE_IPC_CORE} (te-ipc thread, from $ENV_FILE:TRADE_ENGINE_IPC_CORE)"
+  echo "[WARN] TRADE_ENGINE_IPC_CORE=${TRADE_ENGINE_IPC_CORE} 已废弃（trade_engine 单线程），忽略；请从 env.sh 移除并回收该核"
 fi
 
 json_escape() {

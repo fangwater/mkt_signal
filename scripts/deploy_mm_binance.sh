@@ -161,7 +161,6 @@ export ACCOUNT_MONITOR_CORE=""
 export TRADE_SIGNAL_CORE=""
 export PRE_TRADE_CORE=""
 export TRADE_ENGINE_CORE=""
-export TRADE_ENGINE_IPC_CORE=""
 export PERSIST_MANAGER_CORE=""
 EOF
   chmod 600 "$env_file"

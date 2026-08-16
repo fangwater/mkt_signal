@@ -5192,7 +5192,6 @@ dependencies = [
  "order_common",
  "reqwest",
  "rolling_common",
- "rtrb",
  "runtime_common",
  "serde",
  "serde_json",

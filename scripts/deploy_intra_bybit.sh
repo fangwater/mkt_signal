@@ -106,7 +106,6 @@ configure_bybit_arb01_core_layout() {
     "TRADE_SIGNAL_CORE='12'" \
     "PRE_TRADE_CORE='13'" \
     "TRADE_ENGINE_CORE='14'" \
-    "TRADE_ENGINE_IPC_CORE='15'" \
     "PERSIST_MANAGER_CORE=''"
   echo "[INFO] bybit-intra-arb01 core layout written to $ENV_FILE"
 }

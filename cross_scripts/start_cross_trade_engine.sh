@@ -143,38 +143,27 @@ validate_core_value() {
   fi
 }
 
+# trade_engine 现为单线程，只需绑定主核；历史的 *_IPC_CORE 变量不再使用。
 side_core_args() {
   local side="$1"
-  local main_var="" ipc_var="" main_core="" ipc_core=""
+  local main_var="" main_core=""
   if [[ "$side" == "open" ]]; then
     main_var="TRADE_ENGINE_OPEN_CORE"
-    ipc_var="TRADE_ENGINE_OPEN_IPC_CORE"
   else
     main_var="TRADE_ENGINE_HEDGE_CORE"
-    ipc_var="TRADE_ENGINE_HEDGE_IPC_CORE"
   fi
 
   main_core="${!main_var:-}"
-  ipc_core="${!ipc_var:-}"
 
   if [[ -z "$main_core" && -n "${TRADE_ENGINE_CORE:-}" ]]; then
     main_var="TRADE_ENGINE_CORE"
     main_core="$TRADE_ENGINE_CORE"
-  fi
-  if [[ -z "$ipc_core" && -n "${TRADE_ENGINE_IPC_CORE:-}" ]]; then
-    ipc_var="TRADE_ENGINE_IPC_CORE"
-    ipc_core="$TRADE_ENGINE_IPC_CORE"
   fi
 
   if [[ -n "$main_core" ]]; then
     validate_core_value "$main_var" "$main_core"
     printf '%s\n' "--core" "$main_core"
     echo "[INFO] core bind ${main_core} for ${side} trade_engine main (from $ENV_FILE:${main_var})" >&2
-  fi
-  if [[ -n "$ipc_core" ]]; then
-    validate_core_value "$ipc_var" "$ipc_core"
-    printf '%s\n' "--ipc-core" "$ipc_core"
-    echo "[INFO] core bind ${ipc_core} for ${side} trade_engine ipc (from $ENV_FILE:${ipc_var})" >&2
   fi
 }
 

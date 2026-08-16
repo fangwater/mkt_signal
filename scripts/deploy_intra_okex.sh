@@ -90,7 +90,6 @@ configure_hk_okex_arb01_core_layout() {
     "HK el-cc-okx-srv01: housekeeping=0-3, okex intra hot cores=4,6,8,10, OKEX spread_pbs cores=12,14; keep sibling CPUs 5,7,9,11,13,15 unused/offline." \
     "OKEX_INTRA_HOT_CORES='4,6,8,10'" \
     "TRADE_ENGINE_CORE='4'" \
-    "TRADE_ENGINE_IPC_CORE='6'" \
     "PRE_TRADE_CORE='8'" \
     "TRADE_SIGNAL_CORE='10'"
   echo "[INFO] HK okex-intra-arb01 core layout written to $TARGET_DIR/env.sh"

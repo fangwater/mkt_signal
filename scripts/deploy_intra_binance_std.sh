@@ -135,7 +135,6 @@ configure_binance_arb01_core_layout() {
     "TRADE_SIGNAL_CORE='17'" \
     "PRE_TRADE_CORE='18'" \
     "TRADE_ENGINE_CORE='19'" \
-    "TRADE_ENGINE_IPC_CORE='20'" \
     "PERSIST_MANAGER_CORE='26'"
   echo "[INFO] binance-intra-arb01 core layout written to $ENV_FILE"
 }

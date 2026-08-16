@@ -257,8 +257,12 @@ req_worker 把订单 push 进连接任务队列并 notify 后不会立刻让出�
   fast_poll 部署启用。
 - te-ipc 线程、SPSC 队列、`TE_IPC_REQ_QUEUE_CAP` 全部移除；
   `trade_engine_<exchange>_ipc` iceoryx node 不再创建。
-- `--ipc-core` / `TRADE_ENGINE_IPC_CORE` 保留兼容但忽略并告警；部署时
-  从 env.sh 移除该变量，把空出的核转作 ens41 IRQ/XPS 或 spare。
+- `--ipc-core` CLI 参数彻底删除（不做兼容保留）；repo 内全部启动/部署
+  脚本已同步：start 脚本不再传该参数（检测到 env 里残留
+  `TRADE_ENGINE_IPC_CORE` 时打印废弃告警），deploy 模板不再写入
+  `TRADE_ENGINE_IPC_CORE`。注意：新二进制必须配合新 start 脚本部署，
+  旧脚本传 `--ipc-core` 会因未知参数启动失败。部署时从 env.sh 移除该
+  变量，把空出的核转作 ens41 IRQ/XPS 或 spare。
 - 背压语义变化：入站缓冲从 SPSC 4096 + 订阅 256 变为仅订阅 256
   （safe-overflow 覆盖最旧样本）。订单/查询突发远小于 256，与线上
   FR 环境现行为一致。
