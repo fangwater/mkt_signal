@@ -91,10 +91,6 @@ name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 
 [[bin]]
-name = "demo_rate_fetcher"
-path = "src/bin/demo_rate_fetcher.rs"
-
-[[bin]]
 name = "pre_trade"
 path = "src/bin/pre_trade.rs"
 
@@ -135,20 +131,8 @@ path = "src/bin/predict_file.rs"
 
 
 [[bin]]
-name = "demo_qty_alignment"
-path = "src/bin/demo_qty_alignment.rs"
-
-[[bin]]
-name = "demo_gate_minqty"
-path = "src/bin/demo_gate_minqty.rs"
-
-[[bin]]
 name = "delist_schedule"
 path = "src/bin/delist_schedule.rs"
-
-[[bin]]
-name = "demo_depth_query_tlen"
-path = "src/bin/demo_depth_query_tlen.rs"
 
 [[bin]]
 name = "market_maker"
@@ -217,14 +201,6 @@ path = "src/bin/fusion_factor_1m_pub.rs"
 [[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
-
-[[bin]]
-name = "demo_bridge_pub"
-path = "src/bin/demo_bridge_pub.rs"
-
-[[bin]]
-name = "demo_bridge_sub"
-path = "src/bin/demo_bridge_sub.rs"
 
 [[bin]]
 name = "iceoryx_dead_nodes_cleanup"
