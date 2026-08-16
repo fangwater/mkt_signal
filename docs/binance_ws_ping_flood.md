@@ -1,7 +1,7 @@
 # Binance WS ping 洪泛阈值实测
 
 测试时间：2026-07-06 · 机器：binance-intra-arb01（ap-northeast-1，colo 同 AZ）
-工具：`src/bin/binance_ws_ping_flood_test.rs`（仅 session.logon + 协议级 ping，不下单）
+工具：一次性 `binance_ws_ping_flood_test`（仅 session.logon + 协议级 ping，不下单；测完已删）
 
 ## 背景
 

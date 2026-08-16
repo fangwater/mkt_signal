@@ -135,14 +135,6 @@ path = "src/bin/predict_file.rs"
 
 
 [[bin]]
-name = "bybit_am_latency_probe"
-path = "src/bin/bybit_am_latency_probe.rs"
-
-[[bin]]
-name = "okex_am_latency_probe"
-path = "src/bin/okex_am_latency_probe.rs"
-
-[[bin]]
 name = "demo_qty_alignment"
 path = "src/bin/demo_qty_alignment.rs"
 
@@ -259,20 +251,12 @@ name = "inspect_health_snapshot"
 path = "src/bin/inspect_health_snapshot.rs"
 
 [[bin]]
-name = "binance_bbo_time_probe"
-path = "src/bin/binance_bbo_time_probe.rs"
-
-[[bin]]
 name = "hedge_lazy_taker_eval"
 path = "src/bin/hedge_lazy_taker_eval.rs"
 
 [[bin]]
 name = "hedge_lazy_taker_dashboard"
 path = "src/bin/hedge_lazy_taker_dashboard.rs"
-
-[[bin]]
-name = "binance_bbo_parser_bench"
-path = "src/bin/binance_bbo_parser_bench.rs"
 
 [[bin]]
 name = "inspect_model_output"
@@ -293,10 +277,6 @@ path = "src/bin/inspect_model_input.rs"
 [[bin]]
 name = "intra_funding_trace"
 path = "src/bin/intra_funding_trace.rs"
-
-[[bin]]
-name = "binance_ws_ping_flood_test"
-path = "src/bin/binance_ws_ping_flood_test.rs"
 
 [[bin]]
 name = "remote_ip_diag"
