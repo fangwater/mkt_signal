@@ -191,11 +191,19 @@ impl PmForwarder {
             return false;
         }
 
-        let mut buffer = [0u8; PM_MAX_BYTES];
-        buffer[..msg.len()].copy_from_slice(msg);
         match self.publisher.loan_uninit() {
-            Ok(sample) => {
-                let sample = sample.write_payload(buffer);
+            Ok(mut sample) => {
+                // 直写共享内存：拷贝 len 字节 + 尾部清零。旧实现是 16KB 栈数组
+                // memset + 拷入栈 + 整块 write_payload 再拷一次，成交推送热路径
+                // 每条多耗两次 PM_MAX_BYTES 级内存操作。
+                unsafe {
+                    let payload = sample.payload_mut().as_mut_ptr().cast::<u8>();
+                    std::ptr::copy_nonoverlapping(msg.as_ptr(), payload, msg.len());
+                    if msg.len() < PM_MAX_BYTES {
+                        std::ptr::write_bytes(payload.add(msg.len()), 0, PM_MAX_BYTES - msg.len());
+                    }
+                }
+                let sample = unsafe { sample.assume_init() };
                 if sample.send().is_ok() {
                     self.sent += 1;
                     if msg.len() > self.max_seen {

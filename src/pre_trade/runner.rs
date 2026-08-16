@@ -665,25 +665,12 @@ impl PreTrade {
                 }};
             }
 
+            // 优先级：trade_resp / monitor_state（成交回报 -> taker 对冲触发）排在
+            // 新开仓 signal 之前。maker 成交是低频事件，抢占对 signal p50 影响可忽略，
+            // 但避免 fill 在 signal 批次后排队（对冲链路 p99 直接受益）。
+            // open_drop_reason 先行合并，保证 fill/响应提前 finish 时不丢失该轮的
+            // 维护窗口丢弃标记。
             if fast_poll {
-                let before_signal_us = get_timestamp_us();
-                let (signal_has_work, signal_budget_exhausted) =
-                    SignalChannel::drain_pending_with_open_drop_limit(
-                        open_drop_reason,
-                        fast_poll_budgets.signal,
-                    );
-                if signal_has_work {
-                    record_stage_latency(ReactorStage::ReactorGap, last_loop_end_us, loop_start_us);
-                    record_stage_latency(
-                        ReactorStage::BeforeSignal,
-                        loop_start_us,
-                        before_signal_us,
-                    );
-                    if signal_budget_exhausted {
-                        finish_fast_poll_work!(open_drop_reason);
-                    }
-                    finish_fast_poll_work!(None);
-                }
                 next_loop_open_drop_reason =
                     select_slower_open_drop_reason(next_loop_open_drop_reason, open_drop_reason);
             }
@@ -716,6 +703,27 @@ impl PreTrade {
                     );
                 }
                 finish_fast_poll_work!(next_loop_open_drop_reason);
+            }
+
+            if fast_poll {
+                let before_signal_us = get_timestamp_us();
+                let (signal_has_work, signal_budget_exhausted) =
+                    SignalChannel::drain_pending_with_open_drop_limit(
+                        open_drop_reason,
+                        fast_poll_budgets.signal,
+                    );
+                if signal_has_work {
+                    record_stage_latency(ReactorStage::ReactorGap, last_loop_end_us, loop_start_us);
+                    record_stage_latency(
+                        ReactorStage::BeforeSignal,
+                        loop_start_us,
+                        before_signal_us,
+                    );
+                    if signal_budget_exhausted {
+                        finish_fast_poll_work!(open_drop_reason);
+                    }
+                    finish_fast_poll_work!(None);
+                }
             }
 
             if fast_poll {

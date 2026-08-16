@@ -367,6 +367,58 @@ done
 持久化用 systemd oneshot；回滚写 0。`/dev/cpu_dma_latency` 为 root-only
 （600），如走 PM QoS 路线需要进程以特权持有 fd，不如按核禁用直接。
 
+## maker 成交 -> taker 对冲链路评审（2026-08-16）
+
+目标链路：交易所 maker 成交 -> user stream 推送 -> account_monitor ->
+pre_trade -> taker 对冲下单。7 天订单数据的实测拆解（p50）：
+
+```text
+交易所 fill 事件 -> pre_trade 本地收到    ~0.79ms   推送段（交易所+网络+account_monitor），大头
+pre_trade 收到 fill -> hedge 请求 create   21-24us   内部段（p99 219us 有尾巴）
+hedge create -> 交易所 NEW ack             0.70-0.84ms  UM taker 发送段（p99 18ms 尾巴大）
+```
+
+已核查为健康的部分：binance_account_monitor 是 current_thread tokio +
+ACCOUNT_MONITOR_CORE 绑核；user stream 走 `runtime_common::ws_connection`
+（NODELAY/QUICKACK 常开，SO_BUSY_POLL 随 ENABLE_IPC_FAST_POLL）；解析器
+是 sonic_rs LazyValue（SIMD、按需取字段）；对冲直发路径在 fill drain 内
+同步完成（无 due 队列延迟）。
+
+本轮修改（已提交）：
+
+1. `PmForwarder::send_raw` 直写共享内存：旧实现每条账户事件做 16KB 栈
+   数组 memset + 拷入栈 + `write_payload` 整块再拷（PM_MAX_BYTES=16384），
+   改为 loan_uninit 后直接拷 len 字节 + 尾部清零（对齐 ipc_common 的
+   既有写法），成交推送热路径每条省两次 16KB 级内存操作（~2-4us）。
+2. pre_trade reactor 优先级重排：trade_resp / monitor_state（成交回报
+   -> 对冲触发）提到新开仓 signal 之前。maker 成交低频，对 signal p50
+   影响可忽略；避免 fill 排在 signal 批次（最多 8 条 x ~12us）之后，
+   直接压内部段 21us/219us 的尾部。open_drop_reason 顶部前置合并，
+   维护窗口丢弃语义不变。
+
+## 下一步架构项：FIX ER 成交竞速（待实施，先影子测量）
+
+推送段 ~0.79ms 是链路大头，其中交易所把 fill 送达本机的路径可能有更快
+的替代：Binance spot FIX 会话在 ResponseMode=EVERYTHING 下会收到全账户
+ExecutionReport 推送（含 maker 成交），与 user stream 是两条独立的
+服务端路径。方案：
+
+1. 影子阶段：trade_engine 增加一条 listener-only FIX 会话（EVERYTHING、
+   不发单，会话预算 10 条内），对 execType=TRADE 的 ER 记录
+   `symbol/orderId/execId/本地us`，与 account_monitor 的同一成交到达
+   时间对比，量化优势分布。
+2. 若稳定更快：把 fill ER 转成 order_resps 上的 TradeExecOutcome
+   （字段齐备：14 累计量/39 状态/60 时间/31 价格），与 user stream
+   双源竞速。幂等基础已就绪：`OrderManager::should_skip_idempotent_
+   trade_update` 会丢弃重复 Filled 与过期 Partial（见
+   docs/trade_update_idempotency.md），先到者触发对冲。
+3. 注意：需确认策略侧 trade-engine-response 入口对 fill 状态的处理与
+   user stream 路径等价（maker 单目前 ack 只有 NEW，fill 走 monitor），
+   接入前要补该入口的成交处理并复用同一幂等判定。
+
+UM taker 发送段的 p99（18ms）主要来自重连/限频窗口，本轮的路由 yield
+修复与多端点 RR 已部分覆盖，进一步需要 per-endpoint 的发送埋点定位。
+
 ## 附：架构与线上 layout 评审要点（同日评审）
 
 整体判断：进程按 signal → pre_trade → trade_engine 拆分、全链路 iceoryx2
