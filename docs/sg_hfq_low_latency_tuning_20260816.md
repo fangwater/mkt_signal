@@ -52,6 +52,14 @@ ethtool -C <iface> adaptive-rx off rx-usecs 0 tx-usecs 0
 
 曾试验 `napi_defer_hard_irqs=2` + `gro_flush_timeout=200000`,做了三窗口 A/B 后决定**保持关闭**,理由见下。
 
+### 4. C-state 禁用持久化(同日补充)
+
+检查发现 sg 是 `c7a.4xlarge`(AMD,无 SMT,全物理核),cpuidle 为 `acpi_idle`,
+其中 **C2 退出延迟 800µs**。所有 16 核的 C2 此前已被运行时手动禁用
+(`state2/disable=1`,历史驻留 6 亿次/近 90 小时),但**没有任何持久化配置,重启即回滚**。
+已并入上述 systemd oneshot:禁用所有退出延迟 >10µs 的 idle state(保留 POLL/C1,
+与 jp2 的 `max_cstate=1` 效果对齐),重启后自动重新生效。
+
 ## A/B 实验记录
 
 指标:bookticker 进程日志 `latency_us`(交易所时间戳 → 本地接收,KLL 分位数),每窗口取各上报行的中位数。
@@ -88,6 +96,7 @@ net.core.busy_poll = 50
 ENA Adaptive RX: off, rx-usecs 0, tx-usecs 0
 napi_defer_hard_irqs = 0
 gro_flush_timeout = 0
+cpuidle: POLL/C1 可用,C2(800µs)全核禁用(已持久化)
 hfq-low-latency-network.service: enabled / active(重启持久)
 ```
 
