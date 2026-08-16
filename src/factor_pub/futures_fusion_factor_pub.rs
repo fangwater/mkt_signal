@@ -3,6 +3,10 @@
 //! Input, state, registry, formulas, replay, and output are independent from
 //! crypto. Every formula is registered here against the native five-level book.
 
+// 引擎实现放在私有子模块，由专用 bin / replay 驱动；编其他 bin 时 rustc
+// 会把这些项标成 dead_code。
+#![allow(dead_code)]
+
 #[path = "cn_features/app.rs"]
 mod app;
 #[path = "cn_features/baselines.rs"]

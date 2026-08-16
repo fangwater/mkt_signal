@@ -12,7 +12,9 @@ use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use log::{debug, error, info, warn};
 use mkt_parsers::account_event::binance_basic_account_event_parser::BinanceBasicAccountEventParser;
-use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
+use mkt_parsers::account_event::{
+    binance_order_dedup_key, AccountEventSink, Parser as AccountEventParser,
+};
 use mkt_parsers::msg::basic_account_msg::{
     get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
     BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
@@ -39,9 +41,11 @@ use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_util::sync::CancellationToken;
+use trade_engine::binance_fix::{spawn_binance_spot_fix_er_listener, BinanceSpotFixConfig};
 use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
 use trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
@@ -1060,23 +1064,82 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Forwarding loop with periodic stats logging runs in the main task
-
-    loop {
-        tokio::select! {
-            _ = stats.tick() => {
-                log_forwarder_stats();
+    // std 现货第三路：FIX OE EVERYTHING。UM / unified 不走这条。
+    // listener 用 spawn_local，必须在 LocalSet 里驱动。
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            if binance_is_standard && account_monitor_fix_er_enabled() {
+                spawn_std_spot_fix_er_path(non_um_primary_ip.parse().ok(), shutdown_rx.clone());
             }
-            _ = shutdown_rx.changed() => { break; }
-        }
-    }
+            loop {
+                tokio::select! {
+                    _ = stats.tick() => {
+                        log_forwarder_stats();
+                    }
+                    _ = shutdown_rx.changed() => { break; }
+                }
+            }
+        })
+        .await;
 
     Ok(())
 }
 
+fn account_monitor_fix_er_enabled() -> bool {
+    match std::env::var("BINANCE_ACCOUNT_MONITOR_FIX_ER") {
+        Ok(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "0" | "false" | "off" | "no")
+        }
+        Err(_) => true,
+    }
+}
+
+fn spawn_std_spot_fix_er_path(source_ip: Option<IpAddr>, mut shutdown_rx: watch::Receiver<bool>) {
+    let config = match BinanceSpotFixConfig::from_env_listener(source_ip) {
+        Ok(config) => config,
+        Err(err) => {
+            warn!("std spot FIX ER path disabled: {err:#}");
+            return;
+        }
+    };
+    info!(
+        "std spot FIX ER path enabled sender_comp_id={} source_ip={}",
+        config.sender_comp_id(),
+        config
+            .source_ip()
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "system-default".to_string())
+    );
+
+    let shutdown = CancellationToken::new();
+    let stop = shutdown.clone();
+    tokio::task::spawn_local(async move {
+        let _ = shutdown_rx.changed().await;
+        stop.cancel();
+    });
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let _listener = spawn_binance_spot_fix_er_listener(config, tx, shutdown);
+    tokio::task::spawn_local(async move {
+        while let Some(event) = rx.recv().await {
+            let Some(msg) = event.to_std_spot_order_msg() else {
+                continue;
+            };
+            let wrapped = BasicAccountEventMsg::create(
+                BasicAccountEventType::OrderUpdate,
+                BasicAccountScope::BinanceStdSpot,
+                msg.to_bytes(),
+            );
+            let key = binance_order_dedup_key(BasicAccountScope::BinanceStdSpot, &msg);
+            let _ = DirectAccountEventSink.emit_with_dedup_key(wrapped.to_bytes(), key);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_ws_url;
+    use super::{account_monitor_fix_er_enabled, build_ws_url};
 
     #[test]
     fn build_ws_url_uses_private_query_format_for_new_private_base() {
@@ -1096,6 +1159,15 @@ mod tests {
             build_ws_url("wss://fstream.binance.com/pm", "abc123"),
             "wss://fstream.binance.com/pm/ws/abc123"
         );
+    }
+
+    #[test]
+    fn std_spot_fix_er_defaults_on_and_can_be_disabled() {
+        std::env::remove_var("BINANCE_ACCOUNT_MONITOR_FIX_ER");
+        assert!(account_monitor_fix_er_enabled());
+        std::env::set_var("BINANCE_ACCOUNT_MONITOR_FIX_ER", "off");
+        assert!(!account_monitor_fix_er_enabled());
+        std::env::remove_var("BINANCE_ACCOUNT_MONITOR_FIX_ER");
     }
 }
 

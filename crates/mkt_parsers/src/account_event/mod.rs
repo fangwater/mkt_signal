@@ -136,14 +136,18 @@ pub fn binance_order_dedup_key(
     account_scope: BasicAccountScope,
     msg: &BinanceBasicOrderMsg,
 ) -> u64 {
+    // std 现货三路竞速用 T 而不是 E：probe 实测 WS T ≡ FIX 60，
+    // WS E 常比 T 晚 1ms（成交偶发 +3ms），哈希 E 会漏去重。
     scoped_dedup_key(
         account_scope,
         hash64(&[
             BasicAccountEventType::OrderUpdate as u32 as u64,
             msg.order_id as u64,
             msg.client_order_id as u64,
-            msg.event_time as u64,
+            msg.execution_type as u64,
             msg.order_status as u64,
+            msg.trade_id as u64,
+            msg.trade_time as u64,
             msg.cumulative_filled_quantity.to_bits(),
         ]),
     )
@@ -257,5 +261,58 @@ pub(crate) mod test_sink {
             self.msgs.borrow_mut().push(msg);
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::binance_order_dedup_key;
+    use crate::msg::basic_account_msg::{BasicAccountScope, BinanceBasicOrderMsg};
+
+    fn sample_order(event_time: i64, trade_time: i64, trade_id: i64) -> BinanceBasicOrderMsg {
+        BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_MARGIN,
+            event_time,
+            trade_time,
+            "BTCUSDT".into(),
+            76,
+            11,
+            trade_id,
+            1,
+            1,
+            0,
+            1,
+            1,
+            false,
+            10.0,
+            5.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn binance_order_dedup_key_uses_trade_time_not_event_time() {
+        let ws = sample_order(1_718_096_506_197, 1_718_096_506_196, 0);
+        let fix = sample_order(1_718_096_506_228, 1_718_096_506_196, 0);
+        assert_eq!(
+            binance_order_dedup_key(BasicAccountScope::BinanceStdSpot, &ws),
+            binance_order_dedup_key(BasicAccountScope::BinanceStdSpot, &fix)
+        );
+    }
+
+    #[test]
+    fn binance_order_dedup_key_separates_trades() {
+        let first = sample_order(1, 1, 100);
+        let second = sample_order(1, 1, 101);
+        assert_ne!(
+            binance_order_dedup_key(BasicAccountScope::BinanceStdSpot, &first),
+            binance_order_dedup_key(BasicAccountScope::BinanceStdSpot, &second)
+        );
     }
 }
