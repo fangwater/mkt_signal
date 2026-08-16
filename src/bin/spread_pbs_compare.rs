@@ -9,7 +9,6 @@ use mkt_signal::spread_pbs::publisher::{
     DEFAULT_DAT_SERVICE_ROOT, DEFAULT_SPREAD_SERVICE_ROOT, TEST_DAT_SERVICE_ROOT,
     TEST_SPREAD_SERVICE_ROOT,
 };
-use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use std::collections::VecDeque;
 use std::sync::{
@@ -26,7 +25,7 @@ struct Args {
     #[arg(long, default_value = "binance-futures")]
     venue: String,
 
-    /// Comma-separated channels: bbo,trade,incremental,derivatives,latency,all.
+    /// Comma-separated channels: bbo,trade,incremental,derivatives,all.
     #[arg(long, default_value = "bbo")]
     channels: String,
 
@@ -34,11 +33,11 @@ struct Args {
     #[arg(long, default_value = "")]
     symbols: String,
 
-    /// Production BBO/latency root.
+    /// Production BBO root.
     #[arg(long, default_value = DEFAULT_SPREAD_SERVICE_ROOT)]
     left_spread_root: String,
 
-    /// Test BBO/latency root.
+    /// Test BBO root.
     #[arg(long, default_value = TEST_SPREAD_SERVICE_ROOT)]
     right_spread_root: String,
 
@@ -97,7 +96,6 @@ enum CompareChannel {
     Trade,
     Incremental,
     Derivatives,
-    Latency,
 }
 
 impl CompareChannel {
@@ -107,7 +105,6 @@ impl CompareChannel {
             Self::Trade => "trade",
             Self::Incremental => "incremental",
             Self::Derivatives => "derivatives",
-            Self::Latency => "latency",
         }
     }
 
@@ -117,12 +114,11 @@ impl CompareChannel {
             Self::Trade => "trade",
             Self::Incremental => "incremental",
             Self::Derivatives => "derivatives",
-            Self::Latency => "latency",
         }
     }
 
     fn uses_spread_root(self) -> bool {
-        matches!(self, Self::AskBidSpread | Self::Latency)
+        matches!(self, Self::AskBidSpread)
     }
 }
 
@@ -307,7 +303,6 @@ struct ChannelSub {
 
 enum SubscriberEnum {
     Size128(Subscriber<ipc::Service, [u8; 128], ()>),
-    Size512(Subscriber<ipc::Service, [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN], ()>),
     Size2048(Subscriber<ipc::Service, [u8; 2048], ()>),
 }
 
@@ -315,7 +310,6 @@ impl SubscriberEnum {
     fn receive_msg(&self) -> Result<Option<Bytes>> {
         match self {
             Self::Size128(subscriber) => receive_from_subscriber(subscriber),
-            Self::Size512(subscriber) => receive_from_subscriber(subscriber),
             Self::Size2048(subscriber) => receive_from_subscriber(subscriber),
         }
     }
@@ -513,7 +507,6 @@ fn parse_channels(raw: &str) -> Result<Vec<CompareChannel>> {
                 CompareChannel::Trade,
                 CompareChannel::Incremental,
                 CompareChannel::Derivatives,
-                CompareChannel::Latency,
             ]);
         }
         let channel = match normalized.as_str() {
@@ -523,7 +516,7 @@ fn parse_channels(raw: &str) -> Result<Vec<CompareChannel>> {
             "derivatives" | "derivative" | "der" | "funding" | "mark" => {
                 CompareChannel::Derivatives
             }
-            "latency" | "lat" => CompareChannel::Latency,
+            "latency" | "lat" => bail!("unsupported compare channel: {}", item),
             _ => bail!("unsupported compare channel: {}", item),
         };
         if !channels.contains(&channel) {
@@ -614,15 +607,6 @@ fn open_subscriber(
                 .publish_subscribe::<[u8; 2048]>()
                 .open()?;
             Ok(SubscriberEnum::Size2048(
-                service.subscriber_builder().create()?,
-            ))
-        }
-        CompareChannel::Latency => {
-            let service = node
-                .service_builder(&ServiceName::new(service_name)?)
-                .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
-                .open()?;
-            Ok(SubscriberEnum::Size512(
                 service.subscriber_builder().create()?,
             ))
         }
@@ -722,10 +706,6 @@ fn handle_payload(
 }
 
 fn decode_payload(channel: CompareChannel, raw: &[u8]) -> Result<DecodedMsg> {
-    if channel == CompareChannel::Latency {
-        return decode_latency(raw);
-    }
-
     let msg_type = read_u32(raw, 0)?;
     let symbol_len = read_u32(raw, 4)? as usize;
     let symbol_start = 8usize;
@@ -813,7 +793,6 @@ fn decode_payload(channel: CompareChannel, raw: &[u8]) -> Result<DecodedMsg> {
             })
         }
         CompareChannel::Derivatives => decode_derivatives(channel, msg_type, symbol, base, raw),
-        CompareChannel::Latency => unreachable!("latency handled above"),
     }
 }
 
@@ -890,28 +869,6 @@ fn decode_derivatives(
         }
         _ => bail!("unsupported derivatives msg_type={}", msg_type),
     }
-}
-
-fn decode_latency(raw: &[u8]) -> Result<DecodedMsg> {
-    let used_len = LATENCY_SNAPSHOT_PAYLOAD_LEN;
-    let payload = used_payload(raw, used_len)?;
-    let msg_type = read_u32(&payload, 0)?;
-    let schema_ver = read_u32(&payload, 4)?;
-    let venue_id = read_u32(&payload, 8)?;
-    let n_buckets = read_u32(&payload, 12)?;
-    let snapshot_time_us = read_i64(&payload, 16)?;
-    Ok(DecodedMsg {
-        key: EventKey {
-            channel: CompareChannel::Latency,
-            msg_type,
-            symbol: format!("venue_id={}", venue_id),
-            k1: snapshot_time_us,
-            k2: i64::from(n_buckets),
-            k3: i64::from(schema_ver),
-        },
-        event_ts_us: snapshot_time_us,
-        payload,
-    })
 }
 
 fn ensure_msg_type(channel: CompareChannel, msg_type: u32, expected: &[MktMsgType]) -> Result<()> {

@@ -131,7 +131,6 @@ path = "src/bin/market_maker.rs"
 name = "depth_pub"
 path = "src/bin/depth_pub.rs"
 
-
 [[bin]]
 name = "trade_flow_feature_pub"
 path = "src/bin/trade_flow_feature_pub.rs"
@@ -200,32 +199,12 @@ name = "iceoryx_remove_node_from_service"
 path = "src/bin/iceoryx_remove_node_from_service.rs"
 
 [[bin]]
-name = "inspect_rl_vol"
-path = "src/bin/inspect_rl_vol.rs"
-
-[[bin]]
-name = "inspect_iceoryx_service"
-path = "src/bin/inspect_iceoryx_service.rs"
-
-[[bin]]
-name = "inspect_health_snapshot"
-path = "src/bin/inspect_health_snapshot.rs"
-
-[[bin]]
-name = "inspect_model_output"
-path = "src/bin/inspect_model_output.rs"
-
-[[bin]]
 name = "model_pub_probe"
 path = "src/bin/model_pub_probe.rs"
 
 [[bin]]
 name = "predict_rnn_zmq_ipc_demo"
 path = "src/bin/predict_rnn_zmq_ipc_demo.rs"
-
-[[bin]]
-name = "inspect_model_input"
-path = "src/bin/inspect_model_input.rs"
 
 [[bin]]
 name = "intra_funding_trace"

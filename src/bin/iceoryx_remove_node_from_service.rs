@@ -15,7 +15,7 @@ struct Args {
     /// Fully qualified service path, for example model_output/binance_futures_direction_model.
     service: String,
 
-    /// Stale iceoryx node id reported by inspect_iceoryx_service.
+    /// Stale iceoryx node id.
     #[arg(long)]
     node_id: u128,
 

@@ -10,10 +10,6 @@ use tokio::time::{Duration, Instant};
 
 use crate::mkt_pub::cfg::Config;
 use order_common::TradingVenue;
-use rolling_common::latency_kll::LatencyStats;
-use rolling_common::latency_snapshot::{
-    LatencyBucketStat, LatencySnapshotMsg, ACTION_ID_MARKET_DATA, METRIC_ID_SPREAD_E2E,
-};
 use runtime_common::time_util::get_timestamp_us;
 
 use crate::spread_pbs::adapter::{
@@ -28,13 +24,12 @@ use crate::spread_pbs::binance_fix_sbe::{
     decode_market_frame, new_bbo_state, run_fix_sbe_md, BinanceSpotTransport, FixMdLoopParams,
     FixMdStreamKind, FixSbeMarketEvent, ENV_BINANCE_SPOT_TRANSPORT, MAX_FIX_SBE_LEVELS,
 };
-use crate::spread_pbs::latency::LatencyKll;
 use crate::spread_pbs::okex_derivatives::{
     build_okex_derivatives_subscribe_msgs, parse_okex_derivatives_frame, OKEX_PUBLIC_WS_URL,
 };
 use crate::spread_pbs::publisher::{
-    PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadLatencyPublisher,
-    SpreadPbsPublishRoots, SpreadPublisher, SpreadTradePublisher,
+    PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadPbsPublishRoots,
+    SpreadPublisher, SpreadTradePublisher,
 };
 use crate::spread_pbs::ws::{run_public_ws, FrameHandler, RollingRestartSpec, WsLoopParams};
 
@@ -626,21 +621,8 @@ impl SpreadPbsApp {
         } else {
             None
         };
-        let latency_publisher = if bbo_enabled {
-            Some(Rc::new(
-                SpreadLatencyPublisher::new_with_root(venue_slug, publish_roots.spread_root())
-                    .with_context(|| {
-                        format!("create iceoryx latency publisher for {}", venue_slug)
-                    })?,
-            ))
-        } else {
-            None
-        };
-        let ipc_label = format!("{}-ipc", venue_slug);
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
             symbol_state: SymbolSeqState::with_symbols(&initial_symbols),
-            latency_e2e: LatencyKll::new(venue_slug),
-            latency_ipc: LatencyKll::new(ipc_label),
             published: 0,
             trades_published: 0,
             incremental_published: 0,
@@ -675,7 +657,6 @@ impl SpreadPbsApp {
                     publisher.expect("BBO publisher must exist for Binance Spot"),
                     trade_publisher,
                     incremental_publisher,
-                    latency_publisher.expect("latency publisher must exist for Binance Spot"),
                     state,
                     shutdown_rx,
                 )
@@ -878,13 +859,6 @@ impl SpreadPbsApp {
                 }
                 _ = stats_ticker.tick() => {
                     let mut s = state.borrow_mut();
-                    if let Some(latency_publisher) = latency_publisher.as_ref() {
-                        if let Some(msg) = take_latency_snapshot(&mut s, venue.to_u8() as u32) {
-                            if let Err(e) = latency_publisher.publish(msg.into_bytes()) {
-                                log::warn!("spread_pbs[{}] latency snapshot publish failed: {:#}", venue_slug, e);
-                            }
-                        }
-                    }
                     log::info!(
                         "spread_pbs[{}] stats published={} trades_published={} incremental_published={} derivatives_published={} derivatives_dropped_duplicate={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={} incremental_gap_warnings={} symbols_seen={} trade_symbols_seen={} incremental_symbols_seen={}",
                         venue_slug,
@@ -1016,7 +990,6 @@ impl SpreadPbsApp {
         publisher: Rc<SpreadPublisher>,
         trade_publisher: Option<Rc<SpreadTradePublisher>>,
         incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
-        latency_publisher: Rc<SpreadLatencyPublisher>,
         state: Rc<RefCell<SharedState>>,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> Result<()> {
@@ -1113,17 +1086,7 @@ impl SpreadPbsApp {
                     }
                 }
                 _ = stats_ticker.tick() => {
-                    let mut shared = state.borrow_mut();
-                    if let Some(msg) = take_latency_snapshot(
-                        &mut shared,
-                        TradingVenue::BinanceMargin.to_u8() as u32,
-                    ) {
-                        if let Err(err) = latency_publisher.publish(msg.into_bytes()) {
-                            log::warn!(
-                                "spread_pbs[binance-margin] FIX/SBE latency publish failed: {err:#}"
-                            );
-                        }
-                    }
+                    let shared = state.borrow();
                     log::info!(
                         "spread_pbs[binance-margin] FIX/SBE stats published={} trades_published={} incremental_published={} dropped_by_seq={} trades_dropped_by_seq={} incremental_dropped_by_seq={}",
                         shared.published,
@@ -1785,7 +1748,6 @@ struct SymbolSeqState {
     index_by_symbol: FastHashMap<String, usize>,
     bbo_seq: Vec<i64>,
     bbo_ts_us: Vec<i64>,
-    latency_measurement_symbol: Vec<bool>,
     trade_seq: Vec<i64>,
     trade_last_seen_at: Vec<Option<Instant>>,
     incremental_seq: Vec<i64>,
@@ -1801,7 +1763,6 @@ impl SymbolSeqState {
             index_by_symbol: fast_hash_map_with_capacity(symbols.len().max(2048)),
             bbo_seq: Vec::with_capacity(symbols.len()),
             bbo_ts_us: Vec::with_capacity(symbols.len()),
-            latency_measurement_symbol: Vec::with_capacity(symbols.len()),
             trade_seq: Vec::with_capacity(symbols.len()),
             trade_last_seen_at: Vec::with_capacity(symbols.len()),
             incremental_seq: Vec::with_capacity(symbols.len()),
@@ -1828,8 +1789,6 @@ impl SymbolSeqState {
         self.index_by_symbol.insert(symbol.to_string(), idx);
         self.bbo_seq.push(i64::MIN);
         self.bbo_ts_us.push(0);
-        self.latency_measurement_symbol
-            .push(is_latency_measurement_symbol(symbol));
         self.trade_seq.push(i64::MIN);
         self.trade_last_seen_at.push(None);
         self.incremental_seq.push(i64::MIN);
@@ -1867,7 +1826,6 @@ impl SymbolSeqState {
             idx,
             prev: self.bbo_seq[idx],
             prev_ts_us: self.bbo_ts_us[idx],
-            latency_measurement_symbol: self.latency_measurement_symbol[idx],
         }
     }
 
@@ -1891,7 +1849,6 @@ impl SymbolSeqState {
             idx,
             prev: self.trade_seq[idx],
             prev_ts_us: 0,
-            latency_measurement_symbol: false,
         }
     }
 
@@ -1917,7 +1874,6 @@ impl SymbolSeqState {
             idx,
             prev: self.incremental_seq[idx],
             prev_ts_us: 0,
-            latency_measurement_symbol: false,
         }
     }
 
@@ -1988,15 +1944,10 @@ struct SymbolSlot {
     idx: usize,
     prev: i64,
     prev_ts_us: i64,
-    latency_measurement_symbol: bool,
 }
 
 struct SharedState {
     symbol_state: SymbolSeqState,
-    /// 被采纳消息：`accepted_us - event_ts_us`（u 最新判断通过后立刻采样）。
-    latency_e2e: LatencyKll,
-    /// IPC latency snapshot buckets. Kept separate so periodic IPC snapshots do not reset log KLLs.
-    latency_ipc: LatencyKll,
     published: u64,
     trades_published: u64,
     incremental_published: u64,
@@ -3015,7 +2966,7 @@ fn process_bbo_fields(
     state: &mut SharedState,
     publisher: &Rc<SpreadPublisher>,
     slot_index: Option<usize>,
-    recv_us: i64,
+    _recv_us: i64,
     accepted_us: i64,
     symbol: &str,
     ts_us: i64,
@@ -3039,14 +2990,6 @@ fn process_bbo_fields(
     state.symbol_state.set_bbo_slot(slot, seq_id, ts_us);
     state.record_selected_source(source);
 
-    record_latency_measurement_if_needed(
-        state,
-        slot.latency_measurement_symbol,
-        recv_us,
-        accepted_us,
-        ts_us,
-    );
-
     if let Err(e) =
         publisher.publish_bbo(symbol, ts_us, bid_price, bid_amount, ask_price, ask_amount)
     {
@@ -3054,80 +2997,6 @@ fn process_bbo_fields(
         return;
     }
     state.published += 1;
-}
-
-fn record_latency_measurement_if_needed(
-    state: &mut SharedState,
-    latency_measurement_symbol: bool,
-    recv_us: i64,
-    accepted_us: i64,
-    event_ts_us: i64,
-) {
-    if event_ts_us <= 0 || !latency_measurement_symbol {
-        return;
-    }
-    let e2e_us = (accepted_us - event_ts_us) as f64;
-    let _ = recv_us;
-    state.latency_e2e.push(e2e_us);
-    state.latency_ipc.push(e2e_us);
-}
-
-fn is_latency_measurement_symbol(symbol: &str) -> bool {
-    let upper = symbol.trim().to_ascii_uppercase();
-    if upper.is_empty() {
-        return false;
-    }
-    let without_swap = upper.strip_suffix("-SWAP").unwrap_or(&upper);
-    let base = without_swap
-        .strip_suffix("_USDT")
-        .or_else(|| without_swap.strip_suffix("-USDT"))
-        .or_else(|| without_swap.strip_suffix("USDT"))
-        .unwrap_or(without_swap);
-    matches!(base, "BTC" | "ETH" | "SOL")
-}
-
-fn take_latency_snapshot(state: &mut SharedState, venue_id: u32) -> Option<LatencySnapshotMsg> {
-    let mut msg = LatencySnapshotMsg::new(venue_id, get_timestamp_us());
-    let mut idx = 0usize;
-
-    snap_latency_bucket(
-        &mut msg,
-        &mut idx,
-        METRIC_ID_SPREAD_E2E,
-        state.latency_ipc.snapshot_and_reset(),
-    );
-
-    if idx == 0 {
-        None
-    } else {
-        msg.n_buckets = idx as u32;
-        Some(msg)
-    }
-}
-
-fn snap_latency_bucket(
-    msg: &mut LatencySnapshotMsg,
-    idx: &mut usize,
-    metric_id: u8,
-    stats: Option<LatencyStats>,
-) {
-    let Some(stats) = stats else {
-        return;
-    };
-    if *idx >= msg.buckets.len() {
-        return;
-    }
-    msg.buckets[*idx] = LatencyBucketStat {
-        metric_id,
-        action_id: ACTION_ID_MARKET_DATA,
-        _pad: [0; 6],
-        n: stats.n,
-        p50_us: stats.p50_us,
-        p90_us: stats.p90_us,
-        p95_us: stats.p95_us,
-        p99_us: stats.p99_us,
-    };
-    *idx += 1;
 }
 
 fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64) {
@@ -3182,8 +3051,6 @@ mod tests {
     fn test_state(now_us: i64) -> SharedState {
         SharedState {
             symbol_state: SymbolSeqState::with_symbols(&[]),
-            latency_e2e: LatencyKll::new("test-e2e"),
-            latency_ipc: LatencyKll::new("test-ipc"),
             published: 0,
             trades_published: 0,
             incremental_published: 0,
@@ -3241,43 +3108,6 @@ mod tests {
             ),
             (true, false)
         );
-    }
-
-    #[test]
-    fn latency_measurement_symbols_are_limited_to_major_assets() {
-        for symbol in [
-            "BTCUSDT",
-            "ETHUSDT",
-            "SOLUSDT",
-            "btc_usdt",
-            "ETH-USDT",
-            "SOL-USDT-SWAP",
-        ] {
-            assert!(
-                is_latency_measurement_symbol(symbol),
-                "expected {symbol} to be measured"
-            );
-        }
-
-        for symbol in ["XRPUSDT", "DOGE_USDT", "BNB-USDT", "BTCUSDC", ""] {
-            assert!(
-                !is_latency_measurement_symbol(symbol),
-                "expected {symbol} to be skipped"
-            );
-        }
-    }
-
-    #[test]
-    fn latency_measurements_skip_non_major_assets_for_both_buckets() {
-        let mut state = test_state(1_000_000);
-        record_latency_measurement_if_needed(&mut state, false, 120, 130, 100);
-        assert!(take_latency_snapshot(&mut state, 7).is_none());
-
-        record_latency_measurement_if_needed(&mut state, true, 120, 130, 100);
-        let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
-        assert_eq!(msg.n_buckets, 1);
-        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_E2E);
-        assert_eq!(msg.buckets[0].n, 1);
     }
 
     #[test]
@@ -3712,20 +3542,5 @@ mod tests {
 
         assert_eq!(state.symbol_state.bbo_seen(), 0);
         assert_eq!(state.last_dedup_reset_us, now_us + DEDUP_RESET_INTERVAL_US);
-    }
-
-    #[test]
-    fn latency_snapshot_contains_single_spread_e2e_bucket() {
-        let mut state = test_state(1_000_000);
-        state.latency_ipc.push(12.0);
-        state.latency_ipc.push(22.0);
-
-        let msg = take_latency_snapshot(&mut state, 7).expect("snapshot");
-        assert_eq!(msg.venue_id, 7);
-        assert_eq!(msg.n_buckets, 1);
-        assert_eq!(msg.buckets[0].metric_id, METRIC_ID_SPREAD_E2E);
-        assert_eq!(msg.buckets[0].action_id, ACTION_ID_MARKET_DATA);
-        assert_eq!(msg.buckets[0].n, 2);
-        assert!(take_latency_snapshot(&mut state, 7).is_none());
     }
 }

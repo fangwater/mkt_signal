@@ -6,7 +6,6 @@ use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use std::cell::RefCell;
 
 use mkt_parsers::msg::mkt_msg::{Level, MktMsgType};
-use rolling_common::latency_snapshot::LATENCY_SNAPSHOT_PAYLOAD_LEN;
 
 /// AskBidSpreadMsg wire format 实测占用：4B msg_type + 4B symbol_len + N(symbol)
 /// + 8B ts + 4×8B = 至多 ~80 字节。预留到 128 与 dat_pbs 对齐，便于
@@ -1000,13 +999,6 @@ pub struct SpreadPublisher {
     bbo_prefix_by_index: RefCell<Vec<Option<BboPayloadPrefix>>>,
 }
 
-/// `spread_pbs/<venue>/latency` 服务的 publisher。这个 service 不经过
-/// `IPC_NAMESPACE`，因为 spread_pbs 在单机上按 venue 唯一部署。
-pub struct SpreadLatencyPublisher {
-    publisher: Publisher<ipc::Service, [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN], ()>,
-    service_name: String,
-}
-
 /// spread_pbs 直接替代旧 `dat_pbs/<venue>/trade` 的 publisher。
 ///
 /// 使用 open_or_create，允许进程重启/中途替换复用已存在 service；`max_publishers=1`
@@ -1191,57 +1183,6 @@ impl SpreadPublisher {
                 ask_amount,
             ))
         })
-    }
-}
-
-impl SpreadLatencyPublisher {
-    pub fn new(venue_slug: &str) -> Result<Self> {
-        Self::new_with_root(venue_slug, DEFAULT_SPREAD_SERVICE_ROOT)
-    }
-
-    pub fn new_with_root(venue_slug: &str, service_root: &str) -> Result<Self> {
-        let service_name = service_name(service_root, venue_slug, "latency")?;
-        let node_name = publisher_node_name(
-            DEFAULT_SPREAD_SERVICE_ROOT,
-            "spread_pbs",
-            service_root,
-            venue_slug,
-            "latency",
-        )?;
-
-        let node = NodeBuilder::new()
-            .name(&NodeName::new(&node_name)?)
-            .create::<ipc::Service>()?;
-
-        let service = node
-            .service_builder(&ServiceName::new(&service_name)?)
-            .publish_subscribe::<[u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]>()
-            .max_publishers(1)
-            .max_subscribers(64)
-            .history_size(HISTORY_SIZE)
-            .subscriber_max_buffer_size(SUBSCRIBER_MAX_BUFFER)
-            .open_or_create()?;
-
-        let publisher = service.publisher_builder().create()?;
-
-        log::info!(
-            "spread_pbs latency publisher ready: service={} max_subscribers=64 payload={}B",
-            service_name,
-            LATENCY_SNAPSHOT_PAYLOAD_LEN
-        );
-        Ok(Self {
-            publisher,
-            service_name,
-        })
-    }
-
-    pub fn service_name(&self) -> &str {
-        &self.service_name
-    }
-
-    pub fn publish(&self, data: [u8; LATENCY_SNAPSHOT_PAYLOAD_LEN]) -> Result<()> {
-        self.publisher.send_copy(data)?;
-        Ok(())
     }
 }
 
