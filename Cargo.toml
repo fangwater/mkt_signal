@@ -115,17 +115,6 @@ name = "ipc_bridge"
 path = "src/bin/ipc_bridge.rs"
 
 [[bin]]
-name = "latency_stable_monitor"
-path = "src/bin/latency_stable_monitor.rs"
-
-[[bin]]
-name = "latency_csv_capture"
-path = "src/bin/latency_csv_capture.rs"
-
-[[bin]]
-name = "latency_collector"
-path = "src/bin/latency_collector.rs"
-[[bin]]
 name = "predict_file"
 path = "src/bin/predict_file.rs"
 
