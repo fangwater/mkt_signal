@@ -156,10 +156,6 @@ name = "trade_notional_kll_aggregate"
 path = "src/bin/trade_notional_kll_aggregate.rs"
 
 [[bin]]
-name = "tardis_parser_bench"
-path = "src/bin/tardis_parser_bench.rs"
-
-[[bin]]
 name = "pairmm_resample"
 path = "src/bin/pairmm_resample.rs"
 
