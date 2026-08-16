@@ -227,14 +227,6 @@ name = "inspect_health_snapshot"
 path = "src/bin/inspect_health_snapshot.rs"
 
 [[bin]]
-name = "hedge_lazy_taker_eval"
-path = "src/bin/hedge_lazy_taker_eval.rs"
-
-[[bin]]
-name = "hedge_lazy_taker_dashboard"
-path = "src/bin/hedge_lazy_taker_dashboard.rs"
-
-[[bin]]
 name = "inspect_model_output"
 path = "src/bin/inspect_model_output.rs"
 
