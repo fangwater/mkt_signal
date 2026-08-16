@@ -1,6 +1,6 @@
 # from_key 规则总览
 
-本文档给出当前代码实现对应的 `from_key` 总览。详细拆分规则见 `docs/from_key_rules/`。
+本文档给出当前代码实现对应的 `from_key` 总览。逐字段拆分规则已过时并删除，以代码为准。
 
 ## 重要说明
 
@@ -37,14 +37,3 @@
 ### MM
 
 - `MMOpen` / `MMHedge` 的 `from_key` 目前由上游透传，仓库内未定义固定字段拼装格式。
-
-## 详细规则文档
-
-- 索引：`docs/from_key_rules/README.md`
-- FR：
-  - `docs/from_key_rules/arb_open_fr.md`
-  - `docs/from_key_rules/arb_hedge_fr.md`
-  - `docs/from_key_rules/arb_close_fr.md`
-- MM：
-  - `docs/from_key_rules/mm_open.md`
-  - `docs/from_key_rules/mm_hedge.md`
