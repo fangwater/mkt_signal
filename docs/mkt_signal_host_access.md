@@ -1,6 +1,6 @@
 # mkt_signal 主机访问
 
-PEM 文件 gitignore，禁止写入文档或提交。隔离核分配见 `core_allocation.md`。
+PEM 文件 gitignore，禁止写入文档或提交。隔离核见 `core_allocation.md`。JP 交易机 source IP 见 `jp-meta-elvpn_ip_binding.md`。部署时若改绑核或 `local_ips`，两份都要更新。
 
 ## 主机
 

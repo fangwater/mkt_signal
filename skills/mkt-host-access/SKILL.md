@@ -14,7 +14,9 @@ Use this skill when the user asks how to SSH/probe the crypto market
 - SG: SSH alias `sg`
 
 Do not use the retired public IP `54.64.147.69`. Core pins: `docs/core_allocation.md`.
+JP source IPs: `docs/jp-meta-elvpn_ip_binding.md`.
 SSH details: `docs/mkt_signal_host_access.md`.
+Update those docs when a deploy changes core pins or `local_ips`.
 
 ## SSH Pattern
 

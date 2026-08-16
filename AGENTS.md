@@ -57,6 +57,8 @@ Most runtime wrappers source `env.sh` automatically from the environment directo
 
 Current production SSH hosts are only `jp-meta-elvpn` (Japan) and `sg` / `ubuntu@47.131.162.78` (Singapore). Do not use retired aliases such as `jp2`.
 
+After deploying, migrating, or retiring a live env on `jp-meta-elvpn` or `sg`, update the living ops docs when they change: `docs/core_allocation.md` (CPU pins) and `docs/jp-meta-elvpn_ip_binding.md` (`local_ips` / ENI source IPs).
+
 Common FR scripts:
 
 ```bash
