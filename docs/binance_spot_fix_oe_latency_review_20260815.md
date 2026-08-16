@@ -398,15 +398,36 @@ ACCOUNT_MONITOR_CORE 绑核；user stream 走 `runtime_common::ws_connection`
 
 ## 下一步架构项：FIX ER 成交竞速（待实施，先影子测量）
 
-推送段 ~0.79ms 是链路大头，其中交易所把 fill 送达本机的路径可能有更快
-的替代：Binance spot FIX 会话在 ResponseMode=EVERYTHING 下会收到全账户
-ExecutionReport 推送（含 maker 成交），与 user stream 是两条独立的
-服务端路径。方案：
+推送段 ~0.79ms 是链路大头。候选替代源与证据等级（官方 fix-api.md，
+2026-08 复核）：
 
-1. 影子阶段：trade_engine 增加一条 listener-only FIX 会话（EVERYTHING、
-   不发单，会话预算 10 条内），对 execType=TRADE 的 ER 记录
-   `symbol/orderId/execId/本地us`，与 account_monitor 的同一成交到达
-   时间对比，量化优势分布。
+有文档依据的事实：
+
+- ER 定义："Sent by the server whenever an order state changes"，
+  `ExecType(150)` 取值含 `F - TRADE`——成交事件以 ER 形式存在。
+- Response Mode："By default, all concurrent order entry sessions
+  receive all of the account's successful ExecutionReport<8> ...
+  including those in response to orders placed from other FIX sessions
+  and via non-FIX APIs."——OE 会话 EVERYTHING 模式收全账户 ER，
+  含非 FIX 渠道（WS/REST）下的单。
+- 官方性能表述（唯一一句）："FIX API should give better performance
+  for ExecutionReport <8> push."——注意是 "should"，期望性表述非承诺。
+- **Drop Copy 出局**：新版文档明确 "Data in Drop Copy sessions is
+  delayed by 1 second."（旧版无此句），DC 不能做低延迟成交源；
+  listener 必须用 OE 会话 + EVERYTHING（OE 推送无延迟标注）。
+
+无文档依据、必须实测的假设：
+
+- FIX ER push 与 user data stream 是否走不同的服务端推送管道、
+  是否更快——文档未说明；社区对 FIX 行情流甚至有 "built on top of
+  websocket infrastructure" 的反面说法。影子测量正是为验证这一点。
+
+方案：
+
+1. 影子阶段：trade_engine 增加一条 listener-only OE 会话
+   （EVERYTHING、不发单，占 OE 并发额度 10 条之一），对
+   execType=TRADE 的 ER 记录 `symbol/orderId/execId/本地us`，与
+   account_monitor 的同一成交到达时间对比，量化优势分布；无优势即撤。
 2. 若稳定更快：把 fill ER 转成 order_resps 上的 TradeExecOutcome
    （字段齐备：14 累计量/39 状态/60 时间/31 价格），与 user stream
    双源竞速。幂等基础已就绪：`OrderManager::should_skip_idempotent_
@@ -414,7 +435,8 @@ ExecutionReport 推送（含 maker 成交），与 user stream 是两条独立�
    docs/trade_update_idempotency.md），先到者触发对冲。
 3. 注意：需确认策略侧 trade-engine-response 入口对 fill 状态的处理与
    user stream 路径等价（maker 单目前 ack 只有 NEW，fill 走 monitor），
-   接入前要补该入口的成交处理并复用同一幂等判定。
+   接入前要补该入口的成交处理并复用同一幂等判定。另外发单会话保持
+   ONLY_ACKS 不变，全账户推送只落在 listener 会话上。
 
 UM taker 发送段的 p99（18ms）主要来自重连/限频窗口，本轮的路由 yield
 修复与多端点 RR 已部分覆盖，进一步需要 per-endpoint 的发送埋点定位。
