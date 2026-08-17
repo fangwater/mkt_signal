@@ -132,6 +132,10 @@ name = "depth_pub"
 path = "src/bin/depth_pub.rs"
 
 [[bin]]
+name = "depth_pub_general"
+path = "src/bin/depth_pub_general.rs"
+
+[[bin]]
 name = "trade_flow_feature_pub"
 path = "src/bin/trade_flow_feature_pub.rs"
 

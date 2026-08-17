@@ -263,7 +263,7 @@ impl DepthPubApp {
         }
     }
 
-    fn poll_once(&mut self) -> Result<bool> {
+    pub(crate) fn poll_once(&mut self) -> Result<bool> {
         let mut has_message = false;
         let mut inc_drained = 0usize;
         while inc_drained < MAX_INC_DRAIN_PER_POLL {

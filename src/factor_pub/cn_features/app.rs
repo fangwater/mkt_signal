@@ -590,9 +590,7 @@ impl CnReplayState {
         depth: Option<CnDepthSnapshot5>,
     ) -> Result<()> {
         let Some(snapshot) = depth else {
-            bail!(
-                "cn_features rejects rows without a native five-level book: ts_ms={ts_ms}"
-            );
+            bail!("cn_features rejects rows without a native five-level book: ts_ms={ts_ms}");
         };
         let depth = CnDepthStats5::from_snapshot(&snapshot);
         self.state.push_native_bar(ts_ms, values);
@@ -6071,8 +6069,7 @@ mod tests {
         let values: [f64; TRADE_FLOW_FEATURE_DIM] = msg.values[..TRADE_FLOW_FEATURE_DIM]
             .try_into()
             .expect("trade-flow values");
-        let depth = parse_embedded_depth(&msg)
-            .expect("validated native five-level book");
+        let depth = parse_embedded_depth(&msg).expect("validated native five-level book");
         state.push_native(msg.ts, &values, Some(depth))
     }
 

@@ -22,7 +22,7 @@ usage() {
       viz_server = 10231
       trade_signal = deploy only, no dedicated HTTP port
     alpha 环境分别使用 18132 / 10232。
-  - --local-ip: 写入 trade_engine.toml，可重复。jp2 单网卡可传两次 0.0.0.0。
+  - --local-ip: 写入 trade_engine.toml，可重复。jp-meta-elvpn 单网卡可传两次 0.0.0.0。
   - --bin: 仅替换二进制（不改脚本/配置/nginx/env.sh）。
   - --runtime-only: 仅替换二进制和脚本（不改配置/nginx/env.sh）。
 EOF

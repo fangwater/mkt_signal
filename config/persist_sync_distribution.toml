@@ -108,6 +108,17 @@ public_url = "http://47.128.92.224:6352"
 bind = "127.0.0.1:50052"
 status = "fixed"
 
+# JP OKX MM persist sync source.
+[[allocations]]
+port = 6355
+region = "local"
+strategy = "mm"
+env = "okex_mm_alpha"
+source_id = "okex_mm_alpha"
+public_url = "http://127.0.0.1:6355"
+bind = "127.0.0.1:50055"
+status = "fixed"
+
 # Requested OKEX intra source on HK.
 [[allocations]]
 port = 6354

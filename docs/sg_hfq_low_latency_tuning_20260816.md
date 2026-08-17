@@ -23,7 +23,7 @@ napi_defer_hard_irqs = 0
 gro_flush_timeout = 0
 ```
 
-对齐 jp2(见 `jp2_hfq_low_latency_tuning_20260618.md`):sg 此前只做了 CPU 隔离,缺 socket busy poll 与 ENA 中断合并关闭。
+对齐 jp-meta-elvpn(见 `jp-meta-elvpn_hfq_low_latency_tuning_20260618.md`):sg 此前只做了 CPU 隔离,缺 socket busy poll 与 ENA 中断合并关闭。
 
 ## 变更内容
 
@@ -58,7 +58,7 @@ ethtool -C <iface> adaptive-rx off rx-usecs 0 tx-usecs 0
 其中 **C2 退出延迟 800µs**。所有 16 核的 C2 此前已被运行时手动禁用
 (`state2/disable=1`,历史驻留 6 亿次/近 90 小时),但**没有任何持久化配置,重启即回滚**。
 已并入上述 systemd oneshot:禁用所有退出延迟 >10µs 的 idle state(保留 POLL/C1,
-与 jp2 的 `max_cstate=1` 效果对齐),重启后自动重新生效。
+与 jp-meta-elvpn 的 `max_cstate=1` 效果对齐),重启后自动重新生效。
 
 ## A/B 实验记录
 
@@ -84,7 +84,7 @@ bybit-margin    W2 无defer   1798   2368   2505   2835   402
 ## 结论
 
 1. **该指标的噪声底远大于内核侧效应**:一小时内 futures 消息量 +24%、margin +125%,市场活跃度持续上升,交易所侧发布延迟随负载独立漂移(±300µs 级),两个 venue 方向相反的变化即为证据。内核路径的 10–100µs 级改善无法在此指标上单独分辨。
-2. **busy_poll + 合并关闭保留**:机制上严格减少 NIC 侧等待(adaptive rx 高吞吐时可到百 µs 级)并允许应用核直接轮询,与 jp2 生产配置对齐;margin 三窗口持续改善与其一致,futures 的表观回退与其消息量上升趋势一致,归因于交易所侧漂移。
+2. **busy_poll + 合并关闭保留**:机制上严格减少 NIC 侧等待(adaptive rx 高吞吐时可到百 µs 级)并允许应用核直接轮询,与 jp-meta-elvpn 生产配置对齐;margin 三窗口持续改善与其一致,futures 的表观回退与其消息量上升趋势一致,归因于交易所侧漂移。
 3. **defer 关闭**:`gro_flush_timeout` 只在应用近似持续轮询时有益;spread_pbs 是 epoll 休眠型(消息间隔 ms 级 >> 50µs busy poll 预算),休眠期间包会被 defer 定时器拖最多 200µs 才处理,共享 NIC 上其他流量还会维持 defer 状态放大该等待。W1/W2 对比也未显示收益。
 4. 若要真正量化内核路径,需要本地端到端口径(如驱动层/XDP 时间戳 → 应用时间戳),不受交易所漂移污染。
 
@@ -114,4 +114,4 @@ sudo ethtool -C enp40s0 adaptive-rx on rx-usecs 20 tx-usecs 64
 
 ## 备注
 
-- jp2 的 grub/内核参数隔离项 sg 已具备;本次未从当前构建机覆盖 jp2(该机器不在本机 SSH 配置中,`jp-meta-elvpn` 当时不可达)。如需在 jp2 评估 defer,结论预期相同(同为 epoll 休眠型负载)。
+- jp-meta-elvpn 的 grub/内核参数隔离项 sg 已具备;本次未从当前构建机覆盖该机(当时 SSH 不可达)。如需在 jp-meta-elvpn 评估 defer,结论预期相同(同为 epoll 休眠型负载)。

@@ -1,6 +1,6 @@
 ---
 name: aws-ec2-secondary-ip-bind
-description: Bind AWS EC2 public/EIP addresses by discovering their associated ENI private IPv4 addresses and adding those secondary private IPs to the Linux network interface. Use when a user says new AWS public IPs/EIPs were added but need to be bound on an EC2 host, especially Ubuntu/netplan hosts reached by SSH aliases such as jp2.
+description: Bind AWS EC2 public/EIP addresses by discovering their associated ENI private IPv4 addresses and adding those secondary private IPs to the Linux network interface. Use when a user says new AWS public IPs/EIPs were added but need to be bound on an EC2 host, especially Ubuntu/netplan hosts reached by SSH aliases such as jp-meta-elvpn.
 ---
 
 # AWS EC2 Secondary IP Bind
@@ -54,7 +54,7 @@ Before writing:
 - Use the subnet prefix from metadata or existing interface output.
 - Back up the original netplan file with a timestamp.
 
-Example for `jp2`, interface `ens41`, with secondary private IPs `172.31.35.229/20` through `172.31.35.234/20`:
+Example for `jp-meta-elvpn`, interface `ens41`, with secondary private IPs `172.31.35.229/20` through `172.31.35.234/20`:
 
 ```yaml
 network:

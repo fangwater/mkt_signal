@@ -135,7 +135,7 @@ Gate 合约限仓需要修复。
 在 Gate cross futures 里，降低 `cross_leverage_limit` 可能会提升 Gate
 返回的 `risk_limit`，从而扩大交易所允许的合约仓位上限。
 
-之前 jp2 / `gate_fr_arb01` 的实际例子：
+之前 jp-meta-elvpn / `gate_fr_arb01` 的实际例子：
 
 ```text
 AIN_USDT      cross 3 -> 2   risk_limit 20000 -> 50000
@@ -212,7 +212,7 @@ Gate 当前给这个合约的 risk_limit 太小，导致订单无法处理仓位
 
 ## 7. 当前 Gate maintenance_margin 的计算口径
 
-根据我们对 jp2 / `gate_fr_arb01` 的对账，Gate futures 的
+根据我们对 jp-meta-elvpn / `gate_fr_arb01` 的对账，Gate futures 的
 maintenance margin 更接近逐合约计算后求和：
 
 ```text

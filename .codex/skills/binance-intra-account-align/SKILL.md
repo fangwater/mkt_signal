@@ -93,8 +93,8 @@ python3 scripts/binance_transfer_std_cash.py --type MAIN_UMFUTURE --asset USDT -
 Some deployed envs may not have this script. Copy the repo version to `/tmp` and set `PYTHONPATH` so it can import deployed script helpers:
 
 ```bash
-scp scripts/binance_transfer_std_cash.py jp2:/tmp/binance_transfer_std_cash.py
-ssh jp2 "cd /home/ubuntu/binance-intra-arb01 && set -a && source env.sh >/dev/null 2>&1 && set +a && PYTHONPATH=/home/ubuntu/binance-intra-arb01/scripts python3 /tmp/binance_transfer_std_cash.py --type MAIN_UMFUTURE --asset USDT --amount 3000 --execute"
+scp scripts/binance_transfer_std_cash.py jp-meta-elvpn:/tmp/binance_transfer_std_cash.py
+ssh jp-meta-elvpn "cd /home/ubuntu/binance-intra-arb01 && set -a && source env.sh >/dev/null 2>&1 && set +a && PYTHONPATH=/home/ubuntu/binance-intra-arb01/scripts python3 /tmp/binance_transfer_std_cash.py --type MAIN_UMFUTURE --asset USDT --amount 3000 --execute"
 ```
 
 After any transfer, run a read-only balance check again and report:

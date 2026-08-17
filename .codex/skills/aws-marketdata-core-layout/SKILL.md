@@ -148,11 +148,11 @@ dedicated IRQ layout is:
 
 | Interface | Traffic lane | ENA Tx/Rx IRQ CPU | Persistent unit |
 | --- | --- | --- | --- |
-| `ens41` | Order/control and non-exchange service traffic | `45` | `pin-aws-ena-irq@ens41.service` |
-| `ens42` | Eligible public market data | `46` | `pin-aws-ena-irq@ens42.service` |
+| `ens41` | Order/control and non-exchange service traffic | `46` | `pin-aws-ena-irq@ens41.service` |
+| `ens42` | Eligible public market data | `47` | `pin-aws-ena-irq@ens42.service` |
 
 All 16 Tx/Rx IRQs of an interface intentionally share its one dedicated CPU.
-Do not pin user-space processes to cores 45 or 46. The kernel default IRQ set
+Do not pin user-space processes to cores 46 or 47. The kernel default IRQ set
 remains `0-5`; these two explicit ENA overrides are persisted by systemd, and
 `irqbalance` must remain inactive.
 
@@ -175,7 +175,7 @@ sudo systemctl enable --now pin-aws-ena-irq@ens41.service pin-aws-ena-irq@ens42.
 ```
 
 Verify every IRQ's configured and effective affinity in `/proc/irq/<irq>/`;
-for this layout both values must be 45 for `ens41` and 46 for `ens42`.
+for this layout both values must be 46 for `ens41` and 47 for `ens42`.
 To roll back to the kernel housekeeping set, disable both units and run the
 deployed script for each interface with `--cpus 0-5 --execute`.
 

@@ -6,6 +6,7 @@
 pub mod app;
 pub mod cfg;
 pub mod depth_msg;
+pub mod general;
 pub mod orderbook;
 pub mod publisher;
 pub mod query_logic;

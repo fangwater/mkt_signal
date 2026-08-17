@@ -14,6 +14,8 @@ const SBE_BBO_ROOT_MIN: usize = 59;
 const SBE_SPOT_TRADE_ROOT_MIN: usize = 60;
 const SBE_FUTURES_BOOK_UPDATE_ROOT_MIN: usize = 36;
 const SBE_SPOT_BOOK_UPDATE_ROOT_MIN: usize = 44;
+const SBE_FUTURES_ORDER_BOOK_ROOT_MIN: usize = 28;
+const SBE_SPOT_ORDER_BOOK_ROOT_MIN: usize = 27;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Level {
@@ -758,6 +760,67 @@ fn parse_sbe_book_update(raw: &[u8], layout: SbeBookUpdateLayout) -> Option<Book
     })
 }
 
+/// Limited-level full snapshot (`spot.order_book` / `futures.order_book`, templateId=4).
+pub fn parse_futures_sbe_order_book(raw: &[u8]) -> Vec<Book> {
+    parse_sbe_order_book(raw, SbeOrderBookLayout::Futures)
+        .into_iter()
+        .collect()
+}
+
+pub fn parse_spot_sbe_order_book(raw: &[u8]) -> Vec<Book> {
+    parse_sbe_order_book(raw, SbeOrderBookLayout::Spot)
+        .into_iter()
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum SbeOrderBookLayout {
+    Futures,
+    Spot,
+}
+
+fn parse_sbe_order_book(raw: &[u8], layout: SbeOrderBookLayout) -> Option<Book> {
+    let header = sbe_header(raw)?;
+    if header.template_id != SBE_TEMPLATE_BOOK {
+        return None;
+    }
+    let body = SBE_HEADER_SIZE;
+    let root_min = match layout {
+        SbeOrderBookLayout::Futures => SBE_FUTURES_ORDER_BOOK_ROOT_MIN,
+        SbeOrderBookLayout::Spot => SBE_SPOT_ORDER_BOOK_ROOT_MIN,
+    };
+    if raw.len() < body + header.block_length || header.block_length < root_min {
+        return None;
+    }
+    let timestamp_us = read_i64_le(raw, body + 9)?;
+    let last_id = read_i64_le(raw, body + 17)?;
+    let px_exp = read_i8(raw, body + 25)?;
+    let sz_exp = read_i8(raw, body + 26)?;
+    let (first_levels, off) = sbe_level_group(raw, body + header.block_length, px_exp, sz_exp)?;
+    let (second_levels, mut off) = sbe_level_group(raw, off, px_exp, sz_exp)?;
+    let (bids, asks) = match layout {
+        SbeOrderBookLayout::Futures => (second_levels, first_levels),
+        SbeOrderBookLayout::Spot => (first_levels, second_levels),
+    };
+    if bids.is_empty() || asks.is_empty() {
+        return None;
+    }
+    off = sbe_var_string_skip(raw, off)?;
+    let (symbol, _) = sbe_var_string(raw, off)?;
+    Some(Book {
+        symbol,
+        timestamp_us,
+        seq_id: last_id,
+        prev_seq_id: i64::MIN,
+        first_update_id: last_id,
+        final_update_id: last_id,
+        gap_check: false,
+        is_snapshot: true,
+        bids,
+        asks,
+    })
+}
+
 pub fn parse_sbe_derivatives(raw: &[u8]) -> Vec<Derivative> {
     let Some(header) = sbe_header(raw) else {
         return Vec::new();
@@ -1072,5 +1135,77 @@ mod tests {
 
         assert!(parse_spot_book_ticker_bbo_raw(trade).is_none());
         assert!(parse_spot_book_ticker_bbo_raw(futures).is_none());
+    }
+
+    fn push_var_string(buf: &mut Vec<u8>, value: &str) {
+        buf.push(value.len() as u8);
+        buf.extend_from_slice(value.as_bytes());
+    }
+
+    fn push_level_group(buf: &mut Vec<u8>, levels: &[(i64, i64)]) {
+        buf.extend_from_slice(&16u16.to_le_bytes());
+        buf.extend_from_slice(&(levels.len() as u16).to_le_bytes());
+        for (price, amount) in levels {
+            buf.extend_from_slice(&price.to_le_bytes());
+            buf.extend_from_slice(&amount.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn parses_futures_sbe_order_book_asks_then_bids() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&28u16.to_le_bytes());
+        raw.extend_from_slice(&super::SBE_TEMPLATE_BOOK.to_le_bytes());
+        raw.extend_from_slice(&super::SBE_SCHEMA_ID.to_le_bytes());
+        raw.extend_from_slice(&1u16.to_le_bytes());
+        raw.extend_from_slice(&1_700_000_000_000_000i64.to_le_bytes());
+        raw.push(3);
+        raw.extend_from_slice(&1_700_000_000_001_000i64.to_le_bytes());
+        raw.extend_from_slice(&42i64.to_le_bytes());
+        raw.push((-2i8) as u8);
+        raw.push((-4i8) as u8);
+        raw.push(20);
+        push_level_group(&mut raw, &[(10_100, 10_000), (10_200, 20_000)]);
+        push_level_group(&mut raw, &[(10_000, 30_000), (9_900, 40_000)]);
+        push_var_string(&mut raw, "futures.order_book");
+        push_var_string(&mut raw, "BTC_USDT");
+
+        let books = super::parse_futures_sbe_order_book(&raw);
+        assert_eq!(books.len(), 1);
+        let book = &books[0];
+        assert!(book.is_snapshot);
+        assert_eq!(book.symbol, "BTC_USDT");
+        assert_eq!(book.timestamp_us, 1_700_000_000_001_000);
+        assert_eq!(book.seq_id, 42);
+        assert!((book.asks[0].price - 101.0).abs() < 1e-9);
+        assert!((book.bids[0].price - 100.0).abs() < 1e-9);
+        assert!((book.bids[1].amount - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parses_spot_sbe_order_book_bids_then_asks() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&27u16.to_le_bytes());
+        raw.extend_from_slice(&super::SBE_TEMPLATE_BOOK.to_le_bytes());
+        raw.extend_from_slice(&super::SBE_SCHEMA_ID.to_le_bytes());
+        raw.extend_from_slice(&1u16.to_le_bytes());
+        raw.extend_from_slice(&1_700_000_000_000_000i64.to_le_bytes());
+        raw.push(2);
+        raw.extend_from_slice(&1_700_000_000_001_000i64.to_le_bytes());
+        raw.extend_from_slice(&7i64.to_le_bytes());
+        raw.push((-2i8) as u8);
+        raw.push((-4i8) as u8);
+        push_level_group(&mut raw, &[(10_000, 30_000), (9_900, 40_000)]);
+        push_level_group(&mut raw, &[(10_100, 10_000), (10_200, 20_000)]);
+        push_var_string(&mut raw, "spot.order_book");
+        push_var_string(&mut raw, "ETH_USDT");
+        push_var_string(&mut raw, "20");
+
+        let books = super::parse_spot_sbe_order_book(&raw);
+        assert_eq!(books.len(), 1);
+        let book = &books[0];
+        assert_eq!(book.symbol, "ETH_USDT");
+        assert!((book.bids[0].price - 100.0).abs() < 1e-9);
+        assert!((book.asks[0].price - 101.0).abs() < 1e-9);
     }
 }

@@ -75,11 +75,30 @@ def request_okx_private(
     req.add_header("OK-ACCESS-TIMESTAMP", timestamp)
     req.add_header("OK-ACCESS-PASSPHRASE", passphrase)
     req.add_header("Content-Type", "application/json")
+    # OKX Cloudflare rejects Python urllib default UA with HTTP 403 / 1010.
+    req.add_header("User-Agent", "curl/8.5.0")
+    req.add_header("Accept", "application/json")
     if simulated:
         req.add_header("x-simulated-trading", "1")
 
+    opener = urllib.request.build_opener()
+    local_ip = os.environ.get("OKX_LOCAL_IP", "").strip()
+    if local_ip and local_ip not in {"0.0.0.0", "::"}:
+        import http.client
+
+        class SourceAddressHTTPSHandler(urllib.request.HTTPSHandler):
+            def https_open(self, req_inner):
+                return self.do_open(
+                    lambda host, **kwargs: http.client.HTTPSConnection(
+                        host, source_address=(local_ip, 0), **kwargs
+                    ),
+                    req_inner,
+                )
+
+        opener = urllib.request.build_opener(SourceAddressHTTPSHandler())
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             status = resp.getcode()
             body_text = resp.read().decode("utf-8", "replace")
             headers = dict(resp.headers.items())

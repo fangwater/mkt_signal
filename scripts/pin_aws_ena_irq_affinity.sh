@@ -15,8 +15,8 @@ Usage:
 Default is dry-run. Add --execute to write /proc/irq/*/smp_affinity_list.
 
 Examples:
-  scripts/pin_aws_ena_irq_affinity.sh --iface ens41 --cpus 45
-  scripts/pin_aws_ena_irq_affinity.sh --iface ens41 --cpus 45 --stop-irqbalance --execute
+  scripts/pin_aws_ena_irq_affinity.sh --iface ens41 --cpus 46
+  scripts/pin_aws_ena_irq_affinity.sh --iface ens41 --cpus 46 --stop-irqbalance --execute
 USAGE
 }
 

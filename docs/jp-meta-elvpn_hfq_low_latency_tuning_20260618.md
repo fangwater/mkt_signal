@@ -1,10 +1,15 @@
-# jp2 低延迟主机配置记录
+# jp-meta-elvpn 低延迟主机配置记录
 
 日期：2026-06-18
 
+> 2026-08-16 更新：`net.core.busy_poll` 由 50 调整为 200（`/etc/sysctl.d/99-hfq-low-latency-network.conf`），
+> 让 epoll 自旋窗口覆盖静默后首条消息、消除中断唤醒链（约 5-15µs）。
+> 实测 spread_pbs 静默期约 70% 时间在睡眠，代价是隔离核静默期 CPU 升至 100%。
+> 当前各核分配见 `core_allocation.md`。
+
 ## 机器信息
 
-- SSH 别名：`jp2`
+- SSH 别名：`jp-meta-elvpn`
 - 公网 IP：`13.115.227.29`
 - 登录用户：`ubuntu`
 - 主机名：`ip-172-31-35-228`
@@ -48,7 +53,7 @@ cpuidle states 包含 POLL、C1、C1E、C6
 
 ## 配置目标
 
-参考当前 HFQ 机器的低延迟配置思路，对 `jp2` 做成交易专用机器：
+参考当前 HFQ 机器的低延迟配置思路，对 `jp-meta-elvpn` 做成交易专用机器：
 
 - 系统、SSH、IRQ、RCU 回调、PM2、Redis/Nginx、dashboard 等只跑 housekeeping 核。
 - 交易热路径进程显式绑定到隔离核。
@@ -68,7 +73,7 @@ cpuidle states 包含 POLL、C1、C1E、C6
 内容：
 
 ```bash
-# Managed CPU isolation for jp2 HFQ-style trading host with SMT disabled.
+# Managed CPU isolation for jp-meta-elvpn HFQ-style trading host with SMT disabled.
 # Housekeeping: 0-5 (OS, IRQs, RCU callbacks, SSH, PM2, Redis/Nginx, dashboards)
 # Isolated: 6-47 (market-data and execution hot paths; pin processes explicitly)
 # SMT: disabled via nosmt=force, so sibling CPUs 48-95 are offline after reboot.
@@ -115,6 +120,10 @@ irqbalance = disabled / inactive
 ```
 
 `0000003f` 对应 CPU `0-5`。
+
+这是内核**默认** affinity(新中断、`ena-mgmnt`)。数据面 `ens41`/`ens42` 的 Tx-Rx 队列
+后续钉到隔离核 **46 / 47**(一卡一核,全部队列同核),登记见 `docs/core_allocation.md`。
+不要把 46/47 再分配给用户进程;也不要把数据面 IRQ 改回 0-5,以免和 housekeeping 抢核。
 
 ## 超线程修改
 
@@ -304,7 +313,7 @@ sudo systemctl enable --now irqbalance.service
 
 ## 行情和特征服务部署记录
 
-同日继续在 `jp2` 上部署行情和特征相关服务。部署顺序为：先启动 `spread_pbs` 行情，再启动三组 `rolling_metrics`，最后启动六个 `trade_flow_feature_pub`。
+同日继续在 `jp-meta-elvpn` 上部署行情和特征相关服务。部署顺序为：先启动 `spread_pbs` 行情，再启动三组 `rolling_metrics`，最后启动六个 `trade_flow_feature_pub`。
 
 ### 工具链
 
@@ -425,7 +434,6 @@ bitget-both      allowed=11
 - `scripts/rolling_metrics/print_rolling_metrics_params.py`
 - `scripts/rolling_metrics/sync_rolling_metrics_params.py`
 - `scripts/process_match_lib.sh`
-- `docs/rolling_metrics_migration.md`
 - `env.sh`
 
 `env.sh` 说明：
@@ -624,7 +632,7 @@ nginx Cpus_allowed_list: 0-5,48-95
 
 ## Tlen Server 部署记录
 
-按本机当前运行方式，在 `jp2` 上部署共享 `tlen_config_server`。此步骤只部署配置服务和同步 Redis 配置数据，不启动或修改交易进程。
+按本机当前运行方式，在 `jp-meta-elvpn` 上部署共享 `tlen_config_server`。此步骤只部署配置服务和同步 Redis 配置数据，不启动或修改交易进程。
 
 本机基准：
 
@@ -638,7 +646,7 @@ default_venue: binance-futures
 redis: 127.0.0.1:6379/0
 ```
 
-`jp2` 部署结果：
+`jp-meta-elvpn` 部署结果：
 
 ```text
 dir: /home/ubuntu/tlen_config_shared
@@ -660,7 +668,7 @@ PM2 已执行 `pm2 save`，当前进程列表保存到：
 /home/ubuntu/.pm2/dump.pm2
 ```
 
-同步到 `jp2` 的 Redis 配置范围：
+同步到 `jp-meta-elvpn` 的 Redis 配置范围：
 
 ```text
 *:tlen_threshold
@@ -691,7 +699,7 @@ gate_futures:tlen_threshold         fields=62
 gate_margin:tlen_threshold          fields=62
 ```
 
-本机与 `jp2` 对上述 Redis hash 做规范化 JSON 后的校验值一致：
+本机与 `jp-meta-elvpn` 对上述 Redis hash 做规范化 JSON 后的校验值一致：
 
 ```text
 sha256: f3e3bb6a2d0075c863b9f29aabc9ab7df3407a994941e4a802e4792ed293167d
@@ -745,7 +753,7 @@ persist_manager
 viz_server
 ```
 
-顶层二进制均从当前本机 `target/release` 获取并同步到 `jp2`：
+顶层二进制均从当前本机 `target/release` 获取并同步到 `jp-meta-elvpn`：
 
 ```text
 trade_engine              sha256=4d504a19099ffe80e6c21effd6ef7c846a5f0b121c12c9a65725d24f2e48380d
@@ -787,7 +795,7 @@ PERSIST_MANAGER_CORE=21
 
 `16-21` 全部属于 L3 `16-23`；`22-23` 留作 buffer。行情分片 `8-15` 不被该环境占用。
 
-trade engine 本地 IP 配置按 `jp2` 单网卡、未加入 Binance 白名单的状态调整：
+trade engine 本地 IP 配置按 `jp-meta-elvpn` 单网卡、未加入 Binance 白名单的状态调整：
 
 ```text
 trade_engine.toml
@@ -820,7 +828,7 @@ persist_manager
 viz_server
 ```
 
-同步到 `jp2` 的 `binance-intra-arb01` Redis 配置 key：
+同步到 `jp-meta-elvpn` 的 `binance-intra-arb01` Redis 配置 key：
 
 ```text
 binance-intra-arb01:binance-margin:binance-futures:amount_u_overrides
@@ -838,7 +846,7 @@ rolling_metrics_params_binance-margin_binance-futures
 rolling_metrics_thresholds_binance-margin_binance-futures
 ```
 
-Redis 配置恢复后，本机快照与 `jp2` 快照规范化校验一致：
+Redis 配置恢复后，本机快照与 `jp-meta-elvpn` 快照规范化校验一致：
 
 ```text
 sha256=bccb68d48106ffd71460ce27d923ca76db17bbc009a57f5e363be116c7066b2d
@@ -860,7 +868,7 @@ config server API 对比范围：
 /api/taker-decision-model
 ```
 
-本机 `127.0.0.1:19171` 与 `jp2` `127.0.0.1:19171` 上述 11 个 API 的规范化 JSON 完全一致。
+本机 `127.0.0.1:19171` 与 `jp-meta-elvpn` `127.0.0.1:19171` 上述 11 个 API 的规范化 JSON 完全一致。
 
 最终验证：
 
@@ -872,7 +880,7 @@ http://127.0.0.1:4191/intra/binance-intra-arb01/config/api/strategy-params  code
 
 ## 2026-06-18: 启动 binance-intra-arb01 的 viz、persist_manager、trade_engine
 
-本次在 `jp2` 的 `/home/ubuntu/binance-intra-arb01` 只启动以下三个进程：
+本次在 `jp-meta-elvpn` 的 `/home/ubuntu/binance-intra-arb01` 只启动以下三个进程：
 
 ```text
 intra_pm_binance_arb01   persist_manager
@@ -1056,7 +1064,7 @@ trade_signal
 
 ## 2026-06-18: 余额检查与“没有余额”的原因
 
-在 `jp2:/home/ubuntu/binance-intra-arb01` 使用当前环境变量中的 Binance key 执行只读余额检查。
+在 `jp-meta-elvpn:/home/ubuntu/binance-intra-arb01` 使用当前环境变量中的 Binance key 执行只读余额检查。
 
 `scripts/check_balance.py --exchange binance --mode STANDARD --asset USDT` 查询的是 Binance U 本位合约钱包：
 
@@ -1112,7 +1120,7 @@ hedge_leg venue=binance-futures spot_equity_usd=7618.85871779 total_equity=9867.
 open_leg  venue=binance-margin  spot_equity_usd=0 total_equity=0
 ```
 
-## 2026-06-18: jp2 前端汇总为 0 的 pre_trade 修复与替换
+## 2026-06-18: jp-meta-elvpn 前端汇总为 0 的 pre_trade 修复与替换
 
 现象：
 
@@ -1154,10 +1162,10 @@ new target/release/pre_trade sha256:
 f79cbeaa81edbb46fa8b650d9c28eb5aefb6f11469c4f2f5a63d786ca1ebb11f
 ```
 
-jp2 替换过程：
+jp-meta-elvpn 替换过程：
 
 ```text
-target env: jp2:/home/ubuntu/binance-intra-arb01
+target env: jp-meta-elvpn:/home/ubuntu/binance-intra-arb01
 stop: ./intra_scripts/stop_intra_pre_trade.sh
 backup old binary: pre_trade.bak.20260618133003.8a2f8420
 old sha256: 8a2f84209b8643f9b83d1b00f3cc6f32b7cc0754f950b2f82d8f3866b080aef1
@@ -1190,7 +1198,7 @@ hedge_leg total_equity: 9833.14468592
 结论：
 
 ```text
-jp2 前端显示 0 不是 account_monitor 没推仓位，也不是 Binance API 没余额；
+jp-meta-elvpn 前端显示 0 不是 account_monitor 没推仓位，也不是 Binance API 没余额；
 核心问题是 pre_trade 对 query snapshot 写入后的 basic_state cache 没有失效。
 release 版 pre_trade 已经替换并启动，viz 汇总与 exposure 已恢复非 0。
 ```
@@ -1267,12 +1275,12 @@ XRPUSDT positionAmt=0.1 unrealizedProfit=-0.00488698 notional=0.11570407
 
 因此此时 viz 的 `total_position=0`、`total_exposure=0` 基本符合真实账户状态：大额 futures 仓位已在 `13:40-13:42 UTC` 期间被平掉，只剩 XRPUSDT 0.1 的尘埃仓。该变化发生在本次 `trade_signal` 于 `13:45 UTC` 启动之前。
 
-## 2026-06-23: 部署 binance_mm_alpha 到 jp2
+## 2026-06-23: 部署 binance_mm_alpha 到 jp-meta-elvpn
 
 目标：
 
 ```text
-jp2:/home/ubuntu/binance_mm_alpha
+jp-meta-elvpn:/home/ubuntu/binance_mm_alpha
 ```
 
 本次只部署二进制、脚本、配置、dashboard 和 nginx mapping；没有启动任何 `binance_mm_alpha` 交易进程。
@@ -1280,7 +1288,7 @@ jp2:/home/ubuntu/binance_mm_alpha
 部署命令：
 
 ```bash
-FR_DEPLOY_HOST=jp2 \
+FR_DEPLOY_HOST=jp-meta-elvpn \
 FR_DEPLOY_KEY=/home/ubuntu/.ssh/aws-jp-aws-hfq.pem \
 bash scripts/deploy_mm_binance.sh --env-suffix alpha \
   --local-ip 0.0.0.0 \
@@ -1324,7 +1332,7 @@ PERSIST_MANAGER_CORE=32
 local_ips = ["0.0.0.0", "0.0.0.0"]
 ```
 
-这是 jp2 当前单网卡、未使用 Binance UM 白名单 IP 模式的配置。`BINANCE_UM_IP_WHITELIST_MODE=off` 与双 `0.0.0.0` 同时保留，满足 account monitor 至少两路 local IP 的启动要求。
+这是 jp-meta-elvpn 当前单网卡、未使用 Binance UM 白名单 IP 模式的配置。`BINANCE_UM_IP_WHITELIST_MODE=off` 与双 `0.0.0.0` 同时保留，满足 account monitor 至少两路 local IP 的启动要求。
 
 nginx mapping 已写入并 reload：
 

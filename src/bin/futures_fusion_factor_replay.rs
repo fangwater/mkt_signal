@@ -509,10 +509,7 @@ fn read_input_row(reader: &mut impl Read) -> Result<Option<InputRow>> {
             "cn_features replay rejects trade rows without a joined native five-level book: symbol={symbol} ts_ms={ts_ms} trading_day={trading_day} depth_lengths={lengths:?}"
         );
     }
-    if !lengths
-        .iter()
-        .all(|length| *length == FUTURES_DEPTH_LEVELS)
-    {
+    if !lengths.iter().all(|length| *length == FUTURES_DEPTH_LEVELS) {
         bail!(
             "native depth arrays must all contain exactly {FUTURES_DEPTH_LEVELS} levels, got {lengths:?}"
         );

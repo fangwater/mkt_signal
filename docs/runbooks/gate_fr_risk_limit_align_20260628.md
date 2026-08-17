@@ -1,12 +1,12 @@
 # Gate FR Risk Limit Alignment 2026-06-28
 
 This note records the live risk-limit alignment performed for `gate_fr_arb01`
-on `jp2`. It intentionally avoids credentials and account-specific secrets.
+on `jp-meta-elvpn`. It intentionally avoids credentials and account-specific secrets.
 
 ## Scope
 
 - Environment: `gate_fr_arb01`
-- Host access: `ssh jp2`
+- Host access: `ssh jp-meta-elvpn`
 - Gate settle currency: `usdt`
 - Symbol scope: union of the Gate FR online Redis symbol lists
 - Buffer: `2000` USDT
