@@ -80,44 +80,42 @@ CPUs 8-15 are isolated with isolcpus/nohz_full/rcu_nocbs and require explicit pl
 | 8 | spread_pbs Bybit market role |
 | 9 | spread_pbs Bybit bookTicker role |
 | 10 | 下单网卡 enp39s0 IRQs only |
-| 11 | bybit-intra-arb01 account_monitor |
-| 12 | bybit-intra-arb01 trade_signal, reserved but intentionally stopped |
-| 13 | bybit-intra-arb01 pre_trade |
-| 14 | bybit-intra-arb01 trade_engine main thread |
-| 15 | bybit-intra-arb01 trade_engine IPC thread plus 行情网卡 enp40s0 IRQs |
+| 11 | 行情网卡 enp40s0 IRQs only |
+| 12 | bybit-intra-arb01 account_monitor |
+| 13 | bybit-intra-arb01 trade_signal, reserved but intentionally stopped |
+| 14 | bybit-intra-arb01 pre_trade |
+| 15 | bybit-intra-arb01 trade_engine (single-thread; IPC core retired) |
 
 Keep these environment settings:
 
 ~~~text
-ACCOUNT_MONITOR_CORE=11
-TRADE_SIGNAL_CORE=12
-PRE_TRADE_CORE=13
-TRADE_ENGINE_CORE=14
-TRADE_ENGINE_IPC_CORE=15
+ACCOUNT_MONITOR_CORE=12
+TRADE_SIGNAL_CORE=13
+PRE_TRADE_CORE=14
+TRADE_ENGINE_CORE=15
 PERSIST_MANAGER_CORE=
 DEPTH_PUB_CORE=
 ~~~
 
-Leave the MM account monitor and trade engine unbound; verify Cpus_allowed_list is 0-7. Do not
-interpret one ps PSR sample as an affinity setting.
+Do not set `TRADE_ENGINE_IPC_CORE`. Leave the MM account monitor and trade engine unbound; verify
+Cpus_allowed_list is 0-7. Do not interpret one ps PSR sample as an affinity setting.
 
 ENA layout:
 
 | Interface | Role | Tx/Rx IRQ CPU | Unit |
 | --- | --- | --- | --- |
 | enp39s0 | 下单网卡 | 10 | pin-aws-ena-irq@enp39s0.service |
-| enp40s0 | 行情网卡 | 15 | pin-aws-ena-irq@enp40s0.service |
+| enp40s0 | 行情网卡 | 11 | pin-aws-ena-irq@enp40s0.service |
 
 Use these tracked defaults:
 
 ~~~text
 scripts/systemd/pin-aws-ena-irq-enp39s0.default: IRQ_CPUS=10
-scripts/systemd/pin-aws-ena-irq-enp40s0.default: IRQ_CPUS=15
+scripts/systemd/pin-aws-ena-irq-enp40s0.default: IRQ_CPUS=11
 ~~~
 
 Keep irqbalance inactive. Verify every matching IRQ in both smp_affinity_list and
-effective_affinity_list. CPU10 must remain free of user-space affinity. CPU15 intentionally shares
-行情网卡 IRQ work with the intra01 TE IPC thread; measure tail latency before changing this choice.
+effective_affinity_list. CPU10 and CPU11 must remain free of user-space affinity.
 Do not change RPS, XPS, or ENA coalescing as part of the lane migration.
 
 ## Required discovery

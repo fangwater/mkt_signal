@@ -172,6 +172,25 @@ fi
 
 case "$EXCHANGE" in
   okex)
+    OKX_LOCAL_IP="$(
+      python3 - "$ENV_DIR/trade_engine.toml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(0)
+text = path.read_text(encoding="utf-8")
+m = re.search(r'local_ips\s*=\s*\[\s*"([^"]+)"', text)
+if m:
+    print(m.group(1))
+PY
+    )"
+    if [[ -n "${OKX_LOCAL_IP:-}" ]]; then
+      export OKX_LOCAL_IP
+      echo "[INFO] okx source ip=${OKX_LOCAL_IP}"
+    fi
     exec "$PYTHON_BIN" "$SCRIPT_DIR/flatten_okx_swap_exposure.py" "${PASS_ARGS[@]}"
     ;;
   bybit)

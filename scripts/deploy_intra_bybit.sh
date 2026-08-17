@@ -101,11 +101,11 @@ configure_bybit_arb01_core_layout() {
   intra_upsert_env_exports_block \
     "$ENV_FILE" \
     "managed bybit-intra-arb01 core layout" \
-    "Bybit SG intra arb01 layout: cores 8-9 reserved for market data, 下单网卡 IRQ on core 10, trading processes on cores 11-15, persist_manager unbound." \
-    "ACCOUNT_MONITOR_CORE='11'" \
-    "TRADE_SIGNAL_CORE='12'" \
-    "PRE_TRADE_CORE='13'" \
-    "TRADE_ENGINE_CORE='14'" \
+    "Bybit SG intra arb01 layout: cores 8-9 market data, NIC IRQ on 10/11, trading on 12-15 (trade_engine single-thread); persist_manager unbound. TRADE_ENGINE_IPC_CORE retired." \
+    "ACCOUNT_MONITOR_CORE='12'" \
+    "TRADE_SIGNAL_CORE='13'" \
+    "PRE_TRADE_CORE='14'" \
+    "TRADE_ENGINE_CORE='15'" \
     "PERSIST_MANAGER_CORE=''"
   echo "[INFO] bybit-intra-arb01 core layout written to $ENV_FILE"
 }

@@ -102,6 +102,14 @@ hfq-low-latency-network.service: enabled / active(重启持久)
 
 进程无需重启,均在线无异常。
 
+## 2026-08-17 追加
+
+- `net.core.busy_poll` 由 50 调整为 **200**，与 jp-meta-elvpn 对齐
+  (`/etc/sysctl.d/99-hfq-low-latency-network.conf` + 运行时 `sysctl -w`)。
+- `busy_read` 保持 50。
+- 行情网卡 `enp40s0` IRQ 从核 15 迁到核 11；下单网卡 `enp39s0` 仍在核 10。
+  隔离核交易栈前移到 12–15，见 `core_allocation.md`。
+
 ## 回滚
 
 ```bash

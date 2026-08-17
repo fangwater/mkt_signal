@@ -6,7 +6,9 @@ Self-contained: no imports from other scripts in this repo.
 Behavior:
   - CWD basename must match ^bybit_fr_ or ^bybit-intra-.
   - Auto-sources ./env.sh; BYBIT_API_KEY/SECRET — env.sh always wins.
+  - REST source IP from ./trade_engine.toml local_ips[0] (order NIC).
   - POST /v5/order/cancel-all per (category, symbol).
+  - Query/auth failures exit non-zero; never treat them as an empty book.
 
 Usage:
   python3 scripts/cancel_bybit_pm_orders.py
@@ -16,8 +18,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -27,7 +31,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import tomllib  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None  # type: ignore[assignment]
 
 
 BYBIT_BASE = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com").rstrip("/")
@@ -35,6 +45,7 @@ RECV_WINDOW_MS = "5000"
 
 ENV_DIR_PATTERN = re.compile(r"^(bybit_fr_|bybit[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("BYBIT_API_KEY", "BYBIT_API_SECRET")
+TRADE_ENGINE_CFG_NAMES = ("trade_engine.toml", "trade engine.toml")
 CLOSED_ORDER_STATUSES = {
     "Cancelled",
     "Filled",
@@ -50,12 +61,115 @@ SPOT_ORDER_FILTERS = (
     "BidirectionalTpslOrder",
 )
 
+# Set by resolve_source_ip() before any private REST call.
+_SOURCE_IP: Optional[str] = None
+_SOURCE_IP_ORIGIN = "system-default"
+
+
+class SourceAddressHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, local_address: str):
+        super().__init__()
+        self._source_address = (local_address, 0)
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda host, **kwargs: http.client.HTTPConnection(
+                host, source_address=self._source_address, **kwargs
+            ),
+            req,
+        )
+
+
+class SourceAddressHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, local_address: str):
+        super().__init__()
+        self._source_address = (local_address, 0)
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kwargs: http.client.HTTPSConnection(
+                host, source_address=self._source_address, **kwargs
+            ),
+            req,
+        )
+
+
+def normalize_local_address(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed or trimmed in {"0.0.0.0", "::"}:
+        return None
+    return trimmed
+
+
+def find_trade_engine_config(base_dir: str) -> Optional[Path]:
+    root = Path(base_dir)
+    existing = [root / name for name in TRADE_ENGINE_CFG_NAMES if (root / name).is_file()]
+    if not existing:
+        return None
+    if len(existing) > 1:
+        joined = ", ".join(str(path) for path in existing)
+        raise SystemExit(f"[ERROR] multiple trade_engine configs found: {joined}")
+    return existing[0]
+
+
+def load_trade_engine_local_ips(path: Path) -> List[str]:
+    content = path.read_text(encoding="utf-8")
+    if tomllib is not None:
+        data = tomllib.loads(content)
+        raw = data.get("local_ips", [])
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list):
+            raise SystemExit(f"[ERROR] invalid local_ips in {path}: expected array")
+        out = [str(v).strip() for v in raw]
+    else:
+        match = re.search(r"(?ms)^\s*local_ips\s*=\s*\[(.*?)\]", content)
+        if not match:
+            raise SystemExit(f"[ERROR] trade_engine config {path} must provide local_ips")
+        tokens = re.findall(
+            r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'',
+            match.group(1),
+        )
+        out = [str(ast.literal_eval(token)).strip() for token in tokens]
+    if not out or any(not item for item in out):
+        raise SystemExit(f"[ERROR] trade_engine config {path} must provide non-empty local_ips")
+    return out
+
+
+def resolve_source_ip(*, explicit: Optional[str] = None) -> Tuple[Optional[str], str]:
+    manual = normalize_local_address(explicit)
+    if manual is not None:
+        return manual, "cli --local-address"
+
+    cfg = find_trade_engine_config(os.getcwd())
+    if cfg is None:
+        raise SystemExit(
+            "[ERROR] missing ./trade_engine.toml with local_ips; "
+            "refusing to call Bybit without a bound order source IP"
+        )
+    local_ips = load_trade_engine_local_ips(cfg)
+    local_address = normalize_local_address(local_ips[0])
+    if local_address is None:
+        raise SystemExit(
+            f"[ERROR] {cfg} local_ips[0]={local_ips[0]!r} is not a bindable source IP"
+        )
+    return local_address, f"{cfg} local_ips[0]"
+
 
 def http_request(url, *, method="GET", headers=None, data=None, timeout=15):
     req = urllib.request.Request(url, data=data, method=method.upper())
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
+        if _SOURCE_IP:
+            opener = urllib.request.build_opener(
+                SourceAddressHTTPHandler(_SOURCE_IP),
+                SourceAddressHTTPSHandler(_SOURCE_IP),
+            )
+            with opener.open(req, timeout=timeout) as resp:
+                return resp.getcode(), resp.read().decode("utf-8", errors="replace")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.getcode(), resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
@@ -190,12 +304,18 @@ def fetch_open(
             q["cursor"] = cursor
         status, body = bybit_private("GET", "/v5/order/realtime", api_key, api_secret, query=q)
         if not (200 <= status < 300):
-            sys.stderr.write(f"[WARN] order/realtime {category} status={status} body={body}\n")
-            return out
-        parsed = json.loads(body)
+            sys.stderr.write(
+                f"[ERROR] order/realtime {category} status={status} body={body}\n"
+            )
+            sys.exit(1)
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            sys.stderr.write(f"[ERROR] order/realtime {category} non-json body={body}\n")
+            sys.exit(1)
         if parsed.get("retCode") != 0:
-            sys.stderr.write(f"[WARN] order/realtime {category}: {body}\n")
-            return out
+            sys.stderr.write(f"[ERROR] order/realtime {category}: {body}\n")
+            sys.exit(1)
         result = parsed.get("result", {})
         rows = result.get("list", []) or []
         for row in rows:
@@ -301,6 +421,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument(
+        "--local-address",
+        default=None,
+        help="Explicit REST source IP; default = trade_engine.toml local_ips[0]",
+    )
+    parser.add_argument(
         "--verify-delay-sec",
         type=float,
         default=1.0,
@@ -310,17 +435,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    global _SOURCE_IP, _SOURCE_IP_ORIGIN
     args = parse_args()
     env_name = check_env_safety()
     auto_source_env_sh()
     api_key, api_secret = load_credentials()
+    _SOURCE_IP, _SOURCE_IP_ORIGIN = resolve_source_ip(explicit=args.local_address)
     wanted = parse_symbols(args.symbols)
     wanted_set = set(wanted) if wanted else None
     spot_filters = parse_spot_order_filters(args.spot_order_filters)
 
     print(
         f"[info] env={env_name} scope={args.scope} execute={args.execute} "
-        f"spot_order_filters={','.join(spot_filters)}"
+        f"spot_order_filters={','.join(spot_filters)} "
+        f"source_ip={_SOURCE_IP} ({_SOURCE_IP_ORIGIN})"
     )
 
     linear_count, spot_count = collect_open_counts(

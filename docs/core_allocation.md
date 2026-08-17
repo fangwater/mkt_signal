@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-08-16。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-08-17。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
@@ -32,19 +32,13 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 21 | trade_signal(okex_mm_alpha) | |
 | 22 | pre_trade(okex_mm_alpha) | |
 | 23 | trade_engine(okex_mm_alpha) | 单线程 |
-| 24-26 | (空) | |
-| 27 | account_monitor(binance_mm_alpha) | |
-| 28 | trade_signal(binance_mm_alpha) | |
-| 29 | pre_trade(binance_mm_alpha) | |
-| 30 | trade_engine(binance_mm_alpha) | 单线程；原 31 号 te-ipc 核已回收 |
-| 31-45 | (空) | |
+| 24 | account_monitor(binance_mm_alpha) | 紧贴 okex_mm_alpha(20-23)，原 27-30 前移 |
+| 25 | trade_signal(binance_mm_alpha) | |
+| 26 | pre_trade(binance_mm_alpha) | |
+| 27 | trade_engine(binance_mm_alpha) | 单线程；原 31 号 te-ipc 核已回收 |
+| 28-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
-
-异常待查:
-
-- `binance_mm_alpha/persist_manager` 启动参数为 `--core 21`,实际 affinity mask 是 `15`,
-  与参数不符(与其它 persist_manager 堆叠在 15)。
 
 未绑核、跑在 housekeeping 0-5 的交易/数据栈(截至本次盘点):
 binance_fr_arb03/04、gate_fr_arb01/02、bitget_fr_arb02、okex_fr_arb01、
@@ -68,21 +62,23 @@ L3 说明:c7i.metal-24xl 的 L3 为全芯片共享(`shared_cpu_list=0-47`),
 
 ## sg(SSH: `sg`,ip-172-31-7-123,c7a.4xlarge,apse1-az3)
 
-CPU 布局:`0-7` housekeeping(承担全部 NIC IRQ),`8-15` 隔离;AMD 实例无 SMT,全部为物理核。
+CPU 布局:`0-7` housekeeping,`8-15` 隔离;AMD 实例无 SMT,全部为物理核。
 主机调优记录见 `sg_hfq_low_latency_tuning_20260816.md`。
+NIC IRQ:一卡一核(`enp39s0`→10,`enp40s0`→11),`pin-aws-ena-irq@enp39s0/enp40s0`;
+`busy_poll`/`busy_read` 与 jp 对齐为 200/50(2026-08-17)。
 
 | 核 | 进程 | 备注 |
 |----|------|------|
 | 8 | spread_pbs bybit-both(market 角色) | trade/incremental/derivatives |
 | 9 | spread_pbs bybit-both(bookticker 角色) | BBO 专核 |
-| 10 | (空) | 空闲隔离核 |
-| 11 | account_monitor_bybit(bybit-intra-arb01) | |
-| 12 | trade_signal(bybit-intra-arb01) | |
-| 13 | pre_trade(bybit-intra-arb01) | |
-| 14 | trade_engine(bybit-intra-arb01) | 单线程，只需一核；`TRADE_ENGINE_IPC_CORE` 已废弃 |
-| 15 | (空) | 原 te-ipc 核已回收 |
+| 10 | NIC IRQ: enp39s0 下单网卡 | 禁止再绑用户进程 |
+| 11 | NIC IRQ: enp40s0 行情网卡 | 禁止再绑用户进程 |
+| 12 | account_monitor_bybit(bybit-intra-arb01) | |
+| 13 | trade_signal(bybit-intra-arb01) | 预留;start-intra 默认不拉起 |
+| 14 | pre_trade(bybit-intra-arb01) | |
+| 15 | trade_engine(bybit-intra-arb01) | 单线程，只需一核；`TRADE_ENGINE_IPC_CORE` 已废弃 |
 
 未绑核、跑在 housekeeping 0-7 的热路径进程(截至本次盘点):
 mm_bybit_alpha 全套(trade_engine/trade_signal/pre_trade/account_monitor/persist_manager)、
 bybit-intra-arb02 的 trade_signal/pre_trade/account_monitor、depth_pub、若干 persist_manager。
-这些与全部 NIC IRQ 同在 0-7 竞争;隔离核现空 10 与 15,如需整理绑核可先用这两核,再考虑扩容。
+这些与 housekeeping/系统中断同核竞争;隔离段 IRQ 已迁到 10/11。

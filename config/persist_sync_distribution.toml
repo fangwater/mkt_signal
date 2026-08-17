@@ -119,6 +119,18 @@ public_url = "http://127.0.0.1:6355"
 bind = "127.0.0.1:50055"
 status = "fixed"
 
+# JP Binance MM persist sync source.
+# 50049 collided with okex_fr_arb01 on jp-meta-elvpn; moved to 6356/50056.
+[[allocations]]
+port = 6356
+region = "local"
+strategy = "mm"
+env = "binance_mm_alpha"
+source_id = "binance_mm_alpha"
+public_url = "http://127.0.0.1:6356"
+bind = "127.0.0.1:50056"
+status = "fixed"
+
 # Requested OKEX intra source on HK.
 [[allocations]]
 port = 6354

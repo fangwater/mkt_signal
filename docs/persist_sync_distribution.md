@@ -43,6 +43,7 @@ Regions:
 | 6353 | sg | intra | `bybit-intra-arb02` | `bybit-intra-arb02` | `http://47.128.92.224:6353` | `127.0.0.1:50053` | fixed |
 | 6354 | hk | intra | `okex-intra-arb01` | `okex-intra-arb01` | `http://47.238.128.48:6354` | `127.0.0.1:50054` | planned |
 | 6355 | jp | mm | `okex_mm_alpha` | `okex_mm_alpha` | `http://127.0.0.1:6355` | `127.0.0.1:50055` | fixed |
+| 6356 | jp | mm | `binance_mm_alpha` | `binance_mm_alpha` | `http://127.0.0.1:6356` | `127.0.0.1:50056` | fixed |
 
 ## Setup Notes
 
