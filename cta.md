@@ -61,17 +61,25 @@ Value 为 JSON，同时保存下单参数和全部目标仓位：
   "max_maker_requotes": 2,
   "target_tolerance_usdt": 10.0,
   "targets": {
-    "BTCUSDT": 0.03,
-    "ETHUSDT": -0.5
+    "BTCUSDT": {"qty": 0.03, "signal": 0},
+    "ETHUSDT": {"qty": -0.5, "signal": -1}
   }
 }
 ```
 
+每个 symbol 的目标是对象：`qty` 是目标仓位，`signal` 是整数，只允许
+`-2`、`-1`、`0`、`1`、`2`。省略 `signal` 或继续写旧的数字仓位，都按
+`signal = 0` 处理。
+
+`signal == ±1` 时，该 symbol 当前这次执行全部走 taker，不再先挂 maker
+再超时转 taker。`0` 保持原来的 maker 后 taker；`±2` 先解析并保存，暂无
+额外执行语义。
+
 `exec-pre-trade` 定期 reload 整个 KV：
 
 - 下单参数变化：从下一个 batch 或下一次重报开始生效，不撤销当前挂单。
-- 某个 symbol 的目标仓位变化：撤销该 `strategy_id` 的所有挂单，等待撤单确认后读取最新仓位并重新建仓。
-- symbol 从 `targets` 删除：按目标仓位 `0` 处理。
+- 某个 symbol 的 `qty` 或 `signal` 变化：撤销该 `strategy_id` 的所有挂单，等待撤单确认后读取最新仓位并重新建仓。
+- symbol 从 `targets` 删除：按目标仓位 `0`、`signal = 0` 处理。
 - strategy_name 从索引删除：该名称下的旧目标全部按 `0` 处理。
 - Redis 读取或 JSON 校验失败：保留上一次有效配置。
 
@@ -135,7 +143,8 @@ ask0 + 4 tick
 - 相邻 batch 至少间隔 `batch_interval_ms`，batch 内子订单同时发出。
 - maker 超过 `maker_timeout_ms` 后，撤销该 batch 未成交订单。
 - post-only 拒单后等待更新的 BBO，再按原 `level_index` 重算价格；不从第 0 档重新拆分，`batch_seq` 不变。
-- 重报超过 `max_maker_requotes` 后，剩余量使用 taker 成交。
+- `signal == ±1` 时，该 symbol 当前这次执行从第一个 batch 起就使用 taker。
+- 其他 signal 下，maker 重报超过 `max_maker_requotes` 后，剩余量使用 taker 成交。
 - 新目标生效前必须完成旧挂单撤销，随后重新读取账户仓位。
 - 启动后必须先完成首次账户仓位快照，之后才允许创建第一个 batch。
 - BBO 缺失或过期时暂停创建订单。
@@ -236,7 +245,7 @@ python3 scripts/exec_config_client.py post @cta_alpha.json
 
 # 也可以传内联 JSON 或 stdin
 python3 scripts/exec_config_client.py post \
-  '{"strategy_name":"cta_alpha","config":{"single_order_usdt":100.0,"orders_per_batch":3,"maker_price_anchor":"own_best","tick_spacing":1,"batch_interval_ms":500,"maker_timeout_ms":1000,"max_maker_requotes":2,"target_tolerance_usdt":10.0,"targets":{"BTCUSDT":0.03}}}'
+  '{"strategy_name":"cta_alpha","config":{"single_order_usdt":100.0,"orders_per_batch":3,"maker_price_anchor":"own_best","tick_spacing":1,"batch_interval_ms":500,"maker_timeout_ms":1000,"max_maker_requotes":2,"target_tolerance_usdt":10.0,"targets":{"BTCUSDT":{"qty":0.03,"signal":0}}}}'
 cat cta_alpha.json | python3 scripts/exec_config_client.py post -
 ```
 

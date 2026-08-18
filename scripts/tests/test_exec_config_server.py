@@ -151,7 +151,8 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertIn("Read only", body)
         self.assertIn('id="single_order_usdt" inputmode="decimal" disabled', body)
         self.assertNotIn("Add a strategy", body)
-        self.assertIn('.filter(([, qty]) => Number(qty) !== 0)', body)
+        self.assertIn('.filter(([, raw]) => targetQty(raw) !== 0)', body)
+        self.assertIn("<th>Signal</th>", body)
 
     def test_order_parameter_payload_rejects_targets(self):
         config = dict(MODULE.DEFAULT_CONFIG)
@@ -215,7 +216,10 @@ class ExecConfigServerTests(unittest.TestCase):
                 current["updated_at_us"],
             )
 
-        self.assertEqual(store.load("trend_a")["targets"], {"ETHUSDT": 3.0})
+        self.assertEqual(
+            store.load("trend_a")["targets"],
+            {"ETHUSDT": {"qty": 3.0, "signal": 0}},
+        )
 
     def test_order_parameter_save_cannot_create_unknown_strategy(self):
         store = fake_store()
@@ -258,9 +262,15 @@ class ExecConfigServerTests(unittest.TestCase):
                 payload = json.load(response)
 
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["config"]["targets"], {"BTCUSDT": 0.2})
+        self.assertEqual(
+            payload["config"]["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
         self.assertGreater(payload["config"]["updated_at_us"], 0)
-        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
+        self.assertEqual(
+            store.load("trend_a")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
         self.assertIn("update status=200 response=", output.getvalue())
         self.assertIn(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), output.getvalue())
 
@@ -303,7 +313,10 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertEqual(payload["order_parameters"]["orders_per_batch"], 5)
         self.assertNotIn("targets", payload)
         self.assertNotIn('"targets"', output.getvalue())
-        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
+        self.assertEqual(
+            store.load("trend_a")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
 
         published = dict(MODULE.DEFAULT_CONFIG)
         published["orders_per_batch"] = 1
@@ -322,7 +335,10 @@ class ExecConfigServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(publish_payload["config"]["orders_per_batch"], 5)
-        self.assertEqual(publish_payload["config"]["targets"], {"ETHUSDT": -3.0})
+        self.assertEqual(
+            publish_payload["config"]["targets"],
+            {"ETHUSDT": {"qty": -3.0, "signal": 0}},
+        )
         self.assertEqual(store.load("trend_a")["orders_per_batch"], 5)
 
     def test_http_stale_order_parameter_save_returns_409_without_writing(self):
@@ -436,7 +452,7 @@ class ExecConfigServerTests(unittest.TestCase):
 
         self.assertEqual(updated["single_order_usdt"], 250.0)
         self.assertEqual(updated["orders_per_batch"], 5)
-        self.assertEqual(updated["targets"], {"ETHUSDT": -3.0})
+        self.assertEqual(updated["targets"], {"ETHUSDT": {"qty": -3.0, "signal": 0}})
 
     def test_strategy_names_write_independent_keys(self):
         store = fake_store()
@@ -449,8 +465,14 @@ class ExecConfigServerTests(unittest.TestCase):
         store.save("trend_b", second)
 
         self.assertEqual(store.list_strategy_names(), ["trend_a", "trend_b"])
-        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
-        self.assertEqual(store.load("trend_b")["targets"], {"ETHUSDT": -3.0})
+        self.assertEqual(
+            store.load("trend_a")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
+        self.assertEqual(
+            store.load("trend_b")["targets"],
+            {"ETHUSDT": {"qty": -3.0, "signal": 0}},
+        )
         self.assertNotEqual(store.key("trend_a"), store.key("trend_b"))
         self.assertEqual(
             store.client.get(store.index_key), '["trend_a","trend_b"]'
@@ -465,7 +487,10 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertTrue(store.remove("trend_a"))
         self.assertEqual(store.list_strategy_names(), [])
         self.assertEqual(store.list_removed_strategy_names(), ["trend_a"])
-        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
+        self.assertEqual(
+            store.load("trend_a")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
         self.assertTrue(store.remove("trend_a"))
         with self.assertRaisesRegex(ValueError, "removal already requested"):
             store.save("trend_a", config)
@@ -529,6 +554,29 @@ class ExecConfigServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid symbol"):
             MODULE.normalize_exec_config(config)
 
+    def test_target_objects_keep_signal_and_legacy_qty_defaults_to_zero(self):
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {
+            "BTCUSDT": {"qty": 0.03, "signal": -1},
+            "ETHUSDT": -0.5,
+        }
+
+        normalized = MODULE.normalize_exec_config(config)
+
+        self.assertEqual(
+            normalized["targets"],
+            {
+                "BTCUSDT": {"qty": 0.03, "signal": -1},
+                "ETHUSDT": {"qty": -0.5, "signal": 0},
+            },
+        )
+
+    def test_invalid_target_signal_is_rejected(self):
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": {"qty": 0.03, "signal": 3}}
+        with self.assertRaisesRegex(ValueError, "signal must be one of"):
+            MODULE.normalize_exec_config(config)
+
     def test_symbol_can_be_split_across_strategy_names(self):
         store = fake_store()
         first = dict(MODULE.DEFAULT_CONFIG)
@@ -538,8 +586,14 @@ class ExecConfigServerTests(unittest.TestCase):
         store.save("trend_a", first)
         store.save("trend_b", second)
 
-        self.assertEqual(store.load("trend_a")["targets"], {"BTCUSDT": 0.2})
-        self.assertEqual(store.load("trend_b")["targets"], {"BTCUSDT": -0.1})
+        self.assertEqual(
+            store.load("trend_a")["targets"],
+            {"BTCUSDT": {"qty": 0.2, "signal": 0}},
+        )
+        self.assertEqual(
+            store.load("trend_b")["targets"],
+            {"BTCUSDT": {"qty": -0.1, "signal": 0}},
+        )
 
 
 if __name__ == "__main__":

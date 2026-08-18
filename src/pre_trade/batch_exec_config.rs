@@ -1,5 +1,5 @@
 use crate::strategy::batch_exec_strategy::{
-    BatchExecConfig, BatchExecStrategy, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+    BatchExecConfig, BatchExecStrategy, BatchExecTarget, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
 };
 use crate::strategy::StrategyManager;
 use anyhow::{Context, Result};
@@ -19,7 +19,7 @@ use std::time::Duration;
 pub struct BatchExecRedisValue {
     #[serde(flatten)]
     pub config: BatchExecConfig,
-    pub targets: BTreeMap<String, f64>,
+    pub targets: BTreeMap<String, BatchExecTarget>,
     #[serde(default)]
     pub updated_at_us: Option<i64>,
 }
@@ -30,22 +30,22 @@ impl BatchExecRedisValue {
         if self.updated_at_us.is_some_and(|timestamp| timestamp <= 0) {
             anyhow::bail!("updated_at_us must be positive when present");
         }
-        for (symbol, target_qty) in &self.targets {
+        for (symbol, target) in &self.targets {
             if normalize_symbol_for_internal(symbol).is_empty() {
                 anyhow::bail!("target symbol must not be empty");
             }
-            if !target_qty.is_finite() {
+            if !target.qty.is_finite() {
                 anyhow::bail!("target_qty must be finite: symbol={symbol}");
             }
         }
         Ok(())
     }
 
-    fn normalized_targets(&self) -> Result<BTreeMap<String, f64>> {
+    fn normalized_targets(&self) -> Result<BTreeMap<String, BatchExecTarget>> {
         let mut normalized = BTreeMap::new();
-        for (raw_symbol, target_qty) in &self.targets {
+        for (raw_symbol, target) in &self.targets {
             let symbol = normalize_symbol_for_internal(raw_symbol);
-            if normalized.insert(symbol.clone(), *target_qty).is_some() {
+            if normalized.insert(symbol.clone(), *target).is_some() {
                 anyhow::bail!(
                     "duplicate normalized target symbol: raw_symbol={raw_symbol} normalized={symbol}"
                 );
@@ -601,7 +601,7 @@ impl BatchExecConfigReloader {
                 if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
                     if exec.target_qty() != Some(0.0) {
                         exec.update_target(
-                            0.0,
+                            BatchExecTarget::ZERO,
                             get_timestamp_us(),
                             b"batch_exec:system_position_close".to_vec(),
                         );
@@ -1017,9 +1017,12 @@ impl BatchExecConfigReloader {
                 self.close_configs
                     .entry(symbol.clone())
                     .or_insert_with(|| payload.config.clone());
-                let target_qty = targets.get(&symbol).copied().unwrap_or(0.0);
+                let target = targets
+                    .get(&symbol)
+                    .copied()
+                    .unwrap_or(BatchExecTarget::ZERO);
                 let old_target = previous_targets.get(&symbol).copied();
-                let target_changed = old_target != Some(target_qty);
+                let target_changed = old_target != Some(target);
 
                 let strategy_id = strategy_mgr
                     .borrow_mut()
@@ -1034,11 +1037,7 @@ impl BatchExecConfigReloader {
                     if let Some(exec) = strategy.as_any_mut().downcast_mut::<BatchExecStrategy>() {
                         exec.set_source_updated_at_us(payload.updated_at_us.unwrap_or(0));
                         if target_changed {
-                            exec.update_target(
-                                target_qty,
-                                get_timestamp_us(),
-                                key.as_bytes().to_vec(),
-                            );
+                            exec.update_target(target, get_timestamp_us(), key.as_bytes().to_vec());
                             applied += 1;
                         }
                     }
@@ -1146,9 +1145,70 @@ mod tests {
         )
         .unwrap();
         value.validate().unwrap();
-        assert_eq!(value.targets.get("BTCUSDT"), Some(&0.02));
+        assert_eq!(
+            value.targets.get("BTCUSDT"),
+            Some(&BatchExecTarget {
+                qty: 0.02,
+                signal: 0
+            })
+        );
         assert_eq!(value.config.orders_per_batch, 3);
         assert_eq!(value.updated_at_us, None);
+    }
+
+    #[test]
+    fn redis_value_accepts_target_objects_and_omitted_signal() {
+        let value: BatchExecRedisValue = serde_json::from_str(
+            r#"{
+                "single_order_usdt": 100.0,
+                "orders_per_batch": 3,
+                "maker_price_anchor": "own_best",
+                "tick_spacing": 2,
+                "batch_interval_ms": 500,
+                "maker_timeout_ms": 1000,
+                "max_maker_requotes": 2,
+                "target_tolerance_usdt": 10.0,
+                "targets": {
+                    "BTCUSDT": {"qty": 0.03, "signal": -1},
+                    "ETHUSDT": {"qty": -0.5}
+                }
+            }"#,
+        )
+        .unwrap();
+        value.validate().unwrap();
+        assert_eq!(
+            value.targets.get("BTCUSDT"),
+            Some(&BatchExecTarget {
+                qty: 0.03,
+                signal: -1
+            })
+        );
+        assert_eq!(
+            value.targets.get("ETHUSDT"),
+            Some(&BatchExecTarget {
+                qty: -0.5,
+                signal: 0
+            })
+        );
+    }
+
+    #[test]
+    fn redis_value_rejects_unknown_target_signal() {
+        let err = serde_json::from_str::<BatchExecRedisValue>(
+            r#"{
+                "single_order_usdt": 100.0,
+                "orders_per_batch": 3,
+                "maker_price_anchor": "own_best",
+                "tick_spacing": 2,
+                "batch_interval_ms": 500,
+                "maker_timeout_ms": 1000,
+                "max_maker_requotes": 2,
+                "target_tolerance_usdt": 10.0,
+                "targets": {"BTCUSDT": {"qty": 0.03, "signal": 3}}
+            }"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("signal must be one of"));
     }
 
     #[test]

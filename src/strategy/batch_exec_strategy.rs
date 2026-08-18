@@ -35,6 +35,7 @@ const QTY_EPS: f64 = 1e-12;
 const BBO_MAX_AGE_US: i64 = 2_000_000;
 const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
 const BATCH_EXEC_SIGNAL_KIND: u8 = 0;
+pub const ALLOWED_TARGET_SIGNALS: [i32; 5] = [-2, -1, 0, 1, 2];
 
 pub const BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE";
 
@@ -66,6 +67,82 @@ impl Default for BatchExecConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct BatchExecTarget {
+    pub qty: f64,
+    pub signal: i32,
+}
+
+impl BatchExecTarget {
+    pub const ZERO: Self = Self {
+        qty: 0.0,
+        signal: 0,
+    };
+
+    pub fn new(qty: f64, signal: i32) -> Result<Self, String> {
+        if !qty.is_finite() {
+            return Err("qty must be finite".to_string());
+        }
+        validate_target_signal(signal)?;
+        Ok(Self { qty, signal })
+    }
+
+    pub fn uses_taker_only(self) -> bool {
+        self.signal.abs() == 1
+    }
+}
+
+impl<'de> Deserialize<'de> for BatchExecTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum BatchExecTargetDe {
+            Qty(f64),
+            Object(BatchExecTargetObject),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct BatchExecTargetObject {
+            qty: f64,
+            #[serde(default)]
+            signal: Option<i32>,
+        }
+
+        match BatchExecTargetDe::deserialize(deserializer)? {
+            BatchExecTargetDe::Qty(qty) => {
+                BatchExecTarget::new(qty, 0).map_err(serde::de::Error::custom)
+            }
+            BatchExecTargetDe::Object(value) => {
+                BatchExecTarget::new(value.qty, value.signal.unwrap_or(0))
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
+
+pub fn validate_target_signal(signal: i32) -> Result<(), String> {
+    if ALLOWED_TARGET_SIGNALS.contains(&signal) {
+        Ok(())
+    } else {
+        Err(format!(
+            "signal must be one of {}",
+            ALLOWED_TARGET_SIGNALS
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+fn should_use_taker(config: &BatchExecConfig, maker_requotes: u32, signal: i32) -> bool {
+    signal.abs() == 1 || maker_requotes > config.max_maker_requotes
+}
+
 impl BatchExecConfig {
     pub fn validate(&self) -> Result<(), String> {
         if !self.single_order_usdt.is_finite() || self.single_order_usdt <= 0.0 {
@@ -95,6 +172,7 @@ fn estimate_batch_progress(
     active_completion_ts_us: i64,
     now_ts_us: i64,
     next_batch_at_us: i64,
+    force_taker: bool,
 ) -> (u32, i64) {
     if !delta_usdt.is_finite() || delta_usdt.abs() <= config.target_tolerance_usdt || now_ts_us <= 0
     {
@@ -123,11 +201,15 @@ fn estimate_batch_progress(
         let last_batch_start_ts_us = now_ts_us
             .saturating_add(first_batch_delay_us)
             .saturating_add(subsequent_batch_delay_us);
-        // Initial maker order plus max_maker_requotes maker retries, then taker fallback.
-        let maker_attempts = i64::from(config.max_maker_requotes).saturating_add(1);
-        let maker_lifecycle_us = maker_attempts
-            .saturating_mul(i64::from(config.maker_timeout_ms))
-            .saturating_mul(1_000);
+        let maker_lifecycle_us = if force_taker {
+            0
+        } else {
+            // Initial maker order plus max_maker_requotes maker retries, then taker fallback.
+            let maker_attempts = i64::from(config.max_maker_requotes).saturating_add(1);
+            maker_attempts
+                .saturating_mul(i64::from(config.maker_timeout_ms))
+                .saturating_mul(1_000)
+        };
         last_batch_start_ts_us.saturating_add(maker_lifecycle_us)
     };
     let estimated_completion_ts_ms = active_completion_ts_us.max(future_completion_ts_us) / 1_000;
@@ -224,14 +306,14 @@ struct ChildOrderMeta {
 
 #[derive(Debug, Clone)]
 struct ActiveTarget {
-    target_qty: f64,
+    target: BatchExecTarget,
     generation_time: i64,
     from_key: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
 struct PendingTarget {
-    target_qty: f64,
+    target: BatchExecTarget,
     generation_time: i64,
     from_key: Vec<u8>,
 }
@@ -466,6 +548,7 @@ fn build_child_order_plans(
     side: Side,
     remaining_base_qty: f64,
     maker_requotes: u32,
+    signal: i32,
     bid: f64,
     ask: f64,
     price_tick: f64,
@@ -485,7 +568,7 @@ fn build_child_order_plans(
     {
         return Err("invalid BBO, price tick, or qty multiplier".to_string());
     }
-    let use_taker = maker_requotes > config.max_maker_requotes;
+    let use_taker = should_use_taker(config, maker_requotes, signal);
     let child_count = if use_taker {
         1
     } else {
@@ -687,10 +770,21 @@ impl BatchExecStrategy {
     }
 
     pub fn target_qty(&self) -> Option<f64> {
+        self.current_target().map(|target| target.qty)
+    }
+
+    fn current_target(&self) -> Option<BatchExecTarget> {
         self.pending_target
             .as_ref()
-            .map(|target| target.target_qty)
-            .or_else(|| self.active_target.as_ref().map(|target| target.target_qty))
+            .map(|target| target.target)
+            .or_else(|| self.active_target.as_ref().map(|target| target.target))
+    }
+
+    fn active_target_signal(&self) -> i32 {
+        self.active_target
+            .as_ref()
+            .map(|target| target.target.signal)
+            .unwrap_or(0)
     }
 
     pub fn virtual_position_qty(&self) -> Option<f64> {
@@ -784,7 +878,7 @@ impl BatchExecStrategy {
         }
         let target = self.active_target.as_ref()?;
         self.completion_reason.or_else(|| {
-            ((target.target_qty - position_qty).abs() <= QTY_EPS)
+            ((target.target.qty - position_qty).abs() <= QTY_EPS)
                 .then_some(BatchExecCompletionReason::TargetReached)
         })
     }
@@ -821,6 +915,8 @@ impl BatchExecStrategy {
                         active_completion_ts_us,
                         now_ts,
                         self.next_batch_at_us,
+                        self.current_target()
+                            .is_some_and(BatchExecTarget::uses_taker_only),
                     )
                 })
                 .unwrap_or((0, 0))
@@ -994,11 +1090,23 @@ impl BatchExecStrategy {
         Ok(())
     }
 
-    pub fn update_target(&mut self, target_qty: f64, generation_time: i64, from_key: Vec<u8>) {
-        if !target_qty.is_finite() {
+    pub fn update_target(
+        &mut self,
+        target: BatchExecTarget,
+        generation_time: i64,
+        from_key: Vec<u8>,
+    ) {
+        if !target.qty.is_finite() {
             warn!(
                 "BatchExecStrategy: strategy_id={} invalid target_qty={}",
-                self.strategy_id, target_qty
+                self.strategy_id, target.qty
+            );
+            return;
+        }
+        if let Err(err) = validate_target_signal(target.signal) {
+            warn!(
+                "BatchExecStrategy: strategy_id={} invalid target signal={}: {}",
+                self.strategy_id, target.signal, err
             );
             return;
         }
@@ -1018,7 +1126,7 @@ impl BatchExecStrategy {
         }
 
         self.pending_target = Some(PendingTarget {
-            target_qty,
+            target,
             generation_time,
             from_key,
         });
@@ -1046,16 +1154,17 @@ impl BatchExecStrategy {
         let pending = self.pending_target.take().expect("checked above");
         let position_qty = self.virtual_position_qty.expect("allocation checked above");
         info!(
-            "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} allocated_position_qty={:.8} generation={}",
+            "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target activated target_qty={:.8} signal={} allocated_position_qty={:.8} generation={}",
             self.strategy_id,
             self.strategy_name,
             self.symbol,
-            pending.target_qty,
+            pending.target.qty,
+            pending.target.signal,
             position_qty,
             pending.generation_time
         );
         self.active_target = Some(ActiveTarget {
-            target_qty: pending.target_qty,
+            target: pending.target,
             generation_time: pending.generation_time,
             from_key: pending.from_key,
         });
@@ -1072,12 +1181,13 @@ impl BatchExecStrategy {
             return;
         }
 
-        let Some((target_qty, target_generation, target_from_key)) =
+        let Some((target_qty, target_generation, target_from_key, target_signal)) =
             self.active_target.as_ref().map(|target| {
                 (
-                    target.target_qty,
+                    target.target.qty,
                     target.generation_time,
                     target.from_key.clone(),
+                    target.target.signal,
                 )
             })
         else {
@@ -1221,7 +1331,7 @@ impl BatchExecStrategy {
                 side,
                 remaining_base_qty: batch_base_qty,
                 maker_requotes: 0,
-                use_taker: false,
+                use_taker: should_use_taker(&self.config, 0, target_signal),
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
@@ -1277,7 +1387,11 @@ impl BatchExecStrategy {
     ) -> Result<(Vec<BatchChildOrderPlan>, f64), String> {
         let limits = self.load_order_limits()?;
 
-        let use_taker = batch.maker_requotes > self.config.max_maker_requotes;
+        let use_taker = should_use_taker(
+            &self.config,
+            batch.maker_requotes,
+            self.active_target_signal(),
+        );
         let plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
             rebuild_child_order_plans_at_preserved_levels(
                 &self.config,
@@ -1297,6 +1411,7 @@ impl BatchExecStrategy {
                 batch.side,
                 batch.remaining_base_qty,
                 batch.maker_requotes,
+                self.active_target_signal(),
                 bid,
                 ask,
                 limits.price_tick,
@@ -1334,7 +1449,11 @@ impl BatchExecStrategy {
             self.batches.remove(&batch_seq);
             return;
         }
-        let use_taker = batch.maker_requotes > self.config.max_maker_requotes;
+        let use_taker = should_use_taker(
+            &self.config,
+            batch.maker_requotes,
+            self.active_target_signal(),
+        );
         let (plans, qty_multiplier) = match self.build_child_orders(&batch, quote.bid, quote.ask) {
             Ok(value) => value,
             Err(err) => {
@@ -1643,7 +1762,7 @@ impl BatchExecStrategy {
         {
             return;
         }
-        let Some(target_qty) = self.active_target.as_ref().map(|target| target.target_qty) else {
+        let Some(target_qty) = self.active_target.as_ref().map(|target| target.target.qty) else {
             return;
         };
         let position_qty = self.virtual_position_qty.expect("allocation checked above");
@@ -2207,6 +2326,40 @@ mod tests {
     }
 
     #[test]
+    fn same_qty_with_new_unit_signal_replaces_pending_target() {
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget {
+                qty: 1.0,
+                signal: 0,
+            },
+            generation_time: 7,
+            from_key: b"cta_alpha".to_vec(),
+        });
+
+        strategy.update_target(
+            BatchExecTarget {
+                qty: 1.0,
+                signal: 1,
+            },
+            8,
+            b"cta_alpha".to_vec(),
+        );
+
+        let pending = strategy.pending_target.as_ref().expect("pending target");
+        assert_eq!(pending.target.qty, 1.0);
+        assert_eq!(pending.target.signal, 1);
+        assert_eq!(pending.generation_time, 8);
+        assert_eq!(strategy.active_target.as_ref().unwrap().target.signal, 0);
+    }
+
+    #[test]
     fn source_update_time_is_observation_only() {
         let mut strategy = BatchExecStrategy::new(
             1,
@@ -2261,7 +2414,10 @@ mod tests {
         strategy.virtual_position_qty = Some(0.9);
         strategy.position_allocation_ready = true;
         strategy.active_target = Some(ActiveTarget {
-            target_qty: 1.0,
+            target: BatchExecTarget {
+                qty: 1.0,
+                signal: 0,
+            },
             generation_time: 7,
             from_key: b"cta_alpha".to_vec(),
         });
@@ -2355,6 +2511,7 @@ mod tests {
             now_ts_us + 1_000_000,
             now_ts_us,
             now_ts_us + 200_000,
+            false,
         );
 
         assert_eq!(remaining_batches, 3);
@@ -2372,6 +2529,7 @@ mod tests {
             now_ts_us + 2_000_000,
             now_ts_us,
             now_ts_us,
+            false,
         );
 
         assert_eq!(remaining_batches, 4);
@@ -2381,7 +2539,7 @@ mod tests {
     #[test]
     fn batch_progress_estimate_is_empty_within_tolerance() {
         assert_eq!(
-            estimate_batch_progress(&config(), 10.0, 0, 0, 1_000, 1_000),
+            estimate_batch_progress(&config(), 10.0, 0, 0, 1_000, 1_000, false),
             (0, 0)
         );
     }
@@ -2542,7 +2700,10 @@ mod tests {
     fn pending_target_stays_blocked_while_orphan_is_unresolved() {
         let mut strategy = strategy_with_orphan_batch(&[(105, 0, 1.0, 0.0)]);
         strategy.pending_target = Some(PendingTarget {
-            target_qty: 2.0,
+            target: BatchExecTarget {
+                qty: 2.0,
+                signal: 0,
+            },
             generation_time: 2,
             from_key: b"cta_alpha".to_vec(),
         });
@@ -2594,7 +2755,10 @@ mod tests {
         );
         strategy.apply_position_allocation(0.6, 100).unwrap();
         strategy.active_target = Some(ActiveTarget {
-            target_qty: 1.0,
+            target: BatchExecTarget {
+                qty: 1.0,
+                signal: 0,
+            },
             generation_time: 7,
             from_key: b"cta_alpha".to_vec(),
         });
@@ -2632,6 +2796,7 @@ mod tests {
             Side::Sell,
             3.0,
             0,
+            0,
             99.0,
             100.0,
             1.0,
@@ -2657,6 +2822,7 @@ mod tests {
             Side::Sell,
             3.0,
             0,
+            0,
             95.0,
             100.0,
             1.0,
@@ -2674,6 +2840,7 @@ mod tests {
             &config,
             Side::Buy,
             3.0,
+            0,
             0,
             95.0,
             100.0,
@@ -2722,6 +2889,7 @@ mod tests {
             Side::Buy,
             0.55,
             0,
+            0,
             100.0,
             101.0,
             1.0,
@@ -2741,6 +2909,7 @@ mod tests {
             &config(),
             Side::Sell,
             1.2,
+            0,
             0,
             99.0,
             100.0,
@@ -2765,6 +2934,7 @@ mod tests {
             Side::Sell,
             1.1,
             0,
+            0,
             99.0,
             100.0,
             1.0,
@@ -2785,6 +2955,7 @@ mod tests {
             &config(),
             Side::Buy,
             1.2,
+            0,
             0,
             100.0,
             101.0,
@@ -2807,6 +2978,7 @@ mod tests {
             Side::Sell,
             1.05,
             0,
+            0,
             99.0,
             100.0,
             1.0,
@@ -2827,6 +2999,7 @@ mod tests {
             &config(),
             Side::Sell,
             0.1,
+            0,
             0,
             99.0,
             100.0,
@@ -2872,6 +3045,7 @@ mod tests {
             Side::Buy,
             2.0,
             3,
+            0,
             100.0,
             101.0,
             1.0,
@@ -2884,5 +3058,67 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].order_type, OrderType::Market);
         assert_eq!(plans[0].price, 0.0);
+    }
+
+    #[test]
+    fn unit_signal_uses_one_taker_order_without_maker_requotes() {
+        let plans = build_child_order_plans(
+            &config(),
+            Side::Buy,
+            2.0,
+            0,
+            1,
+            100.0,
+            101.0,
+            1.0,
+            0.01,
+            0.01,
+            0.0,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].order_type, OrderType::Market);
+        assert_eq!(plans[0].price, 0.0);
+
+        let sell = build_child_order_plans(
+            &config(),
+            Side::Sell,
+            2.0,
+            0,
+            -1,
+            99.0,
+            100.0,
+            1.0,
+            0.01,
+            0.01,
+            0.0,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(sell.len(), 1);
+        assert_eq!(sell[0].order_type, OrderType::Market);
+    }
+
+    #[test]
+    fn reserved_nonzero_signals_keep_maker_path() {
+        for signal in [-2, 2] {
+            let plans = build_child_order_plans(
+                &config(),
+                Side::Buy,
+                2.0,
+                0,
+                signal,
+                100.0,
+                101.0,
+                1.0,
+                0.01,
+                0.01,
+                0.0,
+                1.0,
+            )
+            .unwrap();
+            assert!(plans.iter().all(|plan| plan.order_type == OrderType::Limit));
+        }
     }
 }
