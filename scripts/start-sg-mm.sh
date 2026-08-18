@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/ssh_remote_bash.sh
+source "$ROOT_DIR/scripts/lib/ssh_remote_bash.sh"
 SSH_HOST="${SG_MM_START_HOST:-ubuntu@47.131.162.78}"
 SSH_KEY="${SG_MM_START_KEY:-$ROOT_DIR/aws-sg.pem}"
 ENV_NAME=""
@@ -124,7 +126,7 @@ if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
 fi
 
 echo "[INFO] start target host=$SSH_HOST exchange=bybit env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$SSH_HOST" bash -s -- \
+ssh_remote_bash SSH "$SSH_HOST" \
   "$REMOTE_DIR" \
   "$CHECK_ONLY" \
   "$CONFIG_PORT" \
@@ -401,7 +403,7 @@ start_and_verify_config_server() {
   local pids=()
   echo
   echo "[STEP] start and verify config_server"
-  bash "$scripts_dir/start_mm_config_server.sh"
+  bash "$scripts_dir/start_mm_config_server.sh" </dev/null
   initial_pid="$(wait_for_config_server)"
   sleep "$startup_settle_seconds"
   mapfile -t pids < <(find_config_server_pids)
@@ -437,11 +439,11 @@ wait_for_binary() {
 run_start_script() {
   local label="$1"
   case "$label" in
-    viz_server) bash "$mm_scripts_dir/start_mm_viz_server.sh" --exchange bybit ;;
-    persist_manager) bash "$mm_scripts_dir/start_mm_persist_manager.sh" ;;
-    trade_engine) bash "$mm_scripts_dir/start_mm_trade_engine.sh" bybit ;;
-    pre_trade) bash "$mm_scripts_dir/start_mm_pre_trade.sh" ;;
-    account_monitor) bash "$scripts_dir/start_account_monitor.sh" ;;
+    viz_server) bash "$mm_scripts_dir/start_mm_viz_server.sh" --exchange bybit </dev/null ;;
+    persist_manager) bash "$mm_scripts_dir/start_mm_persist_manager.sh" </dev/null ;;
+    trade_engine) bash "$mm_scripts_dir/start_mm_trade_engine.sh" bybit </dev/null ;;
+    pre_trade) bash "$mm_scripts_dir/start_mm_pre_trade.sh" </dev/null ;;
+    account_monitor) bash "$scripts_dir/start_account_monitor.sh" </dev/null ;;
     *) echo "[ERROR] unsupported start label: $label" >&2; return 1 ;;
   esac
 }

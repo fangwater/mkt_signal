@@ -24,7 +24,7 @@ LEGACY_APP_NAME="mm_config_server_${dir_tag}"
 
 echo "[INFO] 停止 mm_config_server (name=${APP_NAME}, namespace=${NAMESPACE})"
 if [[ "$LEGACY_APP_NAME" != "$APP_NAME" ]]; then
-  npx pm2 delete "$LEGACY_APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$LEGACY_APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 fi
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 echo "[INFO] 已停止。"

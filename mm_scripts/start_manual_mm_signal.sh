@@ -90,15 +90,16 @@ if [[ -z "$IPC_NS" ]]; then
 fi
 
 if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
-  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 fi
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
 IPC_NAMESPACE="$IPC_NS" RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
   --namespace "$NAMESPACE" \
   -- \
-  --config "$CONFIG_PATH"
+  --config "$CONFIG_PATH" \
+  </dev/null
 
 echo "[INFO] Started ${PROC_NAME} (config=${CONFIG_PATH}, ipc_namespace=${IPC_NS})"
 echo "[INFO] Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"

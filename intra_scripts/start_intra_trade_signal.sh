@@ -75,8 +75,8 @@ if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
 fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
-npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
 pm2_cmd=(npx pm2 start "$BIN_PATH"
   --name "$PROC_NAME"
@@ -85,7 +85,7 @@ pm2_cmd=(npx pm2 start "$BIN_PATH"
 if [[ ${#core_args[@]} -gt 0 ]]; then
   pm2_cmd+=(-- "${core_args[@]}")
 fi
-RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" "${pm2_cmd[@]}"
+RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" "${pm2_cmd[@]}" </dev/null
 
 echo ""
 echo "[INFO] Started trade_signal (exchange=${EXCHANGE} env=${ENV_TAG} queue_position=${QUEUE_POSITION_ENABLED})"

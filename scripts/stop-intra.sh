@@ -108,7 +108,7 @@ if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
 fi
 
 echo "[INFO] stop target host=$INTRA_SSH_HOST exchange=$INTRA_EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
+intra_remote_bash \
   "$REMOTE_DIR" "$ENV_NAME" "$INTRA_EXCHANGE" \
   "$INTRA_ACCOUNT_MONITOR_DEST" "$INTRA_ACCOUNT_MONITOR_BIN" \
   "$CHECK_ONLY" <<'REMOTE_STOP'
@@ -281,7 +281,7 @@ run_step() {
   shift
   echo
   echo "[STEP] $description"
-  "$@"
+  "$@" </dev/null
 }
 
 cd "$target"
@@ -296,7 +296,7 @@ echo "[INFO] trade_engine confirmed stopped"
 echo
 echo "[STEP] cancel all $exchange futures and spot/margin open orders"
 set +e
-cancel_output="$(python3 "$cancel_script" "${cancel_args[@]}" --execute 2>&1)"
+cancel_output="$(python3 "$cancel_script" "${cancel_args[@]}" --execute </dev/null 2>&1)"
 cancel_status=$?
 set -e
 if [[ -n "$cancel_output" ]]; then
@@ -314,7 +314,7 @@ fi
 echo
 echo "[STEP] verify $exchange futures and spot/margin order scopes are empty"
 set +e
-verify_output="$(python3 "$cancel_script" "${cancel_args[@]}" 2>&1)"
+verify_output="$(python3 "$cancel_script" "${cancel_args[@]}" </dev/null 2>&1)"
 verify_status=$?
 set -e
 if [[ -n "$verify_output" ]]; then

@@ -83,7 +83,7 @@ if port_in_use "$PORT"; then
 fi
 
 echo "[INFO] 启动 fr_config_server (exchange=${DEFAULT_EXCHANGE}, port=${PORT}, namespace=${NAMESPACE})"
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
@@ -96,7 +96,8 @@ npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
     "$APP_SCRIPT" \
     --host "$HOST" \
     --port "$PORT" \
-    --default-exchange "$DEFAULT_EXCHANGE"
+    --default-exchange "$DEFAULT_EXCHANGE" \
+    </dev/null
 )
 
 echo "[INFO] 已启动：pm2 status --namespace ${NAMESPACE} ${APP_NAME}"

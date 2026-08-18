@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+_INTRA_ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/ssh_remote_bash.sh
+source "$_INTRA_ORCH_DIR/lib/ssh_remote_bash.sh"
+
 # Shared target metadata for the remote Intra orchestration entrypoints.
 INTRA_ORCHESTRATION_ENVS=(
   bybit-intra-arb01
@@ -86,4 +90,18 @@ intra_validate_explicit_key() {
     echo "[ERROR] --key is only valid for Bybit/SG; $INTRA_ENV_NAME uses jp-meta-elvpn SSH config" >&2
     return 2
   fi
+}
+
+# Intra wrapper around ssh_remote_bash. Requires intra_configure_transport.
+#
+# Usage:
+#   intra_remote_bash arg1 arg2 <<'EOF'
+#     echo "$1"
+#   EOF
+intra_remote_bash() {
+  if [[ ${#INTRA_SSH[@]} -eq 0 || -z "${INTRA_SSH_HOST:-}" ]]; then
+    echo "[ERROR] intra_remote_bash requires intra_configure_transport first" >&2
+    return 2
+  fi
+  ssh_remote_bash INTRA_SSH "$INTRA_SSH_HOST" "$@"
 }

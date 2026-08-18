@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/ssh_remote_bash.sh
+source "$ROOT_DIR/scripts/lib/ssh_remote_bash.sh"
 SSH_HOST="${SG_MM_STOP_HOST:-ubuntu@47.131.162.78}"
 SSH_KEY="${SG_MM_STOP_KEY:-$ROOT_DIR/aws-sg.pem}"
 ENV_NAME=""
@@ -107,7 +109,7 @@ if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
 fi
 
 echo "[INFO] stop target host=$SSH_HOST exchange=bybit env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$SSH_HOST" bash -s -- "$REMOTE_DIR" "$CHECK_ONLY" <<'REMOTE_STOP'
+ssh_remote_bash SSH "$SSH_HOST" "$REMOTE_DIR" "$CHECK_ONLY" <<'REMOTE_STOP'
 set -euo pipefail
 
 target="$1"
@@ -249,7 +251,7 @@ run_step() {
   shift
   echo
   echo "[STEP] $description"
-  "$@"
+  "$@" </dev/null
 }
 
 cd "$target"
@@ -270,7 +272,7 @@ cancel_args=(
 echo
 echo "[STEP] cancel all Bybit linear open orders"
 set +e
-cancel_output="$(bash "$cancel_script" "${cancel_args[@]}" --execute 2>&1)"
+cancel_output="$(bash "$cancel_script" "${cancel_args[@]}" --execute </dev/null 2>&1)"
 cancel_status=$?
 set -e
 if [[ -n "$cancel_output" ]]; then
@@ -289,7 +291,7 @@ orders_empty=0
 for attempt in 1 2 3; do
   echo "[INFO] verifying Bybit open linear orders are empty (attempt $attempt/3)"
   set +e
-  verify_output="$(bash "$cancel_script" "${cancel_args[@]}" 2>&1)"
+  verify_output="$(bash "$cancel_script" "${cancel_args[@]}" </dev/null 2>&1)"
   verify_status=$?
   set -e
   if [[ -n "$verify_output" ]]; then

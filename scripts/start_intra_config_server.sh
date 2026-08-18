@@ -146,7 +146,7 @@ if port_in_use "$PORT"; then
 fi
 
 echo "[INFO] 启动 intra_config_server (exchange=${EXCHANGE}, port=${PORT}, namespace=${NAMESPACE})"
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
@@ -162,7 +162,8 @@ npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
     --port "$PORT" \
     --default-exchange "$DEFAULT_EXCHANGE" \
     --default-open-venue "$DEFAULT_OPEN_VENUE" \
-    --default-hedge-venue "$DEFAULT_HEDGE_VENUE"
+    --default-hedge-venue "$DEFAULT_HEDGE_VENUE" \
+    </dev/null
 )
 
 echo "[INFO] 已启动：pm2 status --namespace ${NAMESPACE} ${APP_NAME}"

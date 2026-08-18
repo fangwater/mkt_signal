@@ -120,7 +120,7 @@ if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
 fi
 
 echo "[INFO] start target host=$INTRA_SSH_HOST exchange=$INTRA_EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
+intra_remote_bash \
   "$REMOTE_DIR" \
   "$ENV_NAME" \
   "$INTRA_EXCHANGE" \
@@ -414,7 +414,7 @@ start_and_verify_config_server() {
   local pids=()
   echo
   echo "[STEP] start and verify config_server"
-  bash "$scripts_dir/start_intra_config_server.sh"
+  bash "$scripts_dir/start_intra_config_server.sh" </dev/null
   initial_pid="$(wait_for_config_server)"
   sleep "$startup_settle_seconds"
   mapfile -t pids < <(find_config_server_pids)
@@ -455,7 +455,7 @@ start_and_verify_binary() {
   local pids=()
   echo
   echo "[STEP] start and verify $label"
-  bash "$start_script"
+  bash "$start_script" </dev/null
   initial_pid="$(wait_for_binary "$binary" "$label")"
   sleep "$startup_settle_seconds"
   mapfile -t pids < <(find_exact_pids "$binary")

@@ -54,7 +54,7 @@ if [[ -z "$PORT" ]]; then
 fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE}, exchange=${EXCHANGE}, port=${PORT})"
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
 RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
@@ -63,7 +63,8 @@ RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
   --exchange "$EXCHANGE" \
   --bind "$BIND" \
   --port "$PORT" \
-  --ws-path "$WS_PATH"
+  --ws-path "$WS_PATH" \
+  </dev/null
 
 echo ""
 echo "[INFO] Started fr_signal_dashboard"

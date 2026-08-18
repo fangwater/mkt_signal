@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/ssh_remote_bash.sh
+source "$SCRIPT_DIR/lib/ssh_remote_bash.sh"
+
 SSH_HOST="${MM_START_HOST:-jp-meta-elvpn}"
 ENV_NAME="${MM_START_ENV:-}"
 CHECK_ONLY=0
@@ -100,7 +104,7 @@ if [[ "$REMOTE_REAL" != "$REMOTE_DIR" ]]; then
 fi
 
 echo "[INFO] start target host=$SSH_HOST exchange=$EXCHANGE env=$ENV_NAME dir=$REMOTE_DIR"
-"${SSH[@]}" "$SSH_HOST" bash -s -- \
+ssh_remote_bash SSH "$SSH_HOST" \
   "$REMOTE_DIR" \
   "$EXCHANGE" \
   "$CHECK_ONLY" \
@@ -365,7 +369,7 @@ stop_existing_config_server() {
     echo "[INFO] config_server has no existing process"
   fi
 
-  bash "$scripts_dir/stop_mm_config_server.sh"
+  bash "$scripts_dir/stop_mm_config_server.sh" </dev/null
   for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
     mapfile -t pids < <(find_config_server_pids)
     if [[ "${#pids[@]}" -eq 0 ]]; then
@@ -426,7 +430,7 @@ start_and_verify_config_server() {
   echo
   echo "[STEP] start and verify config_server"
   stop_existing_config_server
-  bash "$scripts_dir/start_mm_config_server.sh"
+  bash "$scripts_dir/start_mm_config_server.sh" </dev/null
   pid="$(wait_for_config_server)"
   echo "[INFO] config_server is live pid=$pid port=${config_server_port} http=200"
 
@@ -572,13 +576,13 @@ run_start_script() {
 
   case "$label" in
     viz_server)
-      bash "$script" --exchange "$exchange"
+      bash "$script" --exchange "$exchange" </dev/null
       ;;
     persist_manager|pre_trade|account_monitor)
-      bash "$script"
+      bash "$script" </dev/null
       ;;
     trade_engine)
-      bash "$script" "$exchange"
+      bash "$script" "$exchange" </dev/null
       ;;
     *)
       echo "[ERROR] unsupported component: $label" >&2
