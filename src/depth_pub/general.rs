@@ -86,12 +86,7 @@ impl SnapshotFeedApp {
         if book.bids.is_empty() || book.asks.is_empty() {
             return;
         }
-        let msg = DepthMsg::depth25(
-            book.symbol.clone(),
-            book.timestamp_us,
-            book.bids,
-            book.asks,
-        );
+        let msg = DepthMsg::depth25(book.symbol.clone(), book.timestamp_us, book.bids, book.asks);
         self.received = self.received.saturating_add(1);
         let symbol = book.symbol;
         let should_push = {
@@ -187,9 +182,7 @@ impl DepthPubGeneralRunner {
             snapshots.push(app);
         }
 
-        info!(
-            "depth_pub_general ready: okex incremental + binance/bitget/gate snapshots"
-        );
+        info!("depth_pub_general ready: okex incremental + binance/bitget/gate snapshots");
         Ok(Self {
             okex,
             snapshots,
@@ -548,7 +541,10 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["params"].as_array().unwrap().len(), 200);
         assert_eq!(msgs[1]["params"].as_array().unwrap().len(), 1);
-        assert!(msgs[0]["params"][0].as_str().unwrap().ends_with("@depth20@100ms"));
+        assert!(msgs[0]["params"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("@depth20@100ms"));
     }
 
     #[test]
@@ -567,8 +563,14 @@ mod tests {
         let symbols = vec!["BTC_USDT".to_string(), "ETH_USDT".to_string()];
         let fut = build_gate_order_book_subscribe(&symbols, "futures.order_book", true);
         assert_eq!(fut.len(), 2);
-        assert_eq!(fut[0]["payload"], serde_json::json!(["BTC_USDT", "20", "0"]));
+        assert_eq!(
+            fut[0]["payload"],
+            serde_json::json!(["BTC_USDT", "20", "0"])
+        );
         let spot = build_gate_order_book_subscribe(&symbols, "spot.order_book", false);
-        assert_eq!(spot[1]["payload"], serde_json::json!(["ETH_USDT", "20", "100ms"]));
+        assert_eq!(
+            spot[1]["payload"],
+            serde_json::json!(["ETH_USDT", "20", "100ms"])
+        );
     }
 }
