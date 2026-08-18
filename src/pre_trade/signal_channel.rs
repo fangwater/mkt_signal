@@ -328,11 +328,13 @@ fn log_taker_decision_open_gate_block(
     });
 }
 
-fn should_suppress_arb_open_inactive_warning(reason: &str) -> bool {
+fn should_suppress_arb_open_inactive_warning(symbol: &str, reason: &str) -> bool {
     reason.starts_with("open order rate limit triggered:")
         || reason.starts_with("pending limit order risk failed:")
         || reason.starts_with("INTRA_NO_BORROW 余额不足")
         || reason.starts_with("STANDARD 余额不足")
+        || (reason.starts_with("symbol exposure risk failed:")
+            && MonitorChannel::should_skip_small_symbol_exposure_risk_log(symbol))
 }
 
 pub fn take_signal_counts() -> HashMap<String, u64> {
@@ -941,13 +943,20 @@ mod tests {
     #[test]
     fn suppresses_expected_arb_open_inactive_risk_noise() {
         assert!(should_suppress_arb_open_inactive_warning(
+            "AVAUSDT",
             "pending limit order risk failed: symbol=AVAUSDT side=BUY 当前限价挂单数=5，达到方向上限 5"
         ));
         assert!(should_suppress_arb_open_inactive_warning(
+            "AVAUSDT",
             "open order rate limit triggered: symbol=AVAUSDT"
         ));
         assert!(!should_suppress_arb_open_inactive_warning(
+            "AVAUSDT",
             "decode ArbOpen failed: broken payload"
+        ));
+        assert!(!should_suppress_arb_open_inactive_warning(
+            "SIRENUSDT",
+            "symbol exposure risk failed: symbol=SIRENUSDT 敞口比例超过限制 0.01"
         ));
     }
 }
@@ -1291,7 +1300,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 let reason = strategy
                     .open_strategy_inactive_reason()
                     .unwrap_or("unknown");
-                if !should_suppress_arb_open_inactive_warning(reason) {
+                if !should_suppress_arb_open_inactive_warning(log_symbol, reason) {
                     log_strategy_inactive_summary("ArbOpen", Some(strategy_id), log_symbol, reason);
                 }
             }

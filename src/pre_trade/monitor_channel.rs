@@ -56,6 +56,7 @@ const DEFAULT_NODE_PRE_TRADE_DERIVATIVES: &str = "pre_trade_derivatives";
 const ARB_STARTUP_NET_EXPOSURE_WARN_USDT: f64 = 500.0;
 const BASIC_STATE_REFRESH_MIN_INTERVAL_US: i64 = 5_000_000;
 const POSITION_MARK_QTY_EPSILON: f64 = 1e-6;
+const SMALL_SYMBOL_NET_EXPOSURE_LOG_SKIP_USDT: f64 = 100.0;
 
 // ==================== Helper Functions ====================
 
@@ -3779,6 +3780,35 @@ impl MonitorChannel {
         })
     }
 
+    /// 当前 symbol 净敞口的绝对值（USDT）。缺价格或账户状态时返回 None。
+    pub fn try_abs_symbol_net_exposure_usdt(symbol: &str) -> Option<f64> {
+        let base_asset = extract_base_asset_key(symbol)?;
+        if Self::try_with_inner(|_| ()).is_none() || !Self::basic_state_cache_present() {
+            return None;
+        }
+        Self::with_basic_state_cached(|state| {
+            if base_asset.eq_ignore_ascii_case("USDT") {
+                state
+                    .exposures
+                    .get(base_asset.as_ref())
+                    .map(|(open_qty, hedge_qty)| (open_qty + hedge_qty).abs())
+            } else {
+                state
+                    .exposure_usdt_by_asset
+                    .get(base_asset.as_ref())
+                    .copied()
+                    .map(f64::abs)
+            }
+        })
+    }
+
+    /// `max_pos_u` 被压得很小时，1% 单币敞口检查会拦下几乎对冲完的残仓。
+    /// 净敞口不到 100 USDT 时跳过这类 ERROR / 未激活 summary，风控本身仍拒绝开仓。
+    pub fn should_skip_small_symbol_exposure_risk_log(symbol: &str) -> bool {
+        Self::try_abs_symbol_net_exposure_usdt(symbol)
+            .is_some_and(|usdt| usdt.is_finite() && usdt < SMALL_SYMBOL_NET_EXPOSURE_LOG_SKIP_USDT)
+    }
+
     /// 检查当前symbol的敞口是否超过总资产比例限制
     pub fn check_symbol_exposure(&self, symbol: &str) -> Result<(), String> {
         Self::with_inner(|inner| {
@@ -6076,6 +6106,37 @@ mod tests {
             .check_symbol_exposure("FILUSDT")
             .unwrap_err();
         assert!(err.contains("敞口比例超过限制"), "err={err}");
+    }
+
+    #[test]
+    fn small_symbol_net_exposure_skips_symbol_risk_log_below_100u() {
+        let (_, open_bal) = install_binance_arb_margin_open_fixture();
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 0.5));
+        MonitorChannel::refresh_basic_state_cache();
+
+        assert_eq!(
+            MonitorChannel::try_abs_symbol_net_exposure_usdt("FILUSDT"),
+            Some(50.0)
+        );
+        assert!(MonitorChannel::should_skip_small_symbol_exposure_risk_log(
+            "FILUSDT"
+        ));
+
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(1, "FIL".to_string(), 1.5));
+        MonitorChannel::mark_basic_state_dirty();
+        MonitorChannel::refresh_basic_state_cache();
+
+        assert_eq!(
+            MonitorChannel::try_abs_symbol_net_exposure_usdt("FILUSDT"),
+            Some(150.0)
+        );
+        assert!(!MonitorChannel::should_skip_small_symbol_exposure_risk_log(
+            "FILUSDT"
+        ));
     }
 
     #[test]

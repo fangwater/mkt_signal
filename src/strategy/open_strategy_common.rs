@@ -1060,13 +1060,15 @@ pub trait OpenStrategyCommon {
                             current_open_base_qty,
                             input.qty,
                         );
-                        error!(
-                            "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
-                            self.strategy_name(),
-                            self.strategy_id(),
-                            symbol_ref,
-                            e
-                        );
+                        if !MonitorChannel::should_skip_small_symbol_exposure_risk_log(symbol_ref) {
+                            error!(
+                                "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+                                self.strategy_name(),
+                                self.strategy_id(),
+                                symbol_ref,
+                                e
+                            );
+                        }
                         self.mark_open_strategy_inactive(format!(
                             "symbol exposure risk failed: {}",
                             e
