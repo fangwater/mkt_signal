@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
+from bybit_external_order_link import make_external_order_link_id  # noqa: E402
 from exchange_state import fetch_exchange_state  # noqa: E402
 
 DASHBOARD_HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
@@ -253,6 +254,30 @@ def fetch_exposure_rows(args: argparse.Namespace) -> List[ExposureRow]:
 # Main
 # ---------------------------------------------------------------------------
 
+def _install_rest_source_bind() -> None:
+    """Bind Bybit REST sockets to trade_engine.toml local_ips[0] (dual-ENI)."""
+    local_ip = os.environ.get("BYBIT_REST_BIND_IP", "").strip()
+    if not local_ip:
+        toml_path = Path(__file__).resolve().parents[1] / "trade_engine.toml"
+        if toml_path.is_file():
+            import re as _re
+            m = _re.search(r'local_ips\s*=\s*\[\s*"([^"]+)"', toml_path.read_text())
+            if m:
+                local_ip = m.group(1)
+    if not local_ip:
+        print("[warn] no BYBIT_REST_BIND_IP / trade_engine.toml local_ips; using default route")
+        return
+    import socket
+    src = (local_ip, 0)
+    _orig = socket.create_connection
+
+    def _create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+        return _orig(address, timeout, src)
+
+    socket.create_connection = _create_connection  # type: ignore[assignment]
+    print(f"[info] binding REST source address to {local_ip}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Flatten intra (Bybit) net exposure via linear futures market orders",
@@ -274,6 +299,11 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
         dest="min_net_usdt",
         help="Only process rows with abs(net_usdt) above this threshold",
+    )
+    parser.add_argument(
+        "--symbol",
+        default="",
+        help="Optional asset/symbol filter, e.g. BTC or BTCUSDT",
     )
     parser.add_argument(
         "--skip-assets",
@@ -300,9 +330,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    _install_rest_source_bind()
     api_key, api_secret = load_credentials()
 
     skip = {s.strip().upper() for s in args.skip_assets.split(",") if s.strip()}
+    symbol_filter = (args.symbol or "").strip().upper()
+    if symbol_filter.endswith("USDT"):
+        symbol_filter = symbol_filter[:-4]
     exchange = (args.exchange or "bybit").strip().lower()
 
     print(f"[info] fetching exposure rows for exchange={exchange} suffix={args.suffix} ...")
@@ -322,6 +356,8 @@ def main() -> None:
     for row in rows:
         if row.asset in skip:
             print(f"  [skip] {row.asset} (in skip list)")
+            continue
+        if symbol_filter and row.asset != symbol_filter:
             continue
         if abs(row.net_usdt) < args.min_net_usdt:
             continue
@@ -370,9 +406,12 @@ def main() -> None:
             "orderType": "Market",
             "qty": qty_str,
             "reduceOnly": bool(args.reduce_only),
-            "orderLinkId": f"intraflat{int(time.time() * 1000)}{idx:02d}",
+            "orderLinkId": make_external_order_link_id(idx),
         }
-        print(f"\n[order] {spec.symbol} {side} qty={qty_str} reduceOnly={payload['reduceOnly']} ...")
+        print(
+            f"\n[order] {spec.symbol} {side} qty={qty_str} "
+            f"reduceOnly={payload['reduceOnly']} orderLinkId={payload['orderLinkId']} ..."
+        )
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
         try:
             data = request(api_key, api_secret, "POST", "/v5/order/create", body=body)

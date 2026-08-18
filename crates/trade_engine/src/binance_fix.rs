@@ -1028,7 +1028,11 @@ impl BinanceSpotFixErListener {
             self.config.response_mode.tag_value()
         );
         let tcp = connect_tcp(&host, port, self.config.source_ip).await?;
-        tune_tcp_stream(&tcp, "account_monitor binance_spot_fix_er", trade_engine_tcp_tuning());
+        tune_tcp_stream(
+            &tcp,
+            "account_monitor binance_spot_fix_er",
+            trade_engine_tcp_tuning(),
+        );
         let connector = NativeTlsConnector::builder()
             .build()
             .context("build native TLS connector for Binance Spot FIX ER listener")?;
