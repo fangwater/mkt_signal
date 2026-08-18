@@ -427,7 +427,11 @@ impl Dispatcher {
             &self.base_url_papi
         };
         let url = format!("{}{}", base_url, evt.endpoint);
-        let recv_window = RestConstants::RECV_WINDOW_MS.to_string();
+        let recv_window_ms = evt
+            .recv_window_ms
+            .unwrap_or(RestConstants::RECV_WINDOW_MS)
+            .clamp(1, RestConstants::MAX_RECV_WINDOW_MS);
+        let recv_window = recv_window_ms.to_string();
         let ts = chrono::Utc::now().timestamp_millis();
         let ts = ts.to_string();
         let query = build_signed_query(&evt.params, &recv_window, &ts);
@@ -688,6 +692,9 @@ mod tests {
             query,
             "newClientOrderId=42&quantity=0.01&recvWindow=5000&symbol=BTCUSDT&timestamp=1710000000000&type=MARKET"
         );
+
+        let snapshot_query = build_signed_query(&[], "15000", "1710000000000");
+        assert_eq!(snapshot_query, "recvWindow=15000&timestamp=1710000000000");
     }
 
     #[test]

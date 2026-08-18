@@ -1,3 +1,4 @@
+use super::config::RestConstants;
 use super::query_request::QueryRequestType;
 
 pub struct QueryTypeMapping;
@@ -178,6 +179,58 @@ impl QueryTypeMapping {
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
+        }
+    }
+
+    pub fn is_binance_snapshot(request_type: QueryRequestType) -> bool {
+        matches!(
+            request_type,
+            QueryRequestType::BinancePmBalanceSnapshot
+                | QueryRequestType::BinanceUmAccountSnapshot
+                | QueryRequestType::BinanceUmBalanceSnapshotStd
+                | QueryRequestType::BinanceUmAccountSnapshotStd
+                | QueryRequestType::BinanceSpotAccountSnapshotStd
+                | QueryRequestType::BinancePmAccountSnapshot
+        )
+    }
+
+    pub fn recv_window_ms(request_type: QueryRequestType) -> Option<u64> {
+        Self::is_binance_snapshot(request_type).then_some(RestConstants::SNAPSHOT_RECV_WINDOW_MS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QueryTypeMapping;
+    use crate::config::RestConstants;
+    use crate::query_request::QueryRequestType;
+
+    #[test]
+    fn binance_snapshots_use_specialized_recv_window() {
+        for req_type in [
+            QueryRequestType::BinancePmBalanceSnapshot,
+            QueryRequestType::BinancePmAccountSnapshot,
+            QueryRequestType::BinanceUmAccountSnapshot,
+            QueryRequestType::BinanceUmBalanceSnapshotStd,
+            QueryRequestType::BinanceUmAccountSnapshotStd,
+            QueryRequestType::BinanceSpotAccountSnapshotStd,
+        ] {
+            assert!(QueryTypeMapping::is_binance_snapshot(req_type));
+            assert_eq!(
+                QueryTypeMapping::recv_window_ms(req_type),
+                Some(RestConstants::SNAPSHOT_RECV_WINDOW_MS)
+            );
+        }
+    }
+
+    #[test]
+    fn binance_order_queries_keep_default_recv_window() {
+        for req_type in [
+            QueryRequestType::BinanceMarginQuery,
+            QueryRequestType::BinanceUMQuery,
+        ] {
+            assert!(!QueryTypeMapping::is_binance_snapshot(req_type));
+            assert_eq!(QueryTypeMapping::recv_window_ms(req_type), None);
         }
     }
 }

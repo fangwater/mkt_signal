@@ -2581,6 +2581,7 @@ impl TradeEngine {
                             counts_toward_order_limit: TradeTypeMapping::counts_toward_order_limit(
                                 msg.req_type,
                             ),
+                            recv_window_ms: None,
                         };
 
                         let outcome = {
@@ -2877,6 +2878,7 @@ impl TradeEngine {
                                 account: None,
                                 req_id: Some(msg.client_query_id.to_string()),
                                 counts_toward_order_limit: false,
+                                recv_window_ms: QueryTypeMapping::recv_window_ms(msg.req_type),
                             };
 
                             let outcome = {

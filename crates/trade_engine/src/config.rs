@@ -10,6 +10,11 @@ impl RestConstants {
     pub const BINANCE_SAPI_BASE_URL: &'static str = "https://api.binance.com";
     pub const TIMEOUT_MS: u64 = 10_000;
     pub const RECV_WINDOW_MS: u64 = 5_000;
+    /// Snapshot REST only. Trading requests keep `RECV_WINDOW_MS`.
+    /// Binance rejects timestamps older than recvWindow; DNS/connect spikes
+    /// on snapshot polls have been measured around 4–6s.
+    pub const SNAPSHOT_RECV_WINDOW_MS: u64 = 15_000;
+    pub const MAX_RECV_WINDOW_MS: u64 = 60_000;
 }
 
 /// 硬编码的限流配置常量

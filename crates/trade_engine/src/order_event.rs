@@ -9,6 +9,8 @@ pub struct OrderRequestEvent {
     pub account: Option<String>, // choose specific account key
     pub req_id: Option<String>,  // optional correlation id
     pub counts_toward_order_limit: bool,
+    /// Override Binance `recvWindow`. `None` uses the trading default.
+    pub recv_window_ms: Option<u64>,
 }
 
 impl OrderRequestEvent {
