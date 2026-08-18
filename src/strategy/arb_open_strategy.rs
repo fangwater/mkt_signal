@@ -18,6 +18,36 @@ use signal_common::open_signal::ArbOpenCtxView;
 use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
 use std::borrow::Cow;
+use std::sync::OnceLock;
+
+/// 全局开关：`ARB_OPEN_PARTIAL_HEDGE=1` 时，ArbOpen 在部分成交时就推进对冲 watermark，
+/// 不再等整单 Filled/Canceled。默认关闭，保持「整单终态才对冲」。
+static ARB_OPEN_PARTIAL_HEDGE: OnceLock<bool> = OnceLock::new();
+
+fn env_flag_value_enabled(value: &str) -> bool {
+    matches!(value, "1" | "true" | "TRUE" | "True" | "on" | "ON")
+}
+
+fn env_flag_enabled(names: &[&str]) -> bool {
+    names.iter().any(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| env_flag_value_enabled(value.as_str()))
+            .unwrap_or(false)
+    })
+}
+
+pub(crate) fn arb_open_partial_hedge_enabled() -> bool {
+    *ARB_OPEN_PARTIAL_HEDGE.get_or_init(|| {
+        let enabled = env_flag_enabled(&["ARB_OPEN_PARTIAL_HEDGE"]);
+        if enabled {
+            warn!(
+                "ARB_OPEN_PARTIAL_HEDGE=on: ArbOpen will hedge each fill increment instead of waiting for order terminal"
+            );
+        }
+        enabled
+    })
+}
 
 /// 单腿套利开仓策略：只负责 open leg 生命周期，不保存 hedge leg 或双腿盘口。
 pub struct ArbOpenStrategy {
@@ -188,6 +218,10 @@ impl OpenStrategyCommon for ArbOpenStrategy {
         self.close_ts.unwrap_or(0)
     }
 
+    fn hedge_on_incremental_open_fill(&self) -> bool {
+        arb_open_partial_hedge_enabled()
+    }
+
     fn log_open_deleveraging_risk_rejects(&self) -> bool {
         true
     }
@@ -345,6 +379,26 @@ mod tests {
         assert!(strategy.open_state.order.pending_order_query.is_none());
         assert!(strategy.open_state.order.order_query_watchdog.is_none());
         assert!(strategy.open_state.order.cancel_query_watchdog.is_none());
+    }
+
+    #[test]
+    fn env_flag_value_enabled_parses_common_truthy_values() {
+        assert!(super::env_flag_value_enabled("1"));
+        assert!(super::env_flag_value_enabled("on"));
+        assert!(super::env_flag_value_enabled("true"));
+        assert!(super::env_flag_value_enabled("TRUE"));
+        assert!(!super::env_flag_value_enabled("0"));
+        assert!(!super::env_flag_value_enabled("off"));
+        assert!(!super::env_flag_value_enabled(""));
+    }
+
+    #[test]
+    fn incremental_open_fill_hedge_follows_env_flag() {
+        let strategy = ArbOpenStrategy::new(1);
+        assert_eq!(
+            strategy.hedge_on_incremental_open_fill(),
+            super::arb_open_partial_hedge_enabled()
+        );
     }
 
     #[test]

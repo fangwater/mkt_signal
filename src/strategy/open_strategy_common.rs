@@ -500,6 +500,12 @@ pub trait OpenStrategyCommon {
         false
     }
 
+    /// 部分成交是否立刻推进开仓对冲。默认 false：等 Filled/Canceled。
+    /// ArbOpen 通过 env `ARB_OPEN_PARTIAL_HEDGE` 打开。
+    fn hedge_on_incremental_open_fill(&self) -> bool {
+        false
+    }
+
     fn skip_open_total_exposure_risk_check(&self) -> bool {
         false
     }
@@ -798,18 +804,44 @@ pub trait OpenStrategyCommon {
         );
 
         if lite_cumulative_base_qty + eps_base_qty < order_base_qty {
-            debug!(
-                "{}: strategy_id={} trade_lite cumulative below full hedge threshold client_order_id={} symbol={} lite_cum_base={:.8} order_base_qty={:.8} eps_base_qty={:.12} lite_qty={:.8} trade_id={:?}",
-                self.strategy_name(),
-                self.strategy_id(),
-                client_order_id,
-                order.symbol,
-                lite_cumulative_base_qty,
-                order_base_qty,
-                eps_base_qty,
-                lite_qty,
-                trade_id
-            );
+            if self.hedge_on_incremental_open_fill() {
+                let update_detail = format!(
+                    "trade_lite_partial_fill local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} lite_cum_venue_qty={:.8} lite_cum_base_qty={:.8} order_base_qty={:.8} eps_base_qty={:.12} trade_qty={:.8} maker={} trade_id={:?}",
+                    order.symbol,
+                    order.quantity,
+                    order.qty_multiplier,
+                    lite_cumulative_venue_qty,
+                    lite_cumulative_base_qty,
+                    order_base_qty,
+                    eps_base_qty,
+                    lite_qty,
+                    trade.is_maker(),
+                    trade_id
+                );
+                self.record_open_order_terminal_base_qty(
+                    &order.symbol,
+                    order.side,
+                    order_base_qty,
+                    lite_cumulative_base_qty,
+                    trade.trade_time().max(trade.event_time()),
+                    trade.price(),
+                    order.client_order_id,
+                    &update_detail,
+                );
+            } else {
+                debug!(
+                    "{}: strategy_id={} trade_lite cumulative below full hedge threshold client_order_id={} symbol={} lite_cum_base={:.8} order_base_qty={:.8} eps_base_qty={:.12} lite_qty={:.8} trade_id={:?}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order.symbol,
+                    lite_cumulative_base_qty,
+                    order_base_qty,
+                    eps_base_qty,
+                    lite_qty,
+                    trade_id
+                );
+            }
             return true;
         }
 
@@ -1526,7 +1558,13 @@ pub trait OpenStrategyCommon {
         let client_order_id = input
             .client_order_id
             .unwrap_or_else(|| Self::compose_order_id(self.strategy_id()));
-        self.open_order_state_mut().open_order_id = client_order_id;
+        {
+            let order = self.open_order_state_mut();
+            order.open_order_id = client_order_id;
+            order.hedge_watermark_base_qty = 0.0;
+            order.trade_lite_cumulative_venue_qty = 0.0;
+            order.seen_trade_lite_ids.clear();
+        }
 
         let request_build_start_us = get_timestamp_us();
         let quantity_qv = input.order_qty_qv.map(order_qv_from_quantized_value);
@@ -2206,11 +2244,20 @@ pub trait OpenStrategyCommon {
             self.clear_live_order_query_state(client_order_id);
         }
 
-        if matches!(
+        let record_open_fill_hedge = matches!(
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
-        ) {
-            let update_detail = "order_update_terminal";
+        ) || (self.hedge_on_incremental_open_fill()
+            && matches!(order_update.status(), OrderStatus::PartiallyFilled));
+        if record_open_fill_hedge {
+            let update_detail = if matches!(
+                order_update.status(),
+                OrderStatus::Canceled | OrderStatus::Filled
+            ) {
+                "order_update_terminal"
+            } else {
+                "order_update_partial_fill"
+            };
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
@@ -2219,7 +2266,7 @@ pub trait OpenStrategyCommon {
                 order_update.event_time(),
                 order.price,
                 order.client_order_id,
-                &update_detail,
+                update_detail,
             );
         }
 
@@ -2389,18 +2436,27 @@ pub trait OpenStrategyCommon {
             fill_delta_base_qty,
         );
 
-        if status == OrderStatus::Filled {
-            let update_detail = "trade_update_filled";
+        if status == OrderStatus::Filled
+            || (self.hedge_on_incremental_open_fill() && status == OrderStatus::PartiallyFilled)
+        {
+            let update_detail = if status == OrderStatus::Filled {
+                "trade_update_filled"
+            } else {
+                "trade_update_partial_fill"
+            };
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
                 order.quantity * order.qty_multiplier,
                 cumulative_qty * order.qty_multiplier,
                 event_time,
-                order.price,
+                trade.price(),
                 order.client_order_id,
-                &update_detail,
+                update_detail,
             );
+        }
+
+        if status == OrderStatus::Filled {
             debug!(
                 "{}: strategy_id={} open trade filled client_order_id={} symbol={} cumulative={:.8} detail={}",
                 self.strategy_name(),
@@ -3133,6 +3189,12 @@ mod tests {
             PendingOrderQueryReason::CancelRejected,
             PendingOrderQueryReason::OrderWatchdog
         ));
+    }
+
+    #[test]
+    fn incremental_open_fill_hedge_defaults_off() {
+        let strategy = TestOpenStrategy::new(7);
+        assert!(!strategy.hedge_on_incremental_open_fill());
     }
 
     #[test]
