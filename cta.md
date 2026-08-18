@@ -255,6 +255,21 @@ JSON response。
 
 ## 7. 部署与启停
 
+远程编排入口与 JP Meta 相同：`publish-exec.sh` / `start-exec.sh` /
+`stop-exec.sh`。默认 SSH 主机是 `cta_exec`，目标目录是远程 `$HOME/<env-name>`。
+
+```bash
+./scripts/publish-exec.sh --env-name binance_exec_trade01
+./scripts/start-exec.sh --env-name binance_exec_trade01
+./scripts/stop-exec.sh --env-name binance_exec_trade01
+```
+
+`publish-exec.sh` 只上传 Exec 二进制和启停脚本，不改 `env.sh`，也不启停进程。
+目标进程仍在跑时会在替换文件前失败。`start-exec.sh` 不会启动 `trade_signal`。
+三个脚本都支持 `--check-only`；publish 还支持 `--skip-build`。
+
+首次落地或补齐 operator 配置仍用 `deploy_exec.sh`，它同样不会自动启动进程：
+
 ```bash
 ./scripts/deploy_exec.sh --env-name binance_exec_trade01 --venue binance-futures
 cd ~/binance_exec_trade01

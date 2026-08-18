@@ -95,6 +95,7 @@ The following is a historical snapshot verified on 2026-08-10 UTC. It proves tha
 - Remote environment: `/home/el01/binance_exec_trade01`.
 - Venue and instance: Binance Futures, instance `01`.
 - Deployment entry point: `scripts/deploy_exec.sh --env-name binance_exec_trade01 --venue binance-futures`.
+- Remote orchestration (modeled on JP Meta): `scripts/publish-exec.sh`, `scripts/start-exec.sh`, and `scripts/stop-exec.sh` with required `--env-name` and default host `cta_exec`. Publish never starts or stops processes and never rewrites `env.sh`. Start never starts `trade_signal`.
 - Independent collector/read configuration: `config/exec.toml`; do not add this source to `config/persist.toml`.
 - The standard Exec runtime consists of `exec-pre-trade`, `trade_signal`, `trade_engine`, `account_monitor`, `persist_manager`, and `viz_server`, with the matching `spread_pbs` venue deployment.
 - Instance `01` defaults to viz port `10041` and config port `18161`. `deploy_exec.sh` copies/builds the runtime but deliberately does not start processes.
