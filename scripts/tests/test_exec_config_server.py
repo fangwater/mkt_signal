@@ -102,7 +102,7 @@ def order_parameters(config):
 
 
 class ExecConfigServerTests(unittest.TestCase):
-    def test_client_script_is_downloadable(self):
+    def test_old_client_script_is_not_served(self):
         store = fake_store()
         server = ThreadingHTTPServer(
             ("127.0.0.1", 0), MODULE.make_handler(store, "../", WRITE_TOKEN)
@@ -112,20 +112,12 @@ class ExecConfigServerTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
 
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{server.server_port}/exec_config_client.py",
-            timeout=2,
-        ) as response:
-            body = response.read().decode("utf-8")
-            self.assertEqual(response.status, 200)
-            self.assertEqual(response.headers["Content-Type"], "application/octet-stream")
-            self.assertEqual(
-                response.headers["Content-Disposition"],
-                'attachment; filename="exec_config_client.py"',
+        with self.assertRaises(HTTPError) as raised:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/exec_config_client.py",
+                timeout=2,
             )
-
-        self.assertTrue(body.startswith("#!/usr/bin/env python3"))
-        self.assertIn("http://172.16.30.42:10041/config/", body)
+        self.assertEqual(raised.exception.code, 404)
 
     def test_config_page_is_display_only_and_filters_zero_targets(self):
         store = fake_store()

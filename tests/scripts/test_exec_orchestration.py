@@ -23,7 +23,6 @@ COMMON_PUBLISH_FILES = [
     "target/release/trade_engine",
     "target/release/persist_manager",
     "scripts/exec_config_server.py",
-    "scripts/exec_config_client.py",
     "scripts/mm_process_name.sh",
     "scripts/process_match_lib.sh",
     "scripts/start_exec_config_server.sh",

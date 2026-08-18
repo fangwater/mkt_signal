@@ -225,33 +225,22 @@ dashboard 默认链接到同域 `/config/`；未配置反向代理时，可以�
 http://<viz-host>:10041/?config=http://<config-host>:18161/
 ```
 
-当前反向隧道入口可以通过标准库 Python 客户端直接 GET/POST JSON：
+仓位推送不再走 Exec Config 客户端。`exec_config_client.py` 已删除；
+`/config/exec_config_client.py` 不再提供下载。更新仓位模板并发布到 Redis
+使用 Manager：
 
 ```text
-http://172.16.30.42:10041/config/exec_config_client.py
+http://172.16.30.42:10041/manager/api/manager_publish_client.py
 ```
-
-浏览器打开该地址会直接下载客户端脚本，也可以在命令行中使用：
 
 ```bash
-wget http://172.16.30.42:10041/config/exec_config_client.py
-
-# GET 策略列表或单个策略
-python3 scripts/exec_config_client.py get
-python3 scripts/exec_config_client.py get cta_alpha > cta_alpha.json
-
-# 编辑 GET 返回 JSON 后，直接 POST 新增或修改
-python3 scripts/exec_config_client.py post @cta_alpha.json
-
-# 也可以传内联 JSON 或 stdin
-python3 scripts/exec_config_client.py post \
-  '{"strategy_name":"cta_alpha","config":{"single_order_usdt":100.0,"orders_per_batch":3,"maker_price_anchor":"own_best","tick_spacing":1,"batch_interval_ms":500,"maker_timeout_ms":1000,"max_maker_requotes":2,"target_tolerance_usdt":10.0,"targets":{"BTCUSDT":{"qty":0.03,"signal":0}}}}'
-cat cta_alpha.json | python3 scripts/exec_config_client.py post -
+wget http://172.16.30.42:10041/manager/api/manager_publish_client.py
+export MANAGER_API_URL=http://172.16.30.42:10041/manager/api/
+python3 manager_publish_client.py put-position @cta.json
+python3 manager_publish_client.py publish binance_exec_trade01 cta_alpha
 ```
 
-默认入口为 `http://172.16.30.42:10041/config/`，可通过全局参数
-`--url` 或环境变量 `EXEC_CONFIG_URL` 覆盖。GET 和 POST 都会直接打印服务端
-JSON response。
+Exec `/config/` 页面保持只读。
 
 ## 7. 部署与启停
 
