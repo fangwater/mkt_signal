@@ -1,7 +1,7 @@
-use crate::strategy::batch_exec_strategy::{
-    BatchExecConfig, BatchExecStrategy, BatchExecTarget, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
-};
 use crate::strategy::StrategyManager;
+use crate::strategy::batch_exec_strategy::{
+    BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME, BatchExecConfig, BatchExecStrategy, BatchExecTarget,
+};
 use anyhow::{Context, Result};
 use log::{info, warn};
 use order_common::TradingVenue;
@@ -1061,7 +1061,10 @@ impl BatchExecConfigReloader {
         if !unmanaged_ledger_names.is_empty() {
             anyhow::bail!(
                 "BatchExec position ledger contains non-zero strategies without an explicit removal request: {}; use DELETE /api/strategy?name=<strategy_name>",
-                unmanaged_ledger_names.into_iter().collect::<Vec<_>>().join(",")
+                unmanaged_ledger_names
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(",")
             );
         }
 
@@ -1089,13 +1092,35 @@ impl BatchExecConfigReloader {
     }
 
     pub fn spawn(mut self, strategy_mgr: Rc<RefCell<StrategyManager>>, interval: Duration) {
+        let notify = crate::pre_trade::batch_exec_reload_notify::BatchExecReloadNotify::try_open();
         tokio::task::spawn_local(async move {
             let mut timer = tokio::time::interval(interval);
             timer.tick().await;
             loop {
-                timer.tick().await;
-                if let Err(err) = self.reload(&strategy_mgr).await {
-                    warn!("BatchExec Redis reload failed: {err:#}");
+                if let Some(wakeup) = notify.as_ref().and_then(|channel| channel.drain()) {
+                    info!(
+                        "BatchExec reload notify received: strategy_name={} updated_at_us={}",
+                        wakeup.strategy_name, wakeup.updated_at_us
+                    );
+                    if let Err(err) = self.reload(&strategy_mgr).await {
+                        warn!("BatchExec Redis reload failed after notify: {err:#}");
+                    }
+                    continue;
+                }
+                if notify.is_some() {
+                    tokio::select! {
+                        _ = timer.tick() => {
+                            if let Err(err) = self.reload(&strategy_mgr).await {
+                                warn!("BatchExec Redis reload failed: {err:#}");
+                            }
+                        }
+                        _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+                    }
+                } else {
+                    timer.tick().await;
+                    if let Err(err) = self.reload(&strategy_mgr).await {
+                        warn!("BatchExec Redis reload failed: {err:#}");
+                    }
                 }
             }
         });
@@ -1375,12 +1400,14 @@ mod tests {
             ),
             BTreeSet::from(["cta_orphan".to_string()])
         );
-        assert!(nonzero_unmanaged_ledger_names(
-            &positions,
-            &BTreeSet::new(),
-            &BTreeSet::from(["cta_orphan".to_string()]),
-            &BTreeSet::new(),
-        )
-        .is_empty());
+        assert!(
+            nonzero_unmanaged_ledger_names(
+                &positions,
+                &BTreeSet::new(),
+                &BTreeSet::from(["cta_orphan".to_string()]),
+                &BTreeSet::new(),
+            )
+            .is_empty()
+        );
     }
 }

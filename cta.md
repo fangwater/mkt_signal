@@ -75,7 +75,9 @@ Value 为 JSON，同时保存下单参数和全部目标仓位：
 再超时转 taker。`0` 保持原来的 maker 后 taker；`±2` 先解析并保存，暂无
 额外执行语义。
 
-`exec-pre-trade` 定期 reload 整个 KV：
+`exec-pre-trade` 以 Redis 为运行时真源。Manager 在 Redis 写确认后通过
+`<IPC_NAMESPACE>/batch_exec_pubs/reload_notify` 主动唤醒一次 reload；notify
+丢失时仍按 `--config-reload-ms` 兜底（代码默认 30s，不是 1s）。reload 读取整个 KV：
 
 - 下单参数变化：从下一个 batch 或下一次重报开始生效，不撤销当前挂单。
 - 某个 symbol 的 `qty` 或 `signal` 变化：撤销该 `strategy_id` 的所有挂单，等待撤单确认后读取最新仓位并重新建仓。
@@ -83,7 +85,7 @@ Value 为 JSON，同时保存下单参数和全部目标仓位：
 - strategy_name 从索引删除：该名称下的旧目标全部按 `0` 处理。
 - Redis 读取或 JSON 校验失败：保留上一次有效配置。
 
-默认每 1 秒 reload Redis。这里的目标仓位不同于账户实际仓位：实际仓位由
+这里的目标仓位不同于账户实际仓位：实际仓位由
 `account_pubs` 实时更新，并每 60 秒通过交易所快照纠偏。
 Binance 标准账户的 Exec 快照只查询 UM 余额和 UM 仓位，不查询现货账户。
 
