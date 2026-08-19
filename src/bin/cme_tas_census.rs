@@ -1,4 +1,4 @@
-//! Stream LSEG Tick History TAS gzip parts into structured, filled-only events.
+//! Stream CME Group futures TAS gzip parts into structured, filled-only events.
 //!
 //! Python `preprocess/lseg/tas_replay.py` is the correctness baseline. Every
 //! nonempty source cell must belong to `tas_column_rules.json`. Unknown `Type`
@@ -55,10 +55,10 @@ const SPECIAL_TRADES_USER: &str = "Special Trades[USER]";
 const EXPECTED_COLUMN_COUNT: usize = 294;
 
 #[derive(Parser, Debug)]
-#[command(name = "lseg_tas_replay")]
-#[command(about = "Replay LSEG TAS parts into structured filled-only events")]
+#[command(name = "cme_tas_census")]
+#[command(about = "Census CME TAS parts into structured filled-only events")]
 struct Args {
-    #[arg(long, default_value = "config/lseg_tas_replay.toml")]
+    #[arg(long, default_value = "config/cme_tas_census.toml")]
     config: PathBuf,
     /// Override the config's diagnostic source-row limit.
     #[arg(long)]
@@ -447,7 +447,7 @@ fn replay_part(
 
 fn replay(config: &ReplayConfig) -> Result<()> {
     if !config.dry_run && config.output_jsonl.is_none() {
-        bail!("lseg_tas_replay requires output_jsonl when dry_run=false; ClickHouse is not implemented");
+        bail!("cme_tas_census requires output_jsonl when dry_run=false; ClickHouse is not implemented");
     }
     let rules = ColumnRules::load(&config.column_rules)?;
     let allowed = rules.allowed_columns(&config.field_groups)?;
@@ -472,7 +472,7 @@ fn replay(config: &ReplayConfig) -> Result<()> {
     };
     let started = Instant::now();
     info!(
-        "lseg_tas_replay period={} parts={} dry_run={} output_jsonl={:?} field_groups={:?} max_source_rows={:?}",
+        "cme_tas_census period={} parts={} dry_run={} output_jsonl={:?} field_groups={:?} max_source_rows={:?}",
         config.period,
         parts.len(),
         config.dry_run,
@@ -500,7 +500,7 @@ fn replay(config: &ReplayConfig) -> Result<()> {
         out.flush()?;
     }
     println!(
-        "lseg_tas_replay finished period={} source_rows={} selected_rows={} skipped_index={} skipped_ric_filter={} elapsed_ms={}",
+        "cme_tas_census finished period={} source_rows={} selected_rows={} skipped_index={} skipped_ric_filter={} elapsed_ms={}",
         config.period,
         census.source_rows,
         census.selected_rows,

@@ -1,8 +1,9 @@
-# LSEG TAS replay
+# CME TAS census
 
-`lseg_tas_replay` streams LSEG Tick History Time and Sales gzip parts and
+`cme_tas_census` streams CME Group futures Time and Sales gzip parts and
 projects every nonempty cell onto a structured event. It is a parser / census
-skeleton, not a baseline-bar writer.
+skeleton, not a baseline-bar writer. The source files are LSEG Tick History
+extracts of those CME contracts.
 
 Python remains the correctness baseline in
 [`preprocess/lseg/tas_replay.py`](../../preprocess/lseg/tas_replay.py). The
@@ -143,14 +144,14 @@ them, they stay in `fields`.
 Default config is a 20,000-row dry run against the local 2026 H1 tree:
 
 ```bash
-cargo run --bin lseg_tas_replay -- --config config/lseg_tas_replay.toml
+cargo run --bin cme_tas_census -- --config config/cme_tas_census.toml
 ```
 
 Write structured JSONL (still no ClickHouse):
 
 ```bash
 # set output_jsonl in the toml, or copy the config
-cargo run --bin lseg_tas_replay -- --config config/lseg_tas_replay.toml
+cargo run --bin cme_tas_census -- --config config/cme_tas_census.toml
 ```
 
 `dry_run=false` is allowed only when `output_jsonl` is set. The binary still

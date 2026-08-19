@@ -145,8 +145,8 @@ name = "tardis_ipc_replay"
 path = "src/bin/tardis_ipc_replay.rs"
 
 [[bin]]
-name = "lseg_tas_replay"
-path = "src/bin/lseg_tas_replay.rs"
+name = "cme_tas_census"
+path = "src/bin/cme_tas_census.rs"
 
 [[bin]]
 name = "tonglian_baseline_replay"
