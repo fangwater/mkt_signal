@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/account_common",
+    "crates/cme_tas_replay",
     "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",
@@ -142,6 +143,10 @@ path = "src/bin/trade_flow_feature_pub.rs"
 [[bin]]
 name = "tardis_ipc_replay"
 path = "src/bin/tardis_ipc_replay.rs"
+
+[[bin]]
+name = "lseg_tas_replay"
+path = "src/bin/lseg_tas_replay.rs"
 
 [[bin]]
 name = "tonglian_baseline_replay"

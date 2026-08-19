@@ -23,6 +23,13 @@ use mkt_signal::depth_pub::orderbook::OrderBook;
 use mkt_signal::factor_pub::trade_flow_feature_pub::local_baseline::{
     BaselineBar, HourlyNotionalKll, HourlyNotionalKllSnapshot, LocalBaselineAggregator,
 };
+use mkt_signal::factor_pub::trade_market_1s::{
+    encode_market_1s_clickhouse_row, market_1s_clickhouse_columns_sql,
+    market_1s_clickhouse_select_sql, market_1s_clickhouse_value_columns, market_1s_filename,
+    market_1s_table_name, parse_market_1s_clickhouse_tsv, utc_day_start_sec, validate_market_1s_day,
+    write_market_1s_hdf, TopOfBookTracker, TradeMarket1sAggregator, TradeMarket1sBar,
+    DEFAULT_FILE_SIDS, DEFAULT_MARKET_1S_OUTPUT_DIR, SECONDS_PER_DAY,
+};
 use mkt_signal::factor_pub::trade_notional_kll::{
     load_merged_hourly_kll, order_size_thresholds, previous_month, utc_month_bounds,
     validate_order_size_quantiles, HOUR_MS,
@@ -95,11 +102,17 @@ struct ReplayConfig {
     /// Rebuild only 5s/60s depth baseline rows; preserve trade and KLL tables.
     #[serde(default)]
     depth_only: bool,
+    /// Read trades and incremental L2 and write 1s bars to ClickHouse.
+    /// Daily HDF is only an optional export of those rows.
+    #[serde(default)]
+    market_1s_only: bool,
     /// Delete selected symbol/date rows before replaying so reruns are idempotent.
     #[serde(default)]
     overwrite_existing: bool,
     #[serde(default)]
     order_size: OrderSizeConfig,
+    #[serde(default)]
+    market_1s: Market1sConfig,
     #[serde(default)]
     clickhouse: ClickHouseConfig,
 }
@@ -112,6 +125,25 @@ struct OrderSizeConfig {
     medium_quantile: f32,
     #[serde(default = "default_large_quantile")]
     large_quantile: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Market1sConfig {
+    /// Write 1s CTA market bars to ClickHouse in the default full replay,
+    /// alongside 5s/60s baseline and hourly KLL. `market_1s_only` still skips
+    /// those outputs. Daily HDF is only an export of the ClickHouse rows.
+    #[serde(default = "default_market_1s_enabled")]
+    enabled: bool,
+    #[serde(default = "default_market_1s_output_dir")]
+    output_dir: PathBuf,
+    #[serde(default = "default_market_1s_file_sids")]
+    file_sids: String,
+    #[serde(default = "default_market_1s_python")]
+    python: PathBuf,
+    #[serde(default = "default_market_1s_write_clickhouse")]
+    write_clickhouse: bool,
+    #[serde(default = "default_market_1s_write_hdf")]
+    write_hdf: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -171,6 +203,19 @@ impl Default for OrderSizeConfig {
     }
 }
 
+impl Default for Market1sConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_market_1s_enabled(),
+            output_dir: default_market_1s_output_dir(),
+            file_sids: default_market_1s_file_sids(),
+            python: default_market_1s_python(),
+            write_clickhouse: default_market_1s_write_clickhouse(),
+            write_hdf: default_market_1s_write_hdf(),
+        }
+    }
+}
+
 fn default_replay_workers() -> usize {
     1
 }
@@ -205,6 +250,30 @@ fn default_clickhouse_flush_ms() -> u64 {
 
 fn default_clickhouse_queue_capacity() -> usize {
     DEFAULT_CLICKHOUSE_QUEUE_CAPACITY
+}
+
+fn default_market_1s_enabled() -> bool {
+    false
+}
+
+fn default_market_1s_output_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_MARKET_1S_OUTPUT_DIR)
+}
+
+fn default_market_1s_file_sids() -> String {
+    DEFAULT_FILE_SIDS.to_string()
+}
+
+fn default_market_1s_python() -> PathBuf {
+    PathBuf::from("python3")
+}
+
+fn default_market_1s_write_clickhouse() -> bool {
+    true
+}
+
+fn default_market_1s_write_hdf() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -845,8 +914,8 @@ fn discover_files(
     end_date: Option<&str>,
 ) -> Result<Vec<PathBuf>> {
     let dir = data_dir.join(dataset);
-    let prefix = format!("{venue_slug}_{dataset}_");
-    let suffix = format!("_{symbol}.csv.gz");
+    let prefixed = format!("{venue_slug}_{dataset}_");
+    let suffixed = format!("_{symbol}.csv.gz");
     let mut paths = fs::read_dir(&dir)
         .with_context(|| format!("failed to read Tardis dataset directory {}", dir.display()))?
         .filter_map(|entry| entry.ok())
@@ -855,14 +924,17 @@ fn discover_files(
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 return false;
             };
-            if !name.starts_with(&prefix) || !name.ends_with(&suffix) {
-                return false;
-            }
-            let date = name
-                .strip_prefix(&prefix)
-                .and_then(|value| value.strip_suffix(&suffix));
+            let date = if name.starts_with(&prefixed) && name.ends_with(&suffixed) {
+                name.strip_prefix(&prefixed)
+                    .and_then(|value| value.strip_suffix(&suffixed))
+            } else if name.len() == 17 && name.ends_with(".csv.gz") {
+                name.strip_suffix(".csv.gz")
+            } else {
+                None
+            };
             date.is_some_and(|date| {
-                start_date.is_none_or(|start| date >= start)
+                date.len() == 10
+                    && start_date.is_none_or(|start| date >= start)
                     && end_date.is_none_or(|end| date <= end)
             })
         })
@@ -877,6 +949,25 @@ fn discover_files(
         );
     }
     Ok(paths)
+}
+
+fn trade_file_date(path: &Path) -> Result<NaiveDate> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("trade file name {}", path.display()))?;
+    let date = if name.len() == 17 && name.ends_with(".csv.gz") {
+        name.strip_suffix(".csv.gz")
+            .expect("checked suffix above")
+            .to_string()
+    } else {
+        name.rsplit('_')
+            .nth(1)
+            .with_context(|| format!("extract date from {}", path.display()))?
+            .to_string()
+    };
+    NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+        .with_context(|| format!("parse trade date {date} from {}", path.display()))
 }
 
 fn parse_trade_record(record: &StringRecord) -> Result<TradeRow> {
@@ -1187,12 +1278,17 @@ fn replay(config: &ReplayConfig) -> Result<()> {
 }
 
 fn validate_replay_mode(config: &ReplayConfig) -> Result<()> {
-    let exclusive_modes = [config.kll_only, config.order_size_only, config.depth_only]
-        .into_iter()
-        .filter(|enabled| *enabled)
-        .count();
+    let exclusive_modes = [
+        config.kll_only,
+        config.order_size_only,
+        config.depth_only,
+        config.market_1s_only,
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count();
     if exclusive_modes > 1 {
-        bail!("kll_only, order_size_only, and depth_only are mutually exclusive");
+        bail!("kll_only, order_size_only, depth_only, and market_1s_only are mutually exclusive");
     }
     if config.kll_only && !config.write_hourly_notional_kll {
         bail!("kll_only requires write_hourly_notional_kll=true");
@@ -1221,7 +1317,35 @@ fn validate_replay_mode(config: &ReplayConfig) -> Result<()> {
     if config.depth_only && !config.overwrite_existing {
         bail!("depth_only requires overwrite_existing=true");
     }
+    if config.market_1s_only && config.write_hourly_notional_kll {
+        bail!("market_1s_only requires write_hourly_notional_kll=false");
+    }
+    if config.market_1s_only && config.order_size.enabled {
+        bail!("market_1s_only requires order_size.enabled=false");
+    }
+    if config.market_1s_only && config.publish_ipc {
+        bail!("market_1s_only cannot publish IPC");
+    }
+    if market_1s_requested(config) && !config.market_1s.write_clickhouse {
+        bail!("market_1s requires write_clickhouse=true; daily HDF is only an export");
+    }
+    if market_1s_requested(config)
+        && config.market_1s.write_hdf
+        && config.market_1s.file_sids != DEFAULT_FILE_SIDS
+    {
+        bail!("market_1s.file_sids must be {DEFAULT_FILE_SIDS} to match tardis_1s_*_sids_1_6_*.h5");
+    }
+    if market_1s_requested(config) && config.start_date.is_none() {
+        bail!("market_1s requires start_date");
+    }
+    if market_1s_requested(config) && config.end_date.is_none() {
+        bail!("market_1s requires end_date");
+    }
     Ok(())
+}
+
+fn market_1s_requested(config: &ReplayConfig) -> bool {
+    config.market_1s_only || config.market_1s.enabled
 }
 
 fn replay_hourly_kll_only(
@@ -1505,6 +1629,9 @@ fn replay_staging(
             &kll_table,
         );
     }
+    if config.market_1s_only {
+        return replay_market_1s_only(config, venue_slug, symbols);
+    }
     ensure_staging_tables(
         &config.clickhouse.url,
         &config.clickhouse.database,
@@ -1514,6 +1641,14 @@ fn replay_staging(
         &depth_60s_table,
         &kll_table,
     )?;
+    let market_1s_table = market_1s_table_name(venue_slug);
+    if config.market_1s.enabled {
+        ensure_market_1s_table(
+            &config.clickhouse.url,
+            &config.clickhouse.database,
+            &market_1s_table,
+        )?;
+    }
     let size_thresholds = load_replay_order_size_thresholds(config, venue, venue_slug, symbols)?;
     if config.overwrite_existing {
         let (start_ms, end_ms) = replay_time_bounds(config)?;
@@ -1523,15 +1658,19 @@ fn replay_staging(
             start_ms,
             end_ms,
         );
+        let mut staging_tables = vec![
+            trade_5s_table.as_str(),
+            depth_5s_table.as_str(),
+            trade_60s_table.as_str(),
+            depth_60s_table.as_str(),
+        ];
+        if config.market_1s.enabled {
+            staging_tables.push(market_1s_table.as_str());
+        }
         delete_staging_range(
             &config.clickhouse.url,
             &config.clickhouse.database,
-            &[
-                trade_5s_table.as_str(),
-                depth_5s_table.as_str(),
-                trade_60s_table.as_str(),
-                depth_60s_table.as_str(),
-            ],
+            &staging_tables,
             config
                 .write_hourly_notional_kll
                 .then_some(kll_table.as_str()),
@@ -1589,13 +1728,37 @@ fn replay_staging(
             batch_rows: config.clickhouse.batch_rows,
             flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
         });
+    let market_1s_writer = config
+        .market_1s
+        .enabled
+        .then(|| {
+            StageClickHouseWriter::start(
+                ClickHouseWriterConfig {
+                    url: config.clickhouse.url.clone(),
+                    database: config.clickhouse.database.clone(),
+                    table: market_1s_table.clone(),
+                    batch_rows: config.clickhouse.batch_rows,
+                    flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+                },
+                config.clickhouse.queue_capacity,
+            )
+        })
+        .transpose()?;
     let trade_5s_sender = trade_5s_writer.sender();
     let depth_5s_sender = depth_5s_writer.sender();
     let trade_60s_sender = trade_60s_writer.sender();
     let depth_60s_sender = depth_60s_writer.sender();
+    let market_1s_sender = market_1s_writer.as_ref().map(StageClickHouseWriter::sender);
     let depth_symbols = build_depth_tasks(config, venue_slug, symbols)?;
     let workers = config.replay_workers.min(symbols.len()).max(1);
-    info!("Starting split Tardis staging replay: venue={} symbols={} trade_workers={} depth_workers={}", venue_slug, symbols.len(), workers, workers);
+    info!(
+        "Starting split Tardis staging replay: venue={} symbols={} trade_workers={} depth_workers={} market_1s={}",
+        venue_slug,
+        symbols.len(),
+        workers,
+        workers,
+        config.market_1s.enabled,
+    );
     let trade_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
         .build()
@@ -1604,6 +1767,16 @@ fn replay_staging(
         .num_threads(workers)
         .build()
         .context("build depth replay pool")?;
+    let market_1s_pool = config
+        .market_1s
+        .enabled
+        .then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .context("build 1s market replay pool")
+        })
+        .transpose()?;
     let result = std::thread::scope(|scope| {
         let trade_handle = scope.spawn(|| {
             trade_pool.install(|| {
@@ -1625,6 +1798,20 @@ fn replay_staging(
                 })
             })
         });
+        let market_1s_handle = market_1s_pool.as_ref().map(|pool| {
+            scope.spawn(|| {
+                pool.install(|| {
+                    symbols.par_iter().try_for_each(|symbol| {
+                        replay_market_1s_symbol(
+                            config,
+                            venue_slug,
+                            symbol,
+                            market_1s_sender.as_ref(),
+                        )
+                    })
+                })
+            })
+        });
         let depth_result = depth_pool.install(|| {
             depth_symbols.par_iter().try_for_each(|symbol| {
                 replay_depth_stage_symbol(symbol, &depth_5s_sender, &depth_60s_sender)
@@ -1633,16 +1820,29 @@ fn replay_staging(
         let trade_result = trade_handle
             .join()
             .map_err(|_| anyhow!("trade replay worker panicked"))?;
-        trade_result.and(depth_result)
+        let market_1s_result = market_1s_handle
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow!("1s market replay worker panicked"))
+            })
+            .transpose()?;
+        trade_result
+            .and(depth_result)
+            .and(market_1s_result.unwrap_or(Ok(())))
     });
     drop(trade_5s_sender);
     drop(depth_5s_sender);
     drop(trade_60s_sender);
     drop(depth_60s_sender);
+    drop(market_1s_sender);
     let trade_5s_stats = trade_5s_writer.finish()?;
     let depth_5s_stats = depth_5s_writer.finish()?;
     let trade_60s_stats = trade_60s_writer.finish()?;
     let depth_60s_stats = depth_60s_writer.finish()?;
+    let market_1s_stats = market_1s_writer
+        .map(StageClickHouseWriter::finish)
+        .transpose()?;
     result?;
     info!(
         "Tardis staging replay complete: trade_5s_rows={} depth_5s_rows={} trade_60s_rows={} depth_60s_rows={} trade_5s_batches={} depth_5s_batches={} trade_60s_batches={} depth_60s_batches={}",
@@ -1655,6 +1855,12 @@ fn replay_staging(
         trade_60s_stats.inserted_batches,
         depth_60s_stats.inserted_batches,
     );
+    if let Some(stats) = market_1s_stats {
+        info!(
+            "1s market ClickHouse complete: table={} rows={} batches={}",
+            market_1s_table, stats.inserted_rows, stats.inserted_batches
+        );
+    }
     Ok(())
 }
 
@@ -1788,6 +1994,379 @@ fn validate_depth_task_coverage(
         }
     }
     Ok(())
+}
+
+fn replay_market_1s_only(
+    config: &ReplayConfig,
+    venue_slug: &str,
+    symbols: &[String],
+) -> Result<()> {
+    let table = market_1s_table_name(venue_slug);
+    ensure_market_1s_table(&config.clickhouse.url, &config.clickhouse.database, &table)?;
+    if config.overwrite_existing {
+        let (start_ms, end_ms) = replay_time_bounds(config)?;
+        info!(
+            "Replacing existing 1s market ClickHouse range: symbols={} start_ms={} end_ms={}",
+            symbols.join(","),
+            start_ms,
+            end_ms,
+        );
+        delete_staging_range(
+            &config.clickhouse.url,
+            &config.clickhouse.database,
+            &[table.as_str()],
+            None,
+            symbols,
+            start_ms,
+            end_ms,
+        )?;
+    }
+
+    let clickhouse_writer = StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: table.clone(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )?;
+    let clickhouse_sender = clickhouse_writer.sender();
+    let workers = config.replay_workers.min(symbols.len()).max(1);
+    info!(
+        "Starting 1s market replay: venue={} symbols={} workers={} clickhouse_table={} export_hdf={}",
+        venue_slug,
+        symbols.len(),
+        workers,
+        table,
+        config.market_1s.write_hdf,
+    );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .context("build trade-only 1s replay pool")?;
+    let result = pool.install(|| {
+        symbols.par_iter().try_for_each(|symbol| {
+            replay_market_1s_symbol(config, venue_slug, symbol, Some(&clickhouse_sender))
+        })
+    });
+    drop(clickhouse_sender);
+    let clickhouse_stats = clickhouse_writer.finish()?;
+    result?;
+    info!(
+        "1s market ClickHouse complete: table={} rows={} batches={}",
+        table, clickhouse_stats.inserted_rows, clickhouse_stats.inserted_batches
+    );
+    Ok(())
+}
+
+fn replay_market_1s_symbol(
+    config: &ReplayConfig,
+    venue_slug: &str,
+    symbol: &str,
+    clickhouse_sender: Option<&Sender<Bytes>>,
+) -> Result<()> {
+    let sender = clickhouse_sender.context("1s market ClickHouse writer is required")?;
+    let table = market_1s_table_name(venue_slug);
+    let data_dir = replay_data_dir(config, symbol)?;
+    let trade_files = discover_files(
+        data_dir,
+        "trades",
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let depth_files = discover_files(
+        data_dir,
+        "incremental_book_L2",
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let mut by_day: BTreeMap<NaiveDate, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
+    for path in trade_files {
+        let day = trade_file_date(&path)?;
+        by_day.entry(day).or_default().0 = Some(path);
+    }
+    for path in depth_files {
+        let day = trade_file_date(&path)?;
+        by_day.entry(day).or_default().1 = Some(path);
+    }
+    let mut tracker = TopOfBookTracker::default();
+    let mut seed_close = None;
+    let mut written_days = 0u64;
+    let mut exported_days = 0u64;
+    let started = Instant::now();
+    let total_days = by_day.len();
+    for (index, (day, (trade_path, depth_path))) in by_day.into_iter().enumerate() {
+        let trade_path = trade_path
+            .with_context(|| format!("missing trades file for symbol={symbol} day={day}"))?;
+        let depth_path = depth_path.with_context(|| {
+            format!("missing incremental_book_L2 file for symbol={symbol} day={day}")
+        })?;
+        let output = config.market_1s.output_dir.join(market_1s_filename(
+            symbol,
+            &config.market_1s.file_sids,
+            day,
+        ));
+        let day_start_sec = utc_day_start_sec(day)?;
+        let start_ms = day_start_sec * 1_000;
+        let end_ms = start_ms + SECONDS_PER_DAY * 1_000;
+        let already_in_clickhouse = !config.overwrite_existing
+            && market_1s_clickhouse_day_complete(
+                &config.clickhouse.url,
+                &config.clickhouse.database,
+                &table,
+                symbol,
+                start_ms,
+                end_ms,
+            )?;
+        if already_in_clickhouse {
+            apply_depth_file_to_tracker(symbol, &depth_path, &mut tracker)?;
+            seed_close = last_trade_price_from_file(&trade_path)?.or(seed_close);
+            if config.market_1s.write_hdf && !output.is_file() {
+                let bars = load_market_1s_day_from_clickhouse(
+                    &config.clickhouse.url,
+                    &config.clickhouse.database,
+                    &table,
+                    symbol,
+                    start_ms,
+                    end_ms,
+                )?;
+                validate_market_1s_day(symbol, day, &bars)?;
+                write_market_1s_hdf(&output, symbol, &bars, &config.market_1s.python)
+                    .with_context(|| format!("export 1s market HDF {}", output.display()))?;
+                exported_days += 1;
+                info!(
+                    "Exported 1s market HDF from ClickHouse: symbol={} day={} path={}",
+                    symbol,
+                    day,
+                    output.display()
+                );
+            } else {
+                info!(
+                    "Skipping existing 1s market ClickHouse day: symbol={} day={} table={}",
+                    symbol, day, table
+                );
+            }
+            continue;
+        }
+        let bars = aggregate_market_1s_day(
+            symbol,
+            day,
+            &trade_path,
+            &depth_path,
+            &mut tracker,
+            seed_close,
+        )?;
+        validate_market_1s_day(symbol, day, &bars)?;
+        for bar in &bars {
+            sender
+                .send(Bytes::from(encode_market_1s_clickhouse_row(symbol, bar)))
+                .map_err(|_| anyhow!("1s market ClickHouse writer stopped"))?;
+        }
+        if config.market_1s.write_hdf {
+            write_market_1s_hdf(&output, symbol, &bars, &config.market_1s.python)
+                .with_context(|| format!("export 1s market HDF {}", output.display()))?;
+            exported_days += 1;
+        }
+        seed_close = bars.last().map(|bar| bar.close).or(seed_close);
+        written_days += 1;
+        info!(
+            "Wrote 1s market ClickHouse day: symbol={} day={} export_hdf={} files={}/{} elapsed={:.2?}",
+            symbol,
+            day,
+            config.market_1s.write_hdf,
+            index + 1,
+            total_days,
+            started.elapsed()
+        );
+    }
+    info!(
+        "1s market symbol complete: symbol={} days={} clickhouse_days={} hdf_export_days={} elapsed={:.2?}",
+        symbol,
+        total_days,
+        written_days,
+        exported_days,
+        started.elapsed()
+    );
+    Ok(())
+}
+
+fn aggregate_market_1s_day(
+    symbol: &str,
+    day: NaiveDate,
+    trade_path: &Path,
+    depth_path: &Path,
+    tracker: &mut TopOfBookTracker,
+    seed_close: Option<f64>,
+) -> Result<Vec<TradeMarket1sBar>> {
+    let mut trades = TradeEventReader {
+        records: CsvGzipReader::new(vec![trade_path.to_path_buf()]),
+    };
+    let mut books = BookEventReader {
+        records: CsvGzipReader::new(vec![depth_path.to_path_buf()]),
+        pending: None,
+        symbol: symbol.to_string(),
+    };
+    let mut next_trade = trades.next_event()?;
+    let mut next_book = books.next_event()?;
+    let mut aggregator = TradeMarket1sAggregator::new(day, tracker.snapshot(), seed_close)?;
+    loop {
+        let apply_book = match (&next_trade, &next_book) {
+            (None, None) => break,
+            (_, Some(book)) => next_trade
+                .as_ref()
+                .is_none_or(|trade| book.timestamp_us <= trade.timestamp_us),
+            (Some(_), None) => false,
+        };
+        if apply_book {
+            let event = next_book.take().expect("book present");
+            tracker.apply_book_levels(event.timestamp_us, &event.bids, &event.asks);
+            if let Some(book) = tracker.snapshot() {
+                aggregator
+                    .on_book(event.timestamp_us, book)
+                    .with_context(|| {
+                        format!(
+                            "aggregate 1s depth symbol={symbol} day={day} path={}",
+                            depth_path.display()
+                        )
+                    })?;
+            }
+            next_book = books.next_event()?;
+            continue;
+        }
+        let row = next_trade.take().expect("trade present");
+        aggregator
+            .on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount)
+            .with_context(|| {
+                format!(
+                    "aggregate 1s trade symbol={symbol} day={day} path={}",
+                    trade_path.display()
+                )
+            })?;
+        next_trade = trades.next_event()?;
+    }
+    aggregator.finish().with_context(|| {
+        format!(
+            "finish 1s market symbol={symbol} day={day} trade={} depth={}",
+            trade_path.display(),
+            depth_path.display()
+        )
+    })
+}
+
+fn last_trade_price_from_file(path: &Path) -> Result<Option<f64>> {
+    let mut reader = TradeEventReader {
+        records: CsvGzipReader::new(vec![path.to_path_buf()]),
+    };
+    let mut last = None;
+    while let Some(row) = reader.next_event()? {
+        last = Some(row.price);
+    }
+    Ok(last)
+}
+
+fn apply_depth_file_to_tracker(
+    symbol: &str,
+    path: &Path,
+    tracker: &mut TopOfBookTracker,
+) -> Result<()> {
+    let mut reader = BookEventReader {
+        records: CsvGzipReader::new(vec![path.to_path_buf()]),
+        pending: None,
+        symbol: symbol.to_string(),
+    };
+    while let Some(event) = reader.next_event()? {
+        tracker.apply_book_levels(event.timestamp_us, &event.bids, &event.asks);
+    }
+    Ok(())
+}
+
+fn ensure_market_1s_table(url: &str, database: &str, table: &str) -> Result<()> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+    let client = clickhouse_http_client()?;
+    clickhouse_execute(
+        &client,
+        url,
+        &format!("CREATE DATABASE IF NOT EXISTS {database}"),
+    )?;
+    clickhouse_execute(
+        &client,
+        url,
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {database}.{table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+            market_1s_clickhouse_columns_sql()
+        ),
+    )?;
+    for column in market_1s_clickhouse_value_columns() {
+        clickhouse_execute(
+            &client,
+            url,
+            &format!("ALTER TABLE {database}.{table} ADD COLUMN IF NOT EXISTS {column} Float64"),
+        )?;
+    }
+    Ok(())
+}
+
+fn market_1s_clickhouse_day_complete(
+    url: &str,
+    database: &str,
+    table: &str,
+    symbol: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<bool> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+    validate_identifier(symbol)?;
+    let client = clickhouse_http_client()?;
+    let body = clickhouse_select(
+        &client,
+        url,
+        &format!(
+            "SELECT count() FROM {database}.{table} WHERE symbol = '{symbol}' AND ts >= fromUnixTimestamp64Milli({start_ms}) AND ts < fromUnixTimestamp64Milli({end_ms})"
+        ),
+    )?;
+    let count = body
+        .trim()
+        .parse::<i64>()
+        .with_context(|| format!("parse 1s ClickHouse day count: {body}"))?;
+    Ok(count == SECONDS_PER_DAY)
+}
+
+fn load_market_1s_day_from_clickhouse(
+    url: &str,
+    database: &str,
+    table: &str,
+    symbol: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<TradeMarket1sBar>> {
+    validate_identifier(database)?;
+    validate_identifier(table)?;
+    validate_identifier(symbol)?;
+    let client = clickhouse_http_client()?;
+    let body = clickhouse_select(
+        &client,
+        url,
+        &format!(
+            "SELECT {} FROM {database}.{table} WHERE symbol = '{symbol}' AND ts >= fromUnixTimestamp64Milli({start_ms}) AND ts < fromUnixTimestamp64Milli({end_ms}) ORDER BY ts",
+            market_1s_clickhouse_select_sql()
+        ),
+    )?;
+    let mut bars = Vec::with_capacity(SECONDS_PER_DAY as usize);
+    for line in body.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        bars.push(parse_market_1s_clickhouse_tsv(line)?);
+    }
+    Ok(bars)
 }
 
 fn replay_trade_stage_symbol(
@@ -2640,6 +3219,27 @@ fn clickhouse_execute(client: &reqwest::blocking::Client, url: &str, query: &str
     bail!("ClickHouse request failed: status={status} body={body}");
 }
 
+fn clickhouse_select(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    query: &str,
+) -> Result<String> {
+    let response = client
+        .post(url.trim_end_matches('/'))
+        .query(&[("query", query)])
+        .body(Vec::new())
+        .send()
+        .with_context(|| format!("ClickHouse select failed: {query}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        bail!("ClickHouse select failed: status={status} body={body}");
+    }
+    response
+        .text()
+        .context("read ClickHouse select response")
+}
+
 fn clickhouse_execute_sync_mutation(
     client: &reqwest::blocking::Client,
     url: &str,
@@ -3168,6 +3768,67 @@ mod tests {
     }
 
     #[test]
+    fn market_1s_only_disables_kll_order_size_and_other_modes() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        config.market_1s_only = true;
+        config.write_hourly_notional_kll = false;
+        config.order_size.enabled = false;
+        config.publish_ipc = false;
+        assert!(validate_replay_mode(&config).is_ok());
+
+        config.write_hourly_notional_kll = true;
+        assert!(validate_replay_mode(&config).is_err());
+        config.write_hourly_notional_kll = false;
+        config.order_size.enabled = true;
+        assert!(validate_replay_mode(&config).is_err());
+        config.order_size.enabled = false;
+        config.kll_only = true;
+        assert!(validate_replay_mode(&config).is_err());
+        config.kll_only = false;
+        config.market_1s.write_clickhouse = false;
+        assert!(validate_replay_mode(&config).is_err());
+    }
+
+    #[test]
+    fn default_replay_can_write_market_1s_with_baseline_and_kll() {
+        let mut config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay.toml")).unwrap();
+        assert!(config.market_1s.enabled);
+        assert!(config.write_hourly_notional_kll);
+        assert!(!config.market_1s_only);
+        assert!(validate_replay_mode(&config).is_ok());
+
+        config.order_size.enabled = true;
+        assert!(validate_replay_mode(&config).is_ok());
+    }
+
+    #[test]
+    fn accepts_date_named_trade_files() {
+        let root =
+            std::env::temp_dir().join(format!("tardis-market-1s-discover-{}", std::process::id()));
+        let trades = root.join("trades");
+        fs::create_dir_all(&trades).unwrap();
+        let path = trades.join("2026-01-02.csv.gz");
+        fs::write(&path, []).unwrap();
+        let found = discover_files(
+            &root,
+            "trades",
+            "binance-futures",
+            "BNBUSDT",
+            Some("2026-01-01"),
+            Some("2026-01-02"),
+        )
+        .unwrap();
+        assert_eq!(found, [path.clone()]);
+        assert_eq!(
+            trade_file_date(&path).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 2).unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn replay_config_template_parses() {
         let config: ReplayConfig = toml::from_str(include_str!("../../config/tardis_replay.toml"))
             .expect("replay config template");
@@ -3182,7 +3843,18 @@ mod tests {
         assert!(!config.kll_only);
         assert!(!config.order_size_only);
         assert!(!config.depth_only);
+        assert!(!config.market_1s_only);
         assert!(config.overwrite_existing);
+        assert!(config.market_1s.enabled);
+        assert_eq!(
+            config.market_1s.output_dir,
+            PathBuf::from(
+                "/mnt/hdd-raid5-72t/liang_torch/crypto_data/cta_backtest_data/binanceswap/tardis_agg_1s_daily"
+            )
+        );
+        assert_eq!(config.market_1s.file_sids, "1_6");
+        assert!(config.market_1s.write_clickhouse);
+        assert!(config.market_1s.write_hdf);
         assert!(!config.order_size.enabled);
         assert_eq!(config.order_size.medium_quantile, 0.5);
         assert_eq!(config.order_size.large_quantile, 0.9);

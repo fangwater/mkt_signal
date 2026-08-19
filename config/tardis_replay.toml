@@ -31,6 +31,10 @@ write_hourly_notional_kll = true
 kll_only = false
 # When true, rebuild only 5s/60s trade baseline rows. KLL and depth rows are preserved.
 order_size_only = false
+# When true, skip 5s/60s/KLL staging and only write 1s CTA market bars
+# to ClickHouse. Daily HDF is only an export of those rows.
+# Leave this false to write 1s in the same pass as baseline and KLL.
+market_1s_only = false
 # Rerunning this date/symbol selection first synchronously deletes matching rows
 # from the four staging tables and hourly KLL table, then writes a fresh result.
 overwrite_existing = true
@@ -42,6 +46,18 @@ overwrite_existing = true
 enabled = false
 medium_quantile = 0.5
 large_quantile = 0.9
+
+# 1s CTA market bars written to ClickHouse in the same replay as 5s/60s
+# trade/depth and hourly KLL. Daily HDF is only an export of those rows.
+# Bid/ask0 come from the reconstructed L2 book, not last trade. Existing
+# ClickHouse days are overwritten only when overwrite_existing=true.
+[market_1s]
+enabled = true
+output_dir = "/mnt/hdd-raid5-72t/liang_torch/crypto_data/cta_backtest_data/binanceswap/tardis_agg_1s_daily"
+file_sids = "1_6"
+python = "/home/u171/venvs/jupyter312/bin/python"
+write_clickhouse = true
+write_hdf = true
 
 [symbol_data_dirs]
 XRPUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_usd_xrpusdt"

@@ -1,0 +1,24 @@
+# LSEG TAS replay skeleton. Default is a bounded dry-run census of the local
+# 2026 H1 part tree. It does not write ClickHouse and does not invent bars.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+period = "2026-01-01_2026-06-01"
+
+# Empty means every non-index RIC in the scanned parts. Index RICs start with '.'.
+# This package is CME Group futures plus a few index RICs, not cash equities.
+rics = []
+include_index_rics = false
+
+# Empty = every catalogued column that has a nonempty cell.
+# Restricting this list panics if a leftover nonempty cell is outside the groups.
+# Known groups live in ../preprocess/lseg/tas_column_rules.json (21 groups).
+# `core` is the legacy washable futures subset.
+field_groups = []
+
+# Shared 294-column rule table. Unknown Type / column / group panics.
+column_rules = "../preprocess/lseg/tas_column_rules.json"
+
+dry_run = true
+# Optional JSONL of structured rows. Required when dry_run=false.
+# output_jsonl = "/tmp/lseg_tas_events.jsonl"
+# Diagnostic cap on source rows, including skipped index rows. Omit for a full part.
+max_source_rows = 20000
