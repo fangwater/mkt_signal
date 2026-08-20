@@ -26,19 +26,24 @@ use mkt_signal::factor_pub::trade_flow_feature_pub::local_baseline::{
 use mkt_signal::factor_pub::trade_market_1s::{
     encode_market_1s_clickhouse_row, market_1s_clickhouse_columns_sql,
     market_1s_clickhouse_select_sql, market_1s_clickhouse_value_columns, market_1s_filename,
-    market_1s_table_name, parse_market_1s_clickhouse_tsv, utc_day_start_sec, validate_market_1s_day,
-    write_market_1s_hdf, TopOfBookTracker, TradeMarket1sAggregator, TradeMarket1sBar,
-    DEFAULT_FILE_SIDS, DEFAULT_MARKET_1S_OUTPUT_DIR, SECONDS_PER_DAY,
+    market_1s_table_name, parse_market_1s_clickhouse_tsv, utc_day_start_sec,
+    validate_market_1s_day, write_market_1s_hdf, TopOfBookTracker, TradeMarket1sAggregator,
+    TradeMarket1sBar, DEFAULT_FILE_SIDS, DEFAULT_MARKET_1S_OUTPUT_DIR, SECONDS_PER_DAY,
 };
 use mkt_signal::factor_pub::trade_notional_kll::{
     load_merged_hourly_kll, order_size_thresholds, previous_month, utc_month_bounds,
     validate_order_size_quantiles, HOUR_MS,
 };
+use mkt_signal::factor_pub::ylabel::{
+    encode_ylabel_clickhouse_row, horizon_label, ylabel_clickhouse_columns_sql,
+    ylabel_expected_rows_per_day, ylabel_table_name, YlabelAggregator, YlabelBar,
+    YLABEL_HORIZON_MS,
+};
 use order_common::TradingVenue;
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -80,10 +85,18 @@ struct ReplayConfig {
     symbol_data_dirs: BTreeMap<String, PathBuf>,
     /// Venue used in dat_pbs/<SYMBOL>/<venue>/trade and incremental service names.
     venue: String,
+    /// Tardis file-prefix and ClickHouse table slug. Spot files are `binance_*`
+    /// while IPC is `binance-margin`; SID 6 tables stay `binance`. Defaults to
+    /// `venue.data_pub_slug()`.
+    #[serde(default)]
+    tardis_exchange: Option<String>,
     /// Symbols are standardized to uppercase before discovering files and opening IPC services.
     symbols: Vec<String>,
+    /// Inclusive UTC start. Missing files before the first available day are skipped.
     #[serde(default)]
     start_date: Option<String>,
+    /// Inclusive UTC end. After the first available day, every date through this
+    /// bound must exist; a hole is an error.
     #[serde(default)]
     end_date: Option<String>,
     #[serde(default = "default_replay_workers")]
@@ -96,10 +109,11 @@ struct ReplayConfig {
     /// Read trades and write hourly notional KLL rows without baseline or L2 work.
     #[serde(default)]
     kll_only: bool,
-    /// Rebuild only 5s/60s trade baseline rows using previous-month KLL thresholds.
+    /// Rebuild only 5s/10s/60s trade baseline rows using previous-month KLL thresholds.
     #[serde(default)]
     order_size_only: bool,
-    /// Rebuild only 5s/60s depth baseline rows; preserve trade and KLL tables.
+    /// Rebuild only 5s depth baseline rows; preserve trade, ylabel, and KLL tables.
+    /// 10s/1m books are not stored: they are the same last snapshot as 5s.
     #[serde(default)]
     depth_only: bool,
     /// Read trades and incremental L2 and write 1s bars to ClickHouse.
@@ -130,8 +144,8 @@ struct OrderSizeConfig {
 #[derive(Debug, Clone, Deserialize)]
 struct Market1sConfig {
     /// Write 1s CTA market bars to ClickHouse in the default full replay,
-    /// alongside 5s/60s baseline and hourly KLL. `market_1s_only` still skips
-    /// those outputs. Daily HDF is only an export of the ClickHouse rows.
+    /// alongside 10s/1m trade baseline, 5s orderbook, ylabel, and hourly KLL.
+    /// `market_1s_only` still skips those outputs. Daily HDF is only an export.
     #[serde(default = "default_market_1s_enabled")]
     enabled: bool,
     #[serde(default = "default_market_1s_output_dir")]
@@ -543,20 +557,26 @@ struct DepthAggregator {
     next_update_id: i64,
     next_bar_ms: i64,
     end_ms: i64,
+    bar_ms: i64,
 }
 
 impl DepthAggregator {
     fn new(start_ms: i64, end_ms: i64) -> Self {
+        Self::with_bar_ms(start_ms, end_ms, 5_000)
+    }
+
+    fn with_bar_ms(start_ms: i64, end_ms: i64, bar_ms: i64) -> Self {
         Self {
             orderbook: OrderBook::new(),
             next_update_id: 1,
             next_bar_ms: start_ms,
             end_ms,
+            bar_ms,
         }
     }
 
     fn on_book(&mut self, event: &BookEvent) -> Result<Vec<(i64, [f64; 80])>> {
-        let target_ms = align_5s(event.timestamp_us.div_euclid(1_000));
+        let target_ms = align_bar_ms(event.timestamp_us.div_euclid(1_000), self.bar_ms);
         let completed = self.emit_before(target_ms)?;
         let bids: Vec<(f64, f64)> = event
             .bids
@@ -586,7 +606,7 @@ impl DepthAggregator {
         let limit = target_ms.min(self.end_ms);
         while self.next_bar_ms < limit {
             out.push((self.next_bar_ms, self.depth_values(self.next_bar_ms)?));
-            self.next_bar_ms += 5_000;
+            self.next_bar_ms += self.bar_ms;
         }
         Ok(out)
     }
@@ -615,8 +635,8 @@ impl DepthAggregator {
     }
 }
 
-fn align_5s(timestamp_ms: i64) -> i64 {
-    timestamp_ms - timestamp_ms.rem_euclid(5_000)
+fn align_bar_ms(timestamp_ms: i64, bar_ms: i64) -> i64 {
+    timestamp_ms - timestamp_ms.rem_euclid(bar_ms)
 }
 
 struct IpcReplayPublisher {
@@ -914,6 +934,9 @@ fn discover_files(
     end_date: Option<&str>,
 ) -> Result<Vec<PathBuf>> {
     let dir = data_dir.join(dataset);
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
     let prefixed = format!("{venue_slug}_{dataset}_");
     let suffixed = format!("_{symbol}.csv.gz");
     let mut paths = fs::read_dir(&dir)
@@ -940,15 +963,152 @@ fn discover_files(
         })
         .collect::<Vec<_>>();
     paths.sort();
-    if paths.is_empty() {
-        bail!(
-            "no {dataset} files for venue={} symbol={} in {} within requested dates",
-            venue_slug,
-            symbol,
-            data_dir.display()
+    Ok(paths)
+}
+
+fn discovered_file_dates(paths: &[PathBuf]) -> Result<BTreeSet<NaiveDate>> {
+    paths.iter().map(|path| trade_file_date(path)).collect()
+}
+
+fn replay_calendar_bounds(config: &ReplayConfig) -> Result<(NaiveDate, NaiveDate)> {
+    let start = config
+        .start_date
+        .as_deref()
+        .context("start_date is required")?;
+    let end = config.end_date.as_deref().context("end_date is required")?;
+    let start = NaiveDate::parse_from_str(start, "%Y-%m-%d").context("parse replay start_date")?;
+    let end = NaiveDate::parse_from_str(end, "%Y-%m-%d").context("parse replay end_date")?;
+    if start > end {
+        bail!("start_date must not be after end_date");
+    }
+    Ok((start, end))
+}
+
+/// Skip missing calendar days before the first available file. After that day,
+/// every date through `end` must be present; a hole is an error, not a skip.
+fn skip_leading_then_require_contiguous(
+    available: &BTreeSet<NaiveDate>,
+    start: NaiveDate,
+    end: NaiveDate,
+    label: &str,
+) -> Result<Option<NaiveDate>> {
+    if start > end {
+        bail!("start_date must not be after end_date");
+    }
+    let mut first = None;
+    let mut day = start;
+    loop {
+        if available.contains(&day) {
+            first = Some(day);
+            break;
+        }
+        if day == end {
+            break;
+        }
+        day = day
+            .succ_opt()
+            .context("replay date exceeds supported range")?;
+    }
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    if first > start {
+        let skipped_end = first
+            .pred_opt()
+            .context("first available day has no predecessor")?;
+        warn!(
+            "Skipping missing leading dates for {label}: {start} to {skipped_end} inclusive; first available day is {first}"
         );
     }
-    Ok(paths)
+    day = first;
+    loop {
+        if !available.contains(&day) {
+            bail!(
+                "{label}: missing {day} after data started on {first}; only leading dates before the first available day may be skipped"
+            );
+        }
+        if day == end {
+            break;
+        }
+        day = day
+            .succ_opt()
+            .context("replay date exceeds supported range")?;
+    }
+    Ok(Some(first))
+}
+
+fn require_discovered_coverage(
+    paths: &[PathBuf],
+    start: NaiveDate,
+    end: NaiveDate,
+    label: &str,
+) -> Result<Option<NaiveDate>> {
+    let available = discovered_file_dates(paths)?;
+    skip_leading_then_require_contiguous(&available, start, end, label)
+}
+
+fn inclusive_dates(start: NaiveDate, end: NaiveDate) -> Result<Vec<NaiveDate>> {
+    if start > end {
+        bail!("start_date must not be after end_date");
+    }
+    let mut days = Vec::new();
+    let mut day = start;
+    loop {
+        days.push(day);
+        if day == end {
+            break;
+        }
+        day = day
+            .succ_opt()
+            .context("replay date exceeds supported range")?;
+    }
+    Ok(days)
+}
+
+fn files_by_day(paths: &[PathBuf]) -> Result<BTreeMap<NaiveDate, PathBuf>> {
+    let mut by_day = BTreeMap::new();
+    for path in paths {
+        by_day.insert(trade_file_date(path)?, path.clone());
+    }
+    Ok(by_day)
+}
+
+fn require_paired_day_coverage(
+    trade_files: &[PathBuf],
+    depth_files: &[PathBuf],
+    start: NaiveDate,
+    end: NaiveDate,
+    label: &str,
+) -> Result<
+    Option<(
+        NaiveDate,
+        BTreeMap<NaiveDate, PathBuf>,
+        BTreeMap<NaiveDate, PathBuf>,
+    )>,
+> {
+    let trades = files_by_day(trade_files)?;
+    let depth = files_by_day(depth_files)?;
+    let first_trade =
+        skip_leading_then_require_contiguous(&trades.keys().copied().collect(), start, end, label)?;
+    let first_depth =
+        skip_leading_then_require_contiguous(&depth.keys().copied().collect(), start, end, label)?;
+    match (first_trade, first_depth) {
+        (Some(first_trade), Some(first_depth)) => {
+            let first = first_trade.max(first_depth);
+            skip_leading_then_require_contiguous(
+                &trades
+                    .keys()
+                    .filter(|day| depth.contains_key(day))
+                    .copied()
+                    .collect(),
+                first,
+                end,
+                label,
+            )?;
+            Ok(Some((first, trades, depth)))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn trade_file_date(path: &Path) -> Result<NaiveDate> {
@@ -1052,7 +1212,12 @@ fn parse_side(value: &str) -> Result<char> {
 }
 
 fn validate_dates(config: &ReplayConfig) -> Result<()> {
-    for date in [&config.start_date, &config.end_date].into_iter().flatten() {
+    let start = config
+        .start_date
+        .as_deref()
+        .context("start_date is required")?;
+    let end = config.end_date.as_deref().context("end_date is required")?;
+    for date in [start, end] {
         if date.len() != 10
             || !date.as_bytes().get(4).is_some_and(|byte| *byte == b'-')
             || !date.as_bytes().get(7).is_some_and(|byte| *byte == b'-')
@@ -1064,10 +1229,8 @@ fn validate_dates(config: &ReplayConfig) -> Result<()> {
             bail!("date must use YYYY-MM-DD, got '{date}'");
         }
     }
-    if let (Some(start), Some(end)) = (&config.start_date, &config.end_date) {
-        if start > end {
-            bail!("start_date must not be after end_date");
-        }
+    if start > end {
+        bail!("start_date must not be after end_date");
     }
     Ok(())
 }
@@ -1269,12 +1432,25 @@ fn replay(config: &ReplayConfig) -> Result<()> {
     }
     let venue = TradingVenue::from_str(&config.venue, true)
         .map_err(|err| anyhow!("unsupported replay venue '{}': {err}", config.venue))?;
-    let venue_slug = venue.data_pub_slug();
+    let venue_slug = replay_storage_slug(config, venue)?;
     let symbols = replay_symbols(config)?;
     if config.publish_ipc {
         bail!("tardis_ipc_replay no longer publishes trade or incremental IPC; use the separate publisher")
     }
-    replay_staging(config, venue, venue_slug, &symbols)
+    replay_staging(config, venue, &venue_slug, &symbols)
+}
+
+fn replay_storage_slug(config: &ReplayConfig, venue: TradingVenue) -> Result<String> {
+    match config.tardis_exchange.as_deref() {
+        Some(raw) => {
+            let value = raw.trim();
+            if value.is_empty() || value.contains(['/', '\\']) {
+                bail!("tardis_exchange must be a non-empty file-prefix slug");
+            }
+            Ok(value.to_string())
+        }
+        None => Ok(venue.data_pub_slug().to_string()),
+    }
 }
 
 fn validate_replay_mode(config: &ReplayConfig) -> Result<()> {
@@ -1423,15 +1599,28 @@ fn replay_hourly_kll_symbol(
     writer: &Sender<Bytes>,
 ) -> Result<()> {
     let data_dir = replay_data_dir(config, symbol)?;
+    let trade_files = discover_files(
+        data_dir,
+        "trades",
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let (start, end) = replay_calendar_bounds(config)?;
+    if require_discovered_coverage(
+        &trade_files,
+        start,
+        end,
+        &format!("hourly KLL symbol={symbol}"),
+    )?
+    .is_none()
+    {
+        warn!("Skipping hourly KLL symbol={symbol}: no trades files in {start}..{end}");
+        return Ok(());
+    }
     let mut reader = TradeEventReader {
-        records: CsvGzipReader::new(discover_files(
-            data_dir,
-            "trades",
-            venue_slug,
-            symbol,
-            config.start_date.as_deref(),
-            config.end_date.as_deref(),
-        )?),
+        records: CsvGzipReader::new(trade_files),
     };
     let mut kll = HourlyNotionalKll::new();
     let mut source_events = 0u64;
@@ -1503,6 +1692,7 @@ fn replay_order_size_trade_only(
     venue_slug: &str,
     symbols: &[String],
     trade_5s_table: &str,
+    trade_10s_table: &str,
     trade_60s_table: &str,
     kll_table: &str,
 ) -> Result<()> {
@@ -1510,6 +1700,7 @@ fn replay_order_size_trade_only(
         &config.clickhouse.url,
         &config.clickhouse.database,
         trade_5s_table,
+        trade_10s_table,
         trade_60s_table,
         kll_table,
     )?;
@@ -1519,33 +1710,17 @@ fn replay_order_size_trade_only(
     delete_baseline_ranges(
         &config.clickhouse.url,
         &config.clickhouse.database,
-        &[trade_5s_table, trade_60s_table],
+        &[trade_5s_table, trade_10s_table, trade_60s_table],
         symbols,
         start_ms,
         end_ms,
     )?;
 
-    let trade_5s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: trade_5s_table.to_string(),
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
-    let trade_60s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: trade_60s_table.to_string(),
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
+    let trade_5s_writer = start_stage_writer(config, trade_5s_table)?;
+    let trade_10s_writer = start_stage_writer(config, trade_10s_table)?;
+    let trade_60s_writer = start_stage_writer(config, trade_60s_table)?;
     let trade_5s_sender = trade_5s_writer.sender();
+    let trade_10s_sender = trade_10s_writer.sender();
     let trade_60s_sender = trade_60s_writer.sender();
     let workers = config.replay_workers.min(symbols.len()).max(1);
     info!(
@@ -1570,23 +1745,30 @@ fn replay_order_size_trade_only(
                 venue,
                 venue_slug,
                 symbol,
-                &trade_5s_sender,
-                &trade_60s_sender,
+                &BaselineFreqSenders {
+                    five: &trade_5s_sender,
+                    ten: &trade_10s_sender,
+                    sixty: &trade_60s_sender,
+                },
                 None,
                 Some(thresholds.as_slice()),
             )
         })
     });
     drop(trade_5s_sender);
+    drop(trade_10s_sender);
     drop(trade_60s_sender);
     let trade_5s_stats = trade_5s_writer.finish()?;
+    let trade_10s_stats = trade_10s_writer.finish()?;
     let trade_60s_stats = trade_60s_writer.finish()?;
     result?;
     info!(
-        "Order-size-only trade baseline replay complete: trade_5s_rows={} trade_60s_rows={} trade_5s_batches={} trade_60s_batches={}",
+        "Order-size-only trade baseline replay complete: trade_5s_rows={} trade_10s_rows={} trade_60s_rows={} trade_5s_batches={} trade_10s_batches={} trade_60s_batches={}",
         trade_5s_stats.inserted_rows,
+        trade_10s_stats.inserted_rows,
         trade_60s_stats.inserted_rows,
         trade_5s_stats.inserted_batches,
+        trade_10s_stats.inserted_batches,
         trade_60s_stats.inserted_batches,
     );
     Ok(())
@@ -1600,8 +1782,9 @@ fn replay_staging(
 ) -> Result<()> {
     let trade_5s_table = baseline_trade_table_name(venue_slug, 5_000);
     let depth_5s_table = baseline_depth_table_name(venue_slug, 5_000);
+    let trade_10s_table = baseline_trade_table_name(venue_slug, 10_000);
     let trade_60s_table = baseline_trade_table_name(venue_slug, 60_000);
-    let depth_60s_table = baseline_depth_table_name(venue_slug, 60_000);
+    let ylabel_tables = ylabel_table_names(venue_slug);
     let kll_table = trade_notional_kll_table_name(venue_slug);
     if config.kll_only {
         return replay_hourly_kll_only(config, venue, venue_slug, symbols, &kll_table);
@@ -1613,21 +1796,13 @@ fn replay_staging(
             venue_slug,
             symbols,
             &trade_5s_table,
+            &trade_10s_table,
             &trade_60s_table,
             &kll_table,
         );
     }
     if config.depth_only {
-        return replay_depth_only(
-            config,
-            venue_slug,
-            symbols,
-            &trade_5s_table,
-            &depth_5s_table,
-            &trade_60s_table,
-            &depth_60s_table,
-            &kll_table,
-        );
+        return replay_depth_only(config, venue_slug, symbols, &depth_5s_table);
     }
     if config.market_1s_only {
         return replay_market_1s_only(config, venue_slug, symbols);
@@ -1637,9 +1812,14 @@ fn replay_staging(
         &config.clickhouse.database,
         &trade_5s_table,
         &depth_5s_table,
+        &trade_10s_table,
         &trade_60s_table,
-        &depth_60s_table,
         &kll_table,
+    )?;
+    ensure_ylabel_tables(
+        &config.clickhouse.url,
+        &config.clickhouse.database,
+        &ylabel_tables,
     )?;
     let market_1s_table = market_1s_table_name(venue_slug);
     if config.market_1s.enabled {
@@ -1661,8 +1841,8 @@ fn replay_staging(
         let mut staging_tables = vec![
             trade_5s_table.as_str(),
             depth_5s_table.as_str(),
+            trade_10s_table.as_str(),
             trade_60s_table.as_str(),
-            depth_60s_table.as_str(),
         ];
         if config.market_1s.enabled {
             staging_tables.push(market_1s_table.as_str());
@@ -1678,47 +1858,20 @@ fn replay_staging(
             start_ms,
             end_ms,
         )?;
+        delete_ylabel_ranges(
+            &config.clickhouse.url,
+            &config.clickhouse.database,
+            &ylabel_tables,
+            symbols,
+            start_ms,
+            end_ms,
+        )?;
     }
-    let trade_5s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: trade_5s_table,
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
-    let depth_5s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: depth_5s_table,
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
-    let trade_60s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: trade_60s_table,
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
-    let depth_60s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: depth_60s_table,
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
+    let trade_5s_writer = start_stage_writer(config, &trade_5s_table)?;
+    let depth_5s_writer = start_stage_writer(config, &depth_5s_table)?;
+    let trade_10s_writer = start_stage_writer(config, &trade_10s_table)?;
+    let trade_60s_writer = start_stage_writer(config, &trade_60s_table)?;
+    let ylabel_writers = start_ylabel_writers(config, &ylabel_tables)?;
     let kll_config = config
         .write_hourly_notional_kll
         .then(|| ClickHouseWriterConfig {
@@ -1731,33 +1884,28 @@ fn replay_staging(
     let market_1s_writer = config
         .market_1s
         .enabled
-        .then(|| {
-            StageClickHouseWriter::start(
-                ClickHouseWriterConfig {
-                    url: config.clickhouse.url.clone(),
-                    database: config.clickhouse.database.clone(),
-                    table: market_1s_table.clone(),
-                    batch_rows: config.clickhouse.batch_rows,
-                    flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-                },
-                config.clickhouse.queue_capacity,
-            )
-        })
+        .then(|| start_stage_writer(config, &market_1s_table))
         .transpose()?;
     let trade_5s_sender = trade_5s_writer.sender();
     let depth_5s_sender = depth_5s_writer.sender();
+    let trade_10s_sender = trade_10s_writer.sender();
     let trade_60s_sender = trade_60s_writer.sender();
-    let depth_60s_sender = depth_60s_writer.sender();
+    let ylabel_senders: Vec<Sender<Bytes>> = ylabel_writers
+        .iter()
+        .map(StageClickHouseWriter::sender)
+        .collect();
     let market_1s_sender = market_1s_writer.as_ref().map(StageClickHouseWriter::sender);
     let depth_symbols = build_depth_tasks(config, venue_slug, symbols)?;
+    validate_depth_task_coverage(config, &depth_symbols)?;
     let workers = config.replay_workers.min(symbols.len()).max(1);
     info!(
-        "Starting split Tardis staging replay: venue={} symbols={} trade_workers={} depth_workers={} market_1s={}",
+        "Starting one-pass Tardis staging replay: venue={} symbols={} trade_workers={} depth_workers={} market_1s={} ylabel_tables={}",
         venue_slug,
         symbols.len(),
         workers,
         workers,
         config.market_1s.enabled,
+        ylabel_tables.join(","),
     );
     let trade_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
@@ -1790,8 +1938,11 @@ fn replay_staging(
                         venue,
                         venue_slug,
                         symbol,
-                        &trade_5s_sender,
-                        &trade_60s_sender,
+                        &BaselineFreqSenders {
+                            five: &trade_5s_sender,
+                            ten: &trade_10s_sender,
+                            sixty: &trade_60s_sender,
+                        },
                         kll_config.as_ref(),
                         size_threshold,
                     )
@@ -1812,10 +1963,15 @@ fn replay_staging(
                 })
             })
         });
-        let depth_result = depth_pool.install(|| {
-            depth_symbols.par_iter().try_for_each(|symbol| {
-                replay_depth_stage_symbol(symbol, &depth_5s_sender, &depth_60s_sender)
+        let ylabel_handle = scope.spawn(|| {
+            symbols.par_iter().try_for_each(|symbol| {
+                replay_ylabel_symbol(config, venue_slug, symbol, &ylabel_senders)
             })
+        });
+        let depth_result = depth_pool.install(|| {
+            depth_symbols
+                .par_iter()
+                .try_for_each(|symbol| replay_depth_stage_symbol(symbol, &depth_5s_sender))
         });
         let trade_result = trade_handle
             .join()
@@ -1827,34 +1983,46 @@ fn replay_staging(
                     .map_err(|_| anyhow!("1s market replay worker panicked"))
             })
             .transpose()?;
+        let ylabel_result = ylabel_handle
+            .join()
+            .map_err(|_| anyhow!("ylabel replay worker panicked"))?;
         trade_result
             .and(depth_result)
             .and(market_1s_result.unwrap_or(Ok(())))
+            .and(ylabel_result)
     });
     drop(trade_5s_sender);
     drop(depth_5s_sender);
+    drop(trade_10s_sender);
     drop(trade_60s_sender);
-    drop(depth_60s_sender);
+    drop(ylabel_senders);
     drop(market_1s_sender);
     let trade_5s_stats = trade_5s_writer.finish()?;
     let depth_5s_stats = depth_5s_writer.finish()?;
+    let trade_10s_stats = trade_10s_writer.finish()?;
     let trade_60s_stats = trade_60s_writer.finish()?;
-    let depth_60s_stats = depth_60s_writer.finish()?;
+    let ylabel_stats = finish_ylabel_writers(ylabel_writers)?;
     let market_1s_stats = market_1s_writer
         .map(StageClickHouseWriter::finish)
         .transpose()?;
     result?;
     info!(
-        "Tardis staging replay complete: trade_5s_rows={} depth_5s_rows={} trade_60s_rows={} depth_60s_rows={} trade_5s_batches={} depth_5s_batches={} trade_60s_batches={} depth_60s_batches={}",
+        "Tardis staging replay complete: trade_5s_rows={} depth_5s_rows={} trade_10s_rows={} trade_1m_rows={} trade_5s_batches={} depth_5s_batches={} trade_10s_batches={} trade_1m_batches={}",
         trade_5s_stats.inserted_rows,
         depth_5s_stats.inserted_rows,
+        trade_10s_stats.inserted_rows,
         trade_60s_stats.inserted_rows,
-        depth_60s_stats.inserted_rows,
         trade_5s_stats.inserted_batches,
         depth_5s_stats.inserted_batches,
+        trade_10s_stats.inserted_batches,
         trade_60s_stats.inserted_batches,
-        depth_60s_stats.inserted_batches,
     );
+    for (table, stats) in ylabel_tables.iter().zip(ylabel_stats.iter()) {
+        info!(
+            "ylabel ClickHouse complete: table={} rows={} batches={}",
+            table, stats.inserted_rows, stats.inserted_batches
+        );
+    }
     if let Some(stats) = market_1s_stats {
         info!(
             "1s market ClickHouse complete: table={} rows={} batches={}",
@@ -1864,25 +2032,16 @@ fn replay_staging(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn replay_depth_only(
     config: &ReplayConfig,
     venue_slug: &str,
     symbols: &[String],
-    trade_5s_table: &str,
     depth_5s_table: &str,
-    trade_60s_table: &str,
-    depth_60s_table: &str,
-    kll_table: &str,
 ) -> Result<()> {
-    ensure_staging_tables(
+    ensure_depth_staging_table(
         &config.clickhouse.url,
         &config.clickhouse.database,
-        trade_5s_table,
         depth_5s_table,
-        trade_60s_table,
-        depth_60s_table,
-        kll_table,
     )?;
     let depth_symbols = build_depth_tasks(config, venue_slug, symbols)?;
     validate_depth_task_coverage(config, &depth_symbols)?;
@@ -1896,35 +2055,15 @@ fn replay_depth_only(
     delete_staging_range(
         &config.clickhouse.url,
         &config.clickhouse.database,
-        &[depth_5s_table, depth_60s_table],
+        &[depth_5s_table],
         None,
         symbols,
         start_ms,
         end_ms,
     )?;
 
-    let depth_5s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: depth_5s_table.to_string(),
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
-    let depth_60s_writer = StageClickHouseWriter::start(
-        ClickHouseWriterConfig {
-            url: config.clickhouse.url.clone(),
-            database: config.clickhouse.database.clone(),
-            table: depth_60s_table.to_string(),
-            batch_rows: config.clickhouse.batch_rows,
-            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
-        },
-        config.clickhouse.queue_capacity,
-    )?;
+    let depth_5s_writer = start_stage_writer(config, depth_5s_table)?;
     let depth_5s_sender = depth_5s_writer.sender();
-    let depth_60s_sender = depth_60s_writer.sender();
     let total_days: usize = depth_symbols.iter().map(|symbol| symbol.days.len()).sum();
     let workers = config.replay_workers.min(depth_symbols.len()).max(1);
     info!(
@@ -1941,21 +2080,16 @@ fn replay_depth_only(
         .build()
         .context("build depth-only replay pool")?;
     let result: Result<()> = pool.install(|| {
-        depth_symbols.par_iter().try_for_each(|symbol| {
-            replay_depth_stage_symbol(symbol, &depth_5s_sender, &depth_60s_sender)
-        })
+        depth_symbols
+            .par_iter()
+            .try_for_each(|symbol| replay_depth_stage_symbol(symbol, &depth_5s_sender))
     });
     drop(depth_5s_sender);
-    drop(depth_60s_sender);
     let depth_5s_stats = depth_5s_writer.finish()?;
-    let depth_60s_stats = depth_60s_writer.finish()?;
     result?;
     info!(
-        "Depth-only Tardis staging replay complete: depth_5s_rows={} depth_60s_rows={} depth_5s_batches={} depth_60s_batches={}",
-        depth_5s_stats.inserted_rows,
-        depth_60s_stats.inserted_rows,
-        depth_5s_stats.inserted_batches,
-        depth_60s_stats.inserted_batches,
+        "Depth-only Tardis staging replay complete: depth_5s_rows={} depth_5s_batches={}",
+        depth_5s_stats.inserted_rows, depth_5s_stats.inserted_batches,
     );
     Ok(())
 }
@@ -1964,28 +2098,39 @@ fn validate_depth_task_coverage(
     config: &ReplayConfig,
     symbols: &[DepthReplaySymbol],
 ) -> Result<()> {
-    let (start_ms, end_ms) = replay_time_bounds(config)?;
-    let expected_days = usize::try_from((end_ms - start_ms).div_euclid(86_400_000))
-        .context("depth-only day count exceeds usize")?;
-    if expected_days == 0 {
-        bail!("depth-only replay requires at least one day");
-    }
+    let (start, end) = replay_calendar_bounds(config)?;
     for symbol in symbols {
-        if symbol.days.len() != expected_days {
+        let available = symbol
+            .days
+            .iter()
+            .map(|task| utc_ms_to_naive_date(task.start_ms))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let Some(first) = skip_leading_then_require_contiguous(
+            &available,
+            start,
+            end,
+            &format!("depth symbol={}", symbol.symbol),
+        )?
+        else {
+            continue;
+        };
+        let expected_days = inclusive_dates(first, end)?;
+        if symbol.days.len() != expected_days.len() {
             bail!(
-                "incomplete depth files for symbol={}: expected_days={} actual_days={}",
+                "incomplete depth files for symbol={}: expected_days={} actual_days={} first_available={}",
                 symbol.symbol,
-                expected_days,
-                symbol.days.len()
+                expected_days.len(),
+                symbol.days.len(),
+                first
             );
         }
-        for (index, task) in symbol.days.iter().enumerate() {
-            let expected_start = start_ms + index as i64 * 86_400_000;
+        for (task, expected_day) in symbol.days.iter().zip(expected_days.iter()) {
+            let expected_start = utc_day_start_ms(*expected_day)?;
             if task.start_ms != expected_start || task.end_ms != expected_start + 86_400_000 {
                 bail!(
-                    "non-contiguous depth file coverage for symbol={} index={} expected_start_ms={} actual_start_ms={} path={}",
+                    "non-contiguous depth file coverage for symbol={} expected_day={} expected_start_ms={} actual_start_ms={} path={}",
                     symbol.symbol,
-                    index,
+                    expected_day,
                     expected_start,
                     task.start_ms,
                     task.path.display()
@@ -1994,6 +2139,20 @@ fn validate_depth_task_coverage(
         }
     }
     Ok(())
+}
+
+fn utc_ms_to_naive_date(ts_ms: i64) -> Result<NaiveDate> {
+    DateTime::<Utc>::from_timestamp_millis(ts_ms)
+        .map(|ts| ts.date_naive())
+        .with_context(|| format!("invalid UTC millisecond timestamp {ts_ms}"))
+}
+
+fn utc_day_start_ms(day: NaiveDate) -> Result<i64> {
+    Ok(DateTime::<Utc>::from_naive_utc_and_offset(
+        day.and_hms_opt(0, 0, 0).context("valid midnight")?,
+        Utc,
+    )
+    .timestamp_millis())
 }
 
 fn replay_market_1s_only(
@@ -2086,25 +2245,30 @@ fn replay_market_1s_symbol(
         config.start_date.as_deref(),
         config.end_date.as_deref(),
     )?;
-    let mut by_day: BTreeMap<NaiveDate, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
-    for path in trade_files {
-        let day = trade_file_date(&path)?;
-        by_day.entry(day).or_default().0 = Some(path);
-    }
-    for path in depth_files {
-        let day = trade_file_date(&path)?;
-        by_day.entry(day).or_default().1 = Some(path);
-    }
+    let (start, end) = replay_calendar_bounds(config)?;
+    let Some((first, trades, depth)) = require_paired_day_coverage(
+        &trade_files,
+        &depth_files,
+        start,
+        end,
+        &format!("1s market symbol={symbol}"),
+    )?
+    else {
+        warn!("Skipping 1s market symbol={symbol}: no complete trade+L2 day in {start}..{end}");
+        return Ok(());
+    };
     let mut tracker = TopOfBookTracker::default();
     let mut seed_close = None;
     let mut written_days = 0u64;
     let mut exported_days = 0u64;
     let started = Instant::now();
-    let total_days = by_day.len();
-    for (index, (day, (trade_path, depth_path))) in by_day.into_iter().enumerate() {
-        let trade_path = trade_path
+    let days = inclusive_dates(first, end)?;
+    let total_days = days.len();
+    for (index, day) in days.into_iter().enumerate() {
+        let trade_path = trades
+            .get(&day)
             .with_context(|| format!("missing trades file for symbol={symbol} day={day}"))?;
-        let depth_path = depth_path.with_context(|| {
+        let depth_path = depth.get(&day).with_context(|| {
             format!("missing incremental_book_L2 file for symbol={symbol} day={day}")
         })?;
         let output = config.market_1s.output_dir.join(market_1s_filename(
@@ -2369,27 +2533,45 @@ fn load_market_1s_day_from_clickhouse(
     Ok(bars)
 }
 
+struct BaselineFreqSenders<'a> {
+    five: &'a Sender<Bytes>,
+    ten: &'a Sender<Bytes>,
+    sixty: &'a Sender<Bytes>,
+}
+
 fn replay_trade_stage_symbol(
     config: &ReplayConfig,
     venue: TradingVenue,
     venue_slug: &str,
     symbol: &str,
-    trade_5s_sender: &Sender<Bytes>,
-    trade_60s_sender: &Sender<Bytes>,
+    trade_senders: &BaselineFreqSenders<'_>,
     kll_config: Option<&ClickHouseWriterConfig>,
     size_thresholds: Option<&[MonthlyAmountThreshold]>,
 ) -> Result<()> {
     let data_dir = replay_data_dir(config, symbol)?;
     let (_, replay_end_ms) = replay_time_bounds(config)?;
+    let trade_files = discover_files(
+        data_dir,
+        "trades",
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let (start, end) = replay_calendar_bounds(config)?;
+    if require_discovered_coverage(
+        &trade_files,
+        start,
+        end,
+        &format!("trade baseline symbol={symbol}"),
+    )?
+    .is_none()
+    {
+        warn!("Skipping trade baseline symbol={symbol}: no trades files in {start}..{end}");
+        return Ok(());
+    }
     let mut reader = TradeEventReader {
-        records: CsvGzipReader::new(discover_files(
-            data_dir,
-            "trades",
-            venue_slug,
-            symbol,
-            config.start_date.as_deref(),
-            config.end_date.as_deref(),
-        )?),
+        records: CsvGzipReader::new(trade_files),
     };
     let mut aggregator = LocalBaselineAggregator::new();
     let mut hourly_kll = config
@@ -2397,6 +2579,7 @@ fn replay_trade_stage_symbol(
         .then(HourlyNotionalKll::new);
     let mut kll_rows = Vec::new();
     let mut rows_5s = 0u64;
+    let mut rows_10s = 0u64;
     let mut rows_60s = 0u64;
     let mut source_events = 0u64;
     let mut threshold_index = 0usize;
@@ -2428,7 +2611,8 @@ fn replay_trade_stage_symbol(
             None => aggregator.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount),
         };
         for bar in closed {
-            trade_5s_sender
+            trade_senders
+                .five
                 .send(encode_stage_row(
                     bar.start_ms,
                     symbol,
@@ -2437,8 +2621,20 @@ fn replay_trade_stage_symbol(
                 .map_err(|_| anyhow!("trade staging writer stopped"))?;
             rows_5s += 1;
         }
+        for bar in aggregator.drain_ten_second_bars() {
+            trade_senders
+                .ten
+                .send(encode_stage_row(
+                    bar.start_ms,
+                    symbol,
+                    &bar.trade_feature_values(),
+                ))
+                .map_err(|_| anyhow!("10s trade staging writer stopped"))?;
+            rows_10s += 1;
+        }
         for bar in aggregator.drain_sixty_second_bars() {
-            trade_60s_sender
+            trade_senders
+                .sixty
                 .send(encode_stage_row(
                     bar.start_ms,
                     symbol,
@@ -2468,7 +2664,8 @@ fn replay_trade_stage_symbol(
         }
     }
     for bar in aggregator.flush_until_ms(replay_end_ms) {
-        trade_5s_sender
+        trade_senders
+            .five
             .send(encode_stage_row(
                 bar.start_ms,
                 symbol,
@@ -2477,8 +2674,20 @@ fn replay_trade_stage_symbol(
             .map_err(|_| anyhow!("trade staging writer stopped"))?;
         rows_5s += 1;
     }
+    for bar in aggregator.drain_ten_second_bars() {
+        trade_senders
+            .ten
+            .send(encode_stage_row(
+                bar.start_ms,
+                symbol,
+                &bar.trade_feature_values(),
+            ))
+            .map_err(|_| anyhow!("10s trade staging writer stopped"))?;
+        rows_10s += 1;
+    }
     for bar in aggregator.drain_sixty_second_bars() {
-        trade_60s_sender
+        trade_senders
+            .sixty
             .send(encode_stage_row(
                 bar.start_ms,
                 symbol,
@@ -2508,10 +2717,11 @@ fn replay_trade_stage_symbol(
         started.elapsed(),
     );
     info!(
-        "Tardis trade staging complete: symbol={} source_events={} rows_5s={} rows_60s={} elapsed={:.2?}",
+        "Tardis trade staging complete: symbol={} source_events={} rows_5s={} rows_10s={} rows_60s={} elapsed={:.2?}",
         symbol,
         source_events,
         rows_5s,
+        rows_10s,
         rows_60s,
         started.elapsed(),
     );
@@ -2545,19 +2755,20 @@ fn encode_hourly_kll(
 fn replay_depth_stage_symbol(
     symbol: &DepthReplaySymbol,
     depth_5s_sender: &Sender<Bytes>,
-    depth_60s_sender: &Sender<Bytes>,
 ) -> Result<()> {
-    let first_day = symbol
-        .days
-        .first()
-        .with_context(|| format!("no depth files for symbol={}", symbol.symbol))?;
+    let Some(first_day) = symbol.days.first() else {
+        warn!(
+            "Skipping depth symbol={}: no incremental_book_L2 files in requested dates",
+            symbol.symbol
+        );
+        return Ok(());
+    };
     let last_day = symbol.days.last().expect("first day checked above");
     let mut aggregator = DepthAggregator::new(first_day.start_ms, last_day.end_ms);
     let started = Instant::now();
     let total_days = symbol.days.len();
     let mut source_events = 0u64;
     let mut rows_5s = 0u64;
-    let mut rows_60s = 0u64;
     log_stage_progress(
         "depth",
         &symbol.symbol,
@@ -2568,11 +2779,9 @@ fn replay_depth_stage_symbol(
         started.elapsed(),
     );
     for (day_index, task) in symbol.days.iter().enumerate() {
-        let day_stats =
-            replay_depth_stage_day(task, &mut aggregator, depth_5s_sender, depth_60s_sender)?;
+        let day_stats = replay_depth_stage_day(task, &mut aggregator, depth_5s_sender)?;
         source_events += day_stats.source_events;
         rows_5s += day_stats.rows_5s;
-        rows_60s += day_stats.rows_60s;
         log_stage_progress(
             "depth",
             &symbol.symbol,
@@ -2589,16 +2798,13 @@ fn replay_depth_stage_symbol(
             .with_context(|| format!("finish depth reconstruction for symbol={}", symbol.symbol))?,
         &symbol.symbol,
         depth_5s_sender,
-        depth_60s_sender,
     )?;
     rows_5s += final_stats.rows_5s;
-    rows_60s += final_stats.rows_60s;
     info!(
-        "Tardis depth staging complete: symbol={} source_events={} rows_5s={} rows_60s={} elapsed={:.2?}",
+        "Tardis depth staging complete: symbol={} source_events={} rows_5s={} elapsed={:.2?}",
         symbol.symbol,
         source_events,
         rows_5s,
-        rows_60s,
         started.elapsed(),
     );
     Ok(())
@@ -2608,14 +2814,12 @@ fn replay_depth_stage_symbol(
 struct DepthStageStats {
     source_events: u64,
     rows_5s: u64,
-    rows_60s: u64,
 }
 
 fn replay_depth_stage_day(
     task: &DepthReplayTask,
     aggregator: &mut DepthAggregator,
     depth_5s_sender: &Sender<Bytes>,
-    depth_60s_sender: &Sender<Bytes>,
 ) -> Result<DepthStageStats> {
     let mut reader = BookEventReader {
         records: CsvGzipReader::new(vec![task.path.clone()]),
@@ -2631,9 +2835,8 @@ fn replay_depth_stage_day(
                 task.path.display()
             )
         })?;
-        let emitted = enqueue_depth_bars(bars, &task.symbol, depth_5s_sender, depth_60s_sender)?;
+        let emitted = enqueue_depth_bars(bars, &task.symbol, depth_5s_sender)?;
         stats.rows_5s += emitted.rows_5s;
-        stats.rows_60s += emitted.rows_60s;
         stats.source_events += 1;
     }
     Ok(stats)
@@ -2643,7 +2846,6 @@ fn enqueue_depth_bars(
     bars: Vec<(i64, [f64; 80])>,
     symbol: &str,
     depth_5s_sender: &Sender<Bytes>,
-    depth_60s_sender: &Sender<Bytes>,
 ) -> Result<DepthStageStats> {
     let mut stats = DepthStageStats::default();
     for (ts, values) in bars {
@@ -2651,12 +2853,6 @@ fn enqueue_depth_bars(
             .send(encode_stage_row(ts, symbol, &values))
             .map_err(|_| anyhow!("depth staging writer stopped"))?;
         stats.rows_5s += 1;
-        if ts.rem_euclid(60_000) == 0 {
-            depth_60s_sender
-                .send(encode_stage_row(ts, symbol, &values))
-                .map_err(|_| anyhow!("60s depth staging writer stopped"))?;
-            stats.rows_60s += 1;
-        }
     }
     Ok(stats)
 }
@@ -2678,18 +2874,8 @@ fn build_depth_tasks(
             config.start_date.as_deref(),
             config.end_date.as_deref(),
         )? {
-            let date = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.rsplit('_').nth(1))
-                .ok_or_else(|| anyhow!("extract date from {}", path.display()))?;
-            let day = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .with_context(|| format!("parse depth date {date}"))?;
-            let start_ms = DateTime::<Utc>::from_naive_utc_and_offset(
-                day.and_hms_opt(0, 0, 0).expect("valid midnight"),
-                Utc,
-            )
-            .timestamp_millis();
+            let day = trade_file_date(&path)?;
+            let start_ms = utc_day_start_ms(day)?;
             days.push(DepthReplayTask {
                 symbol: symbol.clone(),
                 path,
@@ -2981,7 +3167,7 @@ fn baseline_trade_table_name(venue_slug: &str, bar_ms: i64) -> String {
 }
 
 fn baseline_depth_table_name(venue_slug: &str, bar_ms: i64) -> String {
-    format!("{}_depth", baseline_table_name(venue_slug, bar_ms))
+    format!("{}_{}s_depth", venue_slug.replace('-', "_"), bar_ms / 1_000)
 }
 
 fn trade_notional_kll_table_name(venue_slug: &str) -> String {
@@ -3002,48 +3188,406 @@ fn ensure_hourly_kll_table(url: &str, database: &str, table: &str) -> Result<()>
     ))
 }
 
+fn start_stage_writer(config: &ReplayConfig, table: &str) -> Result<StageClickHouseWriter> {
+    StageClickHouseWriter::start(
+        ClickHouseWriterConfig {
+            url: config.clickhouse.url.clone(),
+            database: config.clickhouse.database.clone(),
+            table: table.to_string(),
+            batch_rows: config.clickhouse.batch_rows,
+            flush_interval: Duration::from_millis(config.clickhouse.flush_ms),
+        },
+        config.clickhouse.queue_capacity,
+    )
+}
+
+fn ylabel_table_names(venue_slug: &str) -> Vec<String> {
+    YLABEL_HORIZON_MS
+        .iter()
+        .map(|horizon_ms| ylabel_table_name(venue_slug, *horizon_ms))
+        .collect()
+}
+
+fn ensure_ylabel_tables(url: &str, database: &str, tables: &[String]) -> Result<()> {
+    validate_identifier(database)?;
+    let client = clickhouse_http_client()?;
+    clickhouse_execute(
+        &client,
+        url,
+        &format!("CREATE DATABASE IF NOT EXISTS {database}"),
+    )?;
+    for table in tables {
+        validate_identifier(table)?;
+        clickhouse_execute(
+            &client,
+            url,
+            &format!(
+                "CREATE TABLE IF NOT EXISTS {database}.{table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+                ylabel_clickhouse_columns_sql()
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn start_ylabel_writers(
+    config: &ReplayConfig,
+    tables: &[String],
+) -> Result<Vec<StageClickHouseWriter>> {
+    tables
+        .iter()
+        .map(|table| start_stage_writer(config, table))
+        .collect()
+}
+
+fn finish_ylabel_writers(
+    writers: Vec<StageClickHouseWriter>,
+) -> Result<Vec<ClickHouseWriterStats>> {
+    writers
+        .into_iter()
+        .map(StageClickHouseWriter::finish)
+        .collect()
+}
+
+fn replay_ylabel_symbol(
+    config: &ReplayConfig,
+    venue_slug: &str,
+    symbol: &str,
+    senders: &[Sender<Bytes>],
+) -> Result<()> {
+    if senders.len() != YLABEL_HORIZON_MS.len() {
+        bail!(
+            "ylabel writer count {} does not match horizons {}",
+            senders.len(),
+            YLABEL_HORIZON_MS.len()
+        );
+    }
+    let data_dir = replay_data_dir(config, symbol)?;
+    let trade_files = discover_files(
+        data_dir,
+        "trades",
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let depth_files = discover_files(
+        data_dir,
+        "incremental_book_L2",
+        venue_slug,
+        symbol,
+        config.start_date.as_deref(),
+        config.end_date.as_deref(),
+    )?;
+    let (start, end) = replay_calendar_bounds(config)?;
+    let Some((first, trades, depth)) = require_paired_day_coverage(
+        &trade_files,
+        &depth_files,
+        start,
+        end,
+        &format!("ylabel symbol={symbol}"),
+    )?
+    else {
+        warn!("Skipping ylabel symbol={symbol}: no complete trade+L2 day in {start}..{end}");
+        return Ok(());
+    };
+    let mut tracker = TopOfBookTracker::default();
+    let mut seed_trade = None;
+    let mut seed_midp = None;
+    let started = Instant::now();
+    let days = inclusive_dates(first, end)?;
+    let total_days = days.len();
+    let mut written_days = 0u64;
+    for (index, day) in days.into_iter().enumerate() {
+        let trade_path = trades
+            .get(&day)
+            .with_context(|| format!("missing trades file for ylabel symbol={symbol} day={day}"))?;
+        let depth_path = depth.get(&day).with_context(|| {
+            format!("missing incremental_book_L2 file for ylabel symbol={symbol} day={day}")
+        })?;
+        let day_start_ms = utc_day_start_sec(day)? * 1_000;
+        let day_end_ms = day_start_ms + SECONDS_PER_DAY * 1_000;
+        let already_written = !config.overwrite_existing
+            && ylabel_clickhouse_day_complete(
+                &config.clickhouse.url,
+                &config.clickhouse.database,
+                venue_slug,
+                symbol,
+                day_start_ms,
+                day_end_ms,
+            )?;
+        if already_written {
+            apply_depth_file_to_tracker(symbol, &depth_path, &mut tracker)?;
+            if let Some(last) = last_trade_from_file(&trade_path)? {
+                seed_trade = Some(last);
+            }
+            seed_midp = tracker.snapshot().map(|book| book.midp()).or(seed_midp);
+            info!(
+                "Skipping existing ylabel ClickHouse day: symbol={} day={}",
+                symbol, day
+            );
+            continue;
+        }
+        let (bars_by_horizon, day_last_trade) = aggregate_ylabel_day(
+            symbol,
+            day,
+            &trade_path,
+            &depth_path,
+            &mut tracker,
+            seed_trade,
+            seed_midp,
+        )?;
+        for (sender, bars) in senders.iter().zip(bars_by_horizon.iter()) {
+            for bar in bars {
+                sender
+                    .send(Bytes::from(encode_ylabel_clickhouse_row(symbol, bar)))
+                    .map_err(|_| anyhow!("ylabel ClickHouse writer stopped"))?;
+            }
+        }
+        if let Some(last) = day_last_trade {
+            seed_trade = Some(last);
+        }
+        seed_midp = tracker.snapshot().map(|book| book.midp()).or(seed_midp);
+        written_days += 1;
+        info!(
+            "Wrote ylabel ClickHouse day: symbol={} day={} files={}/{} elapsed={:.2?}",
+            symbol,
+            day,
+            index + 1,
+            total_days,
+            started.elapsed()
+        );
+    }
+    info!(
+        "ylabel symbol complete: symbol={} days={} written_days={} elapsed={:.2?}",
+        symbol,
+        total_days,
+        written_days,
+        started.elapsed()
+    );
+    Ok(())
+}
+
+fn aggregate_ylabel_day(
+    symbol: &str,
+    day: NaiveDate,
+    trade_path: &Path,
+    depth_path: &Path,
+    tracker: &mut TopOfBookTracker,
+    seed_trade: Option<(i64, f64)>,
+    seed_midp: Option<f64>,
+) -> Result<(Vec<Vec<YlabelBar>>, Option<(i64, f64)>)> {
+    let day_start_sec = utc_day_start_sec(day)?;
+    let day_start_ms = day_start_sec * 1_000;
+    let day_end_ms = day_start_ms + SECONDS_PER_DAY * 1_000;
+    let mut aggregators = YLABEL_HORIZON_MS
+        .iter()
+        .map(|horizon_ms| YlabelAggregator::new(*horizon_ms))
+        .collect::<Result<Vec<_>>>()?;
+    for aggregator in &mut aggregators {
+        if let Some((last_trade_us, last_trade_price)) = seed_trade {
+            aggregator.seed(last_trade_us, last_trade_price, seed_midp);
+        } else {
+            aggregator.seed(0, f64::NAN, seed_midp);
+        }
+        aggregator.start_at(day_start_ms);
+    }
+    let mut trades = TradeEventReader {
+        records: CsvGzipReader::new(vec![trade_path.to_path_buf()]),
+    };
+    let mut books = BookEventReader {
+        records: CsvGzipReader::new(vec![depth_path.to_path_buf()]),
+        pending: None,
+        symbol: symbol.to_string(),
+    };
+    let mut next_trade = trades.next_event()?;
+    let mut next_book = books.next_event()?;
+    let mut closed = vec![Vec::new(); YLABEL_HORIZON_MS.len()];
+    let mut day_last_trade = seed_trade;
+    loop {
+        let apply_book = match (&next_trade, &next_book) {
+            (None, None) => break,
+            (_, Some(book)) => next_trade
+                .as_ref()
+                .is_none_or(|trade| book.timestamp_us <= trade.timestamp_us),
+            (Some(_), None) => false,
+        };
+        if apply_book {
+            let event = next_book.take().expect("book present");
+            tracker.apply_book_levels(event.timestamp_us, &event.bids, &event.asks);
+            let book_ms = event.timestamp_us.div_euclid(1_000);
+            if book_ms >= day_start_ms && book_ms < day_end_ms {
+                if let Some(book) = tracker.snapshot() {
+                    let midp = book.midp();
+                    for (aggregator, out) in aggregators.iter_mut().zip(closed.iter_mut()) {
+                        out.extend(aggregator.on_midp(event.timestamp_us, midp).with_context(
+                            || {
+                                format!(
+                                    "aggregate ylabel midp symbol={symbol} day={day} path={}",
+                                    depth_path.display()
+                                )
+                            },
+                        )?);
+                    }
+                }
+            }
+            next_book = books.next_event()?;
+            continue;
+        }
+        let row = next_trade.take().expect("trade present");
+        let trade_ms = row.timestamp_us.div_euclid(1_000);
+        if trade_ms >= day_start_ms && trade_ms < day_end_ms {
+            day_last_trade = Some((row.timestamp_us, row.price));
+            for (aggregator, out) in aggregators.iter_mut().zip(closed.iter_mut()) {
+                out.extend(
+                    aggregator
+                        .on_trade(row.timestamp_us, row.price, row.amount)
+                        .with_context(|| {
+                            format!(
+                                "aggregate ylabel trade symbol={symbol} day={day} path={}",
+                                trade_path.display()
+                            )
+                        })?,
+                );
+            }
+        }
+        next_trade = trades.next_event()?;
+    }
+    for (aggregator, out) in aggregators.iter_mut().zip(closed.iter_mut()) {
+        out.extend(aggregator.finish_until_ms(day_end_ms).with_context(|| {
+            format!(
+                "finish ylabel symbol={symbol} day={day} trade={} depth={}",
+                trade_path.display(),
+                depth_path.display()
+            )
+        })?);
+    }
+    for (horizon_ms, bars) in YLABEL_HORIZON_MS.iter().zip(closed.iter()) {
+        let expected = ylabel_expected_rows_per_day(*horizon_ms) as usize;
+        if bars.len() != expected {
+            bail!(
+                "{symbol} {day}: expected {expected} ylabel {} rows, got {}",
+                horizon_label(*horizon_ms),
+                bars.len()
+            );
+        }
+        let first_ts = day_start_ms + *horizon_ms;
+        for (index, bar) in bars.iter().enumerate() {
+            let expected_ts = first_ts + index as i64 * *horizon_ms;
+            if bar.ts_ms != expected_ts {
+                bail!(
+                    "{symbol} {day}: ylabel {} ts[{index}]={} expected={expected_ts}",
+                    horizon_label(*horizon_ms),
+                    bar.ts_ms
+                );
+            }
+        }
+    }
+    Ok((closed, day_last_trade))
+}
+
+fn ylabel_clickhouse_day_complete(
+    url: &str,
+    database: &str,
+    venue_slug: &str,
+    symbol: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<bool> {
+    validate_identifier(database)?;
+    validate_identifier(symbol)?;
+    let client = clickhouse_http_client()?;
+    for horizon_ms in YLABEL_HORIZON_MS {
+        let table = ylabel_table_name(venue_slug, horizon_ms);
+        validate_identifier(&table)?;
+        let body = clickhouse_select(
+            &client,
+            url,
+            &format!(
+                "SELECT count() FROM {database}.{table} WHERE symbol = '{symbol}' AND ts > fromUnixTimestamp64Milli({start_ms}) AND ts <= fromUnixTimestamp64Milli({end_ms})"
+            ),
+        )?;
+        let count = body
+            .trim()
+            .parse::<i64>()
+            .with_context(|| format!("parse ylabel ClickHouse day count: {body}"))?;
+        if count != ylabel_expected_rows_per_day(horizon_ms) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn last_trade_from_file(path: &Path) -> Result<Option<(i64, f64)>> {
+    let mut reader = TradeEventReader {
+        records: CsvGzipReader::new(vec![path.to_path_buf()]),
+    };
+    let mut last = None;
+    while let Some(row) = reader.next_event()? {
+        last = Some((row.timestamp_us, row.price));
+    }
+    Ok(last)
+}
+
 fn ensure_staging_tables(
     url: &str,
     database: &str,
     trade_5s_table: &str,
     depth_5s_table: &str,
+    trade_10s_table: &str,
     trade_60s_table: &str,
-    depth_60s_table: &str,
     kll_table: &str,
 ) -> Result<()> {
+    ensure_trade_staging_tables(
+        url,
+        database,
+        trade_5s_table,
+        trade_10s_table,
+        trade_60s_table,
+        kll_table,
+    )?;
+    ensure_depth_staging_table(url, database, depth_5s_table)
+}
+
+fn ensure_depth_staging_table(url: &str, database: &str, depth_5s_table: &str) -> Result<()> {
+    validate_identifier(database)?;
     validate_identifier(depth_5s_table)?;
-    validate_identifier(depth_60s_table)?;
-    ensure_trade_staging_tables(url, database, trade_5s_table, trade_60s_table, kll_table)?;
     let client = clickhouse_http_client()?;
-    clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{depth_5s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
-        baseline_depth_columns_sql()
-    ))?;
-    clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{depth_60s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
-        baseline_depth_columns_sql()
-    ))
+    clickhouse_execute(
+        &client,
+        url,
+        &format!("CREATE DATABASE IF NOT EXISTS {database}"),
+    )?;
+    clickhouse_execute(
+        &client,
+        url,
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {database}.{depth_5s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+            baseline_depth_columns_sql()
+        ),
+    )
 }
 
 fn ensure_trade_staging_tables(
     url: &str,
     database: &str,
     trade_5s_table: &str,
+    trade_10s_table: &str,
     trade_60s_table: &str,
     kll_table: &str,
 ) -> Result<()> {
     validate_identifier(trade_5s_table)?;
+    validate_identifier(trade_10s_table)?;
     validate_identifier(trade_60s_table)?;
     ensure_hourly_kll_table(url, database, kll_table)?;
     let client = clickhouse_http_client()?;
-    clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{trade_5s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
-        baseline_trade_columns_sql()
-    ))?;
-    clickhouse_execute(&client, url, &format!(
-        "CREATE TABLE IF NOT EXISTS {database}.{trade_60s_table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
-        baseline_trade_columns_sql()
-    ))
+    for table in [trade_5s_table, trade_10s_table, trade_60s_table] {
+        clickhouse_execute(&client, url, &format!(
+            "CREATE TABLE IF NOT EXISTS {database}.{table} ({}) ENGINE = MergeTree PARTITION BY toYYYYMM(ts) ORDER BY (symbol, ts)",
+            baseline_trade_columns_sql()
+        ))?;
+    }
+    Ok(())
 }
 
 fn delete_hourly_kll_range(
@@ -3082,6 +3626,32 @@ fn delete_staging_range(
     };
     validate_identifier(kll_table)?;
     delete_hourly_kll_range(url, database, kll_table, symbols, start_ms, end_ms)
+}
+
+fn delete_ylabel_ranges(
+    url: &str,
+    database: &str,
+    tables: &[String],
+    symbols: &[String],
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<()> {
+    validate_identifier(database)?;
+    let symbol_list = clickhouse_symbol_list(symbols)?;
+    let client = clickhouse_http_client()?;
+    for table in tables {
+        validate_identifier(table)?;
+        // ylabel ts is the closed bucket right edge, so the first in-range row is
+        // start+horizon and the last is end. Do not delete the previous day's last row.
+        clickhouse_execute_sync_mutation(
+            &client,
+            url,
+            &format!(
+                "ALTER TABLE {database}.{table} DELETE WHERE symbol IN ({symbol_list}) AND ts > fromUnixTimestamp64Milli({start_ms}) AND ts <= fromUnixTimestamp64Milli({end_ms})"
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 fn delete_baseline_ranges(
@@ -3219,11 +3789,7 @@ fn clickhouse_execute(client: &reqwest::blocking::Client, url: &str, query: &str
     bail!("ClickHouse request failed: status={status} body={body}");
 }
 
-fn clickhouse_select(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    query: &str,
-) -> Result<String> {
+fn clickhouse_select(client: &reqwest::blocking::Client, url: &str, query: &str) -> Result<String> {
     let response = client
         .post(url.trim_end_matches('/'))
         .query(&[("query", query)])
@@ -3235,9 +3801,7 @@ fn clickhouse_select(
         let body = response.text().unwrap_or_default();
         bail!("ClickHouse select failed: status={status} body={body}");
     }
-    response
-        .text()
-        .context("read ClickHouse select response")
+    response.text().context("read ClickHouse select response")
 }
 
 fn clickhouse_execute_sync_mutation(
@@ -3829,6 +4393,116 @@ mod tests {
     }
 
     #[test]
+    fn discover_files_returns_empty_when_dataset_dir_is_missing() {
+        let root =
+            std::env::temp_dir().join(format!("tardis-discover-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let found = discover_files(
+            &root,
+            "trades",
+            "binance-futures",
+            "BTCUSDT",
+            Some("2024-12-01"),
+            Some("2024-12-31"),
+        )
+        .unwrap();
+        assert!(found.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skips_missing_leading_dates_then_requires_contiguous_coverage() {
+        let first = NaiveDate::from_ymd_opt(2024, 12, 5).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 7).unwrap();
+        let available = BTreeSet::from([first, NaiveDate::from_ymd_opt(2024, 12, 6).unwrap(), end]);
+        assert_eq!(
+            skip_leading_then_require_contiguous(
+                &available,
+                NaiveDate::from_ymd_opt(2024, 12, 1).unwrap(),
+                end,
+                "BTCUSDT",
+            )
+            .unwrap(),
+            Some(first)
+        );
+    }
+
+    #[test]
+    fn missing_day_after_data_starts_is_an_error() {
+        let first = NaiveDate::from_ymd_opt(2024, 12, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 3).unwrap();
+        let available = BTreeSet::from([first, NaiveDate::from_ymd_opt(2024, 12, 3).unwrap()]);
+        let error = skip_leading_then_require_contiguous(&available, first, end, "BTCUSDT")
+            .expect_err("hole after start must fail");
+        assert!(error.to_string().contains("2024-12-02"));
+        assert!(error.to_string().contains("only leading dates"));
+    }
+
+    #[test]
+    fn missing_trailing_day_after_data_starts_is_an_error() {
+        let start = NaiveDate::from_ymd_opt(2024, 12, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 3).unwrap();
+        let available = BTreeSet::from([start, NaiveDate::from_ymd_opt(2024, 12, 2).unwrap()]);
+        let error = skip_leading_then_require_contiguous(&available, start, end, "BTCUSDT")
+            .expect_err("missing end_date must fail");
+        assert!(error.to_string().contains("2024-12-03"));
+    }
+
+    #[test]
+    fn empty_requested_range_is_skipped_not_an_error() {
+        let start = NaiveDate::from_ymd_opt(2024, 12, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 3).unwrap();
+        assert_eq!(
+            skip_leading_then_require_contiguous(&BTreeSet::new(), start, end, "BTCUSDT").unwrap(),
+            None
+        );
+    }
+
+    fn dated_path(day: &str) -> PathBuf {
+        PathBuf::from(format!("{day}.csv.gz"))
+    }
+
+    #[test]
+    fn paired_coverage_skips_leading_then_requires_both_files() {
+        let start = NaiveDate::from_ymd_opt(2024, 12, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 3).unwrap();
+        let trades = [dated_path("2024-12-02"), dated_path("2024-12-03")];
+        let depth = [dated_path("2024-12-02"), dated_path("2024-12-03")];
+        let (first, _, _) = require_paired_day_coverage(&trades, &depth, start, end, "BTCUSDT")
+            .unwrap()
+            .expect("paired days");
+        assert_eq!(first, NaiveDate::from_ymd_opt(2024, 12, 2).unwrap());
+    }
+
+    #[test]
+    fn unpaired_day_after_both_streams_start_is_an_error() {
+        let start = NaiveDate::from_ymd_opt(2024, 12, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 3).unwrap();
+        let trades = [
+            dated_path("2024-12-01"),
+            dated_path("2024-12-02"),
+            dated_path("2024-12-03"),
+        ];
+        let depth = [dated_path("2024-12-01"), dated_path("2024-12-03")];
+        let error = require_paired_day_coverage(&trades, &depth, start, end, "BTCUSDT")
+            .expect_err("missing L2 after start must fail");
+        assert!(error.to_string().contains("2024-12-02"));
+    }
+
+    #[test]
+    fn paired_coverage_skips_when_one_dataset_never_appears() {
+        let start = NaiveDate::from_ymd_opt(2024, 12, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 12, 2).unwrap();
+        let trades = [dated_path("2024-12-01"), dated_path("2024-12-02")];
+        assert!(
+            require_paired_day_coverage(&trades, &[], start, end, "BTCUSDT")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn replay_config_template_parses() {
         let config: ReplayConfig = toml::from_str(include_str!("../../config/tardis_replay.toml"))
             .expect("replay config template");
@@ -3864,5 +4538,94 @@ mod tests {
         );
         assert_eq!(config.replay_workers, 6);
         assert_eq!(config.clickhouse.database, "baseline");
+        assert!(config.tardis_exchange.is_none());
+    }
+
+    #[test]
+    fn spot_replay_config_uses_binance_file_prefix() {
+        let config: ReplayConfig =
+            toml::from_str(include_str!("../../config/tardis_replay_binance_spot.toml"))
+                .expect("spot replay config template");
+        assert_eq!(config.venue, "binance-margin");
+        assert_eq!(config.tardis_exchange.as_deref(), Some("binance"));
+        assert_eq!(
+            config.symbols,
+            ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
+        );
+        let venue = TradingVenue::from_str(&config.venue, true).unwrap();
+        assert_eq!(venue.data_pub_slug(), "binance-margin");
+        assert_eq!(replay_storage_slug(&config, venue).unwrap(), "binance");
+        assert_eq!(
+            replay_data_dir(&config, "BTCUSDT").expect("spot BTC data directory"),
+            Path::new("/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_btcusdt")
+        );
+        assert_eq!(
+            config.market_1s.output_dir,
+            PathBuf::from(
+                "/mnt/hdd-raid5-72t/liang_torch/crypto_data/cta_backtest_data/binance/tardis_agg_1s_daily"
+            )
+        );
+        assert_eq!(market_1s_table_name("binance"), "backtest_binance_1s");
+        assert_eq!(
+            baseline_trade_table_name("binance", 5_000),
+            "baseline_binance_5s_trade"
+        );
+        assert_eq!(
+            baseline_depth_table_name("binance", 5_000),
+            "binance_5s_depth"
+        );
+        assert_eq!(ylabel_table_name("binance", 5_000), "ylabel_binance_5s");
+    }
+
+    #[test]
+    fn one_pass_tables_are_venue_native() {
+        assert_eq!(
+            market_1s_table_name("binance-futures"),
+            "backtest_binance_futures_1s"
+        );
+        assert_eq!(
+            baseline_trade_table_name("binance-futures", 5_000),
+            "baseline_binance_futures_5s_trade"
+        );
+        assert_eq!(
+            baseline_trade_table_name("binance-futures", 10_000),
+            "baseline_binance_futures_10s_trade"
+        );
+        assert_eq!(
+            baseline_trade_table_name("binance-futures", 60_000),
+            "baseline_binance_futures_60s_trade"
+        );
+        assert_eq!(
+            baseline_depth_table_name("binance-futures", 5_000),
+            "binance_futures_5s_depth"
+        );
+        assert_eq!(
+            ylabel_table_names("binance-futures"),
+            [
+                "ylabel_binance_futures_5s",
+                "ylabel_binance_futures_10s",
+                "ylabel_binance_futures_30s",
+                "ylabel_binance_futures_1m",
+                "ylabel_binance_futures_5m",
+            ]
+        );
+        assert_eq!(
+            trade_notional_kll_table_name("binance-futures"),
+            "trade_notional_kll_binance_futures_hourly"
+        );
+        assert!(!ylabel_clickhouse_columns_sql().contains("_1"));
+        assert!(!ylabel_clickhouse_columns_sql().contains("_6"));
+        assert!(!market_1s_clickhouse_columns_sql().contains("_1"));
+    }
+
+    #[test]
+    fn ylabel_closed_bucket_sits_on_the_right_edge() {
+        let mut agg = YlabelAggregator::new(10_000).unwrap();
+        agg.seed(0, 100.0, Some(100.5));
+        agg.start_at(1_704_067_200_000);
+        let closed = agg.finish_until_ms(1_704_067_200_000 + 86_400_000).unwrap();
+        assert_eq!(closed.len(), 8_640);
+        assert_eq!(closed[0].ts_ms, 1_704_067_200_000 + 10_000);
+        assert_eq!(closed[8_639].ts_ms, 1_704_067_200_000 + 86_400_000);
     }
 }

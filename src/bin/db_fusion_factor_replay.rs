@@ -2005,7 +2005,7 @@ mod tests {
         );
         assert_eq!(
             config.clickhouse.input_depth_table,
-            "baseline_binance_futures_5s_depth"
+            "binance_futures_5s_depth"
         );
         assert_eq!(
             config.clickhouse.output_table,
@@ -2027,7 +2027,7 @@ mod tests {
         );
         assert_eq!(
             config.clickhouse.input_depth_table,
-            "baseline_binance_futures_60s_depth"
+            "binance_futures_5s_depth"
         );
         assert_eq!(
             config.clickhouse.output_table,

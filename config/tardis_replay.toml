@@ -5,22 +5,21 @@
 # USD-M futures source directories use a binance-futures file prefix and map to
 # venue = "binance-futures". The active range below is 2024-12-01..2024-12-31.
 #
-# Spot BTCUSDT data lives at:
-#   /mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_btcusdt
-# Its files use the `binance_*` source prefix and span 2021-01-01 through
-# 2026-07-12 (2019 common trades/L2 dates). IPC spot is `binance-margin`, so
-# current discovery needs a separate source-prefix mapping before spot replay.
+# Spot replay is config/tardis_replay_binance_spot.toml. Tardis files use the
+# `binance_*` prefix and ClickHouse tables use SID 6 slug `binance`.
 # data_dir = "/mnt/Data/tardis/binance-futures"
 venue = "binance-futures"
 symbols = ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
 
-# Bounds are inclusive. Omit either bound to replay every discovered date on
-# that side.
+# Bounds are inclusive and required. Missing files before the first available
+# day are skipped; a hole after that day through end_date is an error.
 start_date = "2024-12-01"
 end_date = "2024-12-31"
 
 # Each worker owns one symbol's continuous trade stream and daily L2 sequence.
-# Six symbols run in parallel; 5s/60s trade/depth staging has four writers.
+# One pass writes 1s backtest, ylabel, 5s/10s/1m trade baseline, 5s orderbook,
+# and hourly notional KLL. Trade-baseline large/medium/small stay 0 until
+# order_size.enabled=true and the previous month's KLL is complete.
 replay_workers = 6
 # This replay writes ClickHouse staging tables only. IPC publication is handled
 # by a separate future publisher.
@@ -29,14 +28,15 @@ publish_ipc = false
 write_hourly_notional_kll = true
 # When true, skip all baseline and L2 work and only write hourly KLL rows.
 kll_only = false
-# When true, rebuild only 5s/60s trade baseline rows. KLL and depth rows are preserved.
+# When true, rebuild only 5s/10s/60s trade baseline rows. KLL and depth rows are preserved.
 order_size_only = false
-# When true, skip 5s/60s/KLL staging and only write 1s CTA market bars
+# When true, skip 5s/10s/60s/KLL/ylabel staging and only write 1s CTA market bars
 # to ClickHouse. Daily HDF is only an export of those rows.
-# Leave this false to write 1s in the same pass as baseline and KLL.
+# Leave this false to write 1s in the same pass as baseline, ylabel, and KLL.
 market_1s_only = false
 # Rerunning this date/symbol selection first synchronously deletes matching rows
-# from the four staging tables and hourly KLL table, then writes a fresh result.
+# from the 1s/10s/1m trade tables, 5s depth, ylabel tables, and hourly KLL table,
+# then writes a fresh result.
 overwrite_existing = true
 
 # Enable after the previous natural month's hourly KLL rows have been written.

@@ -1,14 +1,15 @@
 //! 1s CTA market bars from Tardis trades plus incremental L2 top-of-book.
 //!
-//! ClickHouse is the source of truth. The official daily HDF is only an export
-//! of those rows. Bid/ask0 come from a full reconstructed L2 book, not last
-//! trade and not a single-level overwrite. The tracker keeps two top-of-book
-//! copies: `latest` follows every incremental update, and `valid` is the last
-//! uncrossed book. They may be identical, but they are stored separately.
-//! Crossed books use the same `prune_crossed_by_best_update_id` rule as the
-//! 5s/60s depth replay. Trades only fill OHLC and `buy_high` / `sell_low`.
-//! Row `t` uses the last valid top-of-book strictly before second `t`, and
-//! trades in `[t, t+1)`.
+//! ClickHouse is the source of truth and stores venue-native base columns.
+//! Daily HDF is a later export that may join SID venues into a wide table.
+//! Bid/ask0 come from a full reconstructed L2 book, not last trade and not a
+//! single-level overwrite. The tracker keeps two top-of-book copies: `latest`
+//! follows every incremental update, and `valid` is the last uncrossed book.
+//! They may be identical, but they are stored separately. Crossed books use
+//! the same `prune_crossed_by_best_update_id` rule as the 5s depth
+//! replay. Trades only fill OHLC and `buy_high` / `sell_low`. Row `t` uses
+//! the last valid top-of-book strictly before second `t`, and trades in
+//! `[t, t+1)`.
 
 use crate::depth_pub::orderbook::OrderBook;
 use anyhow::{bail, Context, Result};
@@ -180,7 +181,7 @@ impl TradeMarket1sBar {
         (self.bid0p + self.ask0p) / 2.0
     }
 
-    fn clickhouse_values(self) -> [f64; 26] {
+    fn clickhouse_values(self) -> [f64; 13] {
         [
             self.bid0p,
             self.bid0v,
@@ -194,20 +195,7 @@ impl TradeMarket1sBar {
             self.close,
             self.volume,
             self.turnover,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
-            f64::NAN,
             self.midp(),
-            f64::NAN,
         ]
     }
 }
@@ -424,11 +412,14 @@ pub fn market_1s_filename(symbol: &str, file_sids: &str, day: NaiveDate) -> Stri
 }
 
 pub fn market_1s_table_name(venue_slug: &str) -> String {
-    format!("baseline_{}_1s_trade", venue_slug.replace('-', "_"))
+    format!("backtest_{}_1s", venue_slug.replace('-', "_"))
 }
 
 pub fn market_1s_clickhouse_value_columns() -> &'static [&'static str] {
-    &MARKET_1S_COLUMNS[2..]
+    &[
+        "bid0p", "bid0v", "ask0p", "ask0v", "buy_high", "sell_low", "open", "high", "low", "close",
+        "volume", "turnover", "midp",
+    ]
 }
 
 pub fn market_1s_clickhouse_columns_sql() -> String {
@@ -447,21 +438,7 @@ pub fn market_1s_clickhouse_columns_sql() -> String {
 pub fn market_1s_clickhouse_select_sql() -> String {
     format!(
         "toUnixTimestamp(ts), {}",
-        [
-            "bid0p_1",
-            "bid0v_1",
-            "ask0p_1",
-            "ask0v_1",
-            "buy_high_1",
-            "sell_low_1",
-            "open_1",
-            "high_1",
-            "low_1",
-            "close_1",
-            "volume_1",
-            "turnover_1",
-        ]
-        .join(", ")
+        market_1s_clickhouse_value_columns().join(", ")
     )
 }
 
@@ -517,7 +494,8 @@ pub fn validate_market_1s_day(
 }
 
 pub fn encode_market_1s_clickhouse_row(symbol: &str, bar: &TradeMarket1sBar) -> Vec<u8> {
-    let mut row = Vec::with_capacity(16 + symbol.len() + market_1s_clickhouse_value_columns().len() * 8);
+    let mut row =
+        Vec::with_capacity(16 + symbol.len() + market_1s_clickhouse_value_columns().len() * 8);
     row.extend_from_slice(&(bar.ts_sec * 1_000).to_le_bytes());
     append_var_uint(&mut row, symbol.len() as u64);
     row.extend_from_slice(symbol.as_bytes());
@@ -534,18 +512,19 @@ pub fn parse_market_1s_clickhouse_tsv(line: &str) -> Result<TradeMarket1sBar> {
         .context("1s ClickHouse export missing ts")?
         .parse::<i64>()
         .context("1s ClickHouse export ts")?;
-    let bid0p = parse_clickhouse_f64(parts.next(), "bid0p_1")?;
-    let bid0v = parse_clickhouse_f64(parts.next(), "bid0v_1")?;
-    let ask0p = parse_clickhouse_f64(parts.next(), "ask0p_1")?;
-    let ask0v = parse_clickhouse_f64(parts.next(), "ask0v_1")?;
-    let buy_high = parse_clickhouse_f64(parts.next(), "buy_high_1")?;
-    let sell_low = parse_clickhouse_f64(parts.next(), "sell_low_1")?;
-    let open = parse_clickhouse_f64(parts.next(), "open_1")?;
-    let high = parse_clickhouse_f64(parts.next(), "high_1")?;
-    let low = parse_clickhouse_f64(parts.next(), "low_1")?;
-    let close = parse_clickhouse_f64(parts.next(), "close_1")?;
-    let volume = parse_clickhouse_f64(parts.next(), "volume_1")?;
-    let turnover = parse_clickhouse_f64(parts.next(), "turnover_1")?;
+    let bid0p = parse_clickhouse_f64(parts.next(), "bid0p")?;
+    let bid0v = parse_clickhouse_f64(parts.next(), "bid0v")?;
+    let ask0p = parse_clickhouse_f64(parts.next(), "ask0p")?;
+    let ask0v = parse_clickhouse_f64(parts.next(), "ask0v")?;
+    let buy_high = parse_clickhouse_f64(parts.next(), "buy_high")?;
+    let sell_low = parse_clickhouse_f64(parts.next(), "sell_low")?;
+    let open = parse_clickhouse_f64(parts.next(), "open")?;
+    let high = parse_clickhouse_f64(parts.next(), "high")?;
+    let low = parse_clickhouse_f64(parts.next(), "low")?;
+    let close = parse_clickhouse_f64(parts.next(), "close")?;
+    let volume = parse_clickhouse_f64(parts.next(), "volume")?;
+    let turnover = parse_clickhouse_f64(parts.next(), "turnover")?;
+    let _midp = parse_clickhouse_f64(parts.next(), "midp")?;
     if parts.next().is_some() {
         bail!("1s ClickHouse export has extra columns");
     }
@@ -883,17 +862,21 @@ mod tests {
         );
         assert_eq!(
             market_1s_table_name("binance-futures"),
-            "baseline_binance_futures_1s_trade"
+            "backtest_binance_futures_1s"
         );
         assert_eq!(MARKET_1S_COLUMNS.len(), 28);
         assert_eq!(MARKET_1S_COLUMNS[2], "bid0p_1");
         assert_eq!(MARKET_1S_COLUMNS[26], "midp_1");
         assert_eq!(
             market_1s_clickhouse_value_columns(),
-            &MARKET_1S_COLUMNS[2..]
+            [
+                "bid0p", "bid0v", "ask0p", "ask0v", "buy_high", "sell_low", "open", "high", "low",
+                "close", "volume", "turnover", "midp",
+            ]
         );
-        assert!(market_1s_clickhouse_columns_sql().contains("bid0p_1 Float64"));
-        assert!(market_1s_clickhouse_columns_sql().contains("midp_1 Float64"));
+        assert!(market_1s_clickhouse_columns_sql().contains("bid0p Float64"));
+        assert!(market_1s_clickhouse_columns_sql().contains("midp Float64"));
+        assert!(!market_1s_clickhouse_columns_sql().contains("bid0p_1"));
         assert!(!market_1s_clickhouse_columns_sql().contains("trade_max"));
         assert!(!market_1s_clickhouse_columns_sql().contains("trade_min"));
     }
@@ -901,7 +884,7 @@ mod tests {
     #[test]
     fn clickhouse_tsv_round_trips_nan_and_sizes() {
         let parsed = parse_market_1s_clickhouse_tsv(
-            "1767225600\t100\t2\t101\t3\t\\N\tnan\t100.5\t100.5\t100.5\t100.5\t0\t0",
+            "1767225600\t100\t2\t101\t3\t\\N\tnan\t100.5\t100.5\t100.5\t100.5\t0\t0\t100.5",
         )
         .unwrap();
         assert_eq!(parsed.ts_sec, 1_767_225_600);

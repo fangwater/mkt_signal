@@ -1,0 +1,54 @@
+# Binance spot one-pass Tardis replay.
+#
+# Tardis names Spot files `binance_*`. SID 6 tables therefore use
+# tardis_exchange = "binance":
+#   backtest_binance_1s
+#   baseline_binance_{5s,10s,60s}_trade
+#   binance_5s_depth
+#   ylabel_binance_{5s,10s,30s,1m,5m}
+#
+# IPC venue remains binance-margin. Do not point this at the TardisSource parent.
+venue = "binance-margin"
+tardis_exchange = "binance"
+symbols = ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
+
+# Bounds are inclusive and required. Missing files before the first available
+# day are skipped; a hole after that day through end_date is an error.
+start_date = "2024-12-01"
+end_date = "2024-12-31"
+
+replay_workers = 6
+publish_ipc = false
+write_hourly_notional_kll = true
+kll_only = false
+order_size_only = false
+market_1s_only = false
+overwrite_existing = true
+
+[order_size]
+enabled = false
+medium_quantile = 0.5
+large_quantile = 0.9
+
+[market_1s]
+enabled = true
+output_dir = "/mnt/hdd-raid5-72t/liang_torch/crypto_data/cta_backtest_data/binance/tardis_agg_1s_daily"
+file_sids = "1_6"
+python = "/home/u171/venvs/jupyter312/bin/python"
+write_clickhouse = true
+write_hdf = true
+
+[symbol_data_dirs]
+XRPUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_xrpusdt"
+DOGEUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_dogeusdt"
+SOLUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_solusdt"
+ETHUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_ethusdt"
+BTCUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_btcusdt"
+BNBUSDT = "/mnt/30.133_xintang/Data/Crypto/TardisSource/binance_spot_bnbusdt"
+
+[clickhouse]
+url = "http://127.0.0.1:18123"
+database = "baseline"
+batch_rows = 10000
+flush_ms = 1000
+queue_capacity = 100000

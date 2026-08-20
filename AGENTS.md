@@ -107,6 +107,35 @@ The following is a historical snapshot verified on 2026-08-10 UTC. It proves tha
 
 Never copy passwords, API keys, or values from the remote `env.sh` into this file, chat, commits, or command output.
 
+## Crypto Market SID Map And Storage Layers
+
+`tardis_agg_1s_daily/tardis_1s_{SYMBOL}_sids_1_6_{YYYYMMDD}.h5` is a local synthesis export, not exchange official data and not a Tardis official product. The official inputs are Tardis raw `trades` and `incremental_book_L2` (and optionally `quotes`). Do not call these HDF files official.
+
+SID is an export-time join key only. ClickHouse tables are venue-native and must not use `_1` / `_6` column suffixes. Wide HDF columns such as `bid0p_1` are assembled later by joining the venue tables below.
+
+```text
+SID_MARKETS = {
+    0: {"exchange": "okex-swap"},
+    1: {"exchange": "binance-futures"},
+    2: {"exchange": "bybit-spot"},
+    3: {"exchange": "bitget"},
+    4: {"exchange": "gate-io"},
+    5: {"exchange": "okex"},
+    6: {"exchange": "binance"},
+    7: {"exchange": "bybit"},
+    8: {"exchange": "bitget-futures"},
+    9: {"exchange": "gate-io-futures"},
+}
+```
+
+- ClickHouse source of truth: one table family per venue, base names `bid0p`, `bid0v`, `ask0p`, `ask0v`, `buy_high`, `sell_low`, `open`, `high`, `low`, `close`, `volume`, `turnover`, `midp`.
+- HDF export is a separate step. It joins SID venues into the historical wide layout; it is not the replay target.
+- One default replay writes all of: 1s backtest bars (`backtest_{venue}_1s`), ylabel, 5s/10s/1m trade baseline, 5s orderbook (`{venue}_5s_depth`), and hourly notional KLL (`trade_notional_kll_{venue}_hourly`). Do not also persist 10s/1m depth tables; those books are the same last snapshot as 5s. Large/medium/small columns live on the trade baseline tables; they stay 0 until `order_size.enabled=true` and the previous natural month's KLL rows are complete.
+- `start_date` and `end_date` are required. Missing Tardis files before the first available day of a symbol are skipped. After that day, every date through `end_date` must have the required files; a hole in the middle or at the end is an error.
+- Binance futures uses `config/tardis_replay.toml` (`tardis_exchange` defaults to `binance-futures`). Binance spot uses `config/tardis_replay_binance_spot.toml` with `venue = "binance-margin"` and `tardis_exchange = "binance"` so files and ClickHouse tables follow SID 6 (`backtest_binance_1s`, `binance_5s_depth`).
+- Factor frequency is 10s. Trade baseline is stored at 5s, 10s, and 1m (`60s` table name). Orderbook is stored as `{venue}_5s_depth` only.
+- Ylabel is its own ClickHouse table, not a column suffix on the market table. Benchmarks are `twap`, `vwap`, `midp`. Horizons are 5s, 10s, 30s, 1m, 5m. The 5s row `ts=t` stores the closed bucket `[t-5s, t)`.
+
 ## Domestic Futures Baseline Replay
 
 `tonglian_baseline_replay` is a bounded offline batch tool. Its `volume_multiple` values and `verified` state must come only from the read-only PostgreSQL table `market_metadata.public.domestic_future_product_multipliers` through Unix socket `/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not restore inline product maps, DataGateway or exchange-API calls, turnover inference, or a default of `1`. A product missing from the loaded catalog must panic with identifying context. This explicit batch-tool rule is an exception to the long-running-service panic guidance below. Never write to this metadata instance and never use the read-only PostgreSQL standby on port `5432` for this workflow.

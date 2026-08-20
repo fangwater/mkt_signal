@@ -464,6 +464,7 @@ pub struct LocalBaselineAggregator {
     base: BarState,
     ten_seconds: BarState,
     sixty_seconds: BarState,
+    completed_ten_seconds: Vec<BaselineBar>,
     completed_sixty_seconds: Vec<BaselineBar>,
     orderbook: OrderBook,
     book_initialized: bool,
@@ -482,6 +483,7 @@ impl LocalBaselineAggregator {
             base: BarState::new(BASELINE_BAR_MS),
             ten_seconds: BarState::new(RESAMPLED_BAR_MS[0]),
             sixty_seconds: BarState::new(RESAMPLED_BAR_MS[1]),
+            completed_ten_seconds: Vec::new(),
             completed_sixty_seconds: Vec::new(),
             orderbook: OrderBook::new(),
             book_initialized: false,
@@ -602,10 +604,17 @@ impl LocalBaselineAggregator {
     }
 
     fn finish_resampled_bars(&mut self) {
-        self.ten_seconds.close_current();
+        if let Some(bar) = self.ten_seconds.close_current() {
+            self.completed_ten_seconds.push(bar);
+        }
         if let Some(bar) = self.sixty_seconds.close_current() {
             self.completed_sixty_seconds.push(bar);
         }
+    }
+
+    /// Returns finalized 10-second trade bars generated from finalized 5-second bars.
+    pub fn drain_ten_second_bars(&mut self) -> Vec<BaselineBar> {
+        std::mem::take(&mut self.completed_ten_seconds)
     }
 
     /// Returns finalized 60-second trade bars generated from finalized 5-second bars.
@@ -675,7 +684,12 @@ impl LocalBaselineAggregator {
     }
 
     fn consume_base_bar(&mut self, bar: &BaselineBar) {
-        let _ = consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS);
+        for completed in consume_sub_bar(&mut self.ten_seconds, bar, BASELINE_BAR_MS)
+            .into_iter()
+            .flatten()
+        {
+            self.completed_ten_seconds.push(completed);
+        }
         for completed in consume_sub_bar(&mut self.sixty_seconds, bar, BASELINE_BAR_MS)
             .into_iter()
             .flatten()
@@ -739,6 +753,23 @@ mod tests {
         assert_eq!(stats[1].closed_bars, 2);
         assert_eq!(stats[2].bar_ms, 60_000);
         assert_eq!(stats[2].closed_bars, 1);
+    }
+
+    #[test]
+    fn exposes_finalized_ten_second_bars() {
+        let mut agg = LocalBaselineAggregator::new();
+        agg.on_trade(1_000, true, 100.0, 1.0);
+        agg.on_trade(5_001_000, false, 101.0, 1.0);
+        agg.on_trade(10_001_000, true, 102.0, 1.0);
+        agg.flush();
+
+        let completed = agg.drain_ten_second_bars();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].start_ms, 0);
+        assert_eq!(completed[1].start_ms, 10_000);
+        assert!(completed[0].has_trade);
+        assert_eq!(completed[0].volume, 2.0);
+        assert_eq!(completed[0].amount, 201.0);
     }
 
     #[test]

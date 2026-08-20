@@ -35,7 +35,7 @@ input_database = "baseline"
 # trade and depth are independently append-only staging tables. The replay
 # joins them by (symbol, ts); no full baseline table is materialized.
 input_trade_table = "baseline_binance_futures_5s_trade"
-input_depth_table = "baseline_binance_futures_5s_depth"
+input_depth_table = "binance_futures_5s_depth"
 output_database = "fusion"
 output_table = "fusion_factor_binance_futures_5s"
 batch_rows = 10000
