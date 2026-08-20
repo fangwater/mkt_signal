@@ -56,10 +56,10 @@ pub use persist_common::{
     TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
 };
 pub use query_eng_channel::QueryEngHub;
-pub use resample_channel::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL, ResampleChannel};
+pub use resample_channel::{ResampleChannel, DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 pub use runner::{
-    IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade, SnapshotQueryConfig,
-    TakerDecisionModelRefreshConfig, publish_snapshot_queries,
+    publish_snapshot_queries, IntraBwdRefreshConfig, ParamRefreshConfig, PreTrade,
+    SnapshotQueryConfig, TakerDecisionModelRefreshConfig,
 };
-pub use signal_channel::{DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL, SignalChannel};
+pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
 pub use trade_eng_channel::TradeEngHub;

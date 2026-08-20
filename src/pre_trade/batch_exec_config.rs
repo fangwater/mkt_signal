@@ -1,7 +1,7 @@
-use crate::strategy::StrategyManager;
 use crate::strategy::batch_exec_strategy::{
-    BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME, BatchExecConfig, BatchExecStrategy, BatchExecTarget,
+    BatchExecConfig, BatchExecStrategy, BatchExecTarget, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
 };
+use crate::strategy::StrategyManager;
 use anyhow::{Context, Result};
 use log::{info, warn};
 use order_common::TradingVenue;
@@ -1400,14 +1400,12 @@ mod tests {
             ),
             BTreeSet::from(["cta_orphan".to_string()])
         );
-        assert!(
-            nonzero_unmanaged_ledger_names(
-                &positions,
-                &BTreeSet::new(),
-                &BTreeSet::from(["cta_orphan".to_string()]),
-                &BTreeSet::new(),
-            )
-            .is_empty()
-        );
+        assert!(nonzero_unmanaged_ledger_names(
+            &positions,
+            &BTreeSet::new(),
+            &BTreeSet::from(["cta_orphan".to_string()]),
+            &BTreeSet::new(),
+        )
+        .is_empty());
     }
 }

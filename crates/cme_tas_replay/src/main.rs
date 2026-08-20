@@ -10,13 +10,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use cme_tas_replay::{
     classify, decode_period_status, encode_cme_price_limit, encode_cme_quote, encode_cme_special,
-    overlay_price_limit,
     encode_cme_trade, encode_key, encode_period_status, encode_symbology_change, is_research_ric,
-    parse_aggressor, parse_change_type, parse_date_time_ns, parse_exch_hms_ns, parse_price_e9,
-    parse_volume, period_meta_key, quote_has_complete_side, tradeday_yyyymmdd, validate_period,
-    ColumnRules, EventKind, PeriodStatus, SlimPriceLimit, SlimQuote, SlimSymbologyChange,
-    SlimTrade, CF_CME_PRICE_LIMIT, CF_CME_QUOTE, CF_CME_SPECIAL, CF_CME_TRADE, CF_REPLAY_META,
-    CF_SYMBOLOGY_CHANGE, KEY_LEN, RESEARCH_PRODUCT_ROOTS,
+    overlay_price_limit, parse_aggressor, parse_change_type, parse_date_time_ns, parse_exch_hms_ns,
+    parse_price_e9, parse_volume, period_meta_key, quote_has_complete_side, tradeday_yyyymmdd,
+    validate_period, ColumnRules, EventKind, PeriodStatus, SlimPriceLimit, SlimQuote,
+    SlimSymbologyChange, SlimTrade, CF_CME_PRICE_LIMIT, CF_CME_QUOTE, CF_CME_SPECIAL, CF_CME_TRADE,
+    CF_REPLAY_META, CF_SYMBOLOGY_CHANGE, KEY_LEN, RESEARCH_PRODUCT_ROOTS,
 };
 use csv::StringRecord;
 use flate2::read::MultiGzDecoder;
@@ -118,7 +117,8 @@ struct FileLogger {
 impl Log for FileLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= log::Level::Info
-            && (metadata.target().starts_with("cme_tas_replay") || metadata.target() == "cme_tas_replay")
+            && (metadata.target().starts_with("cme_tas_replay")
+                || metadata.target() == "cme_tas_replay")
     }
 
     fn log(&self, record: &Record) {
@@ -365,9 +365,7 @@ impl UnparsedSink {
                 part.display()
             );
             if n == UNPARSED_ERROR_CAP {
-                error!(
-                    "cme_tas_replay further unparsed rows go only to the unparsed file"
-                );
+                error!("cme_tas_replay further unparsed rows go only to the unparsed file");
             }
         }
     }
@@ -645,10 +643,10 @@ fn replay_part(
         HeaderMap::from_headers(&headers, &rules)?
     } else {
         let header_part = part.with_file_name("merged-Data-part-000000.csv.gz");
-        let header_file = File::open(&header_part).with_context(|| {
-            format!("open part 0 header {}", header_part.display())
-        })?;
-        let header_decoder = MultiGzDecoder::new(BufReader::with_capacity(1024 * 1024, header_file));
+        let header_file = File::open(&header_part)
+            .with_context(|| format!("open part 0 header {}", header_part.display()))?;
+        let header_decoder =
+            MultiGzDecoder::new(BufReader::with_capacity(1024 * 1024, header_file));
         let mut header_reader = csv::ReaderBuilder::new()
             .flexible(true)
             .from_reader(header_decoder);
@@ -703,23 +701,23 @@ fn replay_part(
         }
         let source_row = census.source_rows;
         let parsed = (|| -> Result<bool> {
-        if record.len() > map.names.len() {
-            for extra in record.iter().skip(map.names.len()) {
-                if !extra.trim().is_empty() {
-                    bail!(
-                        "unhandled extra nonempty TAS cells after column {} in {}",
-                        map.names.len(),
-                        part.display()
-                    );
+            if record.len() > map.names.len() {
+                for extra in record.iter().skip(map.names.len()) {
+                    if !extra.trim().is_empty() {
+                        bail!(
+                            "unhandled extra nonempty TAS cells after column {} in {}",
+                            map.names.len(),
+                            part.display()
+                        );
+                    }
                 }
             }
-        }
 
-        let ric = map.required_at(&record, map.idx.ric, "#RIC")?;
-        if ric.starts_with('.') {
-            if config.progress_every > 0 && census.source_rows % config.progress_every == 0 {
-                let elapsed = started.elapsed().as_secs_f64().max(0.001);
-                info!(
+            let ric = map.required_at(&record, map.idx.ric, "#RIC")?;
+            if ric.starts_with('.') {
+                if config.progress_every > 0 && census.source_rows % config.progress_every == 0 {
+                    let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                    info!(
                     "cme_tas_replay progress period={} part_no={} source_rows={} written_trades={} written_specials={} written_quotes={} written_renames={} written_limits={} last_ric={} kind=index_skip rows_per_s={:.0} elapsed_s={:.1}",
                     period,
                     part_no,
@@ -733,22 +731,22 @@ fn replay_part(
                     census.source_rows as f64 / elapsed,
                     elapsed
                 );
+                }
+                *census.counted.entry("index_skip").or_insert(0) += 1;
+                return Ok(false);
             }
-            *census.counted.entry("index_skip").or_insert(0) += 1;
-            return Ok(false);
-        }
-        let mapped = match &ric_cache {
-            Some((prev, mapped)) if prev == ric => *mapped,
-            _ => {
-                let mapped = is_research_ric(ric)?;
-                ric_cache = Some((ric.to_string(), mapped));
-                mapped
-            }
-        };
-        if !mapped {
-            if config.progress_every > 0 && census.source_rows % config.progress_every == 0 {
-                let elapsed = started.elapsed().as_secs_f64().max(0.001);
-                info!(
+            let mapped = match &ric_cache {
+                Some((prev, mapped)) if prev == ric => *mapped,
+                _ => {
+                    let mapped = is_research_ric(ric)?;
+                    ric_cache = Some((ric.to_string(), mapped));
+                    mapped
+                }
+            };
+            if !mapped {
+                if config.progress_every > 0 && census.source_rows % config.progress_every == 0 {
+                    let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                    info!(
                     "cme_tas_replay progress period={} part_no={} source_rows={} written_trades={} written_specials={} written_quotes={} written_renames={} written_limits={} skipped_unmapped={} last_ric={} kind=unmapped_skip rows_per_s={:.0} elapsed_s={:.1}",
                     period,
                     part_no,
@@ -763,92 +761,92 @@ fn replay_part(
                     census.source_rows as f64 / elapsed,
                     elapsed
                 );
+                }
+                *census.counted.entry("unmapped_skip").or_insert(0) += 1;
+                census.skipped_unmapped += 1;
+                return Ok(false);
             }
-            *census.counted.entry("unmapped_skip").or_insert(0) += 1;
-            census.skipped_unmapped += 1;
-            return Ok(false);
-        }
-        let date_time = map.required_at(&record, map.idx.date_time, "Date-Time")?;
-        let event_type = map.required_at(&record, map.idx.event_type, "Type")?;
-        let price = cell_at(&record, map.idx.price);
-        let volume = cell_at(&record, map.idx.volume);
-        let qualifiers = cell_at(&record, map.idx.qualifiers);
-        let up_lim = cell_at(&record, map.idx.up_lim);
-        let lo_lim = cell_at(&record, map.idx.lo_lim);
-        let bid = cell_at(&record, map.idx.bid);
-        let bid_size = cell_at(&record, map.idx.bid_size);
-        let ask = cell_at(&record, map.idx.ask);
-        let ask_size = cell_at(&record, map.idx.ask_size);
-        let exch_time = cell_at(&record, map.idx.exch_time);
+            let date_time = map.required_at(&record, map.idx.date_time, "Date-Time")?;
+            let event_type = map.required_at(&record, map.idx.event_type, "Type")?;
+            let price = cell_at(&record, map.idx.price);
+            let volume = cell_at(&record, map.idx.volume);
+            let qualifiers = cell_at(&record, map.idx.qualifiers);
+            let up_lim = cell_at(&record, map.idx.up_lim);
+            let lo_lim = cell_at(&record, map.idx.lo_lim);
+            let bid = cell_at(&record, map.idx.bid);
+            let bid_size = cell_at(&record, map.idx.bid_size);
+            let ask = cell_at(&record, map.idx.ask);
+            let ask_size = cell_at(&record, map.idx.ask_size);
+            let exch_time = cell_at(&record, map.idx.exch_time);
 
-        for &idx in &map.forbidden_idxs {
-            let value = cell_at(&record, idx);
-            if !value.is_empty() {
-                bail!(
-                    "unhandled nonempty TAS column {:?}={value:?} on futures {ric} (group {})",
-                    map.names[idx],
-                    map.groups[idx]
-                );
+            for &idx in &map.forbidden_idxs {
+                let value = cell_at(&record, idx);
+                if !value.is_empty() {
+                    bail!(
+                        "unhandled nonempty TAS column {:?}={value:?} on futures {ric} (group {})",
+                        map.names[idx],
+                        map.groups[idx]
+                    );
+                }
             }
-        }
 
-        let mut kind = classify(ric, event_type, price, volume, qualifiers)
-            .with_context(|| format!("classify {ric} {date_time} in {}", part.display()))?;
-        if kind == EventKind::DropEmptyTrade {
-            kind = overlay_price_limit(kind, up_lim, lo_lim)?;
-        }
-        if kind == EventKind::CmeQuote {
-            let probe = SlimQuote {
-                ric: String::new(),
-                ts_utc_ns: 0,
-                exch_hms_ns: 0,
-                bid: parse_price_e9(bid)?,
-                bid_size: parse_volume(bid_size)?,
-                ask: parse_price_e9(ask)?,
-                ask_size: parse_volume(ask_size)?,
-            };
-            if !quote_has_complete_side(&probe)? {
-                kind = EventKind::DropEmptyQuote;
+            let mut kind = classify(ric, event_type, price, volume, qualifiers)
+                .with_context(|| format!("classify {ric} {date_time} in {}", part.display()))?;
+            if kind == EventKind::DropEmptyTrade {
+                kind = overlay_price_limit(kind, up_lim, lo_lim)?;
             }
-        }
-        if kind != EventKind::CmePriceLimit && (!up_lim.is_empty() || !lo_lim.is_empty()) {
-            if kind != EventKind::CmeQuote && kind != EventKind::DropEmptyQuote {
-                let name = if !up_lim.is_empty() {
-                    "UpLim Price"
-                } else {
-                    "LoLim Price"
+            if kind == EventKind::CmeQuote {
+                let probe = SlimQuote {
+                    ric: String::new(),
+                    ts_utc_ns: 0,
+                    exch_hms_ns: 0,
+                    bid: parse_price_e9(bid)?,
+                    bid_size: parse_volume(bid_size)?,
+                    ask: parse_price_e9(ask)?,
+                    ask_size: parse_volume(ask_size)?,
                 };
-                let value = if !up_lim.is_empty() { up_lim } else { lo_lim };
-                bail!(
-                    "unhandled nonempty TAS column {name:?}={value:?} on {} {ric} {date_time}",
-                    kind.as_str()
-                );
+                if !quote_has_complete_side(&probe)? {
+                    kind = EventKind::DropEmptyQuote;
+                }
             }
-            *census.counted.entry("price_limit_ignored").or_insert(0) += 1;
-        }
-        if kind != EventKind::DropSettleIv {
-            let value = cell_at(&record, map.idx.imp_vol);
-            if !value.is_empty() {
-                bail!(
+            if kind != EventKind::CmePriceLimit && (!up_lim.is_empty() || !lo_lim.is_empty()) {
+                if kind != EventKind::CmeQuote && kind != EventKind::DropEmptyQuote {
+                    let name = if !up_lim.is_empty() {
+                        "UpLim Price"
+                    } else {
+                        "LoLim Price"
+                    };
+                    let value = if !up_lim.is_empty() { up_lim } else { lo_lim };
+                    bail!(
+                        "unhandled nonempty TAS column {name:?}={value:?} on {} {ric} {date_time}",
+                        kind.as_str()
+                    );
+                }
+                *census.counted.entry("price_limit_ignored").or_insert(0) += 1;
+            }
+            if kind != EventKind::DropSettleIv {
+                let value = cell_at(&record, map.idx.imp_vol);
+                if !value.is_empty() {
+                    bail!(
                     "unhandled nonempty TAS column \"Imp. Vol.\"={value:?} on {} {ric} {date_time}",
                     kind.as_str()
                 );
+                }
             }
-        }
-        let implied_yield = cell_at(&record, map.idx.implied_yield);
-        if !implied_yield.is_empty() {
-            if kind != EventKind::CmeQuote && kind != EventKind::DropEmptyQuote {
-                bail!(
+            let implied_yield = cell_at(&record, map.idx.implied_yield);
+            if !implied_yield.is_empty() {
+                if kind != EventKind::CmeQuote && kind != EventKind::DropEmptyQuote {
+                    bail!(
                     "unhandled nonempty TAS column \"Implied Yield\"={implied_yield:?} on {} {ric} {date_time}",
                     kind.as_str()
                 );
+                }
+                *census.counted.entry("implied_yield_ignored").or_insert(0) += 1;
             }
-            *census.counted.entry("implied_yield_ignored").or_insert(0) += 1;
-        }
-        *census.counted.entry(kind.as_str()).or_insert(0) += 1;
-        if config.progress_every > 0 && census.source_rows % config.progress_every == 0 {
-            let elapsed = started.elapsed().as_secs_f64().max(0.001);
-            info!(
+            *census.counted.entry(kind.as_str()).or_insert(0) += 1;
+            if config.progress_every > 0 && census.source_rows % config.progress_every == 0 {
+                let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                info!(
                 "cme_tas_replay progress period={} part_no={} source_rows={} written_trades={} written_specials={} written_quotes={} written_renames={} written_limits={} skipped_unmapped={} skipped_ric_filter={} skipped_unparsed={} last_ric={} last_ts={} kind={} rows_per_s={:.0} elapsed_s={:.1}",
                 period,
                 part_no,
@@ -867,159 +865,166 @@ fn replay_part(
                 census.source_rows as f64 / elapsed,
                 elapsed
             );
-        }
+            }
 
-        if ric_filter
-            .as_ref()
-            .is_some_and(|wanted| !wanted.contains(ric))
-        {
-            census.skipped_ric_filter += 1;
-            return Ok(false);
-        }
-        let persist = matches!(
-            kind,
-            EventKind::CmeTrade
-                | EventKind::CmeSpecial
-                | EventKind::CmeQuote
-                | EventKind::SymbologyChange
-                | EventKind::CmePriceLimit
-        );
-        if !persist {
-            return Ok(false);
-        }
+            if ric_filter
+                .as_ref()
+                .is_some_and(|wanted| !wanted.contains(ric))
+            {
+                census.skipped_ric_filter += 1;
+                return Ok(false);
+            }
+            let persist = matches!(
+                kind,
+                EventKind::CmeTrade
+                    | EventKind::CmeSpecial
+                    | EventKind::CmeQuote
+                    | EventKind::SymbologyChange
+                    | EventKind::CmePriceLimit
+            );
+            if !persist {
+                return Ok(false);
+            }
 
-        let ts_utc_ns = parse_date_time_ns(date_time)?;
-        let tradeday = tradeday_yyyymmdd(ts_utc_ns)?;
-        if first_tradeday.is_none() {
-            first_tradeday = Some(tradeday);
-            info!(
+            let ts_utc_ns = parse_date_time_ns(date_time)?;
+            let tradeday = tradeday_yyyymmdd(ts_utc_ns)?;
+            if first_tradeday.is_none() {
+                first_tradeday = Some(tradeday);
+                info!(
                 "cme_tas_replay first futures tradeday={tradeday} part_no={part_no} ric={ric} ts={date_time}"
             );
-        }
-        if !seen_tradedays.contains_key(&tradeday)
-            && config.max_tradedays > 0
-            && seen_tradedays.len() as u32 >= config.max_tradedays
-        {
-            info!(
+            }
+            if !seen_tradedays.contains_key(&tradeday)
+                && config.max_tradedays > 0
+                && seen_tradedays.len() as u32 >= config.max_tradedays
+            {
+                info!(
                 "cme_tas_replay reached max_tradedays={} first={:?} this={} ric={ric} ts={date_time}; stop",
                 config.max_tradedays, first_tradeday, tradeday
             );
-            census.skipped_after_window += 1;
-            return Ok(true);
-        }
-        seen_tradedays.insert(tradeday, ());
-        last_tradeday = Some(tradeday);
-        let last_ric_ts = match kind {
-            EventKind::CmeTrade => &mut last_trade_ric_ts,
-            EventKind::CmeSpecial => &mut last_special_ric_ts,
-            EventKind::CmeQuote => &mut last_quote_ric_ts,
-            EventKind::SymbologyChange => &mut last_rename_ric_ts,
-            EventKind::CmePriceLimit => &mut last_limit_ric_ts,
-            _ => unreachable!("non-persist kind already filtered"),
-        };
-        let seq = match last_ric_ts {
-            Some((prev_ric, prev_ts, prev_seq)) if prev_ric == ric && *prev_ts == ts_utc_ns => {
-                prev_seq
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow!("seq overflow for {ric} at {date_time}"))?
+                census.skipped_after_window += 1;
+                return Ok(true);
             }
-            _ => 0,
-        };
-        *last_ric_ts = Some((ric.to_string(), ts_utc_ns, seq));
-        let key = encode_key(ric, ts_utc_ns, part_no, seq)?;
-        let last_key = match kind {
-            EventKind::CmeTrade => &mut last_trade_key,
-            EventKind::CmeSpecial => &mut last_special_key,
-            EventKind::CmeQuote => &mut last_quote_key,
-            EventKind::SymbologyChange => &mut last_rename_key,
-            EventKind::CmePriceLimit => &mut last_limit_key,
-            _ => unreachable!("non-persist kind already filtered"),
-        };
-        if last_key.is_some_and(|prev| key <= prev) {
-            bail!(
-                "TAS key is not strictly increasing for {ric} at {date_time} in part {part_no}"
-            );
-        }
-        *last_key = Some(key);
-        match kind {
-            EventKind::CmeTrade => {
-                let rec = SlimTrade {
-                    ric: ric.to_string(),
-                    ts_utc_ns,
-                    exch_hms_ns: parse_exch_hms_ns(exch_time)?,
-                    price: parse_price_e9(price)?,
-                    volume: parse_volume(volume)?,
-                    bid: parse_price_e9(bid)?,
-                    bid_size: parse_volume(bid_size)?,
-                    ask: parse_price_e9(ask)?,
-                    ask_size: parse_volume(ask_size)?,
-                    aggressor: parse_aggressor(qualifiers)?,
-                };
-                batch.put_cf(&cf_trade, key, encode_cme_trade(&rec)?);
-                census.written_trades += 1;
+            seen_tradedays.insert(tradeday, ());
+            last_tradeday = Some(tradeday);
+            let last_ric_ts = match kind {
+                EventKind::CmeTrade => &mut last_trade_ric_ts,
+                EventKind::CmeSpecial => &mut last_special_ric_ts,
+                EventKind::CmeQuote => &mut last_quote_ric_ts,
+                EventKind::SymbologyChange => &mut last_rename_ric_ts,
+                EventKind::CmePriceLimit => &mut last_limit_ric_ts,
+                _ => unreachable!("non-persist kind already filtered"),
+            };
+            let seq = match last_ric_ts {
+                Some((prev_ric, prev_ts, prev_seq)) if prev_ric == ric && *prev_ts == ts_utc_ns => {
+                    prev_seq
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("seq overflow for {ric} at {date_time}"))?
+                }
+                _ => 0,
+            };
+            *last_ric_ts = Some((ric.to_string(), ts_utc_ns, seq));
+            let key = encode_key(ric, ts_utc_ns, part_no, seq)?;
+            let last_key = match kind {
+                EventKind::CmeTrade => &mut last_trade_key,
+                EventKind::CmeSpecial => &mut last_special_key,
+                EventKind::CmeQuote => &mut last_quote_key,
+                EventKind::SymbologyChange => &mut last_rename_key,
+                EventKind::CmePriceLimit => &mut last_limit_key,
+                _ => unreachable!("non-persist kind already filtered"),
+            };
+            if last_key.is_some_and(|prev| key <= prev) {
+                bail!(
+                    "TAS key is not strictly increasing for {ric} at {date_time} in part {part_no}"
+                );
             }
-            EventKind::CmeSpecial => {
-                let rec = SlimTrade {
-                    ric: ric.to_string(),
-                    ts_utc_ns,
-                    exch_hms_ns: parse_exch_hms_ns(exch_time)?,
-                    price: parse_price_e9(price)?,
-                    volume: parse_volume(volume)?,
-                    bid: parse_price_e9(bid)?,
-                    bid_size: parse_volume(bid_size)?,
-                    ask: parse_price_e9(ask)?,
-                    ask_size: parse_volume(ask_size)?,
-                    aggressor: parse_aggressor(qualifiers)?,
-                };
-                batch.put_cf(&cf_special, key, encode_cme_special(&rec)?);
-                census.written_specials += 1;
+            *last_key = Some(key);
+            match kind {
+                EventKind::CmeTrade => {
+                    let rec = SlimTrade {
+                        ric: ric.to_string(),
+                        ts_utc_ns,
+                        exch_hms_ns: parse_exch_hms_ns(exch_time)?,
+                        price: parse_price_e9(price)?,
+                        volume: parse_volume(volume)?,
+                        bid: parse_price_e9(bid)?,
+                        bid_size: parse_volume(bid_size)?,
+                        ask: parse_price_e9(ask)?,
+                        ask_size: parse_volume(ask_size)?,
+                        aggressor: parse_aggressor(qualifiers)?,
+                    };
+                    batch.put_cf(&cf_trade, key, encode_cme_trade(&rec)?);
+                    census.written_trades += 1;
+                }
+                EventKind::CmeSpecial => {
+                    let rec = SlimTrade {
+                        ric: ric.to_string(),
+                        ts_utc_ns,
+                        exch_hms_ns: parse_exch_hms_ns(exch_time)?,
+                        price: parse_price_e9(price)?,
+                        volume: parse_volume(volume)?,
+                        bid: parse_price_e9(bid)?,
+                        bid_size: parse_volume(bid_size)?,
+                        ask: parse_price_e9(ask)?,
+                        ask_size: parse_volume(ask_size)?,
+                        aggressor: parse_aggressor(qualifiers)?,
+                    };
+                    batch.put_cf(&cf_special, key, encode_cme_special(&rec)?);
+                    census.written_specials += 1;
+                }
+                EventKind::CmeQuote => {
+                    let rec = SlimQuote {
+                        ric: ric.to_string(),
+                        ts_utc_ns,
+                        exch_hms_ns: parse_exch_hms_ns(exch_time)?,
+                        bid: parse_price_e9(bid)?,
+                        bid_size: parse_volume(bid_size)?,
+                        ask: parse_price_e9(ask)?,
+                        ask_size: parse_volume(ask_size)?,
+                    };
+                    batch.put_cf(&cf_quote, key, encode_cme_quote(&rec)?);
+                    census.written_quotes += 1;
+                }
+                EventKind::SymbologyChange => {
+                    let rec = SlimSymbologyChange {
+                        ric: ric.to_string(),
+                        ts_utc_ns,
+                        change_type: parse_change_type(cell_at(&record, map.idx.change_type))?,
+                        old_value: cell_at(&record, map.idx.old_value).to_string(),
+                        new_value: cell_at(&record, map.idx.new_value).to_string(),
+                    };
+                    batch.put_cf(&cf_rename, key, encode_symbology_change(&rec)?);
+                    census.written_renames += 1;
+                }
+                EventKind::CmePriceLimit => {
+                    let rec = SlimPriceLimit {
+                        ric: ric.to_string(),
+                        ts_utc_ns,
+                        up_lim: parse_price_e9(up_lim)?,
+                        lo_lim: parse_price_e9(lo_lim)?,
+                    };
+                    batch.put_cf(&cf_limit, key, encode_cme_price_limit(&rec)?);
+                    census.written_limits += 1;
+                }
+                _ => unreachable!("non-persist kind already filtered"),
             }
-            EventKind::CmeQuote => {
-                let rec = SlimQuote {
-                    ric: ric.to_string(),
-                    ts_utc_ns,
-                    exch_hms_ns: parse_exch_hms_ns(exch_time)?,
-                    bid: parse_price_e9(bid)?,
-                    bid_size: parse_volume(bid_size)?,
-                    ask: parse_price_e9(ask)?,
-                    ask_size: parse_volume(ask_size)?,
-                };
-                batch.put_cf(&cf_quote, key, encode_cme_quote(&rec)?);
-                census.written_quotes += 1;
+            if batch.len() >= 8192 {
+                flush_batch(db, &mut batch)?;
             }
-            EventKind::SymbologyChange => {
-                let rec = SlimSymbologyChange {
-                    ric: ric.to_string(),
-                    ts_utc_ns,
-                    change_type: parse_change_type(cell_at(&record, map.idx.change_type))?,
-                    old_value: cell_at(&record, map.idx.old_value).to_string(),
-                    new_value: cell_at(&record, map.idx.new_value).to_string(),
-                };
-                batch.put_cf(&cf_rename, key, encode_symbology_change(&rec)?);
-                census.written_renames += 1;
-            }
-            EventKind::CmePriceLimit => {
-                let rec = SlimPriceLimit {
-                    ric: ric.to_string(),
-                    ts_utc_ns,
-                    up_lim: parse_price_e9(up_lim)?,
-                    lo_lim: parse_price_e9(lo_lim)?,
-                };
-                batch.put_cf(&cf_limit, key, encode_cme_price_limit(&rec)?);
-                census.written_limits += 1;
-            }
-            _ => unreachable!("non-persist kind already filtered"),
-        }
-        if batch.len() >= 8192 {
-            flush_batch(db, &mut batch)?;
-        }
-        Ok(false)
+            Ok(false)
         })();
         match parsed {
             Ok(true) => break,
             Ok(false) => {}
             Err(err) => {
-                unparsed.dump(period, part, part_no, source_row, &map.filled_cells(&record), &err);
+                unparsed.dump(
+                    period,
+                    part,
+                    part_no,
+                    source_row,
+                    &map.filled_cells(&record),
+                    &err,
+                );
                 census.skipped_unparsed += 1;
                 *census.counted.entry("unparsed_skip").or_insert(0) += 1;
             }
@@ -1339,7 +1344,10 @@ fn main() {
     init_logger(&config.log_path);
     install_panic_hook(config.log_path.clone());
     info!("cme_tas_replay log_path={}", config.log_path.display());
-    info!("cme_tas_replay unparsed_path={}", config.unparsed_path.display());
+    info!(
+        "cme_tas_replay unparsed_path={}",
+        config.unparsed_path.display()
+    );
     eprintln!("cme_tas_replay logging to {}", config.log_path.display());
     eprintln!(
         "cme_tas_replay unparsed rows to {}",
@@ -1365,15 +1373,9 @@ mod tests {
         finish_period(&db, "2026-01-01_2026-06-01").unwrap();
         claim_period(&db, "2025-01-01_2026-01-01").unwrap();
         let err = claim_period(&db, "2026-01-01_2026-06-01").unwrap_err();
-        assert!(
-            err.to_string().contains("already done"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("already done"), "{err}");
         let err = claim_period(&db, "2025-01-01_2026-01-01").unwrap_err();
-        assert!(
-            err.to_string().contains("marked writing"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("marked writing"), "{err}");
     }
 
     #[test]
@@ -1418,9 +1420,7 @@ mod tests {
             let group = match name {
                 "#RIC" | "Date-Time" | "Type" | "Qualifiers" | "Exch Time" | "Change Type"
                 | "Old Value" | "New Value" => "identity",
-                "Price" | "Volume" | "Bid Price" | "Bid Size" | "Ask Price" | "Ask Size" => {
-                    "trade"
-                }
+                "Price" | "Volume" | "Bid Price" | "Bid Size" | "Ask Price" | "Ask Size" => "trade",
                 "UpLim Price" | "LoLim Price" => "limit",
                 "Imp. Vol." => "iv",
                 "Implied Yield" => "yield",

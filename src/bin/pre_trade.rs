@@ -1,11 +1,9 @@
 use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
-use account_common::{BinanceAccountMode, init_binance_account_mode};
+use account_common::{init_binance_account_mode, BinanceAccountMode};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
-use mkt_signal::pre_trade::QueryEngHub;
-use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
 use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
@@ -28,11 +26,13 @@ use mkt_signal::pre_trade::rebalance_usdt::{RebalanceUsdtConfig, RebalanceUsdtSe
 use mkt_signal::pre_trade::resample_channel::ResampleChannel;
 use mkt_signal::pre_trade::runtime_flags::enable_ipc_fast_poll;
 use mkt_signal::pre_trade::signal_channel::{
-    DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL, SignalChannel,
+    SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL,
 };
 use mkt_signal::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use mkt_signal::pre_trade::unimmr_force_close::UnimmrForceClose;
 use mkt_signal::pre_trade::unimmr_open_lock::UnimmrOpenLock;
+use mkt_signal::pre_trade::QueryEngHub;
+use mkt_signal::pre_trade::TradeEngHub;
 use mkt_signal::pre_trade::{
     IntraBwdRefreshConfig, OrderQueuePositionChannel, ParamRefreshConfig, PreTrade,
     SnapshotQueryConfig, TakerDecisionModelRefreshConfig,
@@ -44,12 +44,12 @@ use runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use runtime_common::redis_client::RedisSettings;
 use std::cell::RefCell;
 use std::net::IpAddr;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use trade_engine::config::RestConstants;

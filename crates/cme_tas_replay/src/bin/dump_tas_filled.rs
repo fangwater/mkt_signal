@@ -81,7 +81,11 @@ fn cell<'a>(record: &'a StringRecord, by_name: &BTreeMap<String, usize>, name: &
         .unwrap_or("")
 }
 
-fn nonempty_object(record: &StringRecord, names: &[String], rules: &ColumnRules) -> Result<Map<String, Value>> {
+fn nonempty_object(
+    record: &StringRecord,
+    names: &[String],
+    rules: &ColumnRules,
+) -> Result<Map<String, Value>> {
     let mut object = Map::new();
     for (idx, name) in names.iter().enumerate() {
         let value = record.get(idx).map(str::trim).unwrap_or("");
@@ -135,7 +139,8 @@ fn main() -> Result<()> {
     let mut hits = Vec::new();
     for record in reader.records() {
         source_rows += 1;
-        let record = record.with_context(|| format!("read TAS row {source_rows} from {}", part.display()))?;
+        let record = record
+            .with_context(|| format!("read TAS row {source_rows} from {}", part.display()))?;
         if source_rows % 5_000_000 == 0 {
             eprintln!(
                 "scanned={source_rows} last_ric={:?} hits={}",

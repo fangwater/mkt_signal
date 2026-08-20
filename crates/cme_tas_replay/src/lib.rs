@@ -775,7 +775,10 @@ pub fn decode_symbology_change(buf: &[u8]) -> Result<SlimSymbologyChange> {
 
 pub fn encode_cme_price_limit(row: &SlimPriceLimit) -> Result<[u8; CME_PRICE_LIMIT_LEN]> {
     if row.up_lim == MISSING_PRICE && row.lo_lim == MISSING_PRICE {
-        bail!("price limit {} missing both UpLim Price and LoLim Price", row.ric);
+        bail!(
+            "price limit {} missing both UpLim Price and LoLim Price",
+            row.ric
+        );
     }
     if row.up_lim != MISSING_PRICE && row.lo_lim != MISSING_PRICE && row.up_lim < row.lo_lim {
         bail!(
@@ -1249,7 +1252,14 @@ mod tests {
             EventKind::DropVolumeOnlyTrade
         );
         assert_eq!(
-            classify("ESH26", "Correction", "6985", "7", "2[CAN_COND_N];611[CAN_COND]").unwrap(),
+            classify(
+                "ESH26",
+                "Correction",
+                "6985",
+                "7",
+                "2[CAN_COND_N];611[CAN_COND]"
+            )
+            .unwrap(),
             EventKind::CmeCorrection
         );
         assert_eq!(
@@ -1518,14 +1528,7 @@ mod tests {
         assert_eq!(empty_trade, EventKind::DropEmptyTrade);
         assert_ne!(empty_trade, EventKind::CmeTrade);
 
-        let printable = classify(
-            "ALIH26",
-            "Trade",
-            "2999.75",
-            "1",
-            "BID[AGGRS_SID1]",
-        )
-        .unwrap();
+        let printable = classify("ALIH26", "Trade", "2999.75", "1", "BID[AGGRS_SID1]").unwrap();
         assert_eq!(printable, EventKind::CmeTrade);
         assert_ne!(printable, EventKind::DropSettleIv);
         assert_ne!(printable, EventKind::CmeAuction);

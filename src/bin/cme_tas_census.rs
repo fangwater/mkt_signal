@@ -292,7 +292,11 @@ fn nonempty(record: &StringRecord, idx: usize) -> Option<String> {
     })
 }
 
-fn classify_trade(price: Option<&str>, volume: Option<&str>, qualifiers: Option<&str>) -> EventClass {
+fn classify_trade(
+    price: Option<&str>,
+    volume: Option<&str>,
+    qualifiers: Option<&str>,
+) -> EventClass {
     if qualifiers == Some(SPECIAL_TRADES_USER) {
         return EventClass::TradeSpecialUser;
     }
@@ -464,9 +468,9 @@ fn replay(config: &ReplayConfig) -> Result<()> {
                         .with_context(|| format!("create JSONL parent {}", parent.display()))?;
                 }
             }
-            Some(BufWriter::new(
-                File::create(path).with_context(|| format!("create JSONL {}", path.display()))?,
-            ))
+            Some(BufWriter::new(File::create(path).with_context(|| {
+                format!("create JSONL {}", path.display())
+            })?))
         }
         None => None,
     };
@@ -550,8 +554,7 @@ mod tests {
     use super::*;
 
     fn rules_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../preprocess/lseg/tas_column_rules.json")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../preprocess/lseg/tas_column_rules.json")
     }
 
     fn test_rules() -> ColumnRules {
@@ -583,13 +586,7 @@ mod tests {
         let map = HeaderMap::from_headers(&headers, rules)?;
         let cells: Vec<&str> = values.iter().map(|(_, value)| *value).collect();
         let allowed = rules.allowed_columns(groups)?;
-        project_record(
-            &map,
-            rules,
-            &StringRecord::from(cells),
-            &allowed,
-            groups,
-        )
+        project_record(&map, rules, &StringRecord::from(cells), &allowed, groups)
     }
 
     #[test]
@@ -619,7 +616,10 @@ mod tests {
         );
         let event = project_record(&map, &rules, &printable, &allowed, &[]).unwrap();
         assert_eq!(event.class, EventClass::TradePrintable);
-        assert_eq!(event.fields.get("Price").map(String::as_str), Some("0.66825"));
+        assert_eq!(
+            event.fields.get("Price").map(String::as_str),
+            Some("0.66825")
+        );
         assert!(!event.fields.contains_key("Halt Reason"));
 
         let special = project(
@@ -739,11 +739,7 @@ mod tests {
         let rules = test_rules();
         let err = project(
             &rules,
-            &[
-                ("#RIC", "X"),
-                ("Date-Time", "t"),
-                ("Type", "Auction"),
-            ],
+            &[("#RIC", "X"), ("Date-Time", "t"), ("Type", "Auction")],
             &[],
         )
         .unwrap_err();
@@ -765,7 +761,10 @@ mod tests {
     fn core_alias_still_resolves_legacy_washable_names() {
         let rules = test_rules();
         let allowed = rules.allowed_columns(&["core".into()]).unwrap();
-        let expected: BTreeSet<_> = CORE_COLUMNS.iter().map(|name| (*name).to_string()).collect();
+        let expected: BTreeSet<_> = CORE_COLUMNS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
         assert_eq!(allowed, expected);
     }
 }
