@@ -34,7 +34,9 @@ pub(crate) fn orphan_initial_query_ticks_for(
 ) -> u32 {
     if matches!(
         venue,
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
     ) && !binance_is_standard
     {
         BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
@@ -55,7 +57,9 @@ pub(crate) fn commit_query_policy_for(
 ) -> CommitQueryPolicy {
     if matches!(
         venue,
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
     ) && !binance_is_standard
     {
         CommitQueryPolicy {
@@ -738,9 +742,12 @@ impl OrphanOrderTracker {
         };
 
         let source_applied = if let Some(owner) = owner {
-            let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, order_qty);
-            let cumulative_base_qty =
-                MonitorChannel::instance().qty_to_base(venue, &symbol, cumulative_qty);
+            let order_base_qty = MonitorChannel::instance()
+                .qty_to_base_at_price(venue, &symbol, order_qty, price)
+                .unwrap_or(0.0);
+            let cumulative_base_qty = MonitorChannel::instance()
+                .qty_to_base_at_price(venue, &symbol, cumulative_qty, price)
+                .unwrap_or(0.0);
             let should_record = owner.source_role == OrphanStrategyRole::Exec
                 || match owner.source_kind {
                     OrphanSourceKind::Open => cumulative_base_qty > eps,
@@ -1026,6 +1033,7 @@ pub(crate) fn infer_query_time_in_force(order: &Order) -> TimeInForce {
     }
     match order.venue {
         TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures
         | TradingVenue::BybitMargin
         | TradingVenue::BybitFutures
         | TradingVenue::OkexMargin
@@ -1201,8 +1209,8 @@ mod tests {
 
         let waits = [
             COMMIT_QUERY_BASE_TICKS,
-            COMMIT_QUERY_BASE_TICKS * 2,
             COMMIT_QUERY_BASE_TICKS * 4,
+            COMMIT_QUERY_BASE_TICKS * 16,
         ];
         for (expected_query_count, wait_ticks) in (1..=COMMIT_QUERY_MAX_ATTEMPTS).zip(waits) {
             for _ in 0..wait_ticks {
@@ -1217,7 +1225,7 @@ mod tests {
             );
         }
 
-        for _ in 0..COMMIT_QUERY_BASE_TICKS * 8 {
+        for _ in 0..COMMIT_QUERY_BASE_TICKS * 64 {
             assert_eq!(tracker.commit_query_due_now(client_order_id), None);
         }
         assert_eq!(

@@ -1,6 +1,19 @@
 /// 从 symbol / inst_id 中提取基础资产（如 BTCUSDT -> BTC，BTC-USDT-SWAP -> BTC）
 pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
     let upper = symbol_like.to_uppercase();
+    let upper = if let Some(root) = upper.strip_suffix("_PERP") {
+        root.to_string()
+    } else if let Some(root) = upper.strip_suffix("PERP") {
+        root.trim_end_matches('_').to_string()
+    } else if upper.len() > 7
+        && upper
+            .get(upper.len() - 6..)
+            .is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        upper[..upper.len() - 6].trim_end_matches('_').to_string()
+    } else {
+        upper
+    };
     const QUOTES: [&str; 7] = ["USDT", "BUSD", "USDC", "FDUSD", "BIDR", "TRY", "USD"];
 
     // OKX style: BTC-USDT-SWAP / BTC-USDT / BTC-USD-SWAP
@@ -41,6 +54,8 @@ mod tests {
         assert_eq!(extract_base_asset("BTCUSDT").as_deref(), Some("BTC"));
         assert_eq!(extract_base_asset("BTCUSD").as_deref(), Some("BTC"));
         assert_eq!(extract_base_asset("ethusdc").as_deref(), Some("ETH"));
+        assert_eq!(extract_base_asset("BTCUSD_PERP").as_deref(), Some("BTC"));
+        assert_eq!(extract_base_asset("ETHUSD_260925").as_deref(), Some("ETH"));
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
+use crate::pre_trade::binance_std_cm_margin_guard::BinanceStdCmMarginGuard;
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::close_inventory::{CloseInventoryLedger, CloseReservationGrant};
 use crate::pre_trade::net_position::NetPosition;
@@ -48,6 +49,7 @@ const DERIVATIVES_HISTORY_SIZE: usize = 50;
 const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
+const BINANCE_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-coin-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
 const BITGET_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-futures/derivatives";
@@ -75,6 +77,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
         TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
             | TradingVenue::OkexFutures
             | TradingVenue::GateFutures
             | TradingVenue::BitgetFutures
@@ -84,7 +87,9 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
 
 fn exchange_from_venue(venue: TradingVenue) -> Exchange {
     match venue {
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Exchange::Binance,
+        TradingVenue::BinanceMargin
+        | TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures => Exchange::Binance,
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
         TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
@@ -110,6 +115,13 @@ fn scope_for_venue(
                 BasicAccountScope::BinanceStdUm
             } else {
                 BasicAccountScope::BinanceUnified
+            }
+        }
+        TradingVenue::BinanceCoinFutures => {
+            if binance_account_mode == Some(BinanceAccountMode::Standard) {
+                BasicAccountScope::BinanceStdCm
+            } else {
+                BasicAccountScope::BinanceUnifiedCm
             }
         }
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => BasicAccountScope::OkexUnified,
@@ -776,10 +788,14 @@ impl BasicAccountListener {
             BasicAccountEventType::BinanceStdUmWalletSnapshot => {
                 match BinanceStdUmWalletSnapshotMsg::from_bytes(data) {
                     Ok(msg) => {
-                        BinanceStdUmMarginGuard::apply_wallet_snapshot(&msg);
-                        MonitorChannel::instance().apply_binance_std_um_wallet_snapshot(msg);
+                        if account_scope == BasicAccountScope::BinanceStdCm {
+                            BinanceStdCmMarginGuard::apply_wallet_snapshot(&msg);
+                        } else {
+                            BinanceStdUmMarginGuard::apply_wallet_snapshot(&msg);
+                            MonitorChannel::instance().apply_binance_std_um_wallet_snapshot(msg);
+                            RebalanceUsdtService::drive_from_account_update("um_wallet_snapshot");
+                        }
                         MonitorChannel::mark_basic_state_dirty();
-                        RebalanceUsdtService::drive_from_account_update("um_wallet_snapshot");
                     }
                     Err(err) => {
                         warn!("Binance std UM wallet snapshot decode failed: {err:#}");
@@ -1965,6 +1981,19 @@ impl MonitorChannel {
         Self::with_inner(|inner| Self::qty_multiplier_for_venue_inner(inner, venue, symbol))
     }
 
+    /// Resolve venue qty -> base qty at the price used for sizing or execution.
+    /// Binance COIN-M is inverse, so its multiplier is contractSize / price.
+    pub fn qty_multiplier_for_venue_at_price(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        price: f64,
+    ) -> Result<f64, String> {
+        Self::with_inner(|inner| {
+            Self::qty_multiplier_for_venue_at_price_inner(inner, venue, symbol, price)
+        })
+    }
+
     /// 获取 order_manager 的引用
     pub fn order_manager(&self) -> Rc<RefCell<OrderManager>> {
         Self::with_inner(|inner| inner.order_manager.clone())
@@ -2305,6 +2334,11 @@ impl MonitorChannel {
         hedge_venue: TradingVenue,
         _arb_mode: ArbMode,
     ) -> &'static str {
+        if open_venue == TradingVenue::BinanceCoinFutures
+            || hedge_venue == TradingVenue::BinanceCoinFutures
+        {
+            return BINANCE_COIN_DERIVATIVES_SERVICE;
+        }
         match Self::mark_price_exchange_for_venues(open_venue, hedge_venue) {
             Exchange::Okex => OKEX_DERIVATIVES_SERVICE,
             Exchange::Bybit => BYBIT_DERIVATIVES_SERVICE,
@@ -2695,6 +2729,7 @@ impl MonitorChannel {
                 v,
                 TradingVenue::BinanceMargin
                     | TradingVenue::BinanceFutures
+                    | TradingVenue::BinanceCoinFutures
                     | TradingVenue::OkexMargin
                     | TradingVenue::OkexFutures
                     | TradingVenue::BybitMargin
@@ -2868,6 +2903,11 @@ impl MonitorChannel {
     ) -> f64 {
         match venue {
             TradingVenue::BinanceFutures => qty,
+            TradingVenue::BinanceCoinFutures => {
+                Self::qty_multiplier_for_venue_inner(inner, venue, symbol)
+                    .map(|multiplier| qty * multiplier)
+                    .unwrap_or(0.0)
+            }
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                 let symbol_key = min_qty_symbol_key(venue, symbol);
                 let mult = inner
@@ -2889,9 +2929,15 @@ impl MonitorChannel {
         venue: TradingVenue,
         symbol: &str,
         qty: f64,
+        price: f64,
     ) -> Result<f64, String> {
         match venue {
             TradingVenue::BinanceFutures => Ok(qty),
+            TradingVenue::BinanceCoinFutures => {
+                let mult =
+                    Self::qty_multiplier_for_venue_at_price_inner(inner, venue, symbol, price)?;
+                Ok(qty * mult)
+            }
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                 let mult = Self::qty_multiplier_for_venue_inner(inner, venue, symbol)?;
                 Ok(qty * mult)
@@ -2907,6 +2953,21 @@ impl MonitorChannel {
     ) -> Result<f64, String> {
         match venue {
             TradingVenue::BinanceFutures => Ok(1.0),
+            TradingVenue::BinanceCoinFutures => {
+                let symbol_key = min_qty_symbol_key(venue, symbol);
+                let price = inner
+                    .price_table
+                    .borrow()
+                    .mark_price(&symbol_key)
+                    .filter(|price| price.is_finite() && *price > 0.0)
+                    .ok_or_else(|| {
+                        format!(
+                            "symbol={} 缺少 Binance COIN-M mark price，无法转换 inverse qty",
+                            symbol_key
+                        )
+                    })?;
+                Self::qty_multiplier_for_venue_at_price_inner(inner, venue, symbol, price)
+            }
             TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                 let symbol_key = min_qty_symbol_key(venue, symbol);
                 let Some(table) = inner.venue_min_qty_tables.get(&venue) else {
@@ -2933,12 +2994,60 @@ impl MonitorChannel {
         }
     }
 
+    fn qty_multiplier_for_venue_at_price_inner(
+        inner: &MonitorChannelInner,
+        venue: TradingVenue,
+        symbol: &str,
+        price: f64,
+    ) -> Result<f64, String> {
+        if venue != TradingVenue::BinanceCoinFutures {
+            return Self::qty_multiplier_for_venue_inner(inner, venue, symbol);
+        }
+        if !price.is_finite() || price <= 0.0 {
+            return Err(format!(
+                "symbol={} Binance COIN-M inverse qty requires positive price, got {}",
+                symbol, price
+            ));
+        }
+        let symbol_key = min_qty_symbol_key(venue, symbol);
+        let table = inner.venue_min_qty_tables.get(&venue).ok_or_else(|| {
+            format!(
+                "未初始化 {:?} 的最小下单量表，无法获取 contractSize symbol={}",
+                venue, symbol_key
+            )
+        })?;
+        let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
+            format!(
+                "symbol={} 缺少 Binance COIN-M contractSize，无法转换 inverse qty",
+                symbol_key
+            )
+        })?;
+        if !contract_size.is_finite() || contract_size <= 0.0 {
+            return Err(format!(
+                "symbol={} Binance COIN-M contractSize invalid: {}",
+                symbol_key, contract_size
+            ));
+        }
+        Ok(contract_size / price)
+    }
+
     /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
     ///
     /// - Binance futures: qty 按 contracts(mult=1) 处理，等价于 base qty
     /// - OKX/Gate futures: qty 是 contracts，需要乘以合约面值（contract multiplier）
     pub fn qty_to_base(&self, venue: TradingVenue, symbol: &str, qty: f64) -> f64 {
         Self::with_inner(|inner| Self::order_qty_to_base(inner, venue, symbol, qty))
+    }
+
+    pub fn qty_to_base_at_price(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        qty: f64,
+        price: f64,
+    ) -> Result<f64, String> {
+        self.qty_multiplier_for_venue_at_price(venue, symbol, price)
+            .map(|multiplier| qty * multiplier)
     }
 
     /// 基于 open/hedge 两腿的基础管理器计算敞口与总量指标
@@ -3216,7 +3325,10 @@ impl MonitorChannel {
             1.0
         } else {
             let symbol = price_mapper.asset_to_price_symbol(asset);
-            price_table.mark_price(&symbol).unwrap_or(0.0)
+            price_table
+                .mark_price(&symbol)
+                .or_else(|| price_table.mark_price(&format!("{}USD_PERP", asset.to_uppercase())))
+                .unwrap_or(0.0)
         }
     }
 
@@ -3491,6 +3603,36 @@ impl MonitorChannel {
                         true,
                     )
                 }
+                TradingVenue::BinanceCoinFutures => {
+                    let contract_size = table
+                        .contract_multiplier_opt(&symbol_key)
+                        .ok_or_else(|| {
+                            format!(
+                                "symbol={} 缺少 Binance COIN-M contractSize，无法将 base qty 转成 contracts",
+                                symbol_key
+                            )
+                        })?;
+                    if !raw_price.is_finite() || raw_price <= 0.0 {
+                        return Err(format!(
+                            "symbol={} Binance COIN-M 下单数量对齐需要正价格，got {}",
+                            symbol_key, raw_price
+                        ));
+                    }
+                    if !contract_size.is_finite() || contract_size <= 0.0 {
+                        return Err(format!(
+                            "symbol={} Binance COIN-M contractSize invalid: {}",
+                            symbol_key, contract_size
+                        ));
+                    }
+                    let raw_contracts = raw_qty * raw_price / contract_size;
+                    Self::align_order_with_table(
+                        &symbol_key,
+                        raw_contracts,
+                        raw_price,
+                        table.as_ref(),
+                        true,
+                    )
+                }
                 TradingVenue::BinanceMargin => Self::align_order_with_table(
                     &symbol_key,
                     raw_qty,
@@ -3613,6 +3755,7 @@ impl MonitorChannel {
                 venue,
                 TradingVenue::BinanceMargin
                     | TradingVenue::BinanceFutures
+                    | TradingVenue::BinanceCoinFutures
                     | TradingVenue::OkexMargin
                     | TradingVenue::OkexFutures
                     | TradingVenue::BitgetMargin
@@ -3640,7 +3783,18 @@ impl MonitorChannel {
                         return Err(format!("缺少 {} 的价格信息，无法验证名义金额", symbol));
                     }
 
-                    let notional = price * qty;
+                    let notional = if venue == TradingVenue::BinanceCoinFutures {
+                        let contract_size =
+                            table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
+                                format!(
+                                    "symbol={} 缺少 Binance COIN-M contractSize，无法验证名义金额",
+                                    symbol_key
+                                )
+                            })?;
+                        qty * contract_size
+                    } else {
+                        price * qty
+                    };
                     if notional + 1e-8 < min_notional {
                         return Err(format!(
                             "名义金额 {:.8} 低于最小要求 {:.8} (价格={:.8} 数量={:.8})",
@@ -4147,6 +4301,17 @@ impl MonitorChannel {
                 TradingVenue::BinanceFutures => {
                     ("contracts(mult=1)", Some(symbol_upper), Some(1.0))
                 }
+                TradingVenue::BinanceCoinFutures => {
+                    let symbol_key = min_qty_symbol_key(venue, symbol_upper.as_ref());
+                    let mult = Self::qty_multiplier_for_venue_at_price_inner(
+                        inner,
+                        venue,
+                        &symbol_key,
+                        price_hint,
+                    )
+                    .ok();
+                    ("inverse_contracts", Some(Cow::Owned(symbol_key)), mult)
+                }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                     let symbol_key = min_qty_symbol_key(venue, symbol_upper.as_ref());
                     let mult = inner
@@ -4163,6 +4328,7 @@ impl MonitorChannel {
                 venue,
                 symbol,
                 additional_qty,
+                price_hint,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -4210,6 +4376,9 @@ impl MonitorChannel {
             let symbol_upper = uppercase_symbol_key(symbol);
             let fut_symbol_key = match venue {
                 TradingVenue::BinanceFutures => Some(symbol_upper),
+                TradingVenue::BinanceCoinFutures => {
+                    Some(Cow::Owned(min_qty_symbol_key(venue, symbol_upper.as_ref())))
+                }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
                     Some(Cow::Owned(min_qty_symbol_key(venue, symbol_upper.as_ref())))
                 }
@@ -4217,6 +4386,7 @@ impl MonitorChannel {
             };
             let qty_unit = match venue {
                 TradingVenue::BinanceFutures => "contracts(mult=1)",
+                TradingVenue::BinanceCoinFutures => "inverse_contracts",
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => "contracts",
                 _ => "base_qty",
             };
@@ -4405,6 +4575,26 @@ impl MonitorChannel {
             LegMgr::Futures {
                 um, min_qty_table, ..
             } => {
+                if venue == TradingVenue::BinanceCoinFutures {
+                    let contracts = um.borrow().net_position(symbol, None);
+                    let symbol_key = min_qty_symbol_key(venue, symbol);
+                    let contract_size = inner
+                        .venue_min_qty_tables
+                        .get(&venue)
+                        .and_then(|table| table.contract_multiplier_opt(&symbol_key));
+                    let mark_price = inner.price_table.borrow().mark_price(&symbol_key);
+                    return match (contract_size, mark_price) {
+                        (Some(contract_size), Some(mark_price))
+                            if contract_size.is_finite()
+                                && contract_size > 0.0
+                                && mark_price.is_finite()
+                                && mark_price > 0.0 =>
+                        {
+                            contracts * contract_size / mark_price
+                        }
+                        _ => 0.0,
+                    };
+                }
                 let table_ref = min_qty_table.borrow();
                 um.borrow().net_position(symbol, Some(&table_ref))
             }

@@ -43,8 +43,14 @@ impl VenueInfoProvider for ExchangeVenueProvider {
         match self.exchange {
             Exchange::Binance => {
                 let provider = BinanceProvider::new();
-                let entries = provider.fetch_filters(client, self.market_type).await?;
-                Ok((entries, HashMap::new()))
+                if self.market_type == MarketType::CoinFutures {
+                    provider
+                        .fetch_filters_with_multipliers(client, self.market_type)
+                        .await
+                } else {
+                    let entries = provider.fetch_filters(client, self.market_type).await?;
+                    Ok((entries, HashMap::new()))
+                }
             }
             Exchange::Aster => Err(anyhow!(
                 "exchange {} not supported yet for venue {:?}",
@@ -88,6 +94,7 @@ fn provider_for_venue(venue: TradingVenue) -> ExchangeVenueProvider {
     let (exchange, market_type) = match venue {
         TradingVenue::BinanceMargin => (Exchange::Binance, MarketType::Margin),
         TradingVenue::BinanceFutures => (Exchange::Binance, MarketType::Futures),
+        TradingVenue::BinanceCoinFutures => (Exchange::Binance, MarketType::CoinFutures),
         TradingVenue::OkexMargin => (Exchange::Okex, MarketType::Margin),
         TradingVenue::OkexFutures => (Exchange::Okex, MarketType::Futures),
         TradingVenue::BybitMargin => (Exchange::Bybit, MarketType::Margin),
@@ -143,7 +150,7 @@ impl VenueMinQtyTable {
     }
 
     fn get_entry(&self, symbol: &str) -> Option<&MinQtyEntry> {
-        let key = symbol.to_uppercase();
+        let key = min_qty_symbol_key(self.venue, symbol);
         self.filters.get(&key)
     }
 
@@ -184,13 +191,13 @@ impl VenueMinQtyTable {
 
     /// 返回合约面值（已将 ctVal × ctMult 合并为一个数），查不到则回退为 1
     pub fn contract_multiplier(&self, symbol: &str) -> f64 {
-        let key = symbol.to_uppercase();
+        let key = min_qty_symbol_key(self.venue, symbol);
         self.contract_multipliers.get(&key).copied().unwrap_or(1.0)
     }
 
     /// 返回合约面值（ctVal × ctMult / quanto_multiplier）；若不存在则返回 None
     pub fn contract_multiplier_opt(&self, symbol: &str) -> Option<f64> {
-        let key = symbol.to_uppercase();
+        let key = min_qty_symbol_key(self.venue, symbol);
         self.contract_multipliers.get(&key).copied()
     }
 }

@@ -526,7 +526,9 @@ enum TradeEngExchangeSlot {
 impl TradeEngExchangeSlot {
     fn from_venue(venue: TradingVenue) -> Self {
         match venue {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Self::Binance,
+            TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures => Self::Binance,
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => Self::Okex,
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => Self::Bybit,
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Self::Bitget,
@@ -1118,6 +1120,7 @@ fn infer_time_in_force(venue: TradingVenue, order_type: OrderType) -> TimeInForc
     }
     match venue {
         TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures
         | TradingVenue::BybitMargin
         | TradingVenue::BybitFutures
         | TradingVenue::OkexMargin

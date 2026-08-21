@@ -3,7 +3,8 @@ use order_common::{gate_text_from_client_order_id, Order, TradingVenue};
 use runtime_common::time_util::get_timestamp_us;
 use std::fmt::Write as _;
 use symbol_utils::symbol_util::{
-    gate_currency_pair_from_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
+    binance_coin_futures_symbol, gate_currency_pair_from_symbol, normalize_symbol_for_internal,
+    okex_inst_id_from_symbol,
 };
 use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
@@ -38,6 +39,17 @@ pub fn build_order_query_request(
                 QueryRequestType::BinanceUMQuery
             }
         }
+        TradingVenue::BinanceCoinFutures => {
+            if MonitorChannel::instance()
+                .order_manager()
+                .borrow()
+                .binance_is_standard()
+            {
+                QueryRequestType::BinanceCmQuery
+            } else {
+                QueryRequestType::BinancePmCmQuery
+            }
+        }
         TradingVenue::OkexMargin => QueryRequestType::OkexMarginQuery,
         TradingVenue::OkexFutures => QueryRequestType::OkexUMQuery,
         TradingVenue::BybitMargin => QueryRequestType::BybitMarginQuery,
@@ -57,6 +69,19 @@ pub fn build_order_query_request(
                 query_bytes_with_i64_pairs(
                     "symbol",
                     &order.symbol,
+                    "origClientOrderId",
+                    lookup_client_order_id,
+                )
+            }
+        }
+        TradingVenue::BinanceCoinFutures => {
+            let symbol = binance_coin_futures_symbol(&order.symbol);
+            if let Some(order_id) = exchange_order_id {
+                query_bytes_with_i64_pairs("symbol", &symbol, "orderId", order_id)
+            } else {
+                query_bytes_with_i64_pairs(
+                    "symbol",
+                    &symbol,
                     "origClientOrderId",
                     lookup_client_order_id,
                 )

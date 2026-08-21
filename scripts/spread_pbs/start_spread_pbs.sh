@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT_DIR="$(cd "${BASE_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|both)$'
+VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin|both)|binance-coin-futures)$'
 
 usage() {
   cat <<'USAGE'
@@ -40,6 +40,7 @@ core_for_venue() {
   case "${1,,}" in
     binance-margin)   echo 0 ;;
     binance-futures)  echo 1 ;;
+    binance-coin-futures) echo 10 ;;
     binance-both)     echo 0 ;;
     bitget-margin)    echo 2 ;;
     bitget-futures)   echo 3 ;;

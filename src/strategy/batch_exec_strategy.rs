@@ -366,6 +366,7 @@ struct BatchChildOrderPlan {
     pub sizing_price: f64,
     pub qty_venue: f64,
     pub qty_base: f64,
+    pub qty_multiplier: f64,
     pub price_offset: f64,
 }
 
@@ -376,6 +377,27 @@ struct BatchOrderLimits {
     min_qty: f64,
     min_notional: f64,
     qty_multiplier: f64,
+    inverse_contract_size: Option<f64>,
+}
+
+impl BatchOrderLimits {
+    fn qty_multiplier_at(self, price: f64) -> Result<f64, String> {
+        let multiplier = if let Some(contract_size) = self.inverse_contract_size {
+            if !price.is_finite() || price <= 0.0 {
+                return Err(format!(
+                    "inverse contract requires positive price, got {price}"
+                ));
+            }
+            contract_size / price
+        } else {
+            self.qty_multiplier
+        };
+        if multiplier.is_finite() && multiplier > 0.0 {
+            Ok(multiplier)
+        } else {
+            Err(format!("invalid qty multiplier={multiplier}"))
+        }
+    }
 }
 
 fn align_child_qty_floor(raw_qty: f64, qty_step: f64) -> f64 {
@@ -405,12 +427,7 @@ fn minimum_executable_base_qty(price: f64, limits: BatchOrderLimits) -> Result<f
     if !price.is_finite() || price <= 0.0 {
         return Err(format!("invalid minimum-order price={price}"));
     }
-    if !limits.qty_multiplier.is_finite() || limits.qty_multiplier <= 0.0 {
-        return Err(format!(
-            "invalid minimum-order qty multiplier={}",
-            limits.qty_multiplier
-        ));
-    }
+    let qty_multiplier = limits.qty_multiplier_at(price)?;
     if !limits.min_qty.is_finite() || limits.min_qty < 0.0 {
         return Err(format!("invalid minimum-order min qty={}", limits.min_qty));
     }
@@ -428,12 +445,12 @@ fn minimum_executable_base_qty(price: f64, limits: BatchOrderLimits) -> Result<f
     }
 
     let notional_qty = if limits.min_notional > 0.0 {
-        limits.min_notional / (price * limits.qty_multiplier)
+        limits.min_notional / (price * qty_multiplier)
     } else {
         0.0
     };
     let required_venue_qty = limits.min_qty.max(notional_qty).max(limits.qty_step);
-    Ok(align_child_qty_ceil(required_venue_qty, limits.qty_step) * limits.qty_multiplier)
+    Ok(align_child_qty_ceil(required_venue_qty, limits.qty_step) * qty_multiplier)
 }
 
 fn select_executable_batch_base_qty(
@@ -619,6 +636,7 @@ fn build_child_order_plans(
             sizing_price,
             qty_venue,
             qty_base,
+            qty_multiplier,
             price_offset,
         });
         unplanned_base_qty = (unplanned_base_qty - qty_base).max(0.0);
@@ -686,6 +704,7 @@ fn rebuild_child_order_plans_at_preserved_levels(
             sizing_price: limit_price,
             qty_venue,
             qty_base,
+            qty_multiplier,
             price_offset,
         });
     }
@@ -1224,7 +1243,7 @@ impl BatchExecStrategy {
             Side::Buy => quote.bid,
             Side::Sell => quote.ask,
         };
-        let limits = match self.load_order_limits() {
+        let limits = match self.load_order_limits(reference_price) {
             Ok(limits) => limits,
             Err(err) => {
                 warn!(
@@ -1356,7 +1375,7 @@ impl BatchExecStrategy {
         now_ts.saturating_sub(quote_ts_us) <= BBO_MAX_AGE_US
     }
 
-    fn load_order_limits(&self) -> Result<BatchOrderLimits, String> {
+    fn load_order_limits(&self, reference_price: f64) -> Result<BatchOrderLimits, String> {
         let table = MonitorChannel::instance()
             .try_venue_min_qty_table(self.exec_venue)
             .ok_or_else(|| format!("missing min qty table venue={:?}", self.exec_venue))?;
@@ -1364,18 +1383,26 @@ impl BatchExecStrategy {
         let price_tick = table
             .price_tick(&symbol_key)
             .ok_or_else(|| format!("missing price tick symbol={}", self.symbol))?;
-        let qty_multiplier = MonitorChannel::instance()
-            .qty_multiplier_for_venue(self.exec_venue, &self.symbol)
-            .unwrap_or(1.0);
+        let qty_multiplier = MonitorChannel::instance().qty_multiplier_for_venue_at_price(
+            self.exec_venue,
+            &self.symbol,
+            reference_price,
+        )?;
         if !qty_multiplier.is_finite() || qty_multiplier <= 0.0 {
             return Err(format!("invalid qty multiplier symbol={}", self.symbol));
         }
+        let inverse_contract_size = if self.exec_venue == TradingVenue::BinanceCoinFutures {
+            table.contract_multiplier_opt(&symbol_key)
+        } else {
+            None
+        };
         Ok(BatchOrderLimits {
             price_tick,
             qty_step: table.step_size(&symbol_key).unwrap_or(0.0),
             min_qty: table.min_qty(&symbol_key).unwrap_or(0.0),
             min_notional: table.min_notional(&symbol_key).unwrap_or(0.0),
             qty_multiplier,
+            inverse_contract_size,
         })
     }
 
@@ -1384,15 +1411,15 @@ impl BatchExecStrategy {
         batch: &BatchState,
         bid: f64,
         ask: f64,
-    ) -> Result<(Vec<BatchChildOrderPlan>, f64), String> {
-        let limits = self.load_order_limits()?;
+    ) -> Result<Vec<BatchChildOrderPlan>, String> {
+        let limits = self.load_order_limits((bid + ask) * 0.5)?;
 
         let use_taker = should_use_taker(
             &self.config,
             batch.maker_requotes,
             self.active_target_signal(),
         );
-        let plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
+        let mut plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
             rebuild_child_order_plans_at_preserved_levels(
                 &self.config,
                 batch.side,
@@ -1421,7 +1448,27 @@ impl BatchExecStrategy {
                 limits.qty_multiplier,
             )?
         };
-        Ok((plans, limits.qty_multiplier))
+        if limits.inverse_contract_size.is_some() {
+            for plan in &mut plans {
+                let target_base_qty = plan.qty_base;
+                let multiplier = limits.qty_multiplier_at(plan.sizing_price)?;
+                let qty_venue =
+                    align_child_qty_floor(target_base_qty / multiplier, limits.qty_step);
+                plan.qty_venue = qty_venue;
+                plan.qty_base = qty_venue * multiplier;
+                plan.qty_multiplier = multiplier;
+            }
+            plans.retain(|plan| {
+                plan.qty_base > QTY_EPS
+                    && child_order_meets_exchange_minimums(
+                        plan,
+                        limits.min_qty,
+                        limits.min_notional,
+                        plan.qty_multiplier,
+                    )
+            });
+        }
+        Ok(plans)
     }
 
     fn submit_batch(&mut self, batch_seq: u64, now_ts: i64) {
@@ -1454,7 +1501,7 @@ impl BatchExecStrategy {
             batch.maker_requotes,
             self.active_target_signal(),
         );
-        let (plans, qty_multiplier) = match self.build_child_orders(&batch, quote.bid, quote.ask) {
+        let plans = match self.build_child_orders(&batch, quote.bid, quote.ask) {
             Ok(value) => value,
             Err(err) => {
                 warn!(
@@ -1502,15 +1549,7 @@ impl BatchExecStrategy {
             ),
             None,
         );
-        self.send_child_orders(
-            batch_seq,
-            quote.bid,
-            quote.ask,
-            quote.ts,
-            signal_bbo,
-            plans,
-            qty_multiplier,
-        );
+        self.send_child_orders(batch_seq, quote.bid, quote.ask, quote.ts, signal_bbo, plans);
     }
 
     fn send_child_orders(
@@ -1521,12 +1560,12 @@ impl BatchExecStrategy {
         quote_ts: i64,
         signal_bbo: Option<SignalBbo>,
         plans: Vec<BatchChildOrderPlan>,
-        qty_multiplier: f64,
     ) {
         let now_ts = get_timestamp_us();
         MonitorChannel::instance().refresh_exec_risk_state();
         let mut sent_ids = Vec::new();
         for plan in plans {
+            let qty_multiplier = plan.qty_multiplier;
             let signed_base_qty = signed_qty_from_side(plan.side, plan.qty_base);
             let current_qty =
                 MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
@@ -1793,24 +1832,28 @@ impl BatchExecStrategy {
         }
     }
 
-    fn account_fill_progress(&mut self, client_order_id: i64, cumulative_venue_qty: f64) {
-        let cumulative_base_qty = MonitorChannel::instance().qty_to_base(
-            self.exec_venue,
-            &self.symbol,
-            cumulative_venue_qty,
-        );
-        if !cumulative_base_qty.is_finite() || cumulative_base_qty < 0.0 {
+    fn account_fill_progress(
+        &mut self,
+        client_order_id: i64,
+        previous_venue_qty: f64,
+        cumulative_venue_qty: f64,
+        fill_price: f64,
+    ) {
+        let delta_venue_qty = (cumulative_venue_qty - previous_venue_qty).max(0.0);
+        let delta_base_at_fill = MonitorChannel::instance()
+            .qty_to_base_at_price(self.exec_venue, &self.symbol, delta_venue_qty, fill_price)
+            .unwrap_or(0.0);
+        if !delta_base_at_fill.is_finite() || delta_base_at_fill < 0.0 {
             warn!(
-                "BatchExecStrategy: strategy_id={} invalid cumulative fill order_id={} cumulative_base_qty={}",
-                self.strategy_id, client_order_id, cumulative_base_qty
+                "BatchExecStrategy: strategy_id={} invalid fill delta order_id={} delta_base_qty={}",
+                self.strategy_id, client_order_id, delta_base_at_fill
             );
             return;
         }
         let Some((batch_seq, level_index, delta_base_qty)) =
             self.child_orders.get_mut(&client_order_id).map(|meta| {
-                let next_accounted = cumulative_base_qty
-                    .max(meta.accounted_fill_base_qty)
-                    .min(meta.order_base_qty);
+                let next_accounted =
+                    (meta.accounted_fill_base_qty + delta_base_at_fill).min(meta.order_base_qty);
                 let delta_base_qty = next_accounted - meta.accounted_fill_base_qty;
                 meta.accounted_fill_base_qty = next_accounted;
                 (meta.batch_seq, meta.level_index, delta_base_qty)
@@ -1974,7 +2017,8 @@ impl BatchExecStrategy {
         if !changed {
             return false;
         }
-        self.account_fill_progress(client_order_id, effective_fill);
+        let fill_price = update.price().max(current.price);
+        self.account_fill_progress(client_order_id, previous_fill, effective_fill, fill_price);
         if let Some((order, ctx)) = snapshot.as_ref() {
             if status == OrderStatus::New {
                 publish_uniform_new_order(
@@ -2062,7 +2106,12 @@ impl BatchExecStrategy {
         if !changed {
             return false;
         }
-        self.account_fill_progress(client_order_id, cumulative_fill);
+        let fill_price = if trade.price() > 0.0 {
+            trade.price()
+        } else {
+            current.price
+        };
+        self.account_fill_progress(client_order_id, previous_fill, cumulative_fill, fill_price);
         if let Some((order, ctx)) = snapshot.as_ref() {
             publish_uniform_trade_order(
                 trade,
@@ -2322,7 +2371,23 @@ mod tests {
             min_qty: 0.01,
             min_notional: 20.0,
             qty_multiplier: 1.0,
+            inverse_contract_size: None,
         }
+    }
+
+    #[test]
+    fn coin_inverse_minimum_uses_contract_size_over_price() {
+        let limits = BatchOrderLimits {
+            price_tick: 0.1,
+            qty_step: 1.0,
+            min_qty: 1.0,
+            min_notional: 0.0,
+            qty_multiplier: 100.0 / 50_000.0,
+            inverse_contract_size: Some(100.0),
+        };
+        let minimum = minimum_executable_base_qty(50_000.0, limits).expect("CM minimum");
+        assert!((minimum - 0.002).abs() < 1e-12);
+        assert!((limits.qty_multiplier_at(25_000.0).unwrap() - 0.004).abs() < 1e-12);
     }
 
     #[test]

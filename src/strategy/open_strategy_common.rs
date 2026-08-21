@@ -338,6 +338,8 @@ pub struct OpenOrderState {
     pub open_order_id: i64,
     pub hedge_watermark_base_qty: f64,
     pub trade_lite_cumulative_venue_qty: f64,
+    pub trade_lite_cumulative_base_qty: f64,
+    pub trade_cumulative_base_qty: f64,
     pub seen_trade_lite_ids: FastHashSet<[u8; mkt_parsers::msg::basic_account_msg::TRADE_ID_LEN]>,
     pub open_expire_ts: Option<i64>,
     pub open_side: Option<Side>,
@@ -463,8 +465,12 @@ pub trait OpenStrategyCommon {
 
     fn open_order_action_log_name(&self) -> &'static str;
 
-    fn resolve_open_qty_multiplier(&self, venue: TradingVenue, symbol: &str)
-        -> Result<f64, String>;
+    fn resolve_open_qty_multiplier(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        price: f64,
+    ) -> Result<f64, String>;
 
     fn open_order_qty_to_base(&self, signed_qty: f64, qty_multiplier: f64) -> Result<f64, String> {
         Ok(signed_qty * qty_multiplier)
@@ -787,15 +793,20 @@ pub trait OpenStrategyCommon {
             return false;
         }
 
-        let lite_cumulative_venue_qty = {
+        let lite_base_delta = MonitorChannel::instance()
+            .qty_to_base_at_price(order.venue, &order.symbol, lite_qty, trade.price())
+            .unwrap_or(lite_qty * order.qty_multiplier);
+        let (lite_cumulative_venue_qty, lite_cumulative_base_qty) = {
             let state = self.open_order_state_mut();
             state.trade_lite_cumulative_venue_qty += lite_qty;
-            state.trade_lite_cumulative_venue_qty
+            state.trade_lite_cumulative_base_qty += lite_base_delta;
+            (
+                state.trade_lite_cumulative_venue_qty,
+                state.trade_lite_cumulative_base_qty,
+            )
         };
         let order_base_qty = order.quantity * order.qty_multiplier;
-        let lite_cumulative_base_qty = (lite_cumulative_venue_qty * order.qty_multiplier)
-            .max(0.0)
-            .min(order_base_qty);
+        let lite_cumulative_base_qty = lite_cumulative_base_qty.max(0.0).min(order_base_qty);
         let eps_base_qty = self.open_trade_lite_full_fill_eps_base_qty(
             order.venue,
             &order.symbol,
@@ -1215,7 +1226,7 @@ pub trait OpenStrategyCommon {
             }
         }
 
-        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
+        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol, input.price) {
             Ok(multiplier) => multiplier,
             Err(err) => {
                 error!(
@@ -1563,6 +1574,8 @@ pub trait OpenStrategyCommon {
             order.open_order_id = client_order_id;
             order.hedge_watermark_base_qty = 0.0;
             order.trade_lite_cumulative_venue_qty = 0.0;
+            order.trade_lite_cumulative_base_qty = 0.0;
+            order.trade_cumulative_base_qty = 0.0;
             order.seen_trade_lite_ids.clear();
         }
 
@@ -2258,11 +2271,26 @@ pub trait OpenStrategyCommon {
             } else {
                 "order_update_partial_fill"
             };
+            let order_base_qty = order.quantity * order.qty_multiplier;
+            let cumulative_base_qty = self
+                .open_order_state()
+                .trade_cumulative_base_qty
+                .max(
+                    MonitorChannel::instance()
+                        .qty_to_base_at_price(
+                            order.venue,
+                            &order.symbol,
+                            effective_cumulative_filled_qty,
+                            order.price,
+                        )
+                        .unwrap_or(effective_cumulative_filled_qty * order.qty_multiplier),
+                )
+                .min(order_base_qty);
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
-                order.quantity * order.qty_multiplier,
-                effective_cumulative_filled_qty * order.qty_multiplier,
+                order_base_qty,
+                cumulative_base_qty,
                 order_update.event_time(),
                 order.price,
                 order.client_order_id,
@@ -2272,7 +2300,14 @@ pub trait OpenStrategyCommon {
 
         let fill_delta_venue_qty =
             (effective_cumulative_filled_qty - prev_cumulative_filled_qty).max(0.0);
-        let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
+        let fill_delta_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(
+                order.venue,
+                &order.symbol,
+                fill_delta_venue_qty,
+                order.price,
+            )
+            .unwrap_or(fill_delta_venue_qty * order.qty_multiplier);
         self.apply_inventory_fill_delta(
             order.venue,
             &order.symbol,
@@ -2427,7 +2462,19 @@ pub trait OpenStrategyCommon {
         }
 
         let fill_delta_venue_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
-        let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
+        let fill_delta_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(
+                order.venue,
+                &order.symbol,
+                fill_delta_venue_qty,
+                trade.price(),
+            )
+            .unwrap_or(fill_delta_venue_qty * order.qty_multiplier);
+        let cumulative_base_qty = {
+            let state = self.open_order_state_mut();
+            state.trade_cumulative_base_qty += fill_delta_base_qty;
+            state.trade_cumulative_base_qty
+        };
         self.apply_inventory_fill_delta(
             order.venue,
             &order.symbol,
@@ -2448,7 +2495,7 @@ pub trait OpenStrategyCommon {
                 &order.symbol,
                 order.side,
                 order.quantity * order.qty_multiplier,
-                cumulative_qty * order.qty_multiplier,
+                cumulative_base_qty.min(order.quantity * order.qty_multiplier),
                 event_time,
                 trade.price(),
                 order.client_order_id,
@@ -3111,6 +3158,7 @@ mod tests {
             &self,
             _venue: TradingVenue,
             _symbol: &str,
+            _price: f64,
         ) -> Result<f64, String> {
             Ok(1.0)
         }

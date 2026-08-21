@@ -665,7 +665,12 @@ impl DepthPubApp {
     }
 
     fn depth_amount_scale(&self, symbol: &str) -> f64 {
-        if !self.venue.is_futures() || matches!(self.venue, TradingVenue::BinanceFutures) {
+        if !self.venue.is_futures()
+            || matches!(
+                self.venue,
+                TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+            )
+        {
             return 1.0;
         }
 

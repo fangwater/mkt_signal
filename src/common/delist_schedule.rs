@@ -70,6 +70,7 @@ pub fn provider_for_venue(venue: TradingVenue) -> Box<dyn DelistScheduleProvider
     match venue {
         TradingVenue::BinanceMargin => Box::new(BinanceSpotDelistProvider::default()),
         TradingVenue::BinanceFutures => Box::new(BinanceFuturesDelistProvider::default()),
+        TradingVenue::BinanceCoinFutures => Box::new(BinanceCoinFuturesDelistProvider::default()),
         TradingVenue::AsterFutures => Box::new(AsterFuturesDelistProvider::default()),
         TradingVenue::OkexMargin => Box::new(OkxSpotDelistProvider::default()),
         TradingVenue::OkexFutures => Box::new(OkxSwapDelistProvider::default()),
@@ -89,6 +90,7 @@ pub fn default_monitored_venues() -> Vec<TradingVenue> {
     vec![
         TradingVenue::BinanceMargin,
         TradingVenue::BinanceFutures,
+        TradingVenue::BinanceCoinFutures,
         TradingVenue::OkexMargin,
         TradingVenue::OkexFutures,
         TradingVenue::BybitFutures,
@@ -229,6 +231,9 @@ impl DelistScheduleProvider for BinanceSpotDelistProvider {
 struct BinanceFuturesDelistProvider;
 
 #[derive(Default)]
+struct BinanceCoinFuturesDelistProvider;
+
+#[derive(Default)]
 struct AsterFuturesDelistProvider;
 
 #[derive(Debug, Deserialize)]
@@ -242,6 +247,7 @@ struct BinanceFuturesExchangeInfo {
 #[serde(rename_all = "camelCase")]
 struct BinanceFuturesSymbol {
     symbol: String,
+    #[serde(alias = "contractStatus")]
     status: String,
     contract_type: String,
     delivery_date: i64,
@@ -284,8 +290,16 @@ async fn fetch_binance_style_futures_delists(
     let events = info
         .symbols
         .into_iter()
-        .filter(|symbol| symbol.contract_type == "PERPETUAL")
-        .filter(|symbol| symbol.delivery_date != BINANCE_PERPETUAL_DEFAULT_DELIVERY_MS)
+        .filter(|symbol| {
+            if venue == TradingVenue::BinanceCoinFutures {
+                symbol.delivery_date > 0
+                    && (symbol.contract_type != "PERPETUAL"
+                        || symbol.delivery_date != BINANCE_PERPETUAL_DEFAULT_DELIVERY_MS)
+            } else {
+                symbol.contract_type == "PERPETUAL"
+                    && symbol.delivery_date != BINANCE_PERPETUAL_DEFAULT_DELIVERY_MS
+            }
+        })
         .filter_map(|symbol| {
             let delist_time = datetime_from_millis(symbol.delivery_date, "deliveryDate").ok()?;
             effective_query
@@ -316,6 +330,23 @@ impl DelistScheduleProvider for BinanceFuturesDelistProvider {
             self.venue(),
             "https://fapi.binance.com/fapi/v1/exchangeInfo",
             "binance_futures_exchange_info",
+            query,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl DelistScheduleProvider for BinanceCoinFuturesDelistProvider {
+    fn venue(&self) -> TradingVenue {
+        TradingVenue::BinanceCoinFutures
+    }
+
+    async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
+        fetch_binance_style_futures_delists(
+            self.venue(),
+            "https://dapi.binance.com/dapi/v1/exchangeInfo",
+            "binance_coin_futures_exchange_info",
             query,
         )
         .await

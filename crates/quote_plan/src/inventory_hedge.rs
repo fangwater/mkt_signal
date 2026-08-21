@@ -248,7 +248,7 @@ where
     if !(min_qty.is_finite() && min_qty > 0.0) {
         return false;
     }
-    let multiplier = contract_qty_multiplier(table, venue, symbol_key).unwrap_or(1.0);
+    let multiplier = contract_qty_multiplier(table, venue, symbol_key, price).unwrap_or(1.0);
     if !(multiplier.is_finite() && multiplier > 0.0) {
         return false;
     }
@@ -277,7 +277,7 @@ where
     if !(target_base_qty.is_finite() && target_base_qty > 0.0 && price.is_finite() && price > 0.0) {
         return false;
     }
-    let multiplier = contract_qty_multiplier(table, venue, symbol_key).unwrap_or(1.0);
+    let multiplier = contract_qty_multiplier(table, venue, symbol_key, price).unwrap_or(1.0);
     if !(multiplier.is_finite() && multiplier > 0.0) {
         return false;
     }

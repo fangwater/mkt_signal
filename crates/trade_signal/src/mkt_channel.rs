@@ -63,6 +63,7 @@ fn is_futures(venue: TradingVenue) -> bool {
     matches!(
         venue,
         TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
             | TradingVenue::OkexFutures
             | TradingVenue::BybitFutures
             | TradingVenue::BitgetFutures

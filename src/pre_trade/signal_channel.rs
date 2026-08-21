@@ -1,5 +1,6 @@
 use crate::pre_trade::account_open_block::{check_account_open_block, AccountOpenBlockReason};
 use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use crate::pre_trade::binance_std_cm_margin_guard::BinanceStdCmMarginGuard;
 use crate::pre_trade::binance_std_um_margin_guard::BinanceStdUmMarginGuard;
 use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
@@ -1061,6 +1062,24 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                     open_ctx.amount_value(),
                 );
                 if BinanceStdUmMarginGuard::should_block_arb_open(
+                    &symbol,
+                    side,
+                    margin_guard_reducing,
+                ) {
+                    return;
+                }
+            }
+
+            if BinanceStdCmMarginGuard::is_enabled() {
+                let margin_guard_reducing = arb_open_is_account_throttle_reducing(
+                    &symbol,
+                    opening_venue,
+                    &hedging_symbol,
+                    hedging_venue,
+                    side,
+                    open_ctx.amount_value(),
+                );
+                if BinanceStdCmMarginGuard::should_block_arb_open(
                     &symbol,
                     side,
                     margin_guard_reducing,

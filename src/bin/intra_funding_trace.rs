@@ -378,6 +378,7 @@ fn parse_venue(raw: &str) -> Result<TradingVenue> {
     let venue = match slug.as_str() {
         "binance-margin" => TradingVenue::BinanceMargin,
         "binance-futures" | "binance" => TradingVenue::BinanceFutures,
+        "binance-coin-futures" => TradingVenue::BinanceCoinFutures,
         "okex-margin" | "okx-margin" => TradingVenue::OkexMargin,
         "okex-futures" | "okx-futures" | "okex" | "okx" => TradingVenue::OkexFutures,
         "bybit-margin" => TradingVenue::BybitMargin,

@@ -807,7 +807,12 @@ fn price_tick_for_symbol(
 }
 
 fn amount_scale_for_symbol(table: &VenueMinQtyTable, venue: TradingVenue, symbol: &str) -> f64 {
-    if !venue.is_futures() || matches!(venue, TradingVenue::BinanceFutures) {
+    if !venue.is_futures()
+        || matches!(
+            venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        )
+    {
         return 1.0;
     }
     table

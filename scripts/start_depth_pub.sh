@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin|both)$'
+VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin|both)|binance-coin-futures)$'
 
 usage() {
   cat <<'USAGE'

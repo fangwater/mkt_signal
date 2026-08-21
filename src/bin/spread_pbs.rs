@@ -192,6 +192,7 @@ fn single_venue_from_slug(slug: &str) -> Option<TradingVenue> {
     match slug {
         "binance-margin" => Some(TradingVenue::BinanceMargin),
         "binance-futures" => Some(TradingVenue::BinanceFutures),
+        "binance-coin-futures" => Some(TradingVenue::BinanceCoinFutures),
         "okex-margin" | "okx-margin" => Some(TradingVenue::OkexMargin),
         "okex-futures" | "okx-futures" => Some(TradingVenue::OkexFutures),
         "bybit-margin" => Some(TradingVenue::BybitMargin),

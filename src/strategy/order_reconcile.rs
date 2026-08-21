@@ -14,7 +14,9 @@ pub fn order_query_watchdog_delay_us_for_venue(
 ) -> i64 {
     if matches!(
         venue,
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
     ) && !binance_is_standard
     {
         BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US

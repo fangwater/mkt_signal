@@ -20,6 +20,12 @@ pub enum TradeRequestType {
     BinanceWsCancelMarginOrder = 4016,          // 币安现货(标准账户) WebSocket 撤单请求
     BinanceStdMainToUmTransfer = 4017,          // 币安标准账户现货转UM合约
     BinanceStdUmToMainTransfer = 4018,          // 币安标准账户UM合约转现货
+    BinanceNewCmOrder = 4019,                   // Binance COIN-M REST order
+    BinanceCancelCmOrder = 4020,                // Binance COIN-M REST cancel
+    BinanceCmSetLeverage = 4021,                // Binance COIN-M leverage
+    BinancePmNewCmOrder = 4022,                 // Binance Portfolio Margin COIN-M order
+    BinancePmCancelCmOrder = 4023,              // Binance Portfolio Margin COIN-M cancel
+    BinancePmCmSetLeverage = 4024,              // Binance Portfolio Margin COIN-M leverage
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -60,6 +66,12 @@ impl TryFrom<u32> for TradeRequestType {
             4016 => Ok(TradeRequestType::BinanceWsCancelMarginOrder),
             4017 => Ok(TradeRequestType::BinanceStdMainToUmTransfer),
             4018 => Ok(TradeRequestType::BinanceStdUmToMainTransfer),
+            4019 => Ok(TradeRequestType::BinanceNewCmOrder),
+            4020 => Ok(TradeRequestType::BinanceCancelCmOrder),
+            4021 => Ok(TradeRequestType::BinanceCmSetLeverage),
+            4022 => Ok(TradeRequestType::BinancePmNewCmOrder),
+            4023 => Ok(TradeRequestType::BinancePmCancelCmOrder),
+            4024 => Ok(TradeRequestType::BinancePmCmSetLeverage),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
@@ -92,6 +104,8 @@ impl TradeRequestType {
                 | TradeRequestType::BinanceNewMarginOrder
                 | TradeRequestType::BinanceWsNewUMOrder
                 | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceNewCmOrder
+                | TradeRequestType::BinancePmNewCmOrder
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder

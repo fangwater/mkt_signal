@@ -93,6 +93,7 @@ impl UnimmrOpenLock {
                 BasicAccountScope::Unknown
                     | BasicAccountScope::BinanceStdSpot
                     | BasicAccountScope::BinanceStdUm
+                    | BasicAccountScope::BinanceStdCm
             )
         {
             return;
@@ -339,6 +340,7 @@ fn build_notification(
 fn scope_label(scope: BasicAccountScope) -> &'static str {
     match scope {
         BasicAccountScope::BinanceUnified => "Binance统一账户",
+        BasicAccountScope::BinanceUnifiedCm => "Binance统一账户币本位合约",
         BasicAccountScope::OkexUnified => "OKX统一账户",
         BasicAccountScope::GateUnified => "Gate统一账户",
         BasicAccountScope::BitgetUnified => "Bitget统一账户",
@@ -346,6 +348,7 @@ fn scope_label(scope: BasicAccountScope) -> &'static str {
         BasicAccountScope::Unknown => "未知账户",
         BasicAccountScope::BinanceStdSpot => "Binance现货账户",
         BasicAccountScope::BinanceStdUm => "Binance合约账户",
+        BasicAccountScope::BinanceStdCm => "Binance币本位合约账户",
     }
 }
 

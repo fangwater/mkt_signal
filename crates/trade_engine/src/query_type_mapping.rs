@@ -16,6 +16,11 @@ impl QueryTypeMapping {
                 | QueryRequestType::BinanceUmAccountSnapshotStd
                 | QueryRequestType::BinanceSpotAccountSnapshotStd
                 | QueryRequestType::BinancePmAccountSnapshot
+                | QueryRequestType::BinanceCmQuery
+                | QueryRequestType::BinanceCmBalanceSnapshotStd
+                | QueryRequestType::BinanceCmAccountSnapshotStd
+                | QueryRequestType::BinancePmCmQuery
+                | QueryRequestType::BinancePmCmAccountSnapshot
         )
     }
 
@@ -76,6 +81,11 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmAccountSnapshotStd => "/fapi/v2/account",
             QueryRequestType::BinanceSpotAccountSnapshotStd => "/api/v3/account",
             QueryRequestType::BinancePmAccountSnapshot => "/papi/v1/account",
+            QueryRequestType::BinanceCmQuery => "/dapi/v1/order",
+            QueryRequestType::BinanceCmBalanceSnapshotStd => "/dapi/v1/balance",
+            QueryRequestType::BinanceCmAccountSnapshotStd => "/dapi/v1/account",
+            QueryRequestType::BinancePmCmQuery => "/papi/v1/cm/order",
+            QueryRequestType::BinancePmCmAccountSnapshot => "/papi/v1/cm/account",
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => {
                 "/api/v5/trade/order"
             }
@@ -115,6 +125,11 @@ impl QueryTypeMapping {
             | QueryRequestType::BinanceUmAccountSnapshotStd
             | QueryRequestType::BinanceSpotAccountSnapshotStd
             | QueryRequestType::BinancePmAccountSnapshot
+            | QueryRequestType::BinanceCmQuery
+            | QueryRequestType::BinanceCmBalanceSnapshotStd
+            | QueryRequestType::BinanceCmAccountSnapshotStd
+            | QueryRequestType::BinancePmCmQuery
+            | QueryRequestType::BinancePmCmAccountSnapshot
             | QueryRequestType::OkexMarginQuery
             | QueryRequestType::OkexUMQuery
             | QueryRequestType::OkexAccountBalanceSnapshot
@@ -157,6 +172,11 @@ impl QueryTypeMapping {
             QueryRequestType::BinanceUmAccountSnapshotStd => 5,
             QueryRequestType::BinanceSpotAccountSnapshotStd => 20,
             QueryRequestType::BinancePmAccountSnapshot => 20,
+            QueryRequestType::BinanceCmQuery => 1,
+            QueryRequestType::BinanceCmBalanceSnapshotStd
+            | QueryRequestType::BinanceCmAccountSnapshotStd => 5,
+            QueryRequestType::BinancePmCmQuery => 1,
+            QueryRequestType::BinancePmCmAccountSnapshot => 5,
             QueryRequestType::OkexMarginQuery | QueryRequestType::OkexUMQuery => 1,
             QueryRequestType::OkexAccountBalanceSnapshot
             | QueryRequestType::OkexPositionsSnapshot
@@ -191,6 +211,9 @@ impl QueryTypeMapping {
                 | QueryRequestType::BinanceUmAccountSnapshotStd
                 | QueryRequestType::BinanceSpotAccountSnapshotStd
                 | QueryRequestType::BinancePmAccountSnapshot
+                | QueryRequestType::BinanceCmBalanceSnapshotStd
+                | QueryRequestType::BinanceCmAccountSnapshotStd
+                | QueryRequestType::BinancePmCmAccountSnapshot
         )
     }
 
@@ -214,6 +237,9 @@ mod tests {
             QueryRequestType::BinanceUmBalanceSnapshotStd,
             QueryRequestType::BinanceUmAccountSnapshotStd,
             QueryRequestType::BinanceSpotAccountSnapshotStd,
+            QueryRequestType::BinanceCmBalanceSnapshotStd,
+            QueryRequestType::BinanceCmAccountSnapshotStd,
+            QueryRequestType::BinancePmCmAccountSnapshot,
         ] {
             assert!(QueryTypeMapping::is_binance_snapshot(req_type));
             assert_eq!(
@@ -228,9 +254,27 @@ mod tests {
         for req_type in [
             QueryRequestType::BinanceMarginQuery,
             QueryRequestType::BinanceUMQuery,
+            QueryRequestType::BinanceCmQuery,
+            QueryRequestType::BinancePmCmQuery,
         ] {
             assert!(!QueryTypeMapping::is_binance_snapshot(req_type));
             assert_eq!(QueryTypeMapping::recv_window_ms(req_type), None);
         }
+    }
+
+    #[test]
+    fn binance_coin_queries_map_to_standard_and_portfolio_margin_endpoints() {
+        assert_eq!(
+            QueryTypeMapping::get_endpoint(QueryRequestType::BinanceCmQuery),
+            "/dapi/v1/order"
+        );
+        assert_eq!(
+            QueryTypeMapping::get_endpoint(QueryRequestType::BinancePmCmQuery),
+            "/papi/v1/cm/order"
+        );
+        assert_eq!(
+            QueryTypeMapping::get_endpoint(QueryRequestType::BinancePmCmAccountSnapshot),
+            "/papi/v1/cm/account"
+        );
     }
 }

@@ -83,6 +83,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
         TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
             | TradingVenue::OkexFutures
             | TradingVenue::BitgetFutures
             | TradingVenue::BybitFutures
@@ -93,6 +94,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
 async fn fetch_binance_symbol_filters(venue: TradingVenue, symbol: &str) -> Result<Vec<Value>> {
     let url = match venue {
         TradingVenue::BinanceFutures => "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        TradingVenue::BinanceCoinFutures => "https://dapi.binance.com/dapi/v1/exchangeInfo",
         TradingVenue::BinanceMargin => "https://api.binance.com/api/v3/exchangeInfo",
         _ => bail!(
             "fetch_binance_symbol_filters: unsupported venue={:?}",
@@ -189,7 +191,11 @@ async fn main() -> Result<()> {
 
         if is_futures_venue(venue) {
             if min_notional > 0.0 {
-                let notional = args.qty * args.price;
+                let notional = if venue == TradingVenue::BinanceCoinFutures {
+                    args.qty * table.contract_multiplier(&symbol_key)
+                } else {
+                    args.qty * args.price
+                };
                 if notional + 1e-8 < min_notional {
                     ok = false;
                     println!(
@@ -212,7 +218,9 @@ async fn main() -> Result<()> {
         if args.show_raw_filters
             && matches!(
                 venue,
-                TradingVenue::BinanceFutures | TradingVenue::BinanceMargin
+                TradingVenue::BinanceFutures
+                    | TradingVenue::BinanceCoinFutures
+                    | TradingVenue::BinanceMargin
             )
         {
             println!("\n--- Raw filters (Binance exchangeInfo) ---");

@@ -1081,7 +1081,9 @@ fn lifecycle_terminal_action(update: &dyn OrderUpdate) -> Option<OrderQueuePosit
 
 fn exchange_for_venue(venue: TradingVenue) -> Option<Exchange> {
     match venue {
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => Some(Exchange::Binance),
+        TradingVenue::BinanceMargin
+        | TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures => Some(Exchange::Binance),
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Some(Exchange::Okex),
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => Some(Exchange::Bybit),
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Some(Exchange::Bitget),
@@ -1099,6 +1101,10 @@ fn scope_can_match_venue(scope: BasicAccountScope, venue: TradingVenue) -> bool 
         TradingVenue::BinanceFutures => matches!(
             scope,
             BasicAccountScope::BinanceUnified | BasicAccountScope::BinanceStdUm
+        ),
+        TradingVenue::BinanceCoinFutures => matches!(
+            scope,
+            BasicAccountScope::BinanceUnifiedCm | BasicAccountScope::BinanceStdCm
         ),
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
             scope == BasicAccountScope::OkexUnified

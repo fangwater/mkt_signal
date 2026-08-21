@@ -117,6 +117,7 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
     match slug.as_str() {
         "binance-margin" => Some(TradingVenue::BinanceMargin),
         "binance-futures" => Some(TradingVenue::BinanceFutures),
+        "binance-coin-futures" => Some(TradingVenue::BinanceCoinFutures),
         "okex-margin" => Some(TradingVenue::OkexMargin),
         "okex-futures" => Some(TradingVenue::OkexFutures),
         "bybit-margin" => Some(TradingVenue::BybitMargin),

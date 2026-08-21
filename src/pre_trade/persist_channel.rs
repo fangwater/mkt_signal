@@ -237,12 +237,17 @@ fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
     }
 }
 
-fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str) -> f64 {
+fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str, price: f64) -> f64 {
     if !venue.is_futures() {
         return 1.0;
     }
     if venue == TradingVenue::BinanceFutures {
         return 1.0;
+    }
+    if venue == TradingVenue::BinanceCoinFutures {
+        return MonitorChannel::instance()
+            .qty_multiplier_for_venue_at_price(venue, normalized_symbol, price)
+            .unwrap_or(0.0);
     }
 
     let Some(table) = MonitorChannel::instance().try_venue_min_qty_table(venue) else {
@@ -255,9 +260,14 @@ fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str) 
         .unwrap_or(1.0)
 }
 
-fn normalize_symbol_and_qty(venue: TradingVenue, symbol: &str, qty: f64) -> (String, f64) {
+fn normalize_symbol_and_qty(
+    venue: TradingVenue,
+    symbol: &str,
+    qty: f64,
+    price: f64,
+) -> (String, f64) {
     let normalized_symbol = normalize_symbol_for_venue(venue, symbol);
-    let multiplier = resolve_futures_qty_multiplier(venue, normalized_symbol.as_str());
+    let multiplier = resolve_futures_qty_multiplier(venue, normalized_symbol.as_str(), price);
     let normalized_qty = if venue.is_futures() {
         qty * multiplier
     } else {
@@ -284,8 +294,12 @@ fn normalize_symbol_and_qty(venue: TradingVenue, symbol: &str, qty: f64) -> (Str
 fn serialize_trade_update(trade: &dyn TradeUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
     let venue = trade.trading_venue();
-    let (normalized_symbol, normalized_cum_qty) =
-        normalize_symbol_and_qty(venue, trade.symbol(), trade.cumulative_filled_quantity());
+    let (normalized_symbol, normalized_cum_qty) = normalize_symbol_and_qty(
+        venue,
+        trade.symbol(),
+        trade.cumulative_filled_quantity(),
+        trade.price(),
+    );
 
     // 接收时间戳（在发布时记录）
     buf.put_i64_le(get_timestamp_us());
@@ -351,9 +365,13 @@ fn serialize_order_update(order: &dyn OrderUpdate) -> Bytes {
     let mut buf = BytesMut::with_capacity(512);
     let venue = order.trading_venue();
     let (normalized_symbol, normalized_qty) =
-        normalize_symbol_and_qty(venue, order.symbol(), order.quantity());
-    let (_, normalized_cum_qty) =
-        normalize_symbol_and_qty(venue, order.symbol(), order.cumulative_filled_quantity());
+        normalize_symbol_and_qty(venue, order.symbol(), order.quantity(), order.price());
+    let (_, normalized_cum_qty) = normalize_symbol_and_qty(
+        venue,
+        order.symbol(),
+        order.cumulative_filled_quantity(),
+        order.price(),
+    );
 
     // 接收时间戳（在发布时记录）
     buf.put_i64_le(get_timestamp_us());
@@ -438,9 +456,13 @@ fn serialize_uniform_order(record: &UnifiedOrderRecord) -> Bytes {
     let venue = TradingVenue::from_u8(record.venue).unwrap_or(TradingVenue::BinanceMargin);
     let raw_symbol = String::from_utf8_lossy(&record.symbol);
     let (normalized_symbol, normalized_amount_init) =
-        normalize_symbol_and_qty(venue, raw_symbol.as_ref(), record.amount_init);
-    let (_, normalized_amount_update) =
-        normalize_symbol_and_qty(venue, raw_symbol.as_ref(), record.amount_update);
+        normalize_symbol_and_qty(venue, raw_symbol.as_ref(), record.amount_init, record.price);
+    let (_, normalized_amount_update) = normalize_symbol_and_qty(
+        venue,
+        raw_symbol.as_ref(),
+        record.amount_update,
+        record.price,
+    );
 
     buf.put_i64_le(get_timestamp_us());
 

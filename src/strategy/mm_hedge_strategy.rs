@@ -94,6 +94,7 @@ pub struct MarketMakerHedgeStrategy {
     hedge_plan: Vec<HedgePlanOrder>,
     hedge_order_meta: FastHashMap<i64, HedgeOrderMeta>,
     hedge_order_ids: FastHashSet<i64>,
+    hedge_filled_base_by_order: FastHashMap<i64, f64>,
     hedge_request_seq: u64,
     pending_hedge_request_seq: Option<u64>,
     alive_flag: bool,
@@ -124,6 +125,7 @@ impl MarketMakerHedgeStrategy {
             hedge_plan: Vec::new(),
             hedge_order_meta: fast_hash_map(),
             hedge_order_ids: fast_hash_set(),
+            hedge_filled_base_by_order: fast_hash_map(),
             hedge_request_seq: 0,
             pending_hedge_request_seq: None,
             alive_flag: true,
@@ -169,6 +171,7 @@ impl MarketMakerHedgeStrategy {
         self.clear_order_query_state(client_order_id);
         self.hedge_order_ids.remove(&client_order_id);
         self.hedge_order_meta.remove(&client_order_id);
+        self.hedge_filled_base_by_order.remove(&client_order_id);
         if remove_local {
             if let Some(order_mgr) = MonitorChannel::try_order_manager() {
                 let _ = order_mgr.borrow_mut().remove(client_order_id);
@@ -203,6 +206,7 @@ impl MarketMakerHedgeStrategy {
         }
         self.hedge_order_ids.clear();
         self.hedge_order_meta.clear();
+        self.hedge_filled_base_by_order.clear();
     }
 
     fn order_from_key(&self, client_order_id: i64) -> &[u8] {
@@ -382,7 +386,8 @@ impl MarketMakerHedgeStrategy {
         let table = MonitorChannel::instance().try_venue_min_qty_table(hedge_venue)?;
         let min_qty = table.min_qty(&symbol_key).unwrap_or(0.0);
         let min_notional = table.min_notional(&symbol_key).unwrap_or(0.0);
-        let multiplier = contract_qty_multiplier(table.as_ref(), hedge_venue, &symbol_key)?;
+        let multiplier =
+            contract_qty_multiplier(table.as_ref(), hedge_venue, &symbol_key, mark_price)?;
         if !(multiplier.is_finite() && multiplier > 0.0) {
             return None;
         }
@@ -566,10 +571,7 @@ impl MarketMakerHedgeStrategy {
 
         let venue = MonitorChannel::instance().open_venue();
         let symbol_key = min_qty_symbol_key(venue, &symbol);
-        let qty_multiplier = MonitorChannel::instance()
-            .venue_min_qty_table(venue)
-            .and_then(|table| contract_qty_multiplier(table.as_ref(), venue, &symbol_key))
-            .unwrap_or(1.0);
+        let min_qty_table = MonitorChannel::instance().venue_min_qty_table(venue);
 
         let levels: Vec<HedgeLevel> = ctx
             .price_qv_list
@@ -586,15 +588,22 @@ impl MarketMakerHedgeStrategy {
                 if qty_venue <= 0.0 {
                     return None;
                 }
+                let qty_multiplier = min_qty_table
+                    .as_ref()
+                    .and_then(|table| {
+                        contract_qty_multiplier(table.as_ref(), venue, &symbol_key, price)
+                    })
+                    .unwrap_or(1.0);
                 Some(HedgeLevel {
                     price,
                     qty_venue_one_hand: qty_venue,
                     qty_venue_tick,
+                    qty_multiplier,
                 })
             })
             .collect();
 
-        let split = split_hedge_orders_round_robin(hedge_side, net_qty, &levels, qty_multiplier);
+        let split = split_hedge_orders_round_robin(hedge_side, net_qty, &levels);
         let remaining_qty = split.remaining_qty_base;
         let total_qty = split.total_qty_base;
         let total_usdt = split.total_usdt;
@@ -618,12 +627,11 @@ impl MarketMakerHedgeStrategy {
                 .collect::<Vec<_>>()
                 .join(" | ");
             debug!(
-                "MMHedge split detail: symbol={} venue={:?} side={:?} net_qty_base={:.8} qty_multiplier={:.8} levels={} remaining_base={:.8} detail={}",
+                "MMHedge split detail: symbol={} venue={:?} side={:?} net_qty_base={:.8} levels={} remaining_base={:.8} detail={}",
                 symbol,
                 venue,
                 hedge_side,
                 net_qty,
-                qty_multiplier,
                 levels.len(),
                 remaining_qty,
                 level_stats_text,
@@ -646,13 +654,12 @@ impl MarketMakerHedgeStrategy {
                 .collect::<Vec<_>>()
                 .join(",");
             debug!(
-                "MMHedgeSplitSummary {{\"strategy_id\":{},\"symbol\":\"{}\",\"venue\":\"{:?}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"qty_multiplier\":{:.8},\"total_qty_base\":{:.8},\"total_usdt\":{:.8},\"remaining_base\":{:.8},\"levels\":[{}]}}",
+                "MMHedgeSplitSummary {{\"strategy_id\":{},\"symbol\":\"{}\",\"venue\":\"{:?}\",\"side\":\"{}\",\"net_qty_base\":{:.8},\"total_qty_base\":{:.8},\"total_usdt\":{:.8},\"remaining_base\":{:.8},\"levels\":[{}]}}",
                 self.strategy_id,
                 symbol,
                 venue,
                 hedge_side.map(|s| s.as_str()).unwrap_or("FLAT"),
                 net_qty,
-                qty_multiplier,
                 total_qty,
                 total_usdt,
                 remaining_qty,
@@ -1477,11 +1484,20 @@ impl MarketMakerHedgeStrategy {
                 .unwrap_or(effective_cumulative_filled_qty);
             let fill_price =
                 self.resolve_fill_price_from_order_update(client_order_id, order_update);
-            let filled_base_qty = MonitorChannel::instance().qty_to_base(
-                order_update.trading_venue(),
-                order_update.symbol(),
-                filled_qty,
-            );
+            let fallback_filled_base_qty = MonitorChannel::instance()
+                .qty_to_base_at_price(
+                    order_update.trading_venue(),
+                    order_update.symbol(),
+                    filled_qty,
+                    fill_price,
+                )
+                .unwrap_or(0.0);
+            let filled_base_qty = self
+                .hedge_filled_base_by_order
+                .get(&client_order_id)
+                .copied()
+                .filter(|qty| *qty > 0.0)
+                .unwrap_or(fallback_filled_base_qty);
             let _applied = self.apply_tracked_hedge_fill_cumulative(
                 client_order_id,
                 order_update.event_time(),
@@ -1588,18 +1604,34 @@ impl MarketMakerHedgeStrategy {
         drop(order_manager);
         self.log_hedge_order_state("trade_update_applied", client_order_id);
 
-        if status != OrderStatus::Filled {
-            return true;
-        }
         let fill_price = self.resolve_fill_price_from_trade_update(
             order_snapshot.as_ref().map(|(_, _, _, price)| *price),
             trade,
         );
-        let cumulative_base_qty = MonitorChannel::instance().qty_to_base(
-            trade.trading_venue(),
-            trade.symbol(),
-            cumulative_qty,
-        );
+        let fill_delta_venue_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
+        let fill_delta_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(
+                trade.trading_venue(),
+                trade.symbol(),
+                fill_delta_venue_qty,
+                fill_price,
+            )
+            .unwrap_or(0.0);
+        if fill_delta_base_qty > 0.0 {
+            *self
+                .hedge_filled_base_by_order
+                .entry(client_order_id)
+                .or_insert(0.0) += fill_delta_base_qty;
+        }
+
+        if status != OrderStatus::Filled {
+            return true;
+        }
+        let cumulative_base_qty = self
+            .hedge_filled_base_by_order
+            .get(&client_order_id)
+            .copied()
+            .unwrap_or(0.0);
         let _applied = self.apply_tracked_hedge_fill_cumulative(
             client_order_id,
             event_time,

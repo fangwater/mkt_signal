@@ -251,6 +251,12 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
     let hedge_venue = config.hedge_venue;
     let need_binance = open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance";
+    let need_binance_um = matches!(open_venue, TradingVenue::BinanceFutures)
+        || matches!(hedge_venue, TradingVenue::BinanceFutures);
+    let need_binance_cm = matches!(open_venue, TradingVenue::BinanceCoinFutures)
+        || matches!(hedge_venue, TradingVenue::BinanceCoinFutures);
+    let need_binance_spot = matches!(open_venue, TradingVenue::BinanceMargin)
+        || matches!(hedge_venue, TradingVenue::BinanceMargin);
     let need_okex = open_venue.trade_engine_exchange() == "okex"
         || hedge_venue.trade_engine_exchange() == "okex";
     let need_gate = open_venue.trade_engine_exchange() == "gate"
@@ -280,7 +286,7 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
 
     if need_binance {
         if binance_is_standard {
-            if config.include_binance_spot_snapshot {
+            if config.include_binance_spot_snapshot && need_binance_spot {
                 publish(
                     "binance",
                     QueryRequestType::BinanceSpotAccountSnapshotStd,
@@ -288,18 +294,34 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
                     "binance spot account snapshot (standard)",
                 );
             }
-            publish(
-                "binance",
-                QueryRequestType::BinanceUmBalanceSnapshotStd,
-                Bytes::new(),
-                "binance UM balance snapshot (standard)",
-            );
-            publish(
-                "binance",
-                QueryRequestType::BinanceUmAccountSnapshotStd,
-                Bytes::new(),
-                "binance UM account snapshot (standard)",
-            );
+            if need_binance_um {
+                publish(
+                    "binance",
+                    QueryRequestType::BinanceUmBalanceSnapshotStd,
+                    Bytes::new(),
+                    "binance UM balance snapshot (standard)",
+                );
+                publish(
+                    "binance",
+                    QueryRequestType::BinanceUmAccountSnapshotStd,
+                    Bytes::new(),
+                    "binance UM account snapshot (standard)",
+                );
+            }
+            if need_binance_cm {
+                publish(
+                    "binance",
+                    QueryRequestType::BinanceCmBalanceSnapshotStd,
+                    Bytes::new(),
+                    "binance CM balance snapshot (standard)",
+                );
+                publish(
+                    "binance",
+                    QueryRequestType::BinanceCmAccountSnapshotStd,
+                    Bytes::new(),
+                    "binance CM account snapshot (standard)",
+                );
+            }
         } else {
             publish(
                 "binance",
@@ -307,12 +329,22 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
                 Bytes::new(),
                 "binance PM balance snapshot",
             );
-            publish(
-                "binance",
-                QueryRequestType::BinanceUmAccountSnapshot,
-                Bytes::new(),
-                "binance UM account snapshot",
-            );
+            if need_binance_um {
+                publish(
+                    "binance",
+                    QueryRequestType::BinanceUmAccountSnapshot,
+                    Bytes::new(),
+                    "binance UM account snapshot",
+                );
+            }
+            if need_binance_cm {
+                publish(
+                    "binance",
+                    QueryRequestType::BinancePmCmAccountSnapshot,
+                    Bytes::new(),
+                    "binance PM CM account snapshot",
+                );
+            }
         }
     }
     if need_okex {

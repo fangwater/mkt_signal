@@ -21,7 +21,10 @@ pub fn min_qty_symbol_key(venue: TradingVenue, trade_symbol: &str) -> String {
 pub fn venue_qty_is_contracts(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceFutures | TradingVenue::OkexFutures | TradingVenue::GateFutures
+        TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
+            | TradingVenue::OkexFutures
+            | TradingVenue::GateFutures
     )
 }
 
@@ -29,9 +32,15 @@ pub fn contract_qty_multiplier(
     table: &VenueMinQtyTable,
     venue: TradingVenue,
     symbol_key: &str,
+    price: f64,
 ) -> Option<f64> {
     match venue {
         TradingVenue::BinanceFutures => Some(1.0),
+        TradingVenue::BinanceCoinFutures => table
+            .contract_multiplier_opt(symbol_key)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .filter(|_| price.is_finite() && price > 0.0)
+            .map(|contract_size| contract_size / price),
         TradingVenue::OkexFutures | TradingVenue::GateFutures => table
             .contract_multiplier_opt(symbol_key)
             .filter(|v| v.is_finite() && *v > 0.0),
@@ -43,13 +52,14 @@ pub fn base_step_size(
     table: &VenueMinQtyTable,
     venue: TradingVenue,
     trade_symbol: &str,
+    price: f64,
 ) -> (Option<f64>, Option<f64>) {
     let symbol_key = min_qty_symbol_key(venue, trade_symbol);
     let step = table.step_size(&symbol_key);
     let min_qty = table.min_qty(&symbol_key);
 
     if venue_qty_is_contracts(venue) {
-        let mult = contract_qty_multiplier(table, venue, &symbol_key);
+        let mult = contract_qty_multiplier(table, venue, &symbol_key, price);
         let step_base = step.zip(mult).map(|(s, m)| s * m);
         let min_qty_base = min_qty.zip(mult).map(|(q, m)| q * m);
         (step_base, min_qty_base)
@@ -72,7 +82,8 @@ pub fn convert_aligned_base_qty_to_open_venue_qty(
     let symbol_key = min_qty_symbol_key(open_venue, open_symbol);
 
     let qty_multiplier = if venue_qty_is_contracts(open_venue) {
-        let Some(multiplier) = contract_qty_multiplier(table, open_venue, &symbol_key) else {
+        let Some(multiplier) = contract_qty_multiplier(table, open_venue, &symbol_key, open_price)
+        else {
             return 0.0;
         };
         multiplier
@@ -132,9 +143,19 @@ pub fn convert_order_amount_to_aligned_base_qty(
     }
 
     let raw_base_qty = order_amount as f64 / open_price;
-    let (open_base_step, open_min_base_qty) = base_step_size(open_table, open_venue, open_symbol);
+    let (open_base_step, open_min_base_qty) =
+        base_step_size(open_table, open_venue, open_symbol, open_price);
+    let hedge_side = if open_side == Side::Buy {
+        Side::Sell
+    } else {
+        Side::Buy
+    };
+    let hedge_price = match hedge_side {
+        Side::Buy => hedge_quote.ask,
+        Side::Sell => hedge_quote.bid,
+    };
     let (hedge_base_step, hedge_min_base_qty) =
-        base_step_size(hedge_table, hedge_venue, hedge_symbol);
+        base_step_size(hedge_table, hedge_venue, hedge_symbol, hedge_price);
 
     let align_step = open_base_step
         .unwrap_or(0.0)
@@ -167,11 +188,6 @@ pub fn convert_order_amount_to_aligned_base_qty(
             required_min_base = required_min_base.max(min_notional / open_price);
         }
     }
-    let hedge_side = if open_side == Side::Buy {
-        Side::Sell
-    } else {
-        Side::Buy
-    };
     let hedge_price_for_min_notional = match hedge_side {
         Side::Buy => hedge_quote.ask,
         Side::Sell => hedge_quote.bid,
@@ -187,4 +203,51 @@ pub fn convert_order_amount_to_aligned_base_qty(
     }
 
     base_qty
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use signal_common::min_qty_table::MinQtyEntry;
+
+    fn coin_table() -> VenueMinQtyTable {
+        let mut table = VenueMinQtyTable::new(TradingVenue::BinanceCoinFutures);
+        table.set_entry_for_test(MinQtyEntry {
+            symbol: "BTCUSD_PERP".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USD".to_string(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: None,
+        });
+        table.set_contract_multiplier_for_test("BTCUSD_PERP", 100.0);
+        table
+    }
+
+    #[test]
+    fn coin_contract_multiplier_is_contract_size_over_price() {
+        let table = coin_table();
+        let multiplier = contract_qty_multiplier(
+            &table,
+            TradingVenue::BinanceCoinFutures,
+            "BTCUSDPERP",
+            50_000.0,
+        )
+        .expect("inverse multiplier");
+        assert!((multiplier - 0.002).abs() < 1e-12);
+    }
+
+    #[test]
+    fn aligned_coin_base_qty_converts_to_integer_contracts() {
+        let table = coin_table();
+        let contracts = convert_aligned_base_qty_to_open_venue_qty(
+            &table,
+            TradingVenue::BinanceCoinFutures,
+            "BTCUSDPERP",
+            50_000.0,
+            0.004,
+        );
+        assert_eq!(contracts, 2.0);
+    }
 }

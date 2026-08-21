@@ -21,12 +21,16 @@ pub enum TradingVenue {
     AsterFutures = 11,
     HyperliquidMargin = 12,
     HyperliquidFutures = 13,
+    /// Binance COIN-M delivery futures (`dapi`), including perpetual contracts.
+    BinanceCoinFutures = 14,
 }
 
 impl TradingVenue {
     pub fn trade_engine_exchange(&self) -> &'static str {
         match self {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => "binance",
+            TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures => "binance",
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => "okex",
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => "bybit",
             TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => "bitget",
@@ -40,6 +44,7 @@ impl TradingVenue {
         match self {
             TradingVenue::BinanceMargin => "binance-margin",
             TradingVenue::BinanceFutures => "binance-futures",
+            TradingVenue::BinanceCoinFutures => "binance-coin-futures",
             TradingVenue::OkexMargin => "okex-margin",
             TradingVenue::OkexFutures => "okex-futures",
             TradingVenue::BybitMargin => "bybit-margin",
@@ -81,6 +86,7 @@ impl TradingVenue {
             11 => Some(TradingVenue::AsterFutures),
             12 => Some(TradingVenue::HyperliquidMargin),
             13 => Some(TradingVenue::HyperliquidFutures),
+            14 => Some(TradingVenue::BinanceCoinFutures),
             _ => None,
         }
     }
@@ -89,6 +95,7 @@ impl TradingVenue {
         match self {
             TradingVenue::BinanceMargin => "BinanceMargin",
             TradingVenue::BinanceFutures => "BinanceFutures",
+            TradingVenue::BinanceCoinFutures => "BinanceCoinFutures",
             TradingVenue::OkexMargin => "OkexMargin",
             TradingVenue::OkexFutures => "OkexFutures",
             TradingVenue::BybitMargin => "BybitMargin",
@@ -106,7 +113,9 @@ impl TradingVenue {
 
     pub fn exchange_name(&self) -> &'static str {
         match self {
-            TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => "binance",
+            TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures => "binance",
             TradingVenue::OkexFutures => "okex_futures",
             TradingVenue::OkexMargin => "okex_margin",
             TradingVenue::BybitMargin => "bybit_margin",
@@ -126,6 +135,7 @@ impl TradingVenue {
         match self {
             TradingVenue::BinanceMargin => "margin",
             TradingVenue::BinanceFutures => "futures",
+            TradingVenue::BinanceCoinFutures => "futures",
             TradingVenue::OkexFutures => "futures",
             TradingVenue::OkexMargin => "margin",
             TradingVenue::BybitMargin => "margin",
@@ -145,6 +155,7 @@ impl TradingVenue {
         matches!(
             self,
             TradingVenue::BinanceFutures
+                | TradingVenue::BinanceCoinFutures
                 | TradingVenue::OkexFutures
                 | TradingVenue::BitgetFutures
                 | TradingVenue::BybitFutures
@@ -172,6 +183,7 @@ impl TradingVenue {
             self,
             TradingVenue::BinanceMargin
                 | TradingVenue::BinanceFutures
+                | TradingVenue::BinanceCoinFutures
                 | TradingVenue::OkexMargin
                 | TradingVenue::OkexFutures
                 | TradingVenue::BybitMargin
@@ -227,6 +239,27 @@ pub fn normalize_symbol_for_internal(symbol: &str) -> String {
     out
 }
 
+/// Restore Binance COIN-M symbols after internal normalization removes separators.
+///
+/// Examples: BTCUSDPERP -> BTCUSD_PERP, ETHUSD260925 -> ETHUSD_260925.
+pub fn binance_coin_futures_symbol(symbol: &str) -> String {
+    let normalized = normalize_symbol_for_internal(symbol);
+    if let Some(prefix) = normalized.strip_suffix("PERP") {
+        return format!("{prefix}_PERP");
+    }
+    if normalized.len() > 6 {
+        let split_at = normalized.len() - 6;
+        if let (Some(prefix), Some(suffix)) =
+            (normalized.get(..split_at), normalized.get(split_at..))
+        {
+            if suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+                return format!("{prefix}_{suffix}");
+            }
+        }
+    }
+    normalized
+}
+
 /// 根据 venue 修正符号格式。
 pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
     let symbol_upper = normalize_symbol_for_internal(symbol);
@@ -240,6 +273,7 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
             let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
             format!("{}-{}-SWAP", base, quote)
         }
+        TradingVenue::BinanceCoinFutures => binance_coin_futures_symbol(&symbol_upper),
         TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => symbol_upper,
         _ => symbol_upper,
     }
@@ -294,6 +328,7 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
         TradingVenue::GateMargin | TradingVenue::GateFutures => {
             symbol.to_uppercase().replace(['_', '-'], "")
         }
+        TradingVenue::BinanceCoinFutures => binance_coin_futures_symbol(symbol),
         _ => symbol.to_uppercase(),
     }
 }
@@ -301,9 +336,23 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
 fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
     const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
+    let contract_root = if let Some(root) = symbol_upper.strip_suffix("PERP") {
+        root
+    } else if symbol_upper.len() > 6
+        && symbol_upper
+            .get(symbol_upper.len() - 6..)
+            .is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        symbol_upper
+            .get(..symbol_upper.len() - 6)
+            .unwrap_or(symbol_upper)
+    } else {
+        symbol_upper
+    };
+
     for quote in QUOTE_ASSETS {
-        if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
-            let base = &symbol_upper[..symbol_upper.len() - quote.len()];
+        if contract_root.ends_with(quote) && contract_root.len() > quote.len() {
+            let base = &contract_root[..contract_root.len() - quote.len()];
             return (base, quote);
         }
     }
@@ -333,6 +382,14 @@ mod tests {
             extract_assets_from_symbol("apt-usdt-swap"),
             ("APT".to_string(), "USDT".to_string())
         );
+        assert_eq!(
+            extract_assets_from_symbol("BTCUSD_PERP"),
+            ("BTC".to_string(), "USD".to_string())
+        );
+        assert_eq!(
+            extract_assets_from_symbol("ETHUSD_260925"),
+            ("ETH".to_string(), "USD".to_string())
+        );
     }
 
     #[test]
@@ -357,6 +414,26 @@ mod tests {
         assert_eq!(
             min_qty_symbol_key(TradingVenue::BinanceFutures, "APTUSDT"),
             "APTUSDT"
+        );
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::BinanceCoinFutures, "BTCUSDPERP"),
+            "BTCUSD_PERP"
+        );
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::BinanceCoinFutures, "ETHUSD260925"),
+            "ETHUSD_260925"
+        );
+    }
+
+    #[test]
+    fn test_normalize_symbol_for_binance_coin_futures() {
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSD_PERP", TradingVenue::BinanceCoinFutures),
+            "BTCUSD_PERP"
+        );
+        assert_eq!(
+            normalize_symbol_for_venue("ETHUSD260925", TradingVenue::BinanceCoinFutures),
+            "ETHUSD_260925"
         );
     }
 

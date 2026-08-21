@@ -8,6 +8,7 @@ use std::collections::HashSet;
 const BINANCE_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 const BINANCE_FUTURES_PUBLIC_WS_URL: &str = "wss://fstream.binance.com/public/ws";
 const BINANCE_FUTURES_MARKET_WS_URL: &str = "wss://fstream.binance.com/market/ws";
+const BINANCE_COIN_FUTURES_WS_URL: &str = "wss://dstream.binance.com/ws";
 const BYBIT_SPOT_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
 const BYBIT_SPOT_SBE_WS_URL: &str = "wss://stream.bybit.com/v5/public-sbe/spot";
@@ -769,6 +770,7 @@ impl SubscribeMsgs {
     ) -> &'static str {
         match venue {
             TradingVenue::BinanceMargin => BINANCE_SPOT_WS_URL,
+            TradingVenue::BinanceCoinFutures => BINANCE_COIN_FUTURES_WS_URL,
             _ => match route {
                 BinanceFuturesWsRoute::Public => BINANCE_FUTURES_PUBLIC_WS_URL,
                 BinanceFuturesWsRoute::Market => BINANCE_FUTURES_MARKET_WS_URL,
@@ -860,9 +862,14 @@ impl SubscribeMsgs {
     fn get_signal_subscribe_message(exchange: &Exchange, venue: TradingVenue) -> serde_json::Value {
         match exchange {
             Exchange::Binance | Exchange::Aster => {
+                let signal_symbol = if venue == TradingVenue::BinanceCoinFutures {
+                    "btcusd_perp"
+                } else {
+                    "btcusdt"
+                };
                 serde_json::json!({
                     "method": "SUBSCRIBE",
-                    "params": ["btcusdt@depth5@100ms"],
+                    "params": [format!("{}@depth5@100ms", signal_symbol)],
                     "id": 1,
                 })
             }
@@ -1125,6 +1132,29 @@ mod tests {
             BinancePerpsSubscribeMsgs::WS_URL,
             BINANCE_FUTURES_MARKET_WS_URL
         );
+    }
+
+    #[test]
+    fn binance_coin_futures_streams_use_dstream() {
+        for kind in [
+            BinanceFuturesStreamKind::Depth,
+            BinanceFuturesStreamKind::BookTicker,
+            BinanceFuturesStreamKind::Trade,
+            BinanceFuturesStreamKind::Kline,
+        ] {
+            assert_eq!(
+                SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                    TradingVenue::BinanceCoinFutures,
+                    kind,
+                ),
+                BINANCE_COIN_FUTURES_WS_URL
+            );
+        }
+        let msg = SubscribeMsgs::get_signal_subscribe_message(
+            &Exchange::Binance,
+            TradingVenue::BinanceCoinFutures,
+        );
+        assert_eq!(msg["params"][0], "btcusd_perp@depth5@100ms");
     }
 
     #[test]

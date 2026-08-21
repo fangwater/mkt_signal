@@ -622,7 +622,11 @@ impl SymbolList {
     /// 将交易所枚举转换为所有对应的 TradingVenue
     fn exchange_to_venues(exchange: &Exchange) -> Vec<TradingVenue> {
         match exchange {
-            Exchange::Binance => vec![TradingVenue::BinanceMargin, TradingVenue::BinanceFutures],
+            Exchange::Binance => vec![
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceCoinFutures,
+            ],
             Exchange::Okex => vec![TradingVenue::OkexFutures, TradingVenue::OkexMargin],
             Exchange::Bitget => vec![TradingVenue::BitgetMargin, TradingVenue::BitgetFutures],
             Exchange::Bybit => vec![TradingVenue::BybitMargin, TradingVenue::BybitFutures],

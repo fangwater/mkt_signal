@@ -9,9 +9,9 @@ export ENABLE_IPC_FAST_POLL=0
 
 VENUE="${EXEC_VENUE:-${VENUE:-}}"
 case "$VENUE" in
-  binance-futures) EXCHANGE="binance" ;;
+  binance-futures|binance-coin-futures) EXCHANGE="binance" ;;
   okex-futures) EXCHANGE="okex" ;;
-  *) echo "[ERROR] EXEC_VENUE must be binance-futures or okex-futures" >&2; exit 1 ;;
+  *) echo "[ERROR] unsupported EXEC_VENUE: $VENUE" >&2; exit 1 ;;
 esac
 
 dir_tag="$(basename "$BASE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"

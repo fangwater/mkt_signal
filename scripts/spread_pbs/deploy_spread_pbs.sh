@@ -10,6 +10,7 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 KNOWN_VENUES=(
   "binance-margin"
   "binance-futures"
+  "binance-coin-futures"
   "binance-both"
   "bitget-margin"
   "bitget-futures"
@@ -73,6 +74,7 @@ aws_marketdata_spread_core_for_venue() {
   case "${1,,}" in
     binance-margin)  echo 8 ;;
     binance-futures) echo 9 ;;
+    binance-coin-futures) echo 10 ;;
     gate-both)       echo 10 ;;
     okex-both)       echo 11 ;;
     bitget-both)     echo 12 ;;

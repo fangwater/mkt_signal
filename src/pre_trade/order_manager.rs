@@ -10,7 +10,8 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 pub use symbol_utils::symbol_util::gate_currency_pair_from_symbol;
 use symbol_utils::symbol_util::{
-    extract_assets_from_internal_symbol, normalize_symbol_for_internal, okex_inst_id_from_symbol,
+    binance_coin_futures_symbol, extract_assets_from_internal_symbol,
+    normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
 use trade_engine::bybit::{
     BybitCancelOrderParams, BybitCancelOrderRequest, BybitNewOrderParams, BybitNewOrderRequest,
@@ -311,6 +312,21 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                 )
                 .ok_or_else(|| "failed to build binance um cancel params".to_string())
             }
+            TradingVenue::BinanceCoinFutures => {
+                let req_type = if self.binance_is_standard() {
+                    trade_engine::trade_request::TradeRequestType::BinanceCancelCmOrder
+                } else {
+                    trade_engine::trade_request::TradeRequestType::BinancePmCancelCmOrder
+                };
+                BinanceCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    client_order_id,
+                    &binance_coin_futures_symbol(symbol),
+                    client_order_id,
+                )
+                .ok_or_else(|| "failed to build binance cm cancel params".to_string())
+            }
             _ => Err(format!(
                 "unmatched cancel fallback not supported for venue {:?}",
                 venue
@@ -507,6 +523,24 @@ impl PreTradeOrderRequestExt for Order {
                     self.client_order_id,
                 )
                 .ok_or_else(|| "failed to build binance um cancel params".to_string())
+            }
+            TradingVenue::BinanceCoinFutures => {
+                let req_type = match self.require_binance_account_mode() {
+                    BinanceAccountMode::Standard => {
+                        trade_engine::trade_request::TradeRequestType::BinanceCancelCmOrder
+                    }
+                    BinanceAccountMode::Unified => {
+                        trade_engine::trade_request::TradeRequestType::BinancePmCancelCmOrder
+                    }
+                };
+                BinanceCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    now,
+                    self.client_order_id,
+                    &binance_coin_futures_symbol(&self.symbol),
+                    self.client_order_id,
+                )
+                .ok_or_else(|| "failed to build binance cm cancel params".to_string())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let inst_id = okex_inst_id_from_symbol(&self.symbol, self.venue)?;
@@ -706,6 +740,34 @@ impl PreTradeOrderRequestExt for Order {
                     false,
                 )
                 .ok_or_else(|| "failed to build binance um order params".to_string())
+            }
+            TradingVenue::BinanceCoinFutures => {
+                let req_type = match self.require_binance_account_mode() {
+                    BinanceAccountMode::Standard => {
+                        trade_engine::trade_request::TradeRequestType::BinanceNewCmOrder
+                    }
+                    BinanceAccountMode::Unified => {
+                        trade_engine::trade_request::TradeRequestType::BinancePmNewCmOrder
+                    }
+                };
+                let quantity_qv = resolved.require_quantity_qv(self, "binance cm")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "binance cm")?;
+                BinanceNewOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    self.client_order_id,
+                    &binance_coin_futures_symbol(&self.symbol),
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    false,
+                    false,
+                    false,
+                    false,
+                )
+                .ok_or_else(|| "failed to build binance cm order params".to_string())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let create_ts = get_timestamp_us();
@@ -954,6 +1016,34 @@ impl PreTradeOrderRequestExt for Order {
                     false,
                 )
                 .ok_or_else(|| "failed to build binance um order params".to_string())
+            }
+            TradingVenue::BinanceCoinFutures => {
+                let req_type = match self.require_binance_account_mode() {
+                    BinanceAccountMode::Standard => {
+                        trade_engine::trade_request::TradeRequestType::BinanceNewCmOrder
+                    }
+                    BinanceAccountMode::Unified => {
+                        trade_engine::trade_request::TradeRequestType::BinancePmNewCmOrder
+                    }
+                };
+                let quantity_qv = resolved.require_quantity_qv(self, "binance cm")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "binance cm")?;
+                BinanceNewOrderParams::prepared_request_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    self.client_order_id,
+                    &binance_coin_futures_symbol(&self.symbol),
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                    false,
+                    false,
+                    false,
+                    false,
+                )
+                .ok_or_else(|| "failed to build binance cm order params".to_string())
             }
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                 let create_ts = get_timestamp_us();
@@ -1210,6 +1300,79 @@ mod tests {
             trade_engine::trade_request::BinanceNewOrderParams::from_bytes(prepared.params_slice())
                 .expect("prepared Binance params should parse");
         assert!(!params.margin_buy);
+    }
+
+    #[test]
+    fn binance_coin_order_selects_dapi_or_papi_cm_by_account_mode() {
+        for (mode, expected_type) in [
+            (
+                BinanceAccountMode::Standard,
+                TradeRequestType::BinanceNewCmOrder,
+            ),
+            (
+                BinanceAccountMode::Unified,
+                TradeRequestType::BinancePmNewCmOrder,
+            ),
+        ] {
+            let order = Order::new(
+                TradingVenue::BinanceCoinFutures,
+                401,
+                OrderType::Limit,
+                "BTCUSDPERP".to_string(),
+                Side::Buy,
+                2.0,
+                64_000.0,
+                false,
+                100.0 / 64_000.0,
+                Some(mode),
+                true,
+            );
+            let bytes = order.get_order_request_bytes().expect("CM order request");
+            let request = TradeRequestMsg::parse(bytes.as_ref()).expect("request parse");
+            assert_eq!(request.req_type, expected_type);
+            let params = trade_engine::trade_request::BinanceNewOrderParams::from_bytes(
+                request.params_bytes().as_ref(),
+            )
+            .expect("CM params parse");
+            assert_eq!(params.symbol, "BTCUSD_PERP");
+            assert_eq!(params.quantity_qv.get_val(), 2.0);
+        }
+    }
+
+    #[test]
+    fn binance_coin_cancel_selects_dapi_or_papi_cm_by_account_mode() {
+        for (mode, expected_type) in [
+            (
+                BinanceAccountMode::Standard,
+                TradeRequestType::BinanceCancelCmOrder,
+            ),
+            (
+                BinanceAccountMode::Unified,
+                TradeRequestType::BinancePmCancelCmOrder,
+            ),
+        ] {
+            let order = Order::new(
+                TradingVenue::BinanceCoinFutures,
+                402,
+                OrderType::Limit,
+                "ETHUSD260925".to_string(),
+                Side::Sell,
+                1.0,
+                3_000.0,
+                false,
+                10.0 / 3_000.0,
+                Some(mode),
+                true,
+            );
+            let bytes = order.get_order_cancel_bytes().expect("CM cancel request");
+            let request = TradeRequestMsg::parse(bytes.as_ref()).expect("request parse");
+            assert_eq!(request.req_type, expected_type);
+            let params = trade_engine::trade_request::BinanceCancelOrderParams::from_bytes(
+                request.params_bytes().as_ref(),
+            )
+            .expect("CM cancel params parse");
+            assert_eq!(params.symbol, "ETHUSD_260925");
+        }
     }
 
     #[test]

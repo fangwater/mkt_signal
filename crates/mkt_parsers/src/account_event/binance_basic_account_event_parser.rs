@@ -34,6 +34,38 @@ impl BinanceBasicAccountEventParser {
         }
     }
 
+    fn futures_scope(&self, json: &LazyValue<'_>) -> BasicAccountScope {
+        if self.account_scope == BasicAccountScope::BinanceUnified
+            && lazy_string(json, "fs").eq_ignore_ascii_case("CM")
+        {
+            BasicAccountScope::BinanceUnifiedCm
+        } else {
+            self.account_scope
+        }
+    }
+
+    fn futures_venue(scope: BasicAccountScope) -> u8 {
+        if matches!(
+            scope,
+            BasicAccountScope::BinanceStdCm | BasicAccountScope::BinanceUnifiedCm
+        ) {
+            BinanceBasicOrderMsg::VENUE_CM
+        } else {
+            BinanceBasicOrderMsg::VENUE_UM
+        }
+    }
+
+    fn futures_trading_venue(scope: BasicAccountScope) -> TradingVenue {
+        if matches!(
+            scope,
+            BasicAccountScope::BinanceStdCm | BasicAccountScope::BinanceUnifiedCm
+        ) {
+            TradingVenue::BinanceCoinFutures
+        } else {
+            TradingVenue::BinanceFutures
+        }
+    }
+
     fn parse_execution_report<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
         let event_time = lazy_i64(json, "E");
         let transaction_time = lazy_i64(json, "T");
@@ -135,6 +167,7 @@ impl BinanceBasicAccountEventParser {
     }
 
     fn parse_order_trade_update<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let account_scope = self.futures_scope(json);
         let event_time = lazy_i64(json, "E");
         let transaction_time = lazy_i64(json, "T");
 
@@ -182,7 +215,7 @@ impl BinanceBasicAccountEventParser {
         let commission_asset = lazy_string(&o, "N");
 
         let msg = BinanceBasicOrderMsg::create(
-            BinanceBasicOrderMsg::VENUE_UM,
+            Self::futures_venue(account_scope),
             event_time,
             transaction_time,
             symbol.clone(),
@@ -220,12 +253,12 @@ impl BinanceBasicAccountEventParser {
 
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::OrderUpdate,
-            self.account_scope,
+            account_scope,
             msg.to_bytes(),
         );
         if !tx.emit_with_dedup_key(
             event.to_bytes(),
-            binance_order_dedup_key(self.account_scope, &msg),
+            binance_order_dedup_key(account_scope, &msg),
         ) {
             return 0;
         }
@@ -233,6 +266,7 @@ impl BinanceBasicAccountEventParser {
     }
 
     fn parse_trade_lite<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let account_scope = self.futures_scope(json);
         let event_time = lazy_i64(json, "E");
         let trade_time = lazy_i64(json, "T");
         let trade_id_num = lazy_i64(json, "t").max(0);
@@ -257,7 +291,7 @@ impl BinanceBasicAccountEventParser {
         let last_executed_quantity = lazy_f64(json, "l");
 
         let msg = BasicTradeLiteMsg::create(
-            TradingVenue::BinanceFutures as u8,
+            Self::futures_trading_venue(account_scope) as u8,
             event_time,
             trade_time,
             symbol.clone(),
@@ -281,13 +315,10 @@ impl BinanceBasicAccountEventParser {
 
         let event = BasicAccountEventMsg::create(
             BasicAccountEventType::TradeUpdateLite,
-            self.account_scope,
+            account_scope,
             msg.to_bytes(),
         );
-        if !tx.emit_with_dedup_key(
-            event.to_bytes(),
-            trade_lite_dedup_key(self.account_scope, &msg),
-        ) {
+        if !tx.emit_with_dedup_key(event.to_bytes(), trade_lite_dedup_key(account_scope, &msg)) {
             return 0;
         }
         1
@@ -351,6 +382,7 @@ impl BinanceBasicAccountEventParser {
     }
 
     fn parse_account_update<S: AccountEventSink>(&self, json: &LazyValue<'_>, tx: &S) -> usize {
+        let account_scope = self.futures_scope(json);
         let event_time = lazy_i64(json, "E");
 
         let mut count = 0;
@@ -373,11 +405,10 @@ impl BinanceBasicAccountEventParser {
                     let balance_value = lazy_json::get_f64(&balance, &["cw", "wb"]).unwrap_or(0.0);
                     let msg = BasicBalanceMsg::create(event_time, asset, balance_value);
                     let payload = msg.to_bytes();
-                    let event =
-                        BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
+                    let event = BasicAccountEventMsg::create(msg.msg_type, account_scope, payload);
                     if !tx.emit_with_dedup_key(
                         event.to_bytes(),
-                        balance_dedup_key(self.account_scope, &msg),
+                        balance_dedup_key(account_scope, &msg),
                     ) {
                         return count;
                     }
@@ -408,11 +439,10 @@ impl BinanceBasicAccountEventParser {
                 let msg =
                     BasicPositionMsg::create(event_time, symbol, position_side, position_amount);
                 let payload = msg.to_bytes();
-                let event = BasicAccountEventMsg::create(msg.msg_type, self.account_scope, payload);
-                if !tx.emit_with_dedup_key(
-                    event.to_bytes(),
-                    position_dedup_key(self.account_scope, &msg),
-                ) {
+                let event = BasicAccountEventMsg::create(msg.msg_type, account_scope, payload);
+                if !tx
+                    .emit_with_dedup_key(event.to_bytes(), position_dedup_key(account_scope, &msg))
+                {
                     return count;
                 }
                 count += 1;
@@ -425,14 +455,11 @@ impl BinanceBasicAccountEventParser {
                         pnl,
                     );
                     let pnl_payload = pnl_msg.to_bytes();
-                    let pnl_event = BasicAccountEventMsg::create(
-                        pnl_msg.msg_type,
-                        self.account_scope,
-                        pnl_payload,
-                    );
+                    let pnl_event =
+                        BasicAccountEventMsg::create(pnl_msg.msg_type, account_scope, pnl_payload);
                     if !tx.emit_with_dedup_key(
                         pnl_event.to_bytes(),
-                        unrealized_pnl_dedup_key(self.account_scope, &pnl_msg),
+                        unrealized_pnl_dedup_key(account_scope, &pnl_msg),
                     ) {
                         return count;
                     }
@@ -710,5 +737,50 @@ mod tests {
         assert_eq!(msg.trade_id_str(), "556677");
         assert!((msg.last_executed_price - 64000.5).abs() < 1e-9);
         assert!((msg.last_executed_quantity - 0.002).abs() < 1e-9);
+    }
+
+    #[test]
+    fn standard_coin_order_update_uses_cm_venue() {
+        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdCm);
+        let sink = TestAccountEventSink::new();
+        let json = Bytes::from(
+            r#"{
+                "e":"ORDER_TRADE_UPDATE","E":1700000000000,"T":1700000000123,
+                "o":{"s":"BTCUSD_PERP","c":"123456","S":"BUY","o":"LIMIT",
+                "f":"GTC","x":"NEW","X":"NEW","i":998877,"t":0,"m":false,
+                "p":"64000","q":"2","ap":"0","l":"0","z":"0","L":"0",
+                "n":"0","rp":"0","N":"BTC"}
+            }"#,
+        );
+        assert_eq!(parser.parse(json, &sink), 1);
+        let wrapped = sink.recv().expect("cm order event");
+        let (_, scope, payload) = split_basic_account_event(&wrapped).expect("wrapped cm order");
+        assert_eq!(scope, BasicAccountScope::BinanceStdCm);
+        let msg = BinanceBasicOrderMsg::from_bytes(payload).expect("cm order payload");
+        assert_eq!(msg.venue, BinanceBasicOrderMsg::VENUE_CM);
+        assert_eq!(msg.symbol, "BTCUSD_PERP");
+    }
+
+    #[test]
+    fn portfolio_margin_fs_cm_uses_unified_cm_scope() {
+        let parser = BinanceBasicAccountEventParser::new(false, BasicAccountScope::BinanceUnified);
+        let sink = TestAccountEventSink::new();
+        let json = Bytes::from(
+            r#"{
+                "e":"ACCOUNT_UPDATE","E":1700000000000,"fs":"CM",
+                "a":{"B":[],"P":[{"s":"ETHUSD_PERP","ps":"BOTH","pa":"-3","up":"0.01"}]}
+            }"#,
+        );
+        assert_eq!(parser.parse(json, &sink), 2);
+        let wrapped_position = sink.recv().expect("cm position event");
+        let (_, scope, payload) =
+            split_basic_account_event(&wrapped_position).expect("wrapped cm position");
+        assert_eq!(scope, BasicAccountScope::BinanceUnifiedCm);
+        let position = BasicPositionMsg::from_bytes(payload).expect("cm position payload");
+        assert_eq!(position.inst_id, "ETHUSD_PERP");
+        assert!((position.position_amount + 3.0).abs() < 1e-6);
+        let wrapped_pnl = sink.recv().expect("cm pnl event");
+        let (_, pnl_scope, _) = split_basic_account_event(&wrapped_pnl).expect("wrapped cm pnl");
+        assert_eq!(pnl_scope, BasicAccountScope::BinanceUnifiedCm);
     }
 }

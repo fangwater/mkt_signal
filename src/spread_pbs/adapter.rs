@@ -310,7 +310,9 @@ pub async fn create_adapter(
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
             Box::new(crate::spread_pbs::okex::OkexAdapter::new(venue).await?)
         }
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
+        TradingVenue::BinanceMargin
+        | TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures => {
             Box::new(crate::spread_pbs::binance::BinanceAdapter::new(venue))
         }
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {

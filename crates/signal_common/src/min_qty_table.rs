@@ -26,6 +26,7 @@ pub struct MinQtyEntry {
 pub enum MarketType {
     Spot,
     Futures,
+    CoinFutures,
     Margin,
 }
 
@@ -57,6 +58,7 @@ impl BinanceProvider {
         match market_type {
             MarketType::Spot | MarketType::Margin => "https://api.binance.com/api/v3/exchangeInfo",
             MarketType::Futures => "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            MarketType::CoinFutures => "https://dapi.binance.com/dapi/v1/exchangeInfo",
         }
     }
 
@@ -69,6 +71,7 @@ impl BinanceProvider {
         let label = match market_type {
             MarketType::Spot => "binance_spot",
             MarketType::Futures => "binance_um_futures",
+            MarketType::CoinFutures => "binance_cm_futures",
             MarketType::Margin => "binance_margin",
         };
         let resp = client.get(url).send().await?;
@@ -95,6 +98,9 @@ impl BinanceProvider {
             .with_context(|| format!("failed to parse {} exchange info", label))?;
         let mut map = HashMap::new();
         for raw_symbol in exchange_info.symbols {
+            if market_type == MarketType::CoinFutures && raw_symbol.status != "TRADING" {
+                continue;
+            }
             let filters = binance_extract_filter_values(&raw_symbol.filters, &raw_symbol.symbol)?;
             let symbol = raw_symbol.symbol.to_uppercase();
             let entry = MinQtyEntry {
@@ -109,6 +115,47 @@ impl BinanceProvider {
             map.insert(symbol, entry);
         }
         Ok(map)
+    }
+
+    pub async fn fetch_filters_with_multipliers(
+        &self,
+        client: &Client,
+        market_type: MarketType,
+    ) -> Result<(HashMap<String, MinQtyEntry>, HashMap<String, f64>)> {
+        let url = self.get_api_url(market_type);
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            return Err(anyhow!("GET {} failed: {} - {}", url, status, body));
+        }
+        let exchange_info: BinanceRawExchangeInfo = serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse Binance exchange info from {}", url))?;
+        let mut entries = HashMap::new();
+        let mut multipliers = HashMap::new();
+        for raw_symbol in exchange_info.symbols {
+            if market_type == MarketType::CoinFutures && raw_symbol.status != "TRADING" {
+                continue;
+            }
+            let filters = binance_extract_filter_values(&raw_symbol.filters, &raw_symbol.symbol)?;
+            let symbol = raw_symbol.symbol.to_uppercase();
+            entries.insert(
+                symbol.clone(),
+                MinQtyEntry {
+                    symbol: symbol.clone(),
+                    base_asset: raw_symbol.base_asset.to_uppercase(),
+                    quote_asset: raw_symbol.quote_asset.to_uppercase(),
+                    min_qty: filters.min_qty.unwrap_or(0.0),
+                    step_size: filters.step_size.unwrap_or(0.0),
+                    price_tick: filters.price_tick,
+                    min_notional: filters.min_notional,
+                },
+            );
+            if let Some(contract_size) = raw_symbol.contract_size.filter(|value| *value > 0.0) {
+                multipliers.insert(symbol, contract_size);
+            }
+        }
+        Ok((entries, multipliers))
     }
 }
 
@@ -145,8 +192,10 @@ struct BinanceRawExchangeSymbol {
     base_asset: String,
     #[serde(rename = "quoteAsset")]
     quote_asset: String,
-    #[serde(default, rename = "status")]
-    _status: String,
+    #[serde(default, rename = "contractSize")]
+    contract_size: Option<f64>,
+    #[serde(default, rename = "status", alias = "contractStatus")]
+    status: String,
     #[serde(default, rename = "filters")]
     filters: Vec<BinanceRawExchangeFilter>,
 }
@@ -254,6 +303,23 @@ mod tests {
         let filters: Vec<BinanceRawExchangeFilter> = serde_json::from_value(json).unwrap();
         let out = binance_extract_filter_values(&filters, "DOGEUSDT").unwrap();
         assert_eq!(out.min_notional, Some(5.0));
+    }
+
+    #[test]
+    fn binance_coin_exchange_info_parses_contract_size_and_status() {
+        let info: BinanceRawExchangeInfo = serde_json::from_value(serde_json::json!({
+            "symbols": [{
+                "symbol": "BTCUSD_PERP",
+                "baseAsset": "BTC",
+                "quoteAsset": "USD",
+                "contractStatus": "TRADING",
+                "contractSize": 100.0,
+                "filters": []
+            }]
+        }))
+        .unwrap();
+        assert_eq!(info.symbols[0].status, "TRADING");
+        assert_eq!(info.symbols[0].contract_size, Some(100.0));
     }
 
     #[test]
@@ -476,6 +542,9 @@ impl GateProvider {
                 "https://api.gateio.ws/api/v4/spot/currency_pairs"
             }
             MarketType::Futures => "https://api.gateio.ws/api/v4/futures/usdt/contracts",
+            MarketType::CoinFutures => {
+                unreachable!("Gate provider does not support Binance COIN-M market type")
+            }
         }
     }
 
@@ -500,6 +569,9 @@ impl GateProvider {
             MarketType::Spot => "gate_spot",
             MarketType::Futures => "gate_futures",
             MarketType::Margin => "gate_margin",
+            MarketType::CoinFutures => {
+                unreachable!("Gate provider does not support Binance COIN-M market type")
+            }
         };
         let request = client.get(url);
         let request = if market_type == MarketType::Futures {
@@ -533,6 +605,9 @@ impl GateProvider {
                 Ok((entries, HashMap::new()))
             }
             MarketType::Futures => self.parse_futures_response(&body, label),
+            MarketType::CoinFutures => {
+                unreachable!("Gate provider does not support Binance COIN-M market type")
+            }
         }
     }
 
@@ -692,6 +767,9 @@ impl OkexProvider {
             MarketType::Spot => "https://www.okx.com/api/v5/public/instruments?instType=SPOT",
             MarketType::Margin => "https://www.okx.com/api/v5/public/instruments?instType=MARGIN",
             MarketType::Futures => "https://www.okx.com/api/v5/public/instruments?instType=SWAP",
+            MarketType::CoinFutures => {
+                unreachable!("OKX provider does not support Binance COIN-M market type")
+            }
         }
     }
 
@@ -716,6 +794,9 @@ impl OkexProvider {
             MarketType::Spot => "okex_spot",
             MarketType::Futures => "okex_swap",
             MarketType::Margin => "okex_margin",
+            MarketType::CoinFutures => {
+                unreachable!("OKX provider does not support Binance COIN-M market type")
+            }
         };
         let resp = client.get(url).send().await?;
         let status = resp.status();
@@ -742,6 +823,9 @@ impl OkexProvider {
         match market_type {
             MarketType::Spot | MarketType::Margin => self.parse_spot_response(&response.data),
             MarketType::Futures => self.parse_swap_response(&response.data),
+            MarketType::CoinFutures => {
+                unreachable!("OKX provider does not support Binance COIN-M market type")
+            }
         }
     }
 
@@ -883,6 +967,9 @@ impl BybitProvider {
             MarketType::Futures => {
                 "https://api.bybit.com/v5/market/instruments-info?category=linear"
             }
+            MarketType::CoinFutures => {
+                unreachable!("Bybit provider does not support Binance COIN-M market type")
+            }
         }
     }
 
@@ -907,6 +994,9 @@ impl BybitProvider {
             MarketType::Spot => "bybit_spot",
             MarketType::Futures => "bybit_linear",
             MarketType::Margin => "bybit_margin",
+            MarketType::CoinFutures => {
+                unreachable!("Bybit provider does not support Binance COIN-M market type")
+            }
         };
         let mut all_entries = HashMap::new();
         let mut all_multipliers = HashMap::new();
@@ -1023,6 +1113,9 @@ impl BybitProvider {
                     "lotSizeFilter.minNotionalValue",
                     lot.min_notional_value.as_deref(),
                 ),
+                MarketType::CoinFutures => {
+                    unreachable!("Bybit provider does not support Binance COIN-M market type")
+                }
             };
 
             let min_qty = lot
@@ -1196,6 +1289,9 @@ impl BitgetProvider {
             MarketType::Futures => {
                 "https://api.bitget.com/api/v3/market/instruments?category=USDT-FUTURES"
             }
+            MarketType::CoinFutures => {
+                unreachable!("Bitget provider does not support Binance COIN-M market type")
+            }
         }
     }
 
@@ -1220,6 +1316,9 @@ impl BitgetProvider {
             MarketType::Spot => "bitget_spot",
             MarketType::Futures => "bitget_futures",
             MarketType::Margin => "bitget_margin",
+            MarketType::CoinFutures => {
+                unreachable!("Bitget provider does not support Binance COIN-M market type")
+            }
         };
         let resp = client.get(url).send().await?;
         let status = resp.status();

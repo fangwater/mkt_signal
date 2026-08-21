@@ -951,7 +951,17 @@ async fn set_target_leverage(
     let symbol = symbol_for_venue(&target.symbol, target.venue);
     match target.venue {
         TradingVenue::BinanceFutures => {
-            set_binance_leverage(client, &symbol, leverage, config.binance_account_mode).await
+            set_binance_leverage(
+                client,
+                &symbol,
+                leverage,
+                config.binance_account_mode,
+                false,
+            )
+            .await
+        }
+        TradingVenue::BinanceCoinFutures => {
+            set_binance_leverage(client, &symbol, leverage, config.binance_account_mode, true).await
         }
         TradingVenue::OkexFutures => set_okx_leverage(client, &symbol, leverage).await,
         TradingVenue::BybitFutures => set_bybit_leverage(client, &symbol, leverage).await,
@@ -962,6 +972,9 @@ async fn set_target_leverage(
 }
 
 fn symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
+    if venue == TradingVenue::BinanceCoinFutures {
+        return runtime_common::symbol_util::binance_coin_futures_symbol(symbol);
+    }
     let internal = normalize_online_value_to_internal_symbol(symbol)
         .unwrap_or_else(|| clean_symbol_text(&symbol.to_ascii_uppercase()));
     let base = internal
@@ -980,19 +993,25 @@ async fn set_binance_leverage(
     symbol: &str,
     leverage: u8,
     account_mode: Option<BinanceAccountMode>,
+    coin_m: bool,
 ) -> Result<()> {
     let api_key = required_env("BINANCE_API_KEY")?;
     let api_secret = required_env("BINANCE_API_SECRET")?;
-    let (base, path) = match account_mode {
-        Some(BinanceAccountMode::Standard) => (
-            env_or("BINANCE_FAPI_URL", "https://fapi.binance.com"),
-            "/fapi/v1/leverage",
-        ),
-        Some(BinanceAccountMode::Unified) => (
-            env_or("BINANCE_PAPI_URL", "https://papi.binance.com"),
-            "/papi/v1/um/leverage",
-        ),
-        None => bail!("BINANCE_ACCOUNT_MODE not initialized"),
+    let path = binance_leverage_path(account_mode, coin_m)?;
+    let base = match (account_mode, coin_m) {
+        (Some(BinanceAccountMode::Standard), true) => {
+            env_or("BINANCE_DAPI_URL", "https://dapi.binance.com")
+        }
+        (Some(BinanceAccountMode::Unified), true) => {
+            env_or("BINANCE_PAPI_URL", "https://papi.binance.com")
+        }
+        (Some(BinanceAccountMode::Standard), false) => {
+            env_or("BINANCE_FAPI_URL", "https://fapi.binance.com")
+        }
+        (Some(BinanceAccountMode::Unified), false) => {
+            env_or("BINANCE_PAPI_URL", "https://papi.binance.com")
+        }
+        (None, _) => bail!("BINANCE_ACCOUNT_MODE not initialized"),
     };
     let mut params = BTreeMap::new();
     params.insert("leverage".to_string(), leverage.to_string());
@@ -1028,6 +1047,19 @@ async fn set_binance_leverage(
         );
     }
     Ok(())
+}
+
+fn binance_leverage_path(
+    account_mode: Option<BinanceAccountMode>,
+    coin_m: bool,
+) -> Result<&'static str> {
+    match (account_mode, coin_m) {
+        (Some(BinanceAccountMode::Standard), true) => Ok("/dapi/v1/leverage"),
+        (Some(BinanceAccountMode::Unified), true) => Ok("/papi/v1/cm/leverage"),
+        (Some(BinanceAccountMode::Standard), false) => Ok("/fapi/v1/leverage"),
+        (Some(BinanceAccountMode::Unified), false) => Ok("/papi/v1/um/leverage"),
+        (None, _) => bail!("BINANCE_ACCOUNT_MODE not initialized"),
+    }
 }
 
 async fn set_okx_leverage(client: &Client, symbol: &str, leverage: u8) -> Result<()> {
@@ -1580,6 +1612,22 @@ mod tests {
         assert_eq!(
             symbol_for_venue("HNTUSDT", TradingVenue::GateFutures),
             "HNT_USDT"
+        );
+        assert_eq!(
+            symbol_for_venue("BTCUSDPERP", TradingVenue::BinanceCoinFutures),
+            "BTCUSD_PERP"
+        );
+    }
+
+    #[test]
+    fn binance_coin_leverage_paths_cover_both_account_modes() {
+        assert_eq!(
+            binance_leverage_path(Some(BinanceAccountMode::Standard), true).unwrap(),
+            "/dapi/v1/leverage"
+        );
+        assert_eq!(
+            binance_leverage_path(Some(BinanceAccountMode::Unified), true).unwrap(),
+            "/papi/v1/cm/leverage"
         );
     }
 

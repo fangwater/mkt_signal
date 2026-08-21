@@ -857,7 +857,11 @@ impl MktManager {
         msgs: &crate::sub_msg::BinancePerpsSubscribeMsgs,
     ) {
         let exchange = self.cfg.get_exchange();
-        let url = crate::sub_msg::BinancePerpsSubscribeMsgs::WS_URL.to_string();
+        let url = SubscribeMsgs::get_binance_ws_url_with_route(
+            self.cfg.venue,
+            crate::sub_msg::BinanceFuturesWsRoute::Market,
+        )
+        .to_string();
         let tx = self.derivatives_tx.clone();
         let symbols = self
             .derivatives_subscribe_msgs

@@ -43,7 +43,9 @@ const DEFAULT_BAR_CLOSE_DELAY_MS: i64 = 100;
 
 fn bar_close_delay_ms(venue: TradingVenue) -> i64 {
     match venue {
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => 3,
+        TradingVenue::BinanceMargin
+        | TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures => 3,
         TradingVenue::GateMargin
         | TradingVenue::GateFutures
         | TradingVenue::BybitMargin

@@ -18,6 +18,7 @@ fn map_order_status(code: u8) -> OrderStatus {
 fn map_trading_venue(code: u8) -> TradingVenue {
     match code {
         BinanceBasicOrderMsg::VENUE_UM => TradingVenue::BinanceFutures,
+        BinanceBasicOrderMsg::VENUE_CM => TradingVenue::BinanceCoinFutures,
         _ => TradingVenue::BinanceMargin,
     }
 }

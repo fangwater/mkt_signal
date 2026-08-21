@@ -233,7 +233,11 @@ impl ArbCloseStrategy {
         }
 
         let client_order_id = Self::compose_order_id(self.open_state.strategy_id);
-        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
+        let qty_multiplier = match self.resolve_open_qty_multiplier(
+            venue,
+            &symbol,
+            ctx.price_value(),
+        ) {
             Ok(multiplier) => multiplier,
             Err(err) => {
                 warn!(
@@ -486,8 +490,9 @@ impl OpenStrategyCommon for ArbCloseStrategy {
         &self,
         venue: TradingVenue,
         symbol: &str,
+        price: f64,
     ) -> Result<f64, String> {
-        MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
+        MonitorChannel::instance().qty_multiplier_for_venue_at_price(venue, symbol, price)
     }
 }
 

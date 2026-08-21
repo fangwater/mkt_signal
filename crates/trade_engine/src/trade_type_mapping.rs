@@ -18,7 +18,13 @@ impl TradeTypeMapping {
             | TradeRequestType::BinanceModifyUMOrder
             | TradeRequestType::BinanceUMSetLeverage
             | TradeRequestType::BinanceStdMainToUmTransfer
-            | TradeRequestType::BinanceStdUmToMainTransfer => false,
+            | TradeRequestType::BinanceStdUmToMainTransfer
+            | TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => false,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => false,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -65,6 +71,14 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => "/sapi/v1/asset/transfer",
+            TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCancelCmOrder => {
+                "/dapi/v1/order"
+            }
+            TradeRequestType::BinanceCmSetLeverage => "/dapi/v1/leverage",
+            TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCancelCmOrder => {
+                "/papi/v1/cm/order"
+            }
+            TradeRequestType::BinancePmCmSetLeverage => "/papi/v1/cm/leverage",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -115,6 +129,12 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceUMSetLeverage => "POST",
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => "POST",
+            TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCmSetLeverage => "POST",
+            TradeRequestType::BinanceCancelCmOrder => "DELETE",
+            TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCmSetLeverage => {
+                "POST"
+            }
+            TradeRequestType::BinancePmCancelCmOrder => "DELETE",
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -165,6 +185,12 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceUMSetLeverage => 1,
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => 900,
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => 1,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => 1,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -215,6 +241,12 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceUMSetLeverage => true,
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => true,
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => true,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -265,6 +297,12 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceUMSetLeverage => true,
             TradeRequestType::BinanceStdMainToUmTransfer
             | TradeRequestType::BinanceStdUmToMainTransfer => true,
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => true,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => true,
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
@@ -330,6 +368,40 @@ mod tests {
             assert!(TradeTypeMapping::requires_signature(req_type));
             assert!(TradeTypeMapping::requires_api_key(req_type));
             assert!(!TradeTypeMapping::counts_toward_order_limit(req_type));
+        }
+    }
+
+    #[test]
+    fn binance_coin_orders_map_to_standard_and_portfolio_margin_endpoints() {
+        for (new_type, cancel_type, leverage_type, prefix) in [
+            (
+                TradeRequestType::BinanceNewCmOrder,
+                TradeRequestType::BinanceCancelCmOrder,
+                TradeRequestType::BinanceCmSetLeverage,
+                "/dapi/v1",
+            ),
+            (
+                TradeRequestType::BinancePmNewCmOrder,
+                TradeRequestType::BinancePmCancelCmOrder,
+                TradeRequestType::BinancePmCmSetLeverage,
+                "/papi/v1/cm",
+            ),
+        ] {
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(new_type),
+                format!("{prefix}/order")
+            );
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(cancel_type),
+                format!("{prefix}/order")
+            );
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(leverage_type),
+                format!("{prefix}/leverage")
+            );
+            assert_eq!(TradeTypeMapping::get_method(new_type), "POST");
+            assert_eq!(TradeTypeMapping::get_method(cancel_type), "DELETE");
+            assert_eq!(TradeTypeMapping::get_method(leverage_type), "POST");
         }
     }
 }

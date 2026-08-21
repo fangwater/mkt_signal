@@ -64,6 +64,13 @@ fn snapshot_initializes_exec_venue(
                 req_type == QueryRequestType::BinanceUmAccountSnapshot
             }
         }
+        TradingVenue::BinanceCoinFutures => {
+            if binance_is_standard {
+                req_type == QueryRequestType::BinanceCmAccountSnapshotStd
+            } else {
+                req_type == QueryRequestType::BinancePmCmAccountSnapshot
+            }
+        }
         TradingVenue::OkexMargin => req_type == QueryRequestType::OkexAccountBalanceSnapshot,
         TradingVenue::OkexFutures => req_type == QueryRequestType::OkexPositionsSnapshot,
         TradingVenue::GateMargin => req_type == QueryRequestType::GateUnifiedBalanceSnapshot,
@@ -512,6 +519,8 @@ impl QueryEngChannel {
                                     Some(
                                         QueryRequestType::BinanceUmAccountSnapshot
                                             | QueryRequestType::BinanceUmAccountSnapshotStd
+                                            | QueryRequestType::BinanceCmAccountSnapshotStd
+                                            | QueryRequestType::BinancePmCmAccountSnapshot
                                             | QueryRequestType::OkexPositionsSnapshot
                                             | QueryRequestType::GateUnifiedPositionsSnapshot
                                             | QueryRequestType::BybitPositionsSnapshot
@@ -520,7 +529,16 @@ impl QueryEngChannel {
                                 ) && body_is_empty
                                 {
                                     let mut cleared = false;
-                                    if open_venue.is_futures() && exchange_enum == open_exchange {
+                                    if open_venue.is_futures()
+                                        && exchange_enum == open_exchange
+                                        && req_type.is_some_and(|request_type| {
+                                            snapshot_initializes_exec_venue(
+                                                request_type,
+                                                open_venue,
+                                                binance_is_standard,
+                                            )
+                                        })
+                                    {
                                         if let Some((um, _)) = mc.open_um_mgr() {
                                             um.borrow_mut().clear();
                                             cleared = true;
@@ -530,7 +548,16 @@ impl QueryEngChannel {
                                             );
                                         }
                                     }
-                                    if hedge_venue.is_futures() && exchange_enum == hedge_exchange {
+                                    if hedge_venue.is_futures()
+                                        && exchange_enum == hedge_exchange
+                                        && req_type.is_some_and(|request_type| {
+                                            snapshot_initializes_exec_venue(
+                                                request_type,
+                                                hedge_venue,
+                                                binance_is_standard,
+                                            )
+                                        })
+                                    {
                                         if let Some((um, _)) = mc.hedge_um_mgr() {
                                             um.borrow_mut().clear();
                                             cleared = true;
@@ -572,12 +599,21 @@ impl QueryEngChannel {
                                     | Some(QueryRequestType::BinanceUmAccountSnapshotStd) => {
                                         BasicAccountScope::BinanceStdUm
                                     }
+                                    Some(QueryRequestType::BinanceCmQuery)
+                                    | Some(QueryRequestType::BinanceCmBalanceSnapshotStd)
+                                    | Some(QueryRequestType::BinanceCmAccountSnapshotStd) => {
+                                        BasicAccountScope::BinanceStdCm
+                                    }
                                     Some(QueryRequestType::BinanceSpotAccountSnapshotStd) => {
                                         BasicAccountScope::BinanceStdSpot
                                     }
                                     Some(QueryRequestType::BinanceMarginQuery)
                                     | Some(QueryRequestType::BinanceUMQuery) => {
                                         BasicAccountScope::BinanceUnified
+                                    }
+                                    Some(QueryRequestType::BinancePmCmQuery)
+                                    | Some(QueryRequestType::BinancePmCmAccountSnapshot) => {
+                                        BasicAccountScope::BinanceUnifiedCm
                                     }
                                     Some(QueryRequestType::OkexMarginQuery)
                                     | Some(QueryRequestType::OkexUMQuery) => {
@@ -620,6 +656,13 @@ impl QueryEngChannel {
                                                 scope == BasicAccountScope::BinanceStdUm
                                             } else {
                                                 scope == BasicAccountScope::BinanceUnified
+                                            }
+                                        }
+                                        TradingVenue::BinanceCoinFutures => {
+                                            if binance_is_standard {
+                                                scope == BasicAccountScope::BinanceStdCm
+                                            } else {
+                                                scope == BasicAccountScope::BinanceUnifiedCm
                                             }
                                         }
                                         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
@@ -749,6 +792,7 @@ impl QueryEngChannel {
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
@@ -768,6 +812,7 @@ impl QueryEngChannel {
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
@@ -795,6 +840,7 @@ impl QueryEngChannel {
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
@@ -810,6 +856,7 @@ impl QueryEngChannel {
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
@@ -960,6 +1007,16 @@ mod tests {
         assert!(snapshot_initializes_exec_venue(
             QueryRequestType::BinanceUmAccountSnapshotStd,
             order_common::TradingVenue::BinanceFutures,
+            true,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinancePmCmAccountSnapshot,
+            order_common::TradingVenue::BinanceCoinFutures,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceCmAccountSnapshotStd,
+            order_common::TradingVenue::BinanceCoinFutures,
             true,
         ));
         assert!(snapshot_initializes_exec_venue(

@@ -259,6 +259,7 @@ struct ArbHedgeOrderMeta {
     signal_bbo: Option<persist_common::SignalBbo>,
     borrowed_qv: f64,
     order_base_qty: f64,
+    filled_base_qty: f64,
     expire_ts: i64,
     next_expire_check_ts: i64,
     cancel_requested: bool,
@@ -1075,8 +1076,9 @@ impl ArbHedgeStrategy {
             return false;
         }
 
-        let aligned_base_qty =
-            MonitorChannel::instance().qty_to_base(self.hedge_venue, &self.symbol, qty);
+        let aligned_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(self.hedge_venue, &self.symbol, qty, mark_price)
+            .unwrap_or(0.0);
         if !(aligned_base_qty.is_finite() && aligned_base_qty > 0.0) {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because aligned base qty invalid venue={:?} due_hedge_qty={:.8} aligned_order_qty={:.8} aligned_base_qty={:.8}",
@@ -1725,7 +1727,18 @@ impl ArbHedgeStrategy {
             return;
         }
 
-        let order_base_qty = MonitorChannel::instance().qty_to_base(venue, &symbol, qty);
+        let conversion_price = if ctx_price > 0.0 {
+            ctx_price
+        } else {
+            MonitorChannel::instance()
+                .price_table()
+                .borrow()
+                .mark_price(&symbol)
+                .unwrap_or(0.0)
+        };
+        let order_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(venue, &symbol, qty, conversion_price)
+            .unwrap_or(0.0);
         if order_base_qty <= 0.0 {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} ArbHedge base qty invalid symbol={} venue={:?} qty={:.8}",
@@ -1873,6 +1886,7 @@ impl ArbHedgeStrategy {
                 signal_bbo: signal_bbo_from_legs(None, Some(&ctx.hedging_leg)),
                 borrowed_qv: borrowed.qv,
                 order_base_qty,
+                filled_base_qty: 0.0,
                 expire_ts,
                 next_expire_check_ts: expire_ts,
                 cancel_requested: false,
@@ -2151,12 +2165,15 @@ impl ArbHedgeStrategy {
             .borrow()
             .get(client_order_id)
             .map(|order| {
-                (
-                    order.side,
-                    order.cumulative_filled_quantity * order.qty_multiplier,
-                    order.price,
-                    order.status,
-                )
+                let filled_base_qty = MonitorChannel::instance()
+                    .qty_to_base_at_price(
+                        order.venue,
+                        &order.symbol,
+                        order.cumulative_filled_quantity,
+                        order.price.max(price),
+                    )
+                    .unwrap_or(order.cumulative_filled_quantity * order.qty_multiplier);
+                (order.side, filled_base_qty, order.price, order.status)
             });
         let Some((side, filled_base_qty, order_price, status)) = order_snapshot else {
             warn!(
@@ -2168,6 +2185,11 @@ impl ArbHedgeStrategy {
         };
         let Some(meta) = self.hedge_order_meta.remove(&client_order_id) else {
             return;
+        };
+        let filled_base_qty = if meta.filled_base_qty > 0.0 {
+            meta.filled_base_qty
+        } else {
+            filled_base_qty
         };
         let terminal_price = if price.is_finite() && price > 0.0 {
             price
@@ -2352,6 +2374,21 @@ impl ArbHedgeStrategy {
             .get(client_order_id)
             .map(|order| (order, self.uniform_hedge_publish_ctx(client_order_id)));
         drop(order_manager);
+        let fill_delta_venue_qty =
+            (trade.cumulative_filled_quantity() - prev_cumulative_filled_qty).max(0.0);
+        let fill_delta_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(
+                trade.trading_venue(),
+                trade.symbol(),
+                fill_delta_venue_qty,
+                trade.price(),
+            )
+            .unwrap_or(0.0);
+        if fill_delta_base_qty > 0.0 {
+            if let Some(meta) = self.hedge_order_meta.get_mut(&client_order_id) {
+                meta.filled_base_qty += fill_delta_base_qty;
+            }
+        }
         if status == OrderStatus::Filled {
             self.clear_order_query_state(client_order_id);
             self.record_terminal_hedge_order(client_order_id, trade.event_time(), trade.price());
@@ -3608,6 +3645,7 @@ mod tests {
                 signal_bbo: None,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,
+                filled_base_qty: 0.0,
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
@@ -3648,6 +3686,7 @@ mod tests {
                 signal_bbo: None,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,
+                filled_base_qty: 0.0,
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,
@@ -3694,6 +3733,7 @@ mod tests {
                 signal_bbo: None,
                 borrowed_qv: borrowed.qv,
                 order_base_qty: borrowed.qty,
+                filled_base_qty: 0.0,
                 expire_ts: 0,
                 next_expire_check_ts: 0,
                 cancel_requested: false,

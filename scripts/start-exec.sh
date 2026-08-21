@@ -20,7 +20,7 @@ Usage: scripts/start-exec.sh --env-name <nameNN> [options]
 Options:
   --host <ssh-host>     SSH config host (default: cta_exec)
   --env-name <nameNN>   Exec environment (required), e.g. binance_exec_trade01
-  --venue <name>        Venue (binance-futures or okex-futures; inferred from env-name)
+  --venue <name>        Venue (binance-futures, binance-coin-futures or okex-futures)
   --check-only          Validate the target and show process state without starting
   -h, --help            Show this help
 
@@ -74,11 +74,12 @@ fi
 INFERRED_EXCHANGE="${BASH_REMATCH[1]}"
 INFERRED_VENUE="${INFERRED_EXCHANGE}-futures"
 VENUE="${VENUE:-$INFERRED_VENUE}"
-if [[ "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
-  echo "[ERROR] venue must be binance-futures or okex-futures: $VENUE" >&2
-  exit 2
-fi
-if [[ "$VENUE" != "$INFERRED_VENUE" ]]; then
+case "$VENUE" in
+  binance-futures|binance-coin-futures) VENUE_EXCHANGE="binance" ;;
+  okex-futures) VENUE_EXCHANGE="okex" ;;
+  *) echo "[ERROR] unsupported venue: $VENUE" >&2; exit 2 ;;
+esac
+if [[ "$VENUE_EXCHANGE" != "$INFERRED_EXCHANGE" ]]; then
   echo "[ERROR] venue/env-name mismatch: venue=$VENUE env-name=$ENV_NAME" >&2
   exit 2
 fi

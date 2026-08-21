@@ -15,7 +15,7 @@ Usage: scripts/publish-exec.sh --env-name <nameNN> [options]
 Options:
   --host <ssh-host>     SSH config host (default: cta_exec)
   --env-name <nameNN>   Exec environment (required), e.g. binance_exec_trade01
-  --venue <name>        Venue (binance-futures or okex-futures; inferred from env-name)
+  --venue <name>        Venue (binance-futures, binance-coin-futures or okex-futures)
   --check-only          Only verify that publish target processes are stopped
   --skip-build          Reuse already-built release binaries
   -h, --help            Show this help
@@ -76,11 +76,12 @@ if ((INSTANCE_INDEX < 1 || INSTANCE_INDEX > 99)); then
 fi
 INFERRED_VENUE="${INFERRED_EXCHANGE}-futures"
 VENUE="${VENUE:-$INFERRED_VENUE}"
-if [[ "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
-  echo "[ERROR] venue must be binance-futures or okex-futures: $VENUE" >&2
-  exit 2
-fi
-if [[ "$VENUE" != "$INFERRED_VENUE" ]]; then
+case "$VENUE" in
+  binance-futures|binance-coin-futures) VENUE_EXCHANGE="binance" ;;
+  okex-futures) VENUE_EXCHANGE="okex" ;;
+  *) echo "[ERROR] unsupported venue: $VENUE" >&2; exit 2 ;;
+esac
+if [[ "$VENUE_EXCHANGE" != "$INFERRED_EXCHANGE" ]]; then
   echo "[ERROR] venue/env-name mismatch: venue=$VENUE env-name=$ENV_NAME" >&2
   exit 2
 fi
@@ -321,18 +322,21 @@ case "$EXCHANGE" in
   binance)
     LOCAL_RELATIVE+=(
       "scripts/binance_cancel_all_std_um_ws_orders.py"
+      "scripts/binance_cancel_all_std_cm_orders.py"
       "scripts/binance_cancel_all_unified_open_orders.py"
       "scripts/binance_local_ip.py"
       "scripts/sell_margin_spot.py"
     )
     UPLOAD_NAMES+=(
       "binance_cancel_all_std_um_ws_orders.py"
+      "binance_cancel_all_std_cm_orders.py"
       "binance_cancel_all_unified_open_orders.py"
       "binance_local_ip.py"
       "sell_margin_spot.py"
     )
     DESTINATIONS+=(
       "scripts/binance_cancel_all_std_um_ws_orders.py"
+      "scripts/binance_cancel_all_std_cm_orders.py"
       "scripts/binance_cancel_all_unified_open_orders.py"
       "scripts/binance_local_ip.py"
       "scripts/sell_margin_spot.py"

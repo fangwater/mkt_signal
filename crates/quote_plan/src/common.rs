@@ -6,6 +6,7 @@ const EPS: f64 = 1e-12;
 pub enum Venue {
     BinanceMargin,
     BinanceFutures,
+    BinanceCoinFutures,
     OkexMargin,
     OkexFutures,
     BybitMargin,
@@ -25,6 +26,7 @@ impl From<TradingVenue> for Venue {
         match value {
             TradingVenue::BinanceMargin => Venue::BinanceMargin,
             TradingVenue::BinanceFutures => Venue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures => Venue::BinanceCoinFutures,
             TradingVenue::OkexMargin => Venue::OkexMargin,
             TradingVenue::OkexFutures => Venue::OkexFutures,
             TradingVenue::BybitMargin => Venue::BybitMargin,
@@ -46,6 +48,7 @@ impl From<Venue> for TradingVenue {
         match value {
             Venue::BinanceMargin => TradingVenue::BinanceMargin,
             Venue::BinanceFutures => TradingVenue::BinanceFutures,
+            Venue::BinanceCoinFutures => TradingVenue::BinanceCoinFutures,
             Venue::OkexMargin => TradingVenue::OkexMargin,
             Venue::OkexFutures => TradingVenue::OkexFutures,
             Venue::BybitMargin => TradingVenue::BybitMargin,
@@ -187,6 +190,7 @@ pub fn is_futures_venue(venue: Venue) -> bool {
     matches!(
         venue,
         Venue::BinanceFutures
+            | Venue::BinanceCoinFutures
             | Venue::OkexFutures
             | Venue::BybitFutures
             | Venue::BitgetFutures
@@ -199,7 +203,7 @@ pub fn is_futures_venue(venue: Venue) -> bool {
 pub fn venue_qty_is_contracts(venue: Venue) -> bool {
     matches!(
         venue,
-        Venue::BinanceFutures | Venue::OkexFutures | Venue::GateFutures
+        Venue::BinanceFutures | Venue::BinanceCoinFutures | Venue::OkexFutures | Venue::GateFutures
     )
 }
 
@@ -230,7 +234,7 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: Venue) -> String {
             let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
             format!("{}-{}-SWAP", base, quote)
         }
-        Venue::BinanceMargin | Venue::BinanceFutures => symbol_upper,
+        Venue::BinanceMargin | Venue::BinanceFutures | Venue::BinanceCoinFutures => symbol_upper,
         _ => symbol_upper,
     }
 }

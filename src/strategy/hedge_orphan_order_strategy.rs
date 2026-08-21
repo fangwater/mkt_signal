@@ -226,8 +226,22 @@ impl HedgeOrphanOrderStrategy {
                     (
                         order.symbol.clone(),
                         order.side,
-                        order.quantity * order.qty_multiplier,
-                        order.cumulative_filled_quantity * order.qty_multiplier,
+                        MonitorChannel::instance()
+                            .qty_to_base_at_price(
+                                order.venue,
+                                &order.symbol,
+                                order.quantity,
+                                order.price,
+                            )
+                            .unwrap_or(order.quantity * order.qty_multiplier),
+                        MonitorChannel::instance()
+                            .qty_to_base_at_price(
+                                order.venue,
+                                &order.symbol,
+                                order.cumulative_filled_quantity,
+                                order.price,
+                            )
+                            .unwrap_or(order.cumulative_filled_quantity * order.qty_multiplier),
                         order.price,
                     )
                 })

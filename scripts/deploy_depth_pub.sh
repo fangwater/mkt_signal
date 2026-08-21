@@ -12,7 +12,7 @@ DEPLOY_ROOT_NAME="depth_pub"
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
 KNOWN_VENUES=(
   "okex-futures" "okex-margin" "okex-both"
-  "binance-futures" "binance-margin" "binance-both"
+  "binance-futures" "binance-coin-futures" "binance-margin" "binance-both"
   "bybit-futures" "bybit-margin" "bybit-both"
   "bitget-futures" "bitget-margin" "bitget-both"
   "gate-futures" "gate-margin" "gate-both"

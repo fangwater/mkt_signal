@@ -42,6 +42,7 @@ const INCREMENTAL_CRITICAL_STALE: Duration = Duration::from_secs(15);
 const INCREMENTAL_STALE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const HEALTH_WALL_CLOCK_JUMP_THRESHOLD: Duration = Duration::from_secs(1);
 const INCREMENTAL_CRITICAL_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const COIN_INCREMENTAL_CRITICAL_SYMBOLS: [&str; 2] = ["BTCUSD_PERP", "ETHUSD_PERP"];
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
 const ENV_ENABLE_INCREMENTAL: &str = "SPREAD_PBS_ENABLE_INCREMENTAL";
 const ENV_ENABLE_DERIVATIVES: &str = "SPREAD_PBS_ENABLE_DERIVATIVES";
@@ -152,7 +153,9 @@ fn role_stream_policy(
 fn is_binance_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures
+        TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
     )
 }
 
@@ -181,6 +184,7 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
         venue,
         TradingVenue::OkexFutures
             | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
             | TradingVenue::BitgetFutures
             | TradingVenue::GateFutures
             | TradingVenue::BybitFutures
@@ -411,6 +415,12 @@ impl SpreadPbsApp {
     /// 必须在 `LocalSet` 上下文里 await（`main` 用 `LocalSet::run_until`）。
     pub async fn run_with_shutdown(self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
         let venue = self.config.venue;
+        let critical_incremental_symbols: &'static [&'static str] =
+            if venue == TradingVenue::BinanceCoinFutures {
+                &COIN_INCREMENTAL_CRITICAL_SYMBOLS
+            } else {
+                &INCREMENTAL_CRITICAL_SYMBOLS
+            };
         let venue_slug: &'static str = venue.data_pub_slug();
         let binance_spot_transport = if venue == TradingVenue::BinanceMargin {
             BinanceSpotTransport::from_env()?
@@ -901,7 +911,7 @@ impl SpreadPbsApp {
                             .borrow()
                             .symbol_state
                             .stale_incremental_symbols(
-                                &INCREMENTAL_CRITICAL_SYMBOLS,
+                                critical_incremental_symbols,
                                 now,
                                 INCREMENTAL_CRITICAL_STALE,
                             );
@@ -912,7 +922,7 @@ impl SpreadPbsApp {
                                     .map(|started_at| now.duration_since(started_at).as_millis())
                                     .unwrap_or(0);
                                 let s = state.borrow();
-                                let symbol_ages = s.symbol_state.critical_stream_age_summary(&INCREMENTAL_CRITICAL_SYMBOLS, now);
+                                let symbol_ages = s.symbol_state.critical_stream_age_summary(critical_incremental_symbols, now);
                                 log::warn!(
                                     "spread_pbs[{}] critical incremental input recovered symbols={} threshold_ms={} stale_duration_ms={} symbol_ages={} incremental_published={} trades_published={}",
                                     venue_slug,
@@ -931,7 +941,7 @@ impl SpreadPbsApp {
                             let stale_changed = stale != reported_stale_incremental_symbols;
                             if stale_changed || now >= next_incremental_stale_log_at {
                                 let s = state.borrow();
-                                let symbol_ages = s.symbol_state.critical_stream_age_summary(&INCREMENTAL_CRITICAL_SYMBOLS, now);
+                                let symbol_ages = s.symbol_state.critical_stream_age_summary(critical_incremental_symbols, now);
                                 log::error!(
                                     "spread_pbs[{}] critical incremental input stale symbols={} threshold_ms={} symbol_ages={} incremental_published={} trades_published={} incremental_dropped_by_seq={} trades_dropped_by_seq={}; keeping process alive while websocket legs reconnect",
                                     venue_slug,

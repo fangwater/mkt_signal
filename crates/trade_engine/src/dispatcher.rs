@@ -66,6 +66,7 @@ impl AccountState {
 pub struct Dispatcher {
     base_url_papi: String,
     base_url_fapi: String,
+    base_url_dapi: String,
     base_url_sapi: String,
     ip_clients: Vec<IpClient>,
     binance_um_whitelist_ip: Option<IpAddr>,
@@ -229,10 +230,15 @@ impl Dispatcher {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| RestConstants::BINANCE_SAPI_BASE_URL.to_string());
+        let base_url_dapi = std::env::var("BINANCE_DAPI_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| RestConstants::BINANCE_DAPI_BASE_URL.to_string());
 
         Ok(Self {
             base_url_papi,
             base_url_fapi,
+            base_url_dapi,
             base_url_sapi,
             ip_clients,
             binance_um_whitelist_ip,
@@ -421,6 +427,8 @@ impl Dispatcher {
 
         let base_url = if evt.endpoint.starts_with("/fapi/") {
             &self.base_url_fapi
+        } else if evt.endpoint.starts_with("/dapi/") {
+            &self.base_url_dapi
         } else if evt.endpoint.starts_with("/api/") || evt.endpoint.starts_with("/sapi/") {
             &self.base_url_sapi
         } else {

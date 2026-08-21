@@ -71,6 +71,9 @@ pub enum BasicAccountScope {
     BinanceUnified = 1,
     BinanceStdSpot = 2,
     BinanceStdUm = 3,
+    BinanceStdCm = 4,
+    /// Binance Portfolio Margin COIN-M futures sub-scope.
+    BinanceUnifiedCm = 5,
     OkexUnified = 10,
     GateUnified = 11,
     BitgetUnified = 12,
@@ -239,6 +242,8 @@ impl BasicAccountScope {
             1 => Self::BinanceUnified,
             2 => Self::BinanceStdSpot,
             3 => Self::BinanceStdUm,
+            4 => Self::BinanceStdCm,
+            5 => Self::BinanceUnifiedCm,
             10 => Self::OkexUnified,
             11 => Self::GateUnified,
             12 => Self::BitgetUnified,
@@ -253,6 +258,8 @@ impl BasicAccountScope {
             Self::BinanceUnified => "binance_unified",
             Self::BinanceStdSpot => "binance_std_spot",
             Self::BinanceStdUm => "binance_std_um",
+            Self::BinanceStdCm => "binance_std_cm",
+            Self::BinanceUnifiedCm => "binance_unified_cm",
             Self::OkexUnified => "okex_unified",
             Self::GateUnified => "gate_unified",
             Self::BitgetUnified => "bitget_unified",
@@ -545,7 +552,7 @@ impl OkexOrderMsg {
 #[derive(Debug, Clone)]
 pub struct BinanceBasicOrderMsg {
     pub msg_type: BasicAccountEventType,
-    /// 1=margin, 2=um
+    /// 1=margin, 2=um, 3=cm
     pub venue: u8,
     pub event_time: i64,
     pub trade_time: i64,
@@ -580,6 +587,7 @@ pub struct BinanceBasicOrderMsg {
 impl BinanceBasicOrderMsg {
     pub const VENUE_MARGIN: u8 = 1;
     pub const VENUE_UM: u8 = 2;
+    pub const VENUE_CM: u8 = 3;
 
     #[allow(clippy::too_many_arguments)]
     pub fn create(

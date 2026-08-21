@@ -8,6 +8,7 @@ pub mod basic_um_manager;
 pub mod batch_exec_config;
 pub mod batch_exec_reload_notify;
 pub mod binance_fr_position_limit_guard;
+pub mod binance_std_cm_margin_guard;
 pub mod binance_std_um_margin_guard;
 pub mod bitget_position_tier_guard;
 mod channel;

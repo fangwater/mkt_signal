@@ -534,6 +534,27 @@ fn parse_bool_env(value: &str) -> Option<bool> {
     }
 }
 
+fn configured_binance_ws_markets() -> (bool, bool) {
+    let venues: Vec<String> = [
+        "OPEN_VENUE",
+        "HEDGE_VENUE",
+        "EXEC_VENUE",
+        "EXEC_START_VENUE",
+        "VENUE",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .map(|value| value.trim().to_ascii_lowercase().replace('_', "-"))
+    .filter(|value| !value.is_empty())
+    .collect();
+    if venues.is_empty() {
+        return (true, true);
+    }
+    let um = venues.iter().any(|venue| venue == "binance-futures");
+    let spot = venues.iter().any(|venue| venue == "binance-margin");
+    (um, spot)
+}
+
 fn enable_ipc_fast_poll() -> bool {
     for name in ["enable_ipc_fast_poll", "ENABLE_IPC_FAST_POLL"] {
         if let Ok(value) = std::env::var(name) {
@@ -724,12 +745,14 @@ fn binance_cancel_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPai
 
 fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
     match msg.req_type {
-        TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceNewMarginOrder => {
-            binance_new_order_rest_pairs(msg)
-        }
-        TradeRequestType::BinanceCancelUMOrder | TradeRequestType::BinanceCancelMarginOrder => {
-            binance_cancel_order_rest_pairs(msg)
-        }
+        TradeRequestType::BinanceNewUMOrder
+        | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceNewCmOrder
+        | TradeRequestType::BinancePmNewCmOrder => binance_new_order_rest_pairs(msg),
+        TradeRequestType::BinanceCancelUMOrder
+        | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceCancelCmOrder
+        | TradeRequestType::BinancePmCancelCmOrder => binance_cancel_order_rest_pairs(msg),
         TradeRequestType::BinanceStdMainToUmTransfer
         | TradeRequestType::BinanceStdUmToMainTransfer => binance_std_usdt_transfer_rest_pairs(msg),
         _ => parse_urlencoded_rest_pairs(&msg.params, "Binance REST trade request"),
@@ -1362,8 +1385,10 @@ impl TradeEngine {
         let health_registry = WsHealthRegistry::default();
 
         // 初始化 REST dispatcher（用于 Binance）
+        let (binance_um_in_play, binance_spot_in_play) = configured_binance_ws_markets();
         let binance_um_ip_whitelist_mode = exchange == Exchange::Binance
             && !use_ltp_backend
+            && binance_um_in_play
             && binance_um_ip_whitelist_mode_enabled();
         let rest_dispatcher = if exchange == Exchange::Binance && !use_ltp_backend {
             Some(Rc::new(tokio::sync::Mutex::new(Dispatcher::new(
@@ -1380,13 +1405,20 @@ impl TradeEngine {
         // 初始化 WebSocket 客户端（用于 OKEx/Gate/Binance）
         let binance_ws_enabled = exchange == Exchange::Binance
             && !use_ltp_backend
-            && binance_account_mode() == BinanceAccountMode::Standard;
+            && binance_account_mode() == BinanceAccountMode::Standard
+            && (binance_um_in_play || binance_spot_in_play);
         if exchange == Exchange::Binance && !use_ltp_backend && !binance_ws_enabled {
-            info!("binance ws disabled (BINANCE_ACCOUNT_MODE!=STANDARD)");
+            info!(
+                "binance UM/Spot trade ws disabled account_mode={} um_in_play={} spot_in_play={}",
+                binance_account_mode().as_str(),
+                binance_um_in_play,
+                binance_spot_in_play
+            );
         }
         let binance_spot_fix_enabled = exchange == Exchange::Binance
             && !use_ltp_backend
             && binance_account_mode() == BinanceAccountMode::Standard
+            && binance_spot_in_play
             && spot_fix_enabled_from_env()?;
         if exchange == Exchange::Binance && !use_ltp_backend {
             info!(
@@ -2889,6 +2921,8 @@ impl TradeEngine {
                                 Ok(outcome) => {
                                     match msg.req_type {
                                         crate::query_request::QueryRequestType::BinanceUMQuery
+                                        | crate::query_request::QueryRequestType::BinanceCmQuery
+                                        | crate::query_request::QueryRequestType::BinancePmCmQuery
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(v) = parse_binance_um_order_query_json(&outcome.body) {
@@ -2903,7 +2937,8 @@ impl TradeEngine {
                                                 });
                                             } else {
                                                 warn!(
-                                                    "binance um order query parse failed: client_query_id={} body_len={}",
+                                                    "binance futures order query parse failed: req_type={:?} client_query_id={} body_len={}",
+                                                    msg.req_type,
                                                     msg.client_query_id,
                                                     outcome.body.len()
                                                 );
@@ -2977,6 +3012,7 @@ impl TradeEngine {
                                             }
                                         }
                                         crate::query_request::QueryRequestType::BinanceUmBalanceSnapshotStd
+                                        | crate::query_request::QueryRequestType::BinanceCmBalanceSnapshotStd
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) =
@@ -2996,6 +3032,7 @@ impl TradeEngine {
                                             }
                                         }
                                         crate::query_request::QueryRequestType::BinanceUmAccountSnapshot
+                                        | crate::query_request::QueryRequestType::BinancePmCmAccountSnapshot
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
@@ -3036,6 +3073,7 @@ impl TradeEngine {
                                             }
                                         }
                                         crate::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
+                                        | crate::query_request::QueryRequestType::BinanceCmAccountSnapshotStd
                                             if outcome.status == 200 =>
                                         {
                                             if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
@@ -4101,8 +4139,8 @@ impl TradeEngine {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_std_usdt_transfer_rest_pairs, enable_ipc_fast_poll, parse_bool_env,
-        router_idle_spin_iters, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        binance_std_usdt_transfer_rest_pairs, configured_binance_ws_markets, enable_ipc_fast_poll,
+        parse_bool_env, router_idle_spin_iters, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
     use std::sync::{Mutex, OnceLock};
 
@@ -4130,6 +4168,20 @@ mod tests {
                 ("type".to_string(), "UMFUTURE_MAIN".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn coin_only_venue_disables_unrelated_binance_trade_websockets() {
+        let _guard = env_test_lock();
+        for name in ["OPEN_VENUE", "HEDGE_VENUE", "EXEC_START_VENUE", "VENUE"] {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("EXEC_VENUE", "binance-coin-futures");
+        assert_eq!(configured_binance_ws_markets(), (false, false));
+        std::env::set_var("OPEN_VENUE", "binance-margin");
+        assert_eq!(configured_binance_ws_markets(), (false, true));
+        std::env::remove_var("OPEN_VENUE");
+        std::env::remove_var("EXEC_VENUE");
     }
 
     #[test]

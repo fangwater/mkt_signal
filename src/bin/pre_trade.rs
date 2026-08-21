@@ -85,6 +85,7 @@ struct Args {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ExecVenue {
     BinanceFutures,
+    BinanceCoinFutures,
     OkexFutures,
 }
 
@@ -101,6 +102,7 @@ impl From<ExecVenue> for TradingVenue {
     fn from(value: ExecVenue) -> Self {
         match value {
             ExecVenue::BinanceFutures => Self::BinanceFutures,
+            ExecVenue::BinanceCoinFutures => Self::BinanceCoinFutures,
             ExecVenue::OkexFutures => Self::OkexFutures,
         }
     }
@@ -353,6 +355,25 @@ async fn cancel_all_exec_orders_on_startup(
             ),
             None => anyhow::bail!("BINANCE_ACCOUNT_MODE is required for binance-futures"),
         },
+        TradingVenue::BinanceCoinFutures => match binance_account_mode {
+            Some(BinanceAccountMode::Standard) => (
+                "binance_cancel_all_std_cm_orders.py",
+                vec![
+                    "--execute".to_string(),
+                    "--env-dir".to_string(),
+                    cwd.display().to_string(),
+                ],
+            ),
+            Some(BinanceAccountMode::Unified) => (
+                "binance_cancel_all_unified_open_orders.py",
+                vec![
+                    "--scope".to_string(),
+                    "cm".to_string(),
+                    "--execute".to_string(),
+                ],
+            ),
+            None => anyhow::bail!("BINANCE_ACCOUNT_MODE is required for binance-coin-futures"),
+        },
         TradingVenue::OkexFutures => (
             "okx_swap_open_orders.py",
             vec![
@@ -363,7 +384,7 @@ async fn cancel_all_exec_orders_on_startup(
             ],
         ),
         _ => anyhow::bail!(
-            "exec-pre-trade only supports binance-futures and okex-futures: venue={venue:?}"
+            "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures: venue={venue:?}"
         ),
     };
     let script = exec_cancel_script(script_name)?;
@@ -471,10 +492,12 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             .into();
         if !matches!(
             venue,
-            TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+            TradingVenue::BinanceFutures
+                | TradingVenue::OkexFutures
+                | TradingVenue::BinanceCoinFutures
         ) {
             return Err(anyhow::anyhow!(
-                "exec-pre-trade only supports binance-futures and okex-futures"
+                "exec-pre-trade only supports binance-futures, binance-coin-futures and okex-futures"
             ));
         }
         (venue, venue)

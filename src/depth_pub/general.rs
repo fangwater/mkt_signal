@@ -34,6 +34,7 @@ use order_common::TradingVenue;
 const BINANCE_SPOT_SBE_WS_URL: &str = "wss://stream-sbe.binance.com:9443/ws";
 const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
 const BINANCE_FUTURES_MM_WS_URL: &str = "wss://fstream-mm.binance.com/public/stream";
+const BINANCE_COIN_FUTURES_WS_URL: &str = "wss://dstream.binance.com/ws";
 const BITGET_SBE_WS_URL: &str = "wss://ws.bitget.com/v3/ws/public/sbe";
 const GATE_SBE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe?sbe_schema_id=1";
 const GATE_SBE_SPOT_WS_URL: &str = "wss://api.gateio.ws/ws/v4/ws/spot/sbe?sbe_schema_id=1";
@@ -161,6 +162,7 @@ impl DepthPubGeneralRunner {
         let snapshot_venues = [
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
+            TradingVenue::BinanceCoinFutures,
             TradingVenue::BitgetMargin,
             TradingVenue::BitgetFutures,
             TradingVenue::GateMargin,
@@ -222,9 +224,9 @@ fn spawn_snapshot_ws(
 ) -> watch::Sender<bool> {
     let local_ip = config.primary_local_ip.clone();
     let (url, headers, subscribe_msgs, keepalive, label, handler) = match venue {
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => {
-            spawn_binance_params(venue, &symbols, app)
-        }
+        TradingVenue::BinanceMargin
+        | TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures => spawn_binance_params(venue, &symbols, app),
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
             spawn_bitget_params(venue, &symbols, app)
         }
@@ -273,6 +275,11 @@ fn spawn_binance_params(
         ),
         TradingVenue::BinanceFutures => (
             binance_futures_ws_url().to_string(),
+            Vec::new(),
+            "depth20@100ms",
+        ),
+        TradingVenue::BinanceCoinFutures => (
+            BINANCE_COIN_FUTURES_WS_URL.to_string(),
             Vec::new(),
             "depth20@100ms",
         ),

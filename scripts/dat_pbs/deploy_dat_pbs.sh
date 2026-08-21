@@ -7,7 +7,7 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate" "aster")
 KNOWN_VENUES=(
   "okex-futures" "okex-margin"
-  "binance-futures" "binance-margin"
+  "binance-futures" "binance-coin-futures" "binance-margin"
   "bybit-futures" "bybit-margin"
   "bitget-futures" "bitget-margin"
   "gate-futures" "gate-margin"

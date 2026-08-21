@@ -149,8 +149,9 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
         &self,
         venue: TradingVenue,
         symbol: &str,
+        price: f64,
     ) -> Result<f64, String> {
-        MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
+        MonitorChannel::instance().qty_multiplier_for_venue_at_price(venue, symbol, price)
     }
 
     fn handoff_open_order_after_query_failure(

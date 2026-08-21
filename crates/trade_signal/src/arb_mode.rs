@@ -29,6 +29,7 @@ impl ArbMode {
         let hedge_is_futures = matches!(
             hedge_venue,
             TradingVenue::BinanceFutures
+                | TradingVenue::BinanceCoinFutures
                 | TradingVenue::OkexFutures
                 | TradingVenue::BybitFutures
                 | TradingVenue::BitgetFutures

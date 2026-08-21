@@ -23,6 +23,7 @@ const BINANCE_FUTURES_WS_URL: &str = "wss://fstream.binance.com/public/stream";
 const BINANCE_FUTURES_MM_WS_URL: &str = "wss://fstream-mm.binance.com/public/stream";
 const BINANCE_FUTURES_DERIVATIVES_WS_URL: &str = "wss://fstream.binance.com/market/ws";
 const BINANCE_FUTURES_MM_DERIVATIVES_WS_URL: &str = "wss://fstream-mm.binance.com/market/ws";
+const BINANCE_COIN_FUTURES_WS_URL: &str = "wss://dstream.binance.com/ws";
 const BINANCE_SUBSCRIBE_CHUNK: usize = 200;
 const SYMBOL_SLOT_CACHE_SIZE: usize = 128;
 pub(crate) const ENV_BINANCE_FUTURES_MM_WS_MODE: &str = "SPREAD_PBS_BINANCE_FUTURES_MM_WS_MODE";
@@ -123,6 +124,7 @@ impl VenueAdapter for BinanceAdapter {
         match self.venue {
             TradingVenue::BinanceMargin => BINANCE_SPOT_SBE_WS_URL.to_string(),
             TradingVenue::BinanceFutures => binance_futures_ws_url().to_string(),
+            TradingVenue::BinanceCoinFutures => BINANCE_COIN_FUTURES_WS_URL.to_string(),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
     }
@@ -140,7 +142,9 @@ impl VenueAdapter for BinanceAdapter {
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
         match self.venue {
-            TradingVenue::BinanceFutures => build_stream_subscribe(symbols, "bookTicker"),
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
+                build_stream_subscribe(symbols, "bookTicker")
+            }
             TradingVenue::BinanceMargin => build_stream_subscribe(symbols, "bestBidAsk"),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
@@ -154,12 +158,16 @@ impl VenueAdapter for BinanceAdapter {
         match self.venue {
             TradingVenue::BinanceMargin => build_stream_subscribe(symbols, "depth"),
             TradingVenue::BinanceFutures => build_stream_subscribe(symbols, "depth@0ms"),
+            TradingVenue::BinanceCoinFutures => build_stream_subscribe(symbols, "depth@100ms"),
             other => unreachable!("BinanceAdapter created with non-binance venue: {:?}", other),
         }
     }
 
     fn build_derivatives_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
-        if self.venue != TradingVenue::BinanceFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             return Vec::new();
         }
         vec![
@@ -185,10 +193,10 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn derivatives_ws_url(&self) -> Option<String> {
-        if self.venue == TradingVenue::BinanceFutures {
-            Some(binance_futures_derivatives_ws_url().to_string())
-        } else {
-            None
+        match self.venue {
+            TradingVenue::BinanceFutures => Some(binance_futures_derivatives_ws_url().to_string()),
+            TradingVenue::BinanceCoinFutures => Some(BINANCE_COIN_FUTURES_WS_URL.to_string()),
+            _ => None,
         }
     }
 
@@ -249,21 +257,30 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn parse_bbo_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<RawBboFrame<'a>> {
-        if self.venue != TradingVenue::BinanceFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             return None;
         }
         binance_codec::parse_bbo_raw_borrowed(raw).map(raw_bbo_to_raw_frame)
     }
 
     fn parse_trade_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<RawTradeFrame<'a>> {
-        if self.venue != TradingVenue::BinanceFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             return None;
         }
         binance_codec::parse_trade_raw_borrowed(raw).map(raw_trade_to_frame)
     }
 
     fn parse_incremental_raw<'a>(&self, raw: &'a [u8]) -> Option<RawIncremental<'a>> {
-        if self.venue != TradingVenue::BinanceFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             return None;
         }
         match binance_codec::parse_incremental_raw(raw)? {
@@ -302,7 +319,10 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn parse_derivatives_frame(&self, value: &Value) -> Result<Vec<Bytes>> {
-        if self.venue != TradingVenue::BinanceFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             return Ok(Vec::new());
         }
         let slots = self.symbol_slot_by_symbol.borrow();
@@ -316,7 +336,10 @@ impl VenueAdapter for BinanceAdapter {
     }
 
     fn skip_json_fallback_after_raw_miss(&self) -> bool {
-        self.venue == TradingVenue::BinanceFutures
+        matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        )
     }
 
     fn parse_derivatives_raw(
@@ -324,7 +347,10 @@ impl VenueAdapter for BinanceAdapter {
         raw: &[u8],
         symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
     ) -> Option<Vec<Bytes>> {
-        if self.venue != TradingVenue::BinanceFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+        ) {
             return None;
         }
         let active_is_empty = self.symbol_slot_by_symbol.borrow().is_empty();

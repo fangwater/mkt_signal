@@ -15,7 +15,7 @@ while [[ $# -gt 0 ]]; do
     --config-port) CONFIG_PORT="${2:-}"; shift 2 ;;
     --scripts-only) DO_BUILD=0; shift ;;
     -h|--help)
-      echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|okex-futures> [--viz-port <port>] [--config-port <port>] [--scripts-only]"
+      echo "Usage: scripts/deploy_exec.sh --env-name <nameNN> --venue <binance-futures|binance-coin-futures|okex-futures> [--viz-port <port>] [--config-port <port>] [--scripts-only]"
       echo "Deploys the complete Exec runtime plus the matching spread_pbs venue; nothing is started."
       echo "Default ports are derived from the trailing instance number: 01 -> 10041/18161, 02 -> 10042/18162."
       exit 0
@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$ENV_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo "[ERROR] invalid --env-name" >&2; exit 1; }
-[[ "$VENUE" == "binance-futures" || "$VENUE" == "okex-futures" ]] || { echo "[ERROR] unsupported --venue" >&2; exit 1; }
+[[ "$VENUE" == "binance-futures" || "$VENUE" == "binance-coin-futures" || "$VENUE" == "okex-futures" ]] || { echo "[ERROR] unsupported --venue" >&2; exit 1; }
 if [[ "$ENV_NAME" =~ ([0-9]+)$ ]]; then
   INSTANCE_SUFFIX="${BASH_REMATCH[1]}"
   INSTANCE_INDEX=$((10#$INSTANCE_SUFFIX))
@@ -45,7 +45,7 @@ SPREAD_ROOT="${DEPLOY_ROOT}/spread_pbs"
 SPREAD_DIR="${SPREAD_ROOT}/${VENUE}"
 HOST_CONFIG_DIR="${DEPLOY_ROOT}/config"
 case "$VENUE" in
-  binance-futures)
+  binance-futures|binance-coin-futures)
     EXCHANGE="binance"
     ACCOUNT_MONITOR_BIN="binance_account_monitor"
     ;;
@@ -92,7 +92,7 @@ FILES=(
   start_trade_engine.sh stop_trade_engine.sh
   start_fr_persist_manager.sh stop_fr_persist_manager.sh
   process_match_lib.sh okx_swap_open_orders.py
-  binance_cancel_all_std_um_ws_orders.py binance_cancel_all_unified_open_orders.py
+  binance_cancel_all_std_um_ws_orders.py binance_cancel_all_std_cm_orders.py binance_cancel_all_unified_open_orders.py
   binance_local_ip.py sell_margin_spot.py
   sync_exec_risk_params.py print_exec_risk_params.py
   sync_exec_max_pos_u.py print_exec_max_pos_u.py

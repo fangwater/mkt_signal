@@ -86,6 +86,7 @@ impl WsOrderUpdate {
         }
         match venue {
             TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
             | TradingVenue::BybitMargin
             | TradingVenue::BybitFutures
             | TradingVenue::OkexMargin

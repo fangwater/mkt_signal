@@ -20,14 +20,14 @@ while [[ $# -gt 0 ]]; do
     --config-reload-ms) CONFIG_RELOAD_MS="${2:-}"; shift 2 ;;
     --core) CORE="${2:-}"; shift 2 ;;
     -h|--help)
-      echo "Usage: scripts/start_exec_pre_trade.sh --venue <binance-futures|okex-futures>"
+      echo "Usage: scripts/start_exec_pre_trade.sh --venue <binance-futures|binance-coin-futures|okex-futures>"
       exit 0
       ;;
     *) echo "[ERROR] Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
-if [[ "$VENUE" != "binance-futures" && "$VENUE" != "okex-futures" ]]; then
-  echo "[ERROR] venue must be binance-futures or okex-futures" >&2
+if [[ "$VENUE" != "binance-futures" && "$VENUE" != "binance-coin-futures" && "$VENUE" != "okex-futures" ]]; then
+  echo "[ERROR] unsupported venue: $VENUE" >&2
   exit 1
 fi
 
@@ -43,6 +43,11 @@ fi
 case "$VENUE" in
   binance-futures)
     for file in binance_cancel_all_std_um_ws_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
+      [[ -f "${SCRIPT_DIR}/${file}" ]] || { echo "[ERROR] missing startup cancel dependency: scripts/${file}" >&2; exit 1; }
+    done
+    ;;
+  binance-coin-futures)
+    for file in binance_cancel_all_std_cm_orders.py binance_cancel_all_unified_open_orders.py binance_local_ip.py sell_margin_spot.py; do
       [[ -f "${SCRIPT_DIR}/${file}" ]] || { echo "[ERROR] missing startup cancel dependency: scripts/${file}" >&2; exit 1; }
     done
     ;;

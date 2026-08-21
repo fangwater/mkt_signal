@@ -130,6 +130,39 @@ fn log_forwarder_stats() {
     });
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn configured_venue_values() -> Vec<String> {
+    [
+        "OPEN_VENUE",
+        "HEDGE_VENUE",
+        "EXEC_VENUE",
+        "EXEC_START_VENUE",
+        "VENUE",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .map(|value| value.trim().to_ascii_lowercase().replace('_', "-"))
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+fn coin_futures_enabled(configured_venues: &[String]) -> bool {
+    if env_flag_enabled("BINANCE_ENABLE_COIN_FUTURES") {
+        return true;
+    }
+    configured_venues
+        .iter()
+        .any(|value| value.contains("binance-coin-futures"))
+}
+
 /// 构造最终的用户数据 WS URL。
 /// - 新版 private 入口优先使用 `.../private/ws?listenKey=...`
 fn build_ws_url(ws_base: &str, listen_key: &str) -> String {
@@ -254,6 +287,8 @@ async fn bootstrap_standard_snapshots(
     fapi_rest_base: &str,
     fapi_local_ip: Option<&str>,
     spot_local_ip: Option<&str>,
+    include_um: bool,
+    include_spot: bool,
 ) -> Result<()> {
     let fapi_client = build_binance_rest_client(fapi_local_ip, Duration::from_secs(10))?;
     let spot_client = build_binance_rest_client(spot_local_ip, Duration::from_secs(10))?;
@@ -265,53 +300,61 @@ async fn bootstrap_standard_snapshots(
         spot_local_ip.unwrap_or("system-default")
     );
 
-    let um_balance_body = signed_get_binance(
-        &fapi_client,
-        fapi_rest_base,
-        "/fapi/v2/balance",
-        api_key,
-        api_secret,
-    )
-    .await?;
-    if let Some(msgs) = parse_binance_um_balance_snapshot_std(&um_balance_body) {
-        for payload in msgs {
-            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload) {
-                let _ = forward_account_event(wrapped);
-                emitted += 1;
+    if include_um {
+        let um_balance_body = signed_get_binance(
+            &fapi_client,
+            fapi_rest_base,
+            "/fapi/v2/balance",
+            api_key,
+            api_secret,
+        )
+        .await?;
+        if let Some(msgs) = parse_binance_um_balance_snapshot_std(&um_balance_body) {
+            for payload in msgs {
+                if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload)
+                {
+                    let _ = forward_account_event(wrapped);
+                    emitted += 1;
+                }
+            }
+        }
+
+        let um_account_body = signed_get_binance(
+            &fapi_client,
+            fapi_rest_base,
+            "/fapi/v2/account",
+            api_key,
+            api_secret,
+        )
+        .await?;
+        if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
+            for payload in msgs {
+                if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload)
+                {
+                    let _ = forward_account_event(wrapped);
+                    emitted += 1;
+                }
             }
         }
     }
 
-    let um_account_body = signed_get_binance(
-        &fapi_client,
-        fapi_rest_base,
-        "/fapi/v2/account",
-        api_key,
-        api_secret,
-    )
-    .await?;
-    if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
-        for payload in msgs {
-            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload) {
-                let _ = forward_account_event(wrapped);
-                emitted += 1;
-            }
-        }
-    }
-
-    let spot_account_body = signed_get_binance(
-        &spot_client,
-        "https://api.binance.com",
-        "/api/v3/account",
-        api_key,
-        api_secret,
-    )
-    .await?;
-    if let Some(msgs) = parse_binance_spot_account_snapshot_std(&spot_account_body) {
-        for payload in msgs {
-            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdSpot, payload) {
-                let _ = forward_account_event(wrapped);
-                emitted += 1;
+    if include_spot {
+        let spot_account_body = signed_get_binance(
+            &spot_client,
+            "https://api.binance.com",
+            "/api/v3/account",
+            api_key,
+            api_secret,
+        )
+        .await?;
+        if let Some(msgs) = parse_binance_spot_account_snapshot_std(&spot_account_body) {
+            for payload in msgs {
+                if let Some(wrapped) =
+                    wrap_basic_payload(BasicAccountScope::BinanceStdSpot, payload)
+                {
+                    let _ = forward_account_event(wrapped);
+                    emitted += 1;
+                }
             }
         }
     }
@@ -323,10 +366,55 @@ async fn bootstrap_standard_snapshots(
     Ok(())
 }
 
+async fn bootstrap_standard_cm_snapshots(
+    api_key: &str,
+    api_secret: &str,
+    dapi_rest_base: &str,
+    local_ip: Option<&str>,
+) -> Result<()> {
+    let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
+    let mut emitted = 0usize;
+    let cm_balance_body = signed_get_binance(
+        &client,
+        dapi_rest_base,
+        "/dapi/v1/balance",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_um_balance_snapshot_std(&cm_balance_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdCm, payload) {
+                let _ = forward_account_event(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+    let cm_account_body = signed_get_binance(
+        &client,
+        dapi_rest_base,
+        "/dapi/v1/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    if let Some(msgs) = parse_binance_um_account_snapshot(&cm_account_body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdCm, payload) {
+                let _ = forward_account_event(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+    info!("bootstrap standard CM snapshots emitted {emitted} event(s)");
+    Ok(())
+}
+
 async fn bootstrap_unified_snapshots(
     api_key: &str,
     api_secret: &str,
     local_ip: Option<&str>,
+    include_um: bool,
 ) -> Result<()> {
     let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
     let mut emitted = 0usize;
@@ -352,19 +440,23 @@ async fn bootstrap_unified_snapshots(
         }
     }
 
-    let um_account_body = signed_get_binance(
-        &client,
-        "https://papi.binance.com",
-        "/papi/v1/um/account",
-        api_key,
-        api_secret,
-    )
-    .await?;
-    if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
-        for payload in msgs {
-            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
-                let _ = forward_account_event(wrapped);
-                emitted += 1;
+    if include_um {
+        let um_account_body = signed_get_binance(
+            &client,
+            "https://papi.binance.com",
+            "/papi/v1/um/account",
+            api_key,
+            api_secret,
+        )
+        .await?;
+        if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
+            for payload in msgs {
+                if let Some(wrapped) =
+                    wrap_basic_payload(BasicAccountScope::BinanceUnified, payload)
+                {
+                    let _ = forward_account_event(wrapped);
+                    emitted += 1;
+                }
             }
         }
     }
@@ -373,6 +465,38 @@ async fn bootstrap_unified_snapshots(
         "bootstrap unified snapshots emitted {} basic account event(s)",
         emitted
     );
+    Ok(())
+}
+
+async fn bootstrap_unified_cm_snapshot(
+    api_key: &str,
+    api_secret: &str,
+    local_ip: Option<&str>,
+) -> Result<()> {
+    let client = build_binance_rest_client(local_ip, Duration::from_secs(10))?;
+    let papi_base = std::env::var("BINANCE_PAPI_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "https://papi.binance.com".to_string());
+    let body = signed_get_binance(
+        &client,
+        &papi_base,
+        "/papi/v1/cm/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    let mut emitted = 0usize;
+    if let Some(msgs) = parse_binance_um_account_snapshot(&body) {
+        for payload in msgs {
+            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnifiedCm, payload)
+            {
+                let _ = forward_account_event(wrapped);
+                emitted += 1;
+            }
+        }
+    }
+    info!("bootstrap unified CM snapshot emitted {emitted} event(s)");
     Ok(())
 }
 
@@ -467,7 +591,7 @@ struct BinanceStdUmBalanceRow {
     cross_un_pnl: String,
     #[serde(default, rename = "availableBalance")]
     available_balance: String,
-    #[serde(default, rename = "maxWithdrawAmount")]
+    #[serde(default, rename = "maxWithdrawAmount", alias = "withdrawAvailable")]
     max_withdraw_amount: String,
     #[serde(default, rename = "marginAvailable")]
     margin_available: bool,
@@ -555,6 +679,98 @@ fn binance_std_um_wallet_msg_from_row(
         parse_f64_field(&row.available_balance, "availableBalance")?,
         parse_f64_field(&row.max_withdraw_amount, "maxWithdrawAmount")?,
     ))
+}
+
+fn binance_std_cm_wallet_msg_from_row(
+    row: &BinanceStdUmBalanceRow,
+    poll_ts_ms: i64,
+) -> Result<BinanceStdUmWalletSnapshotMsg> {
+    Ok(BinanceStdUmWalletSnapshotMsg::create(
+        poll_ts_ms,
+        row.update_time,
+        row.asset.trim().to_ascii_uppercase(),
+        true,
+        parse_f64_field(&row.balance, "balance")?,
+        parse_f64_field(&row.cross_wallet_balance, "crossWalletBalance")?,
+        parse_f64_field(&row.cross_un_pnl, "crossUnPnl")?,
+        parse_f64_field(&row.available_balance, "availableBalance")?,
+        parse_f64_field(&row.max_withdraw_amount, "withdrawAvailable")?,
+    ))
+}
+
+fn spawn_binance_std_cm_wallet_poller(
+    api_key: String,
+    api_secret: String,
+    dapi_rest_base: String,
+    local_ip: Option<String>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let client = match build_binance_rest_client(local_ip.as_deref(), Duration::from_secs(10)) {
+            Ok(client) => client,
+            Err(err) => {
+                error!("binance std CM wallet poller: build client failed: {err:#}");
+                return;
+            }
+        };
+        let interval_secs = std::env::var("BINANCE_CM_WALLET_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(5);
+        let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        info!(
+            "binance std CM wallet poller started interval={}s local_ip={}",
+            interval_secs,
+            local_ip.as_deref().unwrap_or("system-default")
+        );
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+                _ = tick.tick() => {
+                    match signed_get_binance(
+                        &client,
+                        &dapi_rest_base,
+                        "/dapi/v1/balance",
+                        &api_key,
+                        &api_secret,
+                    ).await {
+                        Ok(body) => match serde_json::from_str::<Vec<BinanceStdUmBalanceRow>>(&body) {
+                            Ok(rows) => {
+                                let poll_ts_ms = chrono::Utc::now().timestamp_millis();
+                                for row in rows {
+                                    if row.asset.trim().is_empty() {
+                                        continue;
+                                    }
+                                    match binance_std_cm_wallet_msg_from_row(&row, poll_ts_ms) {
+                                        Ok(snapshot) => {
+                                            let event = BasicAccountEventMsg::create(
+                                                BasicAccountEventType::BinanceStdUmWalletSnapshot,
+                                                BasicAccountScope::BinanceStdCm,
+                                                snapshot.to_bytes(),
+                                            );
+                                            if !forward_account_event(event.to_bytes()) {
+                                                warn!("binance std CM wallet poller: failed to forward event");
+                                            }
+                                        }
+                                        Err(err) => warn!("binance std CM wallet row parse failed: {err:#}"),
+                                    }
+                                }
+                            }
+                            Err(err) => warn!("binance std CM wallet response parse failed: {err:#}"),
+                        },
+                        Err(err) => warn!("binance std CM wallet poll failed: {err:#}"),
+                    }
+                }
+            }
+        }
+        info!("binance std CM wallet poller stopped");
+    });
 }
 
 fn request_weight_summary(rate_limits: &[BinanceWsApiRateLimit]) -> String {
@@ -809,9 +1025,29 @@ async fn main() -> Result<()> {
     const BINANCE_STD_FAPI_WS: &str = "wss://fstream.binance.com/private";
     const BINANCE_STD_FAPI_REST: &str = "https://fapi.binance.com";
     const BINANCE_STD_FAPI_MM_REST: &str = "https://fapi-mm.binance.com";
+    const BINANCE_STD_DAPI_WS: &str = "wss://dstream.binance.com";
+    const BINANCE_STD_DAPI_REST: &str = "https://dapi.binance.com";
     const BINANCE_STD_SPOT_WS_API: &str = "wss://ws-api.binance.com:443/ws-api/v3";
     const BINANCE_STD_SPOT_REST: &str = "https://api.binance.com";
     let binance_is_standard = binance_account_mode == BinanceAccountMode::Standard;
+    let configured_venues = configured_venue_values();
+    let binance_coin_futures_enabled = coin_futures_enabled(&configured_venues);
+    let binance_um_enabled = configured_venues.is_empty()
+        || configured_venues
+            .iter()
+            .any(|venue| venue == "binance-futures");
+    let binance_spot_enabled = configured_venues.is_empty()
+        || configured_venues
+            .iter()
+            .any(|venue| venue == "binance-margin");
+    let std_dapi_rest = std::env::var("BINANCE_DAPI_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| BINANCE_STD_DAPI_REST.to_string());
+    info!(
+        "Binance COIN-M account monitoring enabled={}",
+        binance_coin_futures_enabled
+    );
     let binance_um_ip_whitelist_mode = binance_um_ip_whitelist_mode_enabled();
     // Binance's MM REST host accepts listenKey/snapshot requests from the whitelist IP,
     // but the futures user-data WS is served by the normal private stream host.
@@ -833,8 +1069,9 @@ async fn main() -> Result<()> {
         );
     }
     let mut stream_cfgs: Vec<UserStreamConfig> = if binance_is_standard {
-        vec![
-            UserStreamConfig {
+        let mut configs = Vec::new();
+        if binance_um_enabled {
+            configs.push(UserStreamConfig {
                 stream_label: "fapi",
                 ws_base: std_fapi_ws.to_string(),
                 rest_base: std_fapi_rest.to_string(),
@@ -846,8 +1083,10 @@ async fn main() -> Result<()> {
                 stream_kind: UserStreamKind::ListenKeyUrl,
                 primary_listen_key_rx: None,
                 secondary_listen_key_rx: None,
-            },
-            UserStreamConfig {
+            });
+        }
+        if binance_spot_enabled {
+            configs.push(UserStreamConfig {
                 stream_label: "spot-ws-api",
                 ws_base: BINANCE_STD_SPOT_WS_API.to_string(),
                 rest_base: BINANCE_STD_SPOT_REST.to_string(),
@@ -862,8 +1101,24 @@ async fn main() -> Result<()> {
                 },
                 primary_listen_key_rx: None,
                 secondary_listen_key_rx: None,
-            },
-        ]
+            });
+        }
+        if binance_coin_futures_enabled {
+            configs.push(UserStreamConfig {
+                stream_label: "dapi",
+                ws_base: BINANCE_STD_DAPI_WS.to_string(),
+                rest_base: std_dapi_rest.clone(),
+                secondary_ws_base: None,
+                secondary_rest_base: None,
+                listen_key_path: "/dapi/v1/listenKey".to_string(),
+                parse_balances_from_account_update: true,
+                account_scope: BasicAccountScope::BinanceStdCm,
+                stream_kind: UserStreamKind::ListenKeyUrl,
+                primary_listen_key_rx: None,
+                secondary_listen_key_rx: None,
+            });
+        }
+        configs
     } else {
         vec![UserStreamConfig {
             stream_label: "papi",
@@ -987,25 +1242,62 @@ async fn main() -> Result<()> {
 
     if binance_is_standard {
         let fapi_snapshot_ip = binance_um_whitelist_ip.as_deref().unwrap_or(&primary_ip);
+        if binance_coin_futures_enabled {
+            match bootstrap_standard_cm_snapshots(
+                &api_key,
+                &api_secret,
+                &std_dapi_rest,
+                Some(&non_um_primary_ip),
+            )
+            .await
+            {
+                Ok(()) => info!("bootstrap standard CM snapshots completed"),
+                Err(err) => warn!("bootstrap standard CM snapshots failed: {err:#}"),
+            }
+            spawn_binance_std_cm_wallet_poller(
+                api_key.clone(),
+                api_secret.clone(),
+                std_dapi_rest.clone(),
+                Some(non_um_primary_ip.clone()),
+                shutdown_rx.clone(),
+            );
+        }
         match bootstrap_standard_snapshots(
             &api_key,
             &api_secret,
             std_fapi_rest,
             Some(fapi_snapshot_ip),
             Some(&non_um_primary_ip),
+            binance_um_enabled,
+            binance_spot_enabled,
         )
         .await
         {
             Ok(()) => info!("bootstrap standard snapshots completed"),
             Err(err) => warn!("bootstrap standard snapshots failed: {err:#}"),
         }
-        spawn_binance_std_um_wallet_poller(
-            api_key.clone(),
-            api_secret.clone(),
-            shutdown_rx.clone(),
-        );
+        if binance_um_enabled {
+            spawn_binance_std_um_wallet_poller(
+                api_key.clone(),
+                api_secret.clone(),
+                shutdown_rx.clone(),
+            );
+        }
     } else {
-        match bootstrap_unified_snapshots(&api_key, &api_secret, Some(&primary_ip)).await {
+        if binance_coin_futures_enabled {
+            match bootstrap_unified_cm_snapshot(&api_key, &api_secret, Some(&primary_ip)).await {
+                Ok(()) => info!("bootstrap unified CM snapshot completed"),
+                Err(err) => warn!("bootstrap unified CM snapshot failed: {err:#}"),
+            }
+        }
+        match bootstrap_unified_snapshots(
+            &api_key,
+            &api_secret,
+            Some(&primary_ip),
+            binance_um_enabled,
+        )
+        .await
+        {
             Ok(()) => info!("bootstrap unified snapshots completed"),
             Err(err) => warn!("bootstrap unified snapshots failed: {err:#}"),
         }
@@ -1068,7 +1360,7 @@ async fn main() -> Result<()> {
     // listener 用 spawn_local，必须在 LocalSet 里驱动。
     tokio::task::LocalSet::new()
         .run_until(async move {
-            if binance_is_standard && account_monitor_fix_er_enabled() {
+            if binance_is_standard && binance_spot_enabled && account_monitor_fix_er_enabled() {
                 spawn_std_spot_fix_er_path(non_um_primary_ip.parse().ok(), shutdown_rx.clone());
             }
             loop {
@@ -1139,7 +1431,10 @@ fn spawn_std_spot_fix_er_path(source_ip: Option<IpAddr>, mut shutdown_rx: watch:
 
 #[cfg(test)]
 mod tests {
-    use super::{account_monitor_fix_er_enabled, build_ws_url};
+    use super::{
+        account_monitor_fix_er_enabled, binance_std_cm_wallet_msg_from_row, build_ws_url,
+        BinanceStdUmBalanceRow,
+    };
 
     #[test]
     fn build_ws_url_uses_private_query_format_for_new_private_base() {
@@ -1159,6 +1454,33 @@ mod tests {
             build_ws_url("wss://fstream.binance.com/pm", "abc123"),
             "wss://fstream.binance.com/pm/ws/abc123"
         );
+    }
+
+    #[test]
+    fn build_ws_url_uses_dstream_listen_key_path_for_coin_futures() {
+        assert_eq!(
+            build_ws_url("wss://dstream.binance.com", "cm-key"),
+            "wss://dstream.binance.com/ws/cm-key"
+        );
+    }
+
+    #[test]
+    fn coin_wallet_row_uses_withdraw_available_and_coin_equity() {
+        let row = BinanceStdUmBalanceRow {
+            asset: "BTC".to_string(),
+            balance: "1.2".to_string(),
+            cross_wallet_balance: "1.0".to_string(),
+            cross_un_pnl: "0.1".to_string(),
+            available_balance: "0.3".to_string(),
+            max_withdraw_amount: "0.25".to_string(),
+            margin_available: false,
+            update_time: 123,
+        };
+        let msg = binance_std_cm_wallet_msg_from_row(&row, 456).unwrap();
+        assert_eq!(msg.asset, "BTC");
+        assert!((msg.cross_equity() - 1.1).abs() < 1e-12);
+        assert!((msg.available_balance - 0.3).abs() < 1e-12);
+        assert!(msg.margin_available != 0);
     }
 
     #[test]
@@ -1362,6 +1684,7 @@ fn log_parsed_event(msg: &Bytes) {
                 let venue = match m.venue {
                     BinanceBasicOrderMsg::VENUE_MARGIN => "margin",
                     BinanceBasicOrderMsg::VENUE_UM => "um",
+                    BinanceBasicOrderMsg::VENUE_CM => "cm",
                     _ => "unknown",
                 };
                 info!(

@@ -112,6 +112,7 @@ impl UnimmrForceClose {
             BasicAccountScope::Unknown
                 | BasicAccountScope::BinanceStdSpot
                 | BasicAccountScope::BinanceStdUm
+                | BasicAccountScope::BinanceStdCm
         ) {
             return;
         }
@@ -215,7 +216,9 @@ impl UnimmrForceClose {
             return 0;
         }
 
-        let qty_multiplier = match monitor.qty_multiplier_for_venue(open_venue, &symbol) {
+        let qty_multiplier = match monitor
+            .qty_multiplier_for_venue_at_price(open_venue, &symbol, mark_price)
+        {
             Ok(multiplier) if multiplier.is_finite() && multiplier > 0.0 => multiplier,
             Ok(multiplier) => {
                 warn!(

@@ -12,6 +12,8 @@ use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
 
 const BINANCE_FUTURES_EXCHANGE_INFO_URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+const BINANCE_COIN_FUTURES_EXCHANGE_INFO_URL: &str =
+    "https://dapi.binance.com/dapi/v1/exchangeInfo";
 const BINANCE_CONTRACT_PERPETUAL: &str = "PERPETUAL";
 const BINANCE_CONTRACT_TRADIFI_PERPETUAL: &str = "TRADIFI_PERPETUAL";
 
@@ -49,6 +51,7 @@ struct BinanceExchangeInfoResponse {
 #[serde(rename_all = "camelCase")]
 struct BinanceSymbolInfo {
     symbol: String,
+    #[serde(alias = "contractStatus")]
     status: String,
     quote_asset: String,
     #[serde(default)]
@@ -196,7 +199,7 @@ impl Config {
 
     pub fn get_batch_size(&self) -> usize {
         match self.venue {
-            TradingVenue::BinanceFutures => 50,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => 50,
             TradingVenue::BinanceMargin => 100,
             TradingVenue::OkexFutures | TradingVenue::OkexMargin => 50,
             TradingVenue::BybitFutures => 300,
@@ -335,6 +338,24 @@ impl Config {
             selected.len()
         );
         Ok(selected)
+    }
+
+    async fn get_binance_coin_futures_symbols() -> Result<Vec<String>> {
+        let info =
+            Self::fetch_binance_exchange_info(BINANCE_COIN_FUTURES_EXCHANGE_INFO_URL).await?;
+        let symbols = Self::filter_binance_coin_trading_futures_symbols(&info.symbols);
+        info!("Binance COIN-M trading contract count {}", symbols.len());
+        Ok(symbols)
+    }
+
+    fn filter_binance_coin_trading_futures_symbols(symbols: &[BinanceSymbolInfo]) -> Vec<String> {
+        symbols
+            .iter()
+            .filter(|symbol| symbol.status == "TRADING")
+            .filter(|symbol| symbol.quote_asset == "USD")
+            .filter(|symbol| symbol.contract_type.as_deref().is_some())
+            .map(|symbol| symbol.symbol.clone())
+            .collect()
     }
 
     fn filter_binance_usdt_trading_futures_symbols(
@@ -1093,6 +1114,7 @@ impl Config {
             TradingVenue::BinanceFutures => {
                 Self::get_futures_symbols_related_to_binance_spot().await
             }
+            TradingVenue::BinanceCoinFutures => Self::get_binance_coin_futures_symbols().await,
             TradingVenue::BinanceMargin => {
                 Self::get_spot_symbols_related_to_binance_futures().await
             }
@@ -1317,6 +1339,20 @@ mod tests {
                 "NVDAUSDT".to_string(),
                 "TSLAUSDT".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn filter_binance_coin_futures_keeps_perpetual_and_delivery_contracts() {
+        let symbols = vec![
+            binance_symbol("BTCUSD_PERP", "TRADING", "USD", Some("PERPETUAL")),
+            binance_symbol("ETHUSD_260925", "TRADING", "USD", Some("CURRENT_QUARTER")),
+            binance_symbol("BNBUSD_PERP", "SETTLING", "USD", Some("PERPETUAL")),
+            binance_symbol("BTCUSDT", "TRADING", "USDT", Some("PERPETUAL")),
+        ];
+        assert_eq!(
+            Config::filter_binance_coin_trading_futures_symbols(&symbols),
+            vec!["BTCUSD_PERP".to_string(), "ETHUSD_260925".to_string()]
         );
     }
 }

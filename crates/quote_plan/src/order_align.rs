@@ -17,13 +17,23 @@ where
     Ok(())
 }
 
-pub fn contract_qty_multiplier<T, V>(table: &T, venue: V, symbol_key: &str) -> Option<f64>
+pub fn contract_qty_multiplier<T, V>(
+    table: &T,
+    venue: V,
+    symbol_key: &str,
+    price: f64,
+) -> Option<f64>
 where
     T: MinQtyLookup + ?Sized,
     V: Into<Venue>,
 {
     match venue.into() {
         Venue::BinanceFutures => Some(1.0),
+        Venue::BinanceCoinFutures => table
+            .contract_multiplier_opt(symbol_key)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .filter(|_| price.is_finite() && price > 0.0)
+            .map(|contract_size| contract_size / price),
         Venue::OkexFutures | Venue::GateFutures => table
             .contract_multiplier_opt(symbol_key)
             .filter(|v| v.is_finite() && *v > 0.0),
@@ -127,8 +137,8 @@ where
     let venue_qp = venue.into();
     let enforce_min_notional = is_futures_venue(venue_qp);
     let raw_qty = if venue_qty_is_contracts(venue_qp) {
-        let contract_size =
-            contract_qty_multiplier(table, venue_qp, symbol_key).ok_or_else(|| {
+        let contract_size = contract_qty_multiplier(table, venue_qp, symbol_key, raw_price)
+            .ok_or_else(|| {
                 format!(
                     "symbol={} missing {:?} contract multiplier, cannot convert base qty",
                     symbol_key, venue_qp
