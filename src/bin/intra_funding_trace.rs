@@ -385,6 +385,7 @@ fn parse_venue(raw: &str) -> Result<TradingVenue> {
         "bybit-futures" | "bybit" => TradingVenue::BybitFutures,
         "bitget-margin" => TradingVenue::BitgetMargin,
         "bitget-futures" | "bitget" => TradingVenue::BitgetFutures,
+        "bitget-coin-futures" => TradingVenue::BitgetCoinFutures,
         "gate-margin" => TradingVenue::GateMargin,
         "gate-futures" | "gate" => TradingVenue::GateFutures,
         "aster-margin" => TradingVenue::AsterMargin,

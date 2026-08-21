@@ -50,7 +50,7 @@ normalize_venue() {
 
 validate_venue() {
   local v="${1,,}"
-  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ]]; then
     echo "[ERROR] invalid venue: $1 (expect <exchange>-<margin|futures|spot|swap>)" >&2
     exit 1
   fi

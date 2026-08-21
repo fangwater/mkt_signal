@@ -358,6 +358,7 @@ mod tests {
             TradingVenue::BybitFutures,
             TradingVenue::BitgetMargin,
             TradingVenue::BitgetFutures,
+            TradingVenue::BitgetCoinFutures,
             TradingVenue::GateMargin,
             TradingVenue::GateFutures,
         ] {

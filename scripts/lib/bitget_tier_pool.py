@@ -33,6 +33,15 @@ class EnvSpec:
     def has_bitget(self) -> bool:
         return self.open_exchange == "bitget" or self.hedge_exchange == "bitget"
 
+    def has_bitget_product(self, product_type: str) -> bool:
+        product_type = (product_type or "USDT-FUTURES").strip().upper()
+        expected = (
+            "bitget-coin-futures"
+            if product_type == "COIN-FUTURES"
+            else "bitget-futures"
+        )
+        return self.open_venue == expected or self.hedge_venue == expected
+
     @property
     def bitget_side(self) -> str:
         if self.open_exchange == "bitget" and self.hedge_exchange == "bitget":
@@ -95,7 +104,10 @@ def normalize_asset(value: str) -> str:
         return ""
     if "@" in text:
         text = text.split("@", 1)[0].strip()
-    if text.endswith("-USDT-SWAP"):
+    cleaned = re.sub(r"[^A-Z0-9]+", "", text)
+    if cleaned.endswith("USDCM") and len(cleaned) > len("USDCM"):
+        text = cleaned[: -len("USDCM")]
+    elif text.endswith("-USDT-SWAP"):
         text = text[: -len("-USDT-SWAP")]
     elif re.match(r"^[A-Z0-9]+-USDT-\d{6,8}$", text):
         text = text.split("-USDT-", 1)[0]
@@ -112,9 +124,13 @@ def normalize_asset(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", text)
 
 
-def bitget_symbol(asset_or_symbol: str) -> str:
+def bitget_symbol(asset_or_symbol: str, product_type: str = "USDT-FUTURES") -> str:
     asset = normalize_asset(asset_or_symbol)
-    return f"{asset}USDT" if asset else ""
+    if not asset:
+        return ""
+    if (product_type or "").strip().upper() == "COIN-FUTURES":
+        return f"{asset}USD_CM"
+    return f"{asset}USDT"
 
 
 def parse_env_name(env_name: str) -> Tuple[str, str, str, str]:
@@ -345,7 +361,9 @@ def online_symbol_keys(spec: EnvSpec) -> List[str]:
     raise ValueError(f"unsupported env mode: {spec.mode}")
 
 
-def expand_env_symbols(rds: Any, spec: EnvSpec) -> EnvSymbols:
+def expand_env_symbols(
+    rds: Any, spec: EnvSpec, product_type: str = "USDT-FUTURES"
+) -> EnvSymbols:
     keys = tuple(online_symbol_keys(spec))
     assets: Set[str] = set()
     key_counts: Dict[str, int] = {}
@@ -359,7 +377,11 @@ def expand_env_symbols(rds: Any, spec: EnvSpec) -> EnvSymbols:
             asset = normalize_asset(value)
             if asset:
                 assets.add(asset)
-    bitget_symbols = {bitget_symbol(asset) for asset in assets if bitget_symbol(asset)}
+    bitget_symbols = {
+        bitget_symbol(asset, product_type)
+        for asset in assets
+        if bitget_symbol(asset, product_type)
+    }
     return EnvSymbols(
         spec=spec,
         keys=keys,
@@ -369,8 +391,16 @@ def expand_env_symbols(rds: Any, spec: EnvSpec) -> EnvSymbols:
     )
 
 
-def expand_pool_symbols(rds: Any, specs: Sequence[EnvSpec]) -> Tuple[List[EnvSymbols], List[str]]:
-    expanded = [expand_env_symbols(rds, spec) for spec in specs if spec.has_bitget]
+def expand_pool_symbols(
+    rds: Any,
+    specs: Sequence[EnvSpec],
+    product_type: str = "USDT-FUTURES",
+) -> Tuple[List[EnvSymbols], List[str]]:
+    expanded = [
+        expand_env_symbols(rds, spec, product_type)
+        for spec in specs
+        if spec.has_bitget_product(product_type)
+    ]
     union: Set[str] = set()
     for item in expanded:
         union.update(item.bitget_symbols)

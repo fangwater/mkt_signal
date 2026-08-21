@@ -199,6 +199,7 @@ fn single_venue_from_slug(slug: &str) -> Option<TradingVenue> {
         "bybit-futures" => Some(TradingVenue::BybitFutures),
         "bitget-margin" => Some(TradingVenue::BitgetMargin),
         "bitget-futures" => Some(TradingVenue::BitgetFutures),
+        "bitget-coin-futures" => Some(TradingVenue::BitgetCoinFutures),
         "gate-margin" => Some(TradingVenue::GateMargin),
         "gate-futures" => Some(TradingVenue::GateFutures),
         "aster-margin" => Some(TradingVenue::AsterMargin),

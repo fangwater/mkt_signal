@@ -78,6 +78,7 @@ pub enum BasicAccountScope {
     GateUnified = 11,
     BitgetUnified = 12,
     BybitUnified = 13,
+    BitgetUnifiedCoinFutures = 14,
 }
 
 /// 轻量成交更新消息。
@@ -248,6 +249,7 @@ impl BasicAccountScope {
             11 => Self::GateUnified,
             12 => Self::BitgetUnified,
             13 => Self::BybitUnified,
+            14 => Self::BitgetUnifiedCoinFutures,
             _ => Self::Unknown,
         }
     }
@@ -264,6 +266,7 @@ impl BasicAccountScope {
             Self::GateUnified => "gate_unified",
             Self::BitgetUnified => "bitget_unified",
             Self::BybitUnified => "bybit_unified",
+            Self::BitgetUnifiedCoinFutures => "bitget_unified_coin_futures",
         }
     }
 }

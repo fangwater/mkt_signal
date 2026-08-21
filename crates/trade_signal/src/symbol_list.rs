@@ -628,7 +628,11 @@ impl SymbolList {
                 TradingVenue::BinanceCoinFutures,
             ],
             Exchange::Okex => vec![TradingVenue::OkexFutures, TradingVenue::OkexMargin],
-            Exchange::Bitget => vec![TradingVenue::BitgetMargin, TradingVenue::BitgetFutures],
+            Exchange::Bitget => vec![
+                TradingVenue::BitgetMargin,
+                TradingVenue::BitgetFutures,
+                TradingVenue::BitgetCoinFutures,
+            ],
             Exchange::Bybit => vec![TradingVenue::BybitMargin, TradingVenue::BybitFutures],
             Exchange::Gate => vec![TradingVenue::GateMargin, TradingVenue::GateFutures],
             Exchange::Hyperliquid => {

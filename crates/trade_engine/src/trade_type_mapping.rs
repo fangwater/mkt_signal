@@ -50,7 +50,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => true,
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => true,
         }
     }
 
@@ -108,7 +110,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => {
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -164,7 +168,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => {
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -220,7 +226,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => {
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -276,7 +284,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => {
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }
@@ -332,7 +342,9 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => {
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
         }

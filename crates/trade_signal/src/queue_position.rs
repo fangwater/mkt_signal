@@ -1086,7 +1086,9 @@ fn exchange_for_venue(venue: TradingVenue) -> Option<Exchange> {
         | TradingVenue::BinanceCoinFutures => Some(Exchange::Binance),
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Some(Exchange::Okex),
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => Some(Exchange::Bybit),
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Some(Exchange::Bitget),
+        TradingVenue::BitgetMargin
+        | TradingVenue::BitgetFutures
+        | TradingVenue::BitgetCoinFutures => Some(Exchange::Bitget),
         TradingVenue::GateMargin | TradingVenue::GateFutures => Some(Exchange::Gate),
         _ => None,
     }
@@ -1115,6 +1117,7 @@ fn scope_can_match_venue(scope: BasicAccountScope, venue: TradingVenue) -> bool 
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
             scope == BasicAccountScope::BitgetUnified
         }
+        TradingVenue::BitgetCoinFutures => scope == BasicAccountScope::BitgetUnifiedCoinFutures,
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
             scope == BasicAccountScope::BybitUnified
         }

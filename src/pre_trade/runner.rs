@@ -265,6 +265,10 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
         || hedge_venue.trade_engine_exchange() == "bybit";
     let need_bitget = open_venue.trade_engine_exchange() == "bitget"
         || hedge_venue.trade_engine_exchange() == "bitget";
+    let need_bitget_usdt = matches!(open_venue, TradingVenue::BitgetFutures)
+        || matches!(hedge_venue, TradingVenue::BitgetFutures);
+    let need_bitget_coin = matches!(open_venue, TradingVenue::BitgetCoinFutures)
+        || matches!(hedge_venue, TradingVenue::BitgetCoinFutures);
 
     if !need_binance && !need_okex && !need_gate && !need_bybit && !need_bitget {
         return false;
@@ -396,12 +400,22 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
             Bytes::new(),
             "bitget unified account balance snapshot",
         );
-        publish(
-            "bitget",
-            QueryRequestType::BitgetPositionsSnapshot,
-            Bytes::from_static(b"category=USDT-FUTURES"),
-            "bitget UTA current positions snapshot",
-        );
+        if need_bitget_usdt {
+            publish(
+                "bitget",
+                QueryRequestType::BitgetPositionsSnapshot,
+                Bytes::from_static(b"category=USDT-FUTURES"),
+                "bitget UTA USDT-FUTURES positions snapshot",
+            );
+        }
+        if need_bitget_coin {
+            publish(
+                "bitget",
+                QueryRequestType::BitgetCoinPositionsSnapshot,
+                Bytes::from_static(b"category=COIN-FUTURES"),
+                "bitget UTA COIN-FUTURES positions snapshot",
+            );
+        }
     }
     published
 }

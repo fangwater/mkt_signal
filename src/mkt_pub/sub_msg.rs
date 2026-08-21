@@ -34,6 +34,7 @@ pub enum BinanceFuturesStreamKind {
 fn bitget_v3_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     match venue {
         TradingVenue::BitgetFutures => "usdt-futures",
+        TradingVenue::BitgetCoinFutures => "coin-futures",
         TradingVenue::BitgetMargin => "spot",
         _ => panic!("unsupported venue for bitget v3: {:?}", venue),
     }
@@ -42,6 +43,7 @@ fn bitget_v3_inst_type_for_venue(venue: TradingVenue) -> &'static str {
 fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     match venue {
         TradingVenue::BitgetFutures => "USDT-FUTURES",
+        TradingVenue::BitgetCoinFutures => "COIN-FUTURES",
         TradingVenue::BitgetMargin => "SPOT",
         _ => "USDT-FUTURES",
     }
@@ -56,7 +58,10 @@ fn gate_channel_prefix_for_venue(venue: TradingVenue) -> &'static str {
 }
 
 fn bitget_derivatives_supported_for_venue(venue: TradingVenue) -> bool {
-    venue == TradingVenue::BitgetFutures
+    matches!(
+        venue,
+        TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+    )
 }
 
 fn hyperliquid_coin_from_internal(symbol: &str) -> String {
@@ -446,7 +451,7 @@ impl BitgetPerpsSubscribeMsgs {
     pub async fn new(cfg: &Config) -> Self {
         if !bitget_derivatives_supported_for_venue(cfg.venue) {
             warn!(
-                "bitget derivatives metrics are only supported on bitget-futures; current venue={} will skip derivatives subscriptions",
+                "bitget derivatives metrics require a Bitget futures venue; current venue={} will skip derivatives subscriptions",
                 cfg.venue.data_pub_slug()
             );
             return Self {

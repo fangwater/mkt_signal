@@ -394,6 +394,35 @@ mod tests {
     }
 
     #[test]
+    fn bitget_coin_futures_uses_one_usd_face_value() {
+        let provider = BitgetProvider::new();
+        let response = BitgetResponse {
+            code: "00000".to_string(),
+            msg: "success".to_string(),
+            data: vec![BitgetInstrument {
+                symbol: "BTCUSD_CM".to_string(),
+                base_coin: "BTC".to_string(),
+                quote_coin: "USD".to_string(),
+                min_order_qty: "1".to_string(),
+                price_multiplier: Some("0.1".to_string()),
+                quantity_multiplier: Some("1".to_string()),
+                price_precision: Some("1".to_string()),
+                quantity_precision: Some("0".to_string()),
+                min_order_amount: Some("5".to_string()),
+            }],
+        };
+
+        let (entries, multipliers) = provider
+            .parse_response(response, MarketType::CoinFutures)
+            .unwrap();
+        let entry = entries.get("BTCUSD_CM").unwrap();
+        assert_eq!(entry.min_qty, 1.0);
+        assert_eq!(entry.step_size, 1.0);
+        assert_eq!(entry.min_notional, Some(5.0));
+        assert_eq!(multipliers.get("BTCUSD_CM").copied(), Some(1.0));
+    }
+
+    #[test]
     fn bitget_margin_precision_fields_fallback_to_ticks() {
         let provider = BitgetProvider::new();
         let response = BitgetResponse {
@@ -1290,7 +1319,7 @@ impl BitgetProvider {
                 "https://api.bitget.com/api/v3/market/instruments?category=USDT-FUTURES"
             }
             MarketType::CoinFutures => {
-                unreachable!("Bitget provider does not support Binance COIN-M market type")
+                "https://api.bitget.com/api/v3/market/instruments?category=COIN-FUTURES"
             }
         }
     }
@@ -1316,9 +1345,7 @@ impl BitgetProvider {
             MarketType::Spot => "bitget_spot",
             MarketType::Futures => "bitget_futures",
             MarketType::Margin => "bitget_margin",
-            MarketType::CoinFutures => {
-                unreachable!("Bitget provider does not support Binance COIN-M market type")
-            }
+            MarketType::CoinFutures => "bitget_coin_futures",
         };
         let resp = client.get(url).send().await?;
         let status = resp.status();
@@ -1379,6 +1406,9 @@ impl BitgetProvider {
             if market_type == MarketType::Futures {
                 // 统一账户 USDT-FUTURES: qty 使用 base coin 口径，合约乘数按 1.0 处理。
                 multipliers.insert(symbol.clone(), 1.0);
+            } else if market_type == MarketType::CoinFutures {
+                // UTA COIN-FUTURES qty is USD notional; one qty unit is 1 USD.
+                multipliers.insert(symbol.clone(), 1.0);
             }
             map.insert(symbol, entry);
         }
@@ -1397,7 +1427,12 @@ impl ExchangeInfoProvider for BitgetProvider {
         Exchange::Bitget
     }
     fn supported_market_types(&self) -> Vec<MarketType> {
-        vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
+        vec![
+            MarketType::Spot,
+            MarketType::Futures,
+            MarketType::CoinFutures,
+            MarketType::Margin,
+        ]
     }
     fn margin_reuses_spot(&self) -> bool {
         false

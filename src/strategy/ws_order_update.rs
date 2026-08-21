@@ -42,9 +42,11 @@ impl WsOrderUpdate {
                 | TradeRequestType::BitgetNewMarginOrder
                 | TradeRequestType::BitgetNewUMOrder
                 | TradeRequestType::BitgetNewSpotOrder
+                | TradeRequestType::BitgetNewCoinFuturesOrder
                 | TradeRequestType::BitgetCancelMarginOrder
                 | TradeRequestType::BitgetCancelUMOrder
-                | TradeRequestType::BitgetCancelSpotOrder)
+                | TradeRequestType::BitgetCancelSpotOrder
+                | TradeRequestType::BitgetCancelCoinFuturesOrder)
         )
     }
 
@@ -94,7 +96,8 @@ impl WsOrderUpdate {
             | TradingVenue::GateMargin
             | TradingVenue::GateFutures
             | TradingVenue::BitgetMargin
-            | TradingVenue::BitgetFutures => TimeInForce::GTX,
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => TimeInForce::GTX,
             _ => TimeInForce::GTC,
         }
     }

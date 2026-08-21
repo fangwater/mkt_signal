@@ -79,6 +79,9 @@ fn snapshot_initializes_exec_venue(
         TradingVenue::BybitFutures => req_type == QueryRequestType::BybitPositionsSnapshot,
         TradingVenue::BitgetMargin => req_type == QueryRequestType::BitgetAccountBalanceSnapshot,
         TradingVenue::BitgetFutures => req_type == QueryRequestType::BitgetPositionsSnapshot,
+        TradingVenue::BitgetCoinFutures => {
+            req_type == QueryRequestType::BitgetCoinPositionsSnapshot
+        }
         _ => false,
     }
 }
@@ -525,6 +528,7 @@ impl QueryEngChannel {
                                             | QueryRequestType::GateUnifiedPositionsSnapshot
                                             | QueryRequestType::BybitPositionsSnapshot
                                             | QueryRequestType::BitgetPositionsSnapshot
+                                            | QueryRequestType::BitgetCoinPositionsSnapshot
                                     )
                                 ) && body_is_empty
                                 {
@@ -627,6 +631,10 @@ impl QueryEngChannel {
                                     | Some(QueryRequestType::GateFuturesOrderQuery) => {
                                         BasicAccountScope::GateUnified
                                     }
+                                    Some(QueryRequestType::BitgetCoinFuturesQuery)
+                                    | Some(QueryRequestType::BitgetCoinPositionsSnapshot) => {
+                                        BasicAccountScope::BitgetUnifiedCoinFutures
+                                    }
                                     _ => match exchange_enum {
                                         Exchange::Binance => {
                                             if binance_is_standard {
@@ -674,6 +682,9 @@ impl QueryEngChannel {
                                         TradingVenue::BitgetMargin
                                         | TradingVenue::BitgetFutures => {
                                             scope == BasicAccountScope::BitgetUnified
+                                        }
+                                        TradingVenue::BitgetCoinFutures => {
+                                            scope == BasicAccountScope::BitgetUnifiedCoinFutures
                                         }
                                         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                                             scope == BasicAccountScope::BybitUnified
@@ -796,6 +807,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
@@ -816,6 +828,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
@@ -844,6 +857,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
@@ -860,6 +874,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
@@ -914,6 +929,7 @@ impl QueryEngChannel {
                                         | QueryRequestType::BybitUMQuery
                                         | QueryRequestType::BitgetMarginQuery
                                         | QueryRequestType::BitgetUMQuery
+                                        | QueryRequestType::BitgetCoinFuturesQuery
                                         | QueryRequestType::GateUnifiedOrderQuery
                                         | QueryRequestType::GateFuturesOrderQuery
                                 ) {

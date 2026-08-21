@@ -17,6 +17,7 @@ fn map_order_status(code: u8) -> OrderStatus {
 fn map_trading_venue(code: u8) -> TradingVenue {
     match code {
         BitgetBasicOrderMsg::VENUE_FUTURES => TradingVenue::BitgetFutures,
+        BitgetBasicOrderMsg::VENUE_COIN_FUTURES => TradingVenue::BitgetCoinFutures,
         _ => TradingVenue::BitgetMargin,
     }
 }

@@ -159,8 +159,10 @@ impl BitgetAccountEventParser {
         let mut count = 0;
 
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
+        let default_venue = detect_message_venue(json_value);
 
         for obj in collect_data_objects(json_value) {
+            let account_scope = bitget_scope_for_venue(detect_order_venue(obj, default_venue));
             let inst_id = obj
                 .get("symbol")
                 .or_else(|| obj.get("instId"))
@@ -201,12 +203,12 @@ impl BitgetAccountEventParser {
             let pos_payload = position_msg.to_bytes();
             let pos_event = BasicAccountEventMsg::create(
                 BasicAccountEventType::PositionUpdate,
-                BasicAccountScope::BitgetUnified,
+                account_scope,
                 pos_payload,
             );
             if tx.emit_with_dedup_key(
                 pos_event.to_bytes(),
-                position_dedup_key(BasicAccountScope::BitgetUnified, &position_msg),
+                position_dedup_key(account_scope, &position_msg),
             ) {
                 count += 1;
             }
@@ -219,12 +221,12 @@ impl BitgetAccountEventParser {
                 let pnl_payload = pnl_msg.to_bytes();
                 let pnl_event = BasicAccountEventMsg::create(
                     BasicAccountEventType::UnrealizedPnlUpdate,
-                    BasicAccountScope::BitgetUnified,
+                    account_scope,
                     pnl_payload,
                 );
                 if tx.emit_with_dedup_key(
                     pnl_event.to_bytes(),
-                    unrealized_pnl_dedup_key(BasicAccountScope::BitgetUnified, &pnl_msg),
+                    unrealized_pnl_dedup_key(account_scope, &pnl_msg),
                 ) {
                     count += 1;
                 }
@@ -238,6 +240,7 @@ impl BitgetAccountEventParser {
         let mut count = 0;
 
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
+        let default_venue = detect_message_venue(json_value);
 
         for order_obj in collect_data_objects(json_value) {
             let symbol = order_obj
@@ -340,7 +343,8 @@ impl BitgetAccountEventParser {
                 .unwrap_or("")
                 .to_string();
 
-            let venue = detect_order_venue(order_obj);
+            let venue = detect_order_venue(order_obj, default_venue);
+            let account_scope = bitget_scope_for_venue(venue);
 
             let msg = BitgetBasicOrderMsg::create(
                 venue,
@@ -364,12 +368,12 @@ impl BitgetAccountEventParser {
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(
                 BasicAccountEventType::OrderUpdate,
-                BasicAccountScope::BitgetUnified,
+                account_scope,
                 payload,
             );
             if tx.emit_with_dedup_key(
                 event.to_bytes(),
-                bitget_order_dedup_key(BasicAccountScope::BitgetUnified, &msg),
+                bitget_order_dedup_key(account_scope, &msg),
             ) {
                 count += 1;
             }
@@ -382,6 +386,7 @@ impl BitgetAccountEventParser {
     fn parse_fill_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
+        let default_venue = detect_message_venue(json_value);
 
         for fill_obj in collect_data_objects(json_value) {
             let symbol = fill_obj
@@ -432,7 +437,8 @@ impl BitgetAccountEventParser {
                 })
                 .unwrap_or(0);
 
-            let venue = detect_order_venue(fill_obj);
+            let venue = detect_order_venue(fill_obj, default_venue);
+            let account_scope = bitget_scope_for_venue(venue);
             let msg = BasicTradeLiteMsg::create(
                 venue,
                 event_time,
@@ -449,13 +455,10 @@ impl BitgetAccountEventParser {
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(
                 BasicAccountEventType::TradeUpdateLite,
-                BasicAccountScope::BitgetUnified,
+                account_scope,
                 payload,
             );
-            if tx.emit_with_dedup_key(
-                event.to_bytes(),
-                trade_lite_dedup_key(BasicAccountScope::BitgetUnified, &msg),
-            ) {
+            if tx.emit_with_dedup_key(event.to_bytes(), trade_lite_dedup_key(account_scope, &msg)) {
                 count += 1;
             }
         }
@@ -468,6 +471,7 @@ impl BitgetAccountEventParser {
     fn parse_fast_fill_channel<S: AccountEventSink>(&self, json_value: &Value, tx: &S) -> usize {
         let mut count = 0;
         let top_timestamp = parse_i64_str_or_num(json_value.get("ts")).unwrap_or(0);
+        let default_venue = detect_message_venue(json_value);
 
         for fill_obj in collect_data_objects(json_value) {
             let symbol = fill_obj
@@ -518,7 +522,8 @@ impl BitgetAccountEventParser {
                 })
                 .unwrap_or(false);
 
-            let venue = detect_order_venue(fill_obj);
+            let venue = detect_order_venue(fill_obj, default_venue);
+            let account_scope = bitget_scope_for_venue(venue);
             let msg = BasicTradeLiteMsg::create(
                 venue,
                 event_time,
@@ -535,13 +540,10 @@ impl BitgetAccountEventParser {
             let payload = msg.to_bytes();
             let event = BasicAccountEventMsg::create(
                 BasicAccountEventType::TradeUpdateLite,
-                BasicAccountScope::BitgetUnified,
+                account_scope,
                 payload,
             );
-            if tx.emit_with_dedup_key(
-                event.to_bytes(),
-                trade_lite_dedup_key(BasicAccountScope::BitgetUnified, &msg),
-            ) {
+            if tx.emit_with_dedup_key(event.to_bytes(), trade_lite_dedup_key(account_scope, &msg)) {
                 count += 1;
             }
         }
@@ -609,22 +611,56 @@ fn collect_data_objects(json_value: &Value) -> Vec<&Map<String, Value>> {
     }
 }
 
-fn detect_order_venue(order_obj: &Map<String, Value>) -> u8 {
+fn venue_from_category(category: &str) -> Option<u8> {
+    let category = category.to_ascii_lowercase();
+    if category.contains("coin-future") {
+        return Some(BitgetBasicOrderMsg::VENUE_COIN_FUTURES);
+    }
+    if category.contains("future") || category.contains("swap") || category.contains("perp") {
+        return Some(BitgetBasicOrderMsg::VENUE_FUTURES);
+    }
+    if category.contains("spot") || category.contains("margin") {
+        return Some(BitgetBasicOrderMsg::VENUE_SPOT);
+    }
+    None
+}
+
+fn detect_message_venue(json_value: &Value) -> u8 {
+    json_value
+        .get("arg")
+        .and_then(Value::as_object)
+        .and_then(|arg| {
+            arg.get("category")
+                .or_else(|| arg.get("instType"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| json_value.get("category").and_then(Value::as_str))
+        .and_then(venue_from_category)
+        .unwrap_or(BitgetBasicOrderMsg::VENUE_SPOT)
+}
+
+fn detect_order_venue(order_obj: &Map<String, Value>, default_venue: u8) -> u8 {
     if let Some(category) = order_obj.get("category").and_then(|v| v.as_str()) {
-        let category = category.to_ascii_lowercase();
-        if category.contains("future") || category.contains("swap") || category.contains("perp") {
-            return BitgetBasicOrderMsg::VENUE_FUTURES;
+        if let Some(venue) = venue_from_category(category) {
+            return venue;
         }
     }
 
     if let Some(inst_type) = order_obj.get("instType").and_then(|v| v.as_str()) {
-        let inst_type = inst_type.to_ascii_lowercase();
-        if inst_type.contains("future") || inst_type.contains("swap") {
-            return BitgetBasicOrderMsg::VENUE_FUTURES;
+        if let Some(venue) = venue_from_category(inst_type) {
+            return venue;
         }
     }
 
-    BitgetBasicOrderMsg::VENUE_SPOT
+    default_venue
+}
+
+fn bitget_scope_for_venue(venue: u8) -> BasicAccountScope {
+    if venue == BitgetBasicOrderMsg::VENUE_COIN_FUTURES {
+        BasicAccountScope::BitgetUnifiedCoinFutures
+    } else {
+        BasicAccountScope::BitgetUnified
+    }
 }
 
 fn parse_f64_str_or_num(v: Option<&Value>) -> Option<f64> {
@@ -947,5 +983,56 @@ mod tests {
         assert!((msg.price - 83131.5).abs() < 1e-9);
         assert!((msg.last_executed_price - 83131.5).abs() < 1e-9);
         assert!((msg.last_executed_price - 83131.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn coin_futures_order_uses_top_level_category_fallback() {
+        let parser = BitgetAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let order = Bytes::from_static(
+            br#"{
+                "arg":{"topic":"order","category":"COIN-FUTURES"},
+                "ts":"1710000000999",
+                "data":[{
+                    "symbol":"BTCUSD_CM","orderId":"998877","clientOid":"123456",
+                    "price":"64000","qty":"125","orderType":"limit","side":"sell",
+                    "orderStatus":"live","updatedTime":"1710000000123"
+                }]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(order, &sink), 1);
+        let wrapped = sink.recv().expect("order event");
+        let (_, scope, payload) = split_basic_account_event(&wrapped).expect("wrapped order event");
+        assert_eq!(scope, BasicAccountScope::BitgetUnifiedCoinFutures);
+        let msg = BitgetBasicOrderMsg::from_bytes(payload).expect("order payload");
+        assert_eq!(msg.venue, BitgetBasicOrderMsg::VENUE_COIN_FUTURES);
+        assert_eq!(msg.symbol, "BTCUSD_CM");
+    }
+
+    #[test]
+    fn coin_futures_position_uses_object_category_and_scope() {
+        let parser = BitgetAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let position = Bytes::from_static(
+            br#"{
+                "arg":{"topic":"position","instType":"UTA"},
+                "ts":"1710000000999",
+                "data":[{
+                    "category":"COIN-FUTURES","symbol":"BTCUSD_CM","posSide":"net",
+                    "size":"125","unrealizedPnl":"0.001","updatedTime":"1710000000123"
+                }]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(position, &sink), 2);
+        let wrapped = sink.recv().expect("position event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped position event");
+        assert_eq!(event_type, BasicAccountEventType::PositionUpdate);
+        assert_eq!(scope, BasicAccountScope::BitgetUnifiedCoinFutures);
+        let msg = BasicPositionMsg::from_bytes(payload).expect("position payload");
+        assert_eq!(msg.inst_id, "BTCUSD_CM");
+        assert_eq!(msg.position_amount, 125.0);
     }
 }

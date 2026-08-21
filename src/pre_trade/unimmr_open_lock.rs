@@ -344,6 +344,7 @@ fn scope_label(scope: BasicAccountScope) -> &'static str {
         BasicAccountScope::OkexUnified => "OKX统一账户",
         BasicAccountScope::GateUnified => "Gate统一账户",
         BasicAccountScope::BitgetUnified => "Bitget统一账户",
+        BasicAccountScope::BitgetUnifiedCoinFutures => "Bitget统一账户币本位合约",
         BasicAccountScope::BybitUnified => "Bybit统一账户",
         BasicAccountScope::Unknown => "未知账户",
         BasicAccountScope::BinanceStdSpot => "Binance现货账户",

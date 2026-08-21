@@ -10,6 +10,7 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 DEPLOY_ROOT_NAME="trade_flow_feature"
 
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
+KNOWN_EXTRA_VENUES=("bitget-coin-futures")
 # 与 deploy_mm_{binance,gate,bitget}.sh 对齐：这三所走远端，其余本地。
 REMOTE_EXCHANGES=("binance" "gate" "bitget")
 
@@ -19,6 +20,14 @@ is_known_exchange() {
     if [[ "$v" == "$e" ]]; then
       return 0
     fi
+  done
+  return 1
+}
+
+is_known_extra_venue() {
+  local v="${1,,}"
+  for venue in "${KNOWN_EXTRA_VENUES[@]}"; do
+    [[ "$v" == "$venue" ]] && return 0
   done
   return 1
 }
@@ -51,7 +60,7 @@ is_remote_exchange() {
 usage() {
   cat <<USAGE
 Usage:
-  deploy_trade_flow_feature_pub.sh --exchange <exchange> [options]
+  deploy_trade_flow_feature_pub.sh (--exchange <exchange> | --venue <venue>) [options]
 
 Options:
   --bin-only         仅替换二进制（跳过 scripts/config）
@@ -82,6 +91,7 @@ USAGE
 }
 
 EXCHANGE=""
+VENUE=""
 BIN_MODE="0"
 RUNTIME_ONLY="0"
 
@@ -94,6 +104,11 @@ while [[ $# -gt 0 ]]; do
         usage >&2
         exit 1
       fi
+      shift 2
+      ;;
+    --venue)
+      VENUE="${2:-}"
+      [[ -n "$VENUE" ]] || { echo "[ERROR] --venue 需要一个值" >&2; exit 1; }
       shift 2
       ;;
     --bin-only)
@@ -117,26 +132,32 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "[ERROR] 未知参数: $1（仅支持 --exchange / --bin-only / --runtime-only）" >&2
+      echo "[ERROR] 未知参数: $1（支持 --exchange / --venue / --bin-only / --runtime-only）" >&2
       usage >&2
       exit 1
       ;;
   esac
 done
 
-if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 必须提供 --exchange" >&2
+if [[ -n "$EXCHANGE" && -n "$VENUE" ]] || [[ -z "$EXCHANGE" && -z "$VENUE" ]]; then
+  echo "[ERROR] --exchange 与 --venue 必须且只能提供一个" >&2
   usage >&2
   exit 1
 fi
 
-if ! is_known_exchange "$EXCHANGE"; then
+if [[ -n "$EXCHANGE" ]] && ! is_known_exchange "$EXCHANGE"; then
   echo "[ERROR] 不支持的 exchange: $EXCHANGE" >&2
   usage >&2
   exit 1
 fi
 
-read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+if [[ -n "$VENUE" ]]; then
+  is_known_extra_venue "$VENUE" || { echo "[ERROR] 不支持的 venue: $VENUE" >&2; exit 1; }
+  EXCHANGE="${VENUE%%-*}"
+  VENUES=("${VENUE,,}")
+else
+  read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+fi
 
 if is_remote_exchange "$EXCHANGE"; then
   DEPLOY_TARGET="remote"

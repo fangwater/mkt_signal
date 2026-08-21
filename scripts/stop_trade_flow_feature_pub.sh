@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
+VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin)|(binance|bitget)-coin-futures)$'
 PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
 
 if [[ -f "$PROCESS_MATCH_LIB" ]]; then

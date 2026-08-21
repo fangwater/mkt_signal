@@ -32,7 +32,7 @@ KNOWN_VENUES=(
   "okex-futures" "okex-margin"
   "binance-futures" "binance-coin-futures" "binance-margin"
   "bybit-futures" "bybit-margin"
-  "bitget-futures" "bitget-margin"
+  "bitget-futures" "bitget-coin-futures" "bitget-margin"
   "gate-futures" "gate-margin"
 )
 

@@ -322,7 +322,9 @@ pub async fn create_adapter(
             Box::new(crate::spread_pbs::gate_sbe::GateSpotSbeAdapter::new())
         }
         TradingVenue::GateFutures => Box::new(crate::spread_pbs::gate_sbe::GateSbeAdapter::new()),
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+        TradingVenue::BitgetMargin
+        | TradingVenue::BitgetFutures
+        | TradingVenue::BitgetCoinFutures => {
             Box::new(crate::spread_pbs::bitget::BitgetAdapter::new(venue))
         }
         _ => return Ok(None),

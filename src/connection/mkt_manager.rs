@@ -1024,7 +1024,10 @@ impl MktManager {
         &mut self,
         msgs: &crate::sub_msg::BitgetPerpsSubscribeMsgs,
     ) {
-        if self.cfg.venue != TradingVenue::BitgetFutures {
+        if !matches!(
+            self.cfg.venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        ) {
             info!(
                 "Skipping Bitget derivatives connections for unsupported venue={}",
                 self.cfg.venue.data_pub_slug()

@@ -217,7 +217,10 @@ fn arb_open_is_bitget_margin_lock_spot_deleverage(
     qty: f64,
 ) -> bool {
     opening_venue == TradingVenue::BitgetMargin
-        && hedging_venue == TradingVenue::BitgetFutures
+        && matches!(
+            hedging_venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        )
         && side == Side::Sell
         && arb_open_is_account_throttle_reducing(
             opening_symbol,

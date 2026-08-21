@@ -71,7 +71,7 @@ require_cross_env_name() {
 
 ensure_cross_venue() {
   local v="${1,,}"
-  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" ) ]]; then
+  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ) ]]; then
     echo "[ERROR] 非法 cross venue（必须是 -futures/-swap/-perp/-perpetual）: $1" >&2
     exit 1
   fi

@@ -1056,6 +1056,15 @@ fn decode_internal_open_terminate_order_meta(
                 qty: params.quantity_qv.get_val(),
             })
         }
+        TradeRequestType::BitgetNewCoinFuturesOrder => {
+            let params = BitgetNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: "bitget_coin_futures",
+                qty: params.quantity_qv.get_val(),
+            })
+        }
         TradeRequestType::BitgetNewMarginOrder | TradeRequestType::BitgetNewSpotOrder => {
             let params = BitgetNewOrderParams::from_bytes(&msg.params)?;
             Some(InternalOpenTerminateOrderMeta {
@@ -3951,6 +3960,7 @@ impl TradeEngine {
                                     let body_bytes = match msg.req_type {
                                         crate::query_request::QueryRequestType::BitgetMarginQuery
                                         | crate::query_request::QueryRequestType::BitgetUMQuery
+                                        | crate::query_request::QueryRequestType::BitgetCoinFuturesQuery
                                             if status == 200 =>
                                         {
                                             match parse_bitget_order_query_json(&body) {
@@ -4003,6 +4013,7 @@ impl TradeEngine {
                                             bytes::Bytes::new()
                                         }
                                         crate::query_request::QueryRequestType::BitgetPositionsSnapshot
+                                        | crate::query_request::QueryRequestType::BitgetCoinPositionsSnapshot
                                             if status == 200 =>
                                         {
                                             if let Some(msgs) = parse_bitget_positions_snapshot(&body)

@@ -3,8 +3,8 @@
 //!
 //! `order_manager.rs` 在 `TradingVenue::BitgetMargin` 路径强制 `category=margin` 走 cross-margin
 //! 现货并依赖 UTA 自动借币（Bitget UTA v3 没有显式 `loanType`，借币由账户级 cross-margin 配置触发）。
-//! `TradingVenue::BitgetFutures` 路径按 one-way 持仓模式发 futures 单：开/平仓只由 `side`
-//! 和 `reduceOnly` 区分，不携带 hedge-mode 的 `posSide`。
+//! Bitget USDT/COIN futures paths use one-way mode: open/close is expressed by `side` and
+//! `reduceOnly`, without hedge-mode `posSide`.
 //! 仍处于 V2 经典账户的 key 调用 `/api/v3/account/settings` 会返回错误。
 //!
 //! 校验失败时返回 `Err`，调用方会让 `trade_engine` 启动失败。

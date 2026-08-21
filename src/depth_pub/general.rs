@@ -165,6 +165,7 @@ impl DepthPubGeneralRunner {
             TradingVenue::BinanceCoinFutures,
             TradingVenue::BitgetMargin,
             TradingVenue::BitgetFutures,
+            TradingVenue::BitgetCoinFutures,
             TradingVenue::GateMargin,
             TradingVenue::GateFutures,
         ];
@@ -227,9 +228,9 @@ fn spawn_snapshot_ws(
         TradingVenue::BinanceMargin
         | TradingVenue::BinanceFutures
         | TradingVenue::BinanceCoinFutures => spawn_binance_params(venue, &symbols, app),
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-            spawn_bitget_params(venue, &symbols, app)
-        }
+        TradingVenue::BitgetMargin
+        | TradingVenue::BitgetFutures
+        | TradingVenue::BitgetCoinFutures => spawn_bitget_params(venue, &symbols, app),
         TradingVenue::GateMargin | TradingVenue::GateFutures => {
             spawn_gate_params(venue, &symbols, app)
         }
@@ -322,6 +323,7 @@ fn spawn_bitget_params(
     let inst_type = match venue {
         TradingVenue::BitgetMargin => "spot",
         TradingVenue::BitgetFutures => "usdt-futures",
+        TradingVenue::BitgetCoinFutures => "coin-futures",
         other => unreachable!("bitget snapshot feed on {other:?}"),
     };
     let subscribe_msgs = build_bitget_books50_subscribe(symbols, inst_type);

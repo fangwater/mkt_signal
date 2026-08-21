@@ -1040,7 +1040,8 @@ pub(crate) fn infer_query_time_in_force(order: &Order) -> TimeInForce {
         | TradingVenue::OkexFutures
         | TradingVenue::GateMargin
         | TradingVenue::GateFutures
-        | TradingVenue::BitgetFutures => TimeInForce::GTX,
+        | TradingVenue::BitgetFutures
+        | TradingVenue::BitgetCoinFutures => TimeInForce::GTX,
         _ => TimeInForce::GTC,
     }
 }

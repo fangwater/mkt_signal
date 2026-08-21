@@ -50,7 +50,9 @@ fn bar_close_delay_ms(venue: TradingVenue) -> i64 {
         | TradingVenue::GateFutures
         | TradingVenue::BybitMargin
         | TradingVenue::BybitFutures => 5,
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 10,
+        TradingVenue::BitgetMargin
+        | TradingVenue::BitgetFutures
+        | TradingVenue::BitgetCoinFutures => 10,
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => 3,
         TradingVenue::AsterMargin
         | TradingVenue::AsterFutures

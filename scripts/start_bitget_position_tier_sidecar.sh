@@ -4,11 +4,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="${SCRIPT_DIR}/bitget_position_tier_sidecar.py"
 
-PM2_NAME="${PM2_NAME:-bitget_position_tier_sidecar}"
+PRODUCT_TYPE="${PRODUCT_TYPE:-USDT-FUTURES}"
+if [[ "$PRODUCT_TYPE" == "COIN-FUTURES" ]]; then
+  DEFAULT_PM2_NAME="bitget_position_tier_sidecar_coin"
+else
+  DEFAULT_PM2_NAME="bitget_position_tier_sidecar"
+fi
+PM2_NAME="${PM2_NAME:-$DEFAULT_PM2_NAME}"
 PM2_NAMESPACE="${PM2_NAMESPACE:-risk_sidecar}"
 POOL_KEY="${POOL_KEY:-bitget_position_tier_pool:envs}"
-CACHE_KEY="${CACHE_KEY:-bitget_position_tier_cache:USDT-FUTURES}"
-PRODUCT_TYPE="${PRODUCT_TYPE:-USDT-FUTURES}"
+CACHE_KEY="${CACHE_KEY:-bitget_position_tier_cache:${PRODUCT_TYPE}}"
 BATCH_SIZE="${BATCH_SIZE:-3}"
 INTERVAL_SEC="${INTERVAL_SEC:-20}"
 SYMBOL_COOLDOWN_SEC="${SYMBOL_COOLDOWN_SEC:-1800}"

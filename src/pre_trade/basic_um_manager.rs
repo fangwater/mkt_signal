@@ -4,6 +4,7 @@ use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::net_position::NetPosition;
 use mkt_parsers::msg::basic_account_msg::{BasicPositionMsg, BasicUmUnrealizedMsg};
 use runtime_common::exchange::Exchange;
+use symbol_utils::symbol_util::normalize_symbol_for_internal;
 
 /// 最小化的 U 本位持仓管理器：仅维护 inst_id、side、持仓量、时间戳。
 #[derive(Debug, Clone)]
@@ -218,6 +219,7 @@ impl BasicUmManager {
                 .replace("-SWAP", "")
                 .replace('-', "")
                 .to_ascii_uppercase(),
+            Exchange::Binance | Exchange::Bitget => normalize_symbol_for_internal(inst_id),
             _ => inst_id.to_ascii_uppercase(),
         }
     }
@@ -229,7 +231,10 @@ impl BasicUmManager {
             .replace('-', "")
     }
 
-    fn normalized_symbol_key(symbol: &str) -> std::borrow::Cow<'_, str> {
+    fn normalized_symbol_key<'a>(&self, symbol: &'a str) -> std::borrow::Cow<'a, str> {
+        if matches!(self.exchange, Exchange::Binance | Exchange::Bitget) {
+            return std::borrow::Cow::Owned(normalize_symbol_for_internal(symbol));
+        }
         if !symbol.is_empty()
             && !symbol.ends_with("SWAP")
             && symbol
@@ -264,7 +269,7 @@ impl BasicUmManager {
 
 impl NetPosition for BasicUmManager {
     fn net_position(&self, symbol: &str, min_qty_table: Option<&MinQtyTable>) -> f64 {
-        let symbol_normalized = Self::normalized_symbol_key(symbol);
+        let symbol_normalized = self.normalized_symbol_key(symbol);
         let net_contracts = self
             .net_contracts_by_symbol
             .get(symbol_normalized.as_ref())
@@ -446,5 +451,21 @@ mod tests {
             0.0,
         ));
         assert_eq!(mgr.net_position("BTCUSDT", None), 0.0);
+    }
+
+    #[test]
+    fn bitget_coin_futures_exchange_and_internal_symbols_share_position_key() {
+        use crate::pre_trade::net_position::NetPosition;
+
+        let mut mgr = BasicUmManager::new(Exchange::Bitget);
+        mgr.apply_position(&BasicPositionMsg::create(
+            1,
+            "BTCUSD_CM".to_string(),
+            'N',
+            125.0,
+        ));
+
+        assert_eq!(mgr.net_position("BTCUSD_CM", None), 125.0);
+        assert_eq!(mgr.net_position("BTCUSDCM", None), 125.0);
     }
 }

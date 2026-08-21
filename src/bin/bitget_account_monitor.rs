@@ -31,7 +31,7 @@ use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
 use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -140,6 +140,27 @@ fn log_forwarder_stats() {
     });
 }
 
+fn configured_venue_values() -> Vec<String> {
+    [
+        "OPEN_VENUE",
+        "HEDGE_VENUE",
+        "EXEC_VENUE",
+        "EXEC_START_VENUE",
+        "VENUE",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .map(|value| value.trim().to_ascii_lowercase().replace('_', "-"))
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+fn coin_futures_enabled(configured_venues: &[String]) -> bool {
+    configured_venues
+        .iter()
+        .any(|value| value == "bitget-coin-futures")
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -150,6 +171,12 @@ async fn main() -> Result<()> {
     log_credential_preview("BITGET_API_KEY", &credentials.api_key);
     log_credential_preview("BITGET_API_SECRET", &credentials.secret_key);
     log_credential_preview("BITGET_API_PASSPHRASE", &credentials.passphrase);
+    let configured_venues = configured_venue_values();
+    let poll_coin_futures = coin_futures_enabled(&configured_venues);
+    info!(
+        "Bitget position scopes: usdt_futures=true coin_futures={} configured_venues={:?}",
+        poll_coin_futures, configured_venues
+    );
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     setup_signals(shutdown_tx.clone());
@@ -174,8 +201,12 @@ async fn main() -> Result<()> {
     let mut stats = tokio::time::interval(Duration::from_secs(30));
     let mut balance_poll =
         spawn_bitget_balance_poll(credentials.clone(), primary_ip.clone(), shutdown_rx.clone());
-    let mut position_poll =
-        spawn_bitget_position_poll(credentials.clone(), primary_ip.clone(), shutdown_rx.clone());
+    let mut position_poll = spawn_bitget_position_poll(
+        credentials.clone(),
+        primary_ip.clone(),
+        shutdown_rx.clone(),
+        poll_coin_futures,
+    );
 
     let mut primary = spawn_bitget_stream_path(
         "primary",
@@ -226,6 +257,7 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         primary_ip.clone(),
                         shutdown_rx.clone(),
+                        poll_coin_futures,
                     );
                 }
             }
@@ -304,7 +336,11 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
 }
 
 fn send_wrapped_payload(payload: Bytes, context: &str) {
-    if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BitgetUnified, payload) {
+    send_wrapped_payload_for_scope(BasicAccountScope::BitgetUnified, payload, context);
+}
+
+fn send_wrapped_payload_for_scope(scope: BasicAccountScope, payload: Bytes, context: &str) {
+    if let Some(wrapped) = wrap_basic_payload(scope, payload) {
         if !forward_account_event(wrapped) {
             warn!("failed to forward {}", context);
         }
@@ -366,10 +402,11 @@ fn parse_bitget_account_assets_snapshot(json: &str) -> Option<Vec<Bytes>> {
 async fn bitget_rest_get_positions(
     client: &reqwest::Client,
     credentials: &BitgetCredentials,
+    category: &str,
 ) -> Result<String> {
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let path = "/api/v3/position/current-position";
-    let query = "category=USDT-FUTURES";
+    let query = format!("category={category}");
     let request_path = format!("{}?{}", path, query);
     let sign = sign_bitget_rest_request(credentials, timestamp_ms, "GET", &request_path);
     let url = format!("https://api.bitget.com{}", request_path);
@@ -471,6 +508,7 @@ fn spawn_bitget_position_poll(
     credentials: BitgetCredentials,
     local_ip: String,
     mut shutdown_rx: watch::Receiver<bool>,
+    include_coin_futures: bool,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let client = match build_bitget_rest_client(Some(&local_ip), Duration::from_secs(10)) {
@@ -481,7 +519,12 @@ fn spawn_bitget_position_poll(
             }
         };
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
-        let mut previous_positions: HashSet<(String, char)> = HashSet::new();
+        let mut categories = vec![("USDT-FUTURES", BasicAccountScope::BitgetUnified)];
+        if include_coin_futures {
+            categories.push(("COIN-FUTURES", BasicAccountScope::BitgetUnifiedCoinFutures));
+        }
+        let mut previous_positions: HashMap<BasicAccountScope, HashSet<(String, char)>> =
+            HashMap::new();
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => break,
@@ -489,7 +532,8 @@ fn spawn_bitget_position_poll(
                     if *shutdown_rx.borrow() {
                         break;
                     }
-                    match bitget_rest_get_positions(&client, &credentials).await {
+                    for (category, scope) in &categories {
+                    match bitget_rest_get_positions(&client, &credentials, category).await {
                         Ok(body) => {
                             if let Some(msgs) = parse_bitget_positions_snapshot(&body) {
                                 let mut current_positions: HashSet<(String, char)> = HashSet::new();
@@ -504,13 +548,15 @@ fn spawn_bitget_position_poll(
                                             ));
                                         }
                                     }
-                                    send_wrapped_payload(
+                                    send_wrapped_payload_for_scope(
+                                        *scope,
                                         payload,
                                         "Bitget REST position msg",
                                     );
                                 }
 
-                                let mut stale_positions: Vec<(String, char)> = previous_positions
+                                let previous = previous_positions.entry(*scope).or_default();
+                                let mut stale_positions: Vec<(String, char)> = previous
                                     .difference(&current_positions)
                                     .cloned()
                                     .collect();
@@ -518,26 +564,29 @@ fn spawn_bitget_position_poll(
                                 for (inst_id, side) in stale_positions {
                                     let ts = chrono::Utc::now().timestamp_millis();
                                     info!(
-                                        "Bitget REST position snapshot missing previously-seen position; emitting zero cleanup: inst_id={} side={}",
-                                        inst_id, side
+                                        "Bitget REST position snapshot missing previously-seen position; emitting zero cleanup: category={} inst_id={} side={}",
+                                        category, inst_id, side
                                     );
-                                    send_wrapped_payload(
+                                    send_wrapped_payload_for_scope(
+                                        *scope,
                                         BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
                                             .to_bytes(),
                                         "Bitget REST zero position cleanup",
                                     );
-                                    send_wrapped_payload(
+                                    send_wrapped_payload_for_scope(
+                                        *scope,
                                         BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
                                             .to_bytes(),
                                         "Bitget REST zero pnl cleanup",
                                     );
                                 }
-                                previous_positions = current_positions;
+                                *previous = current_positions;
                             }
                         }
                         Err(e) => {
-                            warn!("Bitget position poll failed: {:?}", e);
+                            warn!("Bitget {} position poll failed: {:?}", category, e);
                         }
+                    }
                     }
                 }
             }

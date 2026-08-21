@@ -23,6 +23,8 @@ pub enum TradingVenue {
     HyperliquidFutures = 13,
     /// Binance COIN-M delivery futures (`dapi`), including perpetual contracts.
     BinanceCoinFutures = 14,
+    /// Bitget UTA coin-margined inverse futures (`COIN-FUTURES`).
+    BitgetCoinFutures = 15,
 }
 
 impl TradingVenue {
@@ -33,7 +35,9 @@ impl TradingVenue {
             | TradingVenue::BinanceCoinFutures => "binance",
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => "okex",
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => "bybit",
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => "bitget",
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => "bitget",
             TradingVenue::GateMargin | TradingVenue::GateFutures => "gate",
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => "hyperliquid",
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => "aster",
@@ -51,6 +55,7 @@ impl TradingVenue {
             TradingVenue::BybitFutures => "bybit-futures",
             TradingVenue::BitgetMargin => "bitget-margin",
             TradingVenue::BitgetFutures => "bitget-futures",
+            TradingVenue::BitgetCoinFutures => "bitget-coin-futures",
             TradingVenue::GateMargin => "gate-margin",
             TradingVenue::GateFutures => "gate-futures",
             TradingVenue::AsterMargin => "aster-margin",
@@ -87,6 +92,7 @@ impl TradingVenue {
             12 => Some(TradingVenue::HyperliquidMargin),
             13 => Some(TradingVenue::HyperliquidFutures),
             14 => Some(TradingVenue::BinanceCoinFutures),
+            15 => Some(TradingVenue::BitgetCoinFutures),
             _ => None,
         }
     }
@@ -102,6 +108,7 @@ impl TradingVenue {
             TradingVenue::BybitFutures => "BybitFutures",
             TradingVenue::BitgetMargin => "BitgetMargin",
             TradingVenue::BitgetFutures => "BitgetFutures",
+            TradingVenue::BitgetCoinFutures => "BitgetCoinFutures",
             TradingVenue::GateMargin => "GateMargin",
             TradingVenue::GateFutures => "GateFutures",
             TradingVenue::AsterMargin => "AsterMargin",
@@ -122,6 +129,7 @@ impl TradingVenue {
             TradingVenue::BybitFutures => "bybit_futures",
             TradingVenue::BitgetMargin => "bitget_margin",
             TradingVenue::BitgetFutures => "bitget_futures",
+            TradingVenue::BitgetCoinFutures => "bitget_coin_futures",
             TradingVenue::GateMargin => "gate_margin",
             TradingVenue::GateFutures => "gate_futures",
             TradingVenue::AsterMargin => "aster_margin",
@@ -142,6 +150,7 @@ impl TradingVenue {
             TradingVenue::BitgetMargin => "margin",
             TradingVenue::BybitFutures => "futures",
             TradingVenue::BitgetFutures => "futures",
+            TradingVenue::BitgetCoinFutures => "futures",
             TradingVenue::GateMargin => "margin",
             TradingVenue::GateFutures => "futures",
             TradingVenue::AsterMargin => "margin",
@@ -158,10 +167,18 @@ impl TradingVenue {
                 | TradingVenue::BinanceCoinFutures
                 | TradingVenue::OkexFutures
                 | TradingVenue::BitgetFutures
+                | TradingVenue::BitgetCoinFutures
                 | TradingVenue::BybitFutures
                 | TradingVenue::GateFutures
                 | TradingVenue::AsterFutures
                 | TradingVenue::HyperliquidFutures
+        )
+    }
+
+    pub fn is_inverse_futures(&self) -> bool {
+        matches!(
+            self,
+            TradingVenue::BinanceCoinFutures | TradingVenue::BitgetCoinFutures
         )
     }
 
@@ -190,6 +207,7 @@ impl TradingVenue {
                 | TradingVenue::BybitFutures
                 | TradingVenue::BitgetMargin
                 | TradingVenue::BitgetFutures
+                | TradingVenue::BitgetCoinFutures
                 | TradingVenue::GateMargin
                 | TradingVenue::GateFutures
         )
@@ -260,6 +278,27 @@ pub fn binance_coin_futures_symbol(symbol: &str) -> String {
     normalized
 }
 
+/// Restore Bitget COIN-FUTURES symbols after internal normalization removes separators.
+///
+/// Example: BTCUSDCM -> BTCUSD_CM.
+pub fn bitget_coin_futures_symbol(symbol: &str) -> String {
+    let normalized = normalize_symbol_for_internal(symbol);
+    if let Some(root) = normalized.strip_suffix("CM") {
+        if root.ends_with("USD") && root.len() > "USD".len() {
+            return format!("{root}_CM");
+        }
+    }
+    if let Some(base) = normalized.strip_suffix("USDT") {
+        if !base.is_empty() {
+            return format!("{base}USD_CM");
+        }
+    }
+    if normalized.ends_with("USD") && normalized.len() > "USD".len() {
+        return format!("{normalized}_CM");
+    }
+    normalized
+}
+
 /// 根据 venue 修正符号格式。
 pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
     let symbol_upper = normalize_symbol_for_internal(symbol);
@@ -274,6 +313,7 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
             format!("{}-{}-SWAP", base, quote)
         }
         TradingVenue::BinanceCoinFutures => binance_coin_futures_symbol(&symbol_upper),
+        TradingVenue::BitgetCoinFutures => bitget_coin_futures_symbol(&symbol_upper),
         TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => symbol_upper,
         _ => symbol_upper,
     }
@@ -329,6 +369,7 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
             symbol.to_uppercase().replace(['_', '-'], "")
         }
         TradingVenue::BinanceCoinFutures => binance_coin_futures_symbol(symbol),
+        TradingVenue::BitgetCoinFutures => bitget_coin_futures_symbol(symbol),
         _ => symbol.to_uppercase(),
     }
 }
@@ -336,7 +377,13 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
 fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
     const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
-    let contract_root = if let Some(root) = symbol_upper.strip_suffix("PERP") {
+    let contract_root = if let Some(root) = symbol_upper.strip_suffix("CM") {
+        if root.ends_with("USD") && root.len() > "USD".len() {
+            root
+        } else {
+            symbol_upper
+        }
+    } else if let Some(root) = symbol_upper.strip_suffix("PERP") {
         root
     } else if symbol_upper.len() > 6
         && symbol_upper
@@ -390,6 +437,10 @@ mod tests {
             extract_assets_from_symbol("ETHUSD_260925"),
             ("ETH".to_string(), "USD".to_string())
         );
+        assert_eq!(
+            extract_assets_from_symbol("BTCUSD_CM"),
+            ("BTC".to_string(), "USD".to_string())
+        );
     }
 
     #[test]
@@ -423,6 +474,10 @@ mod tests {
             min_qty_symbol_key(TradingVenue::BinanceCoinFutures, "ETHUSD260925"),
             "ETHUSD_260925"
         );
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::BitgetCoinFutures, "BTCUSDCM"),
+            "BTCUSD_CM"
+        );
     }
 
     #[test]
@@ -434,6 +489,17 @@ mod tests {
         assert_eq!(
             normalize_symbol_for_venue("ETHUSD260925", TradingVenue::BinanceCoinFutures),
             "ETHUSD_260925"
+        );
+    }
+
+    #[test]
+    fn test_normalize_symbol_for_bitget_coin_futures() {
+        assert_eq!(bitget_coin_futures_symbol("BTCUSDCM"), "BTCUSD_CM");
+        assert_eq!(bitget_coin_futures_symbol("btc-usd_cm"), "BTCUSD_CM");
+        assert_eq!(bitget_coin_futures_symbol("BTCUSDT"), "BTCUSD_CM");
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSD_CM", TradingVenue::BitgetCoinFutures),
+            "BTCUSD_CM"
         );
     }
 

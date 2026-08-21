@@ -1496,27 +1496,36 @@ pub trait OpenStrategyCommon {
             }
 
             if is_arb_open
-                && (venue == TradingVenue::BitgetFutures
-                    || monitor.hedge_venue() == TradingVenue::BitgetFutures)
+                && (matches!(
+                    venue,
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ) || matches!(
+                    monitor.hedge_venue(),
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ))
             {
                 let hedge_venue = monitor.hedge_venue();
                 let (current_bitget_open_base_qty, add_bitget_open_base_qty) = if venue
                     == TradingVenue::BitgetMargin
-                    || venue == TradingVenue::BitgetFutures
-                {
+                    || matches!(
+                        venue,
+                        TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                    ) {
                     (current_open_base_qty, add_base_qty)
                 } else {
                     (0.0, 0.0)
                 };
-                let (current_bitget_futures_base_qty, add_bitget_futures_base_qty) =
-                    if hedge_venue == TradingVenue::BitgetFutures {
-                        (
-                            monitor.get_position_qty(&symbol, TradingVenue::BitgetFutures),
-                            -add_base_qty,
-                        )
-                    } else {
-                        (0.0, 0.0)
-                    };
+                let (current_bitget_futures_base_qty, add_bitget_futures_base_qty) = if matches!(
+                    hedge_venue,
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ) {
+                    (
+                        monitor.get_position_qty(&symbol, hedge_venue),
+                        -add_base_qty,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
                 if let Err(e) = BitgetPositionTierGuard::ensure_projected_notional(
                     &symbol,
                     side,
@@ -1532,7 +1541,7 @@ pub trait OpenStrategyCommon {
                         "Bitget限仓风控",
                         &e,
                         &symbol,
-                        TradingVenue::BitgetFutures,
+                        hedge_venue,
                         side,
                         current_bitget_futures_base_qty,
                         input.qty,

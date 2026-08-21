@@ -36,6 +36,7 @@ use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::{
     extract_assets_from_internal_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
+    normalize_symbol_for_venue,
 };
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::cancel_signal::{ArbCancelCtx, ArbCancelReason, MmCancelCtx, MmCancelReason};
@@ -50,6 +51,7 @@ const DERIVATIVES_MAX_SUBSCRIBERS: usize = 64;
 const DERIVATIVES_SUBSCRIBER_MAX_BUFFER: usize = 8192;
 const BINANCE_DIRECT_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-futures/derivatives";
 const BINANCE_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/binance-coin-futures/derivatives";
+const BITGET_COIN_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-coin-futures/derivatives";
 const OKEX_DERIVATIVES_SERVICE: &str = "dat_pbs/okex-futures/derivatives";
 const BYBIT_DERIVATIVES_SERVICE: &str = "dat_pbs/bybit-futures/derivatives";
 const BITGET_DERIVATIVES_SERVICE: &str = "dat_pbs/bitget-futures/derivatives";
@@ -81,6 +83,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
             | TradingVenue::OkexFutures
             | TradingVenue::GateFutures
             | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures
             | TradingVenue::BybitFutures
     )
 }
@@ -92,7 +95,9 @@ fn exchange_from_venue(venue: TradingVenue) -> Exchange {
         | TradingVenue::BinanceCoinFutures => Exchange::Binance,
         TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
         TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
+        TradingVenue::BitgetMargin
+        | TradingVenue::BitgetFutures
+        | TradingVenue::BitgetCoinFutures => Exchange::Bitget,
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
         _ => panic!("unsupported venue for pre_trade: {:?}", venue),
     }
@@ -129,6 +134,7 @@ fn scope_for_venue(
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
             BasicAccountScope::BitgetUnified
         }
+        TradingVenue::BitgetCoinFutures => BasicAccountScope::BitgetUnifiedCoinFutures,
         TradingVenue::BybitMargin | TradingVenue::BybitFutures => BasicAccountScope::BybitUnified,
         _ => BasicAccountScope::Unknown,
     }
@@ -2339,6 +2345,11 @@ impl MonitorChannel {
         {
             return BINANCE_COIN_DERIVATIVES_SERVICE;
         }
+        if open_venue == TradingVenue::BitgetCoinFutures
+            || hedge_venue == TradingVenue::BitgetCoinFutures
+        {
+            return BITGET_COIN_DERIVATIVES_SERVICE;
+        }
         match Self::mark_price_exchange_for_venues(open_venue, hedge_venue) {
             Exchange::Okex => OKEX_DERIVATIVES_SERVICE,
             Exchange::Bybit => BYBIT_DERIVATIVES_SERVICE,
@@ -2736,6 +2747,7 @@ impl MonitorChannel {
                     | TradingVenue::BybitFutures
                     | TradingVenue::BitgetMargin
                     | TradingVenue::BitgetFutures
+                    | TradingVenue::BitgetCoinFutures
                     | TradingVenue::GateMargin
                     | TradingVenue::GateFutures
             ) {
@@ -2903,7 +2915,7 @@ impl MonitorChannel {
     ) -> f64 {
         match venue {
             TradingVenue::BinanceFutures => qty,
-            TradingVenue::BinanceCoinFutures => {
+            venue if venue.is_inverse_futures() => {
                 Self::qty_multiplier_for_venue_inner(inner, venue, symbol)
                     .map(|multiplier| qty * multiplier)
                     .unwrap_or(0.0)
@@ -2933,7 +2945,7 @@ impl MonitorChannel {
     ) -> Result<f64, String> {
         match venue {
             TradingVenue::BinanceFutures => Ok(qty),
-            TradingVenue::BinanceCoinFutures => {
+            venue if venue.is_inverse_futures() => {
                 let mult =
                     Self::qty_multiplier_for_venue_at_price_inner(inner, venue, symbol, price)?;
                 Ok(qty * mult)
@@ -2953,7 +2965,7 @@ impl MonitorChannel {
     ) -> Result<f64, String> {
         match venue {
             TradingVenue::BinanceFutures => Ok(1.0),
-            TradingVenue::BinanceCoinFutures => {
+            venue if venue.is_inverse_futures() => {
                 let symbol_key = min_qty_symbol_key(venue, symbol);
                 let price = inner
                     .price_table
@@ -2962,8 +2974,8 @@ impl MonitorChannel {
                     .filter(|price| price.is_finite() && *price > 0.0)
                     .ok_or_else(|| {
                         format!(
-                            "symbol={} 缺少 Binance COIN-M mark price，无法转换 inverse qty",
-                            symbol_key
+                            "symbol={} 缺少 {:?} mark price，无法转换 inverse qty",
+                            symbol_key, venue
                         )
                     })?;
                 Self::qty_multiplier_for_venue_at_price_inner(inner, venue, symbol, price)
@@ -3000,13 +3012,13 @@ impl MonitorChannel {
         symbol: &str,
         price: f64,
     ) -> Result<f64, String> {
-        if venue != TradingVenue::BinanceCoinFutures {
+        if !venue.is_inverse_futures() {
             return Self::qty_multiplier_for_venue_inner(inner, venue, symbol);
         }
         if !price.is_finite() || price <= 0.0 {
             return Err(format!(
-                "symbol={} Binance COIN-M inverse qty requires positive price, got {}",
-                symbol, price
+                "symbol={} {:?} inverse qty requires positive price, got {}",
+                symbol, venue, price
             ));
         }
         let symbol_key = min_qty_symbol_key(venue, symbol);
@@ -3018,14 +3030,14 @@ impl MonitorChannel {
         })?;
         let contract_size = table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
             format!(
-                "symbol={} 缺少 Binance COIN-M contractSize，无法转换 inverse qty",
-                symbol_key
+                "symbol={} 缺少 {:?} inverse face value，无法转换 qty",
+                symbol_key, venue
             )
         })?;
         if !contract_size.is_finite() || contract_size <= 0.0 {
             return Err(format!(
-                "symbol={} Binance COIN-M contractSize invalid: {}",
-                symbol_key, contract_size
+                "symbol={} {:?} inverse face value invalid: {}",
+                symbol_key, venue, contract_size
             ));
         }
         Ok(contract_size / price)
@@ -3059,6 +3071,9 @@ impl MonitorChannel {
 
         fn collect_leg_exposure(
             leg: &LegMgr,
+            venue: TradingVenue,
+            price_table: &PriceTable,
+            venue_min_qty_tables: &HashMap<TradingVenue, Rc<VenueMinQtyTable>>,
             exposures: &mut HashMap<String, (f64, f64)>,
             leg_idx: usize,
         ) {
@@ -3097,19 +3112,45 @@ impl MonitorChannel {
                         let Some(base_asset) = symbol_mapper.inst_id_to_base_asset(symbol) else {
                             continue;
                         };
-                        add_exposure(
-                            base_asset,
-                            net_contracts as f64 * min_qty.contract_multiplier(symbol),
-                        );
+                        let base_qty = if venue.is_inverse_futures() {
+                            let symbol_key = min_qty_symbol_key(venue, symbol);
+                            let Some(face_value) = venue_min_qty_tables
+                                .get(&venue)
+                                .and_then(|table| table.contract_multiplier_opt(&symbol_key))
+                            else {
+                                continue;
+                            };
+                            let Some(mark_price) = price_table.mark_price(&symbol_key) else {
+                                continue;
+                            };
+                            net_contracts as f64 * face_value / mark_price
+                        } else {
+                            net_contracts as f64 * min_qty.contract_multiplier(symbol)
+                        };
+                        add_exposure(base_asset, base_qty);
                     }
                 }
             }
         }
 
         let mut exposures: HashMap<String, (f64, f64)> = HashMap::new();
-        collect_leg_exposure(&inner.open_leg, &mut exposures, 0);
+        collect_leg_exposure(
+            &inner.open_leg,
+            inner.open_venue,
+            &price_table,
+            &inner.venue_min_qty_tables,
+            &mut exposures,
+            0,
+        );
         if !same_venue {
-            collect_leg_exposure(&inner.hedge_leg, &mut exposures, 1);
+            collect_leg_exposure(
+                &inner.hedge_leg,
+                inner.hedge_venue,
+                &price_table,
+                &inner.venue_min_qty_tables,
+                &mut exposures,
+                1,
+            );
         }
 
         let binance_mode = if inner.order_manager.borrow().binance_is_standard() {
@@ -3181,7 +3222,20 @@ impl MonitorChannel {
                 continue;
             }
             if let LegMgr::Futures { exchange, um, .. } = leg {
-                let upl = um.borrow().total_unrealized_pnl_usdt();
+                let um_ref = um.borrow();
+                let upl = if venue.is_inverse_futures() {
+                    um_ref
+                        .positions_iter()
+                        .filter_map(|position| {
+                            let symbol_key = min_qty_symbol_key(*venue, &position.inst_id);
+                            price_table
+                                .mark_price(&symbol_key)
+                                .map(|mark| position.unrealized_pnl_usdt * mark)
+                        })
+                        .sum()
+                } else {
+                    um_ref.total_unrealized_pnl_usdt()
+                };
                 total_um_unrealized_usdt += upl;
                 if !matches!(*exchange, Exchange::Gate | Exchange::Okex) {
                     let scope = scope_for_venue(*venue, binance_mode);
@@ -3603,35 +3657,49 @@ impl MonitorChannel {
                         true,
                     )
                 }
-                TradingVenue::BinanceCoinFutures => {
+                TradingVenue::BinanceCoinFutures | TradingVenue::BitgetCoinFutures => {
                     let contract_size = table
                         .contract_multiplier_opt(&symbol_key)
                         .ok_or_else(|| {
                             format!(
-                                "symbol={} 缺少 Binance COIN-M contractSize，无法将 base qty 转成 contracts",
-                                symbol_key
+                                "symbol={} 缺少 {:?} inverse face value，无法将 base qty 转成 venue qty",
+                                symbol_key, venue
                             )
                         })?;
                     if !raw_price.is_finite() || raw_price <= 0.0 {
                         return Err(format!(
-                            "symbol={} Binance COIN-M 下单数量对齐需要正价格，got {}",
-                            symbol_key, raw_price
+                            "symbol={} {:?} 下单数量对齐需要正价格，got {}",
+                            symbol_key, venue, raw_price
                         ));
                     }
                     if !contract_size.is_finite() || contract_size <= 0.0 {
                         return Err(format!(
-                            "symbol={} Binance COIN-M contractSize invalid: {}",
-                            symbol_key, contract_size
+                            "symbol={} {:?} inverse face value invalid: {}",
+                            symbol_key, venue, contract_size
                         ));
                     }
                     let raw_contracts = raw_qty * raw_price / contract_size;
-                    Self::align_order_with_table(
+                    let (mut contracts, aligned_price) = Self::align_order_with_table(
                         &symbol_key,
                         raw_contracts,
                         raw_price,
                         table.as_ref(),
-                        true,
-                    )
+                        false,
+                    )?;
+                    if let Some(min_notional) = table.min_notional(&symbol_key) {
+                        if min_notional > 0.0 {
+                            let required_contracts = min_notional / contract_size;
+                            if contracts < required_contracts {
+                                let step = table.step_size(&symbol_key).unwrap_or(0.0);
+                                contracts = if step > 0.0 {
+                                    align_price_ceil(required_contracts, step)
+                                } else {
+                                    required_contracts
+                                };
+                            }
+                        }
+                    }
+                    Ok((contracts, aligned_price))
                 }
                 TradingVenue::BinanceMargin => Self::align_order_with_table(
                     &symbol_key,
@@ -3760,6 +3828,7 @@ impl MonitorChannel {
                     | TradingVenue::OkexFutures
                     | TradingVenue::BitgetMargin
                     | TradingVenue::BitgetFutures
+                    | TradingVenue::BitgetCoinFutures
                     | TradingVenue::BybitMargin
                     | TradingVenue::BybitFutures
                     | TradingVenue::GateMargin
@@ -3783,12 +3852,12 @@ impl MonitorChannel {
                         return Err(format!("缺少 {} 的价格信息，无法验证名义金额", symbol));
                     }
 
-                    let notional = if venue == TradingVenue::BinanceCoinFutures {
+                    let notional = if venue.is_inverse_futures() {
                         let contract_size =
                             table.contract_multiplier_opt(&symbol_key).ok_or_else(|| {
                                 format!(
-                                    "symbol={} 缺少 Binance COIN-M contractSize，无法验证名义金额",
-                                    symbol_key
+                                    "symbol={} 缺少 {:?} inverse face value，无法验证名义金额",
+                                    symbol_key, venue
                                 )
                             })?;
                         qty * contract_size
@@ -4301,7 +4370,7 @@ impl MonitorChannel {
                 TradingVenue::BinanceFutures => {
                     ("contracts(mult=1)", Some(symbol_upper), Some(1.0))
                 }
-                TradingVenue::BinanceCoinFutures => {
+                TradingVenue::BinanceCoinFutures | TradingVenue::BitgetCoinFutures => {
                     let symbol_key = min_qty_symbol_key(venue, symbol_upper.as_ref());
                     let mult = Self::qty_multiplier_for_venue_at_price_inner(
                         inner,
@@ -4376,7 +4445,7 @@ impl MonitorChannel {
             let symbol_upper = uppercase_symbol_key(symbol);
             let fut_symbol_key = match venue {
                 TradingVenue::BinanceFutures => Some(symbol_upper),
-                TradingVenue::BinanceCoinFutures => {
+                TradingVenue::BinanceCoinFutures | TradingVenue::BitgetCoinFutures => {
                     Some(Cow::Owned(min_qty_symbol_key(venue, symbol_upper.as_ref())))
                 }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => {
@@ -4386,7 +4455,9 @@ impl MonitorChannel {
             };
             let qty_unit = match venue {
                 TradingVenue::BinanceFutures => "contracts(mult=1)",
-                TradingVenue::BinanceCoinFutures => "inverse_contracts",
+                TradingVenue::BinanceCoinFutures | TradingVenue::BitgetCoinFutures => {
+                    "inverse_contracts"
+                }
                 TradingVenue::OkexFutures | TradingVenue::GateFutures => "contracts",
                 _ => "base_qty",
             };
@@ -4575,8 +4646,9 @@ impl MonitorChannel {
             LegMgr::Futures {
                 um, min_qty_table, ..
             } => {
-                if venue == TradingVenue::BinanceCoinFutures {
-                    let contracts = um.borrow().net_position(symbol, None);
+                if venue.is_inverse_futures() {
+                    let venue_symbol = normalize_symbol_for_venue(symbol, venue);
+                    let contracts = um.borrow().net_position(&venue_symbol, None);
                     let symbol_key = min_qty_symbol_key(venue, symbol);
                     let contract_size = inner
                         .venue_min_qty_tables
@@ -6890,5 +6962,63 @@ mod tests {
             (price_bumped - 1.1308).abs() < 1e-9,
             "price_bumped={price_bumped}"
         );
+    }
+
+    #[test]
+    fn bitget_coin_futures_min_notional_uses_face_value() {
+        let mut bitget_table = VenueMinQtyTable::new(TradingVenue::BitgetCoinFutures);
+        bitget_table.set_entry_for_test(MinQtyEntry {
+            symbol: "BTCUSD_CM".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USD".to_string(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: Some(5.0),
+        });
+        bitget_table.set_contract_multiplier_for_test("BTCUSD_CM", 1.0);
+
+        let mut venue_min_qty_tables: HashMap<TradingVenue, Rc<VenueMinQtyTable>> = HashMap::new();
+        venue_min_qty_tables.insert(TradingVenue::BitgetCoinFutures, Rc::new(bitget_table));
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BitgetMargin,
+            hedge_venue: TradingVenue::BitgetCoinFutures,
+            arb_mode: ArbMode::IntraArb,
+            binance_account_mode: Some(BinanceAccountMode::Unified),
+            open_leg: LegMgr::Margin {
+                bal: Rc::new(RefCell::new(BasicBalanceManager::new(Exchange::Bitget))),
+            },
+            hedge_leg: LegMgr::Futures {
+                exchange: Exchange::Bitget,
+                um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Bitget))),
+                min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Bitget))),
+            },
+            usdt_mgrs: HashMap::new(),
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables,
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Unified,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::new(),
+            latest_binance_std_um_wallet: None,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+        MonitorChannel::clear_basic_state_runtime_cache();
+        MONITOR_CHANNEL.with(|mc| *mc.borrow_mut() = Some(inner));
+
+        let (contracts, price) = MonitorChannel::instance()
+            .align_order_by_venue(
+                TradingVenue::BitgetCoinFutures,
+                "BTCUSDT",
+                0.00002,
+                50_000.0,
+            )
+            .expect("bitget coin futures align");
+        assert_eq!(contracts, 5.0);
+        assert_eq!(price, 50_000.0);
     }
 }

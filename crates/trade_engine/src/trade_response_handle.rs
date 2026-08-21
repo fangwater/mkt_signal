@@ -247,6 +247,7 @@ fn is_cancel_request(req_type: TradeRequestType) -> bool {
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
             | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder
     )
 }
 

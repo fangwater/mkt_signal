@@ -10,7 +10,7 @@ use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 pub use symbol_utils::symbol_util::gate_currency_pair_from_symbol;
 use symbol_utils::symbol_util::{
-    binance_coin_futures_symbol, extract_assets_from_internal_symbol,
+    binance_coin_futures_symbol, bitget_coin_futures_symbol, extract_assets_from_internal_symbol,
     normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
 use trade_engine::bybit::{
@@ -614,12 +614,16 @@ impl PreTradeOrderRequestExt for Order {
                 .ok_or_else(|| "failed to build bybit cancel request".to_string())?;
                 Ok(request.to_bytes())
             }
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => {
                 let order_id = self
                     .exchange_order_id
                     .filter(|&id| id > 0)
                     .map(|id| id.to_string());
                 let client_order_id = self.client_order_id.to_string();
+                let coin_symbol = (self.venue == TradingVenue::BitgetCoinFutures)
+                    .then(|| bitget_coin_futures_symbol(&self.symbol));
                 let req_type = match self.venue {
                     TradingVenue::BitgetMargin => {
                         if self.bitget_spot_order {
@@ -631,6 +635,9 @@ impl PreTradeOrderRequestExt for Order {
                     TradingVenue::BitgetFutures => {
                         trade_engine::trade_request::TradeRequestType::BitgetCancelUMOrder
                     }
+                    TradingVenue::BitgetCoinFutures => {
+                        trade_engine::trade_request::TradeRequestType::BitgetCancelCoinFuturesOrder
+                    }
                     _ => unreachable!(),
                 };
                 BitgetCancelOrderParams::request_bytes_from_parts(
@@ -639,6 +646,7 @@ impl PreTradeOrderRequestExt for Order {
                     self.client_order_id,
                     order_id.as_deref(),
                     &client_order_id,
+                    coin_symbol.as_deref(),
                 )
                 .ok_or_else(|| "failed to build bitget cancel params".to_string())
             }
@@ -919,6 +927,24 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget um order params".to_string())
             }
+            TradingVenue::BitgetCoinFutures => {
+                let create_ts = get_timestamp_us();
+                let quantity_qv = resolved.require_quantity_qv(self, "bitget coin futures")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget coin futures")?;
+                let symbol = bitget_coin_futures_symbol(&self.symbol);
+                BitgetNewOrderParams::request_bytes_from_parts(
+                    trade_engine::trade_request::TradeRequestType::BitgetNewCoinFuturesOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build bitget coin futures order params".to_string())
+            }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
@@ -1163,6 +1189,24 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget um order params".to_string())
             }
+            TradingVenue::BitgetCoinFutures => {
+                let create_ts = get_timestamp_us();
+                let quantity_qv = resolved.require_quantity_qv(self, "bitget coin futures")?;
+                let price_qv = resolved.limit_price_qv_or_zero(self, "bitget coin futures")?;
+                let symbol = bitget_coin_futures_symbol(&self.symbol);
+                BitgetNewOrderParams::prepared_request_from_parts(
+                    trade_engine::trade_request::TradeRequestType::BitgetNewCoinFuturesOrder,
+                    create_ts,
+                    self.client_order_id,
+                    &symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build bitget coin futures order params".to_string())
+            }
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                 let create_ts = get_timestamp_us();
                 let quantity_qv = resolved.require_quantity_qv(self, "bybit")?;
@@ -1233,7 +1277,9 @@ mod tests {
             | TradeRequestType::BitgetNewSpotOrder
             | TradeRequestType::BitgetCancelMarginOrder
             | TradeRequestType::BitgetCancelUMOrder
-            | TradeRequestType::BitgetCancelSpotOrder => {
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 let payload = bitget_ws::build_order_payload(&msg, 999)
                     .expect("bitget ws payload should build");
                 let payload: Value =
@@ -1942,6 +1988,70 @@ mod tests {
             Some("YES")
         );
         assert!(payload.get("posSide").is_none());
+    }
+
+    #[test]
+    fn bitget_coin_futures_order_restores_exchange_symbol_and_category() {
+        let order = Order::new(
+            TradingVenue::BitgetCoinFutures,
+            81,
+            OrderType::Limit,
+            "BTCUSDCM".to_string(),
+            Side::Sell,
+            125.0,
+            64_000.0,
+            false,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_request_bytes()
+            .expect("bitget coin futures request should build");
+        let ws_payload = extract_bitget_ws_payload_json(bytes.as_ref());
+        assert_eq!(
+            ws_payload.get("category").and_then(Value::as_str),
+            Some("coin-futures")
+        );
+        assert_eq!(
+            ws_payload["args"][0].get("symbol").and_then(Value::as_str),
+            Some("BTCUSD_CM")
+        );
+        assert_eq!(
+            ws_payload["args"][0].get("qty").and_then(Value::as_str),
+            Some("125")
+        );
+    }
+
+    #[test]
+    fn bitget_coin_futures_cancel_includes_exchange_symbol() {
+        let order = Order::new(
+            TradingVenue::BitgetCoinFutures,
+            82,
+            OrderType::Limit,
+            "BTCUSDCM".to_string(),
+            Side::Buy,
+            125.0,
+            64_000.0,
+            true,
+            1.0,
+            None,
+            true,
+        );
+
+        let bytes = order
+            .get_order_cancel_bytes()
+            .expect("bitget coin futures cancel should build");
+        let ws_payload = extract_bitget_ws_payload_json(bytes.as_ref());
+        assert_eq!(
+            ws_payload.get("category").and_then(Value::as_str),
+            Some("coin-futures")
+        );
+        assert_eq!(
+            ws_payload["args"][0].get("symbol").and_then(Value::as_str),
+            Some("BTCUSD_CM")
+        );
     }
 
     #[test]

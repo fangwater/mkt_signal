@@ -21,7 +21,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, Iterable, List, Sequence, Tuple, TypeVar
 
 from lib.bitget_tier_pool import (
-    DEFAULT_CACHE_KEY,
     DEFAULT_POOL_KEY,
     bitget_symbol,
     expand_pool_symbols,
@@ -107,11 +106,11 @@ def decimal_text(value: Decimal) -> str:
     return text or "0"
 
 
-def parse_symbols(values: Iterable[str]) -> List[str]:
+def parse_symbols(values: Iterable[str], product_type: str) -> List[str]:
     out = set()
     for value in values:
         for part in str(value or "").replace(",", " ").split():
-            symbol = bitget_symbol(part)
+            symbol = bitget_symbol(part, product_type)
             if symbol:
                 out.add(symbol)
     return sorted(out)
@@ -413,8 +412,8 @@ def ordered_eligible_batch(
 
 def refresh_active_symbols(args: argparse.Namespace, rds: Any) -> List[str]:
     specs = load_pool_from_redis(rds, args.pool_key)
-    _expanded, query_symbols = expand_pool_symbols(rds, specs)
-    manual = parse_symbols(args.symbol or [])
+    _expanded, query_symbols = expand_pool_symbols(rds, specs, args.product_type)
+    manual = parse_symbols(args.symbol or [], args.product_type)
     symbols = sorted(set(query_symbols).union(manual))
     if args.max_symbols and args.max_symbols > 0:
         symbols = symbols[: args.max_symbols]
@@ -424,8 +423,16 @@ def refresh_active_symbols(args: argparse.Namespace, rds: Any) -> List[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Round-robin Bitget position-tier Redis sidecar.")
     parser.add_argument("--pool-key", default=DEFAULT_POOL_KEY, help=f"Redis env pool key (default: {DEFAULT_POOL_KEY})")
-    parser.add_argument("--cache-key", default=DEFAULT_CACHE_KEY, help=f"Redis output cache key (default: {DEFAULT_CACHE_KEY})")
-    parser.add_argument("--product-type", default="USDT-FUTURES")
+    parser.add_argument(
+        "--cache-key",
+        default="",
+        help="Redis output cache key (default: bitget_position_tier_cache:<product-type>)",
+    )
+    parser.add_argument(
+        "--product-type",
+        choices=["USDT-FUTURES", "COIN-FUTURES"],
+        default="USDT-FUTURES",
+    )
     parser.add_argument("--base-url", default=os.environ.get("BITGET_API_BASE", "https://api.bitget.com"))
     parser.add_argument("--batch-size", type=int, default=3, help="Max eligible symbols queried per tick.")
     parser.add_argument("--interval-sec", type=float, default=20.0, help="Sleep seconds between ticks.")
@@ -453,7 +460,10 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Seconds to wait between transient Redis retries (default: 1).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.cache_key:
+        args.cache_key = f"bitget_position_tier_cache:{args.product_type}"
+    return args
 
 
 def main() -> int:

@@ -530,7 +530,10 @@ fn gate_unified_capacity_poll_enabled() -> bool {
 fn bitget_unified_capacity_poll_enabled() -> bool {
     let monitor = MonitorChannel::instance();
     monitor.open_venue() == TradingVenue::BitgetMargin
-        && monitor.hedge_venue() == TradingVenue::BitgetFutures
+        && matches!(
+            monitor.hedge_venue(),
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        )
 }
 
 fn bybit_unified_capacity_poll_enabled() -> bool {
@@ -550,7 +553,11 @@ fn capacity_venue_for_monitor() -> Option<CapacityVenue> {
         Some(CapacityVenue::OkexUnified)
     } else if open_venue == TradingVenue::GateMargin && hedge_venue == TradingVenue::GateFutures {
         Some(CapacityVenue::GateUnified)
-    } else if open_venue == TradingVenue::BitgetMargin && hedge_venue == TradingVenue::BitgetFutures
+    } else if open_venue == TradingVenue::BitgetMargin
+        && matches!(
+            hedge_venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        )
     {
         Some(CapacityVenue::BitgetUnified)
     } else if open_venue == TradingVenue::BybitMargin && hedge_venue == TradingVenue::BybitFutures {

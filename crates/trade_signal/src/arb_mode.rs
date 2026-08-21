@@ -33,6 +33,7 @@ impl ArbMode {
                 | TradingVenue::OkexFutures
                 | TradingVenue::BybitFutures
                 | TradingVenue::BitgetFutures
+                | TradingVenue::BitgetCoinFutures
                 | TradingVenue::GateFutures
                 | TradingVenue::HyperliquidFutures
         );

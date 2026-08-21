@@ -2162,25 +2162,29 @@ pub struct BitgetMarginCancelOrderRequest {
 pub struct BitgetCancelOrderParams {
     pub order_id: Option<String>,
     pub client_order_id: String,
+    pub symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitgetCancelOrderParamsRef<'a> {
     pub order_id: Option<&'a str>,
     pub client_order_id: &'a str,
+    pub symbol: Option<&'a str>,
 }
 
 impl BitgetCancelOrderParams {
-    const FIXED_LEN: usize = 1 + 2 + 2;
+    const FIXED_LEN: usize = 1 + 2 + 2 + 1;
 
     pub fn to_bytes(&self) -> Option<Bytes> {
         let mut buf = BytesMut::with_capacity(
             Self::FIXED_LEN
                 + self.order_id.as_deref().map(str::len).unwrap_or(0)
-                + self.client_order_id.len(),
+                + self.client_order_id.len()
+                + self.symbol.as_deref().map(str::len).unwrap_or(0),
         );
         write_optional_string(&mut buf, self.order_id.as_deref())?;
         write_string(&mut buf, &self.client_order_id)?;
+        write_optional_string(&mut buf, self.symbol.as_deref())?;
         Some(buf.freeze())
     }
 
@@ -2189,6 +2193,7 @@ impl BitgetCancelOrderParams {
         Some(Self {
             order_id: params.order_id.map(str::to_string),
             client_order_id: params.client_order_id.to_string(),
+            symbol: params.symbol.map(str::to_string),
         })
     }
 
@@ -2198,19 +2203,24 @@ impl BitgetCancelOrderParams {
         client_order_id: i64,
         order_id: Option<&str>,
         bitget_client_order_id: &str,
+        symbol: Option<&str>,
     ) -> Option<Bytes> {
         if order_id.map(str::len).unwrap_or(0) > u16::MAX as usize
             || bitget_client_order_id.len() > u16::MAX as usize
+            || symbol.map(str::len).unwrap_or(0) > u16::MAX as usize
         {
             return None;
         }
         let params_len = 1
             + order_id.map(|value| 2 + value.len()).unwrap_or(0)
             + 2
-            + bitget_client_order_id.len();
+            + bitget_client_order_id.len()
+            + 1
+            + symbol.map(|value| 2 + value.len()).unwrap_or(0);
         trade_request_bytes_with_params(req_type, create_time, client_order_id, params_len, |buf| {
             write_optional_string(buf, order_id)?;
-            write_string(buf, bitget_client_order_id)
+            write_string(buf, bitget_client_order_id)?;
+            write_optional_string(buf, symbol)
         })
     }
 }
@@ -2220,9 +2230,15 @@ impl<'a> BitgetCancelOrderParamsRef<'a> {
         let mut offset = 0usize;
         let order_id = read_optional_str(raw, &mut offset)?;
         let client_order_id = read_str(raw, &mut offset)?;
+        let symbol = if offset < raw.len() {
+            read_optional_str(raw, &mut offset)?
+        } else {
+            None
+        };
         Some(Self {
             order_id,
             client_order_id,
+            symbol,
         })
     }
 }
@@ -2542,6 +2558,7 @@ mod tests {
             42,
             None,
             "42",
+            None,
         )
         .expect("bitget cancel request bytes");
         let msg = TradeRequestMsg::parse(&req).expect("trade request");
@@ -2550,6 +2567,7 @@ mod tests {
         assert_eq!(msg.req_type, TradeRequestType::BitgetCancelUMOrder);
         assert_eq!(params.order_id, None);
         assert_eq!(params.client_order_id, "42");
+        assert_eq!(params.symbol, None);
     }
 
     #[test]

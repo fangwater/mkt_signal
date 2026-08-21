@@ -810,7 +810,9 @@ fn amount_scale_for_symbol(table: &VenueMinQtyTable, venue: TradingVenue, symbol
     if !venue.is_futures()
         || matches!(
             venue,
-            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+            TradingVenue::BinanceFutures
+                | TradingVenue::BinanceCoinFutures
+                | TradingVenue::BitgetCoinFutures
         )
     {
         return 1.0;

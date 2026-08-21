@@ -60,6 +60,7 @@ SUPPORTED_VENUES = [
     "bybit-futures",
     "bitget-margin",
     "bitget-futures",
+    "bitget-coin-futures",
     "gate-margin",
     "gate-futures",
     "okex-margin",
@@ -141,6 +142,16 @@ def normalize_symbol_for_venue(symbol: str, venue: str) -> str:
             return f"{text}-SWAP"
         base, quote = split_assets(text)
         return f"{base}-{quote}-SWAP"
+
+    if venue == "bitget-coin-futures":
+        compact = text.replace("-", "").replace("SWAP", "")
+        if compact.endswith("USDCM") and len(compact) > len("USDCM"):
+            return compact
+        if compact.endswith("USDT") and len(compact) > len("USDT"):
+            return f"{compact[:-len('USDT')]}USDCM"
+        if compact.endswith("USD") and len(compact) > len("USD"):
+            return f"{compact}CM"
+        return compact
 
     # Binance/Bybit/Bitget/Gate margin/futures use compact symbols.
     return text.replace("-", "").replace("SWAP", "")

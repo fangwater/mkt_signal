@@ -244,7 +244,7 @@ fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str, 
     if venue == TradingVenue::BinanceFutures {
         return 1.0;
     }
-    if venue == TradingVenue::BinanceCoinFutures {
+    if venue.is_inverse_futures() {
         return MonitorChannel::instance()
             .qty_multiplier_for_venue_at_price(venue, normalized_symbol, price)
             .unwrap_or(0.0);

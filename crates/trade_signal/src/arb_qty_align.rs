@@ -23,6 +23,7 @@ pub fn venue_qty_is_contracts(venue: TradingVenue) -> bool {
         venue,
         TradingVenue::BinanceFutures
             | TradingVenue::BinanceCoinFutures
+            | TradingVenue::BitgetCoinFutures
             | TradingVenue::OkexFutures
             | TradingVenue::GateFutures
     )
@@ -36,7 +37,7 @@ pub fn contract_qty_multiplier(
 ) -> Option<f64> {
     match venue {
         TradingVenue::BinanceFutures => Some(1.0),
-        TradingVenue::BinanceCoinFutures => table
+        TradingVenue::BinanceCoinFutures | TradingVenue::BitgetCoinFutures => table
             .contract_multiplier_opt(symbol_key)
             .filter(|value| value.is_finite() && *value > 0.0)
             .filter(|_| price.is_finite() && price > 0.0)
@@ -225,6 +226,21 @@ mod tests {
         table
     }
 
+    fn bitget_coin_table() -> VenueMinQtyTable {
+        let mut table = VenueMinQtyTable::new(TradingVenue::BitgetCoinFutures);
+        table.set_entry_for_test(MinQtyEntry {
+            symbol: "BTCUSD_CM".to_string(),
+            base_asset: "BTC".to_string(),
+            quote_asset: "USD".to_string(),
+            min_qty: 1.0,
+            step_size: 1.0,
+            price_tick: Some(0.1),
+            min_notional: Some(5.0),
+        });
+        table.set_contract_multiplier_for_test("BTCUSD_CM", 1.0);
+        table
+    }
+
     #[test]
     fn coin_contract_multiplier_is_contract_size_over_price() {
         let table = coin_table();
@@ -249,5 +265,18 @@ mod tests {
             0.004,
         );
         assert_eq!(contracts, 2.0);
+    }
+
+    #[test]
+    fn bitget_coin_base_qty_converts_to_usd_contracts() {
+        let table = bitget_coin_table();
+        let contracts = convert_aligned_base_qty_to_open_venue_qty(
+            &table,
+            TradingVenue::BitgetCoinFutures,
+            "BTCUSDT",
+            50_000.0,
+            0.004,
+        );
+        assert_eq!(contracts, 200.0);
     }
 }

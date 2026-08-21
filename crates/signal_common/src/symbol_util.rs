@@ -10,9 +10,7 @@ use order_common::TradingVenue;
 /// - "BTCUSDT" -> ("BTC", "USDT")
 /// - "ETHUSDC" -> ("ETH", "USDC")
 pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
-    let symbol_upper = normalize_symbol_for_internal(symbol);
-    let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
-    (base.to_string(), quote.to_string())
+    runtime_common::symbol_util::extract_assets_from_symbol(symbol)
 }
 
 /// 规范化为 pre_trade 内部统一使用的 symbol key。
@@ -28,19 +26,7 @@ pub fn extract_assets_from_symbol(symbol: &str) -> (String, String) {
 /// - `BTC-USDT-SWAP` -> `BTCUSDT`
 /// - `BTC_USDT` -> `BTCUSDT`
 pub fn normalize_symbol_for_internal(symbol: &str) -> String {
-    let mut out = String::with_capacity(symbol.len());
-    for ch in symbol.trim().chars() {
-        if matches!(ch, '-' | '_' | '/') {
-            continue;
-        }
-        for upper in ch.to_uppercase() {
-            out.push(upper);
-        }
-    }
-    if out.ends_with("SWAP") {
-        out.truncate(out.len().saturating_sub("SWAP".len()));
-    }
-    out
+    runtime_common::symbol_util::normalize_symbol_for_internal(symbol)
 }
 
 /// 根据 venue 修正符号格式
@@ -74,49 +60,12 @@ pub fn normalize_symbol_for_internal(symbol: &str) -> String {
 /// - OKEx 永续合约账户只能交易 SWAP 合约 (如 APT-USDT-SWAP)
 /// - 信号生成时符号格式错误会导致下单失败 (OKEx 错误码 60012: Illegal request)
 pub fn normalize_symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
-    let symbol_upper = normalize_symbol_for_internal(symbol);
-
-    match venue {
-        TradingVenue::OkexMargin => {
-            let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
-            format!("{}-{}", base, quote)
-        }
-        TradingVenue::OkexFutures => {
-            let (base, quote) = extract_assets_from_internal_symbol(&symbol_upper);
-            format!("{}-{}-SWAP", base, quote)
-        }
-        TradingVenue::BinanceMargin | TradingVenue::BinanceFutures => symbol_upper,
-        _ => {
-            // 其他交易所：保持原样
-            symbol_upper
-        }
-    }
+    runtime_common::symbol_util::normalize_symbol_for_venue(symbol, venue)
 }
 
 /// 生成 min-qty/filter 表使用的 symbol key。
 pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
-    match venue {
-        TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
-            symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
-        }
-        TradingVenue::GateMargin | TradingVenue::GateFutures => {
-            symbol.to_uppercase().replace(['_', '-'], "")
-        }
-        _ => symbol.to_uppercase(),
-    }
-}
-
-fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
-    const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
-
-    for quote in QUOTE_ASSETS {
-        if symbol_upper.ends_with(quote) && symbol_upper.len() > quote.len() {
-            let base = &symbol_upper[..symbol_upper.len() - quote.len()];
-            return (base, quote);
-        }
-    }
-
-    (symbol_upper, "USDT")
+    runtime_common::symbol_util::min_qty_symbol_key(venue, symbol)
 }
 
 #[cfg(test)]
@@ -216,6 +165,22 @@ mod tests {
         assert_eq!(
             normalize_symbol_for_venue("APTUSDT", TradingVenue::BinanceMargin),
             "APTUSDT"
+        );
+    }
+
+    #[test]
+    fn test_normalize_symbol_for_bitget_coin_futures() {
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSDT", TradingVenue::BitgetCoinFutures),
+            "BTCUSD_CM"
+        );
+        assert_eq!(
+            min_qty_symbol_key(TradingVenue::BitgetCoinFutures, "BTCUSDCM"),
+            "BTCUSD_CM"
+        );
+        assert_eq!(
+            extract_assets_from_symbol("BTCUSD_CM"),
+            ("BTC".to_string(), "USD".to_string())
         );
     }
 }

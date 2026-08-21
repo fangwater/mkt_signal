@@ -77,6 +77,7 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
         "bybit-futures" => Some(TradingVenue::BybitFutures),
         "bitget-margin" => Some(TradingVenue::BitgetMargin),
         "bitget-futures" => Some(TradingVenue::BitgetFutures),
+        "bitget-coin-futures" => Some(TradingVenue::BitgetCoinFutures),
         "gate-margin" => Some(TradingVenue::GateMargin),
         "gate-futures" => Some(TradingVenue::GateFutures),
         _ => None,

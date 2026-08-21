@@ -531,7 +531,9 @@ impl TradeEngExchangeSlot {
             | TradingVenue::BinanceCoinFutures => Self::Binance,
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => Self::Okex,
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => Self::Bybit,
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Self::Bitget,
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => Self::Bitget,
             TradingVenue::GateMargin | TradingVenue::GateFutures => Self::Gate,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Self::Hyperliquid,
             TradingVenue::AsterMargin | TradingVenue::AsterFutures => Self::Aster,

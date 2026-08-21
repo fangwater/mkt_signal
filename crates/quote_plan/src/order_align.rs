@@ -29,7 +29,7 @@ where
 {
     match venue.into() {
         Venue::BinanceFutures => Some(1.0),
-        Venue::BinanceCoinFutures => table
+        Venue::BinanceCoinFutures | Venue::BitgetCoinFutures => table
             .contract_multiplier_opt(symbol_key)
             .filter(|value| value.is_finite() && *value > 0.0)
             .filter(|_| price.is_finite() && price > 0.0)

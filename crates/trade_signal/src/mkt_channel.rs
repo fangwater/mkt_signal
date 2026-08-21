@@ -67,6 +67,7 @@ fn is_futures(venue: TradingVenue) -> bool {
             | TradingVenue::OkexFutures
             | TradingVenue::BybitFutures
             | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures
             | TradingVenue::GateFutures
     )
 }

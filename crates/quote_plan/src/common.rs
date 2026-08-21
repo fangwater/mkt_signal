@@ -13,6 +13,7 @@ pub enum Venue {
     BybitFutures,
     BitgetMargin,
     BitgetFutures,
+    BitgetCoinFutures,
     GateMargin,
     GateFutures,
     AsterMargin,
@@ -33,6 +34,7 @@ impl From<TradingVenue> for Venue {
             TradingVenue::BybitFutures => Venue::BybitFutures,
             TradingVenue::BitgetMargin => Venue::BitgetMargin,
             TradingVenue::BitgetFutures => Venue::BitgetFutures,
+            TradingVenue::BitgetCoinFutures => Venue::BitgetCoinFutures,
             TradingVenue::GateMargin => Venue::GateMargin,
             TradingVenue::GateFutures => Venue::GateFutures,
             TradingVenue::AsterMargin => Venue::AsterMargin,
@@ -55,6 +57,7 @@ impl From<Venue> for TradingVenue {
             Venue::BybitFutures => TradingVenue::BybitFutures,
             Venue::BitgetMargin => TradingVenue::BitgetMargin,
             Venue::BitgetFutures => TradingVenue::BitgetFutures,
+            Venue::BitgetCoinFutures => TradingVenue::BitgetCoinFutures,
             Venue::GateMargin => TradingVenue::GateMargin,
             Venue::GateFutures => TradingVenue::GateFutures,
             Venue::AsterMargin => TradingVenue::AsterMargin,
@@ -194,6 +197,7 @@ pub fn is_futures_venue(venue: Venue) -> bool {
             | Venue::OkexFutures
             | Venue::BybitFutures
             | Venue::BitgetFutures
+            | Venue::BitgetCoinFutures
             | Venue::GateFutures
             | Venue::AsterFutures
             | Venue::HyperliquidFutures
@@ -203,7 +207,11 @@ pub fn is_futures_venue(venue: Venue) -> bool {
 pub fn venue_qty_is_contracts(venue: Venue) -> bool {
     matches!(
         venue,
-        Venue::BinanceFutures | Venue::BinanceCoinFutures | Venue::OkexFutures | Venue::GateFutures
+        Venue::BinanceFutures
+            | Venue::BinanceCoinFutures
+            | Venue::BitgetCoinFutures
+            | Venue::OkexFutures
+            | Venue::GateFutures
     )
 }
 
@@ -223,6 +231,24 @@ pub fn normalize_symbol_for_internal(symbol: &str) -> String {
     out
 }
 
+fn bitget_coin_futures_symbol(symbol: &str) -> String {
+    let normalized = normalize_symbol_for_internal(symbol);
+    if let Some(root) = normalized.strip_suffix("CM") {
+        if root.ends_with("USD") && root.len() > "USD".len() {
+            return format!("{root}_CM");
+        }
+    }
+    if let Some(base) = normalized.strip_suffix("USDT") {
+        if !base.is_empty() {
+            return format!("{base}USD_CM");
+        }
+    }
+    if normalized.ends_with("USD") && normalized.len() > "USD".len() {
+        return format!("{normalized}_CM");
+    }
+    normalized
+}
+
 pub fn normalize_symbol_for_venue(symbol: &str, venue: Venue) -> String {
     let symbol_upper = normalize_symbol_for_internal(symbol);
     match venue {
@@ -235,6 +261,7 @@ pub fn normalize_symbol_for_venue(symbol: &str, venue: Venue) -> String {
             format!("{}-{}-SWAP", base, quote)
         }
         Venue::BinanceMargin | Venue::BinanceFutures | Venue::BinanceCoinFutures => symbol_upper,
+        Venue::BitgetCoinFutures => bitget_coin_futures_symbol(&symbol_upper),
         _ => symbol_upper,
     }
 }
@@ -245,6 +272,7 @@ pub fn min_qty_symbol_key(venue: Venue, symbol: &str) -> String {
             symbol.to_uppercase().replace("-SWAP", "").replace('-', "")
         }
         Venue::GateMargin | Venue::GateFutures => symbol.to_uppercase().replace(['_', '-'], ""),
+        Venue::BitgetCoinFutures => bitget_coin_futures_symbol(symbol),
         _ => symbol.to_uppercase(),
     }
 }
@@ -305,6 +333,23 @@ fn extract_assets_from_internal_symbol(symbol_upper: &str) -> (&str, &str) {
         }
     }
     (symbol_upper, "USDT")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitget_coin_futures_symbol_is_derived_from_spot_canonical_symbol() {
+        assert_eq!(
+            normalize_symbol_for_venue("BTCUSDT", Venue::BitgetCoinFutures),
+            "BTCUSD_CM"
+        );
+        assert_eq!(
+            min_qty_symbol_key(Venue::BitgetCoinFutures, "BTCUSDCM"),
+            "BTCUSD_CM"
+        );
+    }
 }
 
 fn value_from_int_exp(value_i64: i64, value_exp: i32) -> f64 {

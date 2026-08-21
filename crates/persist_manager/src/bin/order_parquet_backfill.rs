@@ -874,6 +874,7 @@ fn parse_venue_code(raw: &str) -> Result<u8> {
         "BybitFutures" => TradingVenue::BybitFutures,
         "BitgetMargin" => TradingVenue::BitgetMargin,
         "BitgetFutures" => TradingVenue::BitgetFutures,
+        "BitgetCoinFutures" => TradingVenue::BitgetCoinFutures,
         "GateMargin" => TradingVenue::GateMargin,
         "GateFutures" => TradingVenue::GateFutures,
         "AsterMargin" => TradingVenue::AsterMargin,

@@ -2258,7 +2258,8 @@ impl TradeWsClient {
             }
             TradeRequestType::BitgetNewMarginOrder
             | TradeRequestType::BitgetNewUMOrder
-            | TradeRequestType::BitgetNewSpotOrder => {
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder => {
                 BitgetNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.order_type.is_limit())
                     .unwrap_or(false)

@@ -417,12 +417,13 @@ impl LeverageGuard {
                 if matches!(
                     state.targets.get(&global.trigger),
                     Some(status) if status.is_confirmed()
-                ) || (global.trigger.venue == TradingVenue::BitgetFutures
-                    && matches!(
-                        state.targets.get(&global.trigger),
-                        Some(TargetStatus::Failed { .. })
-                    ))
-                {
+                ) || (matches!(
+                    global.trigger.venue,
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ) && matches!(
+                    state.targets.get(&global.trigger),
+                    Some(TargetStatus::Failed { .. })
+                )) {
                     cleared_global = Some(global.trigger.label());
                     state.global_block = None;
                 }
@@ -511,7 +512,10 @@ impl LeverageGuard {
                 match state.targets.get(&target) {
                     Some(status) if status.is_confirmed() => {}
                     Some(status) => {
-                        if target.venue == TradingVenue::BitgetFutures {
+                        if matches!(
+                            target.venue,
+                            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                        ) {
                             continue;
                         }
                         let reason = match status {
@@ -965,7 +969,12 @@ async fn set_target_leverage(
         }
         TradingVenue::OkexFutures => set_okx_leverage(client, &symbol, leverage).await,
         TradingVenue::BybitFutures => set_bybit_leverage(client, &symbol, leverage).await,
-        TradingVenue::BitgetFutures => set_bitget_leverage(client, &symbol, leverage).await,
+        TradingVenue::BitgetFutures => {
+            set_bitget_leverage(client, &symbol, leverage, "USDT-FUTURES").await
+        }
+        TradingVenue::BitgetCoinFutures => {
+            set_bitget_leverage(client, &symbol, leverage, "COIN-FUTURES").await
+        }
         TradingVenue::GateFutures => set_gate_leverage(client, &symbol, leverage).await,
         other => bail!("unsupported futures venue for leverage guard: {:?}", other),
     }
@@ -974,6 +983,9 @@ async fn set_target_leverage(
 fn symbol_for_venue(symbol: &str, venue: TradingVenue) -> String {
     if venue == TradingVenue::BinanceCoinFutures {
         return runtime_common::symbol_util::binance_coin_futures_symbol(symbol);
+    }
+    if venue == TradingVenue::BitgetCoinFutures {
+        return runtime_common::symbol_util::bitget_coin_futures_symbol(symbol);
     }
     let internal = normalize_online_value_to_internal_symbol(symbol)
         .unwrap_or_else(|| clean_symbol_text(&symbol.to_ascii_uppercase()));
@@ -1161,7 +1173,12 @@ async fn set_bybit_leverage(client: &Client, symbol: &str, leverage: u8) -> Resu
     Ok(())
 }
 
-async fn set_bitget_leverage(client: &Client, symbol: &str, leverage: u8) -> Result<()> {
+async fn set_bitget_leverage(
+    client: &Client,
+    symbol: &str,
+    leverage: u8,
+    category: &str,
+) -> Result<()> {
     let api_key = required_env("BITGET_API_KEY")?;
     let api_secret = required_env("BITGET_API_SECRET")?;
     let passphrase = std::env::var("BITGET_API_PASSPHRASE")
@@ -1175,7 +1192,7 @@ async fn set_bitget_leverage(client: &Client, symbol: &str, leverage: u8) -> Res
     let base = env_or("BITGET_API_BASE", "https://api.bitget.com");
     let path = "/api/v3/account/set-leverage";
     let body = serde_json::to_string(&json!({
-        "category": "USDT-FUTURES",
+        "category": category,
         "symbol": symbol,
         "leverage": leverage.to_string(),
     }))?;
@@ -1198,7 +1215,8 @@ async fn set_bitget_leverage(client: &Client, symbol: &str, leverage: u8) -> Res
     let code = value.get("code").and_then(Value::as_str).unwrap_or("");
     if !(200..300).contains(&status) || !matches!(code, "00000" | "0") {
         bail!(
-            "bitget set leverage failed symbol={} leverage={} status={} body={}",
+            "bitget set leverage failed category={} symbol={} leverage={} status={} body={}",
+            category,
             symbol,
             leverage,
             status,

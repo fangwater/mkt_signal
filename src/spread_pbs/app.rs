@@ -125,7 +125,7 @@ fn is_okex_venue(venue: order_common::TradingVenue) -> bool {
 fn is_bitget_venue(venue: TradingVenue) -> bool {
     matches!(
         venue,
-        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures
+        TradingVenue::BitgetMargin | TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
     )
 }
 
@@ -186,6 +186,7 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
             | TradingVenue::BinanceFutures
             | TradingVenue::BinanceCoinFutures
             | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures
             | TradingVenue::GateFutures
             | TradingVenue::BybitFutures
     )

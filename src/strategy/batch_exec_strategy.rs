@@ -1391,7 +1391,7 @@ impl BatchExecStrategy {
         if !qty_multiplier.is_finite() || qty_multiplier <= 0.0 {
             return Err(format!("invalid qty multiplier symbol={}", self.symbol));
         }
-        let inverse_contract_size = if self.exec_venue == TradingVenue::BinanceCoinFutures {
+        let inverse_contract_size = if self.exec_venue.is_inverse_futures() {
             table.contract_multiplier_opt(&symbol_key)
         } else {
             None

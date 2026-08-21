@@ -101,6 +101,7 @@ fn provider_for_venue(venue: TradingVenue) -> ExchangeVenueProvider {
         TradingVenue::BybitFutures => (Exchange::Bybit, MarketType::Futures),
         TradingVenue::BitgetMargin => (Exchange::Bitget, MarketType::Margin),
         TradingVenue::BitgetFutures => (Exchange::Bitget, MarketType::Futures),
+        TradingVenue::BitgetCoinFutures => (Exchange::Bitget, MarketType::CoinFutures),
         TradingVenue::GateMargin => (Exchange::Gate, MarketType::Margin),
         TradingVenue::GateFutures => (Exchange::Gate, MarketType::Futures),
         TradingVenue::HyperliquidMargin => (Exchange::Hyperliquid, MarketType::Margin),

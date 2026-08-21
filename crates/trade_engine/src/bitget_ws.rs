@@ -18,10 +18,12 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
     let topic = match req_type {
         TradeRequestType::BitgetNewMarginOrder
         | TradeRequestType::BitgetNewUMOrder
-        | TradeRequestType::BitgetNewSpotOrder => "place-order",
+        | TradeRequestType::BitgetNewSpotOrder
+        | TradeRequestType::BitgetNewCoinFuturesOrder => "place-order",
         TradeRequestType::BitgetCancelMarginOrder
         | TradeRequestType::BitgetCancelUMOrder
-        | TradeRequestType::BitgetCancelSpotOrder => "cancel-order",
+        | TradeRequestType::BitgetCancelSpotOrder
+        | TradeRequestType::BitgetCancelCoinFuturesOrder => "cancel-order",
         _ => {
             return Err(anyhow!(
                 "unsupported bitget ws request type: {:?}",
@@ -45,7 +47,8 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
     match req_type {
         TradeRequestType::BitgetNewMarginOrder
         | TradeRequestType::BitgetNewUMOrder
-        | TradeRequestType::BitgetNewSpotOrder => {
+        | TradeRequestType::BitgetNewSpotOrder
+        | TradeRequestType::BitgetNewCoinFuturesOrder => {
             let params = BitgetNewOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Bitget WS new order requires typed params, req_type={:?}",
@@ -56,7 +59,8 @@ pub fn build_order_payload(msg: &TradeRequestMsg, transport_id: i64) -> Result<S
         }
         TradeRequestType::BitgetCancelMarginOrder
         | TradeRequestType::BitgetCancelUMOrder
-        | TradeRequestType::BitgetCancelSpotOrder => {
+        | TradeRequestType::BitgetCancelSpotOrder
+        | TradeRequestType::BitgetCancelCoinFuturesOrder => {
             let params = BitgetCancelOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
                 anyhow!(
                     "Bitget WS cancel order requires typed params, req_type={:?}",
@@ -83,6 +87,8 @@ fn bitget_category(req_type: TradeRequestType) -> Result<&'static str> {
         TradeRequestType::BitgetNewSpotOrder | TradeRequestType::BitgetCancelSpotOrder => {
             Ok("spot")
         }
+        TradeRequestType::BitgetNewCoinFuturesOrder
+        | TradeRequestType::BitgetCancelCoinFuturesOrder => Ok("coin-futures"),
         _ => return Err(anyhow!("unsupported bitget req_type")),
     }
 }
@@ -123,6 +129,9 @@ fn push_bitget_new_order_arg(
 
 fn push_bitget_cancel_order_arg(out: &mut String, params: &BitgetCancelOrderParamsRef<'_>) {
     let mut first = true;
+    if let Some(symbol) = params.symbol {
+        push_json_field(out, "symbol", symbol, &mut first);
+    }
     if let Some(order_id) = params.order_id {
         push_json_field(out, "orderId", order_id, &mut first);
     }
@@ -360,6 +369,25 @@ mod tests {
     }
 
     #[test]
+    fn builds_bitget_coin_futures_payload_from_typed_params() {
+        let params = BitgetNewOrderParams {
+            symbol: "BTCUSD_CM".to_string(),
+            side: Side::Sell,
+            order_type: OrderType::Limit,
+            quantity_qv: QuantizedValue::from_parts(1, 0, 125),
+            price_qv: QuantizedValue::from_parts(1, 0, 64000),
+            reduce_only: false,
+        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::BitgetNewCoinFuturesOrder, 123, &params);
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        assert_eq!(val["category"], json!("coin-futures"));
+        assert_eq!(val["args"][0]["symbol"], json!("BTCUSD_CM"));
+        assert_eq!(val["args"][0]["qty"], json!("125"));
+    }
+
+    #[test]
     fn builds_bitget_spot_order_payload_from_typed_params() {
         let params = BitgetNewOrderParams {
             symbol: "BTCUSDT".to_string(),
@@ -407,6 +435,7 @@ mod tests {
         let params = BitgetCancelOrderParams {
             order_id: Some("abc".to_string()),
             client_order_id: "123".to_string(),
+            symbol: None,
         };
         let params = params.to_bytes().expect("typed cancel params");
         let msg = trade_msg(TradeRequestType::BitgetCancelUMOrder, 123, &params);
@@ -417,5 +446,21 @@ mod tests {
         assert_eq!(val["args"][0]["orderId"], json!("abc"));
         assert_eq!(val["args"][0]["clientOid"], json!("123"));
         assert!(val["args"][0].get("category").is_none());
+    }
+
+    #[test]
+    fn builds_bitget_coin_futures_cancel_with_symbol() {
+        let params = BitgetCancelOrderParams {
+            order_id: None,
+            client_order_id: "123".to_string(),
+            symbol: Some("BTCUSD_CM".to_string()),
+        };
+        let params = params.to_bytes().expect("typed cancel params");
+        let msg = trade_msg(TradeRequestType::BitgetCancelCoinFuturesOrder, 123, &params);
+        let payload = build_order_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        assert_eq!(val["category"], json!("coin-futures"));
+        assert_eq!(val["args"][0]["symbol"], json!("BTCUSD_CM"));
+        assert_eq!(val["args"][0]["clientOid"], json!("123"));
     }
 }

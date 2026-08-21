@@ -68,7 +68,7 @@ cross_normalize_venue() {
 cross_ensure_venue() {
   local v
   v="$(cross_normalize_venue "$1")"
-  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" ) ]]; then
+  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ) ]]; then
     echo "[ERROR] 非法 cross venue: $1（必须是 -futures/-swap/-perp/-perpetual，禁止 margin/spot）" >&2
     return 1
   fi

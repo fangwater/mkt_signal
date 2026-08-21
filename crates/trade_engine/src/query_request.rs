@@ -52,6 +52,8 @@ pub enum QueryRequestType {
     BitgetPositionsSnapshot = 9204,
     BitgetUsdtAvailableSnapshot = 9205,
     BitgetUsdtMaxTransferable = 9206,
+    BitgetCoinFuturesQuery = 9207,
+    BitgetCoinPositionsSnapshot = 9208,
 }
 
 #[repr(C, align(8))]
@@ -112,6 +114,8 @@ impl TryFrom<u32> for QueryRequestType {
             9204 => Ok(QueryRequestType::BitgetPositionsSnapshot),
             9205 => Ok(QueryRequestType::BitgetUsdtAvailableSnapshot),
             9206 => Ok(QueryRequestType::BitgetUsdtMaxTransferable),
+            9207 => Ok(QueryRequestType::BitgetCoinFuturesQuery),
+            9208 => Ok(QueryRequestType::BitgetCoinPositionsSnapshot),
             _ => Err(()),
         }
     }

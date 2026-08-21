@@ -40,6 +40,7 @@ impl BitgetBasicOrderMsg {
     pub const VENUE_SPOT: u8 = 6;
     /// Bitget 合约（对应 TradingVenue::BitgetFutures = 7）
     pub const VENUE_FUTURES: u8 = 7;
+    pub const VENUE_COIN_FUTURES: u8 = 15;
 
     #[allow(clippy::too_many_arguments)]
     pub fn create(

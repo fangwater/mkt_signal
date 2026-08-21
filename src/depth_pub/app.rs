@@ -668,7 +668,9 @@ impl DepthPubApp {
         if !self.venue.is_futures()
             || matches!(
                 self.venue,
-                TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures
+                TradingVenue::BinanceFutures
+                    | TradingVenue::BinanceCoinFutures
+                    | TradingVenue::BitgetCoinFutures
             )
         {
             return 1.0;

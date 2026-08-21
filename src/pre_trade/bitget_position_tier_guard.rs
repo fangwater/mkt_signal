@@ -3,7 +3,7 @@ use log::{debug, info, warn};
 use order_common::{Side, TradingVenue};
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::redis_client::{RedisClient, RedisSettings};
-use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::symbol_util::{bitget_coin_futures_symbol, normalize_symbol_for_internal};
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
 use std::cell::RefCell;
@@ -14,6 +14,7 @@ use trade_signal::ArbMode;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 
 const DEFAULT_CACHE_KEY: &str = "bitget_position_tier_cache:USDT-FUTURES";
+const DEFAULT_COIN_CACHE_KEY: &str = "bitget_position_tier_cache:COIN-FUTURES";
 const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 30;
 const DEFAULT_LEVERAGE: u8 = 5;
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
@@ -148,6 +149,7 @@ struct BitgetPositionTierConfig {
     arb_mode: ArbMode,
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    venue: TradingVenue,
     cache_key: String,
     leverage: u8,
 }
@@ -186,7 +188,7 @@ impl BitgetPositionTierGuard {
         open_venue: TradingVenue,
         hedge_venue: TradingVenue,
     ) -> Result<()> {
-        if !is_bitget_position_tier_path(arb_mode, open_venue, hedge_venue) {
+        let Some(venue) = bitget_position_tier_venue(open_venue, hedge_venue) else {
             install_guard_state(BitgetPositionTierState::disabled());
             info!(
                 "Bitget position-tier guard disabled: mode={} open={:?} hedge={:?}",
@@ -195,7 +197,7 @@ impl BitgetPositionTierGuard {
                 hedge_venue
             );
             return Ok(());
-        }
+        };
 
         let config = BitgetPositionTierConfig {
             env_name: env_name
@@ -204,7 +206,8 @@ impl BitgetPositionTierGuard {
             arb_mode,
             open_venue,
             hedge_venue,
-            cache_key: cache_key(),
+            venue,
+            cache_key: cache_key(venue),
             leverage: configured_leverage(),
         };
         let refresh_ctx = BitgetPositionTierRefreshContext {
@@ -394,8 +397,6 @@ impl BitgetPositionTierGuard {
     }
 
     pub fn cap_for_symbol(symbol: &str, side: Side) -> Result<BitgetPositionTierCap, String> {
-        let symbol = normalize_guard_symbol(symbol)
-            .ok_or_else(|| format!("Bitget position-tier symbol invalid: {symbol}"))?;
         BITGET_POSITION_TIER_GUARD.with(|guard| {
             let mut guard_ref = guard.borrow_mut();
             let Some(state) = guard_ref.as_mut() else {
@@ -407,6 +408,13 @@ impl BitgetPositionTierGuard {
             if !state.enabled {
                 return Err("Bitget position-tier guard disabled".to_string());
             }
+            let venue = state
+                .refresh_ctx
+                .as_ref()
+                .map(|ctx| ctx.config.venue)
+                .ok_or_else(|| "Bitget position-tier guard venue missing".to_string())?;
+            let symbol = normalize_guard_symbol(symbol, venue)
+                .ok_or_else(|| format!("Bitget position-tier symbol invalid: {symbol}"))?;
             let Some(record) = state.limits.get(&symbol) else {
                 let now_us = get_timestamp_us();
                 state.stats.record(
@@ -545,16 +553,20 @@ fn current_limit_count() -> usize {
     })
 }
 
-fn is_bitget_position_tier_path(
-    _arb_mode: ArbMode,
-    open_venue: TradingVenue,
-    hedge_venue: TradingVenue,
-) -> bool {
-    is_bitget_position_tier_venues(open_venue, hedge_venue)
+fn is_bitget_position_tier_venues(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
+    bitget_position_tier_venue(open_venue, hedge_venue).is_some()
 }
 
-fn is_bitget_position_tier_venues(open_venue: TradingVenue, hedge_venue: TradingVenue) -> bool {
-    open_venue == TradingVenue::BitgetFutures || hedge_venue == TradingVenue::BitgetFutures
+fn bitget_position_tier_venue(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Option<TradingVenue> {
+    [hedge_venue, open_venue].into_iter().find(|venue| {
+        matches!(
+            venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        )
+    })
 }
 
 fn bitget_guard_symbol(
@@ -563,10 +575,16 @@ fn bitget_guard_symbol(
     hedging_symbol: &str,
     hedging_venue: TradingVenue,
 ) -> Option<String> {
-    if hedging_venue == TradingVenue::BitgetFutures {
-        normalize_guard_symbol(hedging_symbol)
-    } else if opening_venue == TradingVenue::BitgetFutures {
-        normalize_guard_symbol(opening_symbol)
+    if matches!(
+        hedging_venue,
+        TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+    ) {
+        normalize_guard_symbol(hedging_symbol, hedging_venue)
+    } else if matches!(
+        opening_venue,
+        TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+    ) {
+        normalize_guard_symbol(opening_symbol, opening_venue)
     } else {
         None
     }
@@ -629,13 +647,17 @@ async fn refresh_bitget_position_tiers(
             refresh_ctx.config.cache_key
         );
     };
-    let parsed =
-        parse_bitget_position_tier_cache(&raw, refresh_ctx.config.leverage).with_context(|| {
-            format!(
-                "parse Redis Bitget position-tier cache key={}",
-                refresh_ctx.config.cache_key
-            )
-        })?;
+    let parsed = parse_bitget_position_tier_cache(
+        &raw,
+        refresh_ctx.config.leverage,
+        refresh_ctx.config.venue,
+    )
+    .with_context(|| {
+        format!(
+            "parse Redis Bitget position-tier cache key={}",
+            refresh_ctx.config.cache_key
+        )
+    })?;
     Ok(BitgetPositionTierRefreshResult {
         limits: parsed.limits,
         active_symbols: parsed.active_symbols,
@@ -648,6 +670,7 @@ async fn refresh_bitget_position_tiers(
 fn parse_bitget_position_tier_cache(
     raw: &str,
     configured_leverage: u8,
+    venue: TradingVenue,
 ) -> Result<ParsedBitgetPositionTierCache> {
     let value: Value =
         serde_json::from_str(raw).context("Bitget position-tier cache is not JSON")?;
@@ -661,11 +684,11 @@ fn parse_bitget_position_tier_cache(
         bail!("Bitget position-tier cache symbols is not an object");
     };
 
-    let mut active_symbols = parse_active_symbols(root.get("active_symbols"));
+    let mut active_symbols = parse_active_symbols(root.get("active_symbols"), venue);
     if active_symbols.is_empty() {
         active_symbols = symbols_obj
             .keys()
-            .filter_map(|symbol| normalize_guard_symbol(symbol))
+            .filter_map(|symbol| normalize_guard_symbol(symbol, venue))
             .collect();
     }
 
@@ -675,7 +698,7 @@ fn parse_bitget_position_tier_cache(
     for symbol in &active_symbols {
         let Some(record_value) = symbols_obj
             .get(symbol)
-            .or_else(|| symbols_obj.get(&bitget_exchange_symbol(symbol)))
+            .or_else(|| symbols_obj.get(&bitget_exchange_symbol(symbol, venue)))
         else {
             missing_symbols.push(symbol.clone());
             continue;
@@ -700,14 +723,14 @@ fn parse_bitget_position_tier_cache(
     })
 }
 
-fn parse_active_symbols(value: Option<&Value>) -> BTreeSet<String> {
+fn parse_active_symbols(value: Option<&Value>, venue: TradingVenue) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let Some(items) = value.and_then(Value::as_array) else {
         return out;
     };
     for item in items {
         if let Some(raw) = item.as_str() {
-            if let Some(symbol) = normalize_guard_symbol(raw) {
+            if let Some(symbol) = normalize_guard_symbol(raw, venue) {
                 out.insert(symbol);
             }
         }
@@ -785,7 +808,14 @@ fn parse_i64_value(value: &Value) -> Option<i64> {
     }
 }
 
-fn normalize_guard_symbol(value: &str) -> Option<String> {
+fn normalize_guard_symbol(value: &str, venue: TradingVenue) -> Option<String> {
+    if venue == TradingVenue::BitgetCoinFutures {
+        let normalized = normalize_symbol_for_internal(value);
+        let valid = normalized
+            .strip_suffix("CM")
+            .is_some_and(|root| root.ends_with("USD") && root.len() > "USD".len());
+        return valid.then_some(normalized);
+    }
     let mut text = value.trim().to_ascii_uppercase();
     if text.is_empty() {
         return None;
@@ -817,8 +847,12 @@ fn normalize_guard_symbol(value: &str) -> Option<String> {
     }
 }
 
-fn bitget_exchange_symbol(internal_symbol: &str) -> String {
-    normalize_guard_symbol(internal_symbol).unwrap_or_default()
+fn bitget_exchange_symbol(internal_symbol: &str, venue: TradingVenue) -> String {
+    if venue == TradingVenue::BitgetCoinFutures {
+        bitget_coin_futures_symbol(internal_symbol)
+    } else {
+        normalize_guard_symbol(internal_symbol, venue).unwrap_or_default()
+    }
 }
 
 fn clean_symbol_text(value: &str) -> String {
@@ -837,12 +871,18 @@ fn configured_leverage() -> u8 {
         .unwrap_or(DEFAULT_LEVERAGE)
 }
 
-fn cache_key() -> String {
+fn cache_key(venue: TradingVenue) -> String {
     std::env::var("PRE_TRADE_BITGET_POSITION_TIER_CACHE_KEY")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_CACHE_KEY.to_string())
+        .unwrap_or_else(|| {
+            if venue == TradingVenue::BitgetCoinFutures {
+                DEFAULT_COIN_CACHE_KEY.to_string()
+            } else {
+                DEFAULT_CACHE_KEY.to_string()
+            }
+        })
 }
 
 fn refresh_interval_secs() -> u64 {
@@ -899,7 +939,7 @@ mod tests {
             }
         }"#;
 
-        let parsed = parse_bitget_position_tier_cache(raw, 5).unwrap();
+        let parsed = parse_bitget_position_tier_cache(raw, 5, TradingVenue::BitgetFutures).unwrap();
         assert_eq!(parsed.active_symbols, 3);
         assert_eq!(parsed.cached_symbols, 2);
         assert_eq!(parsed.missing_symbols, vec!["MISSINGUSDT".to_string()]);
@@ -915,5 +955,23 @@ mod tests {
         assert_eq!(eth.leverage, 4);
         assert!(!eth.exact_leverage_match);
         assert_eq!(eth.updated_at_ms, Some(456));
+    }
+
+    #[test]
+    fn parses_coin_futures_cache_with_independent_symbol_key() {
+        let raw = r#"{
+            "active_symbols":["BTCUSD_CM"],
+            "symbols":{
+                "BTCUSD_CM":{"risk_limit_by_leverage":{"5":"50000"}}
+            }
+        }"#;
+        let parsed =
+            parse_bitget_position_tier_cache(raw, 5, TradingVenue::BitgetCoinFutures).unwrap();
+        assert_eq!(parsed.missing_symbols, Vec::<String>::new());
+        assert_eq!(parsed.limits.get("BTCUSDCM").unwrap().risk_limit, 50_000.0);
+        assert_eq!(
+            bitget_exchange_symbol("BTCUSDCM", TradingVenue::BitgetCoinFutures),
+            "BTCUSD_CM"
+        );
     }
 }

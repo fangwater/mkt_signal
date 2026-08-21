@@ -3,8 +3,8 @@ use order_common::{gate_text_from_client_order_id, Order, TradingVenue};
 use runtime_common::time_util::get_timestamp_us;
 use std::fmt::Write as _;
 use symbol_utils::symbol_util::{
-    binance_coin_futures_symbol, gate_currency_pair_from_symbol, normalize_symbol_for_internal,
-    okex_inst_id_from_symbol,
+    binance_coin_futures_symbol, bitget_coin_futures_symbol, gate_currency_pair_from_symbol,
+    normalize_symbol_for_internal, okex_inst_id_from_symbol,
 };
 use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
 
@@ -56,6 +56,7 @@ pub fn build_order_query_request(
         TradingVenue::BybitFutures => QueryRequestType::BybitUMQuery,
         TradingVenue::BitgetMargin => QueryRequestType::BitgetMarginQuery,
         TradingVenue::BitgetFutures => QueryRequestType::BitgetUMQuery,
+        TradingVenue::BitgetCoinFutures => QueryRequestType::BitgetCoinFuturesQuery,
         TradingVenue::GateMargin => QueryRequestType::GateUnifiedOrderQuery,
         TradingVenue::GateFutures => QueryRequestType::GateFuturesOrderQuery,
         _ => return Err(format!("unsupported venue for query: {:?}", order.venue)),
@@ -106,11 +107,21 @@ pub fn build_order_query_request(
             lookup_client_order_id,
         ),
         TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => {
-            if let Some(order_id) = exchange_order_id {
-                query_bytes_with_i64("orderId", order_id)
+            let category = if order.venue == TradingVenue::BitgetMargin {
+                "MARGIN"
             } else {
-                query_bytes_with_i64("clientOid", lookup_client_order_id)
-            }
+                "USDT-FUTURES"
+            };
+            bitget_query_bytes(category, None, exchange_order_id, lookup_client_order_id)
+        }
+        TradingVenue::BitgetCoinFutures => {
+            let symbol = bitget_coin_futures_symbol(&order.symbol);
+            bitget_query_bytes(
+                "COIN-FUTURES",
+                Some(&symbol),
+                exchange_order_id,
+                lookup_client_order_id,
+            )
         }
         TradingVenue::GateMargin => {
             let currency_pair = gate_currency_pair_from_symbol(&order.symbol);
@@ -132,11 +143,26 @@ pub fn build_order_query_request(
     Ok((exchange, req.to_bytes()))
 }
 
-fn query_bytes_with_i64(key: &str, value: i64) -> bytes::Bytes {
-    let mut out = String::with_capacity(key.len() + 24);
-    out.push_str(key);
-    out.push('=');
-    write!(out, "{}", value).expect("write query i64 value");
+fn bitget_query_bytes(
+    category: &str,
+    symbol: Option<&str>,
+    exchange_order_id: Option<i64>,
+    client_order_id: i64,
+) -> bytes::Bytes {
+    let mut out = String::with_capacity(category.len() + symbol.map(str::len).unwrap_or(0) + 64);
+    out.push_str("category=");
+    out.push_str(category);
+    if let Some(symbol) = symbol {
+        out.push_str("&symbol=");
+        out.push_str(symbol);
+    }
+    if let Some(order_id) = exchange_order_id {
+        out.push_str("&orderId=");
+        write!(out, "{}", order_id).expect("write Bitget order id");
+    } else {
+        out.push_str("&clientOid=");
+        write!(out, "{}", client_order_id).expect("write Bitget client order id");
+    }
     bytes::Bytes::from(out)
 }
 
@@ -287,6 +313,28 @@ mod tests {
         assert_eq!(
             params,
             "category=spot&symbol=BTCUSDT&orderLinkId=1133736985207242753"
+        );
+    }
+
+    #[test]
+    fn bitget_coin_futures_query_uses_category_and_exchange_symbol() {
+        let client_order_id = 1133736985207242753;
+        let order = order_from_manager(
+            TradingVenue::BitgetCoinFutures,
+            client_order_id,
+            "BTCUSDCM",
+            None,
+        );
+
+        let (exchange, bytes) = build_order_query_request(&order, 99, client_order_id)
+            .expect("bitget coin futures query should build");
+        let (msg, params) = query_params(bytes);
+
+        assert_eq!(exchange, "bitget");
+        assert_eq!(msg.req_type, QueryRequestType::BitgetCoinFuturesQuery);
+        assert_eq!(
+            params,
+            "category=COIN-FUTURES&symbol=BTCUSD_CM&clientOid=1133736985207242753"
         );
     }
 

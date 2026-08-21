@@ -30,7 +30,8 @@ use order_common::TradingVenue;
 use runtime_common::exchange::Exchange;
 use runtime_common::mkt_cfg::load_primary_local_ip_from_trade_engine_sync;
 use runtime_common::symbol_util::{
-    binance_coin_futures_symbol, extract_assets_from_symbol, normalize_symbol_for_internal,
+    binance_coin_futures_symbol, bitget_coin_futures_symbol, extract_assets_from_symbol,
+    normalize_symbol_for_internal,
 };
 
 // ==================== API 响应结构 ====================
@@ -265,6 +266,12 @@ pub const BITGET_CONFIG: ExchangeConfig = ExchangeConfig {
     fetch_days: DEFAULT_FETCH_DAYS,
 };
 
+pub const BITGET_COIN_CONFIG: ExchangeConfig = ExchangeConfig {
+    venue: TradingVenue::BitgetCoinFutures,
+    period: FundingRatePeriod::Hours8,
+    fetch_days: DEFAULT_FETCH_DAYS,
+};
+
 // Bybit 配置
 pub const BYBIT_CONFIG: ExchangeConfig = ExchangeConfig {
     venue: TradingVenue::BybitFutures,
@@ -284,6 +291,7 @@ const BINANCE_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSD
 const BINANCE_COIN_TEST_SYMBOLS: &[&str] = &["BTCUSD_PERP", "ETHUSD_PERP"];
 const OKEX_TEST_SYMBOLS: &[&str] = &["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"];
 const BITGET_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const BITGET_COIN_TEST_SYMBOLS: &[&str] = &["BTCUSD_CM", "ETHUSD_CM"];
 const BYBIT_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const GATE_TEST_SYMBOLS: &[&str] = &["BTC_USDT", "ETH_USDT", "SOL_USDT"];
 
@@ -451,7 +459,9 @@ impl RateFetcher {
             | TradingVenue::BinanceFutures
             | TradingVenue::BinanceCoinFutures => Exchange::Binance,
             TradingVenue::OkexMargin | TradingVenue::OkexFutures => Exchange::Okex,
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => Exchange::Bitget,
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => Exchange::Bitget,
             TradingVenue::BybitMargin | TradingVenue::BybitFutures => Exchange::Bybit,
             TradingVenue::GateMargin | TradingVenue::GateFutures => Exchange::Gate,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
@@ -596,8 +606,26 @@ impl RateFetcher {
                 info!("RateFetcher: Binance credentials initialized without USD-M task");
             }
         }
+        let has_bitget = venues.iter().any(|venue| {
+            matches!(
+                venue,
+                TradingVenue::BitgetMargin
+                    | TradingVenue::BitgetFutures
+                    | TradingVenue::BitgetCoinFutures
+            )
+        });
+        if has_bitget {
+            if venues.contains(&TradingVenue::BitgetFutures) {
+                Self::init(Exchange::Bitget)?;
+            } else {
+                Self::ensure_initialized()?;
+                Self::with_inner_mut(|inner| {
+                    inner.started_exchanges.insert(Exchange::Bitget);
+                });
+            }
+        }
         for exchange in [open_exchange, hedge_exchange] {
-            if exchange != Exchange::Binance {
+            if exchange != Exchange::Binance && exchange != Exchange::Bitget {
                 Self::init(exchange)?;
             }
         }
@@ -605,6 +633,9 @@ impl RateFetcher {
             || hedge_venue == TradingVenue::BinanceCoinFutures
         {
             Self::init_binance_coin_futures();
+        }
+        if venues.contains(&TradingVenue::BitgetCoinFutures) {
+            Self::init_bitget_coin_futures();
         }
         Ok(())
     }
@@ -623,6 +654,23 @@ impl RateFetcher {
         if should_spawn {
             info!("RateFetcher: Binance COIN-M initialized");
             Self::spawn_binance_coin_fetch_task();
+        }
+    }
+
+    fn init_bitget_coin_futures() {
+        let should_spawn = Self::with_inner_mut(|inner| {
+            if inner.venue_states.contains_key(&BITGET_COIN_CONFIG.venue) {
+                false
+            } else {
+                inner
+                    .venue_states
+                    .insert(BITGET_COIN_CONFIG.venue, VenueState::default());
+                true
+            }
+        });
+        if should_spawn {
+            info!("RateFetcher: Bitget COIN-FUTURES initialized");
+            Self::spawn_bitget_coin_fetch_task();
         }
     }
 
@@ -1392,38 +1440,93 @@ impl RateFetcher {
         });
     }
 
+    fn spawn_bitget_coin_fetch_task() {
+        tokio::task::spawn_local(async move {
+            info!(
+                "Bitget COIN-FUTURES rate fetch task started ({}s interval)",
+                FETCH_INTERVAL_SECS
+            );
+            if let Err(err) = Self::fetch_bitget_coin_rates(true).await {
+                warn!("initial Bitget COIN-FUTURES rate fetch failed: {err:?}");
+            }
+            loop {
+                sleep(Duration::from_secs(FETCH_INTERVAL_SECS)).await;
+                let is_full = Self::should_do_full_fetch(BITGET_COIN_CONFIG.venue);
+                if let Err(err) = Self::fetch_bitget_coin_rates(is_full).await {
+                    warn!("Bitget COIN-FUTURES rate fetch failed: {err:?}");
+                }
+            }
+        });
+    }
+
     async fn fetch_bitget_rates(is_full_fetch: bool) -> Result<()> {
-        let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols();
+        Self::fetch_bitget_rates_for_config(
+            is_full_fetch,
+            &BITGET_CONFIG,
+            BITGET_TEST_SYMBOLS,
+            "Bitget",
+            "USDT-FUTURES",
+            false,
+        )
+        .await
+    }
+
+    async fn fetch_bitget_coin_rates(is_full_fetch: bool) -> Result<()> {
+        Self::fetch_bitget_rates_for_config(
+            is_full_fetch,
+            &BITGET_COIN_CONFIG,
+            BITGET_COIN_TEST_SYMBOLS,
+            "Bitget COIN-FUTURES",
+            "COIN-FUTURES",
+            true,
+        )
+        .await
+    }
+
+    async fn fetch_bitget_rates_for_config(
+        is_full_fetch: bool,
+        config: &ExchangeConfig,
+        test_symbols: &[&str],
+        label: &str,
+        category: &str,
+        coin_symbols: bool,
+    ) -> Result<()> {
+        let mut online_symbols = SymbolList::instance().get_online_symbols();
         if online_symbols.is_empty() {
-            online_symbols = BITGET_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
+            online_symbols = test_symbols.iter().map(|s| s.to_string()).collect();
         }
 
         let (new_symbols, all_changed) =
-            Self::update_symbol_cache(BITGET_CONFIG.venue, &online_symbols, is_full_fetch);
-        Self::log_fetch_status("Bitget", is_full_fetch, &new_symbols, online_symbols.len());
+            Self::update_symbol_cache(config.venue, &online_symbols, is_full_fetch);
+        Self::log_fetch_status(label, is_full_fetch, &new_symbols, online_symbols.len());
 
         if is_full_fetch {
-            Self::fetch_bitget_funding_rates(&online_symbols).await?;
+            Self::fetch_bitget_funding_rates(&online_symbols, config, category, coin_symbols)
+                .await?;
         } else if !new_symbols.is_empty() {
-            Self::fetch_bitget_funding_rates(&new_symbols).await?;
+            Self::fetch_bitget_funding_rates(&new_symbols, config, category, coin_symbols).await?;
         }
-        Self::fetch_bitget_lending_rates(&online_symbols).await?;
+        Self::fetch_bitget_lending_rates(&online_symbols, config.venue).await?;
 
         Self::check_initial_rates_if_needed(
-            BITGET_CONFIG.venue,
+            config.venue,
             &online_symbols,
             true,
             all_changed || is_full_fetch,
         );
 
         if all_changed || is_full_fetch {
-            Self::print_bitget_rate_table(&online_symbols);
+            Self::print_bitget_rate_table(&online_symbols, config.venue, label);
         }
         Ok(())
     }
 
-    async fn fetch_bitget_funding_rates(symbols: &[String]) -> Result<()> {
+    async fn fetch_bitget_funding_rates(
+        symbols: &[String],
+        config: &ExchangeConfig,
+        category: &str,
+        coin_symbols: bool,
+    ) -> Result<()> {
         if symbols.is_empty() {
             return Ok(());
         }
@@ -1433,20 +1536,26 @@ impl RateFetcher {
         let mut fail = 0;
 
         for symbol in symbols {
+            let api_symbol = if coin_symbols {
+                bitget_coin_futures_symbol(symbol)
+            } else {
+                symbol.clone()
+            };
+            let store_symbol = Self::normalize_symbol_for_lookup(symbol, config.venue);
             // 先拉取历史数据（用于推断周期和获取费率）
-            match Self::fetch_bitget_funding_history(&client, symbol, 30).await {
+            match Self::fetch_bitget_funding_history(&client, &api_symbol, category, 30).await {
                 Ok((rates, period)) if !rates.is_empty() => {
                     Self::with_inner_mut(|inner| {
                         inner
                             .funding_rates
-                            .entry(BITGET_CONFIG.venue)
+                            .entry(config.venue)
                             .or_default()
-                            .insert(symbol.clone(), rates);
+                            .insert(store_symbol.clone(), rates);
                         inner
                             .funding_periods
-                            .entry(BITGET_CONFIG.venue)
+                            .entry(config.venue)
                             .or_default()
-                            .insert(symbol.clone(), period);
+                            .insert(store_symbol.clone(), period);
                     });
                     success += 1;
                 }
@@ -1464,7 +1573,7 @@ impl RateFetcher {
         Ok(())
     }
 
-    async fn fetch_bitget_lending_rates(symbols: &[String]) -> Result<()> {
+    async fn fetch_bitget_lending_rates(symbols: &[String], venue: TradingVenue) -> Result<()> {
         let assets = Self::collect_base_assets(symbols);
         if assets.is_empty() {
             return Ok(());
@@ -1476,25 +1585,20 @@ impl RateFetcher {
             match Self::fetch_bitget_lending_rate_for_asset(asset).await {
                 Ok(Some(rate)) => {
                     Self::with_inner_mut(|inner| {
-                        inner
-                            .lending_rates
-                            .entry(BITGET_CONFIG.venue)
-                            .or_default()
-                            .insert(
-                                asset.to_uppercase(),
-                                LendingRateCache {
-                                    predict_daily_rate: rate,
-                                    current_daily_rate: rate,
-                                    raw_daily_rates: vec![rate],
-                                },
-                            );
+                        inner.lending_rates.entry(venue).or_default().insert(
+                            asset.to_uppercase(),
+                            LendingRateCache {
+                                predict_daily_rate: rate,
+                                current_daily_rate: rate,
+                                raw_daily_rates: vec![rate],
+                            },
+                        );
                     });
                     success += 1;
                 }
                 Ok(None) => {
                     Self::with_inner_mut(|inner| {
-                        if let Some(venue_rates) = inner.lending_rates.get_mut(&BITGET_CONFIG.venue)
-                        {
+                        if let Some(venue_rates) = inner.lending_rates.get_mut(&venue) {
                             venue_rates.remove(&asset.to_uppercase());
                         }
                     });
@@ -1509,7 +1613,7 @@ impl RateFetcher {
         if success + fail > 0 {
             info!("Bitget 借贷利率: 成功 {}, 失败 {}", success, fail);
         }
-        Self::maybe_recover_initial_ready(BITGET_CONFIG.venue);
+        Self::maybe_recover_initial_ready(venue);
         Ok(())
     }
 
@@ -1574,13 +1678,14 @@ impl RateFetcher {
     async fn fetch_bitget_funding_history(
         client: &Client,
         symbol: &str,
+        category: &str,
         limit: usize,
     ) -> Result<(Vec<f64>, FundingRatePeriod)> {
         let limit_s = limit.clamp(1, 100).to_string();
         let resp = client
             .get(BITGET_FUNDING_RATE_HISTORY_API)
             .query(&[
-                ("category", "USDT-FUTURES"),
+                ("category", category),
                 ("symbol", symbol),
                 ("limit", &limit_s),
             ])
@@ -1629,23 +1734,23 @@ impl RateFetcher {
         Ok((rates, period))
     }
 
-    fn print_bitget_rate_table(symbols: &[String]) {
+    fn print_bitget_rate_table(symbols: &[String], venue: TradingVenue, label: &str) {
         let mut data: Vec<_> = symbols
             .iter()
             .map(|s| {
                 let period = Self::with_inner(|inner| {
                     inner
                         .funding_periods
-                        .get(&BITGET_CONFIG.venue)
-                        .and_then(|m| m.get(s))
+                        .get(&venue)
+                        .and_then(|m| m.get(&Self::normalize_symbol_for_lookup(s, venue)))
                         .copied()
                         .unwrap_or(FundingRatePeriod::Hours8)
                 });
                 let fr = RateFetcher::instance()
-                    .get_predicted_funding_rate(s, BITGET_CONFIG.venue)
+                    .get_predicted_funding_rate(s, venue)
                     .map(|(_, v)| v);
                 let loan = RateFetcher::instance()
-                    .get_predict_loan_rate(s, BITGET_CONFIG.venue)
+                    .get_predict_loan_rate(s, venue)
                     .map(|(_, v)| v);
                 (s.clone(), period, fr, loan)
             })
@@ -1653,7 +1758,10 @@ impl RateFetcher {
         data.sort_by(|a, b| a.0.cmp(&b.0));
 
         info!("┌──────────────────────────────────────────────────────────────┐");
-        info!("│ Bitget              │ Period │ Predict FR      │ Predict Loan │");
+        info!(
+            "│ {:<19} │ Period │ Predict FR      │ Predict Loan │",
+            label
+        );
         info!("├──────────────────────────────────────────────────────────────┤");
         for (sym, period, fr, loan) in data {
             let fr_s = fr.map_or("          N/A".into(), |v| format!("{:>12.6}%", v * 100.0));
@@ -2680,6 +2788,9 @@ impl RateFetcher {
     }
 
     fn normalize_symbol_for_lookup(symbol: &str, venue: TradingVenue) -> String {
+        if venue == TradingVenue::BitgetCoinFutures {
+            return normalize_symbol_for_internal(&bitget_coin_futures_symbol(symbol));
+        }
         if venue == TradingVenue::BinanceCoinFutures {
             return normalize_symbol_for_internal(symbol);
         }

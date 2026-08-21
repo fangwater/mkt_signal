@@ -44,7 +44,9 @@ use order_common::{
 use order_common::{OrderStatus, TradeRequestType, TradingVenue};
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
-use runtime_common::symbol_util::{min_qty_symbol_key, normalize_symbol_for_internal};
+use runtime_common::symbol_util::{
+    min_qty_symbol_key, normalize_symbol_for_internal, normalize_symbol_for_venue,
+};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::arb_signal::ArbBackwardQueryMsg;
 use signal_common::common::{align_price_floor, TradingLeg};
@@ -281,8 +283,11 @@ impl ArbHedgeStrategy {
     ) -> bool {
         const EPS: f64 = 1e-12;
         if self.open_venue != TradingVenue::BitgetMargin
-            || self.hedge_venue != TradingVenue::BitgetFutures
-            || venue != TradingVenue::BitgetFutures
+            || !matches!(
+                self.hedge_venue,
+                TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+            )
+            || venue != self.hedge_venue
             || side != Side::Buy
             || !(order_base_qty.is_finite() && order_base_qty > 0.0)
             || !check_account_open_block().is_some_and(|hit| {
@@ -293,7 +298,7 @@ impl ArbHedgeStrategy {
         }
 
         let futures_net =
-            MonitorChannel::instance().get_position_qty(&self.symbol, TradingVenue::BitgetFutures);
+            MonitorChannel::instance().get_position_qty(&self.symbol, self.hedge_venue);
         futures_net < -EPS && order_base_qty <= -futures_net + EPS
     }
 
@@ -687,7 +692,11 @@ impl ArbHedgeStrategy {
     fn mark_price(&self) -> Option<f64> {
         let monitor = MonitorChannel::instance();
         let mark_price_exchange = monitor.try_mark_price_exchange()?;
-        let price_symbol = mark_price_lookup_symbol(&self.symbol, mark_price_exchange);
+        let price_symbol = if self.hedge_venue.is_inverse_futures() {
+            normalize_symbol_for_venue(&self.symbol, self.hedge_venue)
+        } else {
+            mark_price_lookup_symbol(&self.symbol, mark_price_exchange)
+        };
         monitor
             .try_price_table()?
             .borrow()
@@ -1146,7 +1155,8 @@ impl ArbHedgeStrategy {
         ctx.strategy_id = self.strategy_id;
         ctx.set_side(hedge_side);
         ctx.hedging_leg = TradingLeg::new(self.hedge_venue, mark_price, mark_price, now_ts);
-        ctx.set_hedging_symbol(&self.symbol);
+        let hedge_symbol = normalize_symbol_for_venue(&self.symbol, self.hedge_venue);
+        ctx.set_hedging_symbol(&hedge_symbol);
         ctx.price_qv = QuantizedValue::zero();
         ctx.amount_qv = amount_qv;
         ctx.price_offset = 0.0;
@@ -2513,7 +2523,10 @@ impl ArbHedgeStrategy {
                     | gate::POSITION_MARGIN_TOO_LOW
             );
         let is_bitget_unified_fr = self.open_venue == TradingVenue::BitgetMargin
-            && self.hedge_venue == TradingVenue::BitgetFutures;
+            && matches!(
+                self.hedge_venue,
+                TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+            );
         let account_open_block = if is_binance_pm_fr {
             register_account_open_block(
                 AccountOpenBlockReason::BinancePmInsufficientMargin,
@@ -2647,8 +2660,10 @@ impl ArbHedgeStrategy {
     }
 
     fn is_bitget_position_tier_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
-        self.hedge_venue == TradingVenue::BitgetFutures
-            && self.bitget_position_tier_limit_block_side == Some(hedge_side)
+        matches!(
+            self.hedge_venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        ) && self.bitget_position_tier_limit_block_side == Some(hedge_side)
             && now_ts < self.bitget_position_tier_limit_block_until_us
     }
 

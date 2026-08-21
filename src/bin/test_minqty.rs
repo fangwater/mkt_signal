@@ -86,6 +86,7 @@ fn is_futures_venue(venue: TradingVenue) -> bool {
             | TradingVenue::BinanceCoinFutures
             | TradingVenue::OkexFutures
             | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures
             | TradingVenue::BybitFutures
             | TradingVenue::GateFutures
     )
@@ -191,7 +192,7 @@ async fn main() -> Result<()> {
 
         if is_futures_venue(venue) {
             if min_notional > 0.0 {
-                let notional = if venue == TradingVenue::BinanceCoinFutures {
+                let notional = if venue.is_inverse_futures() {
                     args.qty * table.contract_multiplier(&symbol_key)
                 } else {
                     args.qty * args.price

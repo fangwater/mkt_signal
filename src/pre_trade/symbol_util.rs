@@ -1,7 +1,11 @@
 /// 从 symbol / inst_id 中提取基础资产（如 BTCUSDT -> BTC，BTC-USDT-SWAP -> BTC）
 pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
     let upper = symbol_like.to_uppercase();
-    let upper = if let Some(root) = upper.strip_suffix("_PERP") {
+    let upper = if let Some(root) = upper.strip_suffix("_CM") {
+        root.to_string()
+    } else if let Some(root) = upper.strip_suffix("CM") {
+        root.trim_end_matches('_').to_string()
+    } else if let Some(root) = upper.strip_suffix("_PERP") {
         root.to_string()
     } else if let Some(root) = upper.strip_suffix("PERP") {
         root.trim_end_matches('_').to_string()
@@ -56,6 +60,8 @@ mod tests {
         assert_eq!(extract_base_asset("ethusdc").as_deref(), Some("ETH"));
         assert_eq!(extract_base_asset("BTCUSD_PERP").as_deref(), Some("BTC"));
         assert_eq!(extract_base_asset("ETHUSD_260925").as_deref(), Some("ETH"));
+        assert_eq!(extract_base_asset("BTCUSD_CM").as_deref(), Some("BTC"));
+        assert_eq!(extract_base_asset("BTCUSDCM").as_deref(), Some("BTC"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="spread_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 5 个 CEX × 2 market = 10 单边 venue；*-both 由一个进程同时启动 margin/futures。
+# 每个 CEX 的 margin/futures 为默认单边 venue；inverse venue 必须显式部署。
 # HK el-cc-okx-srv01 的 OKEX venue 会写入 SPREAD_PBS_CORE 覆盖到 12/14。
 KNOWN_VENUES=(
   "binance-margin"
@@ -14,6 +14,7 @@ KNOWN_VENUES=(
   "binance-both"
   "bitget-margin"
   "bitget-futures"
+  "bitget-coin-futures"
   "bitget-both"
   "bybit-margin"
   "bybit-futures"
@@ -75,6 +76,7 @@ aws_marketdata_spread_core_for_venue() {
     binance-margin)  echo 8 ;;
     binance-futures) echo 9 ;;
     binance-coin-futures) echo 10 ;;
+    bitget-coin-futures) echo 11 ;;
     gate-both)       echo 10 ;;
     okex-both)       echo 11 ;;
     bitget-both)     echo 12 ;;
@@ -278,7 +280,7 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 # 远端分流：binance/bitget/gate 的 venue 推到 AWS 远端主机
-REMOTE_VENUE_REGEX='^(binance-(futures|margin|both)|(bitget|gate)-(futures|margin|both))$'
+REMOTE_VENUE_REGEX='^(binance-(futures|margin|both)|bitget-coin-futures|(bitget|gate)-(futures|margin|both))$'
 REMOTE_VENUES=()
 LOCAL_VENUES=()
 for v in "${VENUES[@]}"; do

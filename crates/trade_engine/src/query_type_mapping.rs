@@ -65,6 +65,8 @@ impl QueryTypeMapping {
                 | QueryRequestType::BitgetPositionsSnapshot
                 | QueryRequestType::BitgetUsdtAvailableSnapshot
                 | QueryRequestType::BitgetUsdtMaxTransferable
+                | QueryRequestType::BitgetCoinFuturesQuery
+                | QueryRequestType::BitgetCoinPositionsSnapshot
         )
     }
 
@@ -105,11 +107,12 @@ impl QueryTypeMapping {
             }
             QueryRequestType::BybitAccountBalanceSnapshot => "/v5/account/wallet-balance",
             QueryRequestType::BybitPositionsSnapshot => "/v5/position/list",
-            QueryRequestType::BitgetMarginQuery | QueryRequestType::BitgetUMQuery => {
-                "/api/v3/trade/order-info"
-            }
+            QueryRequestType::BitgetMarginQuery
+            | QueryRequestType::BitgetUMQuery
+            | QueryRequestType::BitgetCoinFuturesQuery => "/api/v3/trade/order-info",
             QueryRequestType::BitgetAccountBalanceSnapshot => "/api/v3/account/assets",
             QueryRequestType::BitgetPositionsSnapshot => "/api/v3/position/current-position",
+            QueryRequestType::BitgetCoinPositionsSnapshot => "/api/v3/position/current-position",
             QueryRequestType::BitgetUsdtAvailableSnapshot => "/api/v3/account/assets",
             QueryRequestType::BitgetUsdtMaxTransferable => "/api/v3/account/max-transferable",
         }
@@ -150,6 +153,8 @@ impl QueryTypeMapping {
             | QueryRequestType::BitgetPositionsSnapshot
             | QueryRequestType::BitgetUsdtAvailableSnapshot
             | QueryRequestType::BitgetUsdtMaxTransferable => "GET",
+            QueryRequestType::BitgetCoinFuturesQuery
+            | QueryRequestType::BitgetCoinPositionsSnapshot => "GET",
             QueryRequestType::BinanceWsUMQuery | QueryRequestType::BinanceWsMarginQuery => {
                 unreachable!("Binance ws queries run via websocket; REST mapping not used")
             }
@@ -196,6 +201,8 @@ impl QueryTypeMapping {
             | QueryRequestType::BitgetPositionsSnapshot
             | QueryRequestType::BitgetUsdtAvailableSnapshot
             | QueryRequestType::BitgetUsdtMaxTransferable => 1,
+            QueryRequestType::BitgetCoinFuturesQuery
+            | QueryRequestType::BitgetCoinPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }

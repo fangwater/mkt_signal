@@ -14,7 +14,7 @@ KNOWN_VENUES=(
   "okex-futures" "okex-margin" "okex-both"
   "binance-futures" "binance-coin-futures" "binance-margin" "binance-both"
   "bybit-futures" "bybit-margin" "bybit-both"
-  "bitget-futures" "bitget-margin" "bitget-both"
+  "bitget-futures" "bitget-coin-futures" "bitget-margin" "bitget-both"
   "gate-futures" "gate-margin" "gate-both"
 )
 # 与 deploy_mm_{binance,gate,bitget}.sh 对齐：这三所走远端，其余本地。

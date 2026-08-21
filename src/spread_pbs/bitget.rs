@@ -43,6 +43,7 @@ impl BitgetAdapter {
         match self.venue {
             TradingVenue::BitgetMargin => "spot",
             TradingVenue::BitgetFutures => "usdt-futures",
+            TradingVenue::BitgetCoinFutures => "coin-futures",
             other => unreachable!("BitgetAdapter created with non-bitget venue: {:?}", other),
         }
     }
@@ -70,7 +71,10 @@ impl VenueAdapter for BitgetAdapter {
     }
 
     fn build_derivatives_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        if self.venue != TradingVenue::BitgetFutures {
+        if !matches!(
+            self.venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        ) {
             return Vec::new();
         }
         build_v2_subscribe(self.venue, symbols, "ticker")
@@ -81,7 +85,10 @@ impl VenueAdapter for BitgetAdapter {
     }
 
     fn derivatives_ws_url(&self) -> Option<String> {
-        if self.venue == TradingVenue::BitgetFutures {
+        if matches!(
+            self.venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        ) {
             Some(BITGET_V2_WS_URL.to_string())
         } else {
             None
@@ -127,6 +134,7 @@ fn v2_inst_type(venue: TradingVenue) -> &'static str {
     match venue {
         TradingVenue::BitgetMargin => "SPOT",
         TradingVenue::BitgetFutures => "USDT-FUTURES",
+        TradingVenue::BitgetCoinFutures => "COIN-FUTURES",
         other => unreachable!("Bitget v2 called for non-bitget venue: {:?}", other),
     }
 }

@@ -233,7 +233,7 @@ def normalize_asset(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", text)
 
 
-def symbol_for_exchange(exchange: str, asset: str) -> str:
+def symbol_for_venue(exchange: str, venue: str, asset: str) -> str:
     base = normalize_asset(asset)
     if not base:
         return ""
@@ -241,6 +241,8 @@ def symbol_for_exchange(exchange: str, asset: str) -> str:
         return f"{base}-USDT-SWAP"
     if exchange == "gate":
         return f"{base}_USDT"
+    if venue == "bitget-coin-futures":
+        return f"{base}USD_CM"
     return f"{base}USDT"
 
 
@@ -427,7 +429,9 @@ def bitget_sign(secret: str, ts_ms: str, method: str, request_path: str, body: s
     ).decode("utf-8")
 
 
-def bitget_set_leverage(symbol: str, leverage: int, timeout: int) -> Tuple[bool, int, str, str]:
+def bitget_set_leverage(
+    symbol: str, leverage: int, category: str, timeout: int
+) -> Tuple[bool, int, str, str]:
     api_key = os.environ.get("BITGET_API_KEY", "").strip()
     api_secret = os.environ.get("BITGET_API_SECRET", "").strip()
     passphrase = (
@@ -439,7 +443,7 @@ def bitget_set_leverage(symbol: str, leverage: int, timeout: int) -> Tuple[bool,
     base = os.environ.get("BITGET_API_BASE", "https://api.bitget.com").rstrip("/")
     path = "/api/v3/account/set-leverage"
     body = json.dumps(
-        {"category": "USDT-FUTURES", "symbol": symbol, "leverage": str(leverage)},
+        {"category": category, "symbol": symbol, "leverage": str(leverage)},
         separators=(",", ":"),
         ensure_ascii=True,
     )
@@ -582,6 +586,7 @@ def gate_set_leverage(
 
 def set_one(
     exchange: str,
+    venue: str,
     symbol: str,
     leverage: int,
     *,
@@ -595,7 +600,8 @@ def set_one(
     if exchange == "bybit":
         return bybit_set_leverage(symbol, leverage, args.timeout)
     if exchange == "bitget":
-        return bitget_set_leverage(symbol, leverage, args.timeout)
+        category = "COIN-FUTURES" if venue == "bitget-coin-futures" else "USDT-FUTURES"
+        return bitget_set_leverage(symbol, leverage, category, args.timeout)
     if exchange == "gate":
         return gate_set_leverage(
             symbol,
@@ -609,6 +615,7 @@ def set_one(
 
 def run_side(
     exchange: str,
+    venue: str,
     assets: List[str],
     leverage: int,
     *,
@@ -618,13 +625,13 @@ def run_side(
     failures = 0
     print(f"\n[info] === side exchange={exchange} symbols={len(assets)} execute={args.execute} ===")
     for idx, asset in enumerate(assets, start=1):
-        symbol = symbol_for_exchange(exchange, asset)
-        print(f"[{exchange} {idx}/{len(assets)}] {symbol} -> {leverage}")
+        symbol = symbol_for_venue(exchange, venue, asset)
+        print(f"[{exchange} {idx}/{len(assets)}] {venue} {symbol} -> {leverage}")
         if not args.execute:
             continue
         try:
             ok, status, body, brief = set_one(
-                exchange, symbol, leverage, args=args, binance_mode=binance_mode
+                exchange, venue, symbol, leverage, args=args, binance_mode=binance_mode
             )
         except SystemExit:
             raise
@@ -716,7 +723,15 @@ def main() -> int:
 
     failures = 0
     for exchange in sides:
-        failures += run_side(exchange, assets, args.leverage, args=args, binance_mode=binance_mode)
+        venue = ctx.open_venue if exchange == ctx.open_ex else ctx.hedge_venue
+        failures += run_side(
+            exchange,
+            venue,
+            assets,
+            args.leverage,
+            args=args,
+            binance_mode=binance_mode,
+        )
 
     if failures:
         print(f"WARN: {failures} leverage updates failed", file=sys.stderr)

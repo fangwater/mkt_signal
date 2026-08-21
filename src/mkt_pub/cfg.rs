@@ -204,7 +204,9 @@ impl Config {
             TradingVenue::OkexFutures | TradingVenue::OkexMargin => 50,
             TradingVenue::BybitFutures => 300,
             TradingVenue::BybitMargin => 10,
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 50,
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => 50,
             TradingVenue::GateMargin | TradingVenue::GateFutures => 50,
             TradingVenue::AsterFutures => 50,
             TradingVenue::AsterMargin => 100,
@@ -828,20 +830,23 @@ impl Config {
             .iter()
             .filter(|item| item["status"].as_str() == Some("online"))
             .map(|item| item["symbol"].as_str().unwrap_or("").to_string())
-            .filter(|s| !s.is_empty() && s.to_lowercase().ends_with("usdt"))
+            .filter(|symbol| {
+                !symbol.is_empty()
+                    && (category == "COIN-FUTURES" || symbol.to_ascii_lowercase().ends_with("usdt"))
+            })
             .collect();
 
-        info!(
-            "Bitget {} USDT-denominated symbol count: {}",
-            category,
-            symbols.len()
-        );
+        info!("Bitget {} online symbol count: {}", category, symbols.len());
         Ok(symbols)
     }
 
     /// 获取 Bitget Futures (USDT-FUTURES) 交易对
     async fn get_symbol_for_bitget_futures() -> Result<Vec<String>> {
         Self::get_symbols_from_bitget_api("USDT-FUTURES").await
+    }
+
+    async fn get_symbol_for_bitget_coin_futures() -> Result<Vec<String>> {
+        Self::get_symbols_from_bitget_api("COIN-FUTURES").await
     }
 
     /// 获取 Bitget Futures (USDT-FUTURES) 交易对（只返回与 Margin 有关联的）
@@ -1130,6 +1135,7 @@ impl Config {
             TradingVenue::BitgetFutures => {
                 Self::get_bitget_futures_symbols_related_to_margin().await
             }
+            TradingVenue::BitgetCoinFutures => Self::get_symbol_for_bitget_coin_futures().await,
             //Bitget杠杆交易（与Futures关联的）
             TradingVenue::BitgetMargin => {
                 Self::get_margin_symbols_related_to_bitget_futures().await
