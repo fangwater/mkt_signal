@@ -3,6 +3,7 @@ use crate::pre_trade::account_open_block::{
     register_bybit_internal_system_open_block, AccountOpenBlockReason,
     BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
 };
+use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
 use crate::pre_trade::lazy_taker_action::publish_lazy_taker_action;
 use crate::pre_trade::log_throttle::log_order_rate_limit_summary;
 use crate::pre_trade::monitor_channel::MonitorChannel;
@@ -248,6 +249,8 @@ pub struct ArbHedgeStrategy {
     alive_flag: bool,
     /// 上一次因 51008 触发应急动作的时间戳（us）。0 表示从未触发。
     last_insufficient_margin_action_ts: i64,
+    binance_position_limit_block_until_us: i64,
+    binance_position_limit_block_side: Option<Side>,
     bybit_oi_limit_block_until_us: i64,
     bybit_oi_limit_block_side: Option<Side>,
     bitget_position_tier_limit_block_until_us: i64,
@@ -469,6 +472,8 @@ impl ArbHedgeStrategy {
             order_reconcile_state: HedgeOrderReconcileState::default(),
             alive_flag: true,
             last_insufficient_margin_action_ts: 0,
+            binance_position_limit_block_until_us: 0,
+            binance_position_limit_block_side: None,
             bybit_oi_limit_block_until_us: 0,
             bybit_oi_limit_block_side: None,
             bitget_position_tier_limit_block_until_us: 0,
@@ -1018,6 +1023,18 @@ impl ArbHedgeStrategy {
         } else {
             Side::Buy
         };
+        if self.is_binance_position_limit_blocked(hedge_side, now_ts) {
+            self.next_query_ts_us = self.binance_position_limit_block_until_us;
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Binance position-limit block is active hedge_side={} until_us={}",
+                self.strategy_id,
+                self.symbol,
+                source,
+                hedge_side.as_str(),
+                self.binance_position_limit_block_until_us
+            );
+            return false;
+        }
         if self.is_bybit_oi_limit_blocked(hedge_side, now_ts) {
             self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
             warn!(
@@ -1704,6 +1721,18 @@ impl ArbHedgeStrategy {
         }
         let ctx_is_taker = ctx.is_taker();
         let now_ts = get_timestamp_us();
+        if self.is_binance_position_limit_blocked(side, now_ts) {
+            self.next_query_ts_us = self.binance_position_limit_block_until_us;
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} ArbHedge blocked by Binance position-limit throttle symbol={} side={} until_us={} request_seq={}",
+                self.strategy_id,
+                symbol,
+                side.as_str(),
+                self.binance_position_limit_block_until_us,
+                ctx.request_seq
+            );
+            return;
+        }
         if self.is_bybit_oi_limit_blocked(side, now_ts) {
             self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
             warn!(
@@ -2653,6 +2682,12 @@ impl ArbHedgeStrategy {
         }
     }
 
+    fn is_binance_position_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
+        self.hedge_venue == TradingVenue::BinanceFutures
+            && self.binance_position_limit_block_side == Some(hedge_side)
+            && now_ts < self.binance_position_limit_block_until_us
+    }
+
     fn is_bybit_oi_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
         self.hedge_venue == TradingVenue::BybitFutures
             && self.bybit_oi_limit_block_side == Some(hedge_side)
@@ -2665,6 +2700,59 @@ impl ArbHedgeStrategy {
             TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
         ) && self.bitget_position_tier_limit_block_side == Some(hedge_side)
             && now_ts < self.bitget_position_tier_limit_block_until_us
+    }
+
+    fn register_binance_position_limit_throttle(
+        &mut self,
+        now_ts: i64,
+        hedge_side: Option<Side>,
+        error_code: i32,
+    ) {
+        BinanceFrPositionLimitGuard::request_refresh("exchange_max_leverage_ratio");
+        let Some(hedge_side) = hedge_side else {
+            self.next_query_ts_us =
+                now_ts.saturating_add(SIGNAL_THROTTLE_TTL_US.max(ARB_HEDGE_QUERY_INTERVAL_US));
+            warn!(
+                "ArbHedgeStrategy: strategy_id={} symbol={} Binance position-limit throttle side unknown code={} retry_after_us={}",
+                self.strategy_id, self.symbol, error_code, self.next_query_ts_us
+            );
+            return;
+        };
+        let open_side = match hedge_side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+        self.binance_position_limit_block_side = Some(hedge_side);
+        self.binance_position_limit_block_until_us =
+            now_ts.saturating_add(SIGNAL_THROTTLE_TTL_US.max(ARB_HEDGE_QUERY_INTERVAL_US));
+        self.next_query_ts_us = self.binance_position_limit_block_until_us;
+
+        let open_registered = register_signal_throttle_for_mode(
+            &self.symbol,
+            open_side,
+            Some(Exchange::Binance),
+            error_code,
+            MonitorChannel::instance().arb_mode(),
+        );
+        let strategy_mgr_handle = MonitorChannel::instance().strategy_mgr();
+        let ids: Vec<i32> = strategy_mgr_handle
+            .borrow()
+            .arb_open_strategy_ids_by_symbol_and_side(&self.symbol, open_side);
+        for sid in &ids {
+            let mut mgr = strategy_mgr_handle.borrow_mut();
+            mgr.cancel_arb_open_by_id(*sid, open_side, "binance_position_limit", now_ts);
+        }
+        warn!(
+            "ArbHedgeStrategy: strategy_id={} symbol={} Binance position-limit throttle registered hedge_side={:?} open_side={:?} code={} open_registered={} hedge_block_until_us={} cancel_open_count={}",
+            self.strategy_id,
+            self.symbol,
+            hedge_side,
+            open_side,
+            error_code,
+            open_registered,
+            self.binance_position_limit_block_until_us,
+            ids.len()
+        );
     }
 
     fn register_bybit_open_interest_position_limit_throttle(
@@ -2895,6 +2983,7 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 Self::is_gate_market_forbidden_reduce_only_failure(response, order)
             });
         let is_insufficient_margin = response.is_insufficient_margin();
+        let is_binance_position_limit = response.is_binance_max_leverage_ratio();
         let is_bybit_open_interest_position_limit =
             response.is_bybit_open_interest_position_limit();
         let is_bybit_collateral_not_enabled = response.is_bybit_collateral_not_enabled();
@@ -2903,6 +2992,13 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
         let is_bitget_max_possible_leverage = response.is_bitget_max_possible_leverage_exceeded();
         let is_bitget_futures_open_limit =
             is_bitget_position_tier_limit || is_bitget_max_possible_leverage;
+        if is_binance_position_limit {
+            self.register_binance_position_limit_throttle(
+                now_ts,
+                order_snapshot.as_ref().map(|order| order.side),
+                response.error_code(),
+            );
+        }
         if is_bybit_open_interest_position_limit {
             self.register_bybit_open_interest_position_limit_throttle(
                 now_ts,
@@ -2965,6 +3061,10 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 }
                 self.next_query_ts_us =
                     now_ts.saturating_add(ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US);
+            } else if is_binance_position_limit {
+                self.next_query_ts_us = self
+                    .next_query_ts_us
+                    .max(self.binance_position_limit_block_until_us);
             } else if is_bybit_open_interest_position_limit || is_bybit_collateral_not_enabled {
                 self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
             } else if is_bybit_internal_system_error {
@@ -2998,6 +3098,8 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 .unwrap_or(""),
             if is_insufficient_margin {
                 " [INSUFFICIENT_MARGIN]"
+            } else if is_binance_position_limit {
+                " [BINANCE_MAX_LEVERAGE_RATIO]"
             } else if is_bybit_open_interest_position_limit {
                 " [BYBIT_OPEN_INTEREST_POSITION_LIMIT]"
             } else if is_bybit_collateral_not_enabled {
@@ -3340,6 +3442,30 @@ mod tests {
 
     const OPEN_ID_A: i64 = 1001;
     const OPEN_ID_B: i64 = 1002;
+
+    #[test]
+    fn binance_position_limit_block_is_side_specific_and_expires() {
+        let mut strategy = ArbHedgeStrategy::new(
+            1,
+            "BTCUSDT",
+            TradingVenue::BinanceMargin,
+            TradingVenue::BinanceFutures,
+        );
+        strategy.binance_position_limit_block_side = Some(Side::Sell);
+        strategy.binance_position_limit_block_until_us = 100;
+
+        assert!(strategy.is_binance_position_limit_blocked(Side::Sell, 99));
+        assert!(!strategy.is_binance_position_limit_blocked(Side::Buy, 99));
+        assert!(!strategy.is_binance_position_limit_blocked(Side::Sell, 100));
+
+        let non_binance = ArbHedgeStrategy::new(
+            2,
+            "BTCUSDT",
+            TradingVenue::BybitMargin,
+            TradingVenue::BybitFutures,
+        );
+        assert!(!non_binance.is_binance_position_limit_blocked(Side::Sell, 99));
+    }
 
     #[test]
     fn unimmr_force_close_direct_key_is_recognized_as_taker() {

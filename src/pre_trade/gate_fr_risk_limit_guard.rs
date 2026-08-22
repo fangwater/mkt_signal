@@ -17,6 +17,7 @@ use std::time::Duration;
 use trade_signal::ArbMode;
 
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
 
 type HmacSha512 = Hmac<Sha512>;
 
@@ -520,7 +521,7 @@ fn calculate_cap_for_record(
             symbol, amount_u
         ));
     }
-    let buffer = pending_limit_orders as f64 * amount_u;
+    let buffer = pending_limit_orders as f64 * amount_u * POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
     let cap = record.risk_limit - buffer;
     if !(cap.is_finite() && cap > 0.0) {
         return Err(format!(
@@ -1020,12 +1021,12 @@ mod tests {
         );
 
         let buy_cap = calculate_cap_for_record("BTCUSDT", Side::Buy, &record(50_000.0)).unwrap();
-        assert_eq!(buy_cap.buffer, 750.0);
-        assert_eq!(buy_cap.cap, 49_250.0);
+        assert_eq!(buy_cap.buffer, 900.0);
+        assert_eq!(buy_cap.cap, 49_100.0);
 
         let sell_cap = calculate_cap_for_record("BTCUSDT", Side::Sell, &record(50_000.0)).unwrap();
-        assert_eq!(sell_cap.buffer, 500.0);
-        assert_eq!(sell_cap.cap, 49_500.0);
+        assert_eq!(sell_cap.buffer, 600.0);
+        assert_eq!(sell_cap.cap, 49_400.0);
     }
 
     #[test]
