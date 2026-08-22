@@ -1092,7 +1092,8 @@ impl BatchExecConfigReloader {
     }
 
     pub fn spawn(mut self, strategy_mgr: Rc<RefCell<StrategyManager>>, interval: Duration) {
-        let notify = crate::pre_trade::batch_exec_reload_notify::BatchExecReloadNotify::try_open();
+        let mut notify =
+            crate::pre_trade::batch_exec_reload_notify::BatchExecReloadNotify::try_open();
         tokio::task::spawn_local(async move {
             let mut timer = tokio::time::interval(interval);
             timer.tick().await;
@@ -1121,6 +1122,9 @@ impl BatchExecConfigReloader {
                     if let Err(err) = self.reload(&strategy_mgr).await {
                         warn!("BatchExec Redis reload failed: {err:#}");
                     }
+                    notify =
+                        crate::pre_trade::batch_exec_reload_notify::BatchExecReloadNotify::try_open(
+                        );
                 }
             }
         });

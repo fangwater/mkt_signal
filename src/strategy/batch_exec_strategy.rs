@@ -1627,14 +1627,12 @@ impl BatchExecStrategy {
             ),
             None,
         );
-        self.send_child_orders(batch_seq, quote.bid, quote.ask, quote.ts, signal_bbo, plans);
+        self.send_child_orders(batch_seq, quote.ts, signal_bbo, plans);
     }
 
     fn send_child_orders(
         &mut self,
         batch_seq: u64,
-        bid: f64,
-        ask: f64,
         quote_ts: i64,
         signal_bbo: Option<SignalBbo>,
         plans: Vec<BatchChildOrderPlan>,
@@ -1644,17 +1642,6 @@ impl BatchExecStrategy {
         let mut sent_ids = Vec::new();
         for plan in plans {
             let qty_multiplier = plan.qty_multiplier;
-            let signed_base_qty = signed_qty_from_side(plan.side, plan.qty_base);
-            let current_qty =
-                MonitorChannel::instance().get_position_qty(&self.symbol, self.exec_venue);
-            let price_hint = if plan.price > 0.0 {
-                plan.price
-            } else {
-                match plan.side {
-                    Side::Buy => ask,
-                    Side::Sell => bid,
-                }
-            };
             if plan.order_type.is_limit()
                 && MonitorChannel::instance()
                     .check_pending_limit_order_for_exec(&self.symbol, plan.side)
@@ -1662,32 +1649,6 @@ impl BatchExecStrategy {
             {
                 break;
             }
-            if (current_qty + signed_base_qty).abs() > current_qty.abs() + QTY_EPS
-                && MonitorChannel::instance().check_leverage().is_err()
-            {
-                break;
-            }
-            if MonitorChannel::instance()
-                .check_exec_position_imbalance_risk(&self.symbol, self.exec_venue, signed_base_qty)
-                .is_err()
-            {
-                break;
-            }
-            if MonitorChannel::instance()
-                .ensure_max_pos_u_for_base_delta(
-                    &self.symbol,
-                    self.exec_venue,
-                    current_qty,
-                    signed_base_qty,
-                    price_hint,
-                    plan.qty_venue,
-                    qty_multiplier,
-                )
-                .is_err()
-            {
-                break;
-            }
-
             let client_order_id = self.next_order_id();
             let from_key = self
                 .batches
