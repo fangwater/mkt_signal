@@ -350,6 +350,20 @@ impl CsvGzipReader {
         }
     }
 
+    fn location(&self) -> String {
+        let path = self
+            .current_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let line = self
+            .reader
+            .as_ref()
+            .map(|reader| reader.position().line())
+            .unwrap_or(0);
+        format!("{path}:{line}")
+    }
+
     fn next_record(&mut self) -> Result<Option<StringRecord>> {
         loop {
             if self.reader.is_none() {
@@ -374,12 +388,8 @@ impl CsvGzipReader {
                     self.current_path = None;
                 }
                 Err(err) => {
-                    let path = self
-                        .current_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "<unknown>".to_string());
-                    return Err(err).with_context(|| format!("failed to read Tardis CSV {path}"));
+                    return Err(err)
+                        .with_context(|| format!("failed to read Tardis CSV {}", self.location()));
                 }
             }
         }
@@ -397,10 +407,27 @@ struct TradeEventReader {
 
 impl TradeEventReader {
     fn next_event(&mut self) -> Result<Option<TradeRow>> {
-        self.records
-            .next_record()?
-            .map(|record| parse_trade_record(&record))
-            .transpose()
+        loop {
+            let Some(record) = self.records.next_record()? else {
+                return Ok(None);
+            };
+            match parse_trade_record(&record) {
+                Ok(Some(row)) => return Ok(Some(row)),
+                Ok(None) => {
+                    warn!(
+                        "Skipping invalid Tardis trade at {}: price={:?} amount={:?}",
+                        self.records.location(),
+                        record.get(6),
+                        record.get(7)
+                    );
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("parse Tardis trade {}", self.records.location())
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -415,7 +442,8 @@ impl BookEventReader {
         let first = match self.pending.take() {
             Some(row) => row,
             None => match self.records.next_record()? {
-                Some(record) => parse_book_record(&record)?,
+                Some(record) => parse_book_record(&record)
+                    .with_context(|| format!("parse Tardis book {}", self.records.location()))?,
                 None => return Ok(None),
             },
         };
@@ -430,7 +458,8 @@ impl BookEventReader {
             let Some(record) = self.records.next_record()? else {
                 break;
             };
-            let row = parse_book_record(&record)?;
+            let row = parse_book_record(&record)
+                .with_context(|| format!("parse Tardis book {}", self.records.location()))?;
             if row.timestamp_us != timestamp_us {
                 self.pending = Some(row);
                 break;
@@ -558,6 +587,7 @@ struct DepthAggregator {
     next_bar_ms: i64,
     end_ms: i64,
     bar_ms: i64,
+    skipped_empty_bars: u64,
 }
 
 impl DepthAggregator {
@@ -572,6 +602,7 @@ impl DepthAggregator {
             next_bar_ms: start_ms,
             end_ms,
             bar_ms,
+            skipped_empty_bars: 0,
         }
     }
 
@@ -605,13 +636,24 @@ impl DepthAggregator {
         let mut out = Vec::new();
         let limit = target_ms.min(self.end_ms);
         while self.next_bar_ms < limit {
-            out.push((self.next_bar_ms, self.depth_values(self.next_bar_ms)?));
+            match self.depth_values() {
+                Some(values) => out.push((self.next_bar_ms, values)),
+                None => {
+                    self.skipped_empty_bars += 1;
+                    if self.skipped_empty_bars == 1 {
+                        warn!(
+                            "skipping depth bar with empty or invalid order book at ts_ms={}",
+                            self.next_bar_ms
+                        );
+                    }
+                }
+            }
             self.next_bar_ms += self.bar_ms;
         }
         Ok(out)
     }
 
-    fn depth_values(&self, ts_ms: i64) -> Result<[f64; 80]> {
+    fn depth_values(&self) -> Option<[f64; 80]> {
         let (bids, asks) = self.orderbook.get_depth(20);
         let valid_best = |levels: &[(f64, f64)]| {
             levels.first().is_some_and(|(price, amount)| {
@@ -619,7 +661,7 @@ impl DepthAggregator {
             })
         };
         if !valid_best(&bids) || !valid_best(&asks) {
-            bail!("cannot emit depth bar from empty or invalid order book at ts_ms={ts_ms}");
+            return None;
         }
         let mut values = [0.0; 80];
         for (index, (price, amount)) in bids.iter().enumerate() {
@@ -631,7 +673,7 @@ impl DepthAggregator {
             values[offset] = *price;
             values[offset + 1] = *amount;
         }
-        Ok(values)
+        Some(values)
     }
 }
 
@@ -1130,20 +1172,24 @@ fn trade_file_date(path: &Path) -> Result<NaiveDate> {
         .with_context(|| format!("parse trade date {date} from {}", path.display()))
 }
 
-fn parse_trade_record(record: &StringRecord) -> Result<TradeRow> {
+fn parse_trade_record(record: &StringRecord) -> Result<Option<TradeRow>> {
     let timestamp_us = parse_i64(record, 2, "timestamp")?;
     let id = parse_i64(record, 4, "id")?;
     let side = parse_side(field(record, 5, "side")?)?;
-    let price = parse_price_or_amount(record, 6, "price", false)?;
-    let amount = parse_price_or_amount(record, 7, "amount", false)?;
-    Ok(TradeRow {
+    let Some(price) = parse_trade_price_or_amount(record, 6, "price")? else {
+        return Ok(None);
+    };
+    let Some(amount) = parse_trade_price_or_amount(record, 7, "amount")? else {
+        return Ok(None);
+    };
+    Ok(Some(TradeRow {
         timestamp_us,
         id,
         symbol: field(record, 1, "symbol")?.to_ascii_uppercase(),
         side,
         price,
         amount,
-    })
+    }))
 }
 
 fn parse_book_record(record: &StringRecord) -> Result<BookLevelRow> {
@@ -1189,18 +1235,36 @@ fn parse_price_or_amount(
     name: &str,
     allow_zero: bool,
 ) -> Result<f64> {
-    let value = field(record, index, name)?
+    let raw = field(record, index, name)?;
+    let value = raw
         .parse::<f64>()
-        .with_context(|| format!("invalid Tardis {name}"))?;
+        .with_context(|| format!("invalid Tardis {name} '{raw}'"))?;
     if !value.is_finite() || value < 0.0 || (!allow_zero && value == 0.0) {
         let expected = if allow_zero {
             "non-negative"
         } else {
             "positive"
         };
-        bail!("Tardis {name} must be finite and {expected}");
+        bail!("Tardis {name} must be finite and {expected}, got '{raw}'");
     }
     Ok(value)
+}
+
+/// Trades with non-finite or non-positive price/amount are dropped, not fatal.
+/// Book deletions still use [`parse_price_or_amount`] with `allow_zero=true`.
+fn parse_trade_price_or_amount(
+    record: &StringRecord,
+    index: usize,
+    name: &str,
+) -> Result<Option<f64>> {
+    let raw = field(record, index, name)?;
+    let value = raw
+        .parse::<f64>()
+        .with_context(|| format!("invalid Tardis {name} '{raw}'"))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Ok(None);
+    }
+    Ok(Some(value))
 }
 
 fn parse_side(value: &str) -> Result<char> {
@@ -1303,7 +1367,7 @@ fn load_replay_order_size_thresholds(
                         (source_end_ms - source_start_ms).div_euclid(HOUR_MS),
                     )
                     .context("source-month hour count exceeds usize")?;
-                    let merged = load_merged_hourly_kll(
+                    let Some(merged) = load_merged_hourly_kll(
                         &config.clickhouse.url,
                         &config.clickhouse.database,
                         &table,
@@ -1315,13 +1379,19 @@ fn load_replay_order_size_thresholds(
                         format!(
                             "load source-month order-size KLL: symbol={symbol} source_month={source_month}"
                         )
-                    })?;
+                    })?
+                    else {
+                        warn!(
+                            "Skipping order-size month with no previous-month KLL: symbol={symbol} target_month={target_month} source_month={source_month}"
+                        );
+                        continue;
+                    };
                     if merged.source_hourly_rows != expected_source_hours {
-                        bail!(
-                            "incomplete source-month KLL for symbol={symbol} source_month={source_month}: expected_hours={} actual_hours={}",
-                            expected_source_hours,
+                        warn!(
+                            "Skipping order-size month with incomplete previous-month KLL: symbol={symbol} target_month={target_month} source_month={source_month} expected_hours={expected_source_hours} actual_hours={}",
                             merged.source_hourly_rows
                         );
+                        continue;
                     }
                     if merged.venue != venue.to_u8() {
                         bail!(
@@ -1383,17 +1453,17 @@ fn threshold_for_timestamp(
     thresholds: &[MonthlyAmountThreshold],
     index: &mut usize,
     timestamp_us: i64,
-) -> Result<AmountThreshold> {
+) -> Result<Option<AmountThreshold>> {
     while *index < thresholds.len() && timestamp_us >= thresholds[*index].end_us {
         *index += 1;
     }
-    let period = thresholds
-        .get(*index)
-        .with_context(|| format!("no order-size threshold covers timestamp_us={timestamp_us}"))?;
+    let Some(period) = thresholds.get(*index) else {
+        return Ok(None);
+    };
     if timestamp_us < period.start_us {
-        bail!("no order-size threshold covers timestamp_us={timestamp_us}");
+        return Ok(None);
     }
-    Ok(period.threshold)
+    Ok(Some(period.threshold))
 }
 
 fn replay_time_bounds(config: &ReplayConfig) -> Result<(i64, i64)> {
@@ -2414,13 +2484,22 @@ fn aggregate_market_1s_day(
             })?;
         next_trade = trades.next_event()?;
     }
-    aggregator.finish().with_context(|| {
+    let bars = aggregator.finish().with_context(|| {
         format!(
             "finish 1s market symbol={symbol} day={day} trade={} depth={}",
             trade_path.display(),
             depth_path.display()
         )
-    })
+    })?;
+    if aggregator.skipped_empty_secs() > 0 {
+        warn!(
+            "Tardis 1s market skipped empty books: symbol={} day={} skipped_secs={}",
+            symbol,
+            day,
+            aggregator.skipped_empty_secs()
+        );
+    }
+    Ok(bars)
 }
 
 fn last_trade_price_from_file(path: &Path) -> Result<Option<f64>> {
@@ -2598,15 +2677,21 @@ fn replay_trade_stage_symbol(
     while let Some(row) = reader.next_event()? {
         let closed = match size_thresholds {
             Some(thresholds) => {
-                let threshold =
-                    threshold_for_timestamp(thresholds, &mut threshold_index, row.timestamp_us)?;
-                aggregator.on_trade_with_threshold(
-                    row.timestamp_us,
-                    row.side == 'B',
-                    row.price,
-                    row.amount,
-                    threshold,
-                )
+                match threshold_for_timestamp(thresholds, &mut threshold_index, row.timestamp_us)? {
+                    Some(threshold) => aggregator.on_trade_with_threshold(
+                        row.timestamp_us,
+                        row.side == 'B',
+                        row.price,
+                        row.amount,
+                        threshold,
+                    ),
+                    None => aggregator.on_trade(
+                        row.timestamp_us,
+                        row.side == 'B',
+                        row.price,
+                        row.amount,
+                    ),
+                }
             }
             None => aggregator.on_trade(row.timestamp_us, row.side == 'B', row.price, row.amount),
         };
@@ -2800,6 +2885,12 @@ fn replay_depth_stage_symbol(
         depth_5s_sender,
     )?;
     rows_5s += final_stats.rows_5s;
+    if aggregator.skipped_empty_bars > 0 {
+        warn!(
+            "Tardis depth staging skipped empty books: symbol={} skipped_bars={} rows_5s={}",
+            symbol.symbol, aggregator.skipped_empty_bars, rows_5s
+        );
+    }
     info!(
         "Tardis depth staging complete: symbol={} source_events={} rows_5s={} elapsed={:.2?}",
         symbol.symbol,
@@ -4020,10 +4111,25 @@ mod tests {
             "7252.74",
             "1.367",
         ]);
-        let row = parse_trade_record(&record).unwrap();
+        let row = parse_trade_record(&record).unwrap().expect("valid trade");
         assert_eq!(row.side, 'S');
         assert_eq!(row.timestamp_us, 1_576_281_603_397_000);
         assert_eq!(row.id, 20_654_725);
+    }
+
+    #[test]
+    fn skips_non_positive_trade_amount() {
+        let record = StringRecord::from(vec![
+            "binance-futures",
+            "ZECUSDT",
+            "1760486401308000",
+            "1760486401335919",
+            "420119367",
+            "buy",
+            "247.68",
+            "0",
+        ]);
+        assert!(parse_trade_record(&record).unwrap().is_none());
     }
 
     #[test]
@@ -4103,7 +4209,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_reconstruction_rejects_bar_before_book_initialization() {
+    fn depth_reconstruction_skips_bar_before_book_initialization() {
         let mut agg = DepthAggregator::new(0, 10_000);
         let late_first_update = BookEvent {
             timestamp_us: 5_000_100,
@@ -4112,10 +4218,25 @@ mod tests {
             bids: vec![Level::from_values(100.0, 1.0)],
             asks: vec![Level::from_values(101.0, 2.0)],
         };
-        let error = agg
+        let bars = agg
             .on_book(&late_first_update)
-            .expect_err("empty book must not produce an all-zero bar");
-        assert!(error.to_string().contains("ts_ms=0"));
+            .expect("listing-day empty books are skipped, not fatal");
+        assert!(bars.is_empty());
+        assert_eq!(agg.skipped_empty_bars, 1);
+        assert_eq!(agg.next_bar_ms, 5_000);
+
+        let later = BookEvent {
+            timestamp_us: 10_000_100,
+            is_snapshot: false,
+            symbol: "BTCUSDT".to_string(),
+            bids: vec![Level::from_values(100.5, 2.0)],
+            asks: vec![Level::from_values(101.5, 3.0)],
+        };
+        let bars = agg.on_book(&later).expect("emit after first valid book");
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].0, 5_000);
+        assert_eq!(bars[0].1[0], 100.0);
+        assert_eq!(bars[0].1[40], 101.0);
     }
 
     #[test]
@@ -4266,16 +4387,22 @@ mod tests {
         assert_eq!(
             threshold_for_timestamp(&thresholds, &mut index, feb_start_ms * 1_000 - 1)
                 .unwrap()
+                .expect("january covered")
                 .medium_notional_threshold,
             10.0
         );
         assert_eq!(
             threshold_for_timestamp(&thresholds, &mut index, feb_start_ms * 1_000)
                 .unwrap()
+                .expect("february covered")
                 .medium_notional_threshold,
             30.0
         );
-        assert!(threshold_for_timestamp(&thresholds, &mut index, mar_start_ms * 1_000).is_err());
+        assert!(
+            threshold_for_timestamp(&thresholds, &mut index, mar_start_ms * 1_000)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

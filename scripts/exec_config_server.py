@@ -22,6 +22,7 @@ SYMBOL_RE = re.compile(r"^[A-Z0-9]+$")
 ORDER_PARAMETER_FIELDS = (
     "single_order_usdt",
     "orders_per_batch",
+    "max_batch",
     "maker_price_anchor",
     "tick_spacing",
     "batch_interval_ms",
@@ -35,6 +36,7 @@ ALLOWED_TARGET_SIGNALS = (-2, -1, 0, 1, 2)
 DEFAULT_CONFIG: Dict[str, Any] = {
     "single_order_usdt": 100.0,
     "orders_per_batch": 3,
+    "max_batch": 20,
     "maker_price_anchor": "own_best",
     "tick_spacing": 1,
     "batch_interval_ms": 500,
@@ -147,6 +149,8 @@ def integer(raw: Any, field: str, *, positive: bool = False) -> int:
 def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config must be an object")
+    raw = {**raw}
+    raw.setdefault("max_batch", DEFAULT_CONFIG["max_batch"])
     unknown = sorted(set(raw) - CONFIG_FIELDS - OPTIONAL_CONFIG_FIELDS)
     missing = sorted(CONFIG_FIELDS - set(raw))
     if unknown:
@@ -171,6 +175,7 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         "orders_per_batch": integer(
             raw["orders_per_batch"], "orders_per_batch", positive=True
         ),
+        "max_batch": integer(raw["max_batch"], "max_batch", positive=True),
         "maker_price_anchor": anchor,
         "tick_spacing": integer(raw["tick_spacing"], "tick_spacing"),
         "batch_interval_ms": integer(raw["batch_interval_ms"], "batch_interval_ms"),
@@ -481,6 +486,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="param-grid">
           <div class="field"><label>Single Order USDT</label><input id="single_order_usdt" inputmode="decimal" disabled /></div>
           <div class="field"><label>Orders Per Batch</label><input id="orders_per_batch" inputmode="numeric" disabled /></div>
+          <div class="field"><label>Max Batch</label><input id="max_batch" inputmode="numeric" disabled /></div>
           <div class="field"><label>Maker Price Anchor</label><select id="maker_price_anchor" disabled><option value="own_best">Own Best</option><option value="opposite_best_plus_one_tick">Opposite Best + 1 Tick</option></select></div>
           <div class="field"><label>Tick Spacing</label><input id="tick_spacing" inputmode="numeric" disabled /></div>
           <div class="field"><label>Batch Interval ms</label><input id="batch_interval_ms" inputmode="numeric" disabled /></div>
@@ -503,7 +509,7 @@ INDEX_HTML = r"""<!doctype html>
     <script>
       (() => {
         const DEFAULTS = __DEFAULTS__;
-        const fields = ["single_order_usdt", "orders_per_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
+        const fields = ["single_order_usdt", "orders_per_batch", "max_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
         const state = { bootstrap: null, names: [], name: "", config: null };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }

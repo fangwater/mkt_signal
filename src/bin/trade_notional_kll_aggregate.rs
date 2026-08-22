@@ -88,7 +88,13 @@ fn aggregate(args: &Args) -> Result<AggregateOutput> {
         &args.symbol,
         start_ms,
         end_ms,
-    )?;
+    )?
+    .with_context(|| {
+        format!(
+            "no hourly KLL rows found for symbol={} in requested range",
+            args.symbol
+        )
+    })?;
     let (medium_notional_threshold, large_notional_threshold) =
         order_size_thresholds(&merged.sketch, args.medium_quantile, args.large_quantile)?;
 

@@ -5,6 +5,7 @@ use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::{PersistChannel, TradeEngHub};
 use crate::strategy::hedge_order_reconcile::{HedgeOrderReconcileCommon, HedgeOrderReconcileState};
+use crate::strategy::hedge_strategy_common::mark_price_lookup_symbol;
 use crate::strategy::hedge_strategy_common::signed_qty_from_side;
 use crate::strategy::manager::{
     ExecOrphanTerminal, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
@@ -44,6 +45,8 @@ pub const BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE
 pub struct BatchExecConfig {
     pub single_order_usdt: f64,
     pub orders_per_batch: u32,
+    #[serde(default = "default_max_batch")]
+    pub max_batch: u32,
     pub maker_price_anchor: MakerPriceAnchor,
     pub tick_spacing: u32,
     pub batch_interval_ms: u32,
@@ -57,6 +60,7 @@ impl Default for BatchExecConfig {
         Self {
             single_order_usdt: 100.0,
             orders_per_batch: 3,
+            max_batch: default_max_batch(),
             maker_price_anchor: MakerPriceAnchor::OwnBest,
             tick_spacing: 1,
             batch_interval_ms: 500,
@@ -65,6 +69,10 @@ impl Default for BatchExecConfig {
             target_tolerance_usdt: 10.0,
         }
     }
+}
+
+const fn default_max_batch() -> u32 {
+    20
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -151,6 +159,9 @@ impl BatchExecConfig {
         if self.orders_per_batch == 0 {
             return Err("orders_per_batch must be positive".to_string());
         }
+        if self.max_batch == 0 {
+            return Err("max_batch must be positive".to_string());
+        }
         if self.maker_timeout_ms == 0 {
             return Err("maker_timeout_ms must be positive".to_string());
         }
@@ -160,8 +171,14 @@ impl BatchExecConfig {
         Ok(())
     }
 
-    fn max_batch_usdt(&self) -> f64 {
-        self.single_order_usdt * f64::from(self.orders_per_batch)
+    fn effective_single_order_usdt(&self, delta_usdt: f64) -> f64 {
+        let dynamic_single =
+            delta_usdt.abs() / f64::from(self.max_batch) / f64::from(self.orders_per_batch);
+        self.single_order_usdt.max(dynamic_single)
+    }
+
+    fn batch_capacity_usdt(&self, single_order_usdt: f64) -> f64 {
+        single_order_usdt * f64::from(self.orders_per_batch)
     }
 }
 
@@ -179,7 +196,8 @@ fn estimate_batch_progress(
         return (0, 0);
     }
 
-    let raw_batches = (delta_usdt.abs() / config.max_batch_usdt()).ceil();
+    let single_order_usdt = config.effective_single_order_usdt(delta_usdt);
+    let raw_batches = (delta_usdt.abs() / config.batch_capacity_usdt(single_order_usdt)).ceil();
     let batch_equivalent = if raw_batches >= f64::from(u32::MAX) {
         u32::MAX
     } else {
@@ -309,6 +327,7 @@ struct ActiveTarget {
     target: BatchExecTarget,
     generation_time: i64,
     from_key: Vec<u8>,
+    effective_single_order_usdt: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -806,6 +825,29 @@ impl BatchExecStrategy {
             .unwrap_or(0)
     }
 
+    fn mark_price(&self) -> Option<f64> {
+        let monitor = MonitorChannel::instance();
+        let exchange = monitor.try_mark_price_exchange()?;
+        let price_symbol = mark_price_lookup_symbol(&self.symbol, exchange);
+        monitor
+            .try_price_table()?
+            .borrow()
+            .mark_price(&price_symbol)
+            .filter(|price| price.is_finite() && *price > 0.0)
+    }
+
+    fn effective_config(&self) -> BatchExecConfig {
+        let mut config = self.config.clone();
+        if let Some(single_order_usdt) = self
+            .active_target
+            .as_ref()
+            .and_then(|target| target.effective_single_order_usdt)
+        {
+            config.single_order_usdt = single_order_usdt;
+        }
+        config
+    }
+
     pub fn virtual_position_qty(&self) -> Option<f64> {
         self.virtual_position_qty
     }
@@ -918,17 +960,13 @@ impl BatchExecStrategy {
             (0, 0)
         } else {
             target_qty
-                .and_then(|target| {
-                    MktChannel::instance()
-                        .get_quote(&self.symbol, self.exec_venue)
-                        .map(|quote| (target, (quote.bid + quote.ask) * 0.5))
-                })
+                .and_then(|target| self.mark_price().map(|price| (target, price)))
                 .filter(|(_, price)| price.is_finite() && *price > 0.0)
                 .map(|(target, price)| {
                     let (active_batches, active_completion_ts_us) =
                         self.relevant_active_batch_progress(target, position_qty, now_ts);
                     estimate_batch_progress(
-                        &self.config,
+                        &self.effective_config(),
                         (target - position_qty) * price,
                         active_batches,
                         active_completion_ts_us,
@@ -1186,6 +1224,7 @@ impl BatchExecStrategy {
             target: pending.target,
             generation_time: pending.generation_time,
             from_key: pending.from_key,
+            effective_single_order_usdt: None,
         });
         self.next_batch_at_us = now_ts;
         self.completion_reason = None;
@@ -1323,8 +1362,46 @@ impl BatchExecStrategy {
             return;
         }
         self.completion_reason = None;
-        let desired_batch_base_qty =
-            aggregate_base_qty.min(self.config.max_batch_usdt() / reference_price);
+        let effective_single_order_usdt = match self
+            .active_target
+            .as_ref()
+            .and_then(|target| target.effective_single_order_usdt)
+        {
+            Some(value) => value,
+            None => {
+                let Some(mark_price) = self.mark_price() else {
+                    debug!(
+                        "BatchExecStrategy: strategy_id={} symbol={} waiting for mark price before sizing target generation={}",
+                        self.strategy_id, self.symbol, target_generation
+                    );
+                    return;
+                };
+                let delta_usdt = aggregate_base_qty * mark_price;
+                let value = self.config.effective_single_order_usdt(delta_usdt);
+                if let Some(target) = self
+                    .active_target
+                    .as_mut()
+                    .filter(|target| target.generation_time == target_generation)
+                {
+                    target.effective_single_order_usdt = Some(value);
+                }
+                info!(
+                    "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target generation={} mark_price={:.8} delta_usdt={:.4} configured_single_usdt={:.4} effective_single_usdt={:.4} max_batch={}",
+                    self.strategy_id,
+                    self.strategy_name,
+                    self.symbol,
+                    target_generation,
+                    mark_price,
+                    delta_usdt,
+                    self.config.single_order_usdt,
+                    value,
+                    self.config.max_batch
+                );
+                value
+            }
+        };
+        let batch_capacity_usdt = self.config.batch_capacity_usdt(effective_single_order_usdt);
+        let desired_batch_base_qty = aggregate_base_qty.min(batch_capacity_usdt / reference_price);
         let Some(batch_base_qty) = select_executable_batch_base_qty(
             aggregate_base_qty,
             desired_batch_base_qty,
@@ -1414,14 +1491,15 @@ impl BatchExecStrategy {
     ) -> Result<Vec<BatchChildOrderPlan>, String> {
         let limits = self.load_order_limits((bid + ask) * 0.5)?;
 
+        let effective_config = self.effective_config();
         let use_taker = should_use_taker(
-            &self.config,
+            &effective_config,
             batch.maker_requotes,
             self.active_target_signal(),
         );
         let mut plans = if !use_taker && !batch.remaining_qty_by_level.is_empty() {
             rebuild_child_order_plans_at_preserved_levels(
-                &self.config,
+                &effective_config,
                 batch.side,
                 &batch.remaining_qty_by_level,
                 bid,
@@ -1434,7 +1512,7 @@ impl BatchExecStrategy {
             )?
         } else {
             build_child_order_plans(
-                &self.config,
+                &effective_config,
                 batch.side,
                 batch.remaining_base_qty,
                 batch.maker_requotes,
@@ -2355,6 +2433,7 @@ mod tests {
         BatchExecConfig {
             single_order_usdt: 100.0,
             orders_per_batch: 3,
+            max_batch: 20,
             maker_price_anchor: MakerPriceAnchor::OwnBest,
             tick_spacing: 2,
             batch_interval_ms: 500,
@@ -2373,6 +2452,22 @@ mod tests {
             qty_multiplier: 1.0,
             inverse_contract_size: None,
         }
+    }
+
+    #[test]
+    fn max_batch_raises_single_order_size_only_for_large_targets() {
+        let config = config();
+        assert_eq!(config.effective_single_order_usdt(3_000.0), 100.0);
+        assert_eq!(config.effective_single_order_usdt(12_000.0), 200.0);
+        assert_eq!(config.batch_capacity_usdt(200.0), 600.0);
+    }
+
+    #[test]
+    fn batch_progress_is_capped_by_configured_max_batch() {
+        let now_ts_us = 10_000_000;
+        let (remaining_batches, _) =
+            estimate_batch_progress(&config(), 12_000.0, 0, 0, now_ts_us, now_ts_us, false);
+        assert_eq!(remaining_batches, 20);
     }
 
     #[test]
@@ -2406,6 +2501,7 @@ mod tests {
             },
             generation_time: 7,
             from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
         });
 
         strategy.update_target(
@@ -2485,6 +2581,7 @@ mod tests {
             },
             generation_time: 7,
             from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
         });
         strategy.completion_reason = Some(BatchExecCompletionReason::ExchangeMinimum);
 
@@ -2826,6 +2923,7 @@ mod tests {
             },
             generation_time: 7,
             from_key: b"cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
         });
         strategy.batches.insert(
             1,

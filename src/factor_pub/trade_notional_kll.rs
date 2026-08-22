@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use log::warn;
 use mkt_parsers::msg::trade_notional_kll_msg::TradeNotionalKllMsg;
 use rolling_common::kll_quantile::FrozenKllSketch;
 use std::io::Read;
@@ -36,7 +37,7 @@ pub fn load_merged_hourly_kll(
     symbol: &str,
     start_ms: i64,
     end_ms: i64,
-) -> Result<MergedTradeNotionalKll> {
+) -> Result<Option<MergedTradeNotionalKll>> {
     if start_ms >= end_ms {
         bail!("start_ms must be before end_ms");
     }
@@ -62,32 +63,10 @@ pub fn load_merged_hourly_kll(
     let mut first_hour_start_ms = None;
     let mut last_hour_start_ms = None;
     let mut previous_hour_start_ms = None;
+    let mut previous_sample_count = None;
     while let Some(row) = read_hourly_row(&mut response)? {
         validate_row(&row, &symbol, start_ms, end_ms)?;
-        if previous_hour_start_ms == Some(row.hour_start_ms) {
-            bail!(
-                "duplicate hourly KLL row for symbol={} hour_start_ms={}",
-                row.symbol,
-                row.hour_start_ms
-            );
-        }
-        let message = TradeNotionalKllMsg::from_bytes(&row.payload).with_context(|| {
-            format!(
-                "decode hourly KLL payload for symbol={} hour_start_ms={}",
-                row.symbol, row.hour_start_ms
-            )
-        })?;
-        if message.symbol != row.symbol
-            || message.hour_start_ms != row.hour_start_ms
-            || message.sketch.sample_count != row.sample_count as usize
-            || message.sketch.level_capacity != row.level_capacity as usize
-        {
-            bail!(
-                "hourly KLL metadata does not match payload for symbol={} hour_start_ms={}",
-                row.symbol,
-                row.hour_start_ms
-            );
-        }
+        let message = decode_hourly_kll_message(&row)?;
         if let Some(expected_venue) = venue {
             if message.venue != expected_venue {
                 bail!(
@@ -99,19 +78,40 @@ pub fn load_merged_hourly_kll(
         } else {
             venue = Some(message.venue);
         }
+        if previous_hour_start_ms == Some(row.hour_start_ms) {
+            let previous_samples = previous_sample_count.unwrap_or(0);
+            warn!(
+                "duplicate hourly KLL row for symbol={} hour_start_ms={}: keeping sample_count={} dropping {}",
+                row.symbol,
+                row.hour_start_ms,
+                previous_samples.max(row.sample_count),
+                previous_samples.min(row.sample_count)
+            );
+            if row.sample_count > previous_samples {
+                if let Some(last) = sketches.last_mut() {
+                    *last = message.sketch;
+                }
+                previous_sample_count = Some(row.sample_count);
+            }
+            continue;
+        }
         first_hour_start_ms.get_or_insert(row.hour_start_ms);
         last_hour_start_ms = Some(row.hour_start_ms);
         previous_hour_start_ms = Some(row.hour_start_ms);
+        previous_sample_count = Some(row.sample_count);
         sketches.push(message.sketch);
     }
 
     let source_hourly_rows = sketches.len();
+    if source_hourly_rows == 0 {
+        return Ok(None);
+    }
     let sketch = FrozenKllSketch::merge_all(sketches.iter())
         .context("merge hourly KLL sketches")?
         .ok_or_else(|| {
             anyhow!("no hourly KLL rows found for symbol={symbol} in requested range")
         })?;
-    Ok(MergedTradeNotionalKll {
+    Ok(Some(MergedTradeNotionalKll {
         symbol,
         venue: venue.ok_or_else(|| anyhow!("merged KLL has no venue"))?,
         start_ms,
@@ -122,7 +122,7 @@ pub fn load_merged_hourly_kll(
         last_hour_start_ms: last_hour_start_ms
             .ok_or_else(|| anyhow!("merged KLL has no last hour"))?,
         sketch,
-    })
+    }))
 }
 
 pub fn order_size_thresholds(
@@ -218,6 +218,27 @@ fn hourly_kll_query(
     format!(
         "SELECT toUnixTimestamp64Milli(hour_start), symbol, sample_count, level_capacity, payload FROM {database}.{table} WHERE symbol = '{symbol}' AND hour_start >= fromUnixTimestamp64Milli({start_ms}) AND hour_start < fromUnixTimestamp64Milli({end_ms}) ORDER BY hour_start FORMAT RowBinary"
     )
+}
+
+fn decode_hourly_kll_message(row: &HourlyRow) -> Result<TradeNotionalKllMsg> {
+    let message = TradeNotionalKllMsg::from_bytes(&row.payload).with_context(|| {
+        format!(
+            "decode hourly KLL payload for symbol={} hour_start_ms={}",
+            row.symbol, row.hour_start_ms
+        )
+    })?;
+    if message.symbol != row.symbol
+        || message.hour_start_ms != row.hour_start_ms
+        || message.sketch.sample_count != row.sample_count as usize
+        || message.sketch.level_capacity != row.level_capacity as usize
+    {
+        bail!(
+            "hourly KLL metadata does not match payload for symbol={} hour_start_ms={}",
+            row.symbol,
+            row.hour_start_ms
+        );
+    }
+    Ok(message)
 }
 
 fn validate_row(row: &HourlyRow, symbol: &str, start_ms: i64, end_ms: i64) -> Result<()> {

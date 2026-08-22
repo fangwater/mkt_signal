@@ -142,6 +142,7 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertIn("Target Positions", body)
         self.assertIn("Read only", body)
         self.assertIn('id="single_order_usdt" inputmode="decimal" disabled', body)
+        self.assertIn('id="max_batch" inputmode="numeric" disabled', body)
         self.assertNotIn("Add a strategy", body)
         self.assertIn('.filter(([, raw]) => targetQty(raw) !== 0)', body)
         self.assertIn("<th>Signal</th>", body)
@@ -538,6 +539,11 @@ class ExecConfigServerTests(unittest.TestCase):
         config = dict(MODULE.DEFAULT_CONFIG)
         config["orders_per_batch"] = 0
         with self.assertRaisesRegex(ValueError, "orders_per_batch"):
+            MODULE.normalize_exec_config(config)
+
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["max_batch"] = 0
+        with self.assertRaisesRegex(ValueError, "max_batch"):
             MODULE.normalize_exec_config(config)
 
     def test_invalid_symbol_is_rejected(self):

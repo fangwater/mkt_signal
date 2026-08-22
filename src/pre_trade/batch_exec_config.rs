@@ -1178,6 +1178,7 @@ mod tests {
             })
         );
         assert_eq!(value.config.orders_per_batch, 3);
+        assert_eq!(value.config.max_batch, 20);
         assert_eq!(value.updated_at_us, None);
     }
 

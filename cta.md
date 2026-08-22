@@ -54,6 +54,7 @@ Value 为 JSON，同时保存下单参数和全部目标仓位：
 {
   "single_order_usdt": 100.0,
   "orders_per_batch": 3,
+  "max_batch": 20,
   "maker_price_anchor": "own_best",
   "tick_spacing": 2,
   "batch_interval_ms": 500,
@@ -100,15 +101,29 @@ remaining_usdt = abs(remaining_qty) * reference_price
 
 当 `remaining_usdt <= target_tolerance_usdt` 时，不再创建新 batch。
 
-每个 batch 的最大金额：
+目标激活时先用 mark price 计算动态单手金额：
 
 ```text
-batch_usdt = single_order_usdt * orders_per_batch
+delta_usdt = abs(target_qty - current_qty) * mark_price
+dynamic_single_usdt = delta_usdt / max_batch / orders_per_batch
+effective_single_usdt = max(single_order_usdt, dynamic_single_usdt)
+batch_usdt = effective_single_usdt * orders_per_batch
 ```
 
-一个 batch 最多拆成 `orders_per_batch` 手，每手金额不超过
-`single_order_usdt`，最后一手可以更小。数量按该手价格换算，并按交易所
+`effective_single_usdt` 在该目标 generation 内固定，避免每批重算后逐步缩小。
+因此小目标保持原来的 `single_order_usdt`，大目标则放大单手金额，初始估算最多
+`max_batch` 批完成。一个 batch 最多拆成 `orders_per_batch` 手，每手金额不超过
+`effective_single_usdt`，最后一手可以更小。数量按该手价格换算，并按交易所
 `qty_step`、`min_qty` 和合约乘数对齐。
+
+maker 路径的最大预估执行时间为：
+
+```text
+(max_batch - 1) * batch_interval_ms
+  + (max_maker_requotes + 1) * maker_timeout_ms
+```
+
+该估算不包含等待行情、撤单确认和网络延迟。
 
 `maker_price_anchor` 支持两个起点：
 

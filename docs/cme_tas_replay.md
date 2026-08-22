@@ -1,6 +1,6 @@
 # CME TAS replay
 
-`cme_tas_replay` 读本机 LSEG Tick History Time and Sales 的 gzip part，把可打印成交、Special、Quote、RIC 更名、价格笼子写成定长 `msg`，写入**一座** RocksDB。不是 JSONL，不写 ClickHouse，不写 parquet。
+`cme_tas_replay` 读本机 LSEG Tick History Time and Sales 的 gzip part，把可打印成交、Special、Quote、RIC 更名、价格笼子写成定长 `msg`，写入**一座** RocksDB。不是 JSONL，不写 ClickHouse，不写 parquet。小时 notional KLL 是独立工具 `cme_tas_kll`，只读 `cme_trade`，见 [cme_tas_kll.md](cme_tas_kll.md)。
 
 默认 `workers = 32`：一进程读 `periods` 里全部年份的 gzip part，直接往正式目录续写。当前配置是 2024、2025、2026 H1 共 32 个 part，一个 worker 对应一个 part。`workers = 1` 仍只读第一个 period 的 `part_index`。源 part 是多段 gzip 拼在一起的，必须用 `MultiGzDecoder`；只解第一段会在大约一百万行处假装读完。解压用 `zlib-ng`。热路径按表头下标取格、缓存 RIC 是否落在 51 根上，并只扫剩余禁列，不再对每行做 294 列按名查找。
 
@@ -56,7 +56,7 @@ ric[16] | ts_utc_ns:u64 BE | part:u16 BE | seq:u32 BE
 
 该行不写库，记 `unparsed_skip`，继续。之后对着这个文件改口径。主日志只打前 20 条 `unparsed`，后面只进这个文件，避免国债 `Implied Yield` 把主日志打满。配置坏了、gzip 截断、旁边还有 `*.building`、本 `period` 已是 `done` / `writing`，仍退出码 1，因为那不是单行问题。
 
-价量都空、也没有涨跌停的 `Trade` 丢掉，不算错。只有一侧 `UpLim`/`LoLim` 的空 Trade 仍写 `cme_price_limit`，缺的一侧用价格哨兵。`Quote` 上的 `UpLim`/`LoLim` 允许出现，不写进 `cme_quote`，记 `price_limit_ignored`。有量没价、又不是 `Special Trades[USER]` 的 `Trade` 丢掉，记 `drop_volume_only_trade`，不写。`Special Trades[USER]` 没有 `Volume` 丢掉，记 `drop_special_no_volume`，不写。`Settle IV[USER]` 丢掉，记 `drop_settle_iv`，不写。`Type=Auction` 丢掉，记 `cme_auction`，不写。`Type=Reference Change` 丢掉，记 `reference_change`，不写。`Quote` 上的 `Implied Yield` 允许出现，不写进 `cme_quote`，记 `implied_yield_ignored`；没有完整一侧仍丢掉，记 `drop_empty_quote`。买卖都空的 `Quote` 丢掉，记 `drop_empty_quote`，不写。指数 RIC（`.` 开头）分类为 `index_print`，不写。未落到研究路由 51 个品种根上的期货（`NGLND*`、`LCO*`、迷你 `SIL` 等）记 `unmapped_skip`，不写。匹配是 `^{根}[FGHJKMNQUVXZ]\d{1,2}$`；`ADF26^2` 先剥历史后缀再比。`rics = []` 不再表示“全包都写”，只表示不再叠加精确 RIC 白名单。
+价量都空、也没有涨跌停的 `Trade` 丢掉，不算错。只有一侧 `UpLim`/`LoLim` 的空 Trade 仍写 `cme_price_limit`，缺的一侧用价格哨兵。`Quote` 上的 `UpLim`/`LoLim` 允许出现，不写进 `cme_quote`，记 `price_limit_ignored`。有量没价、又不是 `Special Trades[USER]` 的 `Trade` 丢掉，记 `drop_volume_only_trade`，不写。`Special Trades[USER]` 没有 `Volume` 丢掉，记 `drop_special_no_volume`，不写。`Settle IV[USER]` 丢掉，记 `drop_settle_iv`，不写。`Type=Auction` 丢掉，记 `cme_auction`，不写。`Type=Reference Change` 丢掉，记 `reference_change`，不写。`Quote` 上的 `Implied Yield` 允许出现，不写进 `cme_quote`，记 `implied_yield_ignored`；没有完整一侧仍丢掉，记 `drop_empty_quote`。买卖都空的 `Quote` 丢掉，记 `drop_empty_quote`，不写。指数 RIC（`.` 开头）分类为 `index_print`，不写。未落到研究路由 51 个品种根上的期货（`NGLND*`、`LCO*`、迷你 `SIL` 等）记 `unmapped_skip`，不写。清单和中文见 preprocess [research_roots.md](../../preprocess/data_format/lseg/research_roots.md)。匹配是 `^{根}[FGHJKMNQUVXZ]\d{1,2}$`；`ADF26^2` 先剥历史后缀再比。`rics = []` 不再表示“全包都写”，只表示不再叠加精确 RIC 白名单。
 
 ## 运行
 

@@ -1,10 +1,16 @@
 //! Slim CME TAS codec: classify a source row and pack printable trades.
 
-use anyhow::{anyhow, bail, Result};
+pub mod drop_special_1min;
+pub mod hourly_kll;
+pub mod sparse_1s;
+
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Datelike, NaiveTime, Timelike};
 use chrono_tz::America::Chicago;
+use polars::prelude::{DataFrame, NamedFrom, ParquetWriter, Series};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::path::Path;
 
 pub const CME_TRADE_LEN: usize = 80;
@@ -162,6 +168,63 @@ pub fn research_root_of(ric: &str) -> Result<Option<&'static str>> {
 
 pub fn is_research_ric(ric: &str) -> Result<bool> {
     Ok(research_root_of(ric)?.is_some())
+}
+
+pub fn research_root_exchange(root: &str) -> Option<&'static str> {
+    match root {
+        "C" | "W" | "KW" | "S" | "SM" | "BO" | "FF" | "TU" | "FV" | "TY" | "TN" | "US" | "U"
+        | "YM" => Some("CBOT"),
+        "AD" | "BP" | "BR" | "CD" | "JY" | "KRW" | "MP" | "NE" | "NOKA" | "PLZ" | "SEK" | "SF"
+        | "URO" | "ES" | "NQ" | "RTY" | "MEM" | "BTC" | "ETH" | "FC" | "LC" | "LH" | "S1R"
+        | "SRA" => Some("CME"),
+        "GC" | "SI" | "HG" | "ALI" => Some("COMEX"),
+        "CL" | "WTCL" | "HO" | "RB" | "NG" | "JKM" | "HRC" | "PL" | "PA" => Some("NYMEX"),
+        _ => None,
+    }
+}
+
+/// `(exchange, product_root, contract_id)` for a fixed-expiry research RIC.
+pub fn parse_contract_id(ric: &str, decade_base: i32) -> Result<Option<(String, String, String)>> {
+    let Some(root) = research_root_of(ric)? else {
+        return Ok(None);
+    };
+    let stem = ric_live_stem(ric);
+    let rest = &stem[root.len()..];
+    let month = MONTH_CODES
+        .iter()
+        .position(|&code| rest.as_bytes().first() == Some(&code))
+        .map(|index| (index as u32) + 1)
+        .ok_or_else(|| anyhow!("RIC {ric} missing month code"))?;
+    let year_digits = &rest[1..];
+    let year = if year_digits.len() == 2 {
+        2000 + year_digits
+            .parse::<i32>()
+            .map_err(|_| anyhow!("RIC {ric} year is not digits"))?
+    } else {
+        let mut year = decade_base
+            + year_digits
+                .parse::<i32>()
+                .map_err(|_| anyhow!("RIC {ric} year is not digits"))?;
+        if year < decade_base + 4 {
+            year += 10;
+        }
+        year
+    };
+    let exchange = research_root_exchange(root)
+        .ok_or_else(|| anyhow!("research root {root} has no exchange"))?;
+    Ok(Some((
+        exchange.to_string(),
+        root.to_string(),
+        format!("{exchange}:{root}:{year:04}-{month:02}"),
+    )))
+}
+
+pub fn decade_base_from_utc_ns(ts_utc_ns: u64) -> Result<i32> {
+    let secs = i64::try_from(ts_utc_ns / 1_000_000_000)
+        .map_err(|_| anyhow!("Date-Time ns {ts_utc_ns} out of range"))?;
+    let utc = DateTime::from_timestamp(secs, 0)
+        .ok_or_else(|| anyhow!("Date-Time ns {ts_utc_ns} is not a UTC instant"))?;
+    Ok((utc.year() / 10) * 10)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -926,6 +989,187 @@ pub fn synthesize_1min_bars(trades: &[SlimTrade]) -> Vec<SynthBar> {
     bars
 }
 
+/// One UTC-left-edge minute from `cme_trade` plus `cme_special`.
+///
+/// OHLC / `volume` / `no_trades` come only from printable trades.
+/// Special volume is a separate column and may explain extra Summary Volume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynthMinute {
+    pub ric: String,
+    pub minute_utc_ns: u64,
+    pub open: i64,
+    pub high: i64,
+    pub low: i64,
+    pub last: i64,
+    pub volume: u64,
+    pub no_trades: u32,
+    pub special_volume: u64,
+    pub special_count: u32,
+}
+
+impl SynthMinute {
+    pub fn priced(&self) -> bool {
+        self.open != MISSING_PRICE
+    }
+
+    pub fn volume_total(&self) -> u64 {
+        self.volume + self.special_volume
+    }
+
+    pub fn as_trade_bar(&self) -> SynthBar {
+        SynthBar {
+            ric: self.ric.clone(),
+            minute_utc_ns: self.minute_utc_ns,
+            open: self.open,
+            high: self.high,
+            low: self.low,
+            last: self.last,
+            volume: self.volume,
+            no_trades: self.no_trades,
+        }
+    }
+}
+
+pub fn price_e9_to_f64(price: i64) -> Option<f64> {
+    if price == MISSING_PRICE {
+        None
+    } else {
+        Some(price as f64 / PRICE_SCALE as f64)
+    }
+}
+
+pub fn format_utc_ns_z(ns: u64) -> Result<String> {
+    let secs = i64::try_from(ns / 1_000_000_000)
+        .map_err(|_| anyhow!("Date-Time ns {ns} out of range"))?;
+    let nsec = (ns % 1_000_000_000) as u32;
+    let utc = DateTime::from_timestamp(secs, nsec)
+        .ok_or_else(|| anyhow!("Date-Time ns {ns} is not a UTC instant"))?;
+    Ok(utc.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string())
+}
+
+/// Merge printable trades and Specials onto UTC minute-left-edge bars.
+///
+/// Trades own Open/High/Low/Last/Volume/No. Trades. Specials only add
+/// `special_volume` / `special_count`. A Special-only minute has missing OHLC.
+pub fn synthesize_1min_from_trade_and_special(
+    trades: &[SlimTrade],
+    specials: &[SlimTrade],
+) -> Vec<SynthMinute> {
+    let trade_bars = synthesize_1min_bars(trades);
+    let mut special_by_min: BTreeMap<(String, u64), (u64, u32)> = BTreeMap::new();
+    for rec in specials {
+        let minute = minute_left_edge_ns(rec.ts_utc_ns);
+        let entry = special_by_min
+            .entry((rec.ric.clone(), minute))
+            .or_insert((0, 0));
+        entry.0 += u64::from(rec.volume);
+        entry.1 += 1;
+    }
+    let mut out: BTreeMap<(String, u64), SynthMinute> = BTreeMap::new();
+    for bar in trade_bars {
+        let key = (bar.ric.clone(), bar.minute_utc_ns);
+        let (special_volume, special_count) = special_by_min.remove(&key).unwrap_or((0, 0));
+        out.insert(
+            key,
+            SynthMinute {
+                ric: bar.ric,
+                minute_utc_ns: bar.minute_utc_ns,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                last: bar.last,
+                volume: bar.volume,
+                no_trades: bar.no_trades,
+                special_volume,
+                special_count,
+            },
+        );
+    }
+    for ((ric, minute_utc_ns), (special_volume, special_count)) in special_by_min {
+        out.insert(
+            (ric.clone(), minute_utc_ns),
+            SynthMinute {
+                ric,
+                minute_utc_ns,
+                open: MISSING_PRICE,
+                high: MISSING_PRICE,
+                low: MISSING_PRICE,
+                last: MISSING_PRICE,
+                volume: 0,
+                no_trades: 0,
+                special_volume,
+                special_count,
+            },
+        );
+    }
+    out.into_values().collect()
+}
+
+/// Write synth minutes as parquet. Missing OHLC is null, not 0.
+pub fn write_synth_minutes_parquet(path: &Path, minutes: &[SynthMinute]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create parquet parent {}", parent.display()))?;
+        }
+    }
+    let n = minutes.len();
+    let mut ric = Vec::with_capacity(n);
+    let mut ts = Vec::with_capacity(n);
+    let mut ts_utc_ns = Vec::with_capacity(n);
+    let mut date_time = Vec::with_capacity(n);
+    let mut open = Vec::with_capacity(n);
+    let mut high = Vec::with_capacity(n);
+    let mut low = Vec::with_capacity(n);
+    let mut close = Vec::with_capacity(n);
+    let mut volume = Vec::with_capacity(n);
+    let mut count = Vec::with_capacity(n);
+    let mut special_volume = Vec::with_capacity(n);
+    let mut special_count = Vec::with_capacity(n);
+    let mut volume_total = Vec::with_capacity(n);
+    for row in minutes {
+        ric.push(row.ric.clone());
+        ts.push((row.minute_utc_ns / 1_000_000_000) as i64);
+        ts_utc_ns.push(i64::try_from(row.minute_utc_ns).with_context(|| {
+            format!("minute {} overflowed i64", row.minute_utc_ns)
+        })?);
+        date_time.push(format_utc_ns_z(row.minute_utc_ns)?);
+        open.push(price_e9_to_f64(row.open));
+        high.push(price_e9_to_f64(row.high));
+        low.push(price_e9_to_f64(row.low));
+        close.push(price_e9_to_f64(row.last));
+        volume.push(i64::try_from(row.volume).context("volume overflowed i64")?);
+        count.push(i32::try_from(row.no_trades).context("no_trades overflowed i32")?);
+        special_volume
+            .push(i64::try_from(row.special_volume).context("special_volume overflowed i64")?);
+        special_count
+            .push(i32::try_from(row.special_count).context("special_count overflowed i32")?);
+        volume_total
+            .push(i64::try_from(row.volume_total()).context("volume_total overflowed i64")?);
+    }
+    let mut df = DataFrame::new(vec![
+        Series::new("ric".into(), ric),
+        Series::new("ts".into(), ts),
+        Series::new("ts_utc_ns".into(), ts_utc_ns),
+        Series::new("date_time".into(), date_time),
+        Series::new("open".into(), open),
+        Series::new("high".into(), high),
+        Series::new("low".into(), low),
+        Series::new("close".into(), close),
+        Series::new("volume".into(), volume),
+        Series::new("count".into(), count),
+        Series::new("special_volume".into(), special_volume),
+        Series::new("special_count".into(), special_count),
+        Series::new("volume_total".into(), volume_total),
+    ])
+    .context("build synth 1min dataframe")?;
+    let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
+    ParquetWriter::new(file)
+        .finish(&mut df)
+        .with_context(|| format!("write parquet {}", path.display()))?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareVerdict {
     Exact,
@@ -1474,6 +1718,126 @@ mod tests {
         assert!(leftover_ohlc.deltas.iter().any(|d| d.name == "Last"));
     }
 
+    fn special(ts: &str, volume: u32) -> SlimTrade {
+        SlimTrade {
+            ric: "ALIH26".to_string(),
+            ts_utc_ns: parse_date_time_ns(ts).unwrap(),
+            exch_hms_ns: MISSING_EXCH_HMS_NS,
+            price: MISSING_PRICE,
+            volume,
+            bid: MISSING_PRICE,
+            bid_size: MISSING_VOLUME,
+            ask: MISSING_PRICE,
+            ask_size: MISSING_VOLUME,
+            aggressor: 0,
+        }
+    }
+
+    #[test]
+    fn trade_and_special_synth_keeps_ohlc_on_prints_and_volume_on_specials() {
+        let trades = [
+            trade("2026-01-02T15:39:23.298829985Z", "2999.75", 1),
+            trade("2026-01-02T15:39:23.693860830Z", "2997.25", 2),
+        ];
+        let specials = [
+            special("2026-01-02T15:39:40.000000000Z", 14),
+            special("2026-01-02T10:22:03.633592953Z", 100),
+        ];
+        let minutes = synthesize_1min_from_trade_and_special(&trades, &specials);
+        assert_eq!(minutes.len(), 2);
+        assert_eq!(
+            minutes[0].minute_utc_ns,
+            parse_date_time_ns("2026-01-02T10:22:00Z").unwrap()
+        );
+        assert!(!minutes[0].priced());
+        assert_eq!(minutes[0].volume, 0);
+        assert_eq!(minutes[0].special_volume, 100);
+        assert_eq!(minutes[0].special_count, 1);
+        assert_eq!(minutes[0].volume_total(), 100);
+
+        assert_eq!(
+            minutes[1].minute_utc_ns,
+            parse_date_time_ns("2026-01-02T15:39:00Z").unwrap()
+        );
+        assert_eq!(minutes[1].open, parse_price_e9("2999.75").unwrap());
+        assert_eq!(minutes[1].last, parse_price_e9("2997.25").unwrap());
+        assert_eq!(minutes[1].volume, 3);
+        assert_eq!(minutes[1].no_trades, 2);
+        assert_eq!(minutes[1].special_volume, 14);
+        assert_eq!(minutes[1].volume_total(), 17);
+        let summary = SynthBar {
+            ric: "ALIH26".into(),
+            minute_utc_ns: minutes[1].minute_utc_ns,
+            open: minutes[1].open,
+            high: minutes[1].high,
+            low: minutes[1].low,
+            last: minutes[1].last,
+            volume: 17,
+            no_trades: 99,
+        };
+        assert_eq!(
+            compare_priced_minute(&minutes[1].as_trade_bar(), &summary, minutes[1].special_volume)
+                .verdict,
+            CompareVerdict::Approximate
+        );
+    }
+
+    #[test]
+    fn parquet_round_trip_keeps_null_ohlc_and_special_volume() {
+        let trades = [trade("2026-01-02T15:39:23.298829985Z", "2999.75", 1)];
+        let specials = [special("2026-01-02T10:22:03.633592953Z", 100)];
+        let minutes = synthesize_1min_from_trade_and_special(&trades, &specials);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synth_1min.parquet");
+        write_synth_minutes_parquet(&path, &minutes).unwrap();
+        use polars::prelude::{ParquetReader, SerReader};
+        let file = std::fs::File::open(&path).unwrap();
+        let df = ParquetReader::new(file).finish().unwrap();
+        assert_eq!(df.height(), 2);
+        assert_eq!(
+            df.get_column_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "ric".to_string(),
+                "ts".to_string(),
+                "ts_utc_ns".to_string(),
+                "date_time".to_string(),
+                "open".to_string(),
+                "high".to_string(),
+                "low".to_string(),
+                "close".to_string(),
+                "volume".to_string(),
+                "count".to_string(),
+                "special_volume".to_string(),
+                "special_count".to_string(),
+                "volume_total".to_string(),
+            ]
+        );
+        let special_only = df
+            .column("special_volume")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(special_only, 100);
+        assert!(df.column("open").unwrap().f64().unwrap().get(0).is_none());
+        let priced_close = df.column("close").unwrap().f64().unwrap().get(1).unwrap();
+        assert!((priced_close - 2999.75).abs() < 1e-12);
+        assert_eq!(df.column("volume").unwrap().i64().unwrap().get(1).unwrap(), 1);
+        assert_eq!(
+            df.column("volume_total")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .get(1)
+                .unwrap(),
+            1
+        );
+    }
+
     #[test]
     fn futures_session_change_fields_are_not_forbidden() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1618,6 +1982,12 @@ mod tests {
         assert_eq!(research_root_of(".NSEI").unwrap(), None);
         assert!(is_research_ric("ESH24").unwrap());
         assert!(!is_research_ric("NGLNDG1324").unwrap());
+        let parsed = parse_contract_id("CLG24", 2020).unwrap().unwrap();
+        assert_eq!(parsed.0, "NYMEX");
+        assert_eq!(parsed.1, "CL");
+        assert_eq!(parsed.2, "NYMEX:CL:2024-02");
+        let ad = parse_contract_id("ADF26", 2020).unwrap().unwrap();
+        assert_eq!(ad.2, "CME:AD:2026-01");
     }
 
     #[test]

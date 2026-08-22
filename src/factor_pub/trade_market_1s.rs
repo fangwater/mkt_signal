@@ -14,6 +14,7 @@
 use crate::depth_pub::orderbook::OrderBook;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
+use log::warn;
 use mkt_parsers::msg::mkt_msg::Level;
 
 pub const SECONDS_PER_DAY: i64 = 86_400;
@@ -265,6 +266,7 @@ pub struct TradeMarket1sAggregator {
     last_book: Option<TopOfBook>,
     last_close: Option<f64>,
     current: OpenSecond,
+    skipped_empty_secs: u64,
 }
 
 impl TradeMarket1sAggregator {
@@ -281,6 +283,7 @@ impl TradeMarket1sAggregator {
             last_book: seed_book.filter(TopOfBook::is_valid),
             last_close: seed_close.filter(|price| price.is_finite() && *price > 0.0),
             current: OpenSecond::empty(),
+            skipped_empty_secs: 0,
         })
     }
 
@@ -325,12 +328,6 @@ impl TradeMarket1sAggregator {
     }
 
     pub fn finish(&mut self) -> Result<Vec<TradeMarket1sBar>> {
-        if self.last_book.is_none() {
-            bail!(
-                "no depth available to seed 1s bid/ask0 for day starting {}",
-                self.day_start_sec
-            );
-        }
         self.emit_until(self.day_end_sec)
     }
 
@@ -342,16 +339,29 @@ impl TradeMarket1sAggregator {
         self.last_close
     }
 
+    pub fn skipped_empty_secs(&self) -> u64 {
+        self.skipped_empty_secs
+    }
+
     fn emit_until(&mut self, target_sec: i64) -> Result<Vec<TradeMarket1sBar>> {
         let limit = target_sec.min(self.day_end_sec);
         if limit <= self.next_sec {
             return Ok(Vec::new());
         }
-        if self.last_book.is_none() {
-            bail!("1s market bars need a top of book before emitting");
-        }
         let mut out = Vec::with_capacity((limit - self.next_sec) as usize);
         while self.next_sec < limit {
+            if self.last_book.is_none() {
+                self.skipped_empty_secs += 1;
+                if self.skipped_empty_secs == 1 {
+                    warn!(
+                        "skipping 1s market bar with empty or invalid top of book at ts_sec={}",
+                        self.next_sec
+                    );
+                }
+                self.current = OpenSecond::empty();
+                self.next_sec += 1;
+                continue;
+            }
             out.push(self.close_second()?);
         }
         Ok(out)
@@ -448,15 +458,31 @@ pub fn validate_market_1s_day(
     bars: &[TradeMarket1sBar],
 ) -> Result<()> {
     let start = utc_day_start_sec(day)?;
-    if bars.len() != SECONDS_PER_DAY as usize {
+    let day_end = start + SECONDS_PER_DAY;
+    if bars.is_empty() {
+        return Ok(());
+    }
+    if bars.len() > SECONDS_PER_DAY as usize {
         bail!(
-            "{symbol} {day}: expected {} 1s rows, got {}",
+            "{symbol} {day}: expected at most {} 1s rows, got {}",
             SECONDS_PER_DAY,
             bars.len()
         );
     }
+    if bars[0].ts_sec < start || bars.last().unwrap().ts_sec >= day_end {
+        bail!(
+            "{symbol} {day}: 1s rows outside UTC day start={start} end={day_end}"
+        );
+    }
+    if bars.last().unwrap().ts_sec != day_end - 1 {
+        bail!(
+            "{symbol} {day}: last 1s row ts={} expected={}",
+            bars.last().unwrap().ts_sec,
+            day_end - 1
+        );
+    }
     for (index, bar) in bars.iter().enumerate() {
-        let expected = start + index as i64;
+        let expected = bars[0].ts_sec + index as i64;
         if bar.ts_sec != expected {
             bail!(
                 "{symbol} {day}: ts[{index}]={} expected={expected}",
@@ -799,9 +825,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_day_with_no_depth() {
+    fn skips_seconds_before_book_initialization() {
         let mut agg = TradeMarket1sAggregator::new(day(), None, Some(100.0)).unwrap();
-        assert!(agg.finish().unwrap_err().to_string().contains("no depth"));
+        assert!(agg
+            .on_trade(us(0, 200), true, 110.0, 1.0)
+            .unwrap()
+            .is_empty());
+        let later = agg.on_book(us(2, 0), book(102.0, 4.0, 103.0, 5.0)).unwrap();
+        assert!(later.is_empty());
+        assert_eq!(agg.skipped_empty_secs(), 3);
+        assert_eq!(agg.last_book().unwrap().bid_price, 102.0);
+        let rest = agg.finish().unwrap();
+        assert_eq!(rest[0].ts_sec, utc_day_start_sec(day()).unwrap() + 3);
+        assert_eq!(rest[0].bid0p, 102.0);
+        assert_eq!(rest[0].ask0p, 103.0);
+        assert_eq!(rest.len(), 86_397);
+        validate_market_1s_day("XRPUSDT", day(), &rest).unwrap();
+    }
+
+    #[test]
+    fn empty_day_without_depth_is_allowed() {
+        let mut agg = TradeMarket1sAggregator::new(day(), None, Some(100.0)).unwrap();
+        let bars = agg.finish().unwrap();
+        assert!(bars.is_empty());
+        assert_eq!(agg.skipped_empty_secs(), 86_400);
+        validate_market_1s_day("XRPUSDT", day(), &bars).unwrap();
     }
 
     #[test]

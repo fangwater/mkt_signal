@@ -1758,6 +1758,7 @@ mod tests {
         let batch_exec_config = BatchExecConfig {
             single_order_usdt: 100.0,
             orders_per_batch: 3,
+            max_batch: 20,
             maker_price_anchor: crate::strategy::batch_exec_strategy::MakerPriceAnchor::OwnBest,
             tick_spacing: 2,
             batch_interval_ms: 500,

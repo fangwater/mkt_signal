@@ -11,7 +11,9 @@ RocksDB 用 secondary 打开，不抢 replay 的锁。
 
 ## 比什么
 
-只比有价分钟的 Open/High/Low/Last/Volume。OHLC 只用来自 `cme_trade` 的可打印成交。`cme_special` 单独扫，用来解释 Summary 多出来的量；不要把 Special 加进 Open/High/Low/Last。Volume 必须等于可打印量，或可打印量加 Special 量；剩下的差立刻失败。只有量、OHLC 空的分钟不算有价失败。有价分钟缺一边立刻失败。5 个交易日的 replay 停在 `ADF26`，默认对这一只。
+只比有价分钟的 Open/High/Low/Last/Volume。OHLC 只用来自 `cme_trade` 的可打印成交。`cme_special` 单独扫，用来解释 Summary 多出来的量；不要把 Special 加进 Open/High/Low/Last。Volume 必须等于可打印量，或可打印量加 Special 量；剩下的差立刻失败。只有量、OHLC 空的分钟不算有价失败。有价分钟缺一边立刻失败。默认对 `ADF26`。
+
+要写出 1 分钟 parquet 再用同一口径对照，用 [cme_tas_synth_1min.md](cme_tas_synth_1min.md)。
 
 ## 运行
 
