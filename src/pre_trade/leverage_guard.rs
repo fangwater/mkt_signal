@@ -24,6 +24,7 @@ type HmacSha256 = Hmac<Sha256>;
 type HmacSha512 = Hmac<Sha512>;
 
 const TARGET_LEVERAGES: [u8; 1] = [5];
+pub const BATCH_EXEC_DEFAULT_LEVERAGE: u8 = 5;
 const BLOCK_SUMMARY_INTERVAL_US: i64 = 60_000_000;
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_SLEEP_MS: u64 = 120;
@@ -243,6 +244,47 @@ impl GuardRefreshSnapshot {
 }
 
 pub struct LeverageGuard;
+
+pub async fn set_batch_exec_default_leverage(
+    venue: TradingVenue,
+    symbol: &str,
+    binance_account_mode: Option<BinanceAccountMode>,
+) -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
+        .build()
+        .context("build BatchExec leverage REST client")?;
+    let symbol = symbol_for_venue(symbol, venue);
+    match venue {
+        TradingVenue::BinanceFutures => {
+            set_binance_leverage(
+                &client,
+                &symbol,
+                BATCH_EXEC_DEFAULT_LEVERAGE,
+                binance_account_mode,
+                false,
+            )
+            .await
+        }
+        TradingVenue::BinanceCoinFutures => {
+            set_binance_leverage(
+                &client,
+                &symbol,
+                BATCH_EXEC_DEFAULT_LEVERAGE,
+                binance_account_mode,
+                true,
+            )
+            .await
+        }
+        TradingVenue::OkexFutures => {
+            set_okx_leverage(&client, &symbol, BATCH_EXEC_DEFAULT_LEVERAGE).await
+        }
+        other => bail!(
+            "unsupported BatchExec futures venue for default leverage: {:?}",
+            other
+        ),
+    }
+}
 
 impl LeverageGuard {
     pub async fn initialize(
@@ -1049,7 +1091,9 @@ async fn set_binance_leverage(
         .await?;
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
-    if !(200..300).contains(&status) {
+    if !(200..300).contains(&status)
+        || !binance_set_leverage_response_matches(&body, symbol, leverage)
+    {
         bail!(
             "binance set leverage failed symbol={} leverage={} status={} body={}",
             symbol,
@@ -1059,6 +1103,20 @@ async fn set_binance_leverage(
         );
     }
     Ok(())
+}
+
+fn binance_set_leverage_response_matches(body: &str, symbol: &str, leverage: u8) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let response_symbol = value.get("symbol").and_then(Value::as_str);
+    let response_leverage = value.get("leverage").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|raw| raw.parse::<u64>().ok()))
+    });
+    response_symbol.is_some_and(|returned| returned.eq_ignore_ascii_case(symbol))
+        && response_leverage == Some(u64::from(leverage))
 }
 
 fn binance_leverage_path(
@@ -1647,6 +1705,35 @@ mod tests {
             binance_leverage_path(Some(BinanceAccountMode::Unified), true).unwrap(),
             "/papi/v1/cm/leverage"
         );
+    }
+
+    #[test]
+    fn binance_set_leverage_response_requires_requested_symbol_and_value() {
+        assert!(binance_set_leverage_response_matches(
+            r#"{"symbol":"DOGEUSDT","leverage":5,"maxNotionalValue":"1000000"}"#,
+            "DOGEUSDT",
+            5,
+        ));
+        assert!(binance_set_leverage_response_matches(
+            r#"{"symbol":"dogeusdt","leverage":"5"}"#,
+            "DOGEUSDT",
+            5,
+        ));
+        assert!(!binance_set_leverage_response_matches(
+            r#"{"symbol":"DOGEUSDT","leverage":4}"#,
+            "DOGEUSDT",
+            5,
+        ));
+        assert!(!binance_set_leverage_response_matches(
+            r#"{"symbol":"BTCUSDT","leverage":5}"#,
+            "DOGEUSDT",
+            5,
+        ));
+        assert!(!binance_set_leverage_response_matches(
+            r#"{"code":-4003,"msg":"invalid leverage"}"#,
+            "DOGEUSDT",
+            5,
+        ));
     }
 
     #[test]

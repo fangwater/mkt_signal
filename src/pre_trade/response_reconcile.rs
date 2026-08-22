@@ -131,20 +131,24 @@ pub fn apply_query_response_as_updates(
         .map(|pos| pos + 1)
         .unwrap_or(0);
     if actual_len == 0 {
+        strategy.reset_order_query_not_found(client_order_id);
         return false;
     }
     if actual_len == 1 && body[0] == b'E' {
+        strategy.reset_order_query_not_found(client_order_id);
         return false;
     }
 
     if is_order_query_not_found_marker(&body[..actual_len]) {
+        strategy.record_order_query_not_found(client_order_id);
         debug!(
-            "ResponseReconcile: strategy_id={} order query not found ignored as non-terminal client_order_id={}",
+            "ResponseReconcile: strategy_id={} order query not found recorded client_order_id={}",
             strategy.get_id(),
             client_order_id
         );
         return true;
     }
+    strategy.reset_order_query_not_found(client_order_id);
 
     let Some(order_mgr) = MonitorChannel::try_order_manager() else {
         return false;
@@ -292,6 +296,8 @@ mod tests {
         client_order_id: i64,
         order_updates: usize,
         trade_updates: usize,
+        query_not_found: usize,
+        query_not_found_resets: usize,
     }
 
     impl RecordingStrategy {
@@ -301,6 +307,8 @@ mod tests {
                 client_order_id,
                 order_updates: 0,
                 trade_updates: 0,
+                query_not_found: 0,
+                query_not_found_resets: 0,
             }
         }
     }
@@ -334,6 +342,16 @@ mod tests {
 
         fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
 
+        fn record_order_query_not_found(&mut self, client_order_id: i64) {
+            assert_eq!(client_order_id, self.client_order_id);
+            self.query_not_found += 1;
+        }
+
+        fn reset_order_query_not_found(&mut self, client_order_id: i64) {
+            assert_eq!(client_order_id, self.client_order_id);
+            self.query_not_found_resets += 1;
+        }
+
         fn handle_period_clock(&mut self, _current_tp: i64) {}
 
         fn is_active(&self) -> bool {
@@ -346,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn query_not_found_marker_is_consumed_without_terminal_update() {
+    fn query_not_found_marker_is_recorded_without_direct_terminal_update() {
         let client_order_id = 1987641311888408577;
         let mut strategy = RecordingStrategy::new(462783819, client_order_id);
         let response = QueryEngineResponseMessage::new(
@@ -358,5 +376,19 @@ mod tests {
         assert!(apply_query_response_as_updates(&mut strategy, &response));
         assert_eq!(strategy.order_updates, 0);
         assert_eq!(strategy.trade_updates, 0);
+        assert_eq!(strategy.query_not_found, 1);
+        assert_eq!(strategy.query_not_found_resets, 0);
+    }
+
+    #[test]
+    fn query_error_resets_consecutive_not_found_evidence() {
+        let client_order_id = 1987641311888408577;
+        let mut strategy = RecordingStrategy::new(462783819, client_order_id);
+        let response =
+            QueryEngineResponseMessage::new(0, client_order_id, Bytes::from_static(b"E"));
+
+        assert!(!apply_query_response_as_updates(&mut strategy, &response));
+        assert_eq!(strategy.query_not_found, 0);
+        assert_eq!(strategy.query_not_found_resets, 1);
     }
 }

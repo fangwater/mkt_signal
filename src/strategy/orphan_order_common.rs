@@ -26,6 +26,8 @@ pub(crate) const ORPHAN_QUERY_BACKOFF_SHIFT: u32 = 1;
 pub(crate) const BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS: u32 = 100;
 pub(crate) const BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS: u8 = 6;
 pub(crate) const BINANCE_PM_COMMIT_QUERY_BASE_TICKS: u32 = 500;
+pub(crate) const EXEC_COMMIT_NOT_FOUND_GRACE_US: i64 = 15_000_000;
+const FILL_EPS: f64 = 1e-12;
 
 pub(crate) fn orphan_initial_query_ticks_for(
     venue: TradingVenue,
@@ -93,6 +95,29 @@ pub struct OrphanOrderOwner {
 struct OrphanQueryState {
     query_count: u8,
     ticks_until_next_query: u32,
+    consecutive_not_found: u8,
+    first_not_found_at_us: i64,
+}
+
+impl OrphanQueryState {
+    fn record_not_found(&mut self, now_us: i64) {
+        if self.consecutive_not_found == 0 {
+            self.first_not_found_at_us = now_us;
+        }
+        self.consecutive_not_found = self.consecutive_not_found.saturating_add(1);
+    }
+
+    fn reset_not_found(&mut self) {
+        self.consecutive_not_found = 0;
+        self.first_not_found_at_us = 0;
+    }
+
+    fn has_confirmed_not_found(&self, required_confirmations: u8, now_us: i64) -> bool {
+        self.query_count >= required_confirmations
+            && self.consecutive_not_found >= required_confirmations
+            && self.first_not_found_at_us > 0
+            && now_us.saturating_sub(self.first_not_found_at_us) >= EXEC_COMMIT_NOT_FOUND_GRACE_US
+    }
 }
 
 pub struct OrphanOrderTracker {
@@ -228,6 +253,84 @@ impl OrphanOrderTracker {
         self.query_states
             .get(&client_order_id)
             .map(|state| state.query_count)
+    }
+
+    pub fn reset_order_query_not_found(&mut self, client_order_id: i64) {
+        if let Some(state) = self.query_states.get_mut(&client_order_id) {
+            state.reset_not_found();
+        }
+    }
+
+    pub fn record_order_query_not_found(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        client_order_id: i64,
+    ) {
+        let Some(owner) = self.order_owners.get(&client_order_id) else {
+            return;
+        };
+        if owner.source_role != OrphanStrategyRole::Exec {
+            return;
+        }
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return;
+        };
+        let snapshot = {
+            let mgr = order_mgr.borrow();
+            let Some(order) = mgr.get(client_order_id) else {
+                return;
+            };
+            (
+                order.status,
+                order.cumulative_filled_quantity,
+                order.exchange_order_id,
+                order.symbol.clone(),
+                order.venue,
+                commit_query_policy_for(order.venue, mgr.binance_is_standard()),
+            )
+        };
+        let (status, cumulative_fill, exchange_order_id, symbol, venue, policy) = snapshot;
+        if status != OrderExecutionStatus::Commit
+            || cumulative_fill > FILL_EPS
+            || exchange_order_id.is_some_and(|id| id > 0)
+        {
+            self.reset_order_query_not_found(client_order_id);
+            return;
+        }
+
+        let now_us = get_timestamp_us();
+        let Some(state) = self.query_states.get_mut(&client_order_id) else {
+            return;
+        };
+        state.record_not_found(now_us);
+        let confirmed = state.has_confirmed_not_found(policy.max_attempts, now_us);
+        let count = state.consecutive_not_found;
+        let elapsed_us = now_us.saturating_sub(state.first_not_found_at_us);
+        if !confirmed {
+            info!(
+                "{}: strategy_id={} Exec orphan not-found evidence client_order_id={} symbol={} venue={:?} queries={} confirmations={}/{} elapsed_ms={} grace_ms={}",
+                strategy_role,
+                strategy_id,
+                client_order_id,
+                symbol,
+                venue,
+                state.query_count,
+                count,
+                policy.max_attempts,
+                elapsed_us / 1_000,
+                EXEC_COMMIT_NOT_FOUND_GRACE_US / 1_000,
+            );
+            return;
+        }
+
+        self.close_exec_commit_after_confirmed_not_found(
+            strategy_role,
+            strategy_id,
+            client_order_id,
+            count,
+            elapsed_us,
+        );
     }
 
     fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
@@ -941,6 +1044,8 @@ impl OrphanOrderTracker {
             .or_insert_with(|| OrphanQueryState {
                 query_count: 0,
                 ticks_until_next_query: initial_query_ticks,
+                consecutive_not_found: 0,
+                first_not_found_at_us: 0,
             });
     }
 
@@ -961,12 +1066,51 @@ impl OrphanOrderTracker {
             );
             return;
         }
+        self.synthesize_commit_terminal(
+            strategy_role,
+            strategy_id,
+            client_order_id,
+            "commit query budget exhausted",
+        );
+    }
+
+    fn close_exec_commit_after_confirmed_not_found(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        client_order_id: i64,
+        confirmations: u8,
+        elapsed_us: i64,
+    ) {
+        warn!(
+            "{}: strategy_id={} Exec orphan confirmed absent; synthesizing terminal client_order_id={} confirmations={} elapsed_ms={}",
+            strategy_role,
+            strategy_id,
+            client_order_id,
+            confirmations,
+            elapsed_us / 1_000,
+        );
+        self.synthesize_commit_terminal(
+            strategy_role,
+            strategy_id,
+            client_order_id,
+            "confirmed order-query not found",
+        );
+    }
+
+    fn synthesize_commit_terminal(
+        &mut self,
+        strategy_role: &str,
+        strategy_id: i32,
+        client_order_id: i64,
+        reason: &str,
+    ) {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             self.forget_order_id(
                 strategy_role,
                 strategy_id,
                 client_order_id,
-                "commit query budget exhausted without order manager",
+                &format!("{reason} without order manager"),
             );
             return;
         };
@@ -975,7 +1119,7 @@ impl OrphanOrderTracker {
                 strategy_role,
                 strategy_id,
                 client_order_id,
-                "commit query budget exhausted missing local order",
+                &format!("{reason} missing local order"),
             );
             return;
         };
@@ -985,8 +1129,8 @@ impl OrphanOrderTracker {
 
         let query_count = self.query_count(client_order_id).unwrap_or_default();
         warn!(
-            "{}: strategy_id={} commit order query budget exhausted; closing local orphan client_order_id={} symbol={} venue={:?} query_count={}",
-            strategy_role, strategy_id, client_order_id, order.symbol, order.venue, query_count
+            "{}: strategy_id={} closing local commit orphan client_order_id={} symbol={} venue={:?} query_count={} reason={}",
+            strategy_role, strategy_id, client_order_id, order.symbol, order.venue, query_count, reason
         );
         let update = OrderQueryOrderUpdate::new(
             &order,
@@ -1126,9 +1270,10 @@ fn normalize_epoch_to_us(ts: i64) -> i64 {
 mod tests {
     use super::{
         commit_query_policy_for, format_orphan_query_table, orphan_initial_query_ticks_for,
-        CommitQueryAction, OrphanOrderOwner, OrphanOrderTracker,
+        CommitQueryAction, OrphanOrderOwner, OrphanOrderTracker, OrphanQueryState,
         BINANCE_PM_COMMIT_QUERY_BASE_TICKS, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
         BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS, COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
+        EXEC_COMMIT_NOT_FOUND_GRACE_US,
     };
     use crate::strategy::manager::{OrphanSourceKind, OrphanStrategyRole};
     use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -1238,6 +1383,59 @@ mod tests {
         );
         tracker.close_commit_order_after_query_budget("test", 1, client_order_id);
         assert!(tracker.contains(client_order_id));
+    }
+
+    #[test]
+    fn exec_not_found_requires_confirmations_and_grace() {
+        let first_not_found_at_us = 1_000_000;
+        let mut state = OrphanQueryState {
+            query_count: 2,
+            ticks_until_next_query: 0,
+            consecutive_not_found: 0,
+            first_not_found_at_us: 0,
+        };
+
+        state.record_not_found(first_not_found_at_us);
+        state.record_not_found(first_not_found_at_us + 1_000_000);
+        assert!(!state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+        ));
+
+        state.record_not_found(first_not_found_at_us + 2_000_000);
+        assert!(!state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+        ));
+
+        state.query_count = COMMIT_QUERY_MAX_ATTEMPTS;
+        assert!(!state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US - 1,
+        ));
+        assert!(state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+        ));
+    }
+
+    #[test]
+    fn non_not_found_response_resets_exec_convergence_evidence() {
+        let mut state = OrphanQueryState {
+            query_count: 3,
+            ticks_until_next_query: 0,
+            consecutive_not_found: COMMIT_QUERY_MAX_ATTEMPTS,
+            first_not_found_at_us: 1_000_000,
+        };
+
+        state.reset_not_found();
+
+        assert_eq!(state.consecutive_not_found, 0);
+        assert_eq!(state.first_not_found_at_us, 0);
+        assert!(!state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            1_000_000 + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+        ));
     }
 
     #[test]

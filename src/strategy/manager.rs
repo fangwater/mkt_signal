@@ -147,6 +147,8 @@ pub trait Strategy {
     fn apply_trade_update(&mut self, trade: &dyn TradeUpdate);
     fn apply_trade_update_lite(&mut self, _trade: &dyn TradeUpdateLite) {}
     fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+    fn record_order_query_not_found(&mut self, _client_order_id: i64) {}
+    fn reset_order_query_not_found(&mut self, _client_order_id: i64) {}
     fn handle_period_clock(&mut self, current_tp: i64);
     fn is_active(&self) -> bool;
     fn symbol(&self) -> Option<&str>;

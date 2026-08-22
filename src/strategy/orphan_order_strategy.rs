@@ -134,6 +134,15 @@ impl Strategy for OrphanOrderStrategy {
             .apply_trade_update(ORPHAN_ROLE, self.strategy_id, trade);
     }
 
+    fn record_order_query_not_found(&mut self, client_order_id: i64) {
+        self.orders
+            .record_order_query_not_found(ORPHAN_ROLE, self.strategy_id, client_order_id);
+    }
+
+    fn reset_order_query_not_found(&mut self, client_order_id: i64) {
+        self.orders.reset_order_query_not_found(client_order_id);
+    }
+
     fn handle_period_clock(&mut self, _current_tp: i64) {
         self.orders
             .handle_period_clock(ORPHAN_ROLE, self.strategy_id);

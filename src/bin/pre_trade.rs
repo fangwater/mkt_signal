@@ -759,6 +759,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 let mut reloader = BatchExecConfigReloader::connect(
                     batch_redis,
                     open_venue,
+                    binance_account_mode,
                 )
                 .await?;
                 reloader.reload(&strategy_mgr).await?;
@@ -767,7 +768,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     Duration::from_millis(args.config_reload_ms.max(100)),
                 );
                 info!(
-                    "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations",
+                    "BatchExec Redis reload started: interval_ms={} notify=batch_exec_pubs/reload_notify index_key=batch_exec:strategy_names position_ledger_key=batch_exec_state:position_allocations leverage_init_key=batch_exec_state:leverage_initialized default_leverage=5",
                     args.config_reload_ms.max(100)
                 );
             }

@@ -2,6 +2,7 @@ use crate::strategy::batch_exec_strategy::{
     BatchExecConfig, BatchExecStrategy, BatchExecTarget, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
 };
 use crate::strategy::StrategyManager;
+use account_common::BinanceAccountMode;
 use anyhow::{Context, Result};
 use log::{info, warn};
 use order_common::TradingVenue;
@@ -58,6 +59,9 @@ impl BatchExecRedisValue {
 pub struct BatchExecConfigReloader {
     client: RedisClient,
     venue: TradingVenue,
+    binance_account_mode: Option<BinanceAccountMode>,
+    leverage_init: BatchExecLeverageInitState,
+    leverage_blocked_symbols: BTreeSet<String>,
     snapshots: BTreeMap<String, BatchExecRedisValue>,
     position_ledger: Option<BatchExecPositionLedger>,
     pending_removals: BTreeSet<String>,
@@ -69,8 +73,51 @@ pub struct BatchExecConfigReloader {
 const STRATEGY_NAMES_KEY: &str = "batch_exec:strategy_names";
 const REMOVED_STRATEGY_NAMES_KEY: &str = "batch_exec:removed_strategy_names";
 const POSITION_LEDGER_KEY: &str = "batch_exec_state:position_allocations";
+const LEVERAGE_INIT_KEY: &str = "batch_exec_state:leverage_initialized";
 const POSITION_LEDGER_VERSION: u32 = 1;
+const LEVERAGE_INIT_VERSION: u32 = 1;
 const POSITION_ALLOCATION_EPS: f64 = 1e-10;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchExecLeverageInitState {
+    version: u32,
+    leverage: u8,
+    symbols: BTreeSet<String>,
+}
+
+impl BatchExecLeverageInitState {
+    fn empty() -> Self {
+        Self {
+            version: LEVERAGE_INIT_VERSION,
+            leverage: crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE,
+            symbols: BTreeSet::new(),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.version != LEVERAGE_INIT_VERSION {
+            anyhow::bail!(
+                "unsupported BatchExec leverage-init version: expected={} actual={}",
+                LEVERAGE_INIT_VERSION,
+                self.version
+            );
+        }
+        if self.leverage != crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE {
+            anyhow::bail!(
+                "BatchExec leverage-init target mismatch: expected={} actual={}",
+                crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE,
+                self.leverage
+            );
+        }
+        for symbol in &self.symbols {
+            if symbol.is_empty() || normalize_symbol_for_internal(symbol) != *symbol {
+                anyhow::bail!("BatchExec leverage-init symbol is not normalized: {symbol}");
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -286,11 +333,31 @@ fn nonzero_unmanaged_ledger_names(
 }
 
 impl BatchExecConfigReloader {
-    pub async fn connect(redis: RedisSettings, venue: TradingVenue) -> Result<Self> {
-        let client = RedisClient::connect(redis).await?;
+    pub async fn connect(
+        redis: RedisSettings,
+        venue: TradingVenue,
+        binance_account_mode: Option<BinanceAccountMode>,
+    ) -> Result<Self> {
+        let mut client = RedisClient::connect(redis).await?;
+        let leverage_init = client
+            .get_json::<BatchExecLeverageInitState>(LEVERAGE_INIT_KEY)
+            .await
+            .with_context(|| format!("load Redis key {LEVERAGE_INIT_KEY}"))?
+            .unwrap_or_else(BatchExecLeverageInitState::empty);
+        leverage_init
+            .validate()
+            .with_context(|| format!("invalid BatchExec leverage-init key={LEVERAGE_INIT_KEY}"))?;
+        info!(
+            "BatchExec leverage-init loaded: leverage={} initialized_symbols={}",
+            leverage_init.leverage,
+            leverage_init.symbols.len()
+        );
         Ok(Self {
             client,
             venue,
+            binance_account_mode,
+            leverage_init,
+            leverage_blocked_symbols: BTreeSet::new(),
             snapshots: BTreeMap::new(),
             position_ledger: None,
             pending_removals: BTreeSet::new(),
@@ -346,6 +413,70 @@ impl BatchExecConfigReloader {
         );
         self.position_ledger = Some(ledger);
         Ok(())
+    }
+
+    async fn initialize_target_leverages(
+        &mut self,
+        required_symbols: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut blocked = BTreeSet::new();
+        let mut newly_initialized = BTreeSet::new();
+        for symbol in required_symbols {
+            if self.leverage_init.symbols.contains(symbol) {
+                continue;
+            }
+            match crate::pre_trade::leverage_guard::set_batch_exec_default_leverage(
+                self.venue,
+                symbol,
+                self.binance_account_mode,
+            )
+            .await
+            {
+                Ok(()) => {
+                    info!(
+                        "BatchExec default leverage set: symbol={} venue={:?} leverage={}",
+                        symbol, self.venue, self.leverage_init.leverage
+                    );
+                    newly_initialized.insert(symbol.clone());
+                }
+                Err(err) => {
+                    warn!(
+                        "BatchExec symbol activation blocked by leverage initialization: symbol={} venue={:?} leverage={} err={:#}",
+                        symbol, self.venue, self.leverage_init.leverage, err
+                    );
+                    blocked.insert(symbol.clone());
+                }
+            }
+        }
+
+        if !newly_initialized.is_empty() {
+            self.leverage_init
+                .symbols
+                .extend(newly_initialized.iter().cloned());
+            if let Err(err) = self
+                .client
+                .set_json(LEVERAGE_INIT_KEY, &self.leverage_init)
+                .await
+            {
+                for symbol in &newly_initialized {
+                    self.leverage_init.symbols.remove(symbol);
+                    blocked.insert(symbol.clone());
+                }
+                warn!(
+                    "BatchExec leverage-init marker save failed; affected symbols remain blocked: key={} symbols={:?} err={:#}",
+                    LEVERAGE_INIT_KEY, newly_initialized, err
+                );
+            } else {
+                info!(
+                    "BatchExec leverage-init marker saved: key={} leverage={} new_symbols={:?} total_symbols={}",
+                    LEVERAGE_INIT_KEY,
+                    self.leverage_init.leverage,
+                    newly_initialized,
+                    self.leverage_init.symbols.len()
+                );
+            }
+        }
+        blocked
     }
 
     async fn queue_removed_strategies(
@@ -996,6 +1127,17 @@ impl BatchExecConfigReloader {
             loaded.push((strategy_name, key, payload, normalized_targets));
         }
 
+        let required_leverage_symbols = loaded
+            .iter()
+            .flat_map(|(_, _, _, targets)| targets.iter())
+            .filter(|(_, target)| target.qty.abs() > POSITION_ALLOCATION_EPS)
+            .map(|(symbol, _)| symbol.clone())
+            .collect::<BTreeSet<_>>();
+        let leverage_retry_symbols = self.leverage_blocked_symbols.clone();
+        self.leverage_blocked_symbols = self
+            .initialize_target_leverages(&required_leverage_symbols)
+            .await;
+
         self.queue_removed_strategies(strategy_mgr, &removal_requests)
             .await?;
 
@@ -1022,7 +1164,14 @@ impl BatchExecConfigReloader {
                     .copied()
                     .unwrap_or(BatchExecTarget::ZERO);
                 let old_target = previous_targets.get(&symbol).copied();
-                let target_changed = old_target != Some(target);
+                let target_changed =
+                    old_target != Some(target) || leverage_retry_symbols.contains(&symbol);
+
+                if target.qty.abs() > POSITION_ALLOCATION_EPS
+                    && self.leverage_blocked_symbols.contains(&symbol)
+                {
+                    continue;
+                }
 
                 let strategy_id = strategy_mgr
                     .borrow_mut()
@@ -1412,5 +1561,25 @@ mod tests {
             &BTreeSet::new(),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn leverage_init_state_requires_current_version_and_default_leverage() {
+        let mut state = BatchExecLeverageInitState::empty();
+        state.symbols.insert("BTCUSDT".to_string());
+        state.validate().unwrap();
+
+        state.version += 1;
+        assert!(state.validate().is_err());
+        state.version = LEVERAGE_INIT_VERSION;
+        state.leverage += 1;
+        assert!(state.validate().is_err());
+    }
+
+    #[test]
+    fn leverage_init_state_rejects_non_normalized_symbols() {
+        let mut state = BatchExecLeverageInitState::empty();
+        state.symbols.insert("btc-usdt".to_string());
+        assert!(state.validate().is_err());
     }
 }
