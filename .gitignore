@@ -60,6 +60,16 @@ dist/
 # user-edited runtime config (template lives in config.example.toml)
 scripts/order_export_puller/config.toml
 
+# Local Tardis / CME TAS replay run configs.
+/config/tardis_replay.toml
+/config/tardis_replay_binance_spot.toml
+/config/tardis_replay_binance_futures_*.toml
+/config/tardis_replay_binance_spot_*.toml
+/config/cme_tas_backtest.toml
+/config/cme_tas_drop_special_1min.toml
+/config/cme_tas_kll.toml
+/config/cme_tas_synth_1min.toml
+
 # local order export dumps
 order_exports/
 
