@@ -19,7 +19,7 @@ usage() {
   - 部署 cross_config_server 到 $HOME/<env-name>/（或 --target）。
   - env-name/目标目录名必须匹配 <open>-<hedge>-cross-<suffix>，例如 okex-binance-cross-trade。
   - open/hedge venue 可省略，会从 env-name 推断为 <exchange>-futures。
-  - 默认端口按 open/hedge 组合映射：18200 + open_rank*10 + hedge_rank。
+  - 默认端口按 open/hedge + suffix 映射：trade 为 182xx，arb01/arb02/arb03 为 192xx。
   - 可选写入 nginx mapping（/cross/<env-name>/config）。
 
 示例:
@@ -71,7 +71,7 @@ require_cross_env_name() {
 
 ensure_cross_venue() {
   local v="${1,,}"
-  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ ]]; then
+  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ) ]]; then
     echo "[ERROR] 非法 cross venue（必须是 -futures/-swap/-perp/-perpetual）: $1" >&2
     exit 1
   fi
@@ -89,17 +89,35 @@ exchange_rank() {
   esac
 }
 
+cross_env_suffix() {
+  local name="${1,,}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_][a-z0-9]+[-_]cross[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  fi
+}
+
 default_port_for_pair() {
   local open_ex="$1"
   local hedge_ex="$2"
-  local open_rank hedge_rank
+  local suffix="${3:-trade}"
+  local open_rank hedge_rank pair_offset
   open_rank="$(exchange_rank "$open_ex")"
   hedge_rank="$(exchange_rank "$hedge_ex")"
   if [[ "$open_rank" == "0" || "$hedge_rank" == "0" ]]; then
-    echo "18211"
-    return
+    pair_offset=11
+  else
+    pair_offset=$((open_rank * 10 + hedge_rank))
   fi
-  echo $((18200 + open_rank * 10 + hedge_rank))
+  case "$suffix" in
+    trade|"") echo $((18200 + pair_offset)) ;;
+    arb01)    echo $((19200 + pair_offset)) ;;
+    arb02)    echo $((19201 + pair_offset)) ;;
+    arb03)    echo $((19202 + pair_offset)) ;;
+    *)
+      echo "[ERROR] unsupported cross suffix for config server: ${suffix}" >&2
+      exit 1
+      ;;
+  esac
 }
 
 upsert_main_nginx_mapping() {
@@ -203,6 +221,7 @@ fi
 
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 require_cross_env_name "$ENV_NAME"
+ENV_SUFFIX="$(cross_env_suffix "$ENV_NAME")"
 
 if [[ -z "$OPEN_VENUE" || -z "$HEDGE_VENUE" ]]; then
   if inferred="$(infer_pair_from_env_name "$ENV_NAME")" && [[ -n "$inferred" ]]; then
@@ -234,7 +253,7 @@ if [[ -n "$TARGET_DIR" ]]; then
 fi
 
 if [[ -z "$PORT" ]]; then
-  PORT="$(default_port_for_pair "$OPEN_EXCHANGE" "$HEDGE_EXCHANGE")"
+  PORT="$(default_port_for_pair "$OPEN_EXCHANGE" "$HEDGE_EXCHANGE" "$ENV_SUFFIX")"
 fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then

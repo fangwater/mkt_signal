@@ -1,6 +1,6 @@
 # from_key 规则总览
 
-本文档给出当前代码实现对应的 `from_key` 总览。详细拆分规则见 `docs/from_key_rules/`。
+本文档给出当前代码实现对应的 `from_key` 总览。逐字段拆分规则已过时并删除，以代码为准。
 
 ## 重要说明
 
@@ -9,6 +9,13 @@
 - `time` 统一使用 `get_timestamp_us()`（微秒）。
 - 浮点字段统一 `:.6` 精度。
 - `from_key` 为 UTF-8 字符串，落地为 `Vec<u8>`。
+
+## `tlen` 迁移
+
+- 新产生的 `from_key` 不再写入逐档 `tlen`；实时 `tlen` 仍参与开仓 gate 和撤单判定。
+- 批次/标的共享的 `tlen_thr` 保留在基础 `from_key` 中，并在拆单前只写入一次；阈值不可用时写为 `NA`。
+- 历史 RocksDB / parquet 记录保持原样，不做回写；读取侧应同时接受带或不带 `tlen` 的旧、新记录。
+- 新记录的 `tlen / backlen / inpos` 从 order queue position parquet 获取，优先按 `client_order_id + trading_venue` 与 uniform order 对齐。
 
 ## 协议更新（ArbHedge）
 
@@ -30,14 +37,3 @@
 ### MM
 
 - `MMOpen` / `MMHedge` 的 `from_key` 目前由上游透传，仓库内未定义固定字段拼装格式。
-
-## 详细规则文档
-
-- 索引：`docs/from_key_rules/README.md`
-- FR：
-  - `docs/from_key_rules/arb_open_fr.md`
-  - `docs/from_key_rules/arb_hedge_fr.md`
-  - `docs/from_key_rules/arb_close_fr.md`
-- MM：
-  - `docs/from_key_rules/mm_open.md`
-  - `docs/from_key_rules/mm_hedge.md`

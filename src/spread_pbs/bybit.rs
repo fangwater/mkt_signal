@@ -10,13 +10,23 @@
 //! - 心跳: `{"op":"ping"}` 每 20s。
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use mkt_parsers::bybit as bybit_codec;
+use runtime_common::fast_hash::{fast_hash_map_with_capacity, FastHashMap};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::signal::common::TradingVenue;
-use crate::spread_pbs::adapter::{BboFrame, KeepaliveSpec, VenueAdapter};
+use crate::spread_pbs::adapter::{
+    BboFrame, IncrementalFrame, KeepaliveSpec, RawBboFrame, RawIncremental, RawIncrementalView,
+    RawTradeFrame, TradeFrame, VenueAdapter,
+};
+use mkt_parsers::msg::mkt_msg::{
+    funding_rate_msg_bytes_borrowed, index_price_msg_bytes_borrowed,
+    liquidation_msg_bytes_borrowed, mark_price_msg_bytes_borrowed, FundingRateMsg, IndexPriceMsg,
+    Level, LiquidationMsg, MarkPriceMsg,
+};
+use order_common::TradingVenue;
 
 const BYBIT_SPOT_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
@@ -36,15 +46,52 @@ struct BboCacheEntry {
 
 pub struct BybitAdapter {
     venue: TradingVenue,
-    cache: RefCell<HashMap<String, BboCacheEntry>>,
+    cache: RefCell<BybitBboCache>,
+    symbol_slot_by_symbol: RefCell<FastHashMap<String, usize>>,
 }
 
 impl BybitAdapter {
     pub fn new(venue: TradingVenue) -> Self {
         Self {
             venue,
-            cache: RefCell::new(HashMap::with_capacity(2048)),
+            cache: RefCell::new(BybitBboCache::with_capacity(2048)),
+            symbol_slot_by_symbol: RefCell::new(fast_hash_map_with_capacity(2048)),
         }
+    }
+}
+
+struct BybitBboCache {
+    index_by_symbol: FastHashMap<String, usize>,
+    entries: Vec<BboCacheEntry>,
+}
+
+impl BybitBboCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            index_by_symbol: fast_hash_map_with_capacity(capacity),
+            entries: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn seed_symbols(&mut self, symbols: &[String]) {
+        for symbol in symbols {
+            self.ensure_symbol(symbol);
+        }
+    }
+
+    fn ensure_symbol(&mut self, symbol: &str) -> usize {
+        if let Some(&idx) = self.index_by_symbol.get(symbol) {
+            return idx;
+        }
+        let idx = self.entries.len();
+        self.index_by_symbol.insert(symbol.to_string(), idx);
+        self.entries.push(BboCacheEntry::default());
+        idx
+    }
+
+    fn entry_mut(&mut self, symbol: &str) -> &mut BboCacheEntry {
+        let idx = self.ensure_symbol(symbol);
+        &mut self.entries[idx]
     }
 }
 
@@ -62,104 +109,171 @@ impl VenueAdapter for BybitAdapter {
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        let chunk_size = match self.venue {
-            TradingVenue::BybitMargin => BYBIT_SPOT_SUBSCRIBE_CHUNK,
-            _ => BYBIT_LINEAR_SUBSCRIBE_CHUNK,
-        }
-        .max(1);
+        build_bybit_subscribe(self.venue, symbols, "orderbook.1")
+    }
 
-        let mut out = Vec::new();
-        for chunk in symbols.chunks(chunk_size) {
-            let args: Vec<String> = chunk
-                .iter()
-                .map(|sym| format!("orderbook.1.{}", sym.to_ascii_uppercase()))
-                .collect();
-            out.push(serde_json::json!({
-                "op": "subscribe",
-                "args": args,
-            }));
+    fn build_trade_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_bybit_subscribe(self.venue, symbols, "publicTrade")
+    }
+
+    fn build_incremental_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        build_bybit_subscribe(self.venue, symbols, "orderbook.1000")
+    }
+
+    fn build_derivatives_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        if self.venue != TradingVenue::BybitFutures {
+            return Vec::new();
         }
+        let mut out = build_bybit_subscribe(self.venue, symbols, "tickers");
+        out.extend(build_bybit_subscribe(self.venue, symbols, "allLiquidation"));
         out
     }
 
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
-        let topic = match value.get("topic").and_then(|v| v.as_str()) {
-            Some(t) if t.starts_with("orderbook.1.") => t,
-            _ => return Ok(Vec::new()),
+    fn derivatives_ws_url(&self) -> Option<String> {
+        if self.venue == TradingVenue::BybitFutures {
+            Some(BYBIT_LINEAR_WS_URL.to_string())
+        } else {
+            None
+        }
+    }
+
+    fn seed_symbols(&self, symbols: &[String]) {
+        self.cache.borrow_mut().seed_symbols(symbols);
+        let mut slots = self.symbol_slot_by_symbol.borrow_mut();
+        for symbol in symbols {
+            let next_idx = slots.len();
+            slots.entry(symbol.to_ascii_uppercase()).or_insert(next_idx);
+        }
+    }
+
+    fn symbol_slot_index(&self, symbol: &str) -> Option<usize> {
+        self.symbol_slot_by_symbol.borrow().get(symbol).copied()
+    }
+
+    fn parse_bbo_raw(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<bool> {
+        let Some(bbo) = self.parse_bbo_raw_borrowed(raw) else {
+            return Ok(false);
         };
-        let push_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let data = value
-            .get("data")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| anyhow!("bybit {} missing data object", topic))?;
-        let symbol = data
-            .get("s")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_ascii_uppercase())
-            .ok_or_else(|| anyhow!("bybit {} missing data.s", topic))?;
-        let seq_id = data
-            .get("u")
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| anyhow!("bybit {} missing data.u (updateId)", topic))?;
-        // Bybit V5 orderbook.<depth> 文档定义：时间戳在顶层 `ts`（ms，gateway 生成时间）
-        // 这里立即升精度到 µs，BboFrame.ts_us 全链路统一单位
-        let ts_us = value
-            .get("ts")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
-            .saturating_mul(1000);
+        emit(BboFrame {
+            symbol: bbo.symbol.to_string(),
+            ts_us: bbo.timestamp_us,
+            seq_id: bbo.seq_id,
+            reset_seq: bbo.reset_seq,
+            bid_price: bbo.bid_price,
+            bid_amount: bbo.bid_amount,
+            ask_price: bbo.ask_price,
+            ask_amount: bbo.ask_amount,
+        })?;
+        Ok(true)
+    }
 
-        let bid_levels = data.get("b").and_then(|v| v.as_array());
-        let ask_levels = data.get("a").and_then(|v| v.as_array());
-
-        let mut cache = self.cache.borrow_mut();
-        let entry = cache.entry(symbol.clone()).or_default();
-
-        if push_type == "snapshot" {
-            *entry = BboCacheEntry::default();
+    fn parse_bbo_raw_borrowed<'a>(&self, raw: &'a [u8]) -> Option<RawBboFrame<'a>> {
+        let update = bybit_codec::parse_bbo_update_raw_borrowed(raw)?;
+        if update.seq_id == 0 {
+            return None;
         }
+        let merged = merge_bbo_update(
+            &self.cache,
+            update.symbol,
+            update.reset_seq,
+            update.bid,
+            update.ask,
+        )?;
+        Some(RawBboFrame {
+            symbol: update.symbol,
+            timestamp_us: update.timestamp_us,
+            seq_id: update.seq_id,
+            reset_seq: update.reset_seq,
+            bid_price: merged.bid_price,
+            bid_amount: merged.bid_amount,
+            ask_price: merged.ask_price,
+            ask_amount: merged.ask_amount,
+        })
+    }
 
-        if let Some(arr) = bid_levels {
-            if let Some((p, a)) = pick_top_level(arr, &symbol, "b")? {
-                entry.bid_price = p;
-                entry.bid_amount = a;
+    fn parse_trades_raw_borrowed<'a>(
+        &self,
+        raw: &'a [u8],
+        emit: &mut dyn FnMut(RawTradeFrame<'a>),
+    ) -> bool {
+        bybit_codec::parse_trades_raw_borrowed(raw, |trade| {
+            emit(RawTradeFrame {
+                symbol: trade.symbol,
+                timestamp_us: trade.timestamp_us,
+                seq_id: trade.seq_id,
+                trade_id: trade.trade_id,
+                side: trade.side,
+                price: trade.price,
+                amount: trade.amount,
+            });
+            Some(())
+        })
+        .is_some()
+    }
+
+    fn parse_incremental_raw<'a>(&self, raw: &'a [u8]) -> Option<RawIncremental<'a>> {
+        let book = bybit_codec::parse_incremental_raw_view(raw)?;
+        Some(RawIncremental::View(RawIncrementalView {
+            symbol: book.symbol,
+            timestamp_us: book.timestamp_us,
+            seq_id: book.seq_id,
+            prev_seq_id: book.prev_seq_id,
+            first_update_id: book.first_update_id,
+            final_update_id: book.final_update_id,
+            gap_check: book.gap_check,
+            is_snapshot: book.is_snapshot,
+            bids_raw: book.bids_raw,
+            asks_raw: book.asks_raw,
+            bids_count: book.bids_count,
+            asks_count: book.asks_count,
+        }))
+    }
+
+    fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
+        parse_trade_frame(value)
+    }
+
+    fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
+        parse_incremental_frame(value)
+    }
+
+    fn parse_derivatives_frame(&self, value: &Value) -> Result<Vec<Bytes>> {
+        parse_derivatives_frame(value)
+    }
+
+    fn parse_frame(
+        &self,
+        value: &Value,
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
+        parse_bbo_frame(value, &self.cache, emit)
+    }
+
+    fn skip_json_fallback_after_raw_miss(&self) -> bool {
+        true
+    }
+
+    fn parse_derivatives_raw(
+        &self,
+        raw: &[u8],
+        symbol_slot: &mut dyn FnMut(&str) -> Option<usize>,
+    ) -> Option<Vec<Bytes>> {
+        if self.venue != TradingVenue::BybitFutures {
+            return None;
+        }
+        let mut encoded = Vec::new();
+        let parsed = bybit_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
+            let symbol = raw_derivative_symbol(&derivative);
+            if symbol_slot(symbol).is_some() {
+                encoded.extend(raw_derivative_to_bytes(derivative));
             }
-        }
-        if let Some(arr) = ask_levels {
-            if let Some((p, a)) = pick_top_level(arr, &symbol, "a")? {
-                entry.ask_price = p;
-                entry.ask_amount = a;
-            }
-        }
-
-        if push_type == "snapshot" {
-            // snapshot 必须同时给齐两侧
-            if entry.bid_price > 0.0 && entry.ask_price > 0.0 {
-                entry.seeded = true;
-            }
-        }
-
-        if !entry.seeded {
-            return Ok(Vec::new());
-        }
-        if entry.bid_price <= 0.0
-            || entry.ask_price <= 0.0
-            || entry.bid_amount <= 0.0
-            || entry.ask_amount <= 0.0
-        {
-            return Ok(Vec::new());
-        }
-
-        Ok(vec![BboFrame {
-            symbol,
-            ts_us,
-            seq_id,
-            reset_seq: push_type == "snapshot",
-            bid_price: entry.bid_price,
-            bid_amount: entry.bid_amount,
-            ask_price: entry.ask_price,
-            ask_amount: entry.ask_amount,
-        }])
+            Some(())
+        });
+        parsed.map(|_| encoded)
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -170,38 +284,244 @@ impl VenueAdapter for BybitAdapter {
     }
 }
 
-/// 取 `[[price, size], ...]` 形式数组的 top 一档；空数组返回 None；解析失败返回 Err。
-fn pick_top_level(arr: &[Value], symbol: &str, side: &str) -> Result<Option<(f64, f64)>> {
-    let Some(level) = arr.first() else {
-        return Ok(None);
-    };
-    let level = level
-        .as_array()
-        .ok_or_else(|| anyhow!("bybit {} {} top level is not an array", symbol, side))?;
-    if level.len() < 2 {
-        return Err(anyhow!(
-            "bybit {} {} top level needs [price,size]",
-            symbol,
-            side
-        ));
+fn build_bybit_subscribe(venue: TradingVenue, symbols: &[String], channel: &str) -> Vec<Value> {
+    let chunk_size = match venue {
+        TradingVenue::BybitMargin => BYBIT_SPOT_SUBSCRIBE_CHUNK,
+        _ => BYBIT_LINEAR_SUBSCRIBE_CHUNK,
     }
-    let price = level[0]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| anyhow!("bybit {} {} top price invalid", symbol, side))?;
-    let amount = level[1]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| anyhow!("bybit {} {} top amount invalid", symbol, side))?;
-    Ok(Some((price, amount)))
+    .max(1);
+
+    let mut out = Vec::new();
+    for chunk in symbols.chunks(chunk_size) {
+        let args: Vec<String> = chunk
+            .iter()
+            .map(|sym| format!("{}.{}", channel, sym.to_ascii_uppercase()))
+            .collect();
+        out.push(serde_json::json!({
+            "op": "subscribe",
+            "args": args,
+        }));
+    }
+    out
+}
+
+fn parse_bbo_frame(
+    value: &Value,
+    cache: &RefCell<BybitBboCache>,
+    emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+) -> Result<()> {
+    let topic = match value.get("topic").and_then(|v| v.as_str()) {
+        Some(topic) if topic.starts_with("orderbook.1.") => topic,
+        _ => return Ok(()),
+    };
+    let data = value
+        .get("data")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow!("bybit {} missing data object", topic))?;
+    if !data.contains_key("u") {
+        return Err(anyhow!("bybit {} missing data.u (updateId)", topic));
+    }
+    let Some(update) = bybit_codec::parse_bbo_update_json(value) else {
+        return Ok(());
+    };
+    if update.seq_id == 0 {
+        return Ok(());
+    }
+
+    let Some(entry) = merge_bbo_update(
+        cache,
+        &update.symbol,
+        update.reset_seq,
+        update.bid,
+        update.ask,
+    ) else {
+        return Ok(());
+    };
+
+    emit(BboFrame {
+        symbol: update.symbol,
+        ts_us: update.timestamp_us,
+        seq_id: update.seq_id,
+        reset_seq: update.reset_seq,
+        bid_price: entry.bid_price,
+        bid_amount: entry.bid_amount,
+        ask_price: entry.ask_price,
+        ask_amount: entry.ask_amount,
+    })?;
+    Ok(())
+}
+
+fn merge_bbo_update(
+    cache: &RefCell<BybitBboCache>,
+    symbol: &str,
+    reset_seq: bool,
+    bid: Option<bybit_codec::Level>,
+    ask: Option<bybit_codec::Level>,
+) -> Option<BboCacheEntry> {
+    let mut cache = cache.borrow_mut();
+    let entry = cache.entry_mut(symbol);
+    if reset_seq {
+        *entry = BboCacheEntry::default();
+    }
+    if let Some(bid) = bid {
+        entry.bid_price = bid.price;
+        entry.bid_amount = bid.amount;
+    }
+    if let Some(ask) = ask {
+        entry.ask_price = ask.price;
+        entry.ask_amount = ask.amount;
+    }
+    if reset_seq && entry.bid_price > 0.0 && entry.ask_price > 0.0 {
+        entry.seeded = true;
+    }
+    (entry.seeded
+        && entry.bid_price > 0.0
+        && entry.ask_price > 0.0
+        && entry.bid_amount > 0.0
+        && entry.ask_amount > 0.0)
+        .then_some(*entry)
+}
+
+fn parse_trade_frame(value: &Value) -> Result<Vec<TradeFrame>> {
+    Ok(bybit_codec::parse_trades_json(value)
+        .into_iter()
+        .map(|t| TradeFrame {
+            symbol: t.symbol,
+            timestamp_us: t.timestamp_us,
+            seq_id: t.seq_id,
+            trade_id: t.trade_id,
+            side: t.side,
+            price: t.price,
+            amount: t.amount,
+        })
+        .collect())
+}
+
+fn parse_incremental_frame(value: &Value) -> Result<Vec<IncrementalFrame>> {
+    let Some(book) = bybit_codec::parse_incremental_json(value) else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![IncrementalFrame::Book {
+        symbol: book.symbol,
+        timestamp: book.timestamp_us,
+        seq_id: book.seq_id,
+        prev_seq_id: book.prev_seq_id,
+        first_update_id: book.first_update_id,
+        final_update_id: book.final_update_id,
+        gap_check: book.gap_check,
+        is_snapshot: book.is_snapshot,
+        bids: book_levels_to_msg(book.bids),
+        asks: book_levels_to_msg(book.asks),
+    }])
+}
+
+fn parse_derivatives_frame(value: &Value) -> Result<Vec<Bytes>> {
+    let mut out = Vec::new();
+    for derivative in bybit_codec::parse_derivatives_json(value) {
+        out.push(derivative_to_bytes(derivative));
+    }
+    Ok(out)
+}
+
+fn derivative_to_bytes(derivative: bybit_codec::Derivative) -> Bytes {
+    match derivative {
+        bybit_codec::Derivative::MarkPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        bybit_codec::Derivative::IndexPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        bybit_codec::Derivative::FundingRate {
+            symbol,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => FundingRateMsg::create(symbol, funding_rate, next_funding_time_us, timestamp_us)
+            .to_bytes(),
+        bybit_codec::Derivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
+    }
+}
+
+fn raw_derivative_symbol<'a>(derivative: &'a bybit_codec::RawDerivative<'a>) -> &'a str {
+    match derivative {
+        bybit_codec::RawDerivative::Ticker { symbol, .. }
+        | bybit_codec::RawDerivative::Liquidation { symbol, .. } => symbol,
+    }
+}
+
+fn raw_derivative_to_bytes(derivative: bybit_codec::RawDerivative<'_>) -> Vec<Bytes> {
+    match derivative {
+        bybit_codec::RawDerivative::Ticker {
+            symbol,
+            mark_price,
+            index_price,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => {
+            let mut encoded = Vec::with_capacity(3);
+            if let Some(price) = mark_price.filter(|price| *price > 0.0) {
+                encoded.push(mark_price_msg_bytes_borrowed(symbol, price, timestamp_us));
+            }
+            if let Some(price) = index_price.filter(|price| *price > 0.0) {
+                encoded.push(index_price_msg_bytes_borrowed(symbol, price, timestamp_us));
+            }
+            if let Some(rate) = funding_rate {
+                encoded.push(funding_rate_msg_bytes_borrowed(
+                    symbol,
+                    rate,
+                    next_funding_time_us.unwrap_or(0),
+                    timestamp_us,
+                ));
+            }
+            encoded
+        }
+        bybit_codec::RawDerivative::Liquidation {
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        } => vec![liquidation_msg_bytes_borrowed(
+            symbol,
+            side,
+            amount,
+            price,
+            timestamp_us,
+        )],
+    }
+}
+
+fn book_levels_to_msg(levels: Vec<bybit_codec::Level>) -> Vec<Level> {
+    levels
+        .into_iter()
+        .map(|level| Level::from_values(level.price, level.amount))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
 
     fn v(raw: &str) -> Value {
         serde_json::from_str(raw).expect("test fixture must be valid JSON")
+    }
+
+    fn liquidation_timestamp(data: &[u8]) -> i64 {
+        let symbol_length = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + symbol_length + 1 + 8 + 8;
+        i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
     }
 
     #[test]
@@ -211,11 +531,12 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
         assert_eq!(f.seq_id, 1);
+        assert_eq!(f.ts_us, 1_700_000_000_000_000);
         assert!((f.bid_price - 100.0).abs() < 1e-9);
         assert!((f.ask_price - 101.0).abs() < 1e-9);
     }
@@ -227,7 +548,7 @@ mod tests {
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[],"u":1}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
+        assert!(a.collect_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]
@@ -237,13 +558,13 @@ mod tests {
             "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1,
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
         }"#;
-        a.parse_frame(&v(snap)).unwrap();
+        a.collect_frame(&v(snap)).unwrap();
         // 只更新 ask 一侧
         let delta = r#"{
             "topic":"orderbook.1.BTCUSDT","type":"delta","ts":2,
             "data":{"s":"BTCUSDT","b":[],"a":[["101.5","3"]],"u":2}
         }"#;
-        let frames = a.parse_frame(&v(delta)).unwrap();
+        let frames = a.collect_frame(&v(delta)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.seq_id, 2);
@@ -253,13 +574,38 @@ mod tests {
     }
 
     #[test]
+    fn raw_bbo_cache_merges_delta_and_preserves_snapshot_reset() {
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        let snapshot = br#"{
+            "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1700000000000,
+            "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]],"u":1}
+        }"#;
+        let bbo = a
+            .parse_bbo_raw_borrowed(snapshot)
+            .expect("raw snapshot BBO");
+        assert!(bbo.reset_seq);
+        assert_eq!(bbo.seq_id, 1);
+        assert_eq!((bbo.bid_price, bbo.ask_price), (100.0, 101.0));
+
+        let delta = br#"{
+            "topic":"orderbook.1.BTCUSDT","type":"delta","ts":1700000000001,
+            "data":{"s":"BTCUSDT","b":[],"a":[["101.5","3"]],"u":2}
+        }"#;
+        let bbo = a.parse_bbo_raw_borrowed(delta).expect("raw merged BBO");
+        assert!(!bbo.reset_seq);
+        assert_eq!(bbo.seq_id, 2);
+        assert_eq!((bbo.bid_price, bbo.bid_amount), (100.0, 1.0));
+        assert_eq!((bbo.ask_price, bbo.ask_amount), (101.5, 3.0));
+    }
+
+    #[test]
     fn missing_u_field_is_an_error() {
         let raw = r#"{
             "topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1,
             "data":{"s":"BTCUSDT","b":[["100","1"]],"a":[["101","2"]]}
         }"#;
         let a = BybitAdapter::new(TradingVenue::BybitFutures);
-        assert!(a.parse_frame(&v(raw)).is_err());
+        assert!(a.collect_frame(&v(raw)).is_err());
     }
 
     #[test]
@@ -292,5 +638,198 @@ mod tests {
         let msgs = a.build_subscribe(&symbols);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["args"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn decodes_public_trade_directly_with_microsecond_ts() {
+        let raw = r#"{
+            "topic":"publicTrade.BTCUSDT",
+            "data":[
+                {"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.5","i":"9001","seq":77},
+                {"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"0.2","p":"100.6","i":"11111111-2222-3333-4444-555555556666","seq":77}
+            ]
+        }"#;
+        let frames = parse_trade_frame(&v(raw)).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].symbol, "BTCUSDT");
+        assert_eq!(frames[0].timestamp_us, 1_700_000_000_123_000);
+        assert_eq!(frames[0].trade_id, 9001);
+        assert_eq!(frames[0].seq_id, 77_000_000);
+        assert_eq!(frames[0].side, 'B');
+        assert_eq!(frames[1].timestamp_us, 1_700_000_000_124_000);
+        assert_ne!(frames[0].seq_id, frames[1].seq_id);
+        assert_eq!(frames[1].side, 'S');
+    }
+
+    #[test]
+    fn raw_trade_hook_emits_entire_batch() {
+        let raw = br#"{
+            "topic":"publicTrade.BTCUSDT",
+            "data":[
+                {"T":1700000000123,"s":"BTCUSDT","S":"Buy","v":"0.1","p":"100.5","i":"9001","seq":77},
+                {"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"0.2","p":"100.6","i":"9002","seq":77}
+            ]
+        }"#;
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        let mut trades = Vec::new();
+        assert!(a.parse_trades_raw_borrowed(raw, &mut |trade| trades.push(trade)));
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].trade_id, 9001);
+        assert_eq!(trades[1].trade_id, 9002);
+        assert_ne!(trades[0].seq_id, trades[1].seq_id);
+    }
+
+    #[test]
+    fn decodes_incremental_orderbook_directly_with_microsecond_ts() {
+        let raw = r#"{
+            "topic":"orderbook.1000.BTCUSDT","type":"snapshot","ts":1700000000999,"cts":1700000000123,
+            "data":{"s":"BTCUSDT","b":[["100","1"],["99","2"]],"a":[["101","3"]],"u":12345,"seq":9}
+        }"#;
+        let frames = parse_incremental_frame(&v(raw)).unwrap();
+        assert_eq!(frames.len(), 1);
+        let IncrementalFrame::Book {
+            symbol,
+            timestamp,
+            seq_id,
+            first_update_id,
+            final_update_id,
+            gap_check,
+            is_snapshot,
+            bids,
+            asks,
+            ..
+        } = &frames[0]
+        else {
+            panic!("expected orderbook book frame");
+        };
+        assert_eq!(symbol, "BTCUSDT");
+        assert_eq!(*timestamp, 1_700_000_000_123_000);
+        assert_eq!(*seq_id, 12345);
+        assert_eq!(*first_update_id, 12345);
+        assert_eq!(*final_update_id, 12345);
+        assert!(!*gap_check);
+        assert!(*is_snapshot);
+        assert_eq!(bids.len(), 2);
+        assert_eq!(asks.len(), 1);
+        assert!((bids[0].price - 100.0).abs() < 1e-9);
+        assert!((asks[0].amount - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn raw_incremental_hook_returns_borrowed_view() {
+        let raw = br#"{
+            "topic":"orderbook.1000.BTCUSDT","type":"delta","ts":1700000000999,"cts":1700000000123,
+            "data":{"s":"BTCUSDT","b":[["100","1"],["99","2"]],"a":[["101","3"]],"u":12345}
+        }"#;
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        let RawIncremental::View(book) = a.parse_incremental_raw(raw).expect("raw depth") else {
+            panic!("expected borrowed raw depth view");
+        };
+        assert_eq!(book.symbol, "BTCUSDT");
+        assert_eq!(book.timestamp_us, 1_700_000_000_123_000);
+        assert_eq!((book.bids_count, book.asks_count), (2, 1));
+        assert!(!book.is_snapshot);
+    }
+
+    #[test]
+    fn decodes_derivatives_ticker_and_liquidation_with_microsecond_ts() {
+        let ticker = r#"{
+            "topic":"tickers.BTCUSDT","type":"snapshot","ts":1700000000123,
+            "data":{"symbol":"BTCUSDT","markPrice":"100.1","indexPrice":"99.9","fundingRate":"0.0001","nextFundingTime":"1700003600000"}
+        }"#;
+        let bytes = parse_derivatives_frame(&v(ticker)).unwrap();
+        assert_eq!(bytes.len(), 3);
+        assert_eq!(
+            MarkPriceMsg::get_timestamp(&bytes[0]),
+            1_700_000_000_123_000
+        );
+        assert_eq!(
+            IndexPriceMsg::get_timestamp(&bytes[1]),
+            1_700_000_000_123_000
+        );
+        assert_eq!(
+            FundingRateMsg::get_timestamp(&bytes[2]),
+            1_700_000_000_123_000
+        );
+        assert_eq!(
+            FundingRateMsg::get_next_funding_time(&bytes[2]),
+            1_700_003_600_000_000
+        );
+
+        let liquidation = r#"{
+            "topic":"allLiquidation.BTCUSDT","ts":1700000000999,
+            "data":[{"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"1.5","p":"98.7"}]
+        }"#;
+        let bytes = parse_derivatives_frame(&v(liquidation)).unwrap();
+        assert_eq!(bytes.len(), 1);
+        assert_eq!(get_msg_type(&bytes[0]), MktMsgType::LiquidationOrder);
+        assert_eq!(liquidation_timestamp(&bytes[0]), 1_700_000_000_124_000);
+    }
+
+    #[test]
+    fn decodes_delta_funding_without_next_funding_time() {
+        let ticker = r#"{
+            "topic":"tickers.HOMEUSDT","type":"delta","ts":1700000000456,
+            "data":{"symbol":"HOMEUSDT","fundingRate":"-0.00054238","markPrice":"0.0279"}
+        }"#;
+        let bytes = parse_derivatives_frame(&v(ticker)).unwrap();
+        assert_eq!(bytes.len(), 2);
+        assert_eq!(MarkPriceMsg::get_symbol(&bytes[0]), "HOMEUSDT");
+        assert_eq!(FundingRateMsg::get_symbol(&bytes[1]), "HOMEUSDT");
+        assert!((FundingRateMsg::get_funding_rate(&bytes[1]) + 0.00054238).abs() < 1e-12);
+        assert_eq!(FundingRateMsg::get_next_funding_time(&bytes[1]), 0);
+        assert_eq!(
+            FundingRateMsg::get_timestamp(&bytes[1]),
+            1_700_000_000_456_000
+        );
+    }
+
+    #[test]
+    fn raw_derivatives_hook_encodes_ticker_and_liquidation() {
+        let a = BybitAdapter::new(TradingVenue::BybitFutures);
+        a.seed_symbols(&["BTCUSDT".to_string(), "HOMEUSDT".to_string()]);
+
+        let ticker = br#"{
+            "topic":"tickers.HOMEUSDT","type":"delta","ts":1700000000456,
+            "data":{"symbol":"HOMEUSDT","fundingRate":"-0.00054238","markPrice":"0.0279"}
+        }"#;
+        let bytes = a
+            .parse_derivatives_raw(ticker, &mut |symbol| a.symbol_slot_index(symbol))
+            .expect("raw ticker");
+        assert_eq!(bytes.len(), 2);
+        assert_eq!(get_msg_type(&bytes[0]), MktMsgType::MarkPrice);
+        assert_eq!(get_msg_type(&bytes[1]), MktMsgType::FundingRate);
+        assert_eq!(FundingRateMsg::get_next_funding_time(&bytes[1]), 0);
+
+        let liquidation = br#"{
+            "topic":"allLiquidation.BTCUSDT","ts":1700000000999,
+            "data":[{"T":1700000000124,"s":"BTCUSDT","S":"Sell","v":"1.5","p":"98.7"}]
+        }"#;
+        let bytes = a
+            .parse_derivatives_raw(liquidation, &mut |symbol| a.symbol_slot_index(symbol))
+            .expect("raw liquidation");
+        assert_eq!(bytes.len(), 1);
+        assert_eq!(get_msg_type(&bytes[0]), MktMsgType::LiquidationOrder);
+        assert_eq!(liquidation_timestamp(&bytes[0]), 1_700_000_000_124_000);
+    }
+
+    #[test]
+    fn both_bybit_venues_are_raw_only() {
+        assert!(BybitAdapter::new(TradingVenue::BybitMargin).skip_json_fallback_after_raw_miss());
+        assert!(BybitAdapter::new(TradingVenue::BybitFutures).skip_json_fallback_after_raw_miss());
+    }
+
+    #[test]
+    fn derivatives_subscribe_is_futures_only() {
+        let futures = BybitAdapter::new(TradingVenue::BybitFutures);
+        let msgs = futures.build_derivatives_subscribe(&["BTCUSDT".to_string()]);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["args"][0], "tickers.BTCUSDT");
+        assert_eq!(msgs[1]["args"][0], "allLiquidation.BTCUSDT");
+
+        let margin = BybitAdapter::new(TradingVenue::BybitMargin);
+        assert!(margin
+            .build_derivatives_subscribe(&["BTCUSDT".to_string()])
+            .is_empty());
     }
 }

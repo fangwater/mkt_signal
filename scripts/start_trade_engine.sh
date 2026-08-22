@@ -131,6 +131,18 @@ else
   PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-trade_engine_${dir_tag}}}"
 fi
 RUST_LOG="${RUST_LOG:-info}"
+TCP_HEALTH_LOG_INTERVAL_MS="${TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS:-60000}"
+if [[ "$NS" == "fr" ]]; then
+  TCP_HEALTH_LOG_INTERVAL_MS=0
+  echo "[INFO] FR mode: TcpHealthSummary logging disabled"
+fi
+FAST_POLL_ENABLED="${enable_ipc_fast_poll:-${ENABLE_IPC_FAST_POLL:-0}}"
+FAST_POLL_ENABLED="${FAST_POLL_ENABLED,,}"
+case "$FAST_POLL_ENABLED" in
+  1|true|yes|y|on) FAST_POLL_ENABLED=1 ;;
+  0|false|no|n|off) FAST_POLL_ENABLED=0 ;;
+  *) echo "[ERROR] enable_ipc_fast_poll must be a boolean" >&2; exit 1 ;;
+esac
 
 find_trade_engine_pids() {
   ps -eo pid=,args= | awk -v base_dir="${BASE_DIR}" -v exchange="${EXCHANGE}" '
@@ -189,6 +201,7 @@ json_bin="$(json_escape "$BIN_PATH")"
 json_base="$(json_escape "$BASE_DIR")"
 json_exchange="$(json_escape "$EXCHANGE")"
 json_rust_log="$(json_escape "$RUST_LOG")"
+json_tcp_health_log_interval_ms="$(json_escape "$TCP_HEALTH_LOG_INTERVAL_MS")"
 
 cat >"$cfg_file" <<JSON
 {
@@ -199,7 +212,10 @@ cat >"$cfg_file" <<JSON
       "args": ["--exchange", "${json_exchange}"],
       "cwd": "${json_base}",
       "env": {
-        "RUST_LOG": "${json_rust_log}"
+        "RUST_LOG": "${json_rust_log}",
+        "TRADE_ENGINE_TCP_HEALTH_LOG_INTERVAL_MS": "${json_tcp_health_log_interval_ms}",
+        "enable_ipc_fast_poll": "${FAST_POLL_ENABLED}",
+        "ENABLE_IPC_FAST_POLL": "${FAST_POLL_ENABLED}"
       }
     }
   ]

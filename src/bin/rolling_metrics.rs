@@ -17,14 +17,11 @@ use tokio::signal;
 use tokio::time::{interval, sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::iceoryx_subscriber::{
-    ChannelType, MultiChannelSubscriber, SubscribeParams,
-};
-use mkt_signal::common::mkt_msg::{
+use ipc_common::iceoryx_subscriber::{ChannelType, MultiChannelSubscriber, SubscribeParams};
+use mkt_parsers::msg::mkt_msg::{
     get_msg_type, AskBidSpreadMsg, FundingRateMsg, IndexPriceMsg, MarkPriceMsg, MktMsgType,
 };
-use mkt_signal::common::redis_client::{RedisClient, RedisSettings};
-use mkt_signal::common::time_util::get_timestamp_us;
+use mkt_parsers::symbol_match::{normalize_symbol_for_pairing, normalize_symbol_for_premium_pair};
 use mkt_signal::rolling_metrics::config::{
     load_config_from_redis, FactorConfig, RollingConfig, DEFAULT_CONFIG_HASH_KEY,
     DEFAULT_OUTPUT_HASH_KEY, FACTOR_ASKBID, FACTOR_BIDASK, FACTOR_HEDGE_PREMIUM_RATE,
@@ -35,7 +32,12 @@ use mkt_signal::rolling_metrics::service::{
     ensure_series_capacity, init_log_prefix, log_prefix, new_series_map, spawn_compute_thread,
     ComputeResult, SeriesMap, SymbolSeries,
 };
-use mkt_signal::symbol_match::{normalize_symbol_for_pairing, normalize_symbol_for_premium_pair};
+use runtime_common::redis_client::{RedisClient, RedisSettings};
+use runtime_common::time_util::get_timestamp_us;
+
+const READER_IDLE_SLEEP: Duration = Duration::from_millis(100);
+const FLUSH_DUE_INTERVAL: Duration = Duration::from_millis(100);
+const CHANNEL_POLL_LIMIT: usize = 4192;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -56,10 +58,10 @@ struct Args {
     log_filter: String,
     #[arg(long, default_value_t = 1800)]
     symbol_refresh_sec: u64,
-    /// open 侧 dat_pbs 前缀（必填，如 binance-spot，可与 hedge 任意组合）
+    /// open 侧 venue 前缀（必填，如 binance-margin，可与 hedge 任意组合）
     #[arg(long)]
     open_venue: String,
-    /// hedge 侧 dat_pbs 前缀（必填，如 binance-futures，可与 open 任意组合）
+    /// hedge 侧 venue 前缀（必填，如 binance-futures，可与 open 任意组合）
     #[arg(long)]
     hedge_venue: String,
 }
@@ -492,24 +494,27 @@ async fn run_reader_loop(
     config: Arc<RwLock<RollingConfig>>,
 ) -> Result<()> {
     let mut subscriber = MultiChannelSubscriber::new(iceoryx_node)?;
+    const SPREAD_ROOT: &str = "spread_pbs";
+    const DERIVATIVES_ROOT: &str = "dat_pbs";
+
     subscriber.subscribe_channels(vec![
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(SPREAD_ROOT.to_string()),
             topic_prefix: open_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(SPREAD_ROOT.to_string()),
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::AskBidSpread,
         },
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(DERIVATIVES_ROOT.to_string()),
             topic_prefix: open_topic.to_string(),
             channel: ChannelType::Derivatives,
         },
         SubscribeParams {
-            service_root: Some("bridge".to_string()),
+            service_root: Some(DERIVATIVES_ROOT.to_string()),
             topic_prefix: hedge_topic.to_string(),
             channel: ChannelType::Derivatives,
         },
@@ -522,14 +527,17 @@ async fn run_reader_loop(
     setup_signal_handlers(&shutdown)?;
 
     info!(
-        "{}: reader loop started (prefix={}, open={}, hedge={})",
+        "{}: reader loop started (prefix={}, open={}, hedge={}, spread_root={}, derivatives_root={})",
         log_prefix(),
         prefix,
         open_topic,
-        hedge_topic
+        hedge_topic,
+        SPREAD_ROOT,
+        DERIVATIVES_ROOT
     );
 
     let mut next_log = Instant::now() + Duration::from_secs(30);
+    let mut next_flush_due = Instant::now();
 
     loop {
         if shutdown.is_cancelled() {
@@ -537,7 +545,16 @@ async fn run_reader_loop(
             break;
         }
 
-        for msg in subscriber.poll_channel(open_topic, &ChannelType::AskBidSpread, Some(64)) {
+        let mut processed_msgs = 0usize;
+
+        let open_spread_msgs = subscriber.poll_channel_from(
+            SPREAD_ROOT,
+            open_topic,
+            &ChannelType::AskBidSpread,
+            Some(CHANNEL_POLL_LIMIT),
+        );
+        processed_msgs += open_spread_msgs.len();
+        for msg in open_spread_msgs {
             process_quote_msg(
                 &msg,
                 &prefix,
@@ -550,7 +567,14 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::AskBidSpread, Some(64)) {
+        let hedge_spread_msgs = subscriber.poll_channel_from(
+            SPREAD_ROOT,
+            hedge_topic,
+            &ChannelType::AskBidSpread,
+            Some(CHANNEL_POLL_LIMIT),
+        );
+        processed_msgs += hedge_spread_msgs.len();
+        for msg in hedge_spread_msgs {
             process_quote_msg(
                 &msg,
                 &prefix,
@@ -563,7 +587,14 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(open_topic, &ChannelType::Derivatives, Some(64)) {
+        let open_derivative_msgs = subscriber.poll_channel_from(
+            DERIVATIVES_ROOT,
+            open_topic,
+            &ChannelType::Derivatives,
+            Some(CHANNEL_POLL_LIMIT),
+        );
+        processed_msgs += open_derivative_msgs.len();
+        for msg in open_derivative_msgs {
             process_derivatives_msg(
                 &msg,
                 &prefix,
@@ -576,7 +607,14 @@ async fn run_reader_loop(
             );
         }
 
-        for msg in subscriber.poll_channel(hedge_topic, &ChannelType::Derivatives, Some(64)) {
+        let hedge_derivative_msgs = subscriber.poll_channel_from(
+            DERIVATIVES_ROOT,
+            hedge_topic,
+            &ChannelType::Derivatives,
+            Some(CHANNEL_POLL_LIMIT),
+        );
+        processed_msgs += hedge_derivative_msgs.len();
+        for msg in hedge_derivative_msgs {
             process_derivatives_msg(
                 &msg,
                 &prefix,
@@ -589,28 +627,34 @@ async fn run_reader_loop(
             );
         }
 
-        let cfg_snapshot = { config.read().clone() };
         let current_total = series_map.len();
         let current_symbols = quotes.len();
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let capacity_snapshot = series_capacity.load(Ordering::SeqCst).max(1);
-        for (symbol, state) in quotes.iter_mut() {
-            let key = format!("{}::{}", prefix, symbol);
-            let series = get_or_insert_series(&*series_map, &key, capacity_snapshot);
-            for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
-                let ring = series.ensure_ring(factor_name);
-                let entry = state
-                    .factor_states
-                    .entry(factor_name.to_string())
-                    .or_insert_with(FactorResampleState::default);
-                entry.flush_due(
-                    factor_cfg.resample_interval_ms.max(1),
-                    now_ms,
-                    ring.as_ref(),
-                );
+
+        let now = Instant::now();
+        if now >= next_flush_due {
+            let cfg_snapshot = { config.read().clone() };
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let capacity_snapshot = series_capacity.load(Ordering::SeqCst).max(1);
+            for (symbol, state) in quotes.iter_mut() {
+                let key = format!("{}::{}", prefix, symbol);
+                let series = get_or_insert_series(&*series_map, &key, capacity_snapshot);
+                for (factor_name, factor_cfg) in cfg_snapshot.factors_iter() {
+                    let ring = series.ensure_ring(factor_name);
+                    let entry = state
+                        .factor_states
+                        .entry(factor_name.to_string())
+                        .or_insert_with(FactorResampleState::default);
+                    entry.flush_due(
+                        factor_cfg.resample_interval_ms.max(1),
+                        now_ms,
+                        ring.as_ref(),
+                    );
+                }
             }
+            next_flush_due = now + FLUSH_DUE_INTERVAL;
         }
-        if Instant::now() >= next_log {
+
+        if now >= next_log {
             info!(
                 "{}: symbols tracked={} (series entries={})",
                 log_prefix(),
@@ -630,7 +674,11 @@ async fn run_reader_loop(
         }
         last_symbol_count = current_symbols;
 
-        tokio::task::yield_now().await;
+        if processed_msgs == 0 {
+            tokio::time::sleep(READER_IDLE_SLEEP).await;
+        } else {
+            tokio::task::yield_now().await;
+        }
     }
 
     Ok(())

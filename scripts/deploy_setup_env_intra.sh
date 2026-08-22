@@ -164,7 +164,11 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR"
 
 ENV_FILE="$TARGET_DIR/env.sh"
-cat > "$ENV_FILE" << EOF
+if [[ -f "$ENV_FILE" ]]; then
+  echo "[INFO] $ENV_FILE 已存在，不重写（保留现有凭证）"
+  echo "[INFO] 如需重新生成，先 mv/rm 现有 env.sh 再跑 deploy"
+else
+  cat > "$ENV_FILE" << EOF
 #!/usr/bin/env bash
 # 自动生成的环境配置文件（intra 同所期现）
 # 环境后缀: $ENV_SUFFIX
@@ -175,6 +179,7 @@ cat > "$ENV_FILE" << EOF
 
 # IceOryx 命名空间（非 dat_pbs 通道会被加上该前缀）
 export IPC_NAMESPACE='$NAMESPACE'
+export TRADE_SIGNAL_ENABLE_QUEUE_POSITION='0'
 
 # 同所 venue
 export OPEN_VENUE='$OPEN_VENUE'
@@ -183,10 +188,14 @@ $(emit_creds_block "$EXCHANGE")
 
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"
+
+# Core binding overrides (optional)
+export ACCOUNT_MONITOR_CORE="\${ACCOUNT_MONITOR_CORE:-}"
+export PERSIST_MANAGER_CORE="\${PERSIST_MANAGER_CORE:-}"
 EOF
+  chmod +x "$ENV_FILE"
+  echo "[INFO] 环境配置已部署到 $TARGET_DIR"
+fi
 
-chmod +x "$ENV_FILE"
-
-echo "[INFO] 环境配置已部署到 $TARGET_DIR"
 echo "[INFO] 使用方法: source $ENV_FILE"
 echo "[INFO] namespace: $NAMESPACE"

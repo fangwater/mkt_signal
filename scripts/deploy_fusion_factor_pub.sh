@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="fusion_factor_pub"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
+KNOWN_EXTRA_VENUES=("bitget-coin-futures")
 
 is_known_exchange() {
   local v="${1,,}"
@@ -12,6 +13,14 @@ is_known_exchange() {
     if [[ "$v" == "$e" ]]; then
       return 0
     fi
+  done
+  return 1
+}
+
+is_known_extra_venue() {
+  local v="${1,,}"
+  for venue in "${KNOWN_EXTRA_VENUES[@]}"; do
+    [[ "$v" == "$venue" ]] && return 0
   done
   return 1
 }
@@ -34,7 +43,7 @@ default_venues_for_exchange() {
 usage() {
   cat <<'USAGE'
 Usage:
-  deploy_fusion_factor_pub.sh --exchange <exchange>
+  deploy_fusion_factor_pub.sh (--exchange <exchange> | --venue <venue>)
 
 Defaults:
   固定部署根目录 -> $HOME/fusion_factor
@@ -60,6 +69,7 @@ USAGE
 
 TARGET_ROOT="$HOME/fusion_factor"
 EXCHANGE=""
+VENUE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --exchange)
@@ -71,31 +81,41 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --venue)
+      VENUE="${2:-}"
+      [[ -n "$VENUE" ]] || { echo "[ERROR] --venue 需要一个值" >&2; exit 1; }
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      echo "[ERROR] 未知参数: $1（仅支持 --exchange）" >&2
+      echo "[ERROR] 未知参数: $1（仅支持 --exchange / --venue）" >&2
       usage >&2
       exit 1
       ;;
   esac
 done
 
-if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 必须提供 --exchange" >&2
+if [[ -n "$EXCHANGE" && -n "$VENUE" ]] || [[ -z "$EXCHANGE" && -z "$VENUE" ]]; then
+  echo "[ERROR] --exchange 与 --venue 必须且只能提供一个" >&2
   usage >&2
   exit 1
 fi
 
-if ! is_known_exchange "$EXCHANGE"; then
+if [[ -n "$EXCHANGE" ]] && ! is_known_exchange "$EXCHANGE"; then
   echo "[ERROR] 不支持的 exchange: $EXCHANGE" >&2
   usage >&2
   exit 1
 fi
 
-read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+if [[ -n "$VENUE" ]]; then
+  is_known_extra_venue "$VENUE" || { echo "[ERROR] 不支持的 venue: $VENUE" >&2; exit 1; }
+  VENUES=("${VENUE,,}")
+else
+  read -r -a VENUES <<<"$(default_venues_for_exchange "$EXCHANGE")"
+fi
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 cargo build --release --bin "$BIN_NAME"

@@ -32,8 +32,9 @@ from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INTRA_SCRIPT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "intra_scripts"))
 INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
+BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S = 300
+BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 
 # Per-symbol overrides 面板（amount_u / max_pos_u / hedge_offset_limits）：
 # 三 arb config_server 共用 helper，这里只负责 import + 在 HTML / 路由里挂接。
@@ -48,14 +49,39 @@ EXCHANGE_DEFAULTS = {
     "gate": ("gate-margin", "gate-futures"),
 }
 
+STRATEGY_BOOL_PARAM_KEYS = [
+    "enable_tlen_cancel",
+    "enable_intra_funding_close_signal",
+    "enable_environment_model",
+    "enable_volatility_limit",
+    "enable_taker_decsion_model",
+    "enable_taker_decsion_model_cancel",
+]
+
+REQUIRED_STRATEGY_PARAMS = {
+    "enable_intra_funding_close_signal": "false",
+    "vol_gate_compare": "lt",
+    "taker_decsion_nn_model_kalman_q": "0.02",
+}
+
+REQUIRED_STRATEGY_PARAM_COMMENTS = {
+    "enable_intra_funding_close_signal": "是否启用 intra funding close 信号（命中 current FR MA close 后仍需通过 spread close gate）",
+    "vol_gate_compare": "vol gate symbol 的放行方向：lt 表示 vol < threshold 才允许开仓；gt 表示 vol > threshold 才允许开仓",
+    "taker_decsion_nn_model_kalman_q": "nn_model local-level Kalman 平滑的 Q/R，有限且 >=0；'-' 表示不使用滤波器；默认 0.02",
+}
+
+REQUIRED_STRATEGY_PARAM_AFTER = {
+    "enable_intra_funding_close_signal": "spread_cancel_cooldown_ms",
+    "vol_gate_compare": "open_volatility_limit",
+    "taker_decsion_nn_model_kalman_q": "taker_decsion_nn_model_zmq_ipc",
+}
+
 ROLLING_METRICS_SCRIPT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "rolling_metrics",
 )
 if os.path.isdir(ROLLING_METRICS_SCRIPT_DIR):
-    sys.path.insert(0, ROLLING_METRICS_SCRIPT_DIR)
-if os.path.isdir(INTRA_SCRIPT_DIR):
-    sys.path.insert(0, INTRA_SCRIPT_DIR)
+    sys.path.append(ROLLING_METRICS_SCRIPT_DIR)
 
 
 def infer_dir_prefix_from_cwd() -> Optional[str]:
@@ -122,16 +148,6 @@ def venue_kind(venue: str) -> str:
     return raw.split("-", 1)[1]
 
 
-def attached_vol_source_key_for_venue(venue: str) -> str:
-    exchange = normalize_exchange((venue or "").split("-", 1)[0])
-    return f"rolling_metrics_params_{exchange}-margin_{exchange}-futures"
-
-
-def attached_vol_factor_name_for_venue(venue: str) -> str:
-    normalized = (venue or "").strip().lower()
-    return "hedge_vol" if normalized.endswith("-futures") else "open_vol"
-
-
 def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     text = str(raw).strip()
     if not text:
@@ -151,93 +167,15 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
 
 
 def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
+    del rds
     percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
-    source_key = attached_vol_source_key_for_venue(venue)
-    factor_name = attached_vol_factor_name_for_venue(venue)
-    raw_values = read_hash(rds, source_key)
-    if not raw_values:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "source hash missing",
-            "current_quantiles": [],
-        }
-
-    factors_raw = raw_values.get("factors", "").strip()
-    if not factors_raw:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "factors missing",
-            "current_quantiles": [],
-        }
-
-    try:
-        factors = json.loads(factors_raw)
-    except Exception as exc:
-        raise ValueError(f"invalid factors json in {source_key}: {exc}") from exc
-    if not isinstance(factors, dict):
-        raise ValueError(f"invalid factors object in {source_key}")
-
-    factor_cfg = factors.get(factor_name)
-    if not isinstance(factor_cfg, dict):
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": f"{factor_name} missing",
-            "current_quantiles": [],
-        }
-
-    quantiles_raw = factor_cfg.get("quantiles")
-    quantiles_list = quantiles_raw if isinstance(quantiles_raw, list) else []
-    normalized_quantiles: List[str] = []
-    requested_exists = False
-    for item in quantiles_list:
-        try:
-            value = float(item)
-        except Exception:
-            continue
-        text = str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.12g}"
-        normalized_quantiles.append(text)
-        if abs(value - percentile_value) < 1e-9:
-            requested_exists = True
-
-    will_trim = len(quantiles_list) > 8
-    will_modify = (not requested_exists) or will_trim
-    if not requested_exists:
-        modification_detail = f"{factor_name}_{percentile_text} missing"
-        if len(quantiles_list) >= 8:
-            modification_detail += ", append then trim oldest"
-    elif will_trim:
-        modification_detail = "quantiles exceed limit, will trim oldest"
-    else:
-        modification_detail = ""
-
     return {
         "venue": venue,
-        "source_key": source_key,
-        "factor": factor_name,
+        "mode": "inline",
         "percentile": percentile_value,
         "percentile_text": percentile_text,
-        "exists": requested_exists,
-        "will_modify": will_modify,
-        "modification_detail": modification_detail,
-        "current_quantiles": normalized_quantiles,
+        "window_capacity": 720,
+        "min_samples": 10,
     }
 
 
@@ -268,6 +206,20 @@ except Exception:
     STRATEGY_PARAM_COMMENTS = {}
     STRATEGY_PARAM_ORDER = []
 
+for key, value in REQUIRED_STRATEGY_PARAMS.items():
+    DEFAULT_STRATEGY_PARAMS.setdefault(key, value)
+for key, value in REQUIRED_STRATEGY_PARAM_COMMENTS.items():
+    STRATEGY_PARAM_COMMENTS.setdefault(key, value)
+for key, previous_key in REQUIRED_STRATEGY_PARAM_AFTER.items():
+    if key in STRATEGY_PARAM_ORDER:
+        continue
+    try:
+        insert_at = STRATEGY_PARAM_ORDER.index(previous_key) + 1
+    except ValueError:
+        STRATEGY_PARAM_ORDER.append(key)
+    else:
+        STRATEGY_PARAM_ORDER.insert(insert_at, key)
+
 try:
     import sync_intra_funding_thresholds as funding_defaults
 
@@ -283,6 +235,21 @@ INTRA_FACTOR_CHAIN: List[Dict[str, Any]] = [
     {"factor": "hedge_premium_rate", "enabled": True, "forward_open": 50, "backward_open": 50},
 ]
 
+# Intra funding close 使用固定阈值，不按 symbol funding period 做折算。
+INTRA_STATIC_FUNDING_CLOSE_DEFAULTS: Dict[str, str] = {
+    "forward_close": "-0.0004",
+    "backward_close": "0.0004",
+    "forward_extreme_close": "-0.001",
+    "backward_extreme_close": "0.001",
+}
+
+INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS: Dict[str, str] = {
+    "forward_close": "4h_forward_close",
+    "backward_close": "4h_backward_close",
+    "forward_extreme_close": "4h_forward_extreme_close",
+    "backward_extreme_close": "4h_backward_extreme_close",
+}
+
 
 def percentile_text_from_value(value: float) -> str:
     rounded = round(value)
@@ -292,11 +259,12 @@ def percentile_text_from_value(value: float) -> str:
 
 
 def _funding_dashboard_keys() -> List[str]:
-    """按因子链顺序展开 dashboard 平铺 key:`<factor>.enabled` / `.forward_open` / `.backward_open`。"""
+    """按因子链顺序展开 dashboard key，并追加 fixed close 止损阈值。"""
     keys: List[str] = []
     for entry in INTRA_FACTOR_CHAIN:
         f = entry["factor"]
         keys.extend([f"{f}.enabled", f"{f}.forward_open", f"{f}.backward_open"])
+    keys.extend(INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.keys())
     return keys
 
 
@@ -309,6 +277,7 @@ def default_funding_threshold_config(
         out[f"{f}.enabled"] = "true" if entry.get("enabled", True) else "false"
         out[f"{f}.forward_open"] = str(entry.get("forward_open", 50))
         out[f"{f}.backward_open"] = str(entry.get("backward_open", 50))
+    out.update(INTRA_STATIC_FUNDING_CLOSE_DEFAULTS)
     return out
 
 
@@ -319,6 +288,10 @@ def default_funding_threshold_comments() -> Dict[str, str]:
         out[f"{f}.enabled"] = f"[{f}] 是否启用 (链上 enabled=false 的因子在评估时跳过)"
         out[f"{f}.forward_open"] = f"[{f}] 正向开仓分位数 (0,99]"
         out[f"{f}.backward_open"] = f"[{f}] 反向开仓分位数 (0,99]"
+    out["forward_close"] = "固定正套平仓阈值：current_fr_ma < threshold 后，再过 forward close spread gate"
+    out["backward_close"] = "固定反套平仓阈值：current_fr_ma + current_loan_rate > threshold 后，再过 backward close spread gate"
+    out["forward_extreme_close"] = "固定正套极端平仓阈值：current_fr_ma < threshold 后，无视 spread close gate 直接发 close"
+    out["backward_extreme_close"] = "固定反套极端平仓阈值：current_fr_ma + current_loan_rate > threshold 后，无视 spread close gate 直接发 close"
     return out
 
 
@@ -333,38 +306,125 @@ def parse_bool_text(raw: Any, default: bool = True) -> bool:
     return default
 
 
-def read_funding_threshold_config(
+def normalize_bool_param_text(raw: Any, field_name: str) -> str:
+    normalized = str(raw if raw is not None else "").strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return "true"
+    if normalized in ("0", "false", "no", "off", ""):
+        return "false"
+    raise ValueError(f"{field_name} must be true/false: {raw}")
+
+
+def env_flag_enabled(*names: str) -> bool:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value in ("1", "true", "TRUE", "True", "on", "ON", "yes", "YES", "Yes"):
+            return True
+    return False
+
+
+def arb_hedge_force_taker_env_enabled() -> bool:
+    return env_flag_enabled("ARB_HEDGE_FORCE_TAKER")
+
+
+def arb_hedge_lazy_taker_env_enabled() -> bool:
+    return env_flag_enabled("ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER")
+
+
+def static_funding_thresholds_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
+    env = (env_name or "").strip().lower()
+    if not env:
+        raise ValueError("env_name unavailable (no cwd prefix)")
+    return f"{env}:funding_rate_thresholds_{open_venue}_{hedge_venue}"
+
+
+def normalize_float_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        value = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number: {text}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be finite: {text}")
+    return f"{value:.12g}"
+
+
+def normalize_nonnegative_float_text(raw: Any, field_name: str) -> str:
+    text = normalize_float_text(raw, field_name)
+    if float(text) < 0.0:
+        raise ValueError(f"{field_name} must be >= 0: {raw}")
+    return text
+
+
+def normalize_nn_kalman_q_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    if text == "-":
+        return text
+    return normalize_nonnegative_float_text(text, field_name)
+
+
+def read_static_funding_close_thresholds(
     rds, open_venue: str, hedge_venue: str
-) -> Dict[str, str]:
-    """从 Redis 读 factor_chain JSON,展平成 dashboard 用的 `<factor>.<key>` flat dict。"""
+) -> Tuple[str, Dict[str, str]]:
+    key = static_funding_thresholds_key(infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
+    raw = read_hash(rds, key)
+    values = {}
+    for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items():
+        legacy_field = INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS.get(field)
+        values[field] = raw.get(field, raw.get(legacy_field, default) if legacy_field else default)
+    return key, values
+
+
+def write_static_funding_close_thresholds(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    values: Dict[str, Any],
+) -> Dict[str, Any]:
+    key = static_funding_thresholds_key(infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
+    mapping = {}
+    for field, default in INTRA_STATIC_FUNDING_CLOSE_DEFAULTS.items():
+        legacy_field = INTRA_STATIC_FUNDING_CLOSE_LEGACY_FIELDS.get(field)
+        raw_value = values.get(field, values.get(legacy_field, default) if legacy_field else default)
+        mapping[field] = normalize_float_text(raw_value, field)
+    write_hash(rds, key, mapping)
+    return {"key": key, "count": len(mapping), "values": mapping}
+
+
+def read_funding_threshold_config(rds, open_venue: str, hedge_venue: str) -> Dict[str, str]:
+    """从 Redis 读 factor_chain JSON + fixed close 阈值，展平成 dashboard flat dict。"""
     defaults = default_funding_threshold_config(open_venue, hedge_venue)
+    out = dict(defaults)
     key = threshold_mapping_key("funding", open_venue, hedge_venue)
     raw = rds.get(key)
-    if not raw:
-        return defaults
+    if raw:
+        try:
+            decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            parsed = json.loads(decoded)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            chain = parsed.get("factor_chain")
+            if isinstance(chain, list):
+                for entry in chain:
+                    if not isinstance(entry, dict):
+                        continue
+                    f = str(entry.get("factor") or "").strip()
+                    if not f:
+                        continue
+                    if "enabled" in entry:
+                        out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
+                    if "forward_open" in entry:
+                        out[f"{f}.forward_open"] = str(entry["forward_open"])
+                    if "backward_open" in entry:
+                        out[f"{f}.backward_open"] = str(entry["backward_open"])
     try:
-        decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        parsed = json.loads(decoded)
+        _, close_values = read_static_funding_close_thresholds(rds, open_venue, hedge_venue)
+        out.update(close_values)
     except Exception:
-        return defaults
-    if not isinstance(parsed, dict):
-        return defaults
-    chain = parsed.get("factor_chain")
-    if not isinstance(chain, list):
-        return defaults
-    out = dict(defaults)  # 用 default 填底,Redis 有的覆盖
-    for entry in chain:
-        if not isinstance(entry, dict):
-            continue
-        f = str(entry.get("factor") or "").strip()
-        if not f:
-            continue
-        if "enabled" in entry:
-            out[f"{f}.enabled"] = "true" if bool(entry["enabled"]) else "false"
-        if "forward_open" in entry:
-            out[f"{f}.forward_open"] = str(entry["forward_open"])
-        if "backward_open" in entry:
-            out[f"{f}.backward_open"] = str(entry["backward_open"])
+        pass
     return out
 
 
@@ -411,8 +471,11 @@ def write_funding_threshold_config(
         "rolling_key": f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}",
     }
     rds.set(key, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    close_result = write_static_funding_close_thresholds(rds, open_venue, hedge_venue, values)
+    flat_out.update(close_result["values"])
     return {
         "key": key,
+        "static_close_key": close_result["key"],
         "count": len(flat_out),
         "values": flat_out,
     }
@@ -708,10 +771,6 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>UniMMR 平仓候选 <span class="hint">{env}:intra_unimmr_close_symbols</span></h3>
-          <textarea id="sym-unimmr-close" class="mono" placeholder="每行一个 symbol"></textarea>
-        </div>
-        <div>
           <h3>正套建仓 <span class="hint">intra_fwd_trade_symbols</span></h3>
           <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
@@ -720,7 +779,11 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-      <div class="hint">说明：intra 统一按基础 symbol 管理；支持逗号/空格/换行分隔，保存时会做大写和基础归一化。</div>
+          <h3>Vol Gate <span class="hint">intra_vol_gate_symbols</span></h3>
+          <textarea id="sym-vol-gate" class="mono" placeholder="每行一个 symbol"></textarea>
+        </div>
+        <div>
+      <div class="hint">说明：intra 统一按基础 symbol 管理；支持逗号/空格/换行分隔，保存时会做大写和基础归一化。只有 Vol Gate 列表内的 symbol 会应用 inline volatility gate。</div>
         </div>
       </div>
       <div id="sym-status" class="status"></div>
@@ -736,7 +799,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`enable_intra_funding_close_signal` 控制 current FR MA close 信号（仍需通过 spread close gate）；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`enable_volatility_limit` 启用后，仅 Vol Gate symbol list 内的 symbol 会用 `open_volatility_limit` 做 inline volatility gate；`vol_gate_compare=lt` 表示 vol &lt; threshold 才允许开仓，`gt` 表示 vol &gt; threshold 才允许开仓。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -765,7 +828,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
           <button id="funding-default" class="ghost">默认</button>
         </div>
       </div>
-      <div class="hint" style="margin-bottom: 10px;">只配置 enable 与 forward/backward 两个分位数。固定使用 hedge_premium_rate；trade_signal 会自动读取 rolling quantiles，不需要手工同步阈值。</div>
+      <div class="hint" style="margin-bottom: 10px;">前半段配置 hedge_premium_rate open filter 的 enable 与 forward/backward 分位数；`forward_close` / `backward_close` 是普通 funding close 固定阈值，命中后仍需通过 spread close gate；`forward_extreme_close` / `backward_extreme_close` 是极端 close 固定阈值，命中后无视 spread gate 直接发 close。trade_signal 不按 symbol funding period 折算。</div>
       <div id="funding-table" class="kv-table"></div>
       <div id="funding-status" class="status"></div>
     </section>
@@ -900,6 +963,14 @@ __PER_SYMBOL_PANELS_HTML__
       return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', ''].includes(normalized);
     }
 
+    function booleanParamKeys(containerId) {
+      const schema = BOOTSTRAP.param_schema || {};
+      if (containerId === 'strategy-table') {
+        return new Set(schema.strategy_bool_params || []);
+      }
+      return new Set();
+    }
+
     async function fetchJson(url, opts = {}) {
       const resp = await fetch(url, opts);
       if (!resp.ok) {
@@ -919,6 +990,7 @@ __PER_SYMBOL_PANELS_HTML__
       Object.keys(values).forEach(key => {
         if (!ordered.includes(key)) ordered.push(key);
       });
+      const boolKeys = booleanParamKeys(containerId);
       ordered.forEach(key => {
         const row = document.createElement('div');
         row.className = 'kv-row';
@@ -931,9 +1003,8 @@ __PER_SYMBOL_PANELS_HTML__
         inputCell.className = 'kv-input';
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
-          ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key)) ||
-           (containerId === 'funding-table' && ['enabled'].includes(key))) &&
+          ((containerId === 'strategy-table' && boolKeys.has(key)) ||
+           (containerId === 'funding-table' && key.endsWith('.enabled'))) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {
@@ -983,11 +1054,40 @@ __PER_SYMBOL_PANELS_HTML__
     }
 
     async function refreshStrategyVolPreview() {
-      setStatus('strategy-vol-preview', '', '');
+      const input = findStrategyInput('open_volatility_limit');
+      if (!input) {
+        setStatus('strategy-vol-preview', '', '');
+        return;
+      }
+
+      const raw = String(input.value || '').trim();
+      if (!raw) {
+        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法校验 inline volatility percentile。', 'warn');
+        return;
+      }
+
+      try {
+        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?${queryParams({ percentile: raw })}`);
+        setStatus(
+          'strategy-vol-preview',
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效。仅 Vol Gate symbol list 内的 symbol 生效；比较方向由 vol_gate_compare 控制，不读取/写入 rolling_metrics_params。`,
+          'ok'
+        );
+      } catch (err) {
+        setStatus('strategy-vol-preview', `Inline volatility 参数校验失败: ${err}`, 'err');
+      }
     }
 
     function bindStrategyVolPreview() {
-      setStatus('strategy-vol-preview', '', '');
+      const input = findStrategyInput('open_volatility_limit');
+      if (!input) {
+        setStatus('strategy-vol-preview', '', '');
+        return;
+      }
+      if (input.dataset.previewBound === '1') return;
+      input.dataset.previewBound = '1';
+      input.addEventListener('input', () => refreshStrategyVolPreview().catch(console.error));
+      input.addEventListener('change', () => refreshStrategyVolPreview().catch(console.error));
     }
 
     async function loadSymbolLists() {
@@ -995,9 +1095,9 @@ __PER_SYMBOL_PANELS_HTML__
       try {
         const data = await fetchJson(`${apiUrl('symbol-lists')}?${queryParams()}`);
         document.getElementById('sym-dump').value = fromList(data.dump_symbols || []);
-        document.getElementById('sym-unimmr-close').value = fromList(data.unimmr_close_symbols || []);
         document.getElementById('sym-fwd').value = fromList(data.fwd_trade_symbols || []);
         document.getElementById('sym-bwd').value = fromList(data.bwd_trade_symbols || []);
+        document.getElementById('sym-vol-gate').value = fromList(data.vol_gate_symbols || []);
         setStatus('sym-status', '读取完成');
       } catch (err) {
         setStatus('sym-status', `读取失败: ${err}`, false);
@@ -1011,9 +1111,9 @@ __PER_SYMBOL_PANELS_HTML__
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
           dump_symbols: toList(document.getElementById('sym-dump').value),
-          unimmr_close_symbols: toList(document.getElementById('sym-unimmr-close').value),
           fwd_trade_symbols: toList(document.getElementById('sym-fwd').value),
           bwd_trade_symbols: toList(document.getElementById('sym-bwd').value),
+          vol_gate_symbols: toList(document.getElementById('sym-vol-gate').value),
         };
         await fetchJson(apiUrl('symbol-lists'), {
           method: 'POST',
@@ -1030,9 +1130,9 @@ __PER_SYMBOL_PANELS_HTML__
       const ex = normalizeExchange(BOOTSTRAP.default_exchange || '');
       const defaults = (BOOTSTRAP.defaults.symbol_lists || {})[ex] || {};
       document.getElementById('sym-dump').value = fromList(defaults.dump_symbols || []);
-      document.getElementById('sym-unimmr-close').value = fromList(defaults.unimmr_close_symbols || []);
       document.getElementById('sym-fwd').value = fromList(defaults.fwd_trade_symbols || []);
       document.getElementById('sym-bwd').value = fromList(defaults.bwd_trade_symbols || []);
+      document.getElementById('sym-vol-gate').value = fromList(defaults.vol_gate_symbols || []);
       setStatus('sym-status', '已载入默认列表');
     }
 
@@ -1050,10 +1150,20 @@ __PER_SYMBOL_PANELS_HTML__
     async function saveRiskParams() {
       setStatus('risk-status', '保存中...');
       try {
+        const values = collectParamValues('risk-table');
+        if (normalizeExchange(BOOTSTRAP.default_exchange || '') === 'binance') {
+          const key = 'arb_hedge_order_rate_limit_10s';
+          const value = Number(String(values[key] || '').trim());
+          if (!Number.isFinite(value) || value !== 300) {
+            const message = `报警：Binance 合约 10 秒报单频率上限必须为 300，当前值=${values[key] || '空'}，禁止保存。`;
+            window.alert(message);
+            throw new Error(message);
+          }
+        }
         const payload = {
           open_venue: openVenueInput.value.trim(),
           hedge_venue: hedgeVenueInput.value.trim(),
-          values: collectParamValues('risk-table'),
+          values,
         };
         const data = await fetchJson(apiUrl('risk-params'), {
           method: 'POST',
@@ -1432,7 +1542,7 @@ def read_symbol_list(rds, key: str) -> List[str]:
         decoded = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         data = json.loads(decoded)
         if isinstance(data, list):
-            return normalize_symbol_list(data)
+            return normalize_symbol_list_for_intra(data)
     except Exception:
         pass
     return []
@@ -1546,8 +1656,25 @@ def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
+    value, text = normalize_percentile_text(raw)
+    if not (0.0 <= value <= 100.0):
+        raise ValueError(f"{field_name} must be in [0,100]: {raw}")
+    return text
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
+    for key in STRATEGY_BOOL_PARAM_KEYS:
+        if key in normalized:
+            normalized[key] = normalize_bool_param_text(normalized[key], key)
+
+    nn_kalman_q_key = "taker_decsion_nn_model_kalman_q"
+    if nn_kalman_q_key in normalized:
+        normalized[nn_kalman_q_key] = normalize_nn_kalman_q_text(
+            normalized[nn_kalman_q_key], nn_kalman_q_key
+        )
+
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
@@ -1556,7 +1683,157 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
         )
+    if "open_volatility_limit" in normalized:
+        normalized["open_volatility_limit"] = normalize_percentile_param_text(
+            normalized["open_volatility_limit"], "open_volatility_limit"
+        )
+    if "vol_gate_compare" in normalized:
+        normalized["vol_gate_compare"] = normalize_vol_gate_compare_text(
+            normalized["vol_gate_compare"]
+        )
+
+    force_taker = arb_hedge_force_taker_env_enabled()
+    lazy_taker = arb_hedge_lazy_taker_env_enabled()
+    if force_taker and lazy_taker:
+        raise ValueError(
+            "ARB_HEDGE_FORCE_TAKER and ARB_HEDGE_LAZY_TAKER/ARB_HEDGE_lazy_TAKER "
+            "are mutually exclusive"
+        )
+
+    enable_key = "enable_taker_decsion_model"
+    if enable_key in normalized:
+        enabled = parse_bool_text(normalized[enable_key], False)
+        normalized[enable_key] = "true" if enabled else "false"
+        if enabled and force_taker:
+            raise ValueError(
+                "enable_taker_decsion_model=true conflicts with ARB_HEDGE_FORCE_TAKER=on"
+            )
+        if enabled and not lazy_taker:
+            raise ValueError(
+                "enable_taker_decsion_model=true requires ARB_HEDGE_LAZY_TAKER=on "
+                "or ARB_HEDGE_lazy_TAKER=on"
+            )
+
+    model_type_key = "taker_decsion_model_type"
+    if model_type_key in normalized:
+        model_type = str(normalized[model_type_key]).strip().lower()
+        if model_type not in ("tree_model", "nn_model"):
+            raise ValueError("taker_decsion_model_type must be tree_model or nn_model")
+        normalized[model_type_key] = model_type
+    else:
+        model_type = "tree_model"
+
+    model_enabled = parse_bool_text(normalized.get(enable_key), False)
+    service_key = "taker_decsion_model_service"
+    if (
+        model_enabled
+        and model_type == "tree_model"
+        and str(normalized.get(service_key, "")).strip() in ("", "-")
+    ):
+        raise ValueError(
+            "tree_model requires taker_decsion_model_service when taker decision is enabled"
+        )
+
+    score_rolling_mean_window_key = "taker_decsion_model_score_rolling_mean_window"
+    keep_long_key = "taker_decsion_model_keep_long_percentile"
+    keep_short_key = "taker_decsion_model_keep_short_percentile"
+    open_cancel_long_key = "taker_decsion_model_open_cancel_long_percentile"
+    open_cancel_short_key = "taker_decsion_model_open_cancel_short_percentile"
+    if model_type == "tree_model":
+        if score_rolling_mean_window_key in normalized:
+            normalized[score_rolling_mean_window_key] = normalize_positive_int_text(
+                normalized[score_rolling_mean_window_key], score_rolling_mean_window_key
+            )
+        if keep_long_key in normalized:
+            normalized[keep_long_key] = normalize_percentile_param_text(
+                normalized[keep_long_key], keep_long_key
+            )
+        if keep_short_key in normalized:
+            normalized[keep_short_key] = normalize_percentile_param_text(
+                normalized[keep_short_key], keep_short_key
+            )
+        if open_cancel_long_key in normalized:
+            normalized[open_cancel_long_key] = normalize_percentile_param_text(
+                normalized[open_cancel_long_key], open_cancel_long_key
+            )
+        if open_cancel_short_key in normalized:
+            normalized[open_cancel_short_key] = normalize_percentile_param_text(
+                normalized[open_cancel_short_key], open_cancel_short_key
+            )
+        if keep_long_key in normalized and keep_short_key in normalized:
+            keep_long = float(normalized[keep_long_key])
+            keep_short = float(normalized[keep_short_key])
+            if keep_short > keep_long:
+                raise ValueError(
+                    "taker_decsion_model_keep_short_percentile must be <= "
+                    "taker_decsion_model_keep_long_percentile"
+                )
+        if open_cancel_long_key in normalized and open_cancel_short_key in normalized:
+            open_cancel_long = float(normalized[open_cancel_long_key])
+            open_cancel_short = float(normalized[open_cancel_short_key])
+            if open_cancel_short > open_cancel_long:
+                raise ValueError(
+                    "taker_decsion_model_open_cancel_short_percentile must be <= "
+                    "taker_decsion_model_open_cancel_long_percentile"
+                )
+    elif model_enabled:
+        endpoint_key = "taker_decsion_nn_model_zmq_ipc"
+        endpoint = str(normalized.get(endpoint_key, "")).strip()
+        if not endpoint.startswith("ipc://"):
+            raise ValueError(
+                "nn_model requires taker_decsion_nn_model_zmq_ipc starting with ipc://"
+            )
+        normalized[endpoint_key] = endpoint
+
+        nn_keep_long_key = "taker_decsion_nn_model_keep_long_score"
+        nn_keep_short_key = "taker_decsion_nn_model_keep_short_score"
+        nn_cancel_long_key = "taker_decsion_nn_model_open_cancel_long_score"
+        nn_cancel_short_key = "taker_decsion_nn_model_open_cancel_short_score"
+        nn_score_keys = (nn_keep_long_key, nn_keep_short_key)
+        for key in nn_score_keys:
+            if key not in normalized or not str(normalized[key]).strip():
+                raise ValueError(f"nn_model requires {key}")
+            normalized[key] = normalize_float_text(normalized[key], key)
+
+        if float(normalized[nn_keep_short_key]) > float(normalized[nn_keep_long_key]):
+            raise ValueError(
+                "taker_decsion_nn_model_keep_short_score must be <= "
+                "taker_decsion_nn_model_keep_long_score"
+            )
+        if parse_bool_text(
+            normalized.get("enable_taker_decsion_model_cancel"), True
+        ):
+            for key in (nn_cancel_long_key, nn_cancel_short_key):
+                if key not in normalized or not str(normalized[key]).strip():
+                    raise ValueError(f"nn_model with cancel enabled requires {key}")
+                normalized[key] = normalize_float_text(normalized[key], key)
+            if float(normalized[nn_cancel_short_key]) > float(
+                normalized[nn_cancel_long_key]
+            ):
+                raise ValueError(
+                    "taker_decsion_nn_model_open_cancel_short_score must be <= "
+                    "taker_decsion_nn_model_open_cancel_long_score"
+                )
     return normalized
+
+
+def normalize_vol_gate_compare_text(raw: Any) -> str:
+    text = str(raw).strip().lower()
+    aliases = {
+        "gt": "gt",
+        ">": "gt",
+        "greater": "gt",
+        "greater_than": "gt",
+        "above": "gt",
+        "lt": "lt",
+        "<": "lt",
+        "less": "lt",
+        "less_than": "lt",
+        "below": "lt",
+    }
+    if text in aliases:
+        return aliases[text]
+    raise ValueError(f"vol_gate_compare must be gt or lt: {raw}")
 
 
 def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
@@ -1568,12 +1845,35 @@ def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
         recover = float(str(normalized["unimmr_recover_line"]).strip())
     except Exception as exc:
         raise ValueError("unimmr_trigger_line/unimmr_recover_line must be numbers") from exc
-    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.5 < trigger < recover):
+    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.5 <= trigger < recover):
         raise ValueError(
-            "unimmr control lines must satisfy 1.5 < unimmr_trigger_line < unimmr_recover_line"
+            "unimmr control lines must satisfy 1.5 <= unimmr_trigger_line < unimmr_recover_line"
         )
     normalized["unimmr_trigger_line"] = f"{trigger:g}"
     normalized["unimmr_recover_line"] = f"{recover:g}"
+    return normalized
+
+
+def normalize_intra_risk_limits(exchange: str, mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    if normalize_exchange(exchange) != "binance":
+        return normalized
+
+    key = BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY
+    raw_value = str(normalized.get(key, "")).strip()
+    try:
+        value = float(raw_value)
+    except Exception as exc:
+        raise ValueError(
+            f"alert: Binance futures 10s order rate limit must be "
+            f"{BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S}, got {raw_value or 'empty'}; save rejected"
+        ) from exc
+    if not math.isfinite(value) or value != BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S:
+        raise ValueError(
+            f"alert: Binance futures 10s order rate limit must be "
+            f"{BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S}, got {raw_value}; save rejected"
+        )
+    normalized[key] = str(BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S)
     return normalized
 
 
@@ -1607,10 +1907,19 @@ def make_unimmr_close_key_suffix(open_venue: str, hedge_venue: str) -> str:
     return f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
 
 
-def build_unimmr_close_symbol_list_key(open_venue: str, hedge_venue: str) -> str:
-    base = f"intra_unimmr_close_symbols:{make_unimmr_close_key_suffix(open_venue, hedge_venue)}"
-    env_name = infer_dir_prefix_from_cwd() or ""
-    return f"{env_name}:{base}" if env_name else base
+
+def intra_symbol_list_key(env_name: str, name: str, key_suffix: str) -> str:
+    env = (env_name or "").strip().lower()
+    if not env:
+        raise ValueError("env_name unavailable (no cwd prefix)")
+    return f"{env}:intra_{name}:{key_suffix.strip().lower()}"
+
+
+def current_env_name() -> str:
+    env = infer_dir_prefix_from_cwd() or ""
+    if not env:
+        raise ValueError("env_name unavailable (no cwd prefix)")
+    return env
 
 
 def resolve_venues(
@@ -1651,12 +1960,15 @@ def get_symbol_defaults() -> Dict[str, Dict[str, List[str]]]:
     bwd_symbols = (
         list(getattr(SYMBOL_DEFAULTS_SRC, "BWD_SYMBOLS", [])) if SYMBOL_DEFAULTS_SRC else []
     )
+    vol_gate_symbols = (
+        list(getattr(SYMBOL_DEFAULTS_SRC, "VOL_GATE_SYMBOLS", [])) if SYMBOL_DEFAULTS_SRC else []
+    )
     for ex in SUPPORTED_EXCHANGES:
         defaults[ex] = {
             "dump_symbols": dump_symbols,
-            "unimmr_close_symbols": [],
             "fwd_trade_symbols": fwd_symbols,
             "bwd_trade_symbols": bwd_symbols,
+            "vol_gate_symbols": vol_gate_symbols,
         }
     return defaults
 
@@ -1881,6 +2193,7 @@ def generate_threshold_fields(
 def sync_thresholds(
     rds,
     kind: str,
+    env_name: str,
     open_venue: str,
     hedge_venue: str,
     key_suffix: str,
@@ -1901,12 +2214,9 @@ def sync_thresholds(
     if not mapping:
         raise RuntimeError(f"{kind} mapping is empty")
 
-    target_symbols = load_symbol_lists_fn(rds, key_suffix)
-    try:
-        unimmr_symbols = load_symbol_lists_fn(rds, key_suffix, infer_dir_prefix_from_cwd() or "", open_venue, hedge_venue)
-        target_symbols = sorted(set(target_symbols).union(unimmr_symbols))
-    except TypeError:
-        pass
+    target_symbols = load_symbol_lists_fn(
+        rds, key_suffix, env_name, open_venue, hedge_venue
+    )
     if symbol:
         target_symbols = [str(symbol).strip().upper()]
     if not target_symbols:
@@ -1970,9 +2280,11 @@ def sync_spread_thresholds(
 ) -> Dict[str, Any]:
     if spread_sync is None:
         raise RuntimeError("sync_intra_spread_thresholds.py not available")
+    env_name = current_env_name()
     return sync_thresholds(
         rds,
         "spread",
+        env_name,
         open_venue,
         hedge_venue,
         key_suffix,
@@ -1997,6 +2309,19 @@ def render_index_html(
     rolling_defaults_mapping = build_runtime_rolling_defaults(
         default_open_venue, default_hedge_venue
     )
+    risk_defaults_mapping = dict(DEFAULT_RISK_PARAMS)
+    risk_comments_mapping = dict(RISK_PARAM_COMMENTS)
+    if normalize_exchange(default_exchange) == "binance":
+        risk_defaults_mapping[BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY] = str(
+            BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S
+        )
+        existing_comment = risk_comments_mapping.get(
+            BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY, ""
+        )
+        risk_comments_mapping[BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY] = (
+            f"{existing_comment} (Binance fixed at "
+            f"{BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S}; other values are rejected)"
+        ).strip()
     bootstrap = {
         "env_name": infer_dir_prefix_from_cwd() or "",
         "exchanges": SUPPORTED_EXCHANGES,
@@ -2008,17 +2333,20 @@ def render_index_html(
                 default_open_venue, default_hedge_venue
             ),
         },
+        "param_schema": {
+            "strategy_bool_params": STRATEGY_BOOL_PARAM_KEYS,
+        },
         "exchange_defaults": EXCHANGE_DEFAULTS,
         "defaults": {
             "symbol_lists": get_symbol_defaults(),
-            "risk_params": DEFAULT_RISK_PARAMS,
+            "risk_params": risk_defaults_mapping,
             "strategy_params": DEFAULT_STRATEGY_PARAMS,
             "funding_thresholds": funding_defaults_mapping,
             "rolling_params": rolling_defaults_mapping,
             "spread_mapping": SPREAD_THRESHOLD_MAPPING,
         },
         "comments": {
-            "risk_params": RISK_PARAM_COMMENTS,
+            "risk_params": risk_comments_mapping,
             "strategy_params": STRATEGY_PARAM_COMMENTS,
             "funding_thresholds": default_funding_threshold_comments(),
         },
@@ -2031,8 +2359,16 @@ def render_index_html(
     }
 
     html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
-    html = html.replace("__PER_SYMBOL_PANELS_HTML__", ps_overrides.render_per_symbol_panels_html())
-    html = html.replace("__PER_SYMBOL_PANELS_JS__", ps_overrides.render_per_symbol_panels_js())
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_HTML__",
+        ps_overrides.render_per_symbol_panels_html()
+        + ps_overrides.render_taker_decision_model_panel_html(),
+    )
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_JS__",
+        ps_overrides.render_per_symbol_panels_js()
+        + ps_overrides.render_taker_decision_model_panel_js(),
+    )
     return html
 
 
@@ -2157,15 +2493,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             rds = self.server.context.redis_client
+            env_name = current_env_name()
             data = {
                 "exchange": exchange,
+                "env_name": env_name,
                 "key_suffix": key_suffix,
-                "dump_symbols": read_symbol_list(rds, f"intra_dump_symbols:{key_suffix}"),
-                "unimmr_close_symbols": read_symbol_list(
-                    rds, build_unimmr_close_symbol_list_key(open_venue, hedge_venue)
-                ),
-                "fwd_trade_symbols": read_symbol_list(rds, f"intra_fwd_trade_symbols:{key_suffix}"),
-                "bwd_trade_symbols": read_symbol_list(rds, f"intra_bwd_trade_symbols:{key_suffix}"),
+                "dump_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "dump_symbols", key_suffix)),
+                "fwd_trade_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix)),
+                "bwd_trade_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix)),
+                "vol_gate_symbols": read_symbol_list(rds, intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix)),
             }
             self._send_json(200, data)
             return
@@ -2301,6 +2637,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/taker-decision-model",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -2321,8 +2658,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = ps_overrides.read_hedge_offset_limits(
                         rds, env_name, open_venue, hedge_venue
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     data = ps_overrides.read_open_offset_lower(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+                else:
+                    data = ps_overrides.read_taker_decision_model(
                         rds, env_name, open_venue, hedge_venue
                     )
             except ValueError as exc:
@@ -2360,17 +2701,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             raw_dump = payload.get("dump_symbols") or []
-            raw_unimmr_close = payload.get("unimmr_close_symbols") or []
             raw_fwd = payload.get("fwd_trade_symbols") or []
             raw_bwd = payload.get("bwd_trade_symbols") or []
+            raw_vol_gate = payload.get("vol_gate_symbols") or []
             dump_symbols = normalize_symbol_list_for_intra(raw_dump)
-            unimmr_close_symbols = normalize_symbol_list_for_intra(raw_unimmr_close)
             fwd_symbols = normalize_symbol_list_for_intra(raw_fwd)
             bwd_symbols = normalize_symbol_list_for_intra(raw_bwd)
+            vol_gate_symbols = normalize_symbol_list_for_intra(raw_vol_gate)
             raw_dump_len, raw_dump_sample = summarize_symbol_payload(raw_dump)
-            raw_unimmr_close_len, raw_unimmr_close_sample = summarize_symbol_payload(raw_unimmr_close)
             raw_fwd_len, raw_fwd_sample = summarize_symbol_payload(raw_fwd)
             raw_bwd_len, raw_bwd_sample = summarize_symbol_payload(raw_bwd)
+            raw_vol_gate_len, raw_vol_gate_sample = summarize_symbol_payload(raw_vol_gate)
             print(
                 "[symbol-lists] exchange={} open={} hedge={} key_suffix={}".format(
                     exchange, open_v, hedge_v, key_suffix
@@ -2379,14 +2720,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             print(
                 "[symbol-lists] dump raw={} norm={} sample_raw={} sample_norm={}".format(
                     raw_dump_len, len(dump_symbols), raw_dump_sample, dump_symbols[:5]
-                )
-            )
-            print(
-                "[symbol-lists] unimmr_close raw={} norm={} sample_raw={} sample_norm={}".format(
-                    raw_unimmr_close_len,
-                    len(unimmr_close_symbols),
-                    raw_unimmr_close_sample,
-                    unimmr_close_symbols[:5],
                 )
             )
             print(
@@ -2399,26 +2732,23 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raw_bwd_len, len(bwd_symbols), raw_bwd_sample, bwd_symbols[:5]
                 )
             )
+            print(
+                "[symbol-lists] vol_gate raw={} norm={} sample_raw={} sample_norm={}".format(
+                    raw_vol_gate_len,
+                    len(vol_gate_symbols),
+                    raw_vol_gate_sample,
+                    vol_gate_symbols[:5],
+                )
+            )
             sys.stdout.flush()
 
             rds = self.server.context.redis_client
             try:
-                rds.set(
-                    f"intra_dump_symbols:{key_suffix}",
-                    json.dumps(dump_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    build_unimmr_close_symbol_list_key(open_v, hedge_v),
-                    json.dumps(unimmr_close_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    f"intra_fwd_trade_symbols:{key_suffix}",
-                    json.dumps(fwd_symbols, ensure_ascii=False),
-                )
-                rds.set(
-                    f"intra_bwd_trade_symbols:{key_suffix}",
-                    json.dumps(bwd_symbols, ensure_ascii=False),
-                )
+                env_name = current_env_name()
+                rds.set(intra_symbol_list_key(env_name, "dump_symbols", key_suffix), json.dumps(dump_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix), json.dumps(fwd_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix), json.dumps(bwd_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix), json.dumps(vol_gate_symbols, ensure_ascii=False))
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
@@ -2429,9 +2759,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "exchange": exchange,
                     "key_suffix": key_suffix,
                     "dump_count": len(dump_symbols),
-                    "unimmr_close_count": len(unimmr_close_symbols),
                     "fwd_count": len(fwd_symbols),
                     "bwd_count": len(bwd_symbols),
+                    "vol_gate_count": len(vol_gate_symbols),
                 },
             )
             return
@@ -2449,6 +2779,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
                 )
                 mapping = normalize_unimmr_control_lines(mapping)
+                mapping = normalize_intra_risk_limits(exchange, mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -2588,6 +2919,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/taker-decision-model",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2609,8 +2941,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     result = ps_overrides.write_hedge_offset_limits(
                         rds, env_name, open_v, hedge_v, values
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     result = ps_overrides.write_open_offset_lower(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+                else:
+                    result = ps_overrides.write_taker_decision_model(
                         rds, env_name, open_v, hedge_v, values
                     )
             except ValueError as exc:

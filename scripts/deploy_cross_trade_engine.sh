@@ -122,6 +122,7 @@ for file in "${EXTRA_FILES[@]}"; do
     chmod +x "$DEST_DIR/$(basename "$file")" 2>/dev/null || true
   fi
 done
+cross_sync_contract_ops_scripts "$ROOT_DIR" "$TARGET_DIR"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
 CARGO_TARGET_DIR_EFFECTIVE="$(cross_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
@@ -142,3 +143,4 @@ echo "[INFO] venues: open=${OPEN_VENUE} hedge=${HEDGE_VENUE}"
 echo "[INFO] 建议先配置 env: scripts/deploy_setup_env_cross.sh --env-name ${ENV_NAME} --open-venue ${OPEN_VENUE} --hedge-venue ${HEDGE_VENUE}"
 echo "[INFO] 手动启动: cd $TARGET_DIR && ./cross_scripts/start_cross_trade_engine.sh"
 echo "[INFO] 停止: cd $TARGET_DIR && ./cross_scripts/stop_cross_trade_engine.sh"
+echo "[INFO] 合约应急操作: cd $TARGET_DIR && ./cross_scripts/cross_contract_ops.py cancel both"

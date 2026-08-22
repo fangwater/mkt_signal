@@ -78,7 +78,7 @@ CARGO_TARGET_DIR_EFFECTIVE="$(intra_effective_cargo_target_dir "$ROOT_DIR" "$CAR
 (
   cd "$ROOT_DIR"
   CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
-    cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
+    cargo build --release -p trade_signal --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
 )
 BIN_PATH="$(intra_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 
@@ -121,34 +121,37 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     binance)
       OPS_TO_SYNC=(
         "flatten_binance_std.py"
+        "sell_binance_std_spot_excess.py"
         "flatten_margin_and_um.py"
         "flatten_binance_std_um.py"
         "cancel_binance_std_orders.py"
         "binance_cancel_all_std_spot_orders.py"
         "binance_cancel_all_std_um_ws_orders.py"
+        "binance_std_um_funding_fees.py"
         "binance_local_ip.py"
         "sell_margin_spot.py"
+        "set_online_futures_leverage.py"
       )
       OPS_CANCEL_CMD="./scripts/cancel_binance_std_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_binance_std.py"
       ;;
     okex)
-      OPS_TO_SYNC=("flatten_okex_pm.py" "cancel_okex_pm_orders.py")
+      OPS_TO_SYNC=("flatten_okex_pm.py" "cancel_okex_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_okex_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_okex_pm.py"
       ;;
     gate)
-      OPS_TO_SYNC=("flatten_gate_pm.py" "cancel_gate_pm_orders.py")
+      OPS_TO_SYNC=("flatten_gate_pm.py" "cancel_gate_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_gate_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_gate_pm.py"
       ;;
     bybit)
-      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py")
+      OPS_TO_SYNC=("flatten_bybit_pm.py" "cancel_bybit_pm_orders.py" "set_online_futures_leverage.py" "set_bybit_online_collateral.py")
       OPS_CANCEL_CMD="./scripts/cancel_bybit_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_bybit_pm.py"
       ;;
     bitget)
-      OPS_TO_SYNC=("flatten_bitget_pm.py" "cancel_bitget_pm_orders.py")
+      OPS_TO_SYNC=("flatten_bitget_pm.py" "cancel_bitget_pm_orders.py" "set_online_futures_leverage.py")
       OPS_CANCEL_CMD="./scripts/cancel_bitget_pm_orders.py"
       OPS_FLATTEN_CMD="./scripts/flatten_bitget_pm.py"
       ;;

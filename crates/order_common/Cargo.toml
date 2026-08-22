@@ -1,0 +1,13 @@
+[package]
+name = "order_common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ahash.workspace = true
+anyhow.workspace = true
+bytes = { version = "1.0", features = ["serde"] }
+log = "0.4"
+mkt_parsers = { path = "../mkt_parsers" }
+serde = { version = "1.0", features = ["derive"] }
+symbol_utils = { path = "../symbol_utils" }

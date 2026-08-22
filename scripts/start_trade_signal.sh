@@ -37,7 +37,7 @@ for cand in "${BIN_CANDIDATES[@]}"; do
 done
 
 if [[ -z "$BIN_PATH" ]]; then
-  echo "[ERROR] trade_signal binary not found. Build first with: cargo build --release --bin trade_signal"
+  echo "[ERROR] trade_signal binary not found. Build first with: cargo build --release -p trade_signal --bin trade_signal"
   exit 1
 fi
 
@@ -157,25 +157,42 @@ else
 fi
 PROC_NAME="${PM2_NAME:-$DEFAULT_PROC_NAME}"
 RUST_LOG="${RUST_LOG:-info}"
+QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+QUEUE_POSITION_ENABLED="${QUEUE_POSITION_ENABLED,,}"
+case "$QUEUE_POSITION_ENABLED" in
+  1|true|yes|on|0|false|no|off) ;;
+  *) echo "[ERROR] TRADE_SIGNAL_ENABLE_QUEUE_POSITION must be a boolean" >&2; exit 1 ;;
+esac
+
+if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
+  if [[ ! "$TRADE_SIGNAL_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_SIGNAL_CORE 必须为单个整数 (got: $TRADE_SIGNAL_CORE)" >&2
+    exit 1
+  fi
+  ARGS+=(--core "$TRADE_SIGNAL_CORE")
+  echo "[INFO] core bind ${TRADE_SIGNAL_CORE} (from $ENV_FILE:TRADE_SIGNAL_CORE)"
+fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
 if [[ -n "$LEGACY_PROC_NAME" ]]; then
-  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 fi
 if [[ -n "$BUGGY_PROC_NAME" && "$BUGGY_PROC_NAME" != "$PROC_NAME" ]]; then
-  npx pm2 delete "$BUGGY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$BUGGY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 fi
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
-RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
+RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" npx pm2 start "$BIN_PATH" \
   --name "$PROC_NAME" \
   --namespace "$NAMESPACE" \
+  --cwd "$BASE_DIR" \
   -- \
-  "${ARGS[@]}"
+  "${ARGS[@]}" \
+  </dev/null
 
 echo ""
-echo "[INFO] Started trade_signal (ns=${NS:-unknown} suffix=${SUFFIX:-unknown})"
-echo "Market data source: bridge/<venue>/{ask_bid_spread,derivatives}"
+echo "[INFO] Started trade_signal (ns=${NS:-unknown} suffix=${SUFFIX:-unknown} queue_position=${QUEUE_POSITION_ENABLED})"
+echo "Market data source: bridge for binance/gate/bitget; spread_pbs+dat_pbs for okex/bybit"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"

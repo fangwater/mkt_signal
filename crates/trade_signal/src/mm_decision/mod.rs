@@ -1,0 +1,1045 @@
+use anyhow::{Context, Result};
+use iceoryx2::prelude::*;
+use iceoryx2::service::ipc;
+use log::{debug, info, warn};
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
+use std::time::Duration;
+
+use super::arb_decision::DEFAULT_ARBITRAGE_BACKWARD_CHANNEL;
+use super::common::{normalize_tlens_for_compare, query_batch_tlens_or_zero};
+use super::mkt_channel::MktChannel;
+use super::tlen_threshold_loader;
+use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use ipc_common::iceoryx_publisher::SIGNAL_PAYLOAD;
+use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
+use quote_plan::inventory_hedge::{
+    build_inventory_hedge_from_key, build_inventory_hedge_quote_plan, InventoryHedgeBuildInput,
+    InventoryHedgeQuotePlan,
+};
+use runtime_common::ipc_service_name::build_service_name;
+use runtime_common::redis_client::RedisSettings;
+use runtime_common::time_util::get_timestamp_us;
+use signal_common::bbo::Bbo;
+use signal_common::common::{SignalBytes, TradingLeg};
+use signal_common::hedge_signal::{MmHedgeCtx, MmHedgeSignalQueryMsg};
+use signal_common::mm_signal::{MmBackwardQueryMsg, MmCancelCandidateQueryMsg};
+use signal_common::trade_signal::SignalType;
+
+mod cancel;
+pub mod from_key;
+mod open;
+mod state;
+
+use cancel::MmCancelDecision;
+use from_key::build_mm_cancel_from_key;
+use open::MmOpenDecision;
+#[cfg(test)]
+use state::compute_next_shifted_deadline_us;
+use state::MmDecisionState;
+
+thread_local! {
+    static MM_DECISION: OnceCell<RefCell<MmDecision>> = const { OnceCell::new() };
+}
+
+pub struct MmDecision {
+    state: MmDecisionState,
+    open_decision: MmOpenDecision,
+    cancel_decision: MmCancelDecision,
+    backward_sub: GenericSignalSubscriber,
+    _node: Node<ipc::Service>,
+}
+
+#[cfg(test)]
+fn compute_next_open_deadline_us(now_us: i64, interval_ms: u64) -> i64 {
+    compute_next_shifted_deadline_us(now_us, interval_ms, 0)
+}
+
+fn build_mm_hedge_ctx_from_plan(plan: InventoryHedgeQuotePlan) -> MmHedgeCtx {
+    let mut ctx = MmHedgeCtx::new();
+    ctx.opening_leg = TradingLeg::new_with_qty(
+        TradingVenue::from(plan.venue),
+        plan.quote.bid,
+        plan.quote.bid_qty,
+        plan.quote.ask,
+        plan.quote.ask_qty,
+        plan.quote.ts,
+    );
+    ctx.set_opening_symbol(&plan.symbol);
+    for level in &plan.levels {
+        let Some(price_qv) = signal_common::tick_math::QuantizedValue::encode_floor(
+            level.aligned_price,
+            plan.price_tick,
+        ) else {
+            continue;
+        };
+        let Some(amount_qv) = signal_common::tick_math::QuantizedValue::encode_floor(
+            level.aligned_qty,
+            plan.qty_tick,
+        ) else {
+            continue;
+        };
+        if price_qv.get_count() <= 0 || amount_qv.get_count() <= 0 {
+            continue;
+        }
+        ctx.price_qv_list.push(price_qv);
+        ctx.amount_qv_list.push(amount_qv);
+        ctx.price_offsets.push(level.offset);
+    }
+    ctx.signal_ts = plan.now_us;
+    ctx.next_query_ts = plan.next_query_ts;
+    ctx.set_from_key(build_inventory_hedge_from_key(
+        plan.now_us,
+        plan.signal_qtl,
+        plan.volatility,
+    ));
+    ctx
+}
+
+enum MmBackwardBatchItem {
+    CancelCandidates(MmCancelCandidateQueryMsg),
+    Hedge(String),
+}
+
+#[derive(Default)]
+struct MmBackwardQueryBatch {
+    items: Vec<MmBackwardBatchItem>,
+    hedge_queries: HashMap<String, MmHedgeSignalQueryMsg>,
+    hedge_counts: HashMap<String, usize>,
+    hedge_messages: usize,
+}
+
+impl MmBackwardQueryBatch {
+    fn push(&mut self, query: MmBackwardQueryMsg) {
+        match query {
+            MmBackwardQueryMsg::Hedge(query) => {
+                let key = query.get_symbol().to_uppercase();
+                self.items.push(MmBackwardBatchItem::Hedge(key.clone()));
+                self.hedge_queries.insert(key.clone(), query);
+                *self.hedge_counts.entry(key).or_insert(0) += 1;
+                self.hedge_messages += 1;
+            }
+            MmBackwardQueryMsg::CancelCandidates(query) => {
+                self.items
+                    .push(MmBackwardBatchItem::CancelCandidates(query));
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+impl MmDecision {
+    fn should_use_mm_hedge_taker(
+        weighted_inventory_price: f64,
+        bid: f64,
+        ask: f64,
+        threshold_pct: f64,
+    ) -> Option<(f64, f64)> {
+        if !(weighted_inventory_price.is_finite() && weighted_inventory_price > 0.0) {
+            return None;
+        }
+        let hedge_mid = Bbo::new(bid, ask, 0).get_mid_price().unwrap_or(0.0);
+        if !(hedge_mid.is_finite() && hedge_mid > 0.0) {
+            return None;
+        }
+        let pct_change = (hedge_mid - weighted_inventory_price).abs() / weighted_inventory_price;
+        let threshold_ratio = threshold_pct / 100.0;
+        Some((pct_change, threshold_ratio))
+    }
+
+    pub fn is_initialized() -> bool {
+        MM_DECISION.with(|cell| cell.get().is_some())
+    }
+
+    pub fn with<F, R>(f: F) -> R
+    where
+        F: FnOnce(&MmDecision) -> R,
+    {
+        MM_DECISION.with(|cell| {
+            let decision_ref = cell
+                .get()
+                .expect("MmDecision not initialized. Call init_singleton() first");
+            f(&decision_ref.borrow())
+        })
+    }
+
+    pub fn with_mut<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut MmDecision) -> R,
+    {
+        MM_DECISION.with(|cell| {
+            let decision_ref = cell
+                .get()
+                .expect("MmDecision not initialized. Call init_singleton() first");
+            f(&mut decision_ref.borrow_mut())
+        })
+    }
+
+    pub fn try_with_mut<F, R>(f: F) -> Option<R>
+    where
+        F: FnOnce(&mut MmDecision) -> R,
+    {
+        MM_DECISION.with(|cell| {
+            let decision_ref = cell.get()?;
+            Some(f(&mut decision_ref.borrow_mut()))
+        })
+    }
+
+    pub async fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
+        let result: Result<()> = MM_DECISION.with(|cell| {
+            if cell.get().is_some() {
+                return Ok(());
+            }
+
+            let decision = Self::new_sync(open_venue, hedge_venue)?;
+            cell.set(RefCell::new(decision))
+                .map_err(|_| anyhow::anyhow!("Failed to initialize MmDecision singleton"))?;
+
+            debug!(
+                "MmDecision singleton initialized, open={:?} hedge={:?}",
+                open_venue, hedge_venue
+            );
+            Ok(())
+        });
+        result?;
+
+        Self::refresh_min_qty_async(open_venue).await;
+        Self::spawn_backward_listener();
+        Self::spawn_tlen_threshold_loader();
+        info!("MmDecision backward listener started");
+        Ok(())
+    }
+
+    fn new_sync(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<Self> {
+        let node_name = NodeName::new("mm_decision")?;
+        let node = NodeBuilder::new()
+            .name(&node_name)
+            .create::<ipc::Service>()?;
+        let state = MmDecisionState::new(&node, open_venue, hedge_venue)?;
+        let backward_sub = Self::create_subscriber(&node, DEFAULT_ARBITRAGE_BACKWARD_CHANNEL)?;
+
+        Ok(Self {
+            state,
+            open_decision: MmOpenDecision::new(),
+            cancel_decision: MmCancelDecision::new(),
+            backward_sub,
+            _node: node,
+        })
+    }
+
+    fn create_subscriber(
+        node: &Node<ipc::Service>,
+        channel_name: &str,
+    ) -> Result<GenericSignalSubscriber> {
+        let service_name = build_service_name(&format!("signal_pubs/{}", channel_name));
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; SIGNAL_PAYLOAD]>()
+            .max_publishers(1)
+            .max_subscribers(32)
+            .history_size(128)
+            .subscriber_max_buffer_size(256)
+            .open()
+            .with_context(|| {
+                format!(
+                    "MMDecision: failed to open backward signal service={service_name}; start pre_trade first"
+                )
+            })?;
+
+        let subscriber = service.subscriber_builder().create()?;
+        Ok(GenericSignalSubscriber::Size4K(subscriber))
+    }
+
+    async fn refresh_min_qty_async(open_venue: TradingVenue) {
+        let mut open_table = signal_common::venue_min_qty_table::VenueMinQtyTable::new(open_venue);
+        let open_res = open_table.refresh().await;
+
+        Self::with_mut(|decision| {
+            if open_res.is_ok() {
+                decision.state.open_min_qty_table = open_table;
+            }
+        });
+
+        match open_res {
+            Ok(_) => debug!(
+                "MmDecision: open venue min_qty_table loaded, venue={:?}",
+                open_venue
+            ),
+            Err(err) => warn!(
+                "MmDecision: failed to refresh open venue filters for {:?}, price_tick may be zero: {err:#}",
+                open_venue
+            ),
+        }
+    }
+
+    pub fn update_order_interval_ms(&mut self, interval_ms: u64) {
+        self.state.update_order_interval_ms(interval_ms);
+    }
+
+    pub fn update_clock_timing_params(
+        &mut self,
+        order_interval_ms: u64,
+        next_query_delay_ms: u64,
+        clock_shift_ms: u64,
+    ) {
+        self.state.update_clock_timing_params(
+            order_interval_ms,
+            next_query_delay_ms,
+            clock_shift_ms,
+        );
+    }
+
+    pub fn next_open_deadline_us(&mut self, now_us: i64, symbols: &[String]) -> i64 {
+        self.state.next_open_deadline_us(now_us, symbols)
+    }
+
+    pub fn update_clock_shift_ms(&mut self, clock_shift_ms: u64) {
+        self.state.update_clock_shift_ms(clock_shift_ms);
+    }
+
+    pub fn update_open_orders_per_round(&mut self, open_orders_per_round: u32) {
+        self.state
+            .update_open_orders_per_round(open_orders_per_round);
+    }
+
+    pub fn update_open_vol_scale_ranges(
+        &mut self,
+        open_buy_vol_scale: [f64; 2],
+        open_sell_vol_scale: [f64; 2],
+    ) {
+        self.state
+            .update_open_vol_scale_ranges(open_buy_vol_scale, open_sell_vol_scale);
+    }
+
+    pub fn update_mm_hedge_params(
+        &mut self,
+        hedge_orders_per_round: u32,
+        hedge_vol_multiplier: f64,
+        hedge_offset_ratio: f64,
+        hedge_price_offset_limit_lower: f64,
+        hedge_price_offset_limit_upper: f64,
+        hedge_window_scale_low: f64,
+        hedge_window_scale_high: f64,
+        max_hedge_price_pct_change: f64,
+        next_query_delay_ms: u64,
+        enable_return_score_adjust_hedge: bool,
+    ) {
+        self.state.update_mm_hedge_params(
+            hedge_orders_per_round,
+            hedge_vol_multiplier,
+            hedge_offset_ratio,
+            hedge_price_offset_limit_lower,
+            hedge_price_offset_limit_upper,
+            hedge_window_scale_low,
+            hedge_window_scale_high,
+            max_hedge_price_pct_change,
+            next_query_delay_ms,
+            enable_return_score_adjust_hedge,
+        );
+    }
+
+    pub fn update_order_amount(&mut self, order_amount: f32) {
+        self.state.update_order_amount(order_amount);
+    }
+
+    pub fn update_order_amount_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, f64>,
+    ) {
+        self.state.update_order_amount_overrides(overrides);
+    }
+
+    pub fn update_open_offset_lower_overrides(
+        &mut self,
+        overrides: std::collections::HashMap<String, f64>,
+    ) {
+        self.state.update_open_offset_lower_overrides(overrides);
+    }
+
+    pub fn update_hedge_price_offset_limit_overrides(
+        &mut self,
+        lower_overrides: std::collections::HashMap<String, f64>,
+        upper_overrides: std::collections::HashMap<String, f64>,
+    ) {
+        self.state
+            .update_hedge_price_offset_limit_overrides(lower_overrides, upper_overrides);
+    }
+
+    pub fn update_open_order_timeout(&mut self, open_order_timeout_secs: u64) {
+        self.state
+            .update_open_order_timeout(open_order_timeout_secs);
+    }
+
+    pub fn update_return_score_cancel_params(
+        &mut self,
+        enabled: bool,
+        buy_cancel_quantile: f64,
+        sell_cancel_quantile: f64,
+        rolling_mean_window: usize,
+        thresholds: std::collections::HashMap<
+            String,
+            crate::return_score_threshold::ReturnScoreCancelThresholds,
+        >,
+    ) {
+        self.state.update_return_score_cancel_params(
+            enabled,
+            buy_cancel_quantile,
+            sell_cancel_quantile,
+            rolling_mean_window,
+            thresholds,
+        );
+    }
+
+    pub fn update_enable_tlen_cancel(&mut self, enabled: bool) {
+        self.state.update_enable_tlen_cancel(enabled);
+    }
+
+    pub fn update_enable_environment_model(&mut self, enabled: bool) {
+        self.state.update_enable_environment_model(enabled);
+    }
+
+    pub fn update_enable_volatility_limit(&mut self, enabled: bool) {
+        self.state.update_enable_volatility_limit(enabled);
+    }
+
+    pub fn update_open_volatility_limit(&mut self, percentile: f64) {
+        self.state.update_open_volatility_limit(percentile);
+    }
+
+    pub fn update_enable_tradecount_limit(&mut self, enabled: bool) {
+        self.state.update_enable_tradecount_limit(enabled);
+    }
+
+    pub fn update_open_tradecount_limit(&mut self, percentile: f64) {
+        self.state.update_open_tradecount_limit(percentile);
+    }
+
+    pub fn update_open_time_block(&mut self, enabled: bool, range: &str) {
+        self.state.update_open_time_block(enabled, range);
+    }
+
+    pub fn update_tlen_cancel_freq_ms(&mut self, tlen_cancel_freq_ms: u64) {
+        self.state.update_tlen_cancel_freq_ms(tlen_cancel_freq_ms);
+    }
+
+    pub fn process_cancel_trigger_interval(&mut self) {
+        if !self.state.enable_tlen_cancel || self.state.tlen_cancel_freq_ms == 0 {
+            return;
+        }
+        let now_us = get_timestamp_us();
+        let interval_us = (self.state.tlen_cancel_freq_ms as i64).saturating_mul(1_000);
+        if self.state.last_cancel_trigger_ts_us != 0
+            && now_us.saturating_sub(self.state.last_cancel_trigger_ts_us) < interval_us
+        {
+            return;
+        }
+        match self.state.emit_mm_cancel_trigger_signal(now_us) {
+            Ok(_) => {
+                self.state.last_cancel_trigger_ts_us = now_us;
+                debug!(
+                    "MmDecision: MMCancelTrigger emitted freq_ms={}",
+                    self.state.tlen_cancel_freq_ms
+                );
+            }
+            Err(err) => warn!("MmDecision: publish MMCancelTrigger failed: {err:#}"),
+        }
+    }
+
+    pub fn update_model_service_roles(
+        &mut self,
+        return_model_service: String,
+        environment_model_service: String,
+    ) {
+        self.state.update_model_service_roles(
+            &self._node,
+            return_model_service,
+            environment_model_service,
+        );
+    }
+
+    pub fn process_open_interval(&mut self) {
+        self.poll_input_updates();
+        self.open_decision.process_interval(&mut self.state);
+    }
+
+    fn poll_input_updates(&mut self) -> Vec<crate::model_output_hub::ModelOutputUpdateEvent> {
+        for (symbol_key, snapshot) in self
+            .state
+            .factor_value_hub
+            .poll_factor_value_updates_with_inline_sampling(Some(self.state.open_volatility_limit))
+        {
+            if snapshot.recomputed {
+                debug!(
+                    "MmDecision: inline open volatility threshold recomputed symbol={} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={}",
+                    symbol_key,
+                    snapshot.threshold.unwrap_or(f64::NAN),
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms.unwrap_or_default()
+                );
+            }
+        }
+        for (symbol_key, snapshot) in self
+            .state
+            .factor_value_hub
+            .poll_trade_flow_tradecount_updates(Some(self.state.open_tradecount_limit))
+        {
+            if snapshot.recomputed {
+                debug!(
+                    "MmDecision: inline open tradecount threshold recomputed symbol={} threshold={:.8} samples={} percentile={:.2} last_recompute_tp_ms={}",
+                    symbol_key,
+                    snapshot.threshold.unwrap_or(f64::NAN),
+                    snapshot.sample_count,
+                    snapshot.percentile,
+                    snapshot.last_recompute_tp_ms.unwrap_or_default()
+                );
+            }
+        }
+        self.state.model_output_hub.poll_updates()
+    }
+
+    pub fn process_return_score_updates(&mut self) {
+        let model_events = self.poll_input_updates();
+        self.cancel_decision
+            .process_return_score_updates(&mut self.state, model_events);
+    }
+
+    fn handle_mm_hedge_query(&mut self, query: MmHedgeSignalQueryMsg) {
+        if !MktChannel::is_initialized() {
+            warn!("MmDecision: MMHedge query skipped because MktChannel is not initialized yet");
+            return;
+        }
+        self.poll_input_updates();
+
+        let symbol = query.get_symbol().to_uppercase();
+        if symbol.is_empty() {
+            warn!("MmDecision: MMHedge query missing symbol");
+            return;
+        }
+        let clock_shift_ms = self.state.clock_shift_for_symbol(&symbol);
+        info!(
+            "MmDecision: MMHedge query received symbol={} clock_shift_ms={} request_seq={} net_qty={:.8} symbol_exposure_u={:.8} weighted_inventory_price={:.8} period_buy_qty={:.8} period_sell_qty={:.8} hedge_venue={:?} next_query_delay_ms={}",
+            symbol,
+            clock_shift_ms,
+            query.request_seq,
+            query.net_qty,
+            query.symbol_exposure_u,
+            query.weighted_inventory_price,
+            query.period_buy_qty,
+            query.period_sell_qty,
+            self.state.hedge_venue,
+            self.state.next_query_delay_ms
+        );
+        let quote = match MktChannel::instance().get_quote(&symbol, self.state.hedge_venue) {
+            Some(quote) => quote,
+            None => {
+                warn!(
+                    "MmDecision: MMHedge quote unavailable symbol={} venue={:?}",
+                    symbol, self.state.hedge_venue
+                );
+                return;
+            }
+        };
+        let model_service = self.state.return_model_service.clone();
+        let (signal, signal_qtl, volatility) = match resolve_inventory_hedge_signal_inputs(
+            &mut self.state.factor_value_hub,
+            Some(&mut self.state.model_output_hub),
+            Some(model_service.as_deref().unwrap_or("-")),
+            &symbol,
+            self.state.hedge_venue,
+            self.state.enable_return_score_adjust_hedge,
+        ) {
+            Ok(values) => values,
+            Err(err) => {
+                warn!(
+                    "MmDecision: MMHedge factor lookup failed symbol={} err={}",
+                    symbol, err
+                );
+                return;
+            }
+        };
+        let (offset_low, offset_high_limit) = self.state.resolve_hedge_price_offset_limits(&symbol);
+        let input = InventoryHedgeBuildInput {
+            venue: self.state.hedge_venue.into(),
+            symbol: &symbol,
+            quote,
+            volatility,
+            signal,
+            signal_qtl,
+            hedge_vol_multiplier: self.state.hedge_vol_multiplier,
+            hedge_offset_ratio: self.state.hedge_offset_ratio,
+            order_amount_u: self.state.resolve_order_amount_u(&symbol),
+            hedge_target_qty: query.net_qty,
+            target_base_qty: None,
+            inventory_net_qty: query.net_qty,
+            symbol_exposure_u: query.symbol_exposure_u,
+            hedge_orders_per_round: self.state.hedge_orders_per_round,
+            offset_low,
+            offset_high_limit,
+            hedge_window_scale_low: self.state.hedge_window_scale_low,
+            hedge_window_scale_high: self.state.hedge_window_scale_high,
+            next_query_delay_ms: self.state.next_query_delay_ms,
+            clock_shift_ms,
+            enable_return_score_adjust_hedge: self.state.enable_return_score_adjust_hedge,
+        };
+        let plan = match build_inventory_hedge_quote_plan(input, &self.state.open_min_qty_table) {
+            Ok(plan) => plan,
+            Err(err) => {
+                warn!(
+                    "MmDecision: build MMHedge plan failed symbol={} err={}",
+                    symbol, err
+                );
+                return;
+            }
+        };
+        let mut ctx = build_mm_hedge_ctx_from_plan(plan);
+        ctx.request_seq = query.request_seq;
+        if let Some((pct_change, threshold_ratio)) = Self::should_use_mm_hedge_taker(
+            query.weighted_inventory_price,
+            quote.bid,
+            quote.ask,
+            self.state.max_hedge_price_pct_change,
+        ) {
+            ctx.use_taker = pct_change > threshold_ratio;
+            let hedge_mid = Bbo::new(quote.bid, quote.ask, quote.ts)
+                .get_mid_price()
+                .unwrap_or(0.0);
+            let pct_change_pct = pct_change * 100.0;
+            let threshold_pct = threshold_ratio * 100.0;
+            info!(
+                "MmDecision: MMHedge mode decision symbol={} clock_shift_ms={} request_seq={} hedge_mid={:.8} weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare={:.6}% {} {:.6}% -> {}",
+                symbol,
+                clock_shift_ms,
+                query.request_seq,
+                hedge_mid,
+                query.weighted_inventory_price,
+                quote.bid,
+                quote.ask,
+                pct_change_pct,
+                if ctx.use_taker { ">" } else { "<=" },
+                threshold_pct,
+                if ctx.use_taker { "taker" } else { "maker" }
+            );
+        } else {
+            info!(
+                "MmDecision: MMHedge mode decision symbol={} clock_shift_ms={} request_seq={} hedge_mid=0 weighted_inventory_price={:.8} bid={:.8} ask={:.8} compare=0.000000% <= {:.6}% -> maker note=weighted_inventory_price_or_mid_invalid",
+                symbol,
+                clock_shift_ms,
+                query.request_seq,
+                query.weighted_inventory_price,
+                quote.bid,
+                quote.ask,
+                self.state.max_hedge_price_pct_change
+            );
+        }
+        let hedge_symbol = ctx.get_opening_symbol();
+        let tick_indices: Vec<i64> = ctx.price_qv_list.iter().map(|qv| qv.get_count()).collect();
+        if tick_indices.is_empty() {
+            warn!(
+                "MmDecision: MMHedge has empty tick_indices symbol={}",
+                symbol
+            );
+            return;
+        }
+        ctx.tlen_values = query_batch_tlens_or_zero(
+            "MmDecision: MMHedge",
+            &self.state.depth_query_client,
+            &hedge_symbol,
+            &tick_indices,
+        );
+        let context = ctx.to_bytes();
+        if let Err(err) = self.state.signal_pub.publish_trade_signal_parts(
+            SignalType::MMHedge,
+            get_timestamp_us(),
+            0.0,
+            context.as_ref(),
+        ) {
+            warn!(
+                "MmDecision: publish MMHedge failed symbol={} err={:#}",
+                symbol, err
+            );
+            return;
+        }
+        info!(
+            "MmDecision: MMHedge query reply symbol={} clock_shift_ms={} next_query_ts={} levels={} request_seq={}",
+            symbol,
+            clock_shift_ms,
+            ctx.next_query_ts,
+            ctx.price_qv_list.len(),
+            ctx.request_seq
+        );
+    }
+
+    fn handle_mm_cancel_candidate_query(&mut self, query: MmCancelCandidateQueryMsg) {
+        if query.groups.is_empty() {
+            debug!("MmDecision: MM cancel candidate query empty");
+            return;
+        }
+        if !MktChannel::is_initialized() {
+            warn!("MmDecision: MMCancel candidate query skipped because MktChannel is not initialized yet");
+            return;
+        }
+        self.poll_input_updates();
+
+        let now_us = get_timestamp_us();
+        let mut cancel_sent = 0usize;
+        let mut matched_symbols = 0usize;
+        for group in query.groups {
+            let symbol = group.get_symbol().to_uppercase();
+            if symbol.is_empty() || group.items.is_empty() {
+                continue;
+            }
+            let threshold_symbol = symbol.to_ascii_uppercase();
+            let Some(threshold) = self.state.tlen_thresholds.get(&threshold_symbol).copied() else {
+                debug!(
+                    "MmDecision: missing MM tlen threshold symbol={}",
+                    threshold_symbol
+                );
+                continue;
+            };
+            let tick_indices: Vec<i64> = group
+                .items
+                .iter()
+                .map(|item| item.price_qv.get_count())
+                .collect();
+            let values = match super::local_tlen::query_batch_local_only_for_cancel(
+                "MmDecision: MMCancel",
+                self.state.depth_query_client.venue_slug(),
+                &symbol,
+                &tick_indices,
+            ) {
+                Some(Some(values)) => values,
+                Some(None) => {
+                    debug!(
+                        "MmDecision: MMCancel tlen local cache unavailable symbol={} levels={}, skip",
+                        symbol,
+                        tick_indices.len()
+                    );
+                    continue;
+                }
+                None => match self
+                    .state
+                    .depth_query_client
+                    .query_batch_tick_indices(&symbol, &tick_indices)
+                {
+                    Ok(values) => values,
+                    Err(err) => {
+                        warn!(
+                            "MmDecision: MMCancel tlen batch query failed symbol={} levels={} err={:#}",
+                            symbol,
+                            tick_indices.len(),
+                            err
+                        );
+                        continue;
+                    }
+                },
+            };
+            let tlens = normalize_tlens_for_compare(
+                "MmDecision: MMCancel",
+                &self.state.open_min_qty_table,
+                self.state.open_venue,
+                &symbol,
+                values,
+            );
+            let open_quote = match MktChannel::instance().get_quote(&symbol, self.state.open_venue)
+            {
+                Some(quote) => quote,
+                None => {
+                    warn!(
+                        "MmDecision: MMCancel quote unavailable symbol={} venue={:?}",
+                        symbol, self.state.open_venue
+                    );
+                    continue;
+                }
+            };
+            let compared_preview = group
+                .items
+                .iter()
+                .zip(tlens.iter().copied())
+                .take(12)
+                .map(|(item, tlen)| {
+                    format!(
+                        "{}@{}:{:.4}{}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        if tlen < threshold { "<hit" } else { ">=skip" }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (min_tlen, max_tlen) = tlens.iter().copied().fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(min_v, max_v), value| (min_v.min(value), max_v.max(value)),
+            );
+            let mut matched_preview: Vec<String> = Vec::new();
+            let mut group_cancel_sent = 0usize;
+            for (item, tlen) in group.items.iter().zip(tlens.iter().copied()) {
+                if tlen >= threshold {
+                    continue;
+                }
+                if matched_preview.len() < 12 {
+                    matched_preview.push(format!(
+                        "{}@{}:{:.4}<{:.4}",
+                        item.strategy_id,
+                        item.price_qv.get_count(),
+                        tlen,
+                        threshold
+                    ));
+                }
+                let return_lookup = self.state.return_model_service.clone().map(|service_name| {
+                    self.state.model_output_hub.lookup_score(
+                        &service_name,
+                        &symbol,
+                        self.state.hedge_venue,
+                    )
+                });
+                let return_qtl = return_lookup
+                    .as_ref()
+                    .and_then(|lookup| lookup.score_quantile)
+                    .filter(|value| value.is_finite());
+                let volatility = self
+                    .state
+                    .factor_value_hub
+                    .lookup_factor_value(&symbol, self.state.hedge_venue)
+                    .target_factor_value
+                    .filter(|value| value.is_finite());
+                let symbol_key = normalize_symbol_for_whitelist(&symbol, TradingVenue::OkexFutures);
+                let environment_signal =
+                    self.state
+                        .evaluate_environment_signal(&symbol_key, &symbol, now_us);
+                let from_key = build_mm_cancel_from_key(
+                    now_us,
+                    return_qtl,
+                    None,
+                    volatility,
+                    &environment_signal,
+                    Some(threshold),
+                );
+                if let Err(err) = self.state.emit_mm_cancel_signal_precise(
+                    &symbol,
+                    open_quote,
+                    now_us,
+                    &from_key,
+                    item.strategy_id,
+                ) {
+                    warn!(
+                        "MmDecision: emit precise MMCancel failed symbol={} strategy_id={} err={:#}",
+                        symbol,
+                        item.strategy_id,
+                        err
+                    );
+                    continue;
+                }
+                cancel_sent += 1;
+                group_cancel_sent += 1;
+            }
+            debug!(
+                "MmDecision: MMCancel tlen compare symbol={} trigger_ts={} candidates={} threshold={:.4} min_tlen={:.4} max_tlen={:.4} details={}",
+                symbol,
+                query.trigger_ts,
+                tick_indices.len(),
+                threshold,
+                min_tlen,
+                max_tlen,
+                if compared_preview.is_empty() {
+                    "-".to_string()
+                } else {
+                    compared_preview.join(",")
+                }
+            );
+            if group_cancel_sent > 0 {
+                matched_symbols += 1;
+                debug!(
+                    "MmDecision: MMCancel tlen hits symbol={} trigger_ts={} candidates={} matched={} threshold={:.4} strategies={}",
+                    symbol,
+                    query.trigger_ts,
+                    tick_indices.len(),
+                    group_cancel_sent,
+                    threshold,
+                    matched_preview.join(",")
+                );
+            }
+        }
+        debug!(
+            "MmDecision: MMCancel candidate query processed trigger_ts={} matched_symbols={} cancels_sent={}",
+            query.trigger_ts, matched_symbols, cancel_sent
+        );
+    }
+
+    fn handle_backward_query_batch(&mut self, batch: MmBackwardQueryBatch) {
+        let unique_hedges = batch.hedge_queries.len();
+        let dropped_hedges = batch.hedge_messages.saturating_sub(unique_hedges);
+        if dropped_hedges > 0 {
+            debug!(
+                "MmDecision: MMHedge query batch deduped total={} unique={} dropped={}",
+                batch.hedge_messages, unique_hedges, dropped_hedges
+            );
+        }
+
+        let mut hedge_queries = batch.hedge_queries;
+        let mut hedge_counts = batch.hedge_counts;
+        for item in batch.items {
+            match item {
+                MmBackwardBatchItem::CancelCandidates(query) => {
+                    self.handle_mm_cancel_candidate_query(query);
+                }
+                MmBackwardBatchItem::Hedge(key) => {
+                    let Some(count) = hedge_counts.get_mut(&key) else {
+                        continue;
+                    };
+                    if *count > 1 {
+                        *count -= 1;
+                        continue;
+                    }
+                    hedge_counts.remove(&key);
+                    if let Some(query) = hedge_queries.remove(&key) {
+                        self.handle_mm_hedge_query(query);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn spawn_backward_listener() {
+        let fast_poll = crate::runtime_flags::enable_ipc_fast_poll();
+        tokio::task::spawn_local(async move {
+            loop {
+                let mut has_message = false;
+                MmDecision::with_mut(|decision| {
+                    let mut batch = MmBackwardQueryBatch::default();
+                    loop {
+                        match decision.backward_sub.receive_msg() {
+                            Ok(Some(data)) => {
+                                has_message = true;
+                                match MmBackwardQueryMsg::from_bytes(data) {
+                                    Ok(query) => batch.push(query),
+                                    Err(err) => {
+                                        warn!("MmDecision: decode MM backward query failed: {err}")
+                                    }
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                warn!("MmDecision: backward_sub receive error: {}", err);
+                                break;
+                            }
+                        }
+                    }
+                    if !batch.is_empty() {
+                        decision.handle_backward_query_batch(batch);
+                    }
+                });
+
+                if !has_message {
+                    crate::runtime_flags::idle_poll_wait(fast_poll).await;
+                }
+            }
+        });
+    }
+
+    fn tlen_threshold_reload_due(&self, now_us: i64) -> bool {
+        const RELOAD_INTERVAL_US: i64 = 30 * 1_000_000;
+        self.state.last_tlen_threshold_reload_ts_us == 0
+            || now_us.saturating_sub(self.state.last_tlen_threshold_reload_ts_us)
+                >= RELOAD_INTERVAL_US
+    }
+
+    fn spawn_tlen_threshold_loader() {
+        tokio::task::spawn_local(async move {
+            let redis = RedisSettings::default();
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let (due, open_venue, now_us) = MmDecision::with(|decision| {
+                    let now_us = get_timestamp_us();
+                    (
+                        decision.tlen_threshold_reload_due(now_us),
+                        decision.state.open_venue,
+                        now_us,
+                    )
+                });
+                if !due {
+                    continue;
+                }
+                match tlen_threshold_loader::load_from_redis(&redis, open_venue).await {
+                    Ok((redis_key, thresholds, bad_fields)) => {
+                        let symbols = thresholds.len();
+                        MmDecision::with_mut(|decision| {
+                            decision.state.tlen_thresholds = thresholds;
+                            decision.state.last_tlen_threshold_reload_ts_us = now_us;
+                        });
+                        info!(
+                            "MmDecision: tlen thresholds loaded key={} symbols={} bad_fields={}",
+                            redis_key, symbols, bad_fields
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            "MmDecision: tlen threshold reload failed venue={:?} err={:#}",
+                            open_venue, err
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::state::compute_next_shifted_deadline_us;
+    use super::{compute_next_open_deadline_us, MmDecision};
+
+    #[test]
+    fn mm_hedge_taker_switch_uses_weighted_inventory_price() {
+        let decision = MmDecision::should_use_mm_hedge_taker(100.0, 109.0, 111.0, 5.0)
+            .expect("valid decision inputs");
+        let (pct_change, threshold_ratio) = decision;
+        assert!((pct_change - 0.10).abs() < 1e-12);
+        assert!((threshold_ratio - 0.05).abs() < 1e-12);
+        assert!(pct_change > threshold_ratio);
+    }
+
+    #[test]
+    fn mm_hedge_taker_switch_returns_none_for_invalid_inventory_price() {
+        assert!(MmDecision::should_use_mm_hedge_taker(0.0, 99.0, 101.0, 5.0).is_none());
+    }
+
+    #[test]
+    fn next_open_deadline_aligns_to_minute_boundary() {
+        assert_eq!(
+            compute_next_open_deadline_us(59_999_000, 60_000),
+            60_000_000
+        );
+        assert_eq!(
+            compute_next_open_deadline_us(60_000_000, 60_000),
+            120_000_000
+        );
+    }
+
+    #[test]
+    fn next_open_deadline_aligns_to_ten_second_boundary() {
+        assert_eq!(compute_next_open_deadline_us(9_999_000, 10_000), 10_000_000);
+        assert_eq!(
+            compute_next_open_deadline_us(10_000_000, 10_000),
+            20_000_000
+        );
+    }
+
+    #[test]
+    fn next_open_deadline_preserves_shifted_boundary() {
+        assert_eq!(
+            compute_next_shifted_deadline_us(11_999_000, 10_000, 2_000),
+            12_000_000
+        );
+        assert_eq!(
+            compute_next_shifted_deadline_us(12_000_000, 10_000, 2_000),
+            22_000_000
+        );
+    }
+}

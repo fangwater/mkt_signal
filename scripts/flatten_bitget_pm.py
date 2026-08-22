@@ -13,7 +13,7 @@ Note: Bitget UTA has no documented manual repay REST endpoint. Debt clearing
 relies on Phase B's auto-repay via the BUY back, per user direction.
 
 Modes:
-  align (default) — net_qty = available + futures_position_coins - borrow = 0;
+  align (default) — net_qty = spot_net_balance + futures_position_coins = 0;
                     futures order is allowed to add/flip to match spot exposure
   clear           — close futures to 0 with reduceOnly; B or S to drain asset
 
@@ -54,6 +54,7 @@ ENV_DIR_PATTERN = re.compile(r"^(bitget_fr_|bitget[-_]intra[-_])")
 # Bitget repo scripts accept either passphrase env var name.
 AUTHORITATIVE_KEYS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_PASSPHRASE", "BITGET_API_PASSPHRASE")
 ZERO = Decimal("0")
+BUYBACK_QUOTE_BUFFER = Decimal("1.001")
 
 
 @dataclass
@@ -62,6 +63,8 @@ class SymbolSpec:
     asset: str            # BTC
     spot_qty_step: Decimal
     spot_min_qty: Decimal
+    spot_quote_step: Decimal
+    spot_min_amount: Decimal
     futures_qty_step: Decimal
     futures_min_qty: Decimal
 
@@ -73,6 +76,7 @@ class SymbolState:
     borrowed: Decimal
     interest: Decimal
     futures_position: Decimal  # signed base-coin qty
+    mark_price: Decimal        # USDT per base coin, used for market buys
 
 
 @dataclass
@@ -84,7 +88,7 @@ class SymbolPlan:
     futures_qty: Decimal
     futures_reduce_only: bool
     futures_skip_reason: Optional[str]
-    buyback_amt: Decimal
+    buyback_amt: Decimal       # quote-coin amount for MARGIN market BUY
     buyback_skip_reason: Optional[str]
     selldown_amt: Decimal
     selldown_skip_reason: Optional[str]
@@ -126,6 +130,18 @@ def ceil_to_step(value, step):
     if step <= 0:
         return value
     return (value / step).to_integral_value(rounding=ROUND_UP) * step
+
+
+def step_from_precision(value, default="0.000001"):
+    if value in (None, ""):
+        return Decimal(default)
+    try:
+        precision = int(str(value))
+    except (TypeError, ValueError):
+        return Decimal(default)
+    if precision < 0:
+        return Decimal(default)
+    return Decimal("1").scaleb(-precision)
 
 
 def format_decimal(value):
@@ -311,19 +327,66 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
             # Bitget instruments expose qty step under different keys depending on category;
             # try several common names.
             spot_qty_step=decimal_or(
-                m.get("quantityStep") or m.get("sizeStep") or m.get("baseSizeStep"), "1"
+                m.get("quantityStep")
+                or m.get("quantityMultiplier")
+                or m.get("sizeStep")
+                or m.get("baseSizeStep"),
+                str(step_from_precision(m.get("quantityPrecision"), "1")),
             ),
             spot_min_qty=decimal_or(
-                m.get("minOrderQuantity") or m.get("minTradeNum") or m.get("minQuantity"), "0"
+                m.get("minOrderQuantity")
+                or m.get("minOrderQty")
+                or m.get("minTradeNum")
+                or m.get("minQuantity"),
+                "0",
             ),
+            spot_quote_step=step_from_precision(m.get("quotePrecision")),
+            spot_min_amount=decimal_or(m.get("minOrderAmount"), "0"),
             futures_qty_step=decimal_or(
-                f.get("quantityStep") or f.get("sizeStep") or f.get("baseSizeStep"), "1"
+                f.get("quantityStep")
+                or f.get("quantityMultiplier")
+                or f.get("sizeStep")
+                or f.get("baseSizeStep"),
+                str(step_from_precision(f.get("quantityPrecision"), "1")),
             ),
             futures_min_qty=decimal_or(
-                f.get("minOrderQuantity") or f.get("minTradeNum") or f.get("minQuantity"), "0"
+                f.get("minOrderQuantity")
+                or f.get("minOrderQty")
+                or f.get("minTradeNum")
+                or f.get("minQuantity"),
+                "0",
             ),
         )
     return out
+
+
+def fetch_spot_marks(symbols: List[str]) -> Dict[str, Decimal]:
+    wanted = set(symbols)
+    marks: Dict[str, Decimal] = {}
+    status, body = http_request(
+        f"{BITGET_BASE}/api/v2/spot/market/tickers", timeout=15
+    )
+    if not (200 <= status < 300):
+        sys.stderr.write(f"[WARN] spot tickers status={status} body={body}\n")
+        return marks
+    parsed = json.loads(body)
+    if str(parsed.get("code", "")) not in ("0", "00000"):
+        sys.stderr.write(f"[WARN] spot tickers: {body}\n")
+        return marks
+    for row in parsed.get("data", []) or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol", "")).upper()
+        if sym not in wanted:
+            continue
+        price = (
+            decimal_or(row.get("askPr"))
+            or decimal_or(row.get("lastPr"))
+            or decimal_or(row.get("bidPr"))
+        )
+        if price > 0:
+            marks[sym] = price
+    return marks
 
 
 def fetch_assets(api_key, api_secret, passphrase) -> Dict[str, Tuple[Decimal, Decimal, Decimal]]:
@@ -349,13 +412,27 @@ def fetch_assets(api_key, api_secret, passphrase) -> Dict[str, Tuple[Decimal, De
         coin = str(item.get("coin", "")).upper()
         if not coin:
             continue
-        avail = decimal_or(item.get("available"))
-        # Bitget exposes both `borrow` (principal) and `debt`/`debts` (with interest);
-        # use `debt` if present, else fall back to `borrow`.
-        debt = decimal_or(item.get("debt") or item.get("debts"))
-        borrow = decimal_or(item.get("borrow"))
-        borrowed = debt if debt > 0 else borrow
-        interest = max(debt - borrow, ZERO)
+        # Bitget UTA `available` is already the net coin amount available to
+        # trade. It can be negative when the account borrowed that coin, so the
+        # planner must not subtract debt from it again.
+        avail_raw = item.get("available")
+        if avail_raw in (None, ""):
+            avail_raw = item.get("equity") if item.get("equity") not in (None, "") else item.get("balance")
+        avail = decimal_or(avail_raw)
+
+        borrow_raw = item.get("borrow")
+        debt_raw = item.get("debts") if item.get("debts") not in (None, "") else item.get("debt")
+        borrow = decimal_or(borrow_raw)
+        debt_total = decimal_or(debt_raw)
+        if borrow_raw not in (None, ""):
+            borrowed = borrow
+            interest = max(debt_total - borrow, ZERO) if debt_raw not in (None, "") else ZERO
+        elif debt_raw not in (None, ""):
+            borrowed = debt_total
+            interest = ZERO
+        else:
+            borrowed = ZERO
+            interest = ZERO
         out[coin] = (avail, borrowed, interest)
     return out
 
@@ -404,9 +481,9 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
     borrowed = state.borrowed
     interest = state.interest
     pos = state.futures_position
-    # No Phase R; free_after = free, borrow_after = borrowed.
+    # Bitget UTA spot balance is already net of debt. Do not subtract debt again.
     free_after = free
-    net_qty = free - borrowed + pos
+    net_qty = free_after + pos
 
     futures_side: Optional[str] = None
     futures_qty = ZERO
@@ -428,7 +505,14 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         futures_side = "buy" if delta > 0 else "sell"
         target = abs(delta)
         futures_qty = floor_to_step(target, spec.futures_qty_step)
-        if futures_qty < spec.futures_min_qty:
+        if futures_qty <= 0:
+            futures_skip = (
+                f"target {format_decimal(target)} floors to 0 with step "
+                f"{format_decimal(spec.futures_qty_step)}"
+            )
+            futures_qty = ZERO
+            futures_side = None
+        elif futures_qty < spec.futures_min_qty:
             futures_skip = (
                 f"qty {format_decimal(futures_qty)} < min "
                 f"{format_decimal(spec.futures_min_qty)}: dust below threshold"
@@ -445,23 +529,40 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             futures_side = None
 
     if mode == "clear":
-        # If borrow > free → net BUY needed to extinguish borrow (cross-margin auto-repay)
-        if borrowed > free:
-            owed = (borrowed - free) + interest
-            buyback_amt = ceil_to_step(owed, spec.spot_qty_step)
-            if buyback_amt < spec.spot_min_qty:
+        # Negative spot net means BUY is needed to extinguish borrow (auto-repay).
+        # For Bitget UTA Spot/Margin market buys, qty is quote coin (USDT),
+        # while market sells and futures orders use base-coin qty.
+        if free_after < 0:
+            owed = -free_after
+            if state.mark_price <= 0:
                 buyback_skip = (
-                    f"buyback qty {format_decimal(buyback_amt)} < min "
-                    f"{format_decimal(spec.spot_min_qty)} (owed={format_decimal(owed)})"
+                    "missing spot mark price for quote-sized buyback "
+                    f"(owed_base={format_decimal(owed)})"
                 )
-                buyback_amt = ZERO
-        elif free > borrowed:
-            sell_target = free - borrowed
+            else:
+                quote_needed = owed * state.mark_price * BUYBACK_QUOTE_BUFFER
+                buyback_amt = ceil_to_step(quote_needed, spec.spot_quote_step)
+                if buyback_amt < spec.spot_min_amount:
+                    buyback_amt = spec.spot_min_amount
+        elif free_after > 0:
+            sell_target = free_after
             selldown_amt = floor_to_step(sell_target, spec.spot_qty_step)
             if selldown_amt < spec.spot_min_qty:
                 selldown_skip = (
                     f"selldown qty {format_decimal(selldown_amt)} < min "
-                    f"{format_decimal(spec.spot_min_qty)} (free-borrow={format_decimal(sell_target)})"
+                    f"{format_decimal(spec.spot_min_qty)} (spot_net={format_decimal(sell_target)})"
+                )
+                selldown_amt = ZERO
+            elif state.mark_price <= 0:
+                selldown_skip = (
+                    "missing spot mark price for min-notional check "
+                    f"(spot_net={format_decimal(sell_target)})"
+                )
+                selldown_amt = ZERO
+            elif selldown_amt * state.mark_price < spec.spot_min_amount:
+                selldown_skip = (
+                    f"selldown notional {format_decimal(selldown_amt * state.mark_price)} < min "
+                    f"{format_decimal(spec.spot_min_amount)} (spot_net={format_decimal(sell_target)})"
                 )
                 selldown_amt = ZERO
 
@@ -487,9 +588,9 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
     print(f"[info] env={env_name} mode={mode} execute={execute}")
     print()
     header = (
-        f"{'Symbol':<12} {'Asset':<6} {'Avail':>14} {'Borrowed':>14} {'Interest':>10} "
+        f"{'Symbol':<12} {'Asset':<6} {'SpotNet':>14} {'Borrowed':>14} {'Interest':>10} "
         f"{'Pos':>14} {'Net':>12} {'Fut Side':>9} {'Fut Qty':>14} "
-        f"{'Fut RO':>6} {'Buyback':>12} {'Selldown':>12} Notes"
+        f"{'Fut RO':>6} {'BuyQuote':>12} {'Selldown':>12} Notes"
     )
     print(header)
     print("-" * len(header))
@@ -503,7 +604,7 @@ def print_plan(env_name, mode, plans: List[SymbolPlan], execute: bool) -> None:
         if p.selldown_skip_reason:
             notes.append(f"selldown_skip: {p.selldown_skip_reason}")
         if mode != "clear" and s.borrowed > 0:
-            notes.append(f"borrowed={format_decimal(s.borrowed)} (no Phase R; clear mode handles)")
+            notes.append(f"borrowed={format_decimal(s.borrowed)} (metadata; SpotNet already includes it)")
         print(
             f"{s.spec.symbol:<12} {s.spec.asset:<6} "
             f"{format_decimal(s.free):>14} "
@@ -599,7 +700,7 @@ def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
         "qty": qty,
         "clientOid": f"frbuy-{int(time.time() * 1000)}",
     }
-    print(f"\n[buyback] {sym} buy qty={qty} category=MARGIN (auto-repay)")
+    print(f"\n[buyback] {sym} buy quote_qty={qty} category=MARGIN (auto-repay)")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -661,6 +762,7 @@ def main() -> None:
     symbols = parse_symbol_args(args.symbol, args.symbols)
 
     specs = fetch_specs(symbols)
+    marks = fetch_spot_marks(symbols)
     balances = fetch_assets(api_key, api_secret, passphrase)
     positions = fetch_positions(symbols, api_key, api_secret, passphrase)
 
@@ -671,7 +773,7 @@ def main() -> None:
         pos = positions.get(sym, ZERO)
         state = SymbolState(
             spec=spec, free=free, borrowed=borrowed, interest=interest,
-            futures_position=pos,
+            futures_position=pos, mark_price=marks.get(sym, ZERO),
         )
         plans.append(plan_symbol(state, args.mode))
 

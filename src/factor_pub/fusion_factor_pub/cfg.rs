@@ -4,11 +4,66 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::fs;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FusionFactorVersion {
+    Default,
+    OneMinute,
+}
+
+impl FusionFactorVersion {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "5s",
+            Self::OneMinute => "1m",
+        }
+    }
+
+    pub fn trade_flow_channel(self) -> &'static str {
+        match self {
+            Self::Default => "trade_flow_feature",
+            Self::OneMinute => "trade_flow_feature_1m",
+        }
+    }
+
+    pub fn factor_plan_config_type(self) -> &'static str {
+        match self {
+            Self::Default => "factor_plan",
+            Self::OneMinute => "factor_plan_1m",
+        }
+    }
+
+    pub fn zscore_config_type(self) -> &'static str {
+        match self {
+            Self::Default => "zscore",
+            Self::OneMinute => "zscore_1m",
+        }
+    }
+
+    pub fn amount_threshold_config_type(self) -> &'static str {
+        match self {
+            Self::Default => "amount_thresholds",
+            Self::OneMinute => "amount_thresholds_1m",
+        }
+    }
+
+    pub fn output_service_path(self, venue_slug: &str) -> String {
+        match self {
+            Self::Default => format!("fusion_factor/{}", venue_slug),
+            Self::OneMinute => format!("fusion_factor_1m/{}", venue_slug),
+        }
+    }
+
+    pub fn node_suffix(self) -> &'static str {
+        match self {
+            Self::Default => "",
+            Self::OneMinute => "_1m",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FusionFactorPubConfig {
     pub tlen_server: TlenServerConfig,
-    #[serde(default)]
-    pub bootstrap: BootstrapConfig,
     #[serde(default)]
     pub rl_factor: RlFactorConfig,
 }
@@ -32,26 +87,12 @@ pub struct RlFactorConfig {
     pub scale_factor: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct BootstrapConfig {
-    #[serde(default = "default_bootstrap_enabled")]
-    pub enabled: bool,
-}
-
 impl Default for RlFactorConfig {
     fn default() -> Self {
         Self {
             pct_change_period: default_rl_pct_change_period(),
             rolling_window: default_rl_rolling_window(),
             scale_factor: default_rl_scale_factor(),
-        }
-    }
-}
-
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_bootstrap_enabled(),
         }
     }
 }
@@ -68,16 +109,6 @@ impl FusionFactorPubConfig {
         self.tlen_server.validate()?;
         self.rl_factor.validate()?;
         Ok(())
-    }
-
-    /// 固定的 trade flow channel 名称
-    pub fn trade_flow_channel(&self) -> &str {
-        "trade_flow_feature"
-    }
-
-    /// 固定 output service path: fusion_factor/{venue_slug}
-    pub fn output_service_path(&self, venue_slug: &str) -> String {
-        format!("fusion_factor/{}", venue_slug)
     }
 }
 
@@ -108,10 +139,6 @@ fn default_rl_scale_factor() -> f64 {
     1.0
 }
 
-fn default_bootstrap_enabled() -> bool {
-    true
-}
-
 fn default_request_timeout_ms() -> u64 {
     5_000
 }
@@ -132,5 +159,26 @@ impl TlenServerConfig {
             anyhow::bail!("tlen_server.symbol_reload_secs must be > 0");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FusionFactorVersion;
+
+    #[test]
+    fn one_minute_version_uses_isolated_resources() {
+        let version = FusionFactorVersion::OneMinute;
+        assert_eq!(version.trade_flow_channel(), "trade_flow_feature_1m");
+        assert_eq!(version.factor_plan_config_type(), "factor_plan_1m");
+        assert_eq!(version.zscore_config_type(), "zscore_1m");
+        assert_eq!(
+            version.amount_threshold_config_type(),
+            "amount_thresholds_1m"
+        );
+        assert_eq!(
+            version.output_service_path("binance-futures"),
+            "fusion_factor_1m/binance-futures"
+        );
     }
 }

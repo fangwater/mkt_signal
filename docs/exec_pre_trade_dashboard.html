@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Exec 执行监控</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", "PingFang SC", sans-serif;
+        --bg: #0b0f14;
+        --surface: #121820;
+        --surface-2: #171f29;
+        --line: #2a3441;
+        --text: #edf2f7;
+        --muted: #91a0b2;
+        --green: #4ade80;
+        --red: #fb7185;
+        --amber: #fbbf24;
+        --cyan: #38bdf8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        letter-spacing: 0;
+      }
+      header {
+        min-height: 62px;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--line);
+        background: #0e141b;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      h1 { margin: 0; font-size: 18px; font-weight: 650; }
+      .connection {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+      .dot.ok { background: var(--green); }
+      .dot.err { background: var(--red); }
+      .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .strategy-updates {
+        order: 3;
+        flex: 1 0 100%;
+        min-width: 0;
+        display: flex;
+        gap: 18px;
+        padding-top: 9px;
+        border-top: 1px solid var(--line);
+        overflow-x: auto;
+        color: var(--muted);
+        font-size: 12px;
+        scrollbar-width: thin;
+      }
+      .strategy-update { display: inline-flex; align-items: baseline; gap: 7px; flex: 0 0 auto; }
+      .strategy-update-name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .strategy-update time { color: var(--text); font-variant-numeric: tabular-nums; }
+      .strategy-update.unknown time { color: var(--amber); }
+      select, input, button, a.command {
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 10px;
+        font: inherit;
+        font-size: 13px;
+      }
+      select { min-width: 190px; }
+      input { width: 180px; }
+      button, a.command { cursor: pointer; }
+      button:hover, a.command:hover { border-color: var(--cyan); }
+      a.command { display: inline-flex; align-items: center; text-decoration: none; }
+      main { padding: 16px 18px 28px; display: grid; gap: 16px; }
+      .risk-band {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(130px, 1fr));
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--surface);
+      }
+      .metric { padding: 14px; border-right: 1px solid var(--line); min-width: 0; }
+      .metric:last-child { border-right: 0; }
+      .metric label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+      .metric strong { display: block; font-size: 20px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+      .section { border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+      .section-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+      .section-head h2 { margin: 0; font-size: 14px; }
+      .view-switch {
+        display: inline-flex;
+        padding: 2px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+      }
+      .view-switch button {
+        height: 27px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--muted);
+      }
+      .view-switch button[aria-pressed="true"] {
+        background: #263341;
+        color: var(--text);
+      }
+      .meta { color: var(--muted); font-size: 12px; }
+      .meta.stale { color: var(--red); }
+      .summary { margin-left: auto; display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+      .summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
+      .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+      table { width: 100%; min-width: 1160px; border-collapse: collapse; }
+      thead { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+      th, td {
+        height: 40px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        text-align: right;
+        white-space: nowrap;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      th { color: var(--muted); font-weight: 550; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      tbody tr:last-child td { border-bottom: 0; }
+      tbody tr:hover { background: #18212b; }
+      .aggregate-row { background: #151e27; font-weight: 600; }
+      .aggregate-row td { border-top: 1px solid #3b4857; }
+      .detail-row td:first-child { padding-left: 36px; position: relative; }
+      .detail-row td:first-child::before {
+        content: "";
+        position: absolute;
+        left: 20px;
+        top: 12px;
+        width: 6px;
+        height: 12px;
+        border-left: 1px solid #526174;
+        border-bottom: 1px solid #526174;
+      }
+      .group-label { display: inline-flex; align-items: center; gap: 7px; }
+      button.group-toggle {
+        width: 24px;
+        min-width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        display: inline-grid;
+        place-items: center;
+      }
+      button.group-toggle::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid var(--muted);
+        border-bottom: 2px solid var(--muted);
+        transform: rotate(-45deg);
+        transition: transform 120ms ease;
+      }
+      button.group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
+      button.group-toggle:hover::before { border-color: var(--cyan); }
+      .scope-label { color: var(--cyan); }
+      .positive { color: var(--green); }
+      .negative { color: var(--red); }
+      .muted { color: var(--muted); }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 74px;
+        height: 23px;
+        padding: 0 7px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .status.live { color: var(--cyan); border-color: #176b8e; }
+      .status.done { color: var(--green); border-color: #287a45; }
+      .status.wait { color: var(--amber); border-color: #82661d; }
+      .config-link { color: var(--cyan); text-decoration: none; }
+      .empty { padding: 42px; text-align: center; color: var(--muted); }
+      @media (max-width: 980px) {
+        .risk-band { grid-template-columns: repeat(3, 1fr); }
+        .metric:nth-child(3) { border-right: 0; }
+        .metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+        .toolbar { margin-left: 0; width: 100%; }
+        select, input { flex: 1; min-width: 130px; }
+      }
+      @media (max-width: 560px) {
+        header, main { padding-left: 10px; padding-right: 10px; }
+        .strategy-update-name { max-width: 210px; }
+        .risk-band { grid-template-columns: repeat(2, 1fr); }
+        .metric { border-bottom: 1px solid var(--line); }
+        .metric:nth-child(2n) { border-right: 0; }
+        .metric:nth-last-child(-n+2) { border-bottom: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Exec 执行监控</h1>
+      <div class="connection">
+        <span id="conn-dot" class="dot"></span>
+        <span id="conn-text">连接中</span>
+        <span id="namespace">-</span>
+        <span id="last-update">-</span>
+      </div>
+      <div class="toolbar">
+        <select id="strategy-filter" aria-label="策略筛选"><option value="">全部策略</option></select>
+        <input id="symbol-filter" placeholder="筛选品种" aria-label="品种筛选" />
+        <button id="refresh" type="button">刷新</button>
+        <a id="config-link" class="command" href="./config/">配置</a>
+      </div>
+      <div id="strategy-updates" class="strategy-updates" aria-label="策略最后更新时间"></div>
+    </header>
+
+    <main>
+      <section class="risk-band" aria-label="账户风险">
+        <div class="metric"><label>账户权益 USDT</label><strong id="equity">--</strong></div>
+        <div class="metric"><label>杠杆率</label><strong id="leverage">--</strong></div>
+        <div class="metric"><label>总名义价值</label><strong id="gross">--</strong></div>
+        <div class="metric"><label>净名义价值</label><strong id="net">--</strong></div>
+        <div class="metric"><label>多头名义价值</label><strong id="long">--</strong></div>
+        <div class="metric"><label>空头名义价值</label><strong id="short">--</strong></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>目标仓位</h2>
+          <div class="view-switch" role="group" aria-label="仓位分组方式">
+            <button type="button" data-group-mode="symbol" aria-pressed="true">按品种</button>
+            <button type="button" data-group-mode="strategy" aria-pressed="false">按策略</button>
+          </div>
+          <span id="state-meta" class="meta">暂无数据</span>
+          <div class="summary">
+            <span>差额 USDT <strong id="sum-delta">--</strong></span>
+            <span>待下单 USDT <strong id="sum-pending">--</strong></span>
+            <span>挂单 USDT <strong id="sum-live">--</strong></span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th id="scope-column">品种 / 策略</th><th id="detail-column">所属品种</th><th>状态</th>
+                <th>目标仓位</th><th title="策略行显示策略实际仓位；品种汇总行显示交易所综合仓位">实际仓位</th>
+                <th>挂单数量</th><th>待下单数量</th><th>差额 USDT</th>
+                <th title="活动子单尚未成交数量 × 当前中间价">挂单 USDT</th>
+                <th title="(目标仓位 - 实际仓位 - 活动挂单数量) × 当前中间价">待下单 USDT</th>
+                <th title="达到目标仓位前预计还需完成的批次数量">剩余批次</th>
+                <th title="最后一个批次启动后，按最大 Maker 重报价次数估算">预计完成</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div id="empty" class="empty">等待 Exec 状态数据</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const STALE_MS = 5000;
+        const RECONNECT_MS = 2000;
+        const POSITION_CLOSE_STRATEGY = "SYSTEM_POSITION_CLOSE";
+        const params = new URLSearchParams(location.search);
+        const demoMode = params.get("demo") === "1";
+        const state = {
+          exec: null,
+          risk: null,
+          ws: null,
+          reconnect: null,
+          strategy: "",
+          symbol: "",
+          groupMode: params.get("group") === "strategy" ? "strategy" : "symbol",
+          collapsed: { symbol: new Set(), strategy: new Set() },
+        };
+        const byId = (id) => document.getElementById(id);
+        const qtyFmt = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 8 });
+        const usdFmt = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const levFmt = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+
+        function finite(value) { return typeof value === "number" && Number.isFinite(value); }
+        function fmt(value, formatter) { return finite(value) ? formatter.format(value) : "--"; }
+        function fmtEta(value) {
+          return finite(value) && value > 0
+            ? new Date(value).toLocaleTimeString("zh-CN", { hour12: false })
+            : "--";
+        }
+        function etaTitle(value) {
+          return finite(value) && value > 0 ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "";
+        }
+        function cls(value) { return !finite(value) ? "muted" : value > 0 ? "positive" : value < 0 ? "negative" : ""; }
+        function escapeHtml(value) {
+          return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+        function wsUrl() {
+          const override = params.get("ws");
+          const url = new URL(override || "./ws", location.href);
+          url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+          return url.toString();
+        }
+        function snapshotUrl() {
+          const fallback = demoMode ? "./exec_pre_trade_sample_snapshot.json" : "./snapshot";
+          return new URL(params.get("snapshot") || fallback, location.href).toString();
+        }
+        function configUrl(strategy) {
+          const configured = params.get("config");
+          const url = new URL(configured || "./config/", location.href);
+          if (strategy) url.searchParams.set("strategy", strategy);
+          return url.toString();
+        }
+        function setConnection(level, text) {
+          byId("conn-dot").className = `dot ${level || ""}`.trim();
+          byId("conn-text").textContent = text;
+        }
+        function applyMessage(msg) {
+          if (!msg || !msg.entry) return;
+          const wrapped = { entry: msg.entry, namespace: msg.namespace || "", received: Date.now() };
+          if (msg.type === "exec_pre_trade_state") state.exec = wrapped;
+          if (msg.type === "exec_pre_trade_risk") state.risk = wrapped;
+          render();
+        }
+        function applySnapshot(payload) {
+          if (demoMode && payload && finite(payload.ts_ms) && Array.isArray(payload.entries)) {
+            const timeOffset = Date.now() - payload.ts_ms;
+            payload.entries.forEach((message) => {
+              const rows = message && message.entry && message.entry.rows;
+              if (!Array.isArray(rows)) return;
+              rows.forEach((row) => {
+                if (finite(row.estimated_completion_ts_ms) && row.estimated_completion_ts_ms > 0) {
+                  row.estimated_completion_ts_ms += timeOffset;
+                }
+                if (finite(row.source_updated_at_ms) && row.source_updated_at_ms > 0) {
+                  row.source_updated_at_ms += timeOffset;
+                }
+              });
+            });
+          }
+          if (payload && Array.isArray(payload.entries)) payload.entries.forEach(applyMessage);
+        }
+        function loadSnapshot() {
+          fetch(snapshotUrl(), { cache: "no-store" }).then((r) => r.ok ? r.json() : Promise.reject()).then(applySnapshot).catch(() => {});
+        }
+        function refreshStrategies(rows) {
+          const names = [...new Set(rows.map((row) => String(row.strategy_name || "")).filter(Boolean))].sort();
+          const select = byId("strategy-filter");
+          const current = state.strategy;
+          select.innerHTML = '<option value="">全部策略</option>' + names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+          select.value = names.includes(current) ? current : "";
+          state.strategy = select.value;
+        }
+        function strategyUpdateText(value) {
+          if (!finite(value) || value <= 0) return "未知";
+          const date = new Date(value);
+          const now = new Date();
+          const sameDay = date.getFullYear() === now.getFullYear()
+            && date.getMonth() === now.getMonth()
+            && date.getDate() === now.getDate();
+          return date.toLocaleString("zh-CN", {
+            month: sameDay ? undefined : "2-digit",
+            day: sameDay ? undefined : "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          });
+        }
+        function renderStrategyUpdates(rows) {
+          const updates = new Map();
+          rows.forEach((row) => {
+            const name = String(row.strategy_name || "");
+            if (!name || name === POSITION_CLOSE_STRATEGY) return;
+            const timestamp = finite(row.source_updated_at_ms) && row.source_updated_at_ms > 0
+              ? row.source_updated_at_ms
+              : 0;
+            updates.set(name, Math.max(updates.get(name) || 0, timestamp));
+          });
+          const container = byId("strategy-updates");
+          container.hidden = updates.size === 0;
+          container.innerHTML = [...updates.entries()]
+            .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
+            .map(([name, timestamp]) => {
+              const title = timestamp > 0
+                ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false })
+                : "尚未收到带时间戳的策略更新";
+              const datetime = timestamp > 0 ? new Date(timestamp).toISOString() : "";
+              return `<span class="strategy-update ${timestamp > 0 ? "" : "unknown"}" title="${escapeHtml(title)}"><span class="strategy-update-name">${escapeHtml(name)}</span><time datetime="${datetime}">${strategyUpdateText(timestamp)}</time></span>`;
+            }).join("");
+        }
+        function completionReasonText(reason) {
+          if (reason === "target_reached") return "已达到目标仓位";
+          if (reason === "target_tolerance") return "剩余量已进入 Target Tolerance";
+          if (reason === "exchange_minimum") return "剩余量低于交易所 minQty / minNotional";
+          if (reason === "mixed") return "包含多种结束原因";
+          return "执行已结束";
+        }
+        function rowStatus(row, ready) {
+          if (!ready || row.position_allocated === false) return ["等待仓位", "wait"];
+          const working = row.has_working === true
+            || Math.abs(row.live_order_usdt || 0) > 0.01
+            || (row.active_batches || 0) > 0;
+          if (working) return ["执行中", "live"];
+          if (row.execution_complete === true) {
+            return ["执行结束", "done", completionReasonText(row.completion_reason)];
+          }
+          const unsettled = row.has_unsettled === true || Math.abs(row.delta_usdt || 0) > 0.01;
+          if (!unsettled) return ["已完成", "done"];
+          return ["待执行", "wait"];
+        }
+        function sumField(rows, key) {
+          return rows.reduce((total, row) => total + (finite(row[key]) ? row[key] : 0), 0);
+        }
+        function isIdleZeroRow(row) {
+          const quantities = ["target_qty", "current_qty", "effective_position_qty", "live_order_qty", "pending_qty"];
+          return quantities.every((key) => !finite(row[key]) || Math.abs(row[key]) <= 1e-12)
+            && (row.active_batches || 0) === 0
+            && (row.remaining_batches || 0) === 0;
+        }
+        function isCompletedCloseResidual(row) {
+          if (row.strategy_name !== POSITION_CLOSE_STRATEGY || row.execution_complete !== true) return false;
+          return Math.abs(row.live_order_qty || 0) <= 1e-12
+            && Math.abs(row.live_order_usdt || 0) <= 0.01
+            && (row.active_batches || 0) === 0;
+        }
+        function maxField(rows, key) {
+          return rows.reduce((maximum, row) => finite(row[key]) ? Math.max(maximum, row[key]) : maximum, 0);
+        }
+        function aggregateCompletion(rows) {
+          if (!rows.length || !rows.every((row) => row.execution_complete === true)) {
+            return { complete: false, reason: "" };
+          }
+          const reasons = [...new Set(rows.map((row) => String(row.completion_reason || "")).filter(Boolean))];
+          return { complete: true, reason: reasons.length === 1 ? reasons[0] : "mixed" };
+        }
+        function aggregateSymbolRows(rows, useAccountPosition) {
+          const grouped = new Map();
+          rows.forEach((row) => {
+            const symbol = String(row.symbol || "");
+            if (!grouped.has(symbol)) grouped.set(symbol, []);
+            grouped.get(symbol).push(row);
+          });
+          return [...grouped.entries()].map(([symbol, strategies]) => {
+            const children = [...strategies].sort((a, b) => String(a.strategy_name).localeCompare(String(b.strategy_name), "zh-CN"));
+            const first = children[0] || {};
+            const targetQty = sumField(children, "target_qty");
+            const targetUsdt = sumField(children, "target_usdt");
+            const liveQty = sumField(children, "live_order_qty");
+            const liveUsdt = sumField(children, "live_order_usdt");
+            const accountQty = useAccountPosition && finite(first.account_position_qty)
+              ? first.account_position_qty
+              : sumField(children, "current_qty");
+            const accountUsdt = useAccountPosition && finite(first.account_position_usdt)
+              ? first.account_position_usdt
+              : sumField(children, "current_usdt");
+            const completion = aggregateCompletion(children);
+            const aggregate = {
+              aggregate: true,
+              group_mode: "symbol",
+              group_key: symbol,
+              group_label: symbol,
+              group_detail: `${children.length} 个策略`,
+              symbol,
+              position_title: useAccountPosition ? "交易所账户综合实际仓位" : "筛选策略的实际仓位汇总",
+              position_allocated: children.every((row) => row.position_allocated !== false),
+              has_working: children.some((row) => Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0),
+              has_unsettled: children.some((row) => Math.abs(row.delta_usdt || 0) > 0.01),
+              target_qty: targetQty,
+              current_qty: accountQty,
+              effective_position_qty: sumField(children, "effective_position_qty"),
+              delta_qty: targetQty - accountQty,
+              live_order_qty: liveQty,
+              pending_qty: targetQty - accountQty - liveQty,
+              target_usdt: targetUsdt,
+              current_usdt: accountUsdt,
+              delta_usdt: targetUsdt - accountUsdt,
+              live_order_usdt: liveUsdt,
+              pending_usdt: targetUsdt - accountUsdt - liveUsdt,
+              active_batches: sumField(children, "active_batches"),
+              remaining_batches: sumField(children, "remaining_batches"),
+              estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
+              execution_complete: completion.complete,
+              completion_reason: completion.reason,
+            };
+            return { aggregate, children };
+          }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.symbol.localeCompare(b.aggregate.symbol));
+        }
+
+        function aggregateStrategyRows(rows) {
+          const grouped = new Map();
+          rows.forEach((row) => {
+            const strategy = String(row.strategy_name || "");
+            if (!grouped.has(strategy)) grouped.set(strategy, []);
+            grouped.get(strategy).push(row);
+          });
+          return [...grouped.entries()].map(([strategy, strategyRows]) => {
+            const children = [...strategyRows].sort((a, b) => String(a.symbol).localeCompare(String(b.symbol), "zh-CN"));
+            const symbols = new Set(children.map((row) => String(row.symbol || "")));
+            const quantitiesComparable = symbols.size === 1;
+            const qty = (key) => quantitiesComparable ? sumField(children, key) : undefined;
+            const completion = aggregateCompletion(children);
+            const aggregate = {
+              aggregate: true,
+              group_mode: "strategy",
+              group_key: strategy,
+              group_label: strategy || "未命名策略",
+              group_detail: `${symbols.size} 个品种`,
+              strategy_name: strategy,
+              position_title: quantitiesComparable ? "策略实际仓位汇总" : "跨品种数量不可直接相加",
+              position_allocated: children.every((row) => row.position_allocated !== false),
+              has_working: children.some((row) => Math.abs(row.live_order_usdt || 0) > 0.01 || (row.active_batches || 0) > 0),
+              has_unsettled: children.some((row) => Math.abs(row.delta_usdt || 0) > 0.01),
+              target_qty: qty("target_qty"),
+              current_qty: qty("current_qty"),
+              effective_position_qty: qty("effective_position_qty"),
+              delta_qty: qty("delta_qty"),
+              live_order_qty: qty("live_order_qty"),
+              pending_qty: qty("pending_qty"),
+              target_usdt: sumField(children, "target_usdt"),
+              current_usdt: sumField(children, "current_usdt"),
+              delta_usdt: sumField(children, "delta_usdt"),
+              live_order_usdt: sumField(children, "live_order_usdt"),
+              pending_usdt: sumField(children, "pending_usdt"),
+              active_batches: sumField(children, "active_batches"),
+              remaining_batches: sumField(children, "remaining_batches"),
+              estimated_completion_ts_ms: maxField(children, "estimated_completion_ts_ms"),
+              execution_complete: completion.complete,
+              completion_reason: completion.reason,
+            };
+            return { aggregate, children };
+          }).sort((a, b) => Math.abs(b.aggregate.delta_usdt) - Math.abs(a.aggregate.delta_usdt) || a.aggregate.group_label.localeCompare(b.aggregate.group_label, "zh-CN"));
+        }
+
+        function renderTableRow(row, ready) {
+          const [status, statusClass, statusTitle = ""] = rowStatus(row, ready);
+          const rowClass = row.aggregate ? "aggregate-row" : "detail-row";
+          const collapsed = row.aggregate && state.collapsed[row.group_mode].has(row.group_key);
+          const primary = row.aggregate
+            ? `<span class="group-label"><button class="group-toggle" type="button" data-group-mode="${row.group_mode}" data-group-key="${escapeHtml(row.group_key)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? "展开" : "收起"}${escapeHtml(row.group_label)}明细" title="${collapsed ? "展开明细" : "收起明细"}"></button><span class="scope-label">${escapeHtml(row.group_label)}</span></span>`
+            : escapeHtml(state.groupMode === "symbol" ? row.strategy_name : row.symbol);
+          const secondary = row.aggregate
+            ? escapeHtml(row.group_detail)
+            : escapeHtml(state.groupMode === "symbol" ? row.symbol : row.strategy_name);
+          const positionTitle = row.aggregate ? row.position_title : "策略实际仓位";
+          const action = row.aggregate || demoMode || row.strategy_name === POSITION_CLOSE_STRATEGY
+            ? ""
+            : `<a class="config-link" href="${escapeHtml(configUrl(row.strategy_name))}">查看</a>`;
+          return `<tr class="${rowClass}">
+            <td>${primary}</td><td>${secondary}</td>
+            <td><span class="status ${statusClass}" title="${escapeHtml(statusTitle)}">${status}</span></td>
+            <td class="${cls(row.target_qty)}">${fmt(row.target_qty, qtyFmt)}</td>
+            <td class="${cls(row.current_qty)}" title="${positionTitle}">${fmt(row.current_qty, qtyFmt)}</td>
+            <td class="${cls(row.live_order_qty)}">${fmt(row.live_order_qty, qtyFmt)}</td>
+            <td class="${cls(row.pending_qty)}">${fmt(row.pending_qty, qtyFmt)}</td>
+            <td class="${cls(row.delta_usdt)}">${fmt(row.delta_usdt, usdFmt)}</td>
+            <td>${fmt(row.live_order_usdt, usdFmt)}</td><td>${fmt(row.pending_usdt, usdFmt)}</td>
+            <td>${row.remaining_batches || 0}</td>
+            <td title="${escapeHtml(etaTitle(row.estimated_completion_ts_ms))}">${fmtEta(row.estimated_completion_ts_ms)}</td><td>${action}</td>
+          </tr>`;
+        }
+        function renderRisk() {
+          const e = state.risk && state.risk.entry;
+          byId("equity").textContent = fmt(e && e.equity_usdt, usdFmt);
+          byId("leverage").textContent = fmt(e && e.leverage, levFmt);
+          byId("gross").textContent = fmt(e && e.gross_notional_usdt, usdFmt);
+          byId("net").textContent = fmt(e && e.net_notional_usdt, usdFmt);
+          byId("long").textContent = fmt(e && e.long_notional_usdt, usdFmt);
+          byId("short").textContent = fmt(e && e.short_notional_usdt, usdFmt);
+        }
+        function render() {
+          renderRisk();
+          const entry = state.exec && state.exec.entry;
+          const rawRows = entry && Array.isArray(entry.rows) ? entry.rows : [];
+          renderStrategyUpdates(rawRows);
+          const allRows = rawRows.filter((row) => !isIdleZeroRow(row) && !isCompletedCloseResidual(row));
+          refreshStrategies(allRows);
+          const rows = allRows
+            .filter((row) => !state.strategy || row.strategy_name === state.strategy)
+            .filter((row) => !state.symbol || String(row.symbol || "").toUpperCase().includes(state.symbol));
+          const ready = !!(entry && entry.position_ready);
+          const groups = state.groupMode === "symbol"
+            ? aggregateSymbolRows(rows, !state.strategy)
+            : aggregateStrategyRows(rows);
+          const displayRows = [];
+          groups.forEach((group) => {
+            displayRows.push(group.aggregate);
+            if (!state.collapsed[state.groupMode].has(group.aggregate.group_key)) {
+              displayRows.push(...group.children);
+            }
+          });
+          const summaryRows = groups.map((group) => group.aggregate);
+          const tbody = byId("rows");
+          tbody.innerHTML = displayRows.map((row) => renderTableRow(row, ready)).join("");
+          byId("empty").style.display = displayRows.length ? "none" : "block";
+          const sum = (key) => sumField(summaryRows, key);
+          byId("sum-delta").textContent = fmt(sum("delta_usdt"), usdFmt);
+          byId("sum-pending").textContent = fmt(sum("pending_usdt"), usdFmt);
+          byId("sum-live").textContent = fmt(sum("live_order_usdt"), usdFmt);
+          const latest = Math.max(state.exec ? state.exec.received : 0, state.risk ? state.risk.received : 0);
+          const namespace = (state.exec && state.exec.namespace) || (state.risk && state.risk.namespace) || "-";
+          byId("namespace").textContent = namespace;
+          byId("last-update").textContent = latest ? new Date(latest).toLocaleTimeString("zh-CN", { hour12: false }) : "-";
+          const symbolCount = new Set(allRows.map((row) => String(row.symbol || ""))).size;
+          const strategyCount = new Set(allRows.map((row) => String(row.strategy_name || ""))).size;
+          const stale = !demoMode && latest > 0 && Date.now() - latest > STALE_MS;
+          byId("state-meta").textContent = `${ready ? "仓位已就绪" : "等待仓位"} / ${strategyCount} 个策略 / ${symbolCount} 个品种${stale ? " / 数据延迟" : ""}`;
+          byId("state-meta").classList.toggle("stale", stale);
+          byId("scope-column").textContent = state.groupMode === "symbol" ? "品种 / 策略" : "策略 / 品种";
+          byId("detail-column").textContent = state.groupMode === "symbol" ? "所属品种" : "所属策略";
+          document.querySelectorAll("[data-group-mode]:not(.group-toggle)").forEach((button) => {
+            button.setAttribute("aria-pressed", String(button.dataset.groupMode === state.groupMode));
+          });
+          const configLink = byId("config-link");
+          configLink.href = configUrl(state.strategy);
+          configLink.style.display = !demoMode && state.strategy !== POSITION_CLOSE_STRATEGY
+            ? "inline-flex"
+            : "none";
+        }
+        function connect() {
+          if (demoMode) {
+            setConnection("ok", "演示数据");
+            return;
+          }
+          if (state.ws) state.ws.close();
+          setConnection("", "连接中");
+          const ws = new WebSocket(wsUrl());
+          state.ws = ws;
+          ws.onopen = () => { setConnection("ok", "实时"); loadSnapshot(); };
+          ws.onmessage = (event) => { try { applyMessage(JSON.parse(event.data)); } catch (_) {} };
+          ws.onerror = () => setConnection("err", "连接错误");
+          ws.onclose = () => {
+            setConnection("err", "已断开");
+            loadSnapshot();
+            clearTimeout(state.reconnect);
+            state.reconnect = setTimeout(connect, RECONNECT_MS);
+          };
+        }
+        byId("strategy-filter").onchange = (event) => { state.strategy = event.target.value; render(); };
+        byId("symbol-filter").oninput = (event) => { state.symbol = event.target.value.trim().toUpperCase(); render(); };
+        byId("refresh").onclick = () => { loadSnapshot(); if (!demoMode) connect(); };
+        document.querySelectorAll(".view-switch [data-group-mode]").forEach((button) => {
+          button.onclick = () => { state.groupMode = button.dataset.groupMode; render(); };
+        });
+        byId("rows").onclick = (event) => {
+          const button = event.target.closest(".group-toggle");
+          if (!button) return;
+          const collapsed = state.collapsed[button.dataset.groupMode];
+          const key = button.dataset.groupKey;
+          if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key);
+          render();
+        };
+        setInterval(render, 1000);
+        loadSnapshot();
+        connect();
+      })();
+    </script>
+  </body>
+</html>

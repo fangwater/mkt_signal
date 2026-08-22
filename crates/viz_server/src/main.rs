@@ -1,0 +1,59 @@
+use anyhow::Result;
+use log::{info, warn};
+use viz_server::config::VizCfg;
+use viz_server::server::{serve_http, WsHub};
+use viz_server::subscribers::{
+    spawn_exec_pre_trade_resample_listeners_with_cfg, spawn_pre_trade_resample_listeners_with_cfg,
+};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    env_logger::init();
+
+    let cfg_path = std::env::var("VIZ_CFG").unwrap_or_else(|_| "config/viz.toml".to_string());
+    let cfg = VizCfg::load(&cfg_path).await?;
+    info!("viz_server config loaded from {}", cfg_path);
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            for server in cfg.servers {
+                let hub = WsHub::new(128);
+                let http_cfg = server.http.clone();
+                let exec_dashboard = server.exec_pre_trade.enabled;
+                let config_proxy_url = server.exec_pre_trade.config_proxy_url.clone();
+
+                if let Err(err) = spawn_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
+                {
+                    warn!(
+                        "spawn pre_trade resample listener failed (port={}): {err:#}",
+                        http_cfg.port
+                    );
+                }
+                if let Err(err) =
+                    spawn_exec_pre_trade_resample_listeners_with_cfg(hub.clone(), &server)
+                {
+                    warn!(
+                        "spawn exec_pre_trade resample listener failed (port={}): {err:#}",
+                        http_cfg.port
+                    );
+                }
+
+                tokio::task::spawn_local(async move {
+                    if let Err(err) =
+                        serve_http(http_cfg, hub, exec_dashboard, config_proxy_url).await
+                    {
+                        warn!("viz http server exited: {err:#}");
+                    }
+                });
+            }
+
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+        .await
+}

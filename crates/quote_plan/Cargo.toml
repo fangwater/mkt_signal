@@ -1,0 +1,8 @@
+[package]
+name = "quote_plan"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+log = "0.4"
+order_common = { path = "../order_common" }

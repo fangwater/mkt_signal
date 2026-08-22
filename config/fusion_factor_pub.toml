@@ -1,5 +1,4 @@
 # Fusion factor 发布配置
-
 # 从 tlen_config_server 拉 symbol + ordered factors + venue 级 zscore。
 # output service 固定为 fusion_factor/{venue}，例如 venue=binance-futures ->
 # fusion_factor/binance-futures
@@ -7,9 +6,6 @@
 base_url = "http://127.0.0.1:6322"
 request_timeout_ms = 5000
 symbol_reload_secs = 180
-
-[bootstrap]
-enabled = true
 
 # rl_return_volatility 已迁移到 trade_flow_feature_pub.yaml[rl_factor]。
 # 这里保留默认字段兼容旧工具/旧配置，fusion_factor_pub 本身不再发布该单因子。

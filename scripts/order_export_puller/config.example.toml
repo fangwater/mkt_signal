@@ -1,0 +1,13 @@
+[client]
+out_root = "~/order_exports"
+# Server emits hourly snapshots at HH:01 UTC; poll a few minutes later.
+poll_minute = 5
+http_timeout_sec = 30.0
+
+[[envs]]
+name = "bybit-intra-arb01"
+base_url = "http://47.131.162.78:4191/order_export/bybit-intra-arb01"
+
+# [[envs]]
+# name = "okex-intra-arb01"
+# base_url = "http://<host>:<port>/order_export/okex-intra-arb01"

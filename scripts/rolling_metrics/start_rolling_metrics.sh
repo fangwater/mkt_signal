@@ -25,8 +25,8 @@ USAGE
 infer_venues_from_dir() {
   local dir_name="${1,,}"
 
-  if [[ "$dir_name" =~ ^([a-z0-9]+-(margin|futures))[-_]([a-z0-9]+-(margin|futures))$ ]]; then
-    echo "${BASH_REMATCH[1]},${BASH_REMATCH[3]}"
+  if [[ "$dir_name" =~ ^([a-z0-9]+-(margin|futures)|(binance|bitget)-coin-futures)[-_]([a-z0-9]+-(margin|futures)|(binance|bitget)-coin-futures)$ ]]; then
+    echo "${BASH_REMATCH[1]},${BASH_REMATCH[4]}"
     return 0
   fi
 
@@ -71,7 +71,7 @@ legacy_token() {
 
 validate_venue() {
   local v="${1,,}"
-  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures)$ ]]; then
+  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ]]; then
     echo "[ERROR] invalid venue: $1 (expect <exchange>-<margin|futures>)" >&2
     exit 1
   fi
@@ -187,8 +187,12 @@ cat >"$cfg_file" <<EOF
 EOF
 
 echo "[INFO] Restarting ${PROC_NAME} (open=${OPEN_VENUE} hedge=${HEDGE_VENUE})"
-"${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_rolling_metrics.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
+fi
+"$STOP_SCRIPT" --open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME}"

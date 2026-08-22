@@ -28,6 +28,7 @@ import requests
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lib"))
+from bybit_external_order_link import make_external_order_link_id  # noqa: E402
 from exchange_state import fetch_exchange_state  # noqa: E402
 
 getcontext().prec = 36
@@ -474,7 +475,7 @@ def submit_spot_order(
         "timeInForce": "IOC",
         "isLeverage": 1,
         "orderFilter": "Order",
-        "orderLinkId": f"intrabyspot{int(time.time() * 1000)}{idx:02d}",
+        "orderLinkId": make_external_order_link_id(idx),
     }
     print(f"\n[spot] {action.symbol} {action.side} qty={action.qty_str} price={action.price_str} IOC")
     try:
@@ -508,7 +509,7 @@ def submit_futures_order(
         "orderType": "Market",
         "qty": action.qty_str,
         "reduceOnly": bool(action.reduce_only),
-        "orderLinkId": f"intrabyfut{int(time.time() * 1000)}{idx:02d}",
+        "orderLinkId": make_external_order_link_id(idx),
     }
     print(f"\n[futures] {action.symbol} {action.side} qty={action.qty_str} reduceOnly={action.reduce_only}")
     try:

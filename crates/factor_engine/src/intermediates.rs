@@ -56,7 +56,7 @@ pub fn build_ad_line_rolling360(series: &SymbolSeries<'_>) -> Option<Vec<Option<
             let raw = ((close - low) - (high - close)) / den;
             clv_x.push(finite_opt(Some(raw * volume)));
         } else {
-            clv_x.push(Some(f64::NAN));
+            clv_x.push(Some(0.0));
         }
     }
     rolling_sum_series_opt(&clv_x, 360, 360).ok()

@@ -1,0 +1,858 @@
+//! OKX 账户事件解析器（余额 / 持仓 / 订单）
+
+use super::{
+    account_risk_dedup_key, balance_dedup_key, borrow_interest_dedup_key, lazy_json,
+    okex_order_dedup_key, position_dedup_key, trade_lite_dedup_key, unrealized_pnl_dedup_key,
+    AccountEventSink, Parser,
+};
+use crate::msg::basic_account_msg::{
+    BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
+    BasicUmUnrealizedMsg, OkexOrderMsg,
+};
+use bytes::Bytes;
+use log::{debug, info, warn};
+use sonic_rs::JsonValueTrait;
+use symbol_utils::TradingVenue;
+
+#[derive(Clone)]
+pub struct OkexAccountEventParser;
+
+impl Default for OkexAccountEventParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OkexAccountEventParser {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn emit_balance<S: AccountEventSink>(
+        tx: &S,
+        timestamp: i64,
+        symbol: String,
+        balance: f64,
+    ) -> bool {
+        let msg = BasicBalanceMsg::create(timestamp, symbol, balance);
+        let payload = msg.to_bytes();
+        let event =
+            BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
+        tx.emit_with_dedup_key(
+            event.to_bytes(),
+            balance_dedup_key(BasicAccountScope::OkexUnified, &msg),
+        )
+    }
+
+    fn parse_balance_and_position<S: AccountEventSink>(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &S,
+    ) -> usize {
+        let mut count = 0;
+
+        // balance
+        // `balance_and_position.balData` 通常不带 liab。新口径下 BasicBalanceMsg 必须是
+        // gross wallet，只有 eq 但没有 liab 时不能安全推导 wallet，因此这里不再消费 balData
+        // 的余额，避免把 net 覆盖成 wallet。
+        if let Some(arr) = json_value
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|d| d.get("balData"))
+            .and_then(|v| v.as_array())
+        {
+            for bal in arr {
+                let timestamp = bal
+                    .get("uTime")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0);
+                let Some(eq) = bal
+                    .get("eq")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<f64>().ok())
+                else {
+                    continue;
+                };
+                let Some(liab) = parse_abs_f64_field(bal.get("liab")) else {
+                    continue;
+                };
+
+                let symbol = bal
+                    .get("ccy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                let balance = eq + liab;
+                if Self::emit_balance(tx, timestamp, symbol, balance) {
+                    count += 1;
+                }
+            }
+        }
+
+        // position
+        // 当前仅从 balance_and_position.posData 提取仓位方向/数量/更新时间。
+        // OKX 这个 WS 事件里的 UPL 字段不稳定/可能缺失；UPL 统一由 positions
+        // 频道和周期性 REST snapshot 补齐，避免 WS balance 事件覆盖正确账户净值口径。
+        if let Some(arr) = json_value
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|d| d.get("posData"))
+            .and_then(|v| v.as_array())
+        {
+            for pos in arr {
+                count += self.emit_position_row(pos, tx, false, "balance_and_position");
+            }
+        }
+
+        count
+    }
+
+    fn emit_position_row<S: AccountEventSink>(
+        &self,
+        pos: &serde_json::Value,
+        tx: &S,
+        emit_upl: bool,
+        source: &str,
+    ) -> usize {
+        let Some(inst_id) = pos.get("instId").and_then(|v| v.as_str()) else {
+            return 0;
+        };
+        if inst_id.is_empty() {
+            return 0;
+        }
+        let Some(position_amount) = parse_f64_field_opt(pos.get("pos")).map(|v| v as f32) else {
+            return 0;
+        };
+        let pos_side = pos.get("posSide").and_then(|v| v.as_str()).unwrap_or("net");
+        let position_side = match pos_side {
+            "long" => 'L',
+            "short" => 'S',
+            _ => 'N',
+        };
+        let timestamp = parse_i64_field(pos.get("uTime"));
+
+        info!(
+            "OKX position: source={} instId={} posSide={} pos={} uTime={}",
+            source, inst_id, pos_side, position_amount, timestamp
+        );
+
+        let msg = BasicPositionMsg::create(
+            timestamp,
+            inst_id.to_string(),
+            position_side,
+            position_amount,
+        );
+        let payload = msg.to_bytes();
+        let event =
+            BasicAccountEventMsg::create(msg.msg_type(), BasicAccountScope::OkexUnified, payload);
+        let mut count = 0;
+        if tx.emit_with_dedup_key(
+            event.to_bytes(),
+            position_dedup_key(BasicAccountScope::OkexUnified, &msg),
+        ) {
+            count += 1;
+        }
+
+        if emit_upl {
+            if let Some(pnl) = parse_f64_field_opt(pos.get("upl")) {
+                let pnl_msg = BasicUmUnrealizedMsg::create(
+                    timestamp,
+                    inst_id.to_string(),
+                    position_side,
+                    pnl,
+                );
+                let event = BasicAccountEventMsg::create(
+                    BasicAccountEventType::UnrealizedPnlUpdate,
+                    BasicAccountScope::OkexUnified,
+                    pnl_msg.to_bytes(),
+                );
+                if tx.emit_with_dedup_key(
+                    event.to_bytes(),
+                    unrealized_pnl_dedup_key(BasicAccountScope::OkexUnified, &pnl_msg),
+                ) {
+                    count += 1;
+                }
+            }
+        }
+
+        count
+    }
+
+    fn parse_positions<S: AccountEventSink>(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &S,
+    ) -> usize {
+        let mut count = 0;
+        let Some(arr) = json_value.get("data").and_then(|d| d.as_array()) else {
+            return 0;
+        };
+        for pos in arr {
+            count += self.emit_position_row(pos, tx, true, "positions");
+        }
+        count
+    }
+
+    fn parse_account<S: AccountEventSink>(&self, json_value: &serde_json::Value, tx: &S) -> usize {
+        let mut count = 0;
+        let Some(account) = json_value.get("data").and_then(|d| d.get(0)) else {
+            return 0;
+        };
+        let fallback_ts = account
+            .get("uTime")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        let has_risk_fields = [
+            "adjEq",
+            "totalEq",
+            "mmr",
+            "imr",
+            "mgnRatio",
+            "borrowFroz",
+            "notionalUsd",
+        ]
+        .iter()
+        .any(|key| account.get(key).is_some());
+        if has_risk_fields {
+            let adj_equity_usd = parse_f64_field(account.get("adjEq"));
+            let actual_equity_usd = {
+                let total_eq = parse_f64_field(account.get("totalEq"));
+                if total_eq.abs() > 0.0 {
+                    total_eq
+                } else {
+                    adj_equity_usd
+                }
+            };
+            let msg = BasicAccountRiskMsg::create(
+                fallback_ts,
+                adj_equity_usd,
+                actual_equity_usd,
+                parse_f64_field(account.get("mmr")),
+                parse_f64_field(account.get("imr")),
+                parse_f64_field(account.get("mgnRatio")),
+                parse_f64_field(account.get("borrowFroz")),
+                parse_f64_field(account.get("notionalUsd")),
+            );
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::AccountRisk,
+                BasicAccountScope::OkexUnified,
+                payload,
+            );
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                account_risk_dedup_key(BasicAccountScope::OkexUnified, &msg),
+            ) {
+                count += 1;
+            }
+        }
+
+        let Some(arr) = account.get("details").and_then(|v| v.as_array()) else {
+            return count;
+        };
+
+        for bal in arr {
+            let symbol = bal
+                .get("ccy")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if symbol.is_empty() {
+                continue;
+            }
+            let Some(eq) = bal
+                .get("eq")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+            else {
+                continue;
+            };
+            let timestamp = bal
+                .get("uTime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(fallback_ts);
+
+            let Some(liab) = parse_abs_f64_field(bal.get("liab")) else {
+                continue;
+            };
+            let interest = parse_abs_f64_field(bal.get("interest")).unwrap_or(0.0);
+            let balance = eq + liab;
+
+            if Self::emit_balance(tx, timestamp, symbol.clone(), balance) {
+                count += 1;
+            }
+
+            let msg = BasicBorrowInterestMsg::create(
+                timestamp,
+                symbol,
+                (liab - interest).max(0.0),
+                interest,
+            );
+            let payload = msg.to_bytes();
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::BorrowInterest,
+                BasicAccountScope::OkexUnified,
+                payload,
+            );
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                borrow_interest_dedup_key(BasicAccountScope::OkexUnified, &msg),
+            ) {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    fn parse_orders<S: AccountEventSink>(&self, json_value: &serde_json::Value, tx: &S) -> usize {
+        let mut count = 0;
+        let Some(arr) = json_value.get("data").and_then(|d| d.as_array()) else {
+            return 0;
+        };
+
+        for order in arr {
+            let inst_id = order
+                .get("instId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if inst_id.is_empty() {
+                continue;
+            }
+
+            let inst_type = order
+                .get("instType")
+                .and_then(|v| v.as_str())
+                .map(OkexOrderMsg::inst_type_to_u8)
+                .unwrap_or(u8::MAX);
+            let ord_id = parse_i64_field(order.get("ordId"));
+            let cl_ord_id = match parse_i64_field_opt(order.get("clOrdId")) {
+                Some(id) => id,
+                None => {
+                    warn!("OKX: orders clOrdId is not i64, dropping: {}", order);
+                    continue;
+                }
+            };
+            let trade_id = parse_i64_field(order.get("tradeId"));
+            let order_status = order
+                .get("state")
+                .and_then(|v| v.as_str())
+                .map(OkexOrderMsg::state_to_u8)
+                .unwrap_or(0);
+            let side = parse_side(order.get("side").and_then(|v| v.as_str()).unwrap_or(""));
+            let ord_type =
+                parse_ord_type(order.get("ordType").and_then(|v| v.as_str()).unwrap_or(""));
+            let cancel_source = parse_u8_field(order.get("cancelSource"));
+            let amend_source = parse_u8_field(order.get("amendSource"));
+            let price = parse_okex_order_price_by_state(order, order_status);
+            let quantity = parse_f64_field(order.get("sz"));
+            let cumulative_filled_quantity = parse_f64_field(order.get("accFillSz"));
+            let create_time = parse_i64_field(order.get("cTime"));
+            let update_time = {
+                let ts = parse_i64_field(order.get("uTime"));
+                if ts != 0 {
+                    ts
+                } else {
+                    create_time
+                }
+            };
+            let fill_time = {
+                let ts = parse_i64_field(order.get("fillTime"));
+                if ts != 0 {
+                    ts
+                } else if update_time != 0 {
+                    update_time
+                } else {
+                    create_time
+                }
+            };
+
+            let msg = OkexOrderMsg {
+                msg_type: BasicAccountEventType::OrderUpdate,
+                inst_id,
+                inst_type,
+                ord_id,
+                cl_ord_id,
+                trade_id,
+                state: order_status,
+                side,
+                ord_type,
+                cancel_source,
+                amend_source,
+                price,
+                quantity,
+                cumulative_filled_quantity,
+                create_time,
+                update_time,
+                fill_time,
+            };
+
+            let payload = msg.to_bytes();
+            let event =
+                BasicAccountEventMsg::create(msg.msg_type, BasicAccountScope::OkexUnified, payload);
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                okex_order_dedup_key(BasicAccountScope::OkexUnified, &msg),
+            ) {
+                count += 1;
+            }
+        }
+
+        count
+    }
+}
+
+impl OkexAccountEventParser {
+    /// 解析 OKX `fills` 频道（VIP4+）。
+    /// 参考字段：instId / clOrdId / tradeId / fillPx / fillSz / side / execType / ts
+    fn parse_fills_channel<S: AccountEventSink>(
+        &self,
+        json_value: &serde_json::Value,
+        tx: &S,
+    ) -> usize {
+        let top_ts = parse_i64_field(json_value.get("ts"));
+        let mut count = 0;
+
+        let data = match json_value.get("data").and_then(|v| v.as_array()) {
+            Some(arr) => arr,
+            None => return 0,
+        };
+
+        for fill in data {
+            let inst_id = fill.get("instId").and_then(|v| v.as_str()).unwrap_or("");
+            if inst_id.is_empty() {
+                continue;
+            }
+
+            let cl_ord_id_str = fill.get("clOrdId").and_then(|v| v.as_str()).unwrap_or("");
+            let client_order_id = match cl_ord_id_str.parse::<i64>() {
+                Ok(id) if id > 0 => id,
+                _ => {
+                    warn!(
+                        "OKX fills: skip non-i64 clOrdId='{}' instId={}",
+                        cl_ord_id_str, inst_id
+                    );
+                    continue;
+                }
+            };
+
+            let trade_id = fill.get("tradeId").and_then(|v| v.as_str()).unwrap_or("");
+            if trade_id.is_empty() || trade_id == "0" {
+                continue;
+            }
+
+            let ts = parse_i64_field(fill.get("ts"));
+            let event_time = if ts > 0 { ts } else { top_ts };
+
+            let fill_px = parse_f64_field(fill.get("fillPx"));
+            let fill_sz = parse_f64_field(fill.get("fillSz"));
+            if fill_px <= 0.0 || fill_sz <= 0.0 {
+                continue;
+            }
+
+            let side = parse_side(fill.get("side").and_then(|v| v.as_str()).unwrap_or(""));
+            let is_maker = fill
+                .get("execType")
+                .and_then(|v| v.as_str())
+                .map(|s| s.eq_ignore_ascii_case("M"))
+                .unwrap_or(false);
+
+            let venue: u8 = if inst_id.ends_with("-SWAP") {
+                TradingVenue::OkexFutures as u8
+            } else {
+                TradingVenue::OkexMargin as u8
+            };
+
+            let msg = BasicTradeLiteMsg::create(
+                venue,
+                event_time,
+                event_time,
+                inst_id.to_string(),
+                client_order_id,
+                trade_id,
+                side,
+                is_maker,
+                fill_px,
+                fill_sz,
+            );
+
+            let event = BasicAccountEventMsg::create(
+                BasicAccountEventType::TradeUpdateLite,
+                BasicAccountScope::OkexUnified,
+                msg.to_bytes(),
+            );
+            if tx.emit_with_dedup_key(
+                event.to_bytes(),
+                trade_lite_dedup_key(BasicAccountScope::OkexUnified, &msg),
+            ) {
+                count += 1;
+            }
+        }
+
+        count
+    }
+}
+
+impl Parser for OkexAccountEventParser {
+    fn parse<S: AccountEventSink>(&self, msg: Bytes, tx: &S) -> usize {
+        let Some(root) = lazy_json::root_from_bytes(&msg) else {
+            return 0;
+        };
+
+        let channel = root
+            .get("arg")
+            .and_then(|arg| lazy_json::get_string(&arg, &["channel"]))
+            .unwrap_or_default();
+
+        match channel.as_str() {
+            "balance_and_position" | "orders" | "account" | "fills" | "positions" => {
+                let json_value: serde_json::Value = match serde_json::from_slice(msg.as_ref()) {
+                    Ok(v) => v,
+                    Err(_) => return 0,
+                };
+                match channel.as_str() {
+                    "balance_and_position" => self.parse_balance_and_position(&json_value, tx),
+                    "orders" => self.parse_orders(&json_value, tx),
+                    "account" => self.parse_account(&json_value, tx),
+                    "fills" => self.parse_fills_channel(&json_value, tx),
+                    "positions" => self.parse_positions(&json_value, tx),
+                    _ => 0,
+                }
+            }
+            _ => {
+                let json_str = std::str::from_utf8(msg.as_ref()).unwrap_or("<non-utf8>");
+                if root.get("event").is_some() {
+                    debug!("OKX: event message: {}", json_str);
+                } else {
+                    warn!("OKX: Unknown channel: {}", channel);
+                }
+                0
+            }
+        }
+    }
+}
+
+fn parse_i64_field_opt(v: Option<&serde_json::Value>) -> Option<i64> {
+    v.and_then(|val| {
+        if let Some(n) = val.as_i64() {
+            Some(n)
+        } else if let Some(n) = val.as_u64() {
+            Some(n as i64)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<i64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_i64_field(v: Option<&serde_json::Value>) -> i64 {
+    parse_i64_field_opt(v).unwrap_or(0)
+}
+
+fn parse_f64_field_opt(v: Option<&serde_json::Value>) -> Option<f64> {
+    v.and_then(|val| {
+        if let Some(n) = val.as_f64() {
+            Some(n)
+        } else if let Some(s) = val.as_str() {
+            s.parse::<f64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_f64_field(v: Option<&serde_json::Value>) -> f64 {
+    parse_f64_field_opt(v).unwrap_or(0.0)
+}
+
+fn parse_abs_f64_field(v: Option<&serde_json::Value>) -> Option<f64> {
+    v.and_then(|val| {
+        if let Some(n) = val.as_f64() {
+            Some(n.abs())
+        } else if let Some(s) = val.as_str() {
+            s.parse::<f64>().ok().map(f64::abs)
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_u8_field(v: Option<&serde_json::Value>) -> u8 {
+    v.and_then(|val| {
+        if let Some(n) = val.as_u64() {
+            u8::try_from(n).ok()
+        } else if let Some(n) = val.as_i64() {
+            u8::try_from(n).ok()
+        } else if let Some(s) = val.as_str() {
+            s.parse::<u8>().ok()
+        } else {
+            None
+        }
+    })
+    .unwrap_or(0)
+}
+
+fn parse_side(side: &str) -> u8 {
+    match side {
+        "buy" | "BUY" | "Buy" => 1,
+        "sell" | "SELL" | "Sell" => 2,
+        _ => 0,
+    }
+}
+
+fn parse_ord_type(ord_type: &str) -> u8 {
+    match ord_type {
+        "market" => 0,
+        "limit" => 1,
+        "post_only" => 2,
+        "fok" => 3,
+        "ioc" => 4,
+        "optimal_limit_ioc" => 5,
+        "mmp" => 6,
+        "mmp_and_post_only" => 7,
+        "elp" => 8,
+        _ => u8::MAX,
+    }
+}
+
+fn parse_okex_order_price_by_state(order: &serde_json::Value, state_u8: u8) -> f64 {
+    let px = parse_f64_field(order.get("px"));
+    let fill_px = parse_f64_field(order.get("fillPx"));
+    match state_u8 {
+        3 | 4 => fill_px,
+        _ => px,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::account_event::test_sink::TestAccountEventSink;
+    use crate::msg::basic_account_msg::{
+        split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
+        BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    };
+
+    #[test]
+    fn balance_and_position_ignores_cashbal_and_ws_upl() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "balance_and_position"},
+            "data": [{
+                "balData": [{
+                    "uTime": "1778479696355",
+                    "cashBal": "56243.85926211993",
+                    "ccy": "USDT"
+                }],
+                "posData": [{
+                    "instId": "BTC-USDT-SWAP",
+                    "posSide": "net",
+                    "pos": "2",
+                    "uTime": "1778472000000",
+                    "upl": "-12.25"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 1);
+
+        let mut event_types = Vec::new();
+        while let Some(msg) = sink.recv() {
+            let (event_type, scope, _payload) =
+                split_basic_account_event(&msg).expect("wrapped event");
+            assert_eq!(scope, BasicAccountScope::OkexUnified);
+            event_types.push(event_type);
+        }
+
+        assert_eq!(event_types, vec![BasicAccountEventType::PositionUpdate]);
+    }
+
+    #[test]
+    fn positions_channel_emits_position_and_upl() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "positions", "instType": "SWAP"},
+            "data": [{
+                "instId": "XTZ-USDT-SWAP",
+                "instType": "SWAP",
+                "posSide": "net",
+                "pos": "0",
+                "uTime": "1783315127082",
+                "upl": "0"
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 2);
+
+        let msg = sink.recv().expect("position event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::PositionUpdate);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let pos = BasicPositionMsg::from_bytes(&payload).expect("position msg");
+        assert_eq!(pos.inst_id, "XTZ-USDT-SWAP");
+        assert_eq!(pos.position_side, 'N');
+        assert_eq!(pos.position_amount, 0.0);
+        assert_eq!(pos.timestamp, 1_783_315_127_082);
+
+        let msg = sink.recv().expect("pnl event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::UnrealizedPnlUpdate);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let pnl = BasicUmUnrealizedMsg::from_bytes(&payload).expect("pnl msg");
+        assert_eq!(pnl.inst_id, "XTZ-USDT-SWAP");
+        assert_eq!(pnl.position_side, 'N');
+        assert_eq!(pnl.unrealized_pnl, 0.0);
+        assert!(sink.recv().is_none());
+    }
+
+    #[test]
+    fn account_channel_emits_gross_wallet_and_borrow() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "account"},
+            "data": [{
+                "uTime": "1778479700000",
+                "details": [{
+                    "uTime": "1778479696355",
+                    "ccy": "USDT",
+                    "cashBal": "56243.85926211993",
+                    "eq": "53443.166831427916",
+                    "liab": "-50.5",
+                    "interest": "-0.5",
+                    "upl": "-2800.6924306920096"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 2);
+        let msg = sink.recv().expect("one balance event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::BalanceUpdate);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let balance = BasicBalanceMsg::from_bytes(&payload).expect("balance msg");
+        assert_eq!(balance.symbol, "USDT");
+        assert!((balance.wallet - 53493.666831427916).abs() < 1e-10);
+
+        let msg = sink.recv().expect("borrow event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::BorrowInterest);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let borrow = BasicBorrowInterestMsg::from_bytes(&payload).expect("borrow msg");
+        assert_eq!(borrow.symbol, "USDT");
+        assert!((borrow.borrowed - 50.0).abs() < 1e-10);
+        assert!((borrow.interest - 0.5).abs() < 1e-10);
+        assert!(sink.recv().is_none());
+    }
+
+    #[test]
+    fn account_risk_parses_account_channel_top_level_metrics() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "account"},
+            "data": [{
+                "uTime": "1778479700000",
+                "adjEq": "100123.45",
+                "totalEq": "100500.00",
+                "mmr": "1500.00",
+                "imr": "8000.00",
+                "mgnRatio": "66.7489666667",
+                "borrowFroz": "100.0",
+                "notionalUsd": "300000.00",
+                "details": [{
+                    "uTime": "1778479696355",
+                    "ccy": "USDT",
+                    "eq": "53443.166831427916",
+                    "liab": "-50.5",
+                    "interest": "-0.5"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 3);
+
+        let msg = sink.recv().expect("risk event");
+        let (event_type, scope, payload) = split_basic_account_event(&msg).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::AccountRisk);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+        let risk = BasicAccountRiskMsg::from_bytes(payload).expect("risk msg");
+        assert_eq!(risk.timestamp, 1_778_479_700_000);
+        assert!((risk.adj_equity_usd - 100_123.45).abs() < 1e-9);
+        assert!((risk.actual_equity_usd - 100_500.0).abs() < 1e-9);
+        assert!((risk.maintenance_margin_usd - 1_500.0).abs() < 1e-9);
+        assert!((risk.initial_margin_usd - 8_000.0).abs() < 1e-9);
+        assert!((risk.margin_ratio - 66.7489666667).abs() < 1e-12);
+        assert!((risk.borrowed_usd - 100.0).abs() < 1e-12);
+        assert!((risk.notional_usd - 300_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fills_channel_emits_trade_update_lite() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "fills", "instId": "BTC-USDT-SWAP"},
+            "data": [{
+                "instId": "BTC-USDT-SWAP",
+                "fillSz": "100",
+                "fillPx": "70000",
+                "side": "buy",
+                "ts": "1705449605015",
+                "ordId": "680800019749904384",
+                "clOrdId": "1234567890",
+                "tradeId": "12345",
+                "execType": "T",
+                "count": "10"
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 1);
+
+        let wrapped = sink.recv().expect("trade lite event");
+        let (event_type, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped event");
+        assert_eq!(event_type, BasicAccountEventType::TradeUpdateLite);
+        assert_eq!(scope, BasicAccountScope::OkexUnified);
+
+        let msg = BasicTradeLiteMsg::from_bytes(payload).expect("trade lite payload");
+        assert_eq!(msg.venue, TradingVenue::OkexFutures as u8);
+        assert_eq!(msg.symbol, "BTC-USDT-SWAP");
+        assert_eq!(msg.client_order_id, 1_234_567_890);
+        assert_eq!(msg.trade_id_str(), "12345");
+        assert_eq!(msg.side, 1);
+        assert_eq!(msg.is_maker, 0);
+        assert!((msg.last_executed_price - 70_000.0).abs() < 1e-9);
+        assert!((msg.last_executed_quantity - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn account_channel_skips_balance_when_liab_missing() {
+        let parser = OkexAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let json = r#"{
+            "arg": {"channel": "account"},
+            "data": [{
+                "uTime": "1778479700000",
+                "details": [{
+                    "uTime": "1778479696355",
+                    "ccy": "USDT",
+                    "eq": "53443.166831427916"
+                }]
+            }]
+        }"#;
+
+        assert_eq!(parser.parse(Bytes::from(json), &sink), 0);
+        assert!(sink.recv().is_none());
+    }
+}

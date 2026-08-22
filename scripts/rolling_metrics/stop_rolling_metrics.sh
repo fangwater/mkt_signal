@@ -24,8 +24,8 @@ USAGE
 infer_venues_from_dir() {
   local dir_name="${1,,}"
 
-  if [[ "$dir_name" =~ ^([a-z0-9]+-(margin|futures))[-_]([a-z0-9]+-(margin|futures))$ ]]; then
-    echo "${BASH_REMATCH[1]},${BASH_REMATCH[3]}"
+  if [[ "$dir_name" =~ ^([a-z0-9]+-(margin|futures)|(binance|bitget)-coin-futures)[-_]([a-z0-9]+-(margin|futures)|(binance|bitget)-coin-futures)$ ]]; then
+    echo "${BASH_REMATCH[1]},${BASH_REMATCH[4]}"
     return 0
   fi
 
@@ -70,7 +70,7 @@ legacy_token() {
 
 validate_venue() {
   local v="${1,,}"
-  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures)$ ]]; then
+  if [[ ! "$v" =~ ^[a-z0-9]+-(margin|futures)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ]]; then
     echo "[ERROR] invalid venue: $1 (expect <exchange>-<margin|futures>)" >&2
     exit 1
   fi

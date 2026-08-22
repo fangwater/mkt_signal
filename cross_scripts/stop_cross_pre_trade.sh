@@ -39,7 +39,7 @@ normalize_venue() {
 ensure_cross_venue() {
   local v
   v="$(normalize_venue "$1")"
-  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ ]]; then
+  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(margin|futures|spot|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ) ]]; then
     echo "[ERROR] 非法 cross venue: $1" >&2
     exit 1
   fi
@@ -113,8 +113,8 @@ find_running_pids() {
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" '
-      index($0, "pre_trade") > 0 && index($0, base_dir) > 0 && index($0, open_arg) > 0 && index($0, hedge_arg) > 0 {
+    ps -eo pid=,comm=,args= | awk -v base_dir="$BASE_DIR" -v open_arg="$open_arg" -v hedge_arg="$hedge_arg" '
+      $2 == "pre_trade" && index($0, base_dir) > 0 && index($0, open_arg) > 0 && index($0, hedge_arg) > 0 {
         print $1
       }
     '

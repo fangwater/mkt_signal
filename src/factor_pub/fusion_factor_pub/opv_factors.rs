@@ -587,7 +587,14 @@ fn clv_series(series: &SymbolSeries<'_>) -> Vec<Option<f64>> {
         &series.close,
         &series.low,
         &series.high,
-        |close, low, high| ratio((close - low) - (high - close), high - low),
+        |close, low, high| {
+            let den = high - low;
+            if den.abs() <= 1e-12 {
+                Some(0.0)
+            } else {
+                ratio((close - low) - (high - close), den)
+            }
+        },
     )
 }
 
@@ -882,12 +889,18 @@ fn compute_td_ti_033(series: &SymbolSeries<'_>) -> Option<f64> {
 fn compute_td_ti_034(series: &SymbolSeries<'_>) -> Option<f64> {
     let high_diff = diff_last(&series.net_buy_large, 1)?;
     let low_diff = diff_last(&series.net_buy_small, 1)?;
+    if low_diff.abs() <= 1e-12 {
+        return Some(0.0);
+    }
     ratio(high_diff, low_diff)
 }
 
 fn compute_td_ti_035(series: &SymbolSeries<'_>) -> Option<f64> {
     let curr = current(&series.net_buy_amount)?;
     let mean = rolling_mean_exact(&series.net_buy_amount, 30)?;
+    if mean.abs() <= 1e-12 {
+        return Some(0.0);
+    }
     ratio(curr, mean)
 }
 
@@ -1023,11 +1036,14 @@ fn compute_td_mt_008(series: &SymbolSeries<'_>) -> Option<f64> {
     let minus_dm = minus_dm_series(series);
     let tr = tr_series(series);
     let sma_tr = rolling_mean_opt_exact(&tr, 14)?;
+    if sma_tr.abs() <= 1e-12 {
+        return Some(0.0);
+    }
     let plus_di = ratio(100.0 * rolling_mean_exact(&plus_dm, 14)?, sma_tr)?;
     let minus_di = ratio(100.0 * rolling_mean_exact(&minus_dm, 14)?, sma_tr)?;
     let den = plus_di + minus_di;
     if den.abs() <= 1e-12 {
-        return None;
+        return Some(0.0);
     }
     finite_opt(Some(((plus_di - minus_di).abs() / den) * 100.0))
 }
@@ -1428,7 +1444,13 @@ fn compute_tp_vpi_014(series: &SymbolSeries<'_>) -> Option<f64> {
             .map(Some)
             .collect::<Vec<Option<f64>>>(),
         &mean20,
-        ratio,
+        |volume, mean| {
+            if mean.abs() <= 1e-12 {
+                Some(0.0)
+            } else {
+                ratio(volume, mean)
+            }
+        },
     );
     rolling_mean_opt_exact(&ratio_series, 20)
 }
@@ -1993,8 +2015,13 @@ fn compute_td_pr_016(series: &SymbolSeries<'_>) -> Option<f64> {
     let var1 = sign_close_open(close, open);
     let oc = zip_map2(&series.open, &series.close, |o, c| o - c);
     let vol = collect_vec(&series.volume);
-    let var2 = ratio(open - close, rolling_mean_exact(&oc, 90)?)?;
-    let var3 = ratio(series.volume.value_at(n - 1), rolling_mean_exact(&vol, 90)?)?;
+    let oc_mean = rolling_mean_exact(&oc, 90)?;
+    let vol_mean = rolling_mean_exact(&vol, 90)?;
+    if oc_mean.abs() <= 1e-12 || vol_mean.abs() <= 1e-12 {
+        return Some(0.0);
+    }
+    let var2 = (open - close) / oc_mean;
+    let var3 = series.volume.value_at(n - 1) / vol_mean;
     finite_opt(Some(var1 * var2 * var3))
 }
 

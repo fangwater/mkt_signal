@@ -134,6 +134,7 @@ write_env_template_if_missing() {
 #!/usr/bin/env bash
 
 export IPC_NAMESPACE="${env_name}"
+export TRADE_SIGNAL_ENABLE_QUEUE_POSITION="0"
 
 export GATE_API_KEY=""
 export GATE_API_SECRET=""

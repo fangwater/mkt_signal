@@ -1,3 +1,42 @@
+[workspace]
+members = [
+    ".",
+    "crates/account_common",
+    "crates/cme_tas_replay",
+    "crates/account_monitor_common",
+    "crates/depth_pub",
+    "crates/factor_engine",
+    "crates/inpos_engine",
+    "crates/ipc_common",
+    "crates/mkt_model_runtime",
+    "crates/mkt_parsers",
+    "crates/notification_server",
+    "crates/order_common",
+    "crates/period_pbs",
+    "crates/spread_pbs_btc_inc_raw",
+    "crates/persist_manager",
+    "crates/persist_common",
+    "crates/quote_plan",
+    "crates/rolling_common",
+    "crates/runtime_common",
+    "crates/signal_common",
+    "crates/symbol_utils",
+    "crates/trade_engine",
+    "crates/trade_signal",
+    "crates/viz_common",
+    "crates/viz_server",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+ahash = "0.8.12"
+serde_json = "1.0"
+
 [package]
 name = "mkt_signal"
 version = "0.1.0"
@@ -17,8 +56,16 @@ name = "spread_pbs"
 path = "src/bin/spread_pbs.rs"
 
 [[bin]]
-name = "trade_signal"
-path = "src/bin/trade_signal.rs"
+name = "spread_bbo_zmq_pub"
+path = "src/bin/spread_bbo_zmq_pub.rs"
+
+[[bin]]
+name = "spread_bbo_zmq_sub"
+path = "src/bin/spread_bbo_zmq_sub.rs"
+
+[[bin]]
+name = "spread_pbs_compare"
+path = "src/bin/spread_pbs_compare.rs"
 
 [[bin]]
 name = "binance_account_monitor"
@@ -45,16 +92,12 @@ name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 
 [[bin]]
-name = "demo_rate_fetcher"
-path = "src/bin/demo_rate_fetcher.rs"
-
-[[bin]]
 name = "pre_trade"
 path = "src/bin/pre_trade.rs"
 
 [[bin]]
-name = "viz_server"
-path = "src/bin/viz_server.rs"
+name = "exec-pre-trade"
+path = "src/bin/exec_pre_trade.rs"
 
 [[bin]]
 name = "fr_signal_dashboard"
@@ -65,14 +108,6 @@ name = "rolling_metrics"
 path = "src/bin/rolling_metrics.rs"
 
 [[bin]]
-name = "persist_manager"
-path = "src/bin/persist_manager.rs"
-
-[[bin]]
-name = "order_export"
-path = "src/bin/order_export.rs"
-
-[[bin]]
 name = "test_minqty"
 path = "src/bin/test_minqty.rs"
 
@@ -81,24 +116,13 @@ name = "ipc_bridge"
 path = "src/bin/ipc_bridge.rs"
 
 [[bin]]
-name = "query_client"
-path = "src/bin/query_client.rs"
+name = "predict_file"
+path = "src/bin/predict_file.rs"
 
-[[bin]]
-name = "demo_qty_alignment"
-path = "src/bin/demo_qty_alignment.rs"
-
-[[bin]]
-name = "demo_gate_minqty"
-path = "src/bin/demo_gate_minqty.rs"
 
 [[bin]]
 name = "delist_schedule"
 path = "src/bin/delist_schedule.rs"
-
-[[bin]]
-name = "demo_depth_query_tlen"
-path = "src/bin/demo_depth_query_tlen.rs"
 
 [[bin]]
 name = "market_maker"
@@ -109,12 +133,36 @@ name = "depth_pub"
 path = "src/bin/depth_pub.rs"
 
 [[bin]]
-name = "kline_pub"
-path = "src/bin/kline_pub.rs"
+name = "depth_pub_general"
+path = "src/bin/depth_pub_general.rs"
 
 [[bin]]
 name = "trade_flow_feature_pub"
 path = "src/bin/trade_flow_feature_pub.rs"
+
+[[bin]]
+name = "tardis_ipc_replay"
+path = "src/bin/tardis_ipc_replay.rs"
+
+[[bin]]
+name = "cme_tas_census"
+path = "src/bin/cme_tas_census.rs"
+
+[[bin]]
+name = "tonglian_baseline_replay"
+path = "src/bin/tonglian_baseline_replay.rs"
+
+[[bin]]
+name = "cn_features_replay"
+path = "src/bin/futures_fusion_factor_replay.rs"
+
+[[bin]]
+name = "db_fusion_factor_replay"
+path = "src/bin/db_fusion_factor_replay.rs"
+
+[[bin]]
+name = "trade_notional_kll_aggregate"
+path = "src/bin/trade_notional_kll_aggregate.rs"
 
 [[bin]]
 name = "pairmm_resample"
@@ -123,6 +171,11 @@ path = "src/bin/pairmm_resample.rs"
 [[bin]]
 name = "model_pub"
 path = "src/bin/model_pub.rs"
+required-features = ["model-ort"]
+
+[[bin]]
+name = "model_1m_pub"
+path = "src/bin/model_1m_pub.rs"
 required-features = ["model-ort"]
 
 [[bin]]
@@ -135,43 +188,63 @@ name = "fusion_factor_pub"
 path = "src/bin/fusion_factor_pub.rs"
 
 [[bin]]
+name = "fusion_factor_1m_pub"
+path = "src/bin/fusion_factor_1m_pub.rs"
+
+[[bin]]
 name = "factor_test"
 path = "src/bin/factor_test.rs"
-
-[[bin]]
-name = "demo_bridge_pub"
-path = "src/bin/demo_bridge_pub.rs"
-
-[[bin]]
-name = "demo_bridge_sub"
-path = "src/bin/demo_bridge_sub.rs"
 
 [[bin]]
 name = "iceoryx_dead_nodes_cleanup"
 path = "src/bin/iceoryx_dead_nodes_cleanup.rs"
 
 [[bin]]
-name = "inspect_rl_vol"
-path = "src/bin/inspect_rl_vol.rs"
+name = "iceoryx_remove_node_from_service"
+path = "src/bin/iceoryx_remove_node_from_service.rs"
 
 [[bin]]
-name = "inspect_iceoryx_service"
-path = "src/bin/inspect_iceoryx_service.rs"
+name = "model_pub_probe"
+path = "src/bin/model_pub_probe.rs"
 
 [[bin]]
-name = "inspect_model_output"
-path = "src/bin/inspect_model_output.rs"
+name = "predict_rnn_zmq_ipc_demo"
+path = "src/bin/predict_rnn_zmq_ipc_demo.rs"
 
 [[bin]]
-name = "inspect_model_input"
-path = "src/bin/inspect_model_input.rs"
+name = "intra_funding_trace"
+path = "src/bin/intra_funding_trace.rs"
+
+[[bin]]
+name = "remote_ip_diag"
+path = "src/bin/remote_ip_diag.rs"
 
 [dependencies]
+account_common = { path = "crates/account_common" }
+account_monitor_common = { path = "crates/account_monitor_common" }
+persist_common = { path = "crates/persist_common" }
+quote_plan = { path = "crates/quote_plan" }
+trade_signal = { path = "crates/trade_signal" }
+trade_engine = { path = "crates/trade_engine" }
+order_common = { path = "crates/order_common" }
+signal_common = { path = "crates/signal_common" }
+runtime_common = { path = "crates/runtime_common" }
+symbol_utils = { path = "crates/symbol_utils" }
+ipc_common = { path = "crates/ipc_common" }
+depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
+mkt_parsers = { path = "crates/mkt_parsers" }
+rolling_common = { path = "crates/rolling_common" }
+viz_common = { path = "crates/viz_common" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+# spread_pbs 热路径专用新版 WS 栈:Bytes 载荷减分配 + rustls/aws-lc TLS。
+# connection/ 等旧模块仍用上面的 0.20/native-tls,全部迁移后可移除双版本。
+tokio-tungstenite-v030 = { package = "tokio-tungstenite", version = "0.30", features = ["rustls-tls-native-roots"] }
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -183,16 +256,19 @@ anyhow = "1.0"
 futures = "0.3"
 bytes = { version = "1.0", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.8"
 async-trait = "0.1"
 iceoryx2 = "0.8.1"
 uuid = { version = "1.17.0", features = ["v4"] }
 sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = { version = "0.12.19", features = ["json", "blocking"] }
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
 prettytable = "0.10.0"
 comfy-table = "=7.1.1"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
+openssl = "0.10"
 once_cell = "1.19"
 hmac = "0.12"
 sha2 = "0.10"
@@ -205,14 +281,19 @@ flate2 = "1.0"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 urlencoding = "2.1"
 axum = { version = "0.7", features = ["ws"] }
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+tokio-stream = "0.1"
+crc32fast = "1.4"
+csv = "1.3"
+zip = { version = "4.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 tower = "0.4"
 tower-http = { version = "0.4", features = ["cors"] }
-rocksdb = { version = "0.21", default-features = false, features = ["lz4"] }
-polars-time = "0.43.1"
 dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
+rtrb = "0.3.4"
 libc = "0.2"
 zmq = "0.10"
 mkt_model_runtime = { path = "crates/mkt_model_runtime", optional = true }
@@ -220,15 +301,13 @@ indexmap = "2"
 rayon = "1.10"
 arc-swap = "1.7"
 
+
 [features]
 default = []
 model-ort = ["dep:mkt_model_runtime"]
 
-[dependencies.polars]
-version = "0.43.1"
-optional = false
-default-features = false
-features = ["fmt", "lazy", "parquet", "polars-io", "rolling_window", "rank", "moment", "cov"]
+[dev-dependencies]
+signal_common = { path = "crates/signal_common", features = ["test-utils"] }
 
 [profile.release]
 debug = 0

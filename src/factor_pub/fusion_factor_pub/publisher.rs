@@ -4,6 +4,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
 pub const FUSION_FACTOR_PAYLOAD_MAX_BYTES: usize = 4096;
+pub const FUSION_FACTOR_MAX_SUBSCRIBERS: usize = 32;
 
 pub struct FusionFactorPublisher {
     publisher: Publisher<ipc::Service, [u8; FUSION_FACTOR_PAYLOAD_MAX_BYTES], ()>,
@@ -21,7 +22,7 @@ impl FusionFactorPublisher {
             .service_builder(&ServiceName::new(service_path)?)
             .publish_subscribe::<[u8; FUSION_FACTOR_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(FUSION_FACTOR_MAX_SUBSCRIBERS)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
             .open_or_create()

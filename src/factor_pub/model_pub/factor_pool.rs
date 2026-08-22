@@ -35,6 +35,7 @@ pub(crate) fn parse_venue_slug_from_input_service(input_service: &str) -> Result
 pub(crate) async fn load_symbol_factor_names_from_tlen_server(
     config: &ModelPubConfig,
     venue_slug: &str,
+    factor_plan_config_type: &str,
 ) -> Result<HashMap<String, Vec<String>>> {
     let client = Client::builder()
         .timeout(Duration::from_millis(config.tlen_server_request_timeout_ms))
@@ -46,7 +47,10 @@ pub(crate) async fn load_symbol_factor_names_from_tlen_server(
     );
     let resp = client
         .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "factor_plan")])
+        .query(&[
+            ("venue", venue_slug),
+            ("config_type", factor_plan_config_type),
+        ])
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -63,11 +67,56 @@ pub(crate) async fn load_symbol_factor_names_from_tlen_server(
         if key.is_empty() || key == TLEN_SHARED_CONFIG_FIELD || item.factors.is_empty() {
             continue;
         }
-        let normalized_symbol = key.to_uppercase();
-        validate_factor_names(&normalized_symbol, &item.factors)?;
-        plans.insert(normalized_symbol, item.factors);
+        let venue_symbol = key.to_uppercase();
+        validate_factor_names(&venue_symbol, &item.factors)?;
+        insert_symbol_plan_alias(&mut plans, &venue_symbol, &item.factors)?;
+
+        let model_symbol = normalize_symbol_key(&venue_symbol);
+        if model_symbol != venue_symbol {
+            insert_symbol_plan_alias(&mut plans, &model_symbol, &item.factors)?;
+        }
     }
     Ok(plans)
+}
+
+pub(crate) fn normalize_symbol_key(raw: &str) -> String {
+    let normalized = raw
+        .trim()
+        .to_uppercase()
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | '/' | ':'))
+        .collect::<String>();
+
+    for suffix in ["PERPETUAL", "SWAP", "PERP"] {
+        if normalized.len() > suffix.len() && normalized.ends_with(suffix) {
+            return normalized[..normalized.len() - suffix.len()].to_string();
+        }
+    }
+
+    normalized
+}
+
+fn insert_symbol_plan_alias(
+    plans: &mut HashMap<String, Vec<String>>,
+    symbol: &str,
+    factors: &[String],
+) -> Result<()> {
+    if symbol.trim().is_empty() {
+        return Ok(());
+    }
+    if let Some(existing) = plans.get(symbol) {
+        if existing != factors {
+            anyhow::bail!(
+                "conflicting factor plan aliases for symbol={} existing={} incoming={}",
+                symbol,
+                existing.len(),
+                factors.len()
+            );
+        }
+        return Ok(());
+    }
+    plans.insert(symbol.to_string(), factors.to_vec());
+    Ok(())
 }
 
 fn factor_name_to_index(name: &str) -> Option<u16> {
@@ -161,5 +210,30 @@ mod tests {
         )
         .expect_err("duplicate factor should fail");
         assert!(err.to_string().contains("duplicate factor"));
+    }
+
+    #[test]
+    fn normalize_symbol_key_handles_okex_swap_symbols() {
+        assert_eq!(normalize_symbol_key("BTCUSDT"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key("BTC-USDT-SWAP"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key("bnb-usdt-swap"), "BNBUSDT");
+        assert_eq!(normalize_symbol_key("BTC_USDT_PERP"), "BTCUSDT");
+        assert_eq!(normalize_symbol_key("ETH/USDT:SWAP"), "ETHUSDT");
+    }
+
+    #[test]
+    fn build_extract_indices_follows_model_factor_order() {
+        let plan = vec![
+            "factor_001".to_string(),
+            "avg_price".to_string(),
+            "factor_002".to_string(),
+        ];
+        let positions = build_factor_position_map("BTCUSDT", &plan).expect("position map");
+        let model_factors = vec!["factor_002".to_string(), "factor_001".to_string()];
+
+        assert_eq!(
+            build_extract_indices("model-1m", "BTCUSDT", &model_factors, &positions),
+            vec![2, 0]
+        );
     }
 }

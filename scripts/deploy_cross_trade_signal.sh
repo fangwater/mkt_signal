@@ -119,7 +119,7 @@ CARGO_TARGET_DIR_EFFECTIVE="$(cross_effective_cargo_target_dir "$ROOT_DIR" "$CAR
 (
   cd "$ROOT_DIR"
   CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
-    cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
+    cargo build --release -p trade_signal --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
 )
 BIN_PATH="$(cross_bin_path_release "$CARGO_TARGET_DIR_EFFECTIVE" "$BIN_NAME")"
 
@@ -137,6 +137,10 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
     "sync_cross_symbol_lists.py"
     "print_cross_symbol_lists.py"
     "set_um_leverage.py"
+    "set_cross_futures_leverage.py"
+    "set_cross_cancel_all.py"
+    "set_cross_align.py"
+    "verify_cross_account_modes.py"
     "sync_cross_strategy_params.py"
     "print_cross_strategy_params.py"
     "sync_cross_spread_thresholds.py"
@@ -162,6 +166,7 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
       chmod +x "$TARGET_DIR/cross_scripts/$tool"
     fi
   done
+  cross_sync_contract_ops_scripts "$ROOT_DIR" "$TARGET_DIR"
 else
   echo "[INFO] 跳过脚本同步（如需同步脚本，请添加 --sync-scripts）"
 fi
@@ -180,8 +185,14 @@ if [[ "$SYNC_SCRIPTS" == "1" ]]; then
   ./cross_scripts/sync_cross_symbol_lists.py
   ./cross_scripts/print_cross_symbol_lists.py
   ./cross_scripts/set_um_leverage.py --leverage 6
+  ./cross_scripts/set_cross_futures_leverage.py --leverage 5
+  ./cross_scripts/set_cross_cancel_all.py
+  ./cross_scripts/set_cross_cancel_all.py --execute
+  ./cross_scripts/set_cross_align.py
+  ./cross_scripts/set_cross_align.py --execute
   ./cross_scripts/sync_cross_strategy_params.py
   ./cross_scripts/print_cross_strategy_params.py
+  ./cross_scripts/cross_contract_ops.py cancel both
 EOF
 else
   echo "[INFO] 未同步脚本（保留目标目录已有 cross_scripts，需更新请加 --sync-scripts）"

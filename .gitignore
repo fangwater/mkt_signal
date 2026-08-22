@@ -3,6 +3,7 @@ node_modules
 logs
 monitor
 *.log
+log_backups/
 
 # 批量服务器配置脚本（包含敏感信息）
 batch_setup_servers.sh
@@ -43,3 +44,47 @@ model/
 
 # SSH keys for FR remote deploy (never commit private keys)
 *.pem
+
+scripts/gate_full_cleanup_collect.py
+cmd.md
+# latency CSV capture runtime output
+/data/
+# generated exchange instrument snapshots and raw API responses
+/data/instrument_snapshots/
+data/latency_csv/
+latency_csv/
+
+# generated deploy/client packages
+dist/
+
+# user-edited runtime config (template lives in config.example.toml)
+scripts/order_export_puller/config.toml
+
+# Local Tardis / CME TAS replay run configs.
+/config/tardis_replay.toml
+/config/tardis_replay_binance_spot.toml
+/config/tardis_replay_binance_futures_*.toml
+/config/tardis_replay_binance_spot_*.toml
+/config/cme_tas_backtest.toml
+/config/cme_tas_drop_special_1min.toml
+/config/cme_tas_kll.toml
+/config/cme_tas_synth_1min.toml
+
+# local order export dumps
+order_exports/
+
+# local notebook analysis outputs
+notebooks/
+analysis_outputs/
+persist_read_bybit_intra_arb01_20260612_new_latency.ipynb
+persist_read_bybit_intra_arb01_20260612_new_latency.executed.ipynb
+
+# Cursor 本地规则/状态，不入库
+.cursor/
+
+# local Binance intra latency notebooks
+binance_intra_futures_taker_*.ipynb
+binance_intra_arb01_latency_*.ipynb
+
+# local Binance Ed25519 auth sandbox
+local_binance_ed25519_test/

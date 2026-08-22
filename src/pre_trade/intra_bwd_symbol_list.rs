@@ -12,9 +12,9 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
-use crate::signal::common::TradingVenue;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
+use runtime_common::redis_client::{BlockingRedisClient, RedisClient, RedisSettings};
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -36,6 +36,10 @@ impl IntraBwdSymbolList {
         SYMBOLS.with(|s| s.borrow().contains(&target))
     }
 
+    pub fn contains_normalized(&self, symbol: &str) -> bool {
+        SYMBOLS.with(|s| s.borrow().contains(symbol))
+    }
+
     /// 当前缓存大小（调试 / 监控用）
     pub fn len(&self) -> usize {
         SYMBOLS.with(|s| s.borrow().len())
@@ -46,19 +50,41 @@ impl IntraBwdSymbolList {
     }
 
     fn normalize(symbol: &str) -> String {
-        // 与 funding_rate::SymbolList 共用同一套 whitelist 归一化策略。
+        // 与 trade_signal::SymbolList 共用同一套 whitelist 归一化策略。
         normalize_symbol_for_whitelist(symbol, TradingVenue::OkexFutures)
     }
 
     /// 从 Redis 拉取一次 `intra_bwd_trade_symbols:<key_suffix>` 并整体替换本地缓存。
     /// key 不存在时清空缓存（语义对齐"白名单空 = 默认禁借贷"）。
-    pub async fn load_from_redis(redis: &RedisSettings, key_suffix: &str) -> Result<()> {
+    pub async fn load_from_redis(
+        redis: &RedisSettings,
+        env_name: &str,
+        key_suffix: &str,
+    ) -> Result<()> {
+        let env_name = env_name.trim().to_ascii_lowercase();
         let key_suffix = key_suffix.trim().to_ascii_lowercase();
-        let key = format!("intra_bwd_trade_symbols:{key_suffix}");
+        let key = format!("{env_name}:intra_bwd_trade_symbols:{key_suffix}");
         let mut client = RedisClient::connect(redis.clone())
             .await
             .context("connect redis for intra_bwd_trade_symbols")?;
-        match client.get_string(&key).await? {
+        Self::apply_raw_redis_value(&key, client.get_string(&key).await?)
+    }
+
+    pub fn load_from_redis_blocking(
+        redis: &RedisSettings,
+        env_name: &str,
+        key_suffix: &str,
+    ) -> Result<()> {
+        let env_name = env_name.trim().to_ascii_lowercase();
+        let key_suffix = key_suffix.trim().to_ascii_lowercase();
+        let key = format!("{env_name}:intra_bwd_trade_symbols:{key_suffix}");
+        let mut client = BlockingRedisClient::connect(redis.clone())
+            .context("connect redis for intra_bwd_trade_symbols")?;
+        Self::apply_raw_redis_value(&key, client.get_string(&key)?)
+    }
+
+    fn apply_raw_redis_value(key: &str, raw: Option<String>) -> Result<()> {
+        match raw {
             Some(raw) => {
                 let parsed: Vec<String> = serde_json::from_str(&raw).with_context(|| {
                     format!("Redis string '{}' 不是合法 JSON(Vec<String>): {}", key, raw)
@@ -82,13 +108,15 @@ impl IntraBwdSymbolList {
 
     /// 启动后台 60s 间隔刷新任务（与 PreTradeParamsLoader 同款）。
     /// 启动处的同步加载已经做过一次，这里跳过 interval 的首个立即触发，避免重复读 Redis。
-    pub fn start_background_refresh(redis: RedisSettings, key_suffix: String) {
+    pub fn start_background_refresh(redis: RedisSettings, env_name: String, key_suffix: String) {
         tokio::task::spawn_local(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(REFRESH_INTERVAL_SECS));
             interval.tick().await; // 立即返回的第一次 tick：跳过，已有启动同步加载
             loop {
                 interval.tick().await;
-                if let Err(err) = IntraBwdSymbolList::load_from_redis(&redis, &key_suffix).await {
+                if let Err(err) =
+                    IntraBwdSymbolList::load_from_redis(&redis, &env_name, &key_suffix).await
+                {
                     warn!(
                         "intra_bwd 借贷白名单后台刷新失败 key_suffix='{}': {:#}",
                         key_suffix, err

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Cancel OKEx Unified Account open orders (SWAP + MARGIN spot).
+"""Cancel OKEx Unified Account open orders (SWAP + cross-margin SPOT).
 
 Self-contained: no imports from other scripts in this repo.
 
 Behavior:
   - CWD basename must match ^okex_fr_ or ^okex-intra-.
   - Auto-sources ./env.sh; OKX_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
-  - Lists open orders via /api/v5/trade/orders-pending; cancels in batches of ≤20
+  - Lists open orders via /api/v5/trade/orders-pending; cancels in batches of <=20
     via /api/v5/trade/cancel-batch-orders.
   - Dry-run by default; --execute required.
 
@@ -41,6 +41,12 @@ OKX_CANCEL_BATCH_PATH = "/api/v5/trade/cancel-batch-orders"
 ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 BATCH_LIMIT = 20
+MARGIN_SPOT_TD_MODES = {"cross", "isolated"}
+USER_AGENT = "mkt-signal-okx-order-cancel/1.0"
+
+
+class OkxQueryError(RuntimeError):
+    """Raised when an open-order scope cannot be verified."""
 
 
 def utc_timestamp() -> str:
@@ -81,6 +87,7 @@ def okx_private(method, path, api_key, api_secret, passphrase, *, params=None, b
         "OK-ACCESS-TIMESTAMP": timestamp,
         "OK-ACCESS-PASSPHRASE": passphrase,
         "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
     }
     return http_request(
         f"{OKX_BASE}{request_path}",
@@ -172,13 +179,26 @@ def fetch_open(api_key, api_secret, passphrase, inst_type: str) -> List[Dict[str
             params["after"] = after
         status, body = okx_private("GET", OKX_ORDERS_PENDING_PATH, api_key, api_secret, passphrase, params=params)
         if not (200 <= status < 300):
-            sys.stderr.write(f"[WARN] orders-pending {inst_type} status={status} body={body}\n")
-            return out
-        parsed = json.loads(body)
+            raise OkxQueryError(
+                f"orders-pending {inst_type} status={status} body={body}"
+            )
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise OkxQueryError(
+                f"orders-pending {inst_type} returned invalid JSON: {body}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise OkxQueryError(
+                f"orders-pending {inst_type} returned a non-object response: {body}"
+            )
         if str(parsed.get("code", "")) != "0":
-            sys.stderr.write(f"[WARN] orders-pending {inst_type}: {body}\n")
-            return out
-        rows = parsed.get("data", []) or []
+            raise OkxQueryError(f"orders-pending {inst_type} failed: {body}")
+        rows = parsed.get("data", [])
+        if not isinstance(rows, list):
+            raise OkxQueryError(
+                f"orders-pending {inst_type} returned invalid data: {body}"
+            )
         if not rows:
             break
         out.extend(rows)
@@ -204,26 +224,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols", help="Comma-separated symbol whitelist (BTCUSDT,...). Omit = all.")
     parser.add_argument(
         "--scope", choices=["um", "margin", "both"], default="both",
-        help="um→SWAP, margin→spot MARGIN",
+        help="um->SWAP, margin->SPOT orders with margin tdMode",
     )
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
 
 def filter_orders(
-    orders: List[Dict[str, Any]], wanted_inst_ids: Optional[set]
+    orders: List[Dict[str, Any]],
+    wanted_inst_ids: Optional[set],
+    wanted_td_modes: Optional[set] = None,
 ) -> List[Dict[str, str]]:
     """Return list of {instId, ordId}."""
     out: List[Dict[str, str]] = []
     for o in orders:
         inst = str(o.get("instId", ""))
         ord_id = str(o.get("ordId", ""))
+        td_mode = str(o.get("tdMode", "")).lower()
         if not inst or not ord_id:
             continue
         if wanted_inst_ids is not None and inst not in wanted_inst_ids:
             continue
+        if wanted_td_modes is not None and td_mode not in wanted_td_modes:
+            continue
         out.append({"instId": inst, "ordId": ord_id})
     return out
+
+
+def collect_orders_to_cancel(
+    api_key: str,
+    api_secret: str,
+    passphrase: str,
+    scope: str,
+    wanted_symbols: Optional[List[str]],
+) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    swap_target_insts: Optional[set] = None
+    margin_target_insts: Optional[set] = None
+    if wanted_symbols:
+        swap_target_insts = {to_inst_id(s, "SWAP") for s in wanted_symbols}
+        swap_target_insts.discard(None)
+        margin_target_insts = {to_inst_id(s, "MARGIN") for s in wanted_symbols}
+        margin_target_insts.discard(None)
+
+    swap_to_cancel: List[Dict[str, str]] = []
+    margin_to_cancel: List[Dict[str, str]] = []
+    if scope in ("um", "both"):
+        swap_orders = fetch_open(api_key, api_secret, passphrase, "SWAP")
+        swap_to_cancel = filter_orders(swap_orders, swap_target_insts)
+    if scope in ("margin", "both"):
+        # OKX margin spot orders are returned under instType=SPOT with tdMode=cross/isolated.
+        spot_orders = fetch_open(api_key, api_secret, passphrase, "SPOT")
+        margin_to_cancel = filter_orders(
+            spot_orders, margin_target_insts, MARGIN_SPOT_TD_MODES
+        )
+    return swap_to_cancel, margin_to_cancel
 
 
 def main() -> None:
@@ -235,22 +289,13 @@ def main() -> None:
 
     print(f"[info] env={env_name} scope={args.scope} execute={args.execute}")
 
-    swap_target_insts: Optional[set] = None
-    margin_target_insts: Optional[set] = None
-    if wanted_symbols:
-        swap_target_insts = {to_inst_id(s, "SWAP") for s in wanted_symbols}
-        swap_target_insts.discard(None)
-        margin_target_insts = {to_inst_id(s, "MARGIN") for s in wanted_symbols}
-        margin_target_insts.discard(None)
-
-    swap_to_cancel: List[Dict[str, str]] = []
-    margin_to_cancel: List[Dict[str, str]] = []
-    if args.scope in ("um", "both"):
-        swap_orders = fetch_open(api_key, api_secret, passphrase, "SWAP")
-        swap_to_cancel = filter_orders(swap_orders, swap_target_insts)
-    if args.scope in ("margin", "both"):
-        margin_orders = fetch_open(api_key, api_secret, passphrase, "MARGIN")
-        margin_to_cancel = filter_orders(margin_orders, margin_target_insts)
+    try:
+        swap_to_cancel, margin_to_cancel = collect_orders_to_cancel(
+            api_key, api_secret, passphrase, args.scope, wanted_symbols
+        )
+    except OkxQueryError as exc:
+        print(f"[ERROR] unable to verify open orders: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     all_items = swap_to_cancel + margin_to_cancel
     if not all_items:

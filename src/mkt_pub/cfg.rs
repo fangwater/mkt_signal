@@ -1,8 +1,8 @@
-use crate::exchange::Exchange;
-use crate::signal::common::TradingVenue;
 use anyhow::{Context, Result};
 use log::{error, info, warn};
+use order_common::TradingVenue;
 use prettytable::{format, Cell, Row, Table};
+use runtime_common::exchange::Exchange;
 use serde::Deserialize;
 use serde_yaml;
 use std::collections::HashMap;
@@ -10,6 +10,12 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;
+
+const BINANCE_FUTURES_EXCHANGE_INFO_URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+const BINANCE_COIN_FUTURES_EXCHANGE_INFO_URL: &str =
+    "https://dapi.binance.com/dapi/v1/exchangeInfo";
+const BINANCE_CONTRACT_PERPETUAL: &str = "PERPETUAL";
+const BINANCE_CONTRACT_TRADIFI_PERPETUAL: &str = "TRADIFI_PERPETUAL";
 
 fn symbols_cache() -> &'static AsyncMutex<HashMap<TradingVenue, Vec<String>>> {
     static CACHE: OnceLock<AsyncMutex<HashMap<TradingVenue, Vec<String>>>> = OnceLock::new();
@@ -45,6 +51,7 @@ struct BinanceExchangeInfoResponse {
 #[serde(rename_all = "camelCase")]
 struct BinanceSymbolInfo {
     symbol: String,
+    #[serde(alias = "contractStatus")]
     status: String,
     quote_asset: String,
     #[serde(default)]
@@ -192,17 +199,59 @@ impl Config {
 
     pub fn get_batch_size(&self) -> usize {
         match self.venue {
-            TradingVenue::BinanceFutures => 50,
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => 50,
             TradingVenue::BinanceMargin => 100,
             TradingVenue::OkexFutures | TradingVenue::OkexMargin => 50,
             TradingVenue::BybitFutures => 300,
             TradingVenue::BybitMargin => 10,
-            TradingVenue::BitgetMargin | TradingVenue::BitgetFutures => 50,
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => 50,
             TradingVenue::GateMargin | TradingVenue::GateFutures => 50,
             TradingVenue::AsterFutures => 50,
             TradingVenue::AsterMargin => 100,
             TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => 200,
         }
+    }
+
+    fn collect_matched_symbols<F>(
+        futures_symbols: &[String],
+        spot_symbols: &[String],
+        mut is_pair: F,
+    ) -> (Vec<String>, Vec<String>, Vec<(String, String)>)
+    where
+        F: FnMut(&str, &str) -> bool,
+    {
+        let mut matched_futures = Vec::new();
+        let mut matched_pairs = Vec::new();
+        for futures_symbol in futures_symbols {
+            if let Some(spot_symbol) = spot_symbols
+                .iter()
+                .find(|spot_symbol| is_pair(spot_symbol, futures_symbol))
+            {
+                matched_futures.push(futures_symbol.clone());
+                matched_pairs.push((futures_symbol.clone(), (*spot_symbol).clone()));
+            }
+        }
+
+        let matched_spots: Vec<String> = spot_symbols
+            .iter()
+            .filter(|spot_symbol| {
+                futures_symbols
+                    .iter()
+                    .any(|futures_symbol| is_pair(spot_symbol, futures_symbol))
+            })
+            .cloned()
+            .collect();
+
+        (matched_futures, matched_spots, matched_pairs)
+    }
+
+    fn is_okex_spot_symbol_related_to_swap(spot_symbol: &str, swap_symbol: &str) -> bool {
+        use mkt_parsers::symbol_match::normalize_symbol_for_pairing;
+
+        normalize_symbol_for_pairing(spot_symbol, "okex-spot")
+            == normalize_symbol_for_pairing(swap_symbol, "okex-futures")
     }
 
     async fn fetch_binance_exchange_info(url: &str) -> Result<BinanceExchangeInfoResponse> {
@@ -237,21 +286,99 @@ impl Config {
     }
 
     async fn get_symbol_for_binance_futures() -> Result<Vec<String>> {
-        const URL: &str = "https://fapi.binance.com/fapi/v1/exchangeInfo";
-        let info = Self::fetch_binance_exchange_info(URL).await?;
-        let symbols: Vec<String> = info
-            .symbols
-            .into_iter()
-            .filter(|s| s.quote_asset == "USDT")
-            .filter(|s| s.status == "TRADING")
-            .filter(|s| s.contract_type.as_deref() == Some("PERPETUAL"))
-            .map(|s| s.symbol)
-            .collect();
+        let info = Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;
+        let symbols = Self::filter_binance_usdt_trading_futures_symbols(
+            &info.symbols,
+            BINANCE_CONTRACT_PERPETUAL,
+        );
         info!(
             "Binance futures USDT-denominated symbol count {:?}",
             symbols.len()
         );
         Ok(symbols)
+    }
+
+    async fn get_futures_symbols_related_to_binance_spot() -> Result<Vec<String>> {
+        let futures_info =
+            Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;
+        let futures_symbols = Self::filter_binance_usdt_trading_futures_symbols(
+            &futures_info.symbols,
+            BINANCE_CONTRACT_PERPETUAL,
+        );
+        let tradifi_symbols = Self::filter_binance_usdt_trading_futures_symbols(
+            &futures_info.symbols,
+            BINANCE_CONTRACT_TRADIFI_PERPETUAL,
+        );
+        info!(
+            "Binance futures USDT-denominated symbol count {:?}",
+            futures_symbols.len()
+        );
+        info!(
+            "Binance futures TRADIFI_PERPETUAL USDT-denominated symbol count {:?}",
+            tradifi_symbols.len()
+        );
+        let spot_symbols = Self::get_spot_symbols_from_binance_api().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Binance futures symbols related to spot {:?}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+
+        let mut selected = matched_futures;
+        let matched_count = selected.len();
+        Self::extend_unique_symbols(&mut selected, tradifi_symbols);
+        info!(
+            "Binance futures symbols selected for subscription: spot_related={} total_with_tradifi={}",
+            matched_count,
+            selected.len()
+        );
+        Ok(selected)
+    }
+
+    async fn get_binance_coin_futures_symbols() -> Result<Vec<String>> {
+        let info =
+            Self::fetch_binance_exchange_info(BINANCE_COIN_FUTURES_EXCHANGE_INFO_URL).await?;
+        let symbols = Self::filter_binance_coin_trading_futures_symbols(&info.symbols);
+        info!("Binance COIN-M trading contract count {}", symbols.len());
+        Ok(symbols)
+    }
+
+    fn filter_binance_coin_trading_futures_symbols(symbols: &[BinanceSymbolInfo]) -> Vec<String> {
+        symbols
+            .iter()
+            .filter(|symbol| symbol.status == "TRADING")
+            .filter(|symbol| symbol.quote_asset == "USD")
+            .filter(|symbol| symbol.contract_type.as_deref().is_some())
+            .map(|symbol| symbol.symbol.clone())
+            .collect()
+    }
+
+    fn filter_binance_usdt_trading_futures_symbols(
+        symbols: &[BinanceSymbolInfo],
+        contract_type: &str,
+    ) -> Vec<String> {
+        symbols
+            .iter()
+            .filter(|s| s.quote_asset == "USDT")
+            .filter(|s| s.status == "TRADING")
+            .filter(|s| s.contract_type.as_deref() == Some(contract_type))
+            .map(|s| s.symbol.clone())
+            .collect()
+    }
+
+    fn extend_unique_symbols(base: &mut Vec<String>, extras: Vec<String>) {
+        for symbol in extras {
+            if !base.contains(&symbol) {
+                base.push(symbol);
+            }
+        }
     }
 
     async fn get_spot_symbols_from_binance_api() -> Result<Vec<String>> {
@@ -379,6 +506,24 @@ impl Config {
             symbols.len()
         );
         Ok(symbols)
+    }
+
+    async fn get_futures_symbols_related_to_aster_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_aster_futures().await?;
+        let spot_symbols = Self::get_spot_symbols_from_aster_api().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Aster futures symbols related to spot {:?}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
     }
 
     async fn get_spot_symbols_from_aster_api() -> Result<Vec<String>> {
@@ -519,9 +664,23 @@ impl Config {
         Ok(symbols)
     }
 
+    /// 获取 OKEx SWAP 交易对（只返回与 SPOT 有关联的；返回 SWAP 原始格式）
+    async fn get_swap_symbols_related_to_okex_spot() -> Result<Vec<String>> {
+        let swap_symbols = Self::get_symbol_for_okex_swap().await?;
+        let spot_symbols = Self::get_spot_symbols_from_okex_api().await?;
+        let (matched_swaps, _, matched_pairs) = Self::collect_matched_symbols(
+            &swap_symbols,
+            &spot_symbols,
+            Self::is_okex_spot_symbol_related_to_swap,
+        );
+        info!("OKEx swap symbols related to spot: {}", matched_swaps.len());
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_swaps)
+    }
+
     /// 获取 OKEx 现货交易对（只返回与 SWAP 有关联的；兼容无 -SWAP 后缀）
     async fn get_spot_symbols_related_to_okex_swap() -> Result<Vec<String>> {
-        use crate::symbol_match::normalize_symbol_for_pairing;
+        use mkt_parsers::symbol_match::normalize_symbol_for_pairing;
         use std::collections::HashMap;
 
         let spot_symbols = Self::get_spot_symbols_from_okex_api().await?;
@@ -566,6 +725,34 @@ impl Config {
             symbols.len()
         );
         Ok(symbols)
+    }
+
+    async fn get_bybit_linear_symbols_related_to_spot() -> Result<Vec<String>> {
+        let linear_contract_symbols = Self::get_symbol_for_bybit_linear().await?;
+        let spot_instruments = Self::fetch_bybit_instruments("spot").await?;
+        let spot_symbols: Vec<String> = spot_instruments
+            .into_iter()
+            .filter(|item| item.status == "Trading")
+            .filter(|item| item.quote_coin.as_deref() == Some("USDT"))
+            .map(|item| item.symbol)
+            .collect();
+        info!(
+            "Bybit spot USDT-denominated symbol count {:?}",
+            spot_symbols.len()
+        );
+        let (matched_linear, _, matched_pairs) = Self::collect_matched_symbols(
+            &linear_contract_symbols,
+            &spot_symbols,
+            |spot_symbol, linear_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, linear_symbol)
+            },
+        );
+        info!(
+            "Bybit linear symbols related to spot {:?}",
+            matched_linear.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_linear)
     }
 
     async fn get_spot_symbols_related_to_bybit() -> Result<Vec<String>> {
@@ -643,20 +830,42 @@ impl Config {
             .iter()
             .filter(|item| item["status"].as_str() == Some("online"))
             .map(|item| item["symbol"].as_str().unwrap_or("").to_string())
-            .filter(|s| !s.is_empty() && s.to_lowercase().ends_with("usdt"))
+            .filter(|symbol| {
+                !symbol.is_empty()
+                    && (category == "COIN-FUTURES" || symbol.to_ascii_lowercase().ends_with("usdt"))
+            })
             .collect();
 
-        info!(
-            "Bitget {} USDT-denominated symbol count: {}",
-            category,
-            symbols.len()
-        );
+        info!("Bitget {} online symbol count: {}", category, symbols.len());
         Ok(symbols)
     }
 
     /// 获取 Bitget Futures (USDT-FUTURES) 交易对
     async fn get_symbol_for_bitget_futures() -> Result<Vec<String>> {
         Self::get_symbols_from_bitget_api("USDT-FUTURES").await
+    }
+
+    async fn get_symbol_for_bitget_coin_futures() -> Result<Vec<String>> {
+        Self::get_symbols_from_bitget_api("COIN-FUTURES").await
+    }
+
+    /// 获取 Bitget Futures (USDT-FUTURES) 交易对（只返回与 Margin 有关联的）
+    async fn get_bitget_futures_symbols_related_to_margin() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_bitget_futures().await?;
+        let margin_symbols = Self::get_symbols_from_bitget_api("MARGIN").await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &margin_symbols,
+            |margin_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(margin_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Bitget futures symbols related to margin: {}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Margin", &matched_pairs);
+        Ok(matched_futures)
     }
 
     /// 获取 Bitget Margin 交易对（只返回与 Futures 有关联的）
@@ -715,6 +924,25 @@ impl Config {
             .collect();
         info!("Gate futures USDT symbol count: {}", symbols.len());
         Ok(symbols)
+    }
+
+    /// 获取 Gate Futures 交易对（只返回与 Spot 有关联的）
+    async fn get_gate_futures_symbols_related_to_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_gate_futures().await?;
+        let spot_symbols = Self::get_spot_symbols_from_gate_api().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::is_spot_symbol_related_to_futures(spot_symbol, futures_symbol)
+            },
+        );
+        info!(
+            "Gate futures symbols related to spot: {}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
     }
 
     /// 从 Gate HTTP API 获取现货交易对列表
@@ -847,35 +1075,83 @@ impl Config {
         Ok(symbols)
     }
 
+    async fn get_hyperliquid_futures_symbols_related_to_spot() -> Result<Vec<String>> {
+        let futures_symbols = Self::get_symbol_for_hyperliquid_futures().await?;
+        let spot_symbols = Self::get_symbol_for_hyperliquid_spot().await?;
+        let (matched_futures, _, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::normalize_hyperliquid_perp_symbol(spot_symbol)
+                    == Self::normalize_hyperliquid_perp_symbol(futures_symbol)
+            },
+        );
+        info!(
+            "Hyperliquid futures symbols related to spot: {}",
+            matched_futures.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_futures)
+    }
+
+    async fn get_hyperliquid_spot_symbols_related_to_futures() -> Result<Vec<String>> {
+        let spot_symbols = Self::get_symbol_for_hyperliquid_spot().await?;
+        let futures_symbols = Self::get_symbol_for_hyperliquid_futures().await?;
+        let (_, matched_spots, matched_pairs) = Self::collect_matched_symbols(
+            &futures_symbols,
+            &spot_symbols,
+            |spot_symbol, futures_symbol| {
+                Self::normalize_hyperliquid_perp_symbol(spot_symbol)
+                    == Self::normalize_hyperliquid_perp_symbol(futures_symbol)
+            },
+        );
+        info!(
+            "Hyperliquid spot symbols related to futures: {}",
+            matched_spots.len()
+        );
+        print_matched_pairs("Futures", "Spot", &matched_pairs);
+        Ok(matched_spots)
+    }
+
     async fn fetch_symbols_uncached(venue: TradingVenue) -> Result<Vec<String>> {
         match venue {
             //币安u本位期货合约
-            TradingVenue::BinanceFutures => Self::get_symbol_for_binance_futures().await,
+            TradingVenue::BinanceFutures => {
+                Self::get_futures_symbols_related_to_binance_spot().await
+            }
+            TradingVenue::BinanceCoinFutures => Self::get_binance_coin_futures_symbols().await,
             TradingVenue::BinanceMargin => {
                 Self::get_spot_symbols_related_to_binance_futures().await
             }
             //OKEXu本位期货合约
-            TradingVenue::OkexFutures => Self::get_symbol_for_okex_swap().await,
+            TradingVenue::OkexFutures => Self::get_swap_symbols_related_to_okex_spot().await,
             //OKEXu本位期货合约对应的现货
             TradingVenue::OkexMargin => Self::get_spot_symbols_related_to_okex_swap().await,
             //Bybitu本位期货合约
-            TradingVenue::BybitFutures => Self::get_symbol_for_bybit_linear().await,
+            TradingVenue::BybitFutures => Self::get_bybit_linear_symbols_related_to_spot().await,
             //Bybitu本位期货合约对应的现货
             TradingVenue::BybitMargin => Self::get_spot_symbols_related_to_bybit().await,
             //Bitget USDT永续合约
-            TradingVenue::BitgetFutures => Self::get_symbol_for_bitget_futures().await,
+            TradingVenue::BitgetFutures => {
+                Self::get_bitget_futures_symbols_related_to_margin().await
+            }
+            TradingVenue::BitgetCoinFutures => Self::get_symbol_for_bitget_coin_futures().await,
             //Bitget杠杆交易（与Futures关联的）
             TradingVenue::BitgetMargin => {
                 Self::get_margin_symbols_related_to_bitget_futures().await
             }
             //Gate USDT永续合约
-            TradingVenue::GateFutures => Self::get_symbol_for_gate_futures().await,
+            TradingVenue::GateFutures => Self::get_gate_futures_symbols_related_to_spot().await,
             //Gate现货（与Futures关联的）
             TradingVenue::GateMargin => Self::get_spot_symbols_related_to_gate_futures().await,
-            TradingVenue::HyperliquidFutures => Self::get_symbol_for_hyperliquid_futures().await,
-            TradingVenue::HyperliquidMargin => Self::get_symbol_for_hyperliquid_spot().await,
+            TradingVenue::HyperliquidFutures => {
+                Self::get_hyperliquid_futures_symbols_related_to_spot().await
+            }
+            TradingVenue::HyperliquidMargin => {
+                Self::get_hyperliquid_spot_symbols_related_to_futures().await
+            }
             //Aster USDT永续合约
-            TradingVenue::AsterFutures => Self::get_symbol_for_aster_futures().await,
+            TradingVenue::AsterFutures => Self::get_futures_symbols_related_to_aster_spot().await,
             //Aster现货（与 futures 关联）
             TradingVenue::AsterMargin => Self::get_spot_symbols_related_to_aster_futures().await,
         }
@@ -986,5 +1262,103 @@ impl Config {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binance_symbol(
+        symbol: &str,
+        status: &str,
+        quote_asset: &str,
+        contract_type: Option<&str>,
+    ) -> BinanceSymbolInfo {
+        BinanceSymbolInfo {
+            symbol: symbol.to_string(),
+            status: status.to_string(),
+            quote_asset: quote_asset.to_string(),
+            contract_type: contract_type.map(str::to_string),
+            is_spot_trading_allowed: None,
+        }
+    }
+
+    #[test]
+    fn filter_binance_usdt_trading_futures_symbols_matches_contract_type() {
+        let symbols = vec![
+            binance_symbol(
+                "BTCUSDT",
+                "TRADING",
+                "USDT",
+                Some(BINANCE_CONTRACT_PERPETUAL),
+            ),
+            binance_symbol(
+                "NVDAUSDT",
+                "TRADING",
+                "USDT",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol(
+                "AAPLUSDC",
+                "TRADING",
+                "USDC",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol(
+                "TSLAUSDT",
+                "SETTLING",
+                "USDT",
+                Some(BINANCE_CONTRACT_TRADIFI_PERPETUAL),
+            ),
+            binance_symbol("ETHUSDT", "TRADING", "USDT", None),
+        ];
+
+        assert_eq!(
+            Config::filter_binance_usdt_trading_futures_symbols(
+                &symbols,
+                BINANCE_CONTRACT_PERPETUAL
+            ),
+            vec!["BTCUSDT".to_string()]
+        );
+        assert_eq!(
+            Config::filter_binance_usdt_trading_futures_symbols(
+                &symbols,
+                BINANCE_CONTRACT_TRADIFI_PERPETUAL
+            ),
+            vec!["NVDAUSDT".to_string()]
+        );
+    }
+
+    #[test]
+    fn extend_unique_symbols_appends_new_symbols_only() {
+        let mut base = vec!["BTCUSDT".to_string(), "NVDAUSDT".to_string()];
+        Config::extend_unique_symbols(
+            &mut base,
+            vec!["NVDAUSDT".to_string(), "TSLAUSDT".to_string()],
+        );
+
+        assert_eq!(
+            base,
+            vec![
+                "BTCUSDT".to_string(),
+                "NVDAUSDT".to_string(),
+                "TSLAUSDT".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_binance_coin_futures_keeps_perpetual_and_delivery_contracts() {
+        let symbols = vec![
+            binance_symbol("BTCUSD_PERP", "TRADING", "USD", Some("PERPETUAL")),
+            binance_symbol("ETHUSD_260925", "TRADING", "USD", Some("CURRENT_QUARTER")),
+            binance_symbol("BNBUSD_PERP", "SETTLING", "USD", Some("PERPETUAL")),
+            binance_symbol("BTCUSDT", "TRADING", "USDT", Some("PERPETUAL")),
+        ];
+        assert_eq!(
+            Config::filter_binance_coin_trading_futures_symbols(&symbols),
+            vec!["BTCUSD_PERP".to_string(), "ETHUSD_260925".to_string()]
+        );
     }
 }

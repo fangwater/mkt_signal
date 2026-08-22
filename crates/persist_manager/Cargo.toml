@@ -1,0 +1,112 @@
+[package]
+name = "persist_manager"
+version.workspace = true
+edition.workspace = true
+autobins = false
+
+[lib]
+name = "persist_manager"
+path = "src/lib.rs"
+
+[[bin]]
+name = "persist_manager"
+path = "src/bin/persist_manager.rs"
+required-features = ["runtime"]
+
+[[bin]]
+name = "persist_sync_collector"
+path = "src/bin/persist_sync_collector.rs"
+required-features = ["runtime"]
+
+[[bin]]
+name = "persist_read_server"
+path = "src/bin/persist_read_server.rs"
+required-features = ["runtime"]
+
+[[bin]]
+name = "order_export"
+path = "src/bin/order_export.rs"
+required-features = ["runtime"]
+
+[[bin]]
+name = "order_export_server"
+path = "src/bin/order_export_server.rs"
+required-features = ["runtime"]
+
+[[bin]]
+name = "order_parquet_backfill"
+path = "src/bin/order_parquet_backfill.rs"
+required-features = ["runtime"]
+
+[[bin]]
+name = "trade_history_reconcile"
+path = "src/bin/trade_history_reconcile.rs"
+required-features = ["runtime"]
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.7", features = ["ws"], optional = true }
+bytes = { version = "1.0", features = ["serde"], optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+clap = { version = "4.0", features = ["derive"], optional = true }
+crc32fast = { version = "1.4", optional = true }
+csv = { version = "1.3", optional = true }
+env_logger = { version = "0.10", optional = true }
+flate2 = { version = "1.0", optional = true }
+hex = { version = "0.4", optional = true }
+iceoryx2 = { version = "0.8.1", optional = true }
+log = "0.4"
+order_common = { path = "../order_common", optional = true }
+parking_lot = { version = "0.12", optional = true }
+persist_common = { path = "../persist_common" }
+polars = { version = "0.43.1", optional = true, default-features = false, features = ["fmt", "lazy", "parquet", "ipc_streaming", "polars-io", "rolling_window", "rank", "moment", "cov"] }
+prost = { version = "0.13", optional = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
+rocksdb = { version = "0.21", default-features = false, features = ["lz4"], optional = true }
+runtime_common = { path = "../runtime_common", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tar = { version = "0.4", optional = true }
+tokio = { version = "1.0", features = ["full"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
+toml = { version = "0.8", optional = true }
+tonic = { version = "0.12", features = ["transport"], optional = true }
+urlencoding = { version = "2.1", optional = true }
+tower-http = { version = "0.4", features = ["cors"], optional = true }
+
+[build-dependencies]
+tonic-build = { version = "0.12", optional = true }
+protoc-bin-vendored = { version = "3", optional = true }
+
+[features]
+default = []
+runtime = [
+    "dep:axum",
+    "dep:bytes",
+    "dep:chrono",
+    "dep:clap",
+    "dep:csv",
+    "dep:env_logger",
+    "dep:flate2",
+    "dep:hex",
+    "dep:crc32fast",
+    "dep:iceoryx2",
+    "dep:order_common",
+    "dep:parking_lot",
+    "dep:polars",
+    "dep:prost",
+    "dep:redis",
+    "dep:rocksdb",
+    "dep:runtime_common",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tar",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:toml",
+    "dep:tonic",
+    "dep:tower-http",
+    "dep:urlencoding",
+    "tonic-build",
+    "protoc-bin-vendored",
+]

@@ -1,0 +1,140 @@
+use std::sync::Arc;
+
+use anyhow::Result;
+use bytes::Buf;
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::service::ipc;
+use log::{info, warn};
+
+use crate::iceoryx::{create_record_subscriber, trim_order_update_payload};
+use crate::polling::{PollStats, MAX_DRAIN_PER_CHANNEL};
+use crate::storage::RocksDbStore;
+use crate::sync::persist_with_outbox;
+use persist_common::{ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL};
+
+pub(crate) const CF_ORDER_UPDATE: &str = "order_updates";
+pub(crate) const CF_ORDER_UPDATE_UNMATCHED: &str = "order_updates_unmatched";
+
+pub fn required_column_families() -> &'static [&'static str] {
+    &[CF_ORDER_UPDATE, CF_ORDER_UPDATE_UNMATCHED]
+}
+
+pub struct OrderUpdatePersistor {
+    subscriber: Subscriber<ipc::Service, [u8; crate::runtime_common::SIGNAL_PAYLOAD], ()>,
+    store: Arc<RocksDbStore>,
+    sync_enabled: bool,
+}
+
+impl OrderUpdatePersistor {
+    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
+        let subscriber = create_record_subscriber(ORDER_UPDATE_RECORD_CHANNEL)?;
+        Ok(Self {
+            subscriber,
+            store,
+            sync_enabled,
+        })
+    }
+
+    pub(crate) fn poll_available(&self) -> PollStats {
+        let mut stats = PollStats::default();
+        for _ in 0..MAX_DRAIN_PER_CHANNEL {
+            match self.subscriber.receive() {
+                Ok(Some(sample)) => {
+                    stats.record_received();
+                    let payload = trim_order_update_payload(sample.payload());
+                    if !payload.is_empty() {
+                        // 从消息头部读取接收时间戳（前8字节）
+                        if payload.len() < 8 {
+                            warn!("order update payload too short: {} bytes", payload.len());
+                            continue;
+                        }
+                        let mut cursor = &payload[..];
+                        let ts = cursor.get_i64_le() as u64;
+                        let key = format!("{:020}", ts);
+                        info!(
+                            "persist order update: key={} payload_len={}",
+                            key,
+                            payload.len()
+                        );
+                        let _ = persist_with_outbox(
+                            &self.store,
+                            CF_ORDER_UPDATE,
+                            key.as_bytes(),
+                            payload.as_ref(),
+                            ts as i64,
+                            self.sync_enabled,
+                        );
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("order update receive error: {err}");
+                    stats.record_error();
+                    break;
+                }
+            }
+        }
+        stats
+    }
+}
+
+pub struct OrderUpdateUnmatchedPersistor {
+    subscriber: Subscriber<ipc::Service, [u8; crate::runtime_common::SIGNAL_PAYLOAD], ()>,
+    store: Arc<RocksDbStore>,
+    sync_enabled: bool,
+}
+
+impl OrderUpdateUnmatchedPersistor {
+    pub fn new(store: Arc<RocksDbStore>, sync_enabled: bool) -> Result<Self> {
+        let subscriber = create_record_subscriber(ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL)?;
+        Ok(Self {
+            subscriber,
+            store,
+            sync_enabled,
+        })
+    }
+
+    pub(crate) fn poll_available(&self) -> PollStats {
+        let mut stats = PollStats::default();
+        for _ in 0..MAX_DRAIN_PER_CHANNEL {
+            match self.subscriber.receive() {
+                Ok(Some(sample)) => {
+                    stats.record_received();
+                    let payload = trim_order_update_payload(sample.payload());
+                    if !payload.is_empty() {
+                        if payload.len() < 8 {
+                            warn!(
+                                "order update unmatched payload too short: {} bytes",
+                                payload.len()
+                            );
+                            continue;
+                        }
+                        let mut cursor = &payload[..];
+                        let ts = cursor.get_i64_le() as u64;
+                        let key = format!("{:020}", ts);
+                        info!(
+                            "persist order update unmatched: key={} payload_len={}",
+                            key,
+                            payload.len()
+                        );
+                        let _ = persist_with_outbox(
+                            &self.store,
+                            CF_ORDER_UPDATE_UNMATCHED,
+                            key.as_bytes(),
+                            payload.as_ref(),
+                            ts as i64,
+                            self.sync_enabled,
+                        );
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!("order update unmatched receive error: {err}");
+                    stats.record_error();
+                    break;
+                }
+            }
+        }
+        stats
+    }
+}

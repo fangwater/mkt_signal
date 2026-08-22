@@ -1,0 +1,14 @@
+[package]
+name = "account_common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.21"
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+order_common = { path = "../order_common" }

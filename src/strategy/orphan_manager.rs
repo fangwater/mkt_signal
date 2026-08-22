@@ -1,17 +1,18 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::hedge_orphan_order_strategy::HedgeOrphanOrderStrategy;
 use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy, StrategyManager};
-use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_strategy::{OrphanOrderSnapshot, OrphanOrderStrategy};
-use crate::strategy::trade_update::TradeUpdate;
 use log::info;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use order_common::OrderUpdate;
+use order_common::TradeUpdate;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use std::collections::{BTreeSet, VecDeque};
 
 pub struct OrphanStrategyManager {
-    strategies: HashMap<i32, Box<dyn Strategy>>,
+    strategies: FastHashMap<i32, Box<dyn Strategy>>,
     strategy_queue: VecDeque<i32>,
-    symbol_index: HashMap<String, BTreeSet<i32>>,
+    symbol_index: FastHashMap<String, BTreeSet<i32>>,
 }
 
 impl Default for OrphanStrategyManager {
@@ -23,9 +24,9 @@ impl Default for OrphanStrategyManager {
 impl OrphanStrategyManager {
     pub fn new() -> Self {
         Self {
-            strategies: HashMap::new(),
+            strategies: fast_hash_map(),
             strategy_queue: VecDeque::new(),
-            symbol_index: HashMap::new(),
+            symbol_index: fast_hash_map(),
         }
     }
 
@@ -107,6 +108,13 @@ impl OrphanStrategyManager {
         removed
     }
 
+    pub(crate) fn take_by_order_id(&mut self, client_order_id: i64) -> Option<Box<dyn Strategy>> {
+        let strategy_id = self.strategies.iter().find_map(|(id, strategy)| {
+            strategy.is_strategy_order(client_order_id).then_some(*id)
+        })?;
+        self.take(strategy_id)
+    }
+
     pub(crate) fn take_next_queued(&mut self) -> Option<Box<dyn Strategy>> {
         let strategy_id = self.strategy_queue.pop_front()?;
         self.take(strategy_id)
@@ -165,7 +173,7 @@ impl OrphanStrategyManager {
         let symbol = order.symbol.clone();
         drop(order);
         let strategy_id = match role {
-            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb => {
+            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb | OrphanStrategyRole::Exec => {
                 self.ensure_order_orphan_strategy(&symbol)
             }
             OrphanStrategyRole::Hedge => self.ensure_hedge_orphan_strategy(&symbol),
@@ -178,10 +186,10 @@ impl OrphanStrategyManager {
                 .as_any_mut()
                 .downcast_mut::<HedgeOrphanOrderStrategy>()
                 .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
-            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb => strategy
+            OrphanStrategyRole::Mm | OrphanStrategyRole::Arb | OrphanStrategyRole::Exec => strategy
                 .as_any_mut()
                 .downcast_mut::<OrphanOrderStrategy>()
-                .is_some_and(|strategy| strategy.adopt_orphan_order_id(handoff)),
+                .is_some_and(|strategy| strategy.adopt_orphan_order_id(role, handoff)),
         }
     }
 

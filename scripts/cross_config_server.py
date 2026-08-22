@@ -111,16 +111,6 @@ def venue_kind(venue: str) -> str:
     return raw.split("-", 1)[1]
 
 
-def attached_vol_source_key_for_venue(venue: str) -> str:
-    exchange = normalize_exchange((venue or "").split("-", 1)[0])
-    return f"rolling_metrics_params_{exchange}-margin_{exchange}-futures"
-
-
-def attached_vol_factor_name_for_venue(venue: str) -> str:
-    normalized = (venue or "").strip().lower()
-    return "hedge_vol" if normalized.endswith("-futures") else "open_vol"
-
-
 def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     text = str(raw).strip()
     if not text:
@@ -140,93 +130,15 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
 
 
 def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
+    del rds
     percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
-    source_key = attached_vol_source_key_for_venue(venue)
-    factor_name = attached_vol_factor_name_for_venue(venue)
-    raw_values = read_hash(rds, source_key)
-    if not raw_values:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "source hash missing",
-            "current_quantiles": [],
-        }
-
-    factors_raw = raw_values.get("factors", "").strip()
-    if not factors_raw:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "factors missing",
-            "current_quantiles": [],
-        }
-
-    try:
-        factors = json.loads(factors_raw)
-    except Exception as exc:
-        raise ValueError(f"invalid factors json in {source_key}: {exc}") from exc
-    if not isinstance(factors, dict):
-        raise ValueError(f"invalid factors object in {source_key}")
-
-    factor_cfg = factors.get(factor_name)
-    if not isinstance(factor_cfg, dict):
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": f"{factor_name} missing",
-            "current_quantiles": [],
-        }
-
-    quantiles_raw = factor_cfg.get("quantiles")
-    quantiles_list = quantiles_raw if isinstance(quantiles_raw, list) else []
-    normalized_quantiles: List[str] = []
-    requested_exists = False
-    for item in quantiles_list:
-        try:
-            value = float(item)
-        except Exception:
-            continue
-        text = str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.12g}"
-        normalized_quantiles.append(text)
-        if abs(value - percentile_value) < 1e-9:
-            requested_exists = True
-
-    will_trim = len(quantiles_list) > 8
-    will_modify = (not requested_exists) or will_trim
-    if not requested_exists:
-        modification_detail = f"{factor_name}_{percentile_text} missing"
-        if len(quantiles_list) >= 8:
-            modification_detail += ", append then trim oldest"
-    elif will_trim:
-        modification_detail = "quantiles exceed limit, will trim oldest"
-    else:
-        modification_detail = ""
-
     return {
         "venue": venue,
-        "source_key": source_key,
-        "factor": factor_name,
+        "mode": "inline",
         "percentile": percentile_value,
         "percentile_text": percentile_text,
-        "exists": requested_exists,
-        "will_modify": will_modify,
-        "modification_detail": modification_detail,
-        "current_quantiles": normalized_quantiles,
+        "window_capacity": 720,
+        "min_samples": 10,
     }
 
 
@@ -318,6 +230,31 @@ def parse_bool_text(raw: Any, default: bool = True) -> bool:
     if normalized in ("0", "false", "no", "off"):
         return False
     return default
+
+
+def normalize_bool_param_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return "true"
+    if text in ("0", "false", "no", "off", ""):
+        return "false"
+    raise ValueError(f"{field_name} must be boolean: {raw}")
+
+
+def env_flag_enabled(*names: str) -> bool:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value in ("1", "true", "TRUE", "True", "on", "ON", "yes", "YES", "Yes"):
+            return True
+    return False
+
+
+def arb_hedge_force_taker_env_enabled() -> bool:
+    return env_flag_enabled("ARB_HEDGE_FORCE_TAKER")
+
+
+def arb_hedge_lazy_taker_env_enabled() -> bool:
+    return env_flag_enabled("ARB_HEDGE_LAZY_TAKER", "ARB_HEDGE_lazy_TAKER")
 
 
 def read_funding_threshold_config(
@@ -506,20 +443,10 @@ def build_runtime_rolling_defaults(
         funding_mapping[f"{f}.backward_open"] = (
             f"{f}_{percentile_text_from_value(float(entry.get('backward_open', 20)))}"
         )
-    strategy_open_vol_limit = (
-        DEFAULT_STRATEGY_PARAMS.get("open_volatility_limit", "70")
-        if isinstance(DEFAULT_STRATEGY_PARAMS, dict)
-        else "70"
-    )
-    open_vol_factor = attached_vol_factor_name_for_venue(open_venue or "")
-    open_vol_mapping = {}
-    if open_vol_factor:
-        open_vol_mapping = {"open_vol_limit": f"{open_vol_factor}_{strategy_open_vol_limit}"}
     defaults = build_cross_rolling_defaults(
         BASE_ROLLING_PARAMS,
         SPREAD_THRESHOLD_MAPPING,
         funding_mapping,
-        open_vol_mapping,
     )
     if (
         "rolling_defaults" in globals()
@@ -736,7 +663,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 直接在 trade_signal 进程内做 inline 滚窗采样（720 条），不再挂 rolling_metrics。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -932,7 +859,7 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           ((containerId === 'strategy-table' &&
-            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit'].includes(key)) ||
+            ['enable_tlen_cancel', 'enable_environment_model', 'enable_volatility_limit', 'enable_taker_decsion_model'].includes(key)) ||
            (containerId === 'funding-table' && ['enabled'].includes(key))) &&
           isBooleanParamValue(rawValue);
         let input;
@@ -991,21 +918,19 @@ __PER_SYMBOL_PANELS_HTML__
 
       const raw = String(input.value || '').trim();
       if (!raw) {
-        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法预判挂靠的 rolling vol 配置。', 'warn');
+        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法校验 inline volatility percentile。', 'warn');
         return;
       }
 
       try {
-        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?open_venue=${encodeURIComponent(openVenueInput.value.trim())}&hedge_venue=${encodeURIComponent(hedgeVenueInput.value.trim())}&percentile=${encodeURIComponent(raw)}`);
-        const factorRef = `${data.factor}_${data.percentile_text}`;
-        const prefix = `挂靠检查: ${data.source_key} / ${factorRef} (venue=${data.venue})`;
-        if (data.will_modify) {
-          setStatus('strategy-vol-preview', `${prefix}，当前未就绪，运行时会自动补配置${data.modification_detail ? `（${data.modification_detail}）` : ''}`, 'warn');
-        } else {
-          setStatus('strategy-vol-preview', `${prefix}，当前已存在，不会额外改 rolling 配置`, 'ok');
-        }
+        const data = await fetchJson(`${apiUrl('open-volatility-preview')}?${queryParams({ percentile: raw })}`);
+        setStatus(
+          'strategy-vol-preview',
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效，不读取/写入 rolling_metrics_params。`,
+          'ok'
+        );
       } catch (err) {
-        setStatus('strategy-vol-preview', `挂靠检查失败: ${err}`, 'err');
+        setStatus('strategy-vol-preview', `Inline volatility 参数校验失败: ${err}`, 'err');
       }
     }
 
@@ -1362,6 +1287,7 @@ __PER_SYMBOL_PANELS_JS__
     loadAmountU();
     loadMaxPosU();
     loadHedgeOffsetLimits();
+    loadTakerDecisionModel();
 
     reloadAll();
   </script>
@@ -1577,8 +1503,24 @@ def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
+    value, text = normalize_percentile_text(raw)
+    if not (0.0 <= value <= 100.0):
+        raise ValueError(f"{field_name} must be in [0,100]: {raw}")
+    return text
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
+    for key in (
+        "enable_tlen_cancel",
+        "enable_environment_model",
+        "enable_volatility_limit",
+        "enable_taker_decsion_model",
+    ):
+        if key in normalized:
+            normalized[key] = normalize_bool_param_text(normalized[key], key)
+
     if "tlen_cancel_freq_ms" in normalized:
         normalized["tlen_cancel_freq_ms"] = normalize_positive_int_text(
             normalized["tlen_cancel_freq_ms"], "tlen_cancel_freq_ms"
@@ -1587,6 +1529,82 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
         )
+    if "open_volatility_limit" in normalized:
+        normalized["open_volatility_limit"] = normalize_percentile_param_text(
+            normalized["open_volatility_limit"], "open_volatility_limit"
+        )
+
+    force_taker = arb_hedge_force_taker_env_enabled()
+    lazy_taker = arb_hedge_lazy_taker_env_enabled()
+    if force_taker and lazy_taker:
+        raise ValueError(
+            "ARB_HEDGE_FORCE_TAKER and ARB_HEDGE_LAZY_TAKER/ARB_HEDGE_lazy_TAKER "
+            "are mutually exclusive"
+        )
+
+    enable_key = "enable_taker_decsion_model"
+    if enable_key in normalized:
+        enabled = parse_bool_text(normalized[enable_key], False)
+        normalized[enable_key] = "true" if enabled else "false"
+        if enabled and force_taker:
+            raise ValueError(
+                "enable_taker_decsion_model=true conflicts with ARB_HEDGE_FORCE_TAKER=on"
+            )
+        if enabled and not lazy_taker:
+            raise ValueError(
+                "enable_taker_decsion_model=true requires ARB_HEDGE_LAZY_TAKER=on "
+                "or ARB_HEDGE_lazy_TAKER=on"
+            )
+
+    service_key = "taker_decsion_model_service"
+    if (
+        parse_bool_text(normalized.get(enable_key), False)
+        and str(normalized.get(service_key, "")).strip() in ("", "-")
+    ):
+        raise ValueError("enable_taker_decsion_model=true requires taker_decsion_model_service")
+
+    score_rolling_mean_window_key = "taker_decsion_model_score_rolling_mean_window"
+    if score_rolling_mean_window_key in normalized:
+        normalized[score_rolling_mean_window_key] = normalize_positive_int_text(
+            normalized[score_rolling_mean_window_key], score_rolling_mean_window_key
+        )
+
+    keep_long_key = "taker_decsion_model_keep_long_percentile"
+    keep_short_key = "taker_decsion_model_keep_short_percentile"
+    open_cancel_long_key = "taker_decsion_model_open_cancel_long_percentile"
+    open_cancel_short_key = "taker_decsion_model_open_cancel_short_percentile"
+    if keep_long_key in normalized:
+        normalized[keep_long_key] = normalize_percentile_param_text(
+            normalized[keep_long_key], keep_long_key
+        )
+    if keep_short_key in normalized:
+        normalized[keep_short_key] = normalize_percentile_param_text(
+            normalized[keep_short_key], keep_short_key
+        )
+    if open_cancel_long_key in normalized:
+        normalized[open_cancel_long_key] = normalize_percentile_param_text(
+            normalized[open_cancel_long_key], open_cancel_long_key
+        )
+    if open_cancel_short_key in normalized:
+        normalized[open_cancel_short_key] = normalize_percentile_param_text(
+            normalized[open_cancel_short_key], open_cancel_short_key
+        )
+    if keep_long_key in normalized and keep_short_key in normalized:
+        keep_long = float(normalized[keep_long_key])
+        keep_short = float(normalized[keep_short_key])
+        if keep_short > keep_long:
+            raise ValueError(
+                "taker_decsion_model_keep_short_percentile must be <= "
+                "taker_decsion_model_keep_long_percentile"
+            )
+    if open_cancel_long_key in normalized and open_cancel_short_key in normalized:
+        open_cancel_long = float(normalized[open_cancel_long_key])
+        open_cancel_short = float(normalized[open_cancel_short_key])
+        if open_cancel_short > open_cancel_long:
+            raise ValueError(
+                "taker_decsion_model_open_cancel_short_percentile must be <= "
+                "taker_decsion_model_open_cancel_long_percentile"
+            )
     return normalized
 
 
@@ -1803,7 +1821,6 @@ def ensure_cross_runtime_quantiles(
     open_venue: str,
     hedge_venue: str,
     funding_values: Optional[Dict[str, Any]] = None,
-    open_volatility_limit_raw: Optional[Any] = None,
 ) -> Dict[str, Any]:
     key = f"rolling_metrics_params_{open_venue}_{hedge_venue}"
     parsed = parse_rolling_params(read_hash(rds, key))
@@ -1826,11 +1843,6 @@ def ensure_cross_runtime_quantiles(
                     continue
                 if ensure_factor_quantile_config(factors, f, raw):
                     changed_factors.append(f"{f}_{direction}")
-
-    if open_volatility_limit_raw not in (None, ""):
-        vol_factor = attached_vol_factor_name_for_venue(open_venue)
-        if vol_factor and ensure_factor_quantile_config(factors, vol_factor, open_volatility_limit_raw):
-            changed_factors.append(f"{vol_factor}_open_volatility_limit")
 
     if changed_factors:
         write_hash(rds, key, serialize_rolling_params(parsed))
@@ -2093,8 +2105,16 @@ def render_index_html(
     }
 
     html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
-    html = html.replace("__PER_SYMBOL_PANELS_HTML__", ps_overrides.render_per_symbol_panels_html())
-    html = html.replace("__PER_SYMBOL_PANELS_JS__", ps_overrides.render_per_symbol_panels_js())
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_HTML__",
+        ps_overrides.render_per_symbol_panels_html()
+        + ps_overrides.render_taker_decision_model_panel_html(),
+    )
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_JS__",
+        ps_overrides.render_per_symbol_panels_js()
+        + ps_overrides.render_taker_decision_model_panel_js(),
+    )
     return html
 
 
@@ -2363,6 +2383,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/taker-decision-model",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -2383,8 +2404,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = ps_overrides.read_hedge_offset_limits(
                         rds, env_name, open_venue, hedge_venue
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     data = ps_overrides.read_open_offset_lower(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+                else:
+                    data = ps_overrides.read_taker_decision_model(
                         rds, env_name, open_venue, hedge_venue
                     )
             except ValueError as exc:
@@ -2543,13 +2568,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             result = replace_hash(self.server.context.redis_client, key, mapping)
-            rolling_attach = ensure_cross_runtime_quantiles(
-                self.server.context.redis_client,
-                open_v,
-                hedge_v,
-                open_volatility_limit_raw=mapping.get("open_volatility_limit"),
-            )
-            result["rolling_attach"] = rolling_attach
             self._send_json(200, result)
             return
 
@@ -2651,6 +2669,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/taker-decision-model",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2672,8 +2691,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     result = ps_overrides.write_hedge_offset_limits(
                         rds, env_name, open_v, hedge_v, values
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     result = ps_overrides.write_open_offset_lower(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+                else:
+                    result = ps_overrides.write_taker_decision_model(
                         rds, env_name, open_v, hedge_v, values
                     )
             except ValueError as exc:

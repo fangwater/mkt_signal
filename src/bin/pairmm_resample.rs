@@ -7,7 +7,7 @@ use clap::Parser;
 use log::info;
 
 use mkt_signal::factor_pub::pairmm_resample::app::PairMmResampleApp;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "pairmm_resample")]

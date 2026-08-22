@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 
-use crate::common::{
-    basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg},
-    exchange::Exchange,
-    min_qty_table::MinQtyTable,
-};
+use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::net_position::NetPosition;
+use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+use runtime_common::exchange::Exchange;
 
 /// 最小化的余额管理器：维护 symbol、钱包余额、借币本金、累计利息。
 #[derive(Debug, Clone)]
@@ -15,6 +13,8 @@ pub struct BasicBalance {
     pub wallet: f64,
     pub borrowed: f64,
     pub cumulative_interest: f64,
+    pub wallet_timestamp: i64,
+    pub liability_timestamp: i64,
     pub last_timestamp: i64,
 }
 
@@ -59,11 +59,17 @@ impl BasicBalanceManager {
                 wallet: 0.0,
                 borrowed: 0.0,
                 cumulative_interest: 0.0,
+                wallet_timestamp: msg.timestamp,
+                liability_timestamp: 0,
                 last_timestamp: msg.timestamp,
             });
+        if msg.timestamp < entry.wallet_timestamp {
+            return;
+        }
         entry.symbol = symbol.clone();
         entry.wallet = msg.wallet;
-        entry.last_timestamp = msg.timestamp;
+        entry.wallet_timestamp = msg.timestamp;
+        entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
     }
 
     /// 应用借贷利息消息：覆盖本金/利息，保留钱包余额不变。
@@ -81,26 +87,46 @@ impl BasicBalanceManager {
                 exchange: self.exchange,
                 symbol: symbol.clone(),
                 wallet: 0.0,
-                borrowed: msg.borrowed,
+                borrowed: 0.0,
                 cumulative_interest: 0.0,
+                wallet_timestamp: 0,
+                liability_timestamp: msg.timestamp,
                 last_timestamp: msg.timestamp,
             });
+        if msg.timestamp < entry.liability_timestamp {
+            return;
+        }
         entry.borrowed = msg.borrowed;
         // interest 字段为“当前应计利息总额”，按最新值覆盖即可。
         entry.cumulative_interest = msg.interest;
+        entry.liability_timestamp = msg.timestamp;
         entry.last_timestamp = entry.last_timestamp.max(msg.timestamp);
     }
 
     /// 获取某个 symbol 的余额视图。
     pub fn get(&self, symbol: &str) -> Option<&BasicBalance> {
+        if symbol.bytes().all(|b| !b.is_ascii_lowercase()) {
+            return self.balances.get(symbol);
+        }
+
+        let upper = symbol.to_ascii_uppercase();
         self.balances
-            .get(&symbol.to_string().to_ascii_uppercase())
+            .get(&upper)
             .or_else(|| self.balances.get(symbol))
+    }
+
+    /// 返回当前全部余额的只读迭代器，避免只读汇总路径 clone 整张表。
+    pub fn balances_iter(&self) -> impl Iterator<Item = &BasicBalance> {
+        self.balances.values()
+    }
+
+    pub fn len(&self) -> usize {
+        self.balances.len()
     }
 
     /// 返回当前全部余额的快照副本。
     pub fn snapshot(&self) -> Vec<BasicBalance> {
-        self.balances.values().cloned().collect()
+        self.balances_iter().cloned().collect()
     }
 
     /// 获取指定币种的净余额头寸（base qty）。
@@ -108,13 +134,7 @@ impl BasicBalanceManager {
     /// 全交易所统一口径：BasicBalanceMsg.wallet 是 gross 钱包余额，借款/利息由
     /// BasicBorrowInterestMsg 维护，读取时统一计算净额。
     pub fn balance_position_of(&self, symbol: &str) -> f64 {
-        let mapped = symbol.to_ascii_uppercase();
-        let entry = self
-            .balances
-            .get(&mapped)
-            .or_else(|| self.balances.get(symbol));
-
-        entry.map(|b| b.net()).unwrap_or(0.0)
+        self.get(symbol).map(|b| b.net()).unwrap_or(0.0)
     }
 }
 
@@ -141,6 +161,72 @@ mod tests {
         ));
 
         assert!((mgr.balance_position_of("BTC") - 68.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_borrow_interest_does_not_override_newer_balance_state() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(
+            1_780_495_229_000,
+            "BTC".to_string(),
+            0.0,
+        ));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1_780_495_229_000,
+            "BTC".to_string(),
+            0.2728088547403847,
+            0.0,
+        ));
+        assert!((mgr.balance_position_of("BTC") + 0.2728088547403847).abs() < 1e-12);
+
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1_780_484_400_000,
+            "BTC".to_string(),
+            0.3711443959357258,
+            0.0000002152637497,
+        ));
+        assert!((mgr.balance_position_of("BTC") + 0.2728088547403847).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_balance_does_not_override_newer_wallet_state() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(20, "XTZ".to_string(), 10.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            25,
+            "XTZ".to_string(),
+            1.0,
+            0.1,
+        ));
+        mgr.apply_balance(&BasicBalanceMsg::create(10, "XTZ".to_string(), 99.0));
+
+        let balance = mgr.get("XTZ").expect("balance");
+        assert_eq!(balance.wallet, 10.0);
+        assert_eq!(balance.wallet_timestamp, 20);
+        assert_eq!(balance.liability_timestamp, 25);
+        assert_eq!(balance.last_timestamp, 25);
+        assert!((mgr.balance_position_of("XTZ") - 8.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn same_timestamp_borrow_interest_can_clear_current_liability() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Gate);
+        mgr.apply_balance(&BasicBalanceMsg::create(10, "ETH".to_string(), 5.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            10,
+            "ETH".to_string(),
+            2.0,
+            0.5,
+        ));
+        assert!((mgr.balance_position_of("ETH") - 2.5).abs() < 1e-12);
+
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            10,
+            "ETH".to_string(),
+            0.0,
+            0.0,
+        ));
+        assert!((mgr.balance_position_of("ETH") - 5.0).abs() < 1e-12);
     }
 
     #[test]

@@ -92,6 +92,18 @@ CFG_FILE="$(mktemp)"
 trap 'rm -f "$CFG_FILE" >/dev/null 2>&1 || true' EXIT
 
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+core_args=()
+if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then
+  if [[ ! "$PERSIST_MANAGER_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] PERSIST_MANAGER_CORE 必须为单个整数 (got: $PERSIST_MANAGER_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$PERSIST_MANAGER_CORE")
+  echo "[INFO] core bind ${PERSIST_MANAGER_CORE} (from $ENV_FILE:PERSIST_MANAGER_CORE)"
+fi
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 
 cat >"$CFG_FILE" <<EOF
 {
@@ -111,10 +123,12 @@ cat >"$CFG_FILE" <<EOF
 EOF
 
 echo "[INFO] Restarting ${PROC_NAME} (ipc_namespace=${IPC_NS})"
-if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_mm_persist_manager.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
 fi
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$CFG_FILE" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME} (ipc_namespace=${IPC_NS})"

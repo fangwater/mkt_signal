@@ -20,7 +20,7 @@ usage() {
 用法: cross_scripts/start_cross_monitors.sh
 
 说明:
-  - 启动 cross 所需的两侧账户 monitor（当前支持 okex + binance）。
+  - 启动 cross 所需的两侧账户 monitor（支持 binance/okex/bybit/bitget/gate）。
   - 会优先从 env.sh 读取 OPEN_VENUE/HEDGE_VENUE；
     若没有，则从部署目录名推断：<open>-<hedge>-cross-...
   - 跨所会启动两个 pmdaemon 进程：
@@ -123,14 +123,14 @@ SIDE_TAG="${CROSS_SIDE:-$(infer_side_from_dir "$(basename "$BASE_DIR")")}"
 
 if [[ -z "${IPC_NAMESPACE:-}" ]]; then
   echo "[ERROR] IPC_NAMESPACE 未设置（请 source env.sh）"
-  echo "[ERROR] 建议: scripts/deploy_setup_env_cross.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-margin --hedge-venue ${HEDGE_EXCHANGE}-futures"
+  echo "[ERROR] 建议: scripts/deploy_setup_env_cross.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-futures --hedge-venue ${HEDGE_EXCHANGE}-futures"
   exit 1
 fi
 
 bin_for_exchange() {
   local ex="$1"
   case "$ex" in
-    okex|binance) ;;
+    binance|okex|bybit|bitget|gate) ;;
     *)
       return 1
       ;;
@@ -167,6 +167,24 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+DUAL_CROSS_START=0
+if [[ -z "$SIDE_TAG" && "$OPEN_EXCHANGE" != "$HEDGE_EXCHANGE" ]]; then
+  DUAL_CROSS_START=1
+fi
+
+if [[ "$DUAL_CROSS_START" == "1" && -n "${ACCOUNT_MONITOR_CORE:-}" ]]; then
+  echo "[WARN] ACCOUNT_MONITOR_CORE is ignored for dual cross monitor start; use ACCOUNT_MONITOR_OPEN_CORE and ACCOUNT_MONITOR_HEDGE_CORE"
+fi
+
+validate_core_value() {
+  local var_name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] ${var_name} 必须为单个整数 (got: $value)" >&2
+    exit 1
+  fi
+}
+
 proc_base_name() {
   if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
     echo "cross_am_${OPEN_EXCHANGE}_${ENV_TAG}"
@@ -196,13 +214,33 @@ start_one() {
   if ! bin="$(bin_for_exchange "$ex")"; then
     echo "[ERROR] 未找到 account monitor 二进制 for exchange=${ex}"
     echo "[ERROR] 期望存在: ${BASE_DIR}/account_monitor_${ex} 或 ${BASE_DIR}/${ex}_account_monitor"
-    echo "[ERROR] 请先部署: scripts/deploy_cross_monitors.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-margin --hedge-venue ${HEDGE_EXCHANGE}-futures"
+    echo "[ERROR] 请先部署: scripts/deploy_cross_monitors.sh --env-name $(basename "$BASE_DIR") --open-venue ${OPEN_EXCHANGE}-futures --hedge-venue ${HEDGE_EXCHANGE}-futures"
     exit 1
   fi
 
   local cfg_file
   cfg_file="$(mktemp)"
   TMP_CFGS+=("$cfg_file")
+
+  local core_args=()
+  local core_value=""
+  local core_var=""
+  if [[ "$side" == "open" && -n "${ACCOUNT_MONITOR_OPEN_CORE:-}" ]]; then
+    core_value="$ACCOUNT_MONITOR_OPEN_CORE"
+    core_var="ACCOUNT_MONITOR_OPEN_CORE"
+  elif [[ "$side" == "hedge" && -n "${ACCOUNT_MONITOR_HEDGE_CORE:-}" ]]; then
+    core_value="$ACCOUNT_MONITOR_HEDGE_CORE"
+    core_var="ACCOUNT_MONITOR_HEDGE_CORE"
+  elif [[ "$DUAL_CROSS_START" != "1" && -n "${ACCOUNT_MONITOR_CORE:-}" ]]; then
+    core_value="$ACCOUNT_MONITOR_CORE"
+    core_var="ACCOUNT_MONITOR_CORE"
+  fi
+
+  if [[ -n "$core_value" ]]; then
+    validate_core_value "$core_var" "$core_value"
+    core_args=(--core "$core_value")
+    echo "[INFO] core bind ${core_value} for ${side} monitor (from $ENV_FILE:${core_var})"
+  fi
 
   local json_name json_base json_rust_log json_ipc_ns json_shell json_cmd cmd
   json_name="$(json_escape "$proc_name")"
@@ -211,6 +249,12 @@ start_one() {
   json_rust_log="$(json_escape "${RUST_LOG:-info}")"
   json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
   cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$bin")"
+  if [[ "$DUAL_CROSS_START" == "1" ]]; then
+    cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; unset ACCOUNT_MONITOR_CORE; exec $(shell_quote "$bin")"
+  fi
+  for arg in "${core_args[@]}"; do
+    cmd+=" $(shell_quote "$arg")"
+  done
   json_cmd="$(json_escape "$cmd")"
 
   cat >"$cfg_file" <<JSON
@@ -231,7 +275,12 @@ start_one() {
 JSON
 
   echo "[INFO] Restarting $proc_name (exchange=$ex namespace=$IPC_NAMESPACE)"
-  "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1 || true
+  STOP_SCRIPT="${SCRIPT_DIR}/stop_cross_monitors.sh"
+  if [[ ! -x "$STOP_SCRIPT" ]]; then
+    echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+    exit 1
+  fi
+  "$STOP_SCRIPT" "$side"
   "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
 }
 

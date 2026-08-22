@@ -1,0 +1,4 @@
+interface:
+  display_name: "AWS Marketdata And Dual-ENI Layout"
+  short_description: "Audit JP/SG traffic lanes, cores, and ENA IRQs"
+  default_prompt: "Use $aws-marketdata-core-layout to audit or operate the JP/SG CPU and dual-ENI traffic-lane assignments."

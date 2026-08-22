@@ -199,9 +199,9 @@ fn create_publisher<const SIZE: usize>(
         builder = builder.subscriber_max_buffer_size(value);
     }
 
-    let service = builder.create().with_context(|| {
+    let service = builder.open_or_create().with_context(|| {
         format!(
-            "failed to create new service {} (stale or duplicate service may already exist)",
+            "failed to open or create service {} (stale, duplicate, or incompatible service may already exist)",
             service_name
         )
     })?;

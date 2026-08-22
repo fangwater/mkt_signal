@@ -65,6 +65,14 @@ DEFAULTS = {
     },
 }
 
+SPREAD_FR_FUTURES_PAIRS = {
+    ("okex-futures", "binance-futures"),
+    ("okex-futures", "bybit-futures"),
+    ("bybit-futures", "okex-futures"),
+    ("bybit-futures", "binance-futures"),
+    ("bitget-futures", "gate-futures"),
+}
+
 
 def build_single_side_factor(
     *, quantiles: list[float], min_periods: int = 7_200
@@ -95,7 +103,7 @@ def apply_pair_specific_defaults(
             build_single_side_factor(quantiles=[30, 50, 70], min_periods=1),
         )
 
-    if pair == ("okex-futures", "binance-futures"):
+    if pair in SPREAD_FR_FUTURES_PAIRS:
         factors.setdefault("spread_fr", build_single_side_factor(quantiles=[0.2, 0.8]))
 
 

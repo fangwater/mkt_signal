@@ -8,70 +8,45 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
 
-use super::depth_msg::{DepthMsg, DEPTH25_MAX_BYTES, DEPTH50_MAX_BYTES};
+use super::depth_msg::{DepthMsg, DEPTH25_MAX_BYTES};
 
 /// Depth Message Publisher
 pub struct DepthMsgPublisher {
     node: Node<ipc::Service>,
     venue_slug: String,
-    depth25_publisher: Option<Publisher<ipc::Service, [u8; DEPTH25_MAX_BYTES], ()>>,
-    depth50_publisher: Option<Publisher<ipc::Service, [u8; DEPTH50_MAX_BYTES], ()>>,
+    depth25_publisher: Publisher<ipc::Service, [u8; DEPTH25_MAX_BYTES], ()>,
     // 统计
     depth25_count: u64,
-    depth50_count: u64,
     dropped_count: u64,
 }
 
 impl DepthMsgPublisher {
     /// 创建新的发布器
     /// venue_slug: 例如 "binance-futures", "okex-margin"
-    pub fn new(venue_slug: &str, enable_depth25: bool, enable_depth50: bool) -> Result<Self> {
+    pub fn new(venue_slug: &str) -> Result<Self> {
         let node_name = format!("depth_msg_{}", venue_slug.replace('-', "_"));
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
         // 发布通道格式: depth_pubs/{venue}/depth25
-        let depth25_publisher = if enable_depth25 {
-            let service_name = format!("depth_pubs/{}/depth25", venue_slug);
-            let service = node
-                .service_builder(&ServiceName::new(&service_name)?)
-                .publish_subscribe::<[u8; DEPTH25_MAX_BYTES]>()
-                .max_publishers(1)
-                .max_subscribers(10)
-                .history_size(100)
-                .open_or_create()?;
-            Some(service.publisher_builder().create()?)
-        } else {
-            None
-        };
+        let service_name = format!("depth_pubs/{}/depth25", venue_slug);
+        let service = node
+            .service_builder(&ServiceName::new(&service_name)?)
+            .publish_subscribe::<[u8; DEPTH25_MAX_BYTES]>()
+            .max_publishers(1)
+            .max_subscribers(10)
+            .history_size(100)
+            .open_or_create()?;
+        let depth25_publisher = service.publisher_builder().create()?;
 
-        let depth50_publisher = if enable_depth50 {
-            let service_name = format!("depth_pubs/{}/depth50", venue_slug);
-            let service = node
-                .service_builder(&ServiceName::new(&service_name)?)
-                .publish_subscribe::<[u8; DEPTH50_MAX_BYTES]>()
-                .max_publishers(1)
-                .max_subscribers(10)
-                .history_size(100)
-                .open_or_create()?;
-            Some(service.publisher_builder().create()?)
-        } else {
-            None
-        };
-
-        info!(
-            "DepthMsgPublisher created for {}: depth25={}, depth50={}",
-            venue_slug, enable_depth25, enable_depth50
-        );
+        info!("DepthMsgPublisher created for {}: depth25=true", venue_slug);
 
         Ok(Self {
             node,
             venue_slug: venue_slug.to_string(),
             depth25_publisher,
-            depth50_publisher,
             depth25_count: 0,
-            depth50_count: 0,
             dropped_count: 0,
         })
     }
@@ -83,27 +58,12 @@ impl DepthMsgPublisher {
 
     /// 发布 Depth25 消息
     pub fn publish_depth25(&mut self, msg: &DepthMsg) -> bool {
-        if let Some(ref publisher) = self.depth25_publisher {
-            let bytes = msg.to_bytes();
-            if self.send_with_publisher(publisher, &bytes, DEPTH25_MAX_BYTES) {
-                self.depth25_count += 1;
-                return true;
-            }
-            self.dropped_count += 1;
+        let bytes = msg.to_bytes();
+        if self.send_with_publisher(&self.depth25_publisher, &bytes, DEPTH25_MAX_BYTES) {
+            self.depth25_count += 1;
+            return true;
         }
-        false
-    }
-
-    /// 发布 Depth50 消息
-    pub fn publish_depth50(&mut self, msg: &DepthMsg) -> bool {
-        if let Some(ref publisher) = self.depth50_publisher {
-            let bytes = msg.to_bytes();
-            if self.send_with_publisher(publisher, &bytes, DEPTH50_MAX_BYTES) {
-                self.depth50_count += 1;
-                return true;
-            }
-            self.dropped_count += 1;
-        }
+        self.dropped_count += 1;
         false
     }
 
@@ -138,11 +98,10 @@ impl DepthMsgPublisher {
     /// 日志统计
     pub fn log_stats(&mut self) {
         info!(
-            "DepthMsgPublisher[{}] stats: depth25={}, depth50={}, dropped={}",
-            self.venue_slug, self.depth25_count, self.depth50_count, self.dropped_count
+            "DepthMsgPublisher[{}] stats: depth25={}, dropped={}",
+            self.venue_slug, self.depth25_count, self.dropped_count
         );
         self.depth25_count = 0;
-        self.depth50_count = 0;
         self.dropped_count = 0;
     }
 }

@@ -206,10 +206,25 @@ done
 
 case "$EXCHANGE" in
   okex)
+    if [[ -z "${OKX_LOCAL_IP:-}" && -f "${ENV_DIR}/trade_engine.toml" ]]; then
+      OKX_LOCAL_IP="$("$PYTHON_BIN" - "$ENV_DIR/trade_engine.toml" <<'PY'
+import re, pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+m = re.search(r'local_ips\s*=\s*\[\s*"([^"]+)"', text)
+print(m.group(1) if m else "")
+PY
+)"
+      export OKX_LOCAL_IP
+    fi
+    if [[ -n "${OKX_LOCAL_IP:-}" ]]; then
+      echo "[INFO] okx source ip=${OKX_LOCAL_IP}"
+    fi
     exec "$PYTHON_BIN" "$SCRIPT_DIR/okx_swap_open_orders.py" "${OKX_ARGS[@]}"
     ;;
   bybit)
-    exec "$PYTHON_BIN" "$SCRIPT_DIR/bybit_cancel_all_um_orders.py" "${PASS_ARGS[@]}"
+    exec "$PYTHON_BIN" "$SCRIPT_DIR/bybit_cancel_all_um_orders.py" \
+      --env-dir "$ENV_DIR" \
+      "${PASS_ARGS[@]}"
     ;;
   bitget)
     exec "$PYTHON_BIN" "$SCRIPT_DIR/bitget_cancel_all_um_orders.py" "${PASS_ARGS[@]}"

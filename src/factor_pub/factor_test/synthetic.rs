@@ -1,7 +1,7 @@
 //! Deterministic synthetic data generator for factor testing.
 
-use crate::common::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 use crate::factor_pub::fusion_factor_pub::app::{DepthLevel, DepthSnapshot};
+use mkt_parsers::msg::trade_flow_feature_msg::{TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM};
 
 const NUM_BARS: usize = 600;
 const DEPTH_LEVELS: usize = 20;

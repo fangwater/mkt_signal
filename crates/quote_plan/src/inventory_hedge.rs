@@ -1,0 +1,855 @@
+use log::{debug, info, warn};
+use order_common::Side;
+
+use crate::common::{
+    align_price_floor, build_decision_from_key_base, min_qty_symbol_key,
+    normalize_symbol_for_internal, normalize_symbol_for_venue, MinQtyLookup, Quote, Venue,
+};
+use crate::order_align::contract_qty_multiplier;
+use crate::quote_plan_levels::{
+    build_quote_plan_levels, build_quote_plan_levels_for_base_qty, QuotePlanLevel,
+    QuotePlanLevelSpec,
+};
+
+fn get_timestamp_us() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_micros().min(i64::MAX as u128) as i64,
+        Err(_) => 0,
+    }
+}
+
+pub struct InventoryHedgeBuildInput<'a> {
+    pub venue: Venue,
+    pub symbol: &'a str,
+    pub quote: Quote,
+    pub volatility: f64,
+    pub signal: f64,
+    pub signal_qtl: Option<f64>,
+    pub enable_return_score_adjust_hedge: bool,
+    pub hedge_vol_multiplier: f64,
+    pub hedge_offset_ratio: f64,
+    pub order_amount_u: f64,
+    pub hedge_target_qty: f64,
+    pub target_base_qty: Option<f64>,
+    pub inventory_net_qty: f64,
+    pub symbol_exposure_u: f64,
+    pub hedge_orders_per_round: u32,
+    pub offset_low: f64,
+    pub offset_high_limit: f64,
+    pub hedge_window_scale_low: f64,
+    pub hedge_window_scale_high: f64,
+    pub next_query_delay_ms: u64,
+    pub clock_shift_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InventoryHedgeQuotePlan {
+    pub venue: Venue,
+    pub symbol: String,
+    pub quote: Quote,
+    pub now_us: i64,
+    pub next_query_ts: i64,
+    pub side: Side,
+    pub signal: f64,
+    pub signal_qtl: Option<f64>,
+    pub effective_signal: f64,
+    pub clipped_signal: f64,
+    pub normalized_signal: f64,
+    pub volatility: f64,
+    pub bound: f64,
+    pub mapped_offset: f64,
+    pub final_offset: f64,
+    pub order_amount_u: f64,
+    pub hedge_orders_per_round: u32,
+    pub price_tick: f64,
+    pub qty_tick: f64,
+    pub levels: Vec<QuotePlanLevel>,
+}
+
+fn next_aligned_query_ts_us(now_us: i64, interval_ms: u64, shift_ms: u64) -> i64 {
+    let now_ms = now_us.max(0).div_euclid(1_000);
+    let interval_ms = i64::try_from(interval_ms).unwrap_or(i64::MAX);
+    let shift_ms = i64::try_from(shift_ms).unwrap_or(i64::MAX);
+    let shifted_now_ms = now_ms.saturating_sub(shift_ms);
+    let remainder = shifted_now_ms.rem_euclid(interval_ms);
+    let delay_ms = if remainder == 0 {
+        interval_ms
+    } else {
+        interval_ms - remainder
+    };
+    shifted_now_ms
+        .saturating_add(delay_ms)
+        .saturating_add(shift_ms)
+        .saturating_mul(1_000)
+}
+
+pub fn build_inventory_hedge_from_key(
+    now_us: i64,
+    signal_qtl: Option<f64>,
+    volatility: f64,
+) -> Vec<u8> {
+    build_decision_from_key_base(now_us, signal_qtl, None, Some(volatility), None, None)
+        .into_bytes()
+}
+
+fn log_hedge_build_table(
+    symbol: &str,
+    side: Side,
+    input: &InventoryHedgeBuildInput<'_>,
+    signal_qtl_log: &str,
+    bound: f64,
+    mapped_offset: f64,
+    adjusted_offset: f64,
+    final_offset: f64,
+) {
+    let header = format!(
+        " {:<10} {:<5} {:>14} {:>14} {:>12} {:>14} {:>14} {:>14} {:>14} {:>5}",
+        "symbol",
+        "side",
+        "vol",
+        "signal",
+        "signal_qtl",
+        "bound",
+        "mapped",
+        "adjusted",
+        "final",
+        "adj"
+    );
+    let row = format!(
+        " {:<10} {:<5} {:>14.8} {:>14.8} {:>12} {:>14.8} {:>14.8} {:>14.8} {:>14.8} {:>5}",
+        symbol,
+        side.as_str(),
+        input.volatility,
+        input.signal,
+        signal_qtl_log,
+        bound,
+        mapped_offset,
+        adjusted_offset,
+        final_offset,
+        if input.enable_return_score_adjust_hedge {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    let rule = "=".repeat(header.len());
+    let mid = "-".repeat(header.len());
+    info!("\n{rule}\n{header}\n{mid}\n{row}\n{rule}");
+}
+
+fn normalize_signal_legacy(signal: f64, bound: f64) -> (f64, f64) {
+    let s_clipped = signal.clamp(-bound, bound);
+    let n = ((s_clipped + bound) / (2.0 * bound + 1e-10)).clamp(0.0, 1.0);
+    (s_clipped, n)
+}
+
+fn map_offset_from_signal_legacy(
+    side: Side,
+    signal: f64,
+    volatility: f64,
+    multiplier: f64,
+    low: f64,
+    high: f64,
+) -> Result<(f64, f64, f64, f64), String> {
+    if !(volatility.is_finite() && volatility > 0.0) {
+        return Err(format!("invalid volatility={}", volatility));
+    }
+    if !(multiplier.is_finite() && multiplier > 0.0) {
+        return Err(format!("invalid hedge_vol_multiplier={}", multiplier));
+    }
+
+    let low = low.max(0.0);
+    let high = high.max(low);
+    let bound = volatility * multiplier;
+    if !(bound.is_finite() && bound > 0.0) {
+        return Err(format!(
+            "invalid bound volatility={} multiplier={} bound={}",
+            volatility, multiplier, bound
+        ));
+    }
+
+    let (s_clipped, n) = normalize_signal_legacy(signal, bound);
+    let offset_high = bound.clamp(low, high);
+    let offset = match side {
+        Side::Sell => low + n * (offset_high - low),
+        Side::Buy => offset_high - n * (offset_high - low),
+    };
+    Ok((offset, bound, s_clipped, n))
+}
+
+struct InventoryHedgeOffsetPlan {
+    bound: f64,
+    clipped_signal: f64,
+    normalized_signal: f64,
+    mapped_offset: f64,
+    adjusted_offset: f64,
+    final_offset: f64,
+    exposure_offset_factor: f64,
+    offsets: Vec<f64>,
+}
+
+fn build_linear_offsets(low: f64, high: f64, levels: usize) -> Vec<f64> {
+    if levels == 0 {
+        return Vec::new();
+    }
+    if levels == 1 {
+        return vec![high.max(low)];
+    }
+
+    let start = low.max(0.0);
+    let end = high.max(start);
+    let step = (end - start) / (levels - 1) as f64;
+    (0..levels).map(|idx| start + step * idx as f64).collect()
+}
+
+fn build_scaled_split_offsets(
+    center_offset: f64,
+    levels: usize,
+    final_low: f64,
+    final_high: f64,
+    hedge_window_scale_low: f64,
+    hedge_window_scale_high: f64,
+) -> Vec<f64> {
+    if levels == 0 {
+        return Vec::new();
+    }
+
+    let final_low = final_low.max(0.0);
+    let final_high = final_high.max(final_low);
+    let center_offset = center_offset.clamp(final_low, final_high);
+    if levels == 1 {
+        return vec![center_offset];
+    }
+
+    let start = center_offset * hedge_window_scale_low;
+    let end = center_offset * hedge_window_scale_high;
+    let step = (end - start) / (levels - 1) as f64;
+    (0..levels)
+        .map(|idx| (start + step * idx as f64).clamp(final_low, final_high))
+        .collect()
+}
+
+fn one_hand_qty_below_min<T>(
+    venue: Venue,
+    symbol_key: &str,
+    order_amount_u: f64,
+    price: f64,
+    table: &T,
+) -> bool
+where
+    T: MinQtyLookup + ?Sized,
+{
+    if !(order_amount_u.is_finite() && order_amount_u > 0.0 && price.is_finite() && price > 0.0) {
+        return false;
+    }
+    let min_qty = table.min_qty(symbol_key).unwrap_or(0.0);
+    if !(min_qty.is_finite() && min_qty > 0.0) {
+        return false;
+    }
+    let multiplier = contract_qty_multiplier(table, venue, symbol_key, price).unwrap_or(1.0);
+    if !(multiplier.is_finite() && multiplier > 0.0) {
+        return false;
+    }
+
+    let raw_qty_venue = (order_amount_u / price) / multiplier;
+    let step = table.step_size(symbol_key).unwrap_or(0.0);
+    let aligned_qty_venue = if step.is_finite() && step > 0.0 {
+        align_price_floor(raw_qty_venue, step)
+    } else {
+        raw_qty_venue
+    };
+
+    aligned_qty_venue + 1e-12 < min_qty
+}
+
+fn target_base_qty_below_min<T>(
+    venue: Venue,
+    symbol_key: &str,
+    target_base_qty: f64,
+    price: f64,
+    table: &T,
+) -> bool
+where
+    T: MinQtyLookup + ?Sized,
+{
+    if !(target_base_qty.is_finite() && target_base_qty > 0.0 && price.is_finite() && price > 0.0) {
+        return false;
+    }
+    let multiplier = contract_qty_multiplier(table, venue, symbol_key, price).unwrap_or(1.0);
+    if !(multiplier.is_finite() && multiplier > 0.0) {
+        return false;
+    }
+
+    let raw_qty_venue = target_base_qty / multiplier;
+    let step = table.step_size(symbol_key).unwrap_or(0.0);
+    let aligned_qty_venue = if step.is_finite() && step > 0.0 {
+        align_price_floor(raw_qty_venue, step)
+    } else {
+        raw_qty_venue
+    };
+
+    let min_qty = table.min_qty(symbol_key).unwrap_or(0.0);
+    if min_qty.is_finite() && min_qty > 0.0 && aligned_qty_venue + 1e-12 < min_qty {
+        return true;
+    }
+
+    if crate::common::is_futures_venue(venue) {
+        if let Some(min_notional) = table.min_notional(symbol_key) {
+            if min_notional.is_finite() && min_notional > 0.0 {
+                let target_notional = price * target_base_qty;
+                if target_notional + 1e-8 < min_notional {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn build_quantile_offset_plan(
+    side: Side,
+    signal: f64,
+    signal_qtl: f64,
+    volatility: f64,
+    multiplier: f64,
+    low: f64,
+    high: f64,
+    net_qty: f64,
+    mid_price: f64,
+    max_exposure_abs: f64,
+    hedge_offset_ratio: f64,
+    split_count: usize,
+    hedge_window_scale_low: f64,
+    hedge_window_scale_high: f64,
+) -> Result<InventoryHedgeOffsetPlan, String> {
+    if !(signal_qtl.is_finite() && (0.0..=1.0).contains(&signal_qtl)) {
+        return Err(format!("invalid signal_qtl={}", signal_qtl));
+    }
+    if !(volatility.is_finite() && volatility > 0.0) {
+        return Err(format!("invalid volatility={}", volatility));
+    }
+    if !(multiplier.is_finite() && multiplier > 0.0) {
+        return Err(format!("invalid hedge_vol_multiplier={}", multiplier));
+    }
+    if !(hedge_offset_ratio.is_finite() && hedge_offset_ratio > 0.0) {
+        return Err(format!("invalid hedge_offset_ratio={}", hedge_offset_ratio));
+    }
+    if !hedge_window_scale_low.is_finite() || !hedge_window_scale_high.is_finite() {
+        return Err(format!(
+            "invalid hedge_window_scale low={} high={}",
+            hedge_window_scale_low, hedge_window_scale_high
+        ));
+    }
+    if hedge_window_scale_low <= 0.0 || hedge_window_scale_high < hedge_window_scale_low {
+        return Err(format!(
+            "hedge_window_scale must satisfy 0<low<=high, got low={} high={}",
+            hedge_window_scale_low, hedge_window_scale_high
+        ));
+    }
+
+    let low = low.max(0.0);
+    let high = high.max(low);
+    let bound = volatility * multiplier;
+    if !(bound.is_finite() && bound > 0.0) {
+        return Err(format!(
+            "invalid bound volatility={} multiplier={} bound={}",
+            volatility, multiplier, bound
+        ));
+    }
+
+    let offset_high = bound.clamp(low, high);
+    let (clipped_signal, _) = normalize_signal_legacy(signal, bound);
+    let normalized_signal = signal_qtl;
+    let raw_offset = match side {
+        Side::Sell => low + normalized_signal * (offset_high - low),
+        Side::Buy => offset_high - normalized_signal * (offset_high - low),
+    };
+
+    let net_amount_u = net_qty.abs() * mid_price.max(0.0);
+    let exposure_ratio = if max_exposure_abs > 0.0 {
+        (net_amount_u / max_exposure_abs).clamp(0.0, 3.0)
+    } else {
+        3.0
+    };
+    let exposure_offset_factor = 1.0 - exposure_ratio / 6.0;
+    let adjusted_offset = low + exposure_offset_factor * (raw_offset - low);
+    let center_offset = (low + hedge_offset_ratio * (adjusted_offset - low)).clamp(low, high);
+    let offsets = build_scaled_split_offsets(
+        center_offset,
+        split_count,
+        low,
+        high,
+        hedge_window_scale_low,
+        hedge_window_scale_high,
+    );
+    let final_offset = offsets.last().copied().unwrap_or(center_offset);
+
+    Ok(InventoryHedgeOffsetPlan {
+        bound,
+        clipped_signal,
+        normalized_signal,
+        mapped_offset: raw_offset,
+        adjusted_offset: center_offset,
+        final_offset,
+        exposure_offset_factor,
+        offsets,
+    })
+}
+
+fn build_legacy_offset_plan(
+    side: Side,
+    signal: f64,
+    volatility: f64,
+    multiplier: f64,
+    low: f64,
+    high: f64,
+    net_qty: f64,
+    mid_price: f64,
+    max_exposure_abs: f64,
+    hedge_offset_ratio: f64,
+    split_count: usize,
+) -> Result<InventoryHedgeOffsetPlan, String> {
+    let (mapped_offset, bound, clipped_signal, normalized_signal) =
+        map_offset_from_signal_legacy(side, signal, volatility, multiplier, low, high)?;
+    let net_amount_u = net_qty.abs() * mid_price.max(0.0);
+    let inventory_scale = if max_exposure_abs > 0.0 {
+        1.0 / (1.0 + net_amount_u / max_exposure_abs)
+    } else {
+        1.0
+    };
+    let adjusted_offset = (mapped_offset * inventory_scale * hedge_offset_ratio)
+        .clamp(low.max(0.0), high.max(low.max(0.0)));
+    let offsets = build_linear_offsets(low, adjusted_offset, split_count);
+
+    Ok(InventoryHedgeOffsetPlan {
+        bound,
+        clipped_signal,
+        normalized_signal,
+        mapped_offset,
+        adjusted_offset,
+        final_offset: adjusted_offset,
+        exposure_offset_factor: inventory_scale,
+        offsets,
+    })
+}
+
+pub fn build_inventory_hedge_quote_plan<T>(
+    input: InventoryHedgeBuildInput,
+    table: &T,
+) -> Result<InventoryHedgeQuotePlan, String>
+where
+    T: MinQtyLookup + ?Sized,
+{
+    let now_us = get_timestamp_us();
+    let symbol = normalize_symbol_for_internal(input.symbol);
+    if symbol.is_empty() {
+        return Err("empty symbol".to_string());
+    }
+
+    let hedge_target_qty = input.hedge_target_qty;
+    if hedge_target_qty.abs() <= 1e-12 {
+        return Err("hedge target qty is zero, skip hedge".to_string());
+    }
+    let inventory_net_qty = input.inventory_net_qty;
+    if input.hedge_orders_per_round == 0 {
+        return Err("hedge_orders_per_round must be > 0".to_string());
+    }
+    if !(input.hedge_offset_ratio.is_finite() && input.hedge_offset_ratio > 0.0) {
+        return Err(format!(
+            "invalid hedge_offset_ratio={}",
+            input.hedge_offset_ratio
+        ));
+    }
+
+    let side = if hedge_target_qty >= 0.0 {
+        Side::Sell
+    } else {
+        Side::Buy
+    };
+    let base_price = match side {
+        Side::Buy => input.quote.bid,
+        Side::Sell => input.quote.ask,
+    };
+    if !base_price.is_finite() || base_price <= 0.0 {
+        return Err("invalid base price".to_string());
+    }
+
+    let mid_price = (input.quote.bid + input.quote.ask) * 0.5;
+    let split_count = input.hedge_orders_per_round as usize;
+    let offset_plan = match input.signal_qtl {
+        Some(signal_qtl) => build_quantile_offset_plan(
+            side,
+            input.signal,
+            signal_qtl,
+            input.volatility,
+            input.hedge_vol_multiplier,
+            input.offset_low,
+            input.offset_high_limit,
+            inventory_net_qty,
+            mid_price,
+            input.symbol_exposure_u,
+            input.hedge_offset_ratio,
+            split_count,
+            input.hedge_window_scale_low,
+            input.hedge_window_scale_high,
+        )?,
+        None => build_legacy_offset_plan(
+            side,
+            input.signal,
+            input.volatility,
+            input.hedge_vol_multiplier,
+            input.offset_low,
+            input.offset_high_limit,
+            inventory_net_qty,
+            mid_price,
+            input.symbol_exposure_u,
+            input.hedge_offset_ratio,
+            split_count,
+        )?,
+    };
+    if offset_plan.offsets.is_empty() {
+        return Err("empty offsets after signal mapping".to_string());
+    }
+    let signal_qtl_log = input
+        .signal_qtl
+        .map(|value| format!("{:.8}", value))
+        .unwrap_or_else(|| "null".to_string());
+
+    let specs: Vec<QuotePlanLevelSpec> = offset_plan
+        .offsets
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(idx, offset)| QuotePlanLevelSpec {
+            side,
+            side_level_index: idx + 1,
+            offset,
+            base_price,
+        })
+        .collect();
+    let trade_symbol = normalize_symbol_for_venue(&symbol, input.venue);
+    let symbol_key = min_qty_symbol_key(input.venue, &trade_symbol);
+    let use_target_base_qty = input
+        .target_base_qty
+        .filter(|qty| qty.is_finite() && qty.abs() > 0.0)
+        .map(f64::abs);
+    let one_hand_below_min = use_target_base_qty.is_none()
+        && one_hand_qty_below_min(
+            input.venue,
+            &symbol_key,
+            input.order_amount_u,
+            base_price,
+            table,
+        );
+    let hedge_target_base_qty = hedge_target_qty.abs();
+    let fallback_target_base_qty = if use_target_base_qty.is_none()
+        && one_hand_below_min
+        && !target_base_qty_below_min(
+            input.venue,
+            &symbol_key,
+            hedge_target_base_qty,
+            base_price,
+            table,
+        ) {
+        Some(hedge_target_base_qty)
+    } else {
+        None
+    };
+    let effective_target_base_qty = use_target_base_qty.or(fallback_target_base_qty);
+    let target_below_min = effective_target_base_qty
+        .map(|target_base_qty| {
+            target_base_qty_below_min(input.venue, &symbol_key, target_base_qty, base_price, table)
+        })
+        .unwrap_or(false);
+    let (price_tick, qty_tick, levels) = if target_below_min
+        || (one_hand_below_min && fallback_target_base_qty.is_none())
+    {
+        warn!(
+            "InventoryHedge: skip hedge levels because requested hedge qty is below venue minimum symbol={} venue={:?} order_amount_u={:.8} base_price={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} target_base_qty={:?}",
+            symbol,
+            input.venue,
+            input.order_amount_u,
+            base_price,
+            hedge_target_qty,
+            inventory_net_qty,
+            effective_target_base_qty
+        );
+        (
+            table.price_tick(&symbol_key).unwrap_or(0.0),
+            table.step_size(&symbol_key).unwrap_or(0.0),
+            Vec::new(),
+        )
+    } else {
+        let build_result = if let Some(target_base_qty) = fallback_target_base_qty {
+            info!(
+                "InventoryHedge: use hedge target qty as first level because one-hand order_amount_u is below venue minimum symbol={} venue={:?} order_amount_u={:.8} target_base_qty={:.8}",
+                symbol,
+                input.venue,
+                input.order_amount_u,
+                target_base_qty
+            );
+            build_quote_plan_levels_for_base_qty(
+                input.venue,
+                &symbol,
+                target_base_qty,
+                &specs[..1],
+                table,
+            )
+        } else if let Some(target_base_qty) = use_target_base_qty {
+            build_quote_plan_levels_for_base_qty(
+                input.venue,
+                &symbol,
+                target_base_qty,
+                &specs,
+                table,
+            )
+        } else {
+            build_quote_plan_levels(input.venue, &symbol, input.order_amount_u, &specs, table)
+        };
+        match build_result {
+            Ok(result) => result,
+            Err(err) if err.contains("aligned qty invalid") => {
+                warn!(
+                    "InventoryHedge: skip hedge levels because one-hand qty cannot be aligned symbol={} venue={:?} order_amount_u={:.8} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} err={}",
+                    symbol,
+                    input.venue,
+                    input.order_amount_u,
+                    hedge_target_qty,
+                    inventory_net_qty,
+                    err
+                );
+                let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+                let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+                (price_tick, qty_tick, Vec::new())
+            }
+            Err(err) => return Err(err),
+        }
+    };
+
+    debug!(
+        "InventoryHedge query->scale: symbol={} side={:?} hedge_target_qty_base={:.8} inventory_net_qty_base={:.8} bid0={:.8} ask0={:.8} signal={:.8} signal_qtl={} enable_return_score_adjust_hedge={} clipped_signal={:.8} normalized_signal={:.8} volatility={:.8} hedge_vol_multiplier={:.8} bound={:.8} offset_low={:.8} offset_high_limit={:.8} hedge_window_scale_low={:.8} hedge_window_scale_high={:.8} mapped_offset={:.8} adjusted_offset={:.8} symbol_exposure_u={:.8} exposure_offset_factor={:.8} hedge_offset_ratio={:.8} final_offset={:.8}",
+        symbol,
+        side,
+        hedge_target_qty,
+        inventory_net_qty,
+        input.quote.bid,
+        input.quote.ask,
+        input.signal,
+        signal_qtl_log,
+        input.enable_return_score_adjust_hedge,
+        offset_plan.clipped_signal,
+        offset_plan.normalized_signal,
+        input.volatility,
+        input.hedge_vol_multiplier,
+        offset_plan.bound,
+        input.offset_low,
+        input.offset_high_limit,
+        input.hedge_window_scale_low,
+        input.hedge_window_scale_high,
+        offset_plan.mapped_offset,
+        offset_plan.adjusted_offset,
+        input.symbol_exposure_u,
+        offset_plan.exposure_offset_factor,
+        input.hedge_offset_ratio,
+        offset_plan.final_offset,
+    );
+    debug!(
+        "InventoryHedgeQuerySummary {{\"symbol\":\"{}\",\"side\":\"{}\",\"hedge_target_qty_base\":{:.8},\"inventory_net_qty_base\":{:.8},\"hedge_bid0\":{:.8},\"hedge_ask0\":{:.8},\"signal\":{:.8},\"signal_qtl\":{},\"enable_return_score_adjust_hedge\":{},\"clipped_signal\":{:.8},\"normalized_signal\":{:.8},\"volatility\":{:.8},\"hedge_vol_multiplier\":{:.8},\"bound\":{:.8},\"offset_low\":{:.8},\"offset_high_limit\":{:.8},\"hedge_window_scale_low\":{:.8},\"hedge_window_scale_high\":{:.8},\"mapped_offset\":{:.8},\"adjusted_offset\":{:.8},\"symbol_exposure_u\":{:.8},\"exposure_offset_factor\":{:.8},\"hedge_offset_ratio\":{:.8},\"final_offset\":{:.8}}}",
+        symbol,
+        side.as_str(),
+        hedge_target_qty,
+        inventory_net_qty,
+        input.quote.bid,
+        input.quote.ask,
+        input.signal,
+        signal_qtl_log,
+        input.enable_return_score_adjust_hedge,
+        offset_plan.clipped_signal,
+        offset_plan.normalized_signal,
+        input.volatility,
+        input.hedge_vol_multiplier,
+        offset_plan.bound,
+        input.offset_low,
+        input.offset_high_limit,
+        input.hedge_window_scale_low,
+        input.hedge_window_scale_high,
+        offset_plan.mapped_offset,
+        offset_plan.adjusted_offset,
+        input.symbol_exposure_u,
+        offset_plan.exposure_offset_factor,
+        input.hedge_offset_ratio,
+        offset_plan.final_offset,
+    );
+
+    log_hedge_build_table(
+        &symbol,
+        side,
+        &input,
+        signal_qtl_log.as_str(),
+        offset_plan.bound,
+        offset_plan.mapped_offset,
+        offset_plan.adjusted_offset,
+        offset_plan.final_offset,
+    );
+
+    Ok(InventoryHedgeQuotePlan {
+        venue: input.venue,
+        symbol,
+        quote: input.quote,
+        now_us,
+        next_query_ts: next_aligned_query_ts_us(
+            now_us,
+            input.next_query_delay_ms,
+            input.clock_shift_ms,
+        ),
+        side,
+        signal: input.signal,
+        signal_qtl: input.signal_qtl,
+        effective_signal: input.signal,
+        clipped_signal: offset_plan.clipped_signal,
+        normalized_signal: offset_plan.normalized_signal,
+        volatility: input.volatility,
+        bound: offset_plan.bound,
+        mapped_offset: offset_plan.mapped_offset,
+        final_offset: offset_plan.final_offset,
+        order_amount_u: input.order_amount_u,
+        hedge_orders_per_round: input.hedge_orders_per_round,
+        price_tick,
+        qty_tick,
+        levels,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::QuantizedValue;
+
+    struct TestMinQtyTable {
+        min_qty: f64,
+        step_size: f64,
+        price_tick: f64,
+        min_notional: Option<f64>,
+        contract_multiplier: Option<f64>,
+    }
+
+    impl MinQtyLookup for TestMinQtyTable {
+        fn min_qty(&self, _symbol: &str) -> Option<f64> {
+            Some(self.min_qty)
+        }
+
+        fn step_size(&self, _symbol: &str) -> Option<f64> {
+            Some(self.step_size)
+        }
+
+        fn price_tick(&self, _symbol: &str) -> Option<f64> {
+            Some(self.price_tick)
+        }
+
+        fn min_notional(&self, _symbol: &str) -> Option<f64> {
+            self.min_notional
+        }
+
+        fn contract_multiplier_opt(&self, _symbol: &str) -> Option<f64> {
+            self.contract_multiplier
+        }
+    }
+
+    #[test]
+    fn target_base_qty_below_min_returns_empty_levels_for_futures() {
+        let table = TestMinQtyTable {
+            min_qty: 10.0,
+            step_size: 1.0,
+            price_tick: 0.0001,
+            min_notional: Some(5.0),
+            contract_multiplier: Some(1.0),
+        };
+        let input = InventoryHedgeBuildInput {
+            venue: Venue::BinanceFutures,
+            symbol: "BEATUSDT",
+            quote: Quote {
+                bid: 5.45,
+                bid_qty: 10.0,
+                ask: 5.46,
+                ask_qty: 10.0,
+                ts: 1,
+            },
+            volatility: 0.01,
+            signal: 0.0,
+            signal_qtl: Some(0.5),
+            enable_return_score_adjust_hedge: false,
+            hedge_vol_multiplier: 1.0,
+            hedge_offset_ratio: 1.0,
+            order_amount_u: 20.495,
+            hedge_target_qty: -3.75772,
+            target_base_qty: Some(-3.75772),
+            inventory_net_qty: -2.95526814,
+            symbol_exposure_u: 1000.0,
+            hedge_orders_per_round: 1,
+            offset_low: 0.0,
+            offset_high_limit: 0.01,
+            hedge_window_scale_low: 1.0,
+            hedge_window_scale_high: 1.0,
+            next_query_delay_ms: 60_000,
+            clock_shift_ms: 0,
+        };
+
+        let plan = build_inventory_hedge_quote_plan(input, &table).expect("plan");
+
+        assert_eq!(plan.levels.len(), 0);
+        assert_eq!(plan.qty_tick, 1.0);
+        assert_eq!(plan.price_tick, 0.0001);
+
+        let zero_qv = QuantizedValue::encode_floor(0.0, plan.qty_tick);
+        assert!(zero_qv.is_none());
+    }
+
+    #[test]
+    fn one_hand_below_min_uses_target_qty_when_total_is_tradeable() {
+        let table = TestMinQtyTable {
+            min_qty: 0.001,
+            step_size: 0.001,
+            price_tick: 0.1,
+            min_notional: Some(50.0),
+            contract_multiplier: Some(1.0),
+        };
+        let input = InventoryHedgeBuildInput {
+            venue: Venue::BinanceFutures,
+            symbol: "BTCUSDT",
+            quote: Quote {
+                bid: 62_664.3,
+                bid_qty: 1.0,
+                ask: 62_664.4,
+                ask_qty: 1.0,
+                ts: 1,
+            },
+            volatility: 0.0003122,
+            signal: 0.0,
+            signal_qtl: Some(0.5),
+            enable_return_score_adjust_hedge: true,
+            hedge_vol_multiplier: 1.0,
+            hedge_offset_ratio: 1.0,
+            order_amount_u: 50.0,
+            hedge_target_qty: -0.002,
+            target_base_qty: None,
+            inventory_net_qty: -0.002,
+            symbol_exposure_u: 400.0,
+            hedge_orders_per_round: 10,
+            offset_low: 0.0005,
+            offset_high_limit: 0.001,
+            hedge_window_scale_low: 1.0,
+            hedge_window_scale_high: 1.0,
+            next_query_delay_ms: 60_000,
+            clock_shift_ms: 0,
+        };
+
+        let plan = build_inventory_hedge_quote_plan(input, &table).expect("plan");
+
+        assert_eq!(plan.levels.len(), 1);
+        assert!(plan.levels[0].aligned_qty >= 0.001);
+        assert!(plan.levels[0].aligned_qty <= 0.002);
+    }
+}

@@ -1,20 +1,22 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::PersistChannel;
-use crate::signal::cancel_signal::MmCancelCtx;
-use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::open_signal::MmOpenCtx;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::OpenPriceMapEntry;
 use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
     OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::signal_bbo_from_legs;
 use log::{debug, warn};
+use order_common::OrderUpdate;
+use order_common::TradeEngineResponse;
+use order_common::TradeUpdate;
+use order_common::TradingVenue;
+use signal_common::cancel_signal::MmCancelCtx;
+use signal_common::open_signal::MmOpenCtxView;
+use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
+use std::borrow::Cow;
 
 /// 做市开仓策略：仅处理开仓，不涉及对冲/强平/模式切换
 pub struct MarketMakerOpenStrategy {
@@ -28,12 +30,18 @@ impl MarketMakerOpenStrategy {
         }
     }
 
-    fn handle_mm_open_signal(&mut self, ctx: MmOpenCtx) {
+    pub fn handle_mm_open_view_with_symbol(
+        &mut self,
+        ctx: MmOpenCtxView<'_>,
+        symbol: Cow<'_, str>,
+        pending_limit_prechecked: bool,
+    ) {
         let _ = self.handle_open_signal_common(OpenSignalInput {
             signal_kind: "MMOpen",
             order_log_name: "MM开仓",
             order_rate_bucket: OrderRateBucket::MmOpen,
-            opening_symbol: ctx.get_opening_symbol(),
+            opening_symbol: symbol,
+            opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
             order_type_u8: ctx.order_type,
@@ -44,12 +52,33 @@ impl MarketMakerOpenStrategy {
             exp_time: ctx.exp_time,
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
-            from_key: ctx.from_key,
+            from_key: Cow::Borrowed(ctx.from_key),
+            signal_bbo: signal_bbo_from_legs(Some(&ctx.opening_leg), None),
             price_qv: ctx.price_qv,
+            order_qty_qv: Some(ctx.amount_qv),
+            order_price_qv: Some(ctx.price_qv),
             price_offset: ctx.price_offset,
             reduce_only: false,
+            bitget_spot_order: false,
             client_order_id: None,
+            pending_limit_prechecked,
             close_ts: 0,
+            mkt_ts: ctx.opening_leg.ts,
+            signal_type_u8: SignalType::MMOpen as u8,
+            pre_trade_recv_ts: 0,
+            pre_trade_handle_ts: 0,
+        });
+    }
+
+    pub fn handle_mm_cancel_ctx(&mut self, ctx: &MmCancelCtx) {
+        self.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "MMCancel",
+            target_strategy_id: ctx.strategy_id,
+            target_client_order_id: ctx.client_order_id,
+            cancel_side: ctx.get_side(),
+            cancel_reason: ctx.get_reason().as_log_reason(),
+            trigger_ts: ctx.trigger_ts,
+            from_key: ctx.from_key.clone(),
             mkt_ts: ctx.opening_leg.ts,
         });
     }
@@ -64,27 +93,12 @@ impl MarketMakerOpenStrategy {
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::MMOpen => match MmOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_mm_open_signal(ctx),
-                Err(err) => {
-                    warn!(
-                        "MarketMakerOpenStrategy: strategy_id={} decode MMOpen failed: {}",
-                        self.open_state.strategy_id, err
-                    );
-                    self.mark_open_strategy_inactive(format!("decode MMOpen failed: {}", err));
-                }
-            },
-            SignalType::MMCancel => match MmCancelCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_open_cancel_signal_common(OpenCancelInput {
-                    signal_name: "MMCancel",
-                    target_strategy_id: ctx.strategy_id,
-                    target_client_order_id: ctx.client_order_id,
-                    cancel_side: ctx.get_side(),
-                    cancel_reason: ctx.get_reason().as_log_reason(),
-                    trigger_ts: ctx.trigger_ts,
-                    from_key: ctx.from_key,
-                    mkt_ts: ctx.opening_leg.ts,
-                }),
+            SignalType::MMOpen => warn!(
+                "MarketMakerOpenStrategy: strategy_id={} unexpected MMOpen in strategy signal handler; open signals must be constructed by pre_trade fast path",
+                self.open_state.strategy_id
+            ),
+            SignalType::MMCancel => match MmCancelCtx::from_slice(signal.context.as_ref()) {
+                Ok(ctx) => self.handle_mm_cancel_ctx(&ctx),
                 Err(err) => {
                     warn!(
                         "MarketMakerOpenStrategy: strategy_id={} decode MMCancel failed: {}",
@@ -105,6 +119,10 @@ impl MarketMakerOpenStrategy {
 impl OpenStrategyCommon for MarketMakerOpenStrategy {
     fn strategy_name(&self) -> &'static str {
         "MarketMakerOpenStrategy"
+    }
+
+    fn cancel_signal_type_u8(&self) -> u8 {
+        SignalType::MMCancel as u8
     }
 
     fn open_state(&self) -> &OpenStrategyState {
@@ -131,8 +149,9 @@ impl OpenStrategyCommon for MarketMakerOpenStrategy {
         &self,
         venue: TradingVenue,
         symbol: &str,
+        price: f64,
     ) -> Result<f64, String> {
-        MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
+        MonitorChannel::instance().qty_multiplier_for_venue_at_price(venue, symbol, price)
     }
 
     fn handoff_open_order_after_query_failure(

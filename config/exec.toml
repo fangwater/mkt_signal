@@ -1,0 +1,56 @@
+# Dedicated persistence sync and read stack for the Exec environment.
+# This file must not share its center DB, status, secondary DB, or processes with config/persist.toml.
+#
+# Source-side prerequisites on cta_exec (/home/el01/binance_exec_trade01/env.sh):
+#   export PERSIST_SYNC_SOURCE_ID="binance_exec_trade01"
+#   export PERSIST_SYNC_BIND="127.0.0.1:50080"
+# Then restart only that environment's persist_manager.
+#
+# The collector reaches the loopback-only source through a dedicated local tunnel:
+#   ssh -N -L 127.0.0.1:6380:127.0.0.1:50080 cta_exec
+#
+# Start the independent collector and read server with distinct PM2 identities:
+#   PM2_NAMESPACE=exec \
+#   PERSIST_SYNC_PM2_NAME=exec_persist_sync_collector \
+#   PERSIST_READ_PM2_NAME=exec_persist_read_server \
+#   ./scripts/start_persist_sync_collector.sh config/exec.toml
+
+center_db = "data/exec_persist_sync_center"
+batch_records = 1000
+batch_bytes = 4194304
+reconnect_delay_ms = 1000
+status_path = "data/exec_persist_sync_status.json"
+sync_writes = false
+
+repair_enabled = true
+repair_interval_secs = 1800
+repair_lookback_hours = 24
+repair_bucket_us = 60000000
+
+[[sources]]
+id = "binance_exec_trade01"
+url = "http://127.0.0.1:6380"
+
+[read_server]
+enabled = true
+bind = "127.0.0.1:8823"
+
+# primary_dir defaults to the top-level center_db.
+secondary_dir = "data/exec_persist_read_server_secondary"
+source_id = "binance_exec_trade01"
+
+max_concurrent = 8
+batch_rows = 50000
+max_window_sec = 3600
+max_result_rows = 5000000
+request_timeout_sec = 120
+
+default_format = "arrow_ipc"
+enable_parquet = true
+
+allowed_tables = [
+  "uniform_orders",
+  "order_updates_unmatched",
+  "trade_updates_unmatched",
+  "order_queue_positions",
+]

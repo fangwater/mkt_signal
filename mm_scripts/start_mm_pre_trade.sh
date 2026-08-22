@@ -139,6 +139,16 @@ fi
 
 ensure_pmdaemon
 
+core_args=()
+if [[ -n "${PRE_TRADE_CORE:-}" ]]; then
+  if [[ ! "$PRE_TRADE_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] PRE_TRADE_CORE 必须为单个整数 (got: $PRE_TRADE_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$PRE_TRADE_CORE")
+  echo "[INFO] core bind ${PRE_TRADE_CORE} (from $ENV_FILE:PRE_TRADE_CORE)"
+fi
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -156,6 +166,9 @@ json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NS")"
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --open-venue $(shell_quote "$VENUE") --hedge-venue $(shell_quote "$VENUE")"
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
@@ -176,10 +189,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${PROC_NAME}"
-if [[ "$LEGACY_PROC_NAME" != "$PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_mm_pre_trade.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
 fi
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started ${PROC_NAME} (venue=${VENUE}, ipc_namespace=${IPC_NS})"

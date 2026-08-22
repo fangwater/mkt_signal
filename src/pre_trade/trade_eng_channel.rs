@@ -5,39 +5,138 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
-use std::time::Duration;
+use std::rc::Rc;
 
-use crate::common::ipc_service_name::build_service_name;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderType;
+use crate::pre_trade::rebalance_usdt::RebalanceUsdtService;
 use crate::pre_trade::response_reconcile::apply_trade_response_as_update;
+use crate::pre_trade::runtime_flags::fast_poll_hot_path_mode;
+use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
-use crate::strategy::trade_engine_response::{
-    TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
+use crate::strategy::StrategyManager;
+use order_common::TradeRequestType;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate, OrderSubmitSignalMeta};
+use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind};
+use rolling_common::arb_open_latency::record_arb_open_latency;
+use runtime_common::ipc_service_name::build_service_name;
+use runtime_common::time_util::get_timestamp_us;
+use signal_common::trade_signal::SignalType;
+use trade_engine::internal_terminate::{InternalOpenTerminateMsg, ORDER_TERMINATE_PAYLOAD_LEN};
+use trade_engine::trade_request::{
+    PreparedTradeRequest, TradeRequestIpcPayload, TRADE_REQ_PAYLOAD,
 };
-use crate::trade_engine::trade_request::TradeRequestType;
 
 thread_local! {
     static TRADE_ENG_HUB: OnceCell<TradeEngHub> = const { OnceCell::new() };
 }
 
-const TRADE_REQ_PAYLOAD: usize = 4_096;
 const TRADE_RESP_PAYLOAD: usize = 64;
 const TRADE_RESP_HEADER_LEN: usize = 22;
 const TRADE_RESP_TAIL_LEN: usize = 33;
 const TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+const TRADE_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
+const OPEN_ORDER_SLOW_TRACE_US: i64 = 100;
+
+fn trade_request_create_time_us(bytes: &Bytes) -> Option<i64> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
+}
+
+fn trade_request_type(bytes: &Bytes) -> Option<TradeRequestType> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let req_type = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+    TradeRequestType::try_from(req_type).ok()
+}
+
+fn read_internal_open_terminate_enabled() -> bool {
+    let fast_poll = fast_poll_hot_path_mode();
+    info!(
+        "TradeEngHub internal open terminate configured fast_poll={} enabled={}",
+        fast_poll, fast_poll
+    );
+    fast_poll
+}
+
+fn log_open_order_slow_trace(
+    client_order_id: i64,
+    exchange: &str,
+    bytes_len: usize,
+    meta: &OrderSubmitSignalMeta,
+    signal_type: SignalType,
+    order_manager: Option<&RefCell<order_common::OrderManager>>,
+    publish_start_us: i64,
+    publish_done_us: i64,
+    result_status: &str,
+) {
+    if meta.signal_t <= 0 {
+        return;
+    }
+    if !matches!(signal_type, SignalType::ArbOpen) {
+        return;
+    }
+    let signal_to_submit_us = publish_start_us.saturating_sub(meta.signal_t);
+    if signal_to_submit_us < OPEN_ORDER_SLOW_TRACE_US {
+        return;
+    }
+    let Some(order_manager) = order_manager else {
+        return;
+    };
+    let Some(order) = order_manager.borrow().get(client_order_id) else {
+        return;
+    };
+    let signal_to_recv_us =
+        (meta.pre_trade_recv_t > 0).then(|| meta.pre_trade_recv_t.saturating_sub(meta.signal_t));
+    let recv_to_handle_us = (meta.pre_trade_recv_t > 0 && meta.pre_trade_handle_t > 0).then(|| {
+        meta.pre_trade_handle_t
+            .saturating_sub(meta.pre_trade_recv_t)
+    });
+    let handle_to_publish_start_us = (meta.pre_trade_handle_t > 0)
+        .then(|| publish_start_us.saturating_sub(meta.pre_trade_handle_t));
+    let mkt_to_signal_us = (meta.mkt_t > 0).then(|| meta.signal_t.saturating_sub(meta.mkt_t));
+    let mkt_to_submit_us = (meta.mkt_t > 0).then(|| publish_start_us.saturating_sub(meta.mkt_t));
+    info!(
+        "OpenOrderSlowTrace: signal_type={} client_order_id={} exchange={} venue={:?} symbol={} side={} order_type={:?} bytes_len={} threshold_us={} signal_ts={} pre_trade_recv_us={} pre_trade_handle_us={} publish_start_us={} publish_done_us={} signal_to_submit_us={} signal_to_recv_us={:?} recv_to_handle_us={:?} handle_to_publish_start_us={:?} publish_start_to_done_us={} mkt_ts={} mkt_to_signal_us={:?} mkt_to_submit_us={:?} result={}",
+        signal_type.as_str(),
+        client_order_id,
+        exchange,
+        order.venue,
+        order.symbol,
+        order.side.as_str(),
+        order.order_type,
+        bytes_len,
+        OPEN_ORDER_SLOW_TRACE_US,
+        meta.signal_t,
+        meta.pre_trade_recv_t,
+        meta.pre_trade_handle_t,
+        publish_start_us,
+        publish_done_us,
+        signal_to_submit_us,
+        signal_to_recv_us,
+        recv_to_handle_us,
+        handle_to_publish_start_us,
+        publish_done_us.saturating_sub(publish_start_us),
+        meta.mkt_t,
+        mkt_to_signal_us,
+        mkt_to_submit_us,
+        result_status
+    );
+}
 
 /// TradeEngHub 负责与多个 trade engine 进程进行双向通信
 ///
 /// * 采用线程本地单例，通过 [`TradeEngHub::with`] 访问
 /// * 每个交易所对应独立的 `TradeEngChannel`（Iceoryx publisher + subscriber）
-/// * 可以在启动时显式注册多个交易所，也可以按需懒加载
+/// * 启动时显式注册交易所；发送路径只做固定槽位路由
 pub struct TradeEngHub {
-    channels: RefCell<HashMap<String, TradeEngChannel>>,
+    channels: RefCell<TradeEngChannels>,
+    response_scratch: RefCell<Vec<TradeEngineResponseMessage>>,
+    internal_open_terminate_enabled: bool,
 }
 
 impl TradeEngHub {
@@ -49,7 +148,8 @@ impl TradeEngHub {
         TRADE_ENG_HUB.with(|cell| {
             let hub = cell.get_or_init(|| {
                 info!("Initializing TradeEngHub singleton with default exchange (binance)");
-                let hub = TradeEngHub::new();
+                let internal_open_terminate_enabled = read_internal_open_terminate_enabled();
+                let hub = TradeEngHub::new(internal_open_terminate_enabled);
                 hub.ensure_exchange("binance")
                     .expect("Failed to initialize default TradeEngHub");
                 hub
@@ -58,7 +158,7 @@ impl TradeEngHub {
         })
     }
 
-    /// 显式初始化 TradeEngHub（优先在程序启动阶段调用）
+    /// 显式初始化 TradeEngHub（优先在程序启动阶段调用）。响应由 PreTrade reactor drain。
     pub fn initialize<S>(exchanges: S) -> Result<()>
     where
         S: IntoIterator,
@@ -68,7 +168,8 @@ impl TradeEngHub {
             if cell.get().is_some() {
                 return Err(anyhow!("TradeEngHub already initialized"));
             }
-            let hub = TradeEngHub::new();
+            let internal_open_terminate_enabled = read_internal_open_terminate_enabled();
+            let hub = TradeEngHub::new(internal_open_terminate_enabled);
             for exchange in exchanges {
                 hub.ensure_exchange(exchange.as_ref())?;
             }
@@ -87,6 +188,44 @@ impl TradeEngHub {
         Self::with(|hub| hub.publish_to_exchange(exchange, bytes))
     }
 
+    pub fn publish_prepared_order_request(
+        exchange: &str,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        Self::with(|hub| hub.publish_prepared_to_exchange(exchange, request))
+    }
+
+    pub fn drain_pending_responses() -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner())
+    }
+
+    pub fn drain_pending_responses_limit(max_responses: usize) -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner_limit(max_responses))
+    }
+
+    fn drain_pending_responses_inner(&self) -> bool {
+        self.drain_pending_responses_inner_limit(usize::MAX)
+    }
+
+    fn drain_pending_responses_inner_limit(&self, max_responses: usize) -> bool {
+        let mut responses = {
+            let mut scratch = self.response_scratch.borrow_mut();
+            std::mem::take(&mut *scratch)
+        };
+        responses.clear();
+        {
+            let mut channels = self.channels.borrow_mut();
+            channels.drain_trade_responses_into_limit(&mut responses, max_responses);
+        }
+        let any = !responses.is_empty();
+        for response in responses.iter() {
+            dispatch_trade_engine_response(&response);
+        }
+        responses.clear();
+        *self.response_scratch.borrow_mut() = responses;
+        any
+    }
+
     /// 发布订单请求并同步刷新该订单的最近一次发送时间戳（submit_t）。
     ///
     /// 调用方在 strategy 层有 `client_order_id` 时统一走该 helper：先把 OrderManager
@@ -96,58 +235,428 @@ impl TradeEngHub {
         exchange: &str,
         bytes: &Bytes,
     ) -> Result<()> {
-        let now = get_timestamp_us();
-        if let Some(om) = MonitorChannel::try_order_manager() {
-            om.borrow_mut().update(client_order_id, |order| {
-                order.set_submit_time(now);
-            });
+        let publish_start_us = get_timestamp_us();
+        let create_time_us = trade_request_create_time_us(bytes);
+        let req_type = trade_request_type(bytes);
+        let mut submit_meta = None;
+        let mut submit_signal_type = None;
+        let order_manager = MonitorChannel::try_order_manager();
+        if let Some(om) = order_manager.as_ref() {
+            // egress 单点：刷新 submit_t 的同时取出 signal 元数据，测度 signal→submit 延迟。
+            let signal_meta = om.borrow_mut().set_submit_time_and_signal_meta(
+                client_order_id,
+                publish_start_us,
+                req_type
+                    .map(TradeRequestType::is_new_order)
+                    .unwrap_or(false),
+            );
+            if let Some(meta) = signal_meta {
+                if meta.signal_t > 0 {
+                    submit_signal_type = SignalType::from_u32(meta.signal_kind as u32);
+                    if let Some(signal_type) = submit_signal_type {
+                        record_signal_submit_latency(
+                            signal_type.as_str(),
+                            publish_start_us,
+                            meta.signal_t,
+                        );
+                    }
+                    if submit_signal_type == Some(SignalType::ArbOpen) {
+                        record_arb_open_latency(
+                            "pt_publish_start_minus_generation",
+                            publish_start_us.saturating_sub(meta.signal_t),
+                        );
+                    }
+                }
+                submit_meta = Some(meta);
+            }
         }
-        Self::publish_order_request(exchange, bytes)
+        let result = Self::publish_order_request(exchange, bytes);
+        let publish_done_us = get_timestamp_us();
+        let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        let result_status = if result.is_ok() { "ok" } else { "err" };
+        if let Some(meta) = submit_meta.as_ref() {
+            if let Some(signal_type) = submit_signal_type {
+                log_open_order_slow_trace(
+                    client_order_id,
+                    exchange,
+                    bytes.len(),
+                    meta,
+                    signal_type,
+                    order_manager.as_deref(),
+                    publish_start_us,
+                    publish_done_us,
+                    result_status,
+                );
+            }
+        }
+        let build_to_publish_done_us = create_time_us
+            .filter(|create_time_us| *create_time_us > 0)
+            .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
+        let build_to_publish_slow = build_to_publish_done_us
+            .map(|latency_us| latency_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US)
+            .unwrap_or(false);
+        if publish_cost_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US || build_to_publish_slow {
+            warn!(
+                "TradeReqLatency: publish_slow client_order_id={} exchange={} bytes_len={} create_time_us={:?} publish_start_us={} publish_done_us={} publish_cost_us={} build_to_publish_done_us={:?} result={}",
+                client_order_id,
+                exchange,
+                bytes.len(),
+                create_time_us,
+                publish_start_us,
+                publish_done_us,
+                publish_cost_us,
+                build_to_publish_done_us,
+                result_status
+            );
+        }
+        result
     }
 
-    fn new() -> Self {
+    pub fn publish_prepared_order_request_for(
+        client_order_id: i64,
+        exchange: &str,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        Self::publish_prepared_order_request_for_inner(
+            client_order_id,
+            TradeEngExchangeSlot::parse(exchange)?,
+            request,
+        )
+    }
+
+    pub fn publish_prepared_order_request_for_venue(
+        client_order_id: i64,
+        venue: TradingVenue,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        Self::publish_prepared_order_request_for_inner(
+            client_order_id,
+            TradeEngExchangeSlot::from_venue(venue),
+            request,
+        )
+    }
+
+    fn publish_prepared_order_request_for_inner(
+        client_order_id: i64,
+        slot: TradeEngExchangeSlot,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        let publish_start_us = get_timestamp_us();
+        let create_time_us = Some(request.create_time());
+        let req_type = Some(request.req_type());
+        let exchange = slot.as_str();
+        let mut submit_meta = None;
+        let mut submit_signal_type = None;
+        let order_manager = MonitorChannel::try_order_manager();
+        if let Some(om) = order_manager.as_ref() {
+            let signal_meta = om.borrow_mut().set_submit_time_and_signal_meta(
+                client_order_id,
+                publish_start_us,
+                req_type
+                    .map(TradeRequestType::is_new_order)
+                    .unwrap_or(false),
+            );
+            if let Some(meta) = signal_meta {
+                if meta.signal_t > 0 {
+                    submit_signal_type = SignalType::from_u32(meta.signal_kind as u32);
+                    if let Some(signal_type) = submit_signal_type {
+                        record_signal_submit_latency(
+                            signal_type.as_str(),
+                            publish_start_us,
+                            meta.signal_t,
+                        );
+                    }
+                    if submit_signal_type == Some(SignalType::ArbOpen) {
+                        record_arb_open_latency(
+                            "pt_publish_start_minus_generation",
+                            publish_start_us.saturating_sub(meta.signal_t),
+                        );
+                    }
+                }
+                submit_meta = Some(meta);
+            }
+        }
+        let result = Self::with(|hub| hub.publish_prepared_to_slot(slot, request));
+        let publish_done_us = get_timestamp_us();
+        let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        let result_status = if result.is_ok() { "ok" } else { "err" };
+        if let Some(meta) = submit_meta.as_ref() {
+            if let Some(signal_type) = submit_signal_type {
+                log_open_order_slow_trace(
+                    client_order_id,
+                    exchange,
+                    request.encoded_len(),
+                    meta,
+                    signal_type,
+                    order_manager.as_deref(),
+                    publish_start_us,
+                    publish_done_us,
+                    result_status,
+                );
+            }
+        }
+        let build_to_publish_done_us = create_time_us
+            .filter(|create_time_us| *create_time_us > 0)
+            .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
+        let build_to_publish_slow = build_to_publish_done_us
+            .map(|latency_us| latency_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US)
+            .unwrap_or(false);
+        if publish_cost_us >= TRADE_REQ_PUBLISH_SLOW_WARN_US || build_to_publish_slow {
+            warn!(
+                "TradeReqLatency: publish_slow client_order_id={} exchange={} bytes_len={} create_time_us={:?} publish_start_us={} publish_done_us={} publish_cost_us={} build_to_publish_done_us={:?} result={}",
+                client_order_id,
+                exchange,
+                request.encoded_len(),
+                create_time_us,
+                publish_start_us,
+                publish_done_us,
+                publish_cost_us,
+                build_to_publish_done_us,
+                result_status
+            );
+        }
+        result
+    }
+
+    pub fn publish_internal_open_terminate_for(
+        client_order_id: i64,
+        exchange: &str,
+        trigger_ts: i64,
+    ) -> Result<bool> {
+        Self::with(|hub| {
+            if !hub.internal_open_terminate_enabled {
+                return Ok(false);
+            }
+            hub.publish_internal_open_terminate_to_exchange(client_order_id, exchange, trigger_ts)?;
+            Ok(true)
+        })
+    }
+
+    fn new(internal_open_terminate_enabled: bool) -> Self {
         Self {
-            channels: RefCell::new(HashMap::new()),
+            channels: RefCell::new(TradeEngChannels::new()),
+            response_scratch: RefCell::new(Vec::with_capacity(
+                TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE,
+            )),
+            internal_open_terminate_enabled,
         }
     }
 
     fn publish_to_exchange(&self, exchange: &str, bytes: &Bytes) -> Result<()> {
-        self.ensure_exchange(exchange)?;
-        let key = Self::normalize_exchange(exchange);
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(&key) else {
-            return Err(anyhow!("TradeEngHub: exchange '{}' not registered", key));
+        let Some(channel) = channels.get(slot) else {
+            return Err(anyhow!(
+                "TradeEngHub: exchange '{}' not registered",
+                slot.as_str()
+            ));
         };
         channel.publish_order_request(bytes)
     }
 
+    fn publish_prepared_to_exchange(
+        &self,
+        exchange: &str,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
+        self.publish_prepared_to_slot(slot, request)
+    }
+
+    fn publish_prepared_to_slot(
+        &self,
+        slot: TradeEngExchangeSlot,
+        request: &PreparedTradeRequest,
+    ) -> Result<()> {
+        let channels = self.channels.borrow();
+        let Some(channel) = channels.get(slot) else {
+            return Err(anyhow!(
+                "TradeEngHub: exchange '{}' not registered",
+                slot.as_str()
+            ));
+        };
+        channel.publish_prepared_order_request(request)
+    }
+
+    fn publish_internal_open_terminate_to_exchange(
+        &self,
+        client_order_id: i64,
+        exchange: &str,
+        trigger_ts: i64,
+    ) -> Result<()> {
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
+        let channels = self.channels.borrow();
+        let Some(channel) = channels.get(slot) else {
+            return Err(anyhow!(
+                "TradeEngHub: exchange '{}' not registered",
+                slot.as_str()
+            ));
+        };
+        channel.publish_internal_open_terminate(client_order_id, trigger_ts)
+    }
+
     fn ensure_exchange(&self, exchange: &str) -> Result<()> {
-        let key = Self::normalize_exchange(exchange);
-        if self.channels.borrow().contains_key(&key) {
+        let slot = TradeEngExchangeSlot::parse(exchange)?;
+        if self.channels.borrow().get(slot).is_some() {
             return Ok(());
         }
 
+        let key = slot.as_str();
         info!(
             "TradeEngHub: registering trade engine channel for exchange '{}'",
             key
         );
-        let channel = TradeEngChannel::new(&key)?;
-        self.channels.borrow_mut().insert(key, channel);
+        let channel = TradeEngChannel::new(key, self.internal_open_terminate_enabled)?;
+        self.channels.borrow_mut().set(slot, channel);
         Ok(())
     }
+}
 
-    fn normalize_exchange(exchange: &str) -> String {
-        exchange.trim().to_ascii_lowercase()
+#[derive(Clone, Copy)]
+enum TradeEngExchangeSlot {
+    Binance,
+    Okex,
+    Bybit,
+    Bitget,
+    Gate,
+    Hyperliquid,
+    Aster,
+}
+
+impl TradeEngExchangeSlot {
+    fn from_venue(venue: TradingVenue) -> Self {
+        match venue {
+            TradingVenue::BinanceMargin
+            | TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures => Self::Binance,
+            TradingVenue::OkexMargin | TradingVenue::OkexFutures => Self::Okex,
+            TradingVenue::BybitMargin | TradingVenue::BybitFutures => Self::Bybit,
+            TradingVenue::BitgetMargin
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => Self::Bitget,
+            TradingVenue::GateMargin | TradingVenue::GateFutures => Self::Gate,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Self::Hyperliquid,
+            TradingVenue::AsterMargin | TradingVenue::AsterFutures => Self::Aster,
+        }
+    }
+
+    fn parse(exchange: &str) -> Result<Self> {
+        match exchange.trim() {
+            "binance" => Ok(Self::Binance),
+            "okex" => Ok(Self::Okex),
+            "bybit" => Ok(Self::Bybit),
+            "bitget" => Ok(Self::Bitget),
+            "gate" => Ok(Self::Gate),
+            "hyperliquid" => Ok(Self::Hyperliquid),
+            "aster" => Ok(Self::Aster),
+            other => Err(anyhow!("TradeEngHub: unsupported exchange '{}'", other)),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Binance => "binance",
+            Self::Okex => "okex",
+            Self::Bybit => "bybit",
+            Self::Bitget => "bitget",
+            Self::Gate => "gate",
+            Self::Hyperliquid => "hyperliquid",
+            Self::Aster => "aster",
+        }
+    }
+}
+
+struct TradeEngChannels {
+    binance: Option<TradeEngChannel>,
+    okex: Option<TradeEngChannel>,
+    bybit: Option<TradeEngChannel>,
+    bitget: Option<TradeEngChannel>,
+    gate: Option<TradeEngChannel>,
+    hyperliquid: Option<TradeEngChannel>,
+    aster: Option<TradeEngChannel>,
+}
+
+impl TradeEngChannels {
+    fn new() -> Self {
+        Self {
+            binance: None,
+            okex: None,
+            bybit: None,
+            bitget: None,
+            gate: None,
+            hyperliquid: None,
+            aster: None,
+        }
+    }
+
+    fn get(&self, slot: TradeEngExchangeSlot) -> Option<&TradeEngChannel> {
+        match slot {
+            TradeEngExchangeSlot::Binance => self.binance.as_ref(),
+            TradeEngExchangeSlot::Okex => self.okex.as_ref(),
+            TradeEngExchangeSlot::Bybit => self.bybit.as_ref(),
+            TradeEngExchangeSlot::Bitget => self.bitget.as_ref(),
+            TradeEngExchangeSlot::Gate => self.gate.as_ref(),
+            TradeEngExchangeSlot::Hyperliquid => self.hyperliquid.as_ref(),
+            TradeEngExchangeSlot::Aster => self.aster.as_ref(),
+        }
+    }
+
+    fn set(&mut self, slot: TradeEngExchangeSlot, channel: TradeEngChannel) {
+        match slot {
+            TradeEngExchangeSlot::Binance => self.binance = Some(channel),
+            TradeEngExchangeSlot::Okex => self.okex = Some(channel),
+            TradeEngExchangeSlot::Bybit => self.bybit = Some(channel),
+            TradeEngExchangeSlot::Bitget => self.bitget = Some(channel),
+            TradeEngExchangeSlot::Gate => self.gate = Some(channel),
+            TradeEngExchangeSlot::Hyperliquid => self.hyperliquid = Some(channel),
+            TradeEngExchangeSlot::Aster => self.aster = Some(channel),
+        }
+    }
+
+    fn drain_trade_responses_into_limit(
+        &mut self,
+        responses: &mut Vec<TradeEngineResponseMessage>,
+        max_responses: usize,
+    ) {
+        Self::drain_one(&mut self.binance, responses, max_responses);
+        Self::drain_one(&mut self.okex, responses, max_responses);
+        Self::drain_one(&mut self.bybit, responses, max_responses);
+        Self::drain_one(&mut self.bitget, responses, max_responses);
+        Self::drain_one(&mut self.gate, responses, max_responses);
+        Self::drain_one(&mut self.hyperliquid, responses, max_responses);
+        Self::drain_one(&mut self.aster, responses, max_responses);
+    }
+
+    fn drain_one(
+        channel: &mut Option<TradeEngChannel>,
+        responses: &mut Vec<TradeEngineResponseMessage>,
+        max_responses: usize,
+    ) {
+        if responses.len() >= max_responses {
+            return;
+        }
+        let Some(channel) = channel.as_mut() else {
+            return;
+        };
+        channel.drain_trade_responses_into_limit(
+            responses,
+            max_responses.saturating_sub(responses.len()),
+        );
     }
 }
 
 struct TradeEngChannel {
-    order_req_publisher: Publisher<ipc::Service, [u8; TRADE_REQ_PAYLOAD], ()>,
+    exchange: String,
+    order_req_publisher: Publisher<ipc::Service, TradeRequestIpcPayload, ()>,
+    order_control_publisher: Option<Publisher<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()>>,
+    _resp_node: Node<ipc::Service>,
+    resp_subscriber: Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()>,
 }
 
 impl TradeEngChannel {
-    fn new(exchange: &str) -> Result<Self> {
+    fn new(exchange: &str, internal_open_terminate_enabled: bool) -> Result<Self> {
         let order_req_service = build_service_name(&format!("order_reqs/{}", exchange));
+        let order_control_service = build_service_name(&format!("order_controls/{}", exchange));
         let order_resp_service = build_service_name(&format!("order_resps/{}", exchange));
 
         let req_node = NodeBuilder::new()
@@ -159,7 +668,7 @@ impl TradeEngChannel {
 
         let req_service = req_node
             .service_builder(&ServiceName::new(&order_req_service)?)
-            .publish_subscribe::<[u8; TRADE_REQ_PAYLOAD]>()
+            .publish_subscribe::<TradeRequestIpcPayload>()
             .subscriber_max_buffer_size(TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
@@ -169,22 +678,31 @@ impl TradeEngChannel {
             order_req_service, exchange
         );
 
-        // 启动该交易所的 trade response 监听任务
-        let resp_service_name = order_resp_service.clone();
-        let exchange_name = exchange.to_string();
-        tokio::task::spawn_local(async move {
-            if let Err(err) =
-                Self::run_trade_resp_listener(&exchange_name, &resp_service_name).await
-            {
-                warn!(
-                    "Trade response listener exited (exchange={} service={}): {err:?}",
-                    exchange_name, resp_service_name
-                );
-            }
-        });
+        let order_control_publisher = if internal_open_terminate_enabled {
+            let control_service = req_node
+                .service_builder(&ServiceName::new(&order_control_service)?)
+                .publish_subscribe::<[u8; ORDER_TERMINATE_PAYLOAD_LEN]>()
+                .subscriber_max_buffer_size(TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
+                .open_or_create()?;
+            let publisher = control_service.publisher_builder().create()?;
+            info!(
+                "TradeEngHub: internal order control publisher created on '{}' (exchange={})",
+                order_control_service, exchange
+            );
+            Some(publisher)
+        } else {
+            None
+        };
+
+        let (resp_node, resp_subscriber) =
+            Self::create_trade_resp_subscriber(exchange, &order_resp_service)?;
 
         Ok(Self {
+            exchange: exchange.to_string(),
             order_req_publisher,
+            order_control_publisher,
+            _resp_node: resp_node,
+            resp_subscriber,
         })
     }
 
@@ -201,18 +719,63 @@ impl TradeEngChannel {
             );
         }
 
-        let mut buf = [0u8; TRADE_REQ_PAYLOAD];
         let copy_len = bytes.len().min(TRADE_REQ_PAYLOAD);
-        buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
 
-        let sample = self.order_req_publisher.loan_uninit()?;
-        let sample = sample.write_payload(buf);
+        let mut sample = self.order_req_publisher.loan_uninit()?;
+        TradeRequestIpcPayload::write_to_uninit_slot(sample.payload_mut(), &bytes[..copy_len])
+            .ok_or_else(|| anyhow!("order request exceeds ipc payload: len={}", bytes.len()))?;
+        let sample = unsafe { sample.assume_init() };
         sample.send()?;
 
         Ok(())
     }
 
-    async fn run_trade_resp_listener(exchange: &str, service_name: &str) -> Result<()> {
+    fn publish_prepared_order_request(&self, request: &PreparedTradeRequest) -> Result<()> {
+        if request.encoded_len() > TRADE_REQ_PAYLOAD {
+            warn!(
+                "Order request exceeds payload: len={} capacity={}",
+                request.encoded_len(),
+                TRADE_REQ_PAYLOAD
+            );
+        }
+
+        let mut sample = self.order_req_publisher.loan_uninit()?;
+        request
+            .write_to_uninit_slot(sample.payload_mut())
+            .ok_or_else(|| {
+                anyhow!(
+                    "order request exceeds ipc payload: len={}",
+                    request.encoded_len()
+                )
+            })?;
+        let sample = unsafe { sample.assume_init() };
+        sample.send()?;
+
+        Ok(())
+    }
+
+    fn publish_internal_open_terminate(&self, client_order_id: i64, trigger_ts: i64) -> Result<()> {
+        let Some(publisher) = self.order_control_publisher.as_ref() else {
+            return Ok(());
+        };
+        let msg = InternalOpenTerminateMsg::new(get_timestamp_us(), client_order_id, trigger_ts);
+        let sample = publisher.loan_uninit()?;
+        let sample = sample.write_payload(msg.to_payload());
+        sample.send()?;
+        debug!(
+            "TradeEngHub: internal open terminate published exchange={} client_order_id={} trigger_ts={}",
+            self.exchange, client_order_id, trigger_ts
+        );
+        Ok(())
+    }
+
+    fn create_trade_resp_subscriber(
+        exchange: &str,
+        service_name: &str,
+    ) -> Result<(
+        Node<ipc::Service>,
+        Subscriber<ipc::Service, [u8; TRADE_RESP_PAYLOAD], ()>,
+    )> {
         let node = NodeBuilder::new()
             .name(&NodeName::new(&format!(
                 "pre_trade_order_resp_{}",
@@ -234,16 +797,26 @@ impl TradeEngChannel {
             service_name, exchange
         );
 
-        loop {
-            match subscriber.receive() {
+        Ok((node, subscriber))
+    }
+
+    fn drain_trade_responses_into_limit(
+        &mut self,
+        responses: &mut Vec<TradeEngineResponseMessage>,
+        max_responses: usize,
+    ) {
+        let mut received = 0usize;
+        while received < max_responses {
+            match self.resp_subscriber.receive() {
                 Ok(Some(sample)) => {
+                    received += 1;
                     let payload = sample.payload();
 
                     if payload.len() < TRADE_RESP_HEADER_LEN {
                         warn!(
                             "Trade response too short: {} bytes (exchange={})",
                             payload.len(),
-                            exchange
+                            self.exchange
                         );
                         continue;
                     }
@@ -326,19 +899,18 @@ impl TradeEngChannel {
                         response_price,
                     );
 
-                    Self::handle_trade_engine_response(&response);
+                    responses.push(response);
                 }
-                Ok(None) => tokio::task::yield_now().await,
+                Ok(None) => break,
                 Err(err) => {
-                    warn!("Trade response receive error: {err}");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    warn!(
+                        "Trade response receive error exchange={}: {err}",
+                        self.exchange
+                    );
+                    break;
                 }
             }
         }
-    }
-
-    fn handle_trade_engine_response(response: &TradeEngineResponseMessage) {
-        dispatch_trade_engine_response(response);
     }
 }
 
@@ -354,36 +926,22 @@ fn sanitize_node_suffix(exchange: &str) -> String {
 }
 
 fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
+    if RebalanceUsdtService::handle_trade_engine_response(response) {
+        return;
+    }
+
     let Some(strategy_mgr) = MonitorChannel::try_strategy_mgr() else {
         return;
     };
 
     let order_id = response.client_order_id();
-    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
-    let mut matched = false;
-
-    for strategy_id in strategy_ids {
-        let strategy_opt = {
-            let mut mgr = strategy_mgr.borrow_mut();
-            mgr.take(strategy_id)
-        };
-
-        if let Some(mut strategy) = strategy_opt {
-            if strategy.is_strategy_order(order_id) {
-                matched = true;
-                if !apply_trade_response_as_update(strategy.as_mut(), response) {
-                    strategy.apply_trade_engine_response(response);
-                }
-            }
-            if strategy.is_active() {
-                strategy_mgr.borrow_mut().insert(strategy);
-            }
-        }
-    }
+    let expected_strategy_id = (order_id >> 32) as i32;
+    let matched =
+        dispatch_trade_engine_response_to_strategy(&strategy_mgr, expected_strategy_id, response)
+            || dispatch_trade_engine_response_fallback_scan(&strategy_mgr, response);
 
     if !matched {
         persist_unmatched_trade_engine_response(response);
-        let expected_strategy_id = (order_id >> 32) as i32;
         debug!(
             "tradeEngineResponse unmatched: cli_ord_id={} status={} expect_strategy={}",
             order_id,
@@ -391,6 +949,53 @@ fn dispatch_trade_engine_response(response: &TradeEngineResponseMessage) {
             expected_strategy_id
         );
     }
+}
+
+fn dispatch_trade_engine_response_to_strategy(
+    strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    strategy_id: i32,
+    response: &TradeEngineResponseMessage,
+) -> bool {
+    let order_id = response.client_order_id();
+    let strategy_opt = {
+        let mut mgr = strategy_mgr.borrow_mut();
+        if mgr.contains(strategy_id) {
+            mgr.take(strategy_id)
+        } else {
+            None
+        }
+    };
+
+    let Some(mut strategy) = strategy_opt else {
+        return false;
+    };
+
+    let matched = strategy.is_strategy_order(order_id);
+    if matched {
+        if !apply_trade_response_as_update(strategy.as_mut(), response) {
+            strategy.apply_trade_engine_response(response);
+        }
+    }
+    if strategy.is_active() {
+        strategy_mgr.borrow_mut().insert(strategy);
+    }
+    matched
+}
+
+fn dispatch_trade_engine_response_fallback_scan(
+    strategy_mgr: &Rc<RefCell<StrategyManager>>,
+    response: &TradeEngineResponseMessage,
+) -> bool {
+    let strategy_ids: Vec<i32> = strategy_mgr.borrow().iter_ids().cloned().collect();
+    let mut matched = false;
+
+    for strategy_id in strategy_ids {
+        if dispatch_trade_engine_response_to_strategy(strategy_mgr, strategy_id, response) {
+            matched = true;
+            break;
+        }
+    }
+    matched
 }
 
 fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage) {
@@ -517,6 +1122,7 @@ fn infer_time_in_force(venue: TradingVenue, order_type: OrderType) -> TimeInForc
     }
     match venue {
         TradingVenue::BinanceFutures
+        | TradingVenue::BinanceCoinFutures
         | TradingVenue::BybitMargin
         | TradingVenue::BybitFutures
         | TradingVenue::OkexMargin

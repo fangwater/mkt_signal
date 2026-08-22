@@ -23,6 +23,8 @@ UM_OPEN_ORDERS_PATH = "/papi/v1/um/openOrders"
 UM_CANCEL_ALL_PATH = "/papi/v1/um/allOpenOrders"
 MARGIN_OPEN_ORDERS_PATH = "/papi/v1/margin/openOrders"
 MARGIN_CANCEL_ALL_PATH = "/papi/v1/margin/allOpenOrders"
+CM_OPEN_ORDERS_PATH = "/papi/v1/cm/openOrders"
+CM_CANCEL_ALL_PATH = "/papi/v1/cm/allOpenOrders"
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,14 +36,13 @@ def parse_args() -> argparse.Namespace:
         "--base-url",
         default=(
             os.environ.get("BINANCE_PAPI_URL")
-            or os.environ.get("BINANCE_FAPI_URL")
             or "https://papi.binance.com"
         ),
         help="Binance Portfolio Margin REST base URL",
     )
     parser.add_argument(
         "--scope",
-        choices=["um", "margin", "both"],
+        choices=["um", "cm", "margin", "both", "all"],
         default="both",
         help="Which unified-account order scopes to cancel",
     )
@@ -272,7 +273,7 @@ def main() -> None:
         margin_params["isIsolated"] = "TRUE"
 
     exit_code = 0
-    if args.scope in {"um", "both"}:
+    if args.scope in {"um", "both", "all"}:
         exit_code |= handle_scope(
             scope="um",
             query_path=UM_OPEN_ORDERS_PATH,
@@ -287,7 +288,22 @@ def main() -> None:
             execute=args.execute,
         )
 
-    if args.scope in {"margin", "both"}:
+    if args.scope in {"cm", "all"}:
+        exit_code |= handle_scope(
+            scope="cm",
+            query_path=CM_OPEN_ORDERS_PATH,
+            cancel_path=CM_CANCEL_ALL_PATH,
+            base_url=base_url,
+            api_key=api_key,
+            api_secret=api_secret,
+            timeout=args.timeout,
+            recv_window=args.recv_window,
+            requested_symbols=symbols,
+            extra_params=None,
+            execute=args.execute,
+        )
+
+    if args.scope in {"margin", "both", "all"}:
         exit_code |= handle_scope(
             scope="margin",
             query_path=MARGIN_OPEN_ORDERS_PATH,

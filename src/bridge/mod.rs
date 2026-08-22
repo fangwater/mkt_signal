@@ -1,20 +1,22 @@
 pub mod cfg;
 mod iceoryx;
+mod redis_sync;
 
 use anyhow::{anyhow, Result};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{info, warn};
+use runtime_common::redis_client::RedisSettings;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::bridge::cfg::{BridgeConfig, EndpointType, RouteConfig};
+use crate::bridge::cfg::{BridgeConfig, EndpointType, RedisKeyType, RouteConfig};
 use crate::bridge::iceoryx::{PublisherEnum, SubscriberEnum};
+use crate::bridge::redis_sync::RedisSyncClient;
 
-/// Bridge app that forwards Iceoryx2 IPC messages across network with ZMQ.
 pub struct BridgeApp {
     cfg: BridgeConfig,
 }
@@ -40,6 +42,33 @@ impl RouteCounter {
     }
 }
 
+struct RedisTarget {
+    settings: RedisSettings,
+    client: Option<RedisSyncClient>,
+    key: String,
+    key_type: RedisKeyType,
+    counter: RouteCounter,
+}
+
+impl RedisTarget {
+    async fn apply(&mut self, payload: &[u8]) -> Result<()> {
+        let value = redis_sync::decode(payload)?;
+        if self.client.is_none() {
+            self.client = Some(RedisSyncClient::connect(&self.settings).await?);
+        }
+        let result = self
+            .client
+            .as_mut()
+            .expect("Redis client initialized")
+            .apply(&self.key, self.key_type, value)
+            .await;
+        if result.is_err() {
+            self.client = None;
+        }
+        result
+    }
+}
+
 impl BridgeApp {
     pub fn new(cfg: BridgeConfig) -> Self {
         Self { cfg }
@@ -51,90 +80,120 @@ impl BridgeApp {
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let mut outgoing_routes: Vec<RouteConfig> = Vec::new();
-        let mut incoming_routes: Vec<RouteConfig> = Vec::new();
-        let mut local_routes: Vec<RouteConfig> = Vec::new();
-        for r in &self.cfg.routes {
-            match (r.from.kind, r.to.kind) {
-                (EndpointType::Ipc, EndpointType::Zmq) => outgoing_routes.push(r.clone()),
-                (EndpointType::Zmq, EndpointType::Ipc) => incoming_routes.push(r.clone()),
-                (EndpointType::Ipc, EndpointType::Ipc) => local_routes.push(r.clone()),
-                (EndpointType::Zmq, EndpointType::Zmq) => {
-                    return Err(anyhow!("route '{}' does not support zmq->zmq", r.id));
+        let mut outgoing_ipc = Vec::<RouteConfig>::new();
+        let mut incoming_ipc = Vec::<RouteConfig>::new();
+        let mut local_routes = Vec::<RouteConfig>::new();
+        let mut outgoing_redis = Vec::<RouteConfig>::new();
+        let mut incoming_redis = Vec::<RouteConfig>::new();
+        for route in &self.cfg.routes {
+            match (route.from.kind, route.to.kind) {
+                (EndpointType::Ipc, EndpointType::Zmq) => outgoing_ipc.push(route.clone()),
+                (EndpointType::Zmq, EndpointType::Ipc) => incoming_ipc.push(route.clone()),
+                (EndpointType::Ipc, EndpointType::Ipc) => local_routes.push(route.clone()),
+                (EndpointType::Redis, EndpointType::Zmq) => outgoing_redis.push(route.clone()),
+                (EndpointType::Zmq, EndpointType::Redis) => incoming_redis.push(route.clone()),
+                _ => {
+                    return Err(anyhow!(
+                        "route '{}' does not support {:?}->{:?}",
+                        route.id,
+                        route.from.kind,
+                        route.to.kind
+                    ));
                 }
             }
         }
 
         info!(
-            "ipc_bridge routes: ipc_to_zmq={} zmq_to_ipc={} ipc_to_ipc={}",
-            outgoing_routes.len(),
-            incoming_routes.len(),
-            local_routes.len()
+            "ipc_bridge routes: ipc_to_zmq={} zmq_to_ipc={} ipc_to_ipc={} redis_to_zmq={} zmq_to_redis={}",
+            outgoing_ipc.len(),
+            incoming_ipc.len(),
+            local_routes.len(),
+            outgoing_redis.len(),
+            incoming_redis.len()
         );
 
-        let needs_zmq = !outgoing_routes.is_empty() || !incoming_routes.is_empty();
-        let zmq_ctx = if needs_zmq {
-            Some(Arc::new(zmq::Context::new()))
-        } else {
-            None
-        };
-        let mut route_counters: Vec<RouteCounter> = Vec::new();
+        let needs_zmq = !outgoing_ipc.is_empty()
+            || !incoming_ipc.is_empty()
+            || !outgoing_redis.is_empty()
+            || !incoming_redis.is_empty();
+        let zmq_ctx = needs_zmq.then(|| Arc::new(zmq::Context::new()));
+        let zmq_source_ip = self
+            .cfg
+            .zmq_source_ip
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_owned);
+        let mut route_counters = Vec::<RouteCounter>::new();
 
-        let mut publishers: HashMap<String, PublisherEnum> = HashMap::new();
-        for r in &incoming_routes {
-            let svc = bridge_service_name(&r.to.endpoint);
-            let pub_enum = PublisherEnum::new(&node, &svc, r.to.size, &r.to)?;
-            publishers.insert(r.id.clone(), pub_enum);
-            route_counters.push(RouteCounter::new(r.id.clone(), "zmq->ipc"));
+        let mut publishers = HashMap::<String, (PublisherEnum, RouteCounter)>::new();
+        for route in &incoming_ipc {
+            let service = bridge_service_name(&route.to.endpoint);
+            let publisher = PublisherEnum::new(&node, &service, route.to.size, &route.to)?;
+            let counter = RouteCounter::new(route.id.clone(), "zmq->ipc");
+            route_counters.push(counter.clone());
+            publishers.insert(route.id.clone(), (publisher, counter));
         }
 
-        if !incoming_routes.is_empty() {
-            let incoming_counter_map: Arc<HashMap<String, RouteCounter>> = Arc::new(
-                route_counters
-                    .iter()
-                    .filter(|counter| counter.direction == "zmq->ipc")
-                    .map(|counter| (counter.route_id.to_string(), counter.clone()))
-                    .collect(),
-            );
+        let mut redis_senders = HashMap::<String, mpsc::Sender<Vec<u8>>>::new();
+        for route in &incoming_redis {
+            let counter = RouteCounter::new(route.id.clone(), "zmq->redis");
+            route_counters.push(counter.clone());
+            let route_id = route.id.clone();
+            let mut target = RedisTarget {
+                settings: route.to.redis.clone(),
+                client: None,
+                key: route.to.endpoint.trim().to_string(),
+                key_type: route.to.redis_type,
+                counter,
+            };
+            let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
+            tokio::task::spawn_local(async move {
+                while let Some(payload) = rx.recv().await {
+                    match target.apply(&payload).await {
+                        Ok(()) => target.counter.inc(),
+                        Err(err) => warn!(
+                            "apply Redis sync failed (route='{}' key='{}'): {err:#}",
+                            route_id, target.key
+                        ),
+                    }
+                }
+            });
+            redis_senders.insert(route.id.clone(), tx);
+        }
+
+        if !incoming_ipc.is_empty() || !incoming_redis.is_empty() {
             let (incoming_tx, mut incoming_rx) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
-            let bind_addrs: HashSet<String> = incoming_routes
+            let bind_addrs: HashSet<String> = incoming_ipc
                 .iter()
-                .map(|r| r.from.endpoint.trim().to_string())
+                .chain(incoming_redis.iter())
+                .map(|route| route.from.endpoint.trim().to_string())
                 .collect();
 
             for bind_addr in bind_addrs {
-                let ctx = zmq_ctx
-                    .as_ref()
-                    .expect("zmq ctx required for incoming routes")
-                    .clone();
+                let ctx = zmq_ctx.as_ref().expect("ZMQ context required").clone();
                 let tx = incoming_tx.clone();
                 tokio::task::spawn_blocking(move || {
                     let pull = ctx
                         .socket(zmq::PULL)
-                        .map_err(|e| anyhow!("failed to create PULL socket: {e}"))?;
+                        .map_err(|err| anyhow!("failed to create PULL socket: {err}"))?;
                     pull.bind(&bind_addr)
-                        .map_err(|e| anyhow!("failed to bind PULL on {bind_addr}: {e}"))?;
+                        .map_err(|err| anyhow!("failed to bind PULL on {bind_addr}: {err}"))?;
                     info!("ZMQ PULL bound on {}", bind_addr);
-
                     loop {
                         match pull.recv_multipart(0) {
-                            Ok(parts) => {
-                                if parts.len() < 2 {
-                                    warn!(
-                                        "ZMQ message too short on {}: frames={}",
-                                        bind_addr,
-                                        parts.len()
-                                    );
-                                    continue;
-                                }
+                            Ok(parts) if parts.len() >= 2 => {
                                 let route_id = String::from_utf8_lossy(&parts[0]).to_string();
-                                let payload = parts[1].clone();
-                                if tx.send((route_id, payload)).is_err() {
+                                if tx.send((route_id, parts[1].clone())).is_err() {
                                     break;
                                 }
                             }
-                            Err(e) => {
-                                warn!("ZMQ recv error on {}: {e}", bind_addr);
+                            Ok(parts) => warn!(
+                                "ZMQ message too short on {}: frames={}",
+                                bind_addr,
+                                parts.len()
+                            ),
+                            Err(err) => {
+                                warn!("ZMQ recv error on {}: {err}", bind_addr);
                                 std::thread::sleep(Duration::from_millis(200));
                             }
                         }
@@ -145,78 +204,62 @@ impl BridgeApp {
 
             tokio::task::spawn_local(async move {
                 while let Some((route_id, payload)) = incoming_rx.recv().await {
-                    match publishers.get(&route_id) {
-                        Some(pub_) => {
-                            if let Err(e) = pub_.publish(&payload) {
-                                warn!("publish iceoryx failed (route='{}'): {e}", route_id);
-                            } else if let Some(counter) = incoming_counter_map.get(&route_id) {
-                                counter.inc();
+                    if let Some((publisher, counter)) = publishers.get(&route_id) {
+                        match publisher.publish(&payload) {
+                            Ok(()) => counter.inc(),
+                            Err(err) => {
+                                warn!("publish iceoryx failed (route='{}'): {err}", route_id)
                             }
                         }
-                        None => {
-                            warn!(
-                                "received unknown route '{}' ({} bytes)",
-                                route_id,
-                                payload.len()
-                            );
+                    } else if let Some(tx) = redis_senders.get(&route_id) {
+                        match tx.try_send(payload) {
+                            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                warn!("Redis sync worker stopped (route='{}')", route_id);
+                            }
                         }
+                    } else {
+                        warn!(
+                            "received unknown route '{}' ({} bytes)",
+                            route_id,
+                            payload.len()
+                        );
                     }
                 }
             });
         }
 
-        for r in outgoing_routes {
-            let remote_addr = r.to.endpoint.trim().to_string();
-            let route_id = r.id.clone();
-            let from_service = bridge_service_name(&r.from.endpoint);
-            let route_from = r.from.clone();
-            let route_counter = RouteCounter::new(route_id.clone(), "ipc->zmq");
-            route_counters.push(route_counter.clone());
-            let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
-            {
-                let ctx = zmq_ctx
-                    .as_ref()
-                    .expect("zmq ctx required for outgoing routes")
-                    .clone();
-                let rid = route_id.clone();
-                let addr = remote_addr.clone();
-                tokio::task::spawn_blocking(move || {
-                    let push = ctx
-                        .socket(zmq::PUSH)
-                        .map_err(|e| anyhow!("failed to create PUSH socket: {e}"))?;
-                    push.connect(&addr)
-                        .map_err(|e| anyhow!("failed to connect PUSH to {addr}: {e}"))?;
-                    info!("ZMQ PUSH connected: route='{}' -> {}", rid, addr);
-
-                    while let Some(payload) = rx.blocking_recv() {
-                        if let Err(e) = push.send_multipart([rid.as_bytes(), &payload], 0) {
-                            warn!("ZMQ send error (route='{}' addr='{}'): {e}", rid, addr);
-                            std::thread::sleep(Duration::from_millis(200));
-                        }
-                    }
-
-                    Ok::<(), anyhow::Error>(())
-                });
-            }
+        for route in outgoing_ipc {
+            let remote_addr = route.to.endpoint.trim().to_string();
+            let route_id = route.id.clone();
+            let from_service = bridge_service_name(&route.from.endpoint);
+            let route_from = route.from.clone();
+            let counter = RouteCounter::new(route_id.clone(), "ipc->zmq");
+            route_counters.push(counter.clone());
+            let tx = spawn_zmq_sender(
+                zmq_ctx.as_ref().expect("ZMQ context required").clone(),
+                route_id.clone(),
+                remote_addr.clone(),
+                zmq_source_ip.clone(),
+            );
 
             tokio::task::spawn_local(async move {
                 info!(
-                    "route '{}' ipc->zmq started: from='{}' size={} -> to='{}' size={}",
-                    route_id, from_service, r.from.size, remote_addr, r.to.size
+                    "route '{}' ipc->zmq started: from='{}' size={} -> to='{}'",
+                    route_id, from_service, route_from.size, remote_addr
                 );
                 let route_node =
                     match create_route_node("ipc_to_zmq_src", &route_id, std::process::id()) {
                         Ok(node) => node,
-                        Err(e) => {
+                        Err(err) => {
                             warn!(
-                                "route '{}' failed to create subscriber node for '{}': {e:#}",
-                                route_id, from_service
+                                "route '{}' failed to create subscriber node: {err:#}",
+                                route_id
                             );
                             return;
                         }
                     };
-                let mut subscriber: Option<SubscriberEnum> = None;
+                let mut subscriber = None::<SubscriberEnum>;
                 loop {
                     if subscriber.is_none() {
                         match SubscriberEnum::new(
@@ -225,16 +268,13 @@ impl BridgeApp {
                             route_from.size,
                             &route_from,
                         ) {
-                            Ok(sub) => {
-                                info!(
-                                    "route '{}' connected iceoryx source '{}'",
-                                    route_id, from_service
-                                );
-                                subscriber = Some(sub);
+                            Ok(value) => {
+                                info!("route '{}' connected source '{}'", route_id, from_service);
+                                subscriber = Some(value);
                             }
-                            Err(e) => {
+                            Err(err) => {
                                 warn!(
-                                    "route '{}' waiting for iceoryx source '{}': {e:#}",
+                                    "route '{}' waiting for source '{}': {err:#}",
                                     route_id, from_service
                                 );
                                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -242,23 +282,22 @@ impl BridgeApp {
                             }
                         }
                     }
-
                     match subscriber
                         .as_ref()
-                        .expect("subscriber must exist after successful open")
+                        .expect("subscriber initialized")
                         .receive_msg()
                     {
                         Ok(Some(bytes)) => {
                             if tx.send(bytes.to_vec()).is_err() {
                                 break;
                             }
-                            route_counter.inc();
+                            counter.inc();
                         }
                         Ok(None) => tokio::task::yield_now().await,
-                        Err(e) => {
+                        Err(err) => {
                             warn!(
-                                "iceoryx receive error (route='{}' service='{}'), reconnecting: {e}",
-                                route_id, from_service
+                                "iceoryx receive error (route='{}'), reconnecting: {err}",
+                                route_id
                             );
                             subscriber = None;
                             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -268,32 +307,91 @@ impl BridgeApp {
             });
         }
 
-        for r in local_routes {
-            let route_id = r.id.clone();
-            let from_service = bridge_service_name(&r.from.endpoint);
-            let to_service = bridge_service_name(&r.to.endpoint);
-            let route_from = r.from.clone();
-            let publisher = PublisherEnum::new(&node, &to_service, r.to.size, &r.to)?;
-            let route_counter = RouteCounter::new(route_id.clone(), "ipc->ipc");
-            route_counters.push(route_counter.clone());
+        for route in outgoing_redis {
+            let route_id = route.id.clone();
+            let remote_addr = route.to.endpoint.trim().to_string();
+            let settings = route.from.redis.clone();
+            let key = route.from.endpoint.trim().to_string();
+            let key_type = route.from.redis_type;
+            let poll_interval = Duration::from_millis(route.from.poll_interval_ms);
+            let counter = RouteCounter::new(route_id.clone(), "redis->zmq");
+            route_counters.push(counter.clone());
+            let tx = spawn_zmq_sender(
+                zmq_ctx.as_ref().expect("ZMQ context required").clone(),
+                route_id.clone(),
+                remote_addr.clone(),
+                zmq_source_ip.clone(),
+            );
 
             tokio::task::spawn_local(async move {
                 info!(
-                    "route '{}' ipc->ipc started: from='{}' size={} -> to='{}' size={}",
-                    route_id, from_service, r.from.size, to_service, r.to.size
+                    "route '{}' redis->zmq started: key='{}' type={:?} interval_ms={} -> '{}'",
+                    route_id,
+                    key,
+                    key_type,
+                    poll_interval.as_millis(),
+                    remote_addr
                 );
+                let mut client = None::<RedisSyncClient>;
+                let mut interval = tokio::time::interval(poll_interval);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    if client.is_none() {
+                        match RedisSyncClient::connect(&settings).await {
+                            Ok(value) => client = Some(value),
+                            Err(err) => {
+                                warn!("route '{}' Redis connect failed: {err:#}", route_id);
+                                continue;
+                            }
+                        }
+                    }
+                    let result = client
+                        .as_mut()
+                        .expect("Redis client initialized")
+                        .read(&key, key_type)
+                        .await;
+                    match result.and_then(|value| redis_sync::encode(&value)) {
+                        Ok(payload) => {
+                            if tx.send(payload).is_err() {
+                                break;
+                            }
+                            counter.inc();
+                        }
+                        Err(err) => {
+                            warn!(
+                                "route '{}' Redis read failed (key='{}'): {err:#}",
+                                route_id, key
+                            );
+                            client = None;
+                        }
+                    }
+                }
+            });
+        }
+
+        for route in local_routes {
+            let route_id = route.id.clone();
+            let from_service = bridge_service_name(&route.from.endpoint);
+            let to_service = bridge_service_name(&route.to.endpoint);
+            let route_from = route.from.clone();
+            let publisher = PublisherEnum::new(&node, &to_service, route.to.size, &route.to)?;
+            let counter = RouteCounter::new(route_id.clone(), "ipc->ipc");
+            route_counters.push(counter.clone());
+
+            tokio::task::spawn_local(async move {
                 let route_node =
                     match create_route_node("ipc_to_ipc_src", &route_id, std::process::id()) {
                         Ok(node) => node,
-                        Err(e) => {
+                        Err(err) => {
                             warn!(
-                                "route '{}' failed to create subscriber node for '{}': {e:#}",
-                                route_id, from_service
+                                "route '{}' failed to create local subscriber node: {err:#}",
+                                route_id
                             );
                             return;
                         }
                     };
-                let mut subscriber: Option<SubscriberEnum> = None;
+                let mut subscriber = None::<SubscriberEnum>;
                 loop {
                     if subscriber.is_none() {
                         match SubscriberEnum::new(
@@ -302,16 +400,10 @@ impl BridgeApp {
                             route_from.size,
                             &route_from,
                         ) {
-                            Ok(sub) => {
-                                info!(
-                                    "route '{}' connected local iceoryx source '{}'",
-                                    route_id, from_service
-                                );
-                                subscriber = Some(sub);
-                            }
-                            Err(e) => {
+                            Ok(value) => subscriber = Some(value),
+                            Err(err) => {
                                 warn!(
-                                    "route '{}' waiting for local iceoryx source '{}': {e:#}",
+                                    "route '{}' waiting for local source '{}': {err:#}",
                                     route_id, from_service
                                 );
                                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -319,28 +411,23 @@ impl BridgeApp {
                             }
                         }
                     }
-
                     match subscriber
                         .as_ref()
-                        .expect("subscriber must exist after successful open")
+                        .expect("subscriber initialized")
                         .receive_msg()
                     {
-                        Ok(Some(bytes)) => {
-                            if let Err(e) = publisher.publish(&bytes) {
-                                warn!(
-                                    "local bridge publish error (route='{}' from='{}' to='{}'): {e}",
-                                    route_id, from_service, to_service
-                                );
+                        Ok(Some(bytes)) => match publisher.publish(&bytes) {
+                            Ok(()) => counter.inc(),
+                            Err(err) => {
+                                warn!("local bridge publish error (route='{}'): {err}", route_id);
                                 tokio::time::sleep(Duration::from_millis(200)).await;
-                            } else {
-                                route_counter.inc();
                             }
-                        }
+                        },
                         Ok(None) => tokio::task::yield_now().await,
-                        Err(e) => {
+                        Err(err) => {
                             warn!(
-                                "local bridge receive error (route='{}' service='{}'), reconnecting: {e}",
-                                route_id, from_service
+                                "local bridge receive error (route='{}'), reconnecting: {err}",
+                                route_id
                             );
                             subscriber = None;
                             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -367,9 +454,80 @@ impl BridgeApp {
             });
         }
 
-        tokio::signal::ctrl_c().await?;
-        info!("ipc_bridge shutdown");
+        let shutdown_signal = wait_shutdown_signal().await?;
+        info!("ipc_bridge shutdown: {}", shutdown_signal);
         Ok(())
+    }
+}
+
+fn spawn_zmq_sender(
+    ctx: Arc<zmq::Context>,
+    route_id: String,
+    remote_addr: String,
+    source_ip: Option<String>,
+) -> mpsc::UnboundedSender<Vec<u8>> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::task::spawn_blocking(move || {
+        let connect_addr = zmq_connect_addr(&remote_addr, source_ip.as_deref())?;
+        let push = ctx
+            .socket(zmq::PUSH)
+            .map_err(|err| anyhow!("failed to create PUSH socket: {err}"))?;
+        push.connect(&connect_addr)
+            .map_err(|err| anyhow!("failed to connect PUSH to {connect_addr}: {err}"))?;
+        info!(
+            "ZMQ PUSH connected: route='{}' -> {} source_ip='{}'",
+            route_id,
+            remote_addr,
+            source_ip.as_deref().unwrap_or("default")
+        );
+        while let Some(payload) = rx.blocking_recv() {
+            if let Err(err) = push.send_multipart([route_id.as_bytes(), &payload], 0) {
+                warn!(
+                    "ZMQ send error (route='{}' addr='{}'): {err}",
+                    route_id, remote_addr
+                );
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+    tx
+}
+
+fn zmq_connect_addr(remote_addr: &str, source_ip: Option<&str>) -> Result<String> {
+    let Some(source_ip) = source_ip else {
+        return Ok(remote_addr.to_owned());
+    };
+    let destination = remote_addr.strip_prefix("tcp://").ok_or_else(|| {
+        anyhow!("zmq_source_ip requires a tcp:// destination, got '{remote_addr}'")
+    })?;
+    if destination.contains(';') {
+        return Err(anyhow!(
+            "ZMQ destination already contains a source address: '{remote_addr}'"
+        ));
+    }
+    Ok(format!("tcp://{source_ip}:0;{destination}"))
+}
+
+async fn wait_shutdown_signal() -> Result<&'static str> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result?;
+                Ok("SIGINT")
+            }
+            _ = sigterm.recv() => Ok("SIGTERM"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        Ok("SIGINT")
     }
 }
 
@@ -392,4 +550,33 @@ fn create_route_node(prefix: &str, route_id: &str, pid: u32) -> Result<Node<ipc:
     Ok(NodeBuilder::new()
         .name(&NodeName::new(&node_name)?)
         .create::<ipc::Service>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zmq_connect_addr;
+
+    #[test]
+    fn adds_zmq_tcp_source_ip() {
+        assert_eq!(
+            zmq_connect_addr("tcp://47.131.162.78:6360", Some("172.31.46.90")).unwrap(),
+            "tcp://172.31.46.90:0;47.131.162.78:6360"
+        );
+    }
+
+    #[test]
+    fn keeps_zmq_endpoint_without_source_ip() {
+        assert_eq!(
+            zmq_connect_addr("ipc:///tmp/test", None).unwrap(),
+            "ipc:///tmp/test"
+        );
+    }
+
+    #[test]
+    fn rejects_non_tcp_endpoint_with_source_ip() {
+        assert!(zmq_connect_addr("ipc:///tmp/test", Some("172.31.46.90"))
+            .expect_err("source IP requires TCP")
+            .to_string()
+            .contains("requires a tcp:// destination"));
+    }
 }

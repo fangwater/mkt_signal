@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gate FR Risk Limit Align"
+  short_description: "Align Gate FR leverage and max_u caps"
+  default_prompt: "Use $gate-fr-risk-limit-align to audit Gate FR online symbols, lower leverage when positions exceed risk-limit-buffer, and write max_pos_u overrides capped by the unified base max_u."

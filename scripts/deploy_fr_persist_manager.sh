@@ -132,7 +132,7 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "[INFO] Building $BIN_NAME (release)"
-  (cd "$ROOT_DIR" && cargo build --release --bin "$BIN_NAME")
+  (cd "$ROOT_DIR" && cargo build --release -p persist_manager --features runtime --bin "$BIN_NAME")
 fi
 
 mkdir -p "$TARGET_DIR"
@@ -148,16 +148,20 @@ SCRIPTS_TO_SYNC=(
   "start_fr_persist_manager.sh"
   "stop_fr_persist_manager.sh"
   "process_match_lib.sh"
+  "configure_persist_sync_source.sh"
 )
 
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
-  mkdir -p "$TARGET_DIR/scripts"
+  mkdir -p "$TARGET_DIR/scripts" "$TARGET_DIR/config"
   for script in "${SCRIPTS_TO_SYNC[@]}"; do
     if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
       rsync -a "$ROOT_DIR/scripts/$script" "$TARGET_DIR/scripts/"
       chmod +x "$TARGET_DIR/scripts/$script"
     fi
   done
+  if [[ -f "$ROOT_DIR/config/persist_sync_distribution.toml" ]]; then
+    rsync -a "$ROOT_DIR/config/persist_sync_distribution.toml" "$TARGET_DIR/config/"
+  fi
 fi
 
 echo "[INFO] $BIN_NAME deployed to $TARGET_DIR"

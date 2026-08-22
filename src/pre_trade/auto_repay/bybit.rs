@@ -25,11 +25,12 @@ use log::{info, warn};
 use prettytable::{Cell, Row};
 use reqwest::Client;
 use serde_json::json;
+use std::net::IpAddr;
 
-use crate::portfolio_margin::bybit_auth::BybitCredentials;
 use crate::pre_trade::auto_repay::build_three_line_table;
 use crate::pre_trade::auto_repay_service::{looks_like_no_liability, Repayer};
-use crate::trade_engine::bybit_query::{bybit_rest_get, bybit_rest_post};
+use account_common::bybit_auth::BybitCredentials;
+use trade_engine::bybit_query::{build_bybit_rest_client, bybit_rest_get, bybit_rest_post};
 
 const WALLET_BALANCE_PATH: &str = "/v5/account/wallet-balance";
 const NO_CONVERT_REPAY_PATH: &str = "/v5/account/no-convert-repay";
@@ -40,11 +41,12 @@ pub struct BybitRepayer {
 }
 
 impl BybitRepayer {
-    pub fn new(creds: BybitCredentials) -> Self {
-        Self {
-            client: Client::new(),
+    pub fn new(creds: BybitCredentials, local_ip: Option<IpAddr>) -> Result<Self> {
+        Ok(Self {
+            client: build_bybit_rest_client(local_ip)
+                .map_err(|err| anyhow!("build Bybit auto-repay HTTP client failed: {err:#}"))?,
             creds,
-        }
+        })
     }
 
     async fn fetch_wallet(&self) -> Result<String> {

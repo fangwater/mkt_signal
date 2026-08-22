@@ -1,20 +1,22 @@
-use crate::common::time_util::get_timestamp_us;
-use crate::common::trade_error_code::describe_trade_error_code;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::QueryEngHub;
 use crate::strategy::manager::Strategy;
 use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_reconcile::{PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US};
-use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
+use crate::strategy::order_reconcile::{
+    order_query_watchdog_delay_us, PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US,
+};
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, warn};
-use std::collections::HashMap;
+use order_common::trade_error_code::describe_trade_error_code;
+use order_common::OrderExecutionStatus;
+use order_common::{TradeEngineResponse, TradeRequestKind};
+use runtime_common::fast_hash::FastHashMap;
+use runtime_common::time_util::get_timestamp_us;
 
 #[derive(Debug, Clone, Default)]
 pub struct HedgeOrderReconcileState {
-    pub pending_order_queries: HashMap<i64, PendingOrderQueryReason>,
-    pub order_query_watchdogs: HashMap<i64, (i64, PendingOrderQueryReason)>,
+    pub pending_order_queries: FastHashMap<i64, PendingOrderQueryReason>,
+    pub order_query_watchdogs: FastHashMap<i64, (i64, PendingOrderQueryReason)>,
 }
 
 impl HedgeOrderReconcileState {
@@ -184,7 +186,8 @@ pub trait HedgeOrderReconcileCommon: Strategy {
         client_order_id: i64,
         reason: PendingOrderQueryReason,
     ) {
-        let due = get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US);
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
+        let due = get_timestamp_us().saturating_add(delay_us);
         self.hedge_reconcile_state_mut()
             .order_query_watchdogs
             .insert(client_order_id, (due, reason));
@@ -196,6 +199,17 @@ pub trait HedgeOrderReconcileCommon: Strategy {
             reason,
             self.hedge_order_trace_snapshot(client_order_id)
         );
+    }
+
+    fn order_query_watchdog_delay_us_for_order_id(&self, client_order_id: i64) -> i64 {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return ORDER_QUERY_WATCHDOG_DELAY_US;
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return ORDER_QUERY_WATCHDOG_DELAY_US;
+        };
+        order_query_watchdog_delay_us(&order, mgr.binance_is_standard())
     }
 
     fn clear_order_query_state(&mut self, client_order_id: i64) {
@@ -261,7 +275,8 @@ pub trait HedgeOrderReconcileCommon: Strategy {
                 .borrow()
                 .get(client_order_id);
             if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                let scheduled_at = now.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
+                let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
+                let scheduled_at = now.saturating_sub(delay_us);
                 let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
                 let since_submit_ms = now
                     .saturating_sub(order.timestamp.submit_t)

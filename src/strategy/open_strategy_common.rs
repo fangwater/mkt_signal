@@ -1,32 +1,304 @@
-use crate::common::symbol_util::{extract_assets_from_symbol, normalize_symbol_for_internal};
-use crate::common::tick_math::QuantizedValue;
-use crate::common::time_util::get_timestamp_us;
-use crate::common::trade_error_code::describe_trade_error_code;
-use crate::funding_rate::ArbMode;
+use crate::pre_trade::account_open_block::{
+    register_bybit_internal_system_open_block, BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US,
+};
+use crate::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
+use crate::pre_trade::bitget_position_tier_guard::BitgetPositionTierGuard;
+use crate::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
-use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::log_throttle::{log_open_risk_reject_summary, log_pending_limit_summary};
+use crate::pre_trade::monitor_channel::{MonitorChannel, OpenExposureRiskError};
 use crate::pre_trade::open_order_rate_limiter::{OrderRateBucket, OrderRateLimiter};
-use crate::pre_trade::order_manager::{OrderExecutionStatus, OrderManager, OrderType, Side};
+use crate::pre_trade::order_manager::{PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt};
 use crate::pre_trade::params_load::PreTradeParamsLoader;
-use crate::pre_trade::signal_throttle::register_signal_throttle;
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
+use crate::pre_trade::signal_throttle::register_signal_throttle_for_mode;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::{OrderStatus, TradingVenue};
 use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
 pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
-use crate::strategy::order_reconcile::{qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US};
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::{TradeEngineResponse, TradeRequestKind};
-use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::order_reconcile::{
+    order_query_watchdog_delay_us, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
+    ORDER_QUERY_WATCHDOG_DELAY_US,
+};
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
+#[cfg(test)]
+use bytes::Bytes;
 use log::{debug, error, info, warn};
+use order_common::trade_error_code::describe_trade_error_code;
+use order_common::OrderUpdate;
+use order_common::TradeUpdate;
+use order_common::TradeUpdateLite;
+use order_common::{OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side};
+use order_common::{OrderStatus, TradingVenue};
+use order_common::{TradeEngineResponse, TradeRequestKind};
+use persist_common::SignalBbo;
+use rolling_common::arb_open_latency::record_arb_open_latency;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap, FastHashSet};
+use runtime_common::symbol_util::{
+    extract_assets_from_internal_symbol, min_qty_symbol_key, normalize_symbol_for_internal,
+};
+use runtime_common::time_util::get_timestamp_us;
+use signal_common::tick_math::QuantizedValue;
+use signal_common::trade_signal::SignalType;
+use std::borrow::Cow;
+use std::cell::{RefCell, RefMut};
+use trade_engine::trade_request::PreparedTradeRequest;
 
 const OPEN_BALANCE_EPS: f64 = 1e-12;
 const OPEN_DELEVERAGING_EPS: f64 = 1e-12;
+const OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US: i64 = 20_000_000;
+const OPEN_BALANCE_REJECT_SUMMARY_INTERVAL_US: i64 = 20_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OpenOrderRateLimitSummaryKey {
+    strategy_name: &'static str,
+    bucket: OrderRateBucket,
+    symbol: String,
+    window: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct OpenOrderRateLimitSummaryState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_strategy_id: i32,
+    last_reason: String,
+}
+
+thread_local! {
+    static OPEN_ORDER_RATE_LIMIT_SUMMARY: RefCell<FastHashMap<OpenOrderRateLimitSummaryKey, OpenOrderRateLimitSummaryState>> =
+        RefCell::new(fast_hash_map());
+    static OPEN_BALANCE_REJECT_SUMMARY: RefCell<FastHashMap<OpenBalanceRejectSummaryKey, OpenBalanceRejectSummaryState>> =
+        RefCell::new(fast_hash_map());
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OpenBalanceRejectSummaryKey {
+    strategy_name: &'static str,
+    venue: TradingVenue,
+    gate: &'static str,
+    side_u8: u8,
+    asset: String,
+}
+
+#[derive(Debug, Clone)]
+struct OpenBalanceRejectSummaryState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_strategy_id: i32,
+    last_symbol: String,
+    max_required: f64,
+    min_available: f64,
+}
+
+struct OpenBalanceRejectSummaryInput<'a> {
+    strategy_name: &'static str,
+    strategy_id: i32,
+    venue: TradingVenue,
+    gate: &'static str,
+    symbol: &'a str,
+    side: Side,
+    asset: &'a str,
+    required_amount: f64,
+    available_balance: f64,
+    now_us: i64,
+}
+
+fn summarize_open_balance_reject(input: OpenBalanceRejectSummaryInput<'_>) {
+    let key = OpenBalanceRejectSummaryKey {
+        strategy_name: input.strategy_name,
+        venue: input.venue,
+        gate: input.gate,
+        side_u8: input.side.to_u8(),
+        asset: input.asset.to_string(),
+    };
+    OPEN_BALANCE_REJECT_SUMMARY.with(|summary| {
+        let mut summary = summary.borrow_mut();
+        let state = summary.entry(key).or_insert_with(|| OpenBalanceRejectSummaryState {
+            last_log_ts_us: 0,
+            suppressed: 0,
+            last_strategy_id: input.strategy_id,
+            last_symbol: input.symbol.to_string(),
+            max_required: 0.0,
+            min_available: input.available_balance,
+        });
+        state.suppressed += 1;
+        state.last_strategy_id = input.strategy_id;
+        state.last_symbol = input.symbol.to_string();
+        state.max_required = state.max_required.max(input.required_amount);
+        state.min_available = state.min_available.min(input.available_balance);
+        if state.last_log_ts_us == 0
+            || input.now_us.saturating_sub(state.last_log_ts_us)
+                >= OPEN_BALANCE_REJECT_SUMMARY_INTERVAL_US
+        {
+            if !suppress_pre_submit_hot_path_logs() {
+                error!(
+                    "{}: {:?} {} 余额不足，拒绝开仓 summary: suppressed={} last_strategy_id={} last_symbol={} side={:?} asset={} max_required={:.8} min_available={:.8}",
+                    input.strategy_name,
+                    input.venue,
+                    input.gate,
+                    state.suppressed,
+                    state.last_strategy_id,
+                    state.last_symbol,
+                    input.side,
+                    input.asset,
+                    state.max_required,
+                    state.min_available
+                );
+            }
+            state.last_log_ts_us = input.now_us;
+            state.suppressed = 0;
+            state.max_required = 0.0;
+            state.min_available = input.available_balance;
+        }
+    });
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn build_open_order_request_bytes_scoped(
+    mut order_manager: RefMut<'_, OrderManager>,
+    venue: TradingVenue,
+    client_order_id: i64,
+    order_type: OrderType,
+    normalized_symbol: &str,
+    side: Side,
+    order_qty: f64,
+    order_price: f64,
+    quantity_qv: Option<OrderQuantizedValue>,
+    price_qv: Option<OrderQuantizedValue>,
+    reduce_only: bool,
+    qty_multiplier: f64,
+    create_ts: i64,
+    signal_type_u8: u8,
+    mkt_ts: i64,
+    pre_trade_recv_ts: i64,
+    pre_trade_handle_ts: i64,
+) -> Result<(&'static str, Bytes), String> {
+    order_manager.create_open_order_request_bytes_normalized_symbol(
+        venue,
+        client_order_id,
+        order_type,
+        normalized_symbol,
+        side,
+        order_qty,
+        order_price,
+        quantity_qv,
+        price_qv,
+        reduce_only,
+        qty_multiplier,
+        create_ts,
+        signal_type_u8,
+        mkt_ts,
+        pre_trade_recv_ts,
+        pre_trade_handle_ts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_open_order_request_prepared_scoped(
+    mut order_manager: RefMut<'_, OrderManager>,
+    venue: TradingVenue,
+    client_order_id: i64,
+    order_type: OrderType,
+    normalized_symbol: &str,
+    side: Side,
+    order_qty: f64,
+    order_price: f64,
+    quantity_qv: Option<OrderQuantizedValue>,
+    price_qv: Option<OrderQuantizedValue>,
+    reduce_only: bool,
+    bitget_spot_order: bool,
+    qty_multiplier: f64,
+    create_ts: i64,
+    signal_type_u8: u8,
+    mkt_ts: i64,
+    pre_trade_recv_ts: i64,
+    pre_trade_handle_ts: i64,
+) -> Result<PreparedTradeRequest, String> {
+    order_manager
+        .create_open_order_request_prepared_normalized_symbol(
+            venue,
+            client_order_id,
+            order_type,
+            normalized_symbol,
+            side,
+            order_qty,
+            order_price,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            bitget_spot_order,
+            qty_multiplier,
+            create_ts,
+            signal_type_u8,
+            mkt_ts,
+            pre_trade_recv_ts,
+            pre_trade_handle_ts,
+        )
+        .map(|(_, request)| request)
+}
+
+fn summarize_open_order_rate_limit(
+    strategy_name: &'static str,
+    strategy_id: i32,
+    bucket: OrderRateBucket,
+    symbol: &str,
+    reason: &str,
+    now_us: i64,
+) {
+    let key = OpenOrderRateLimitSummaryKey {
+        strategy_name,
+        bucket,
+        symbol: symbol.to_string(),
+        window: classify_open_order_rate_limit_window(reason),
+    };
+    OPEN_ORDER_RATE_LIMIT_SUMMARY.with(|summary| {
+        let mut summary = summary.borrow_mut();
+        let state = summary
+            .entry(key)
+            .or_insert_with(|| OpenOrderRateLimitSummaryState {
+                last_log_ts_us: 0,
+                suppressed: 0,
+                last_strategy_id: strategy_id,
+                last_reason: reason.to_string(),
+            });
+        state.suppressed += 1;
+        state.last_strategy_id = strategy_id;
+        state.last_reason.clear();
+        state.last_reason.push_str(reason);
+        if state.last_log_ts_us == 0
+            || now_us.saturating_sub(state.last_log_ts_us)
+                >= OPEN_ORDER_RATE_LIMIT_SUMMARY_INTERVAL_US
+        {
+            info!(
+                "{}: symbol={} 开仓下单频率风控触发 summary: suppressed={} last_strategy_id={} bucket={} reason={}",
+                strategy_name,
+                symbol,
+                state.suppressed,
+                state.last_strategy_id,
+                bucket.as_str(),
+                state.last_reason
+            );
+            state.last_log_ts_us = now_us;
+            state.suppressed = 0;
+        }
+    });
+}
+
+fn classify_open_order_rate_limit_window(reason: &str) -> &'static str {
+    if reason.contains("近10秒") {
+        "10s"
+    } else if reason.contains("近60秒") {
+        "60s"
+    } else {
+        "unknown"
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryWatchdog {
@@ -35,9 +307,40 @@ pub struct QueryWatchdog {
     pub reason: PendingOrderQueryReason,
 }
 
+fn should_promote_open_pending_query_reason(
+    existing: PendingOrderQueryReason,
+    incoming: PendingOrderQueryReason,
+) -> bool {
+    matches!(
+        (existing, incoming),
+        (
+            PendingOrderQueryReason::OrderWatchdog,
+            PendingOrderQueryReason::CancelWatchdog
+                | PendingOrderQueryReason::CancelFailed
+                | PendingOrderQueryReason::CancelRejected
+        ) | (
+            PendingOrderQueryReason::CancelWatchdog,
+            PendingOrderQueryReason::CancelFailed | PendingOrderQueryReason::CancelRejected
+        ) | (
+            PendingOrderQueryReason::CancelFailed,
+            PendingOrderQueryReason::CancelRejected
+        )
+    )
+}
+
+fn order_qv_from_quantized_value(qv: QuantizedValue) -> OrderQuantizedValue {
+    let (tick_i64, tick_exp) = qv.get_tick_parts();
+    OrderQuantizedValue::new(tick_i64, tick_exp, qv.get_count())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OpenOrderState {
     pub open_order_id: i64,
+    pub hedge_watermark_base_qty: f64,
+    pub trade_lite_cumulative_venue_qty: f64,
+    pub trade_lite_cumulative_base_qty: f64,
+    pub trade_cumulative_base_qty: f64,
+    pub seen_trade_lite_ids: FastHashSet<[u8; mkt_parsers::msg::basic_account_msg::TRADE_ID_LEN]>,
     pub open_expire_ts: Option<i64>,
     pub open_side: Option<Side>,
     pub pending_order_query: Option<PendingOrderQueryReason>,
@@ -54,18 +357,20 @@ pub struct OpenStrategyState {
     pub open_venue: Option<TradingVenue>,
     pub order: OpenOrderState,
     pub signal_ts: i64,
-    pub from_key: String,
+    pub from_key: Vec<u8>,
+    pub signal_bbo: Option<SignalBbo>,
     pub price_qv: QuantizedValue,
     pub price_offset: f64,
     pub alive: bool,
     pub inactive_reason: Option<String>,
 }
 
-pub struct OpenSignalInput {
+pub struct OpenSignalInput<'a> {
     pub signal_kind: &'static str,
     pub order_log_name: &'static str,
     pub order_rate_bucket: OrderRateBucket,
-    pub opening_symbol: String,
+    pub opening_symbol: Cow<'a, str>,
+    pub opening_symbol_normalized: bool,
     pub venue_u8: u8,
     pub side_u8: u8,
     pub order_type_u8: u8,
@@ -76,17 +381,27 @@ pub struct OpenSignalInput {
     pub exp_time: i64,
     pub create_ts: i64,
     pub from_key_len: u32,
-    pub from_key: Vec<u8>,
+    pub from_key: Cow<'a, [u8]>,
+    pub signal_bbo: Option<SignalBbo>,
     pub price_qv: QuantizedValue,
+    pub order_qty_qv: Option<QuantizedValue>,
+    pub order_price_qv: Option<QuantizedValue>,
     pub price_offset: f64,
     pub reduce_only: bool,
+    pub bitget_spot_order: bool,
     pub client_order_id: Option<i64>,
+    pub pending_limit_prechecked: bool,
     // 绝对 close_ts。0 表示不设置藏仓窗口；>0 表示这笔 ArbOpen 不追求立刻对冲，
     // 而是先藏一段时间，到 close_ts 后才进入可对冲/可关闭的 due 数量。
     pub close_ts: i64,
     // 触发该 open 动作时的最新盘口时间(µs)，套利路径=max(open_leg.ts, hedge_leg.ts)；
     // 0 表示无概念（MM）或无上下文，不会覆写已有 order.timestamp.mkt_t
     pub mkt_ts: i64,
+    // 触发该 open 动作的信号类型(SignalType as u8)，供 egress 测度 signal→submit 延迟分桶
+    pub signal_type_u8: u8,
+    // pre_trade 本地收到/开始处理该 open 信号的时间(µs)，用于慢 open 分段日志。
+    pub pre_trade_recv_ts: i64,
+    pub pre_trade_handle_ts: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,7 +431,8 @@ impl OpenStrategyState {
             open_venue: None,
             order: OpenOrderState::default(),
             signal_ts: 0,
-            from_key: String::new(),
+            from_key: Vec::new(),
+            signal_bbo: None,
             price_qv: QuantizedValue::zero(),
             price_offset: 0.0,
             alive: true,
@@ -130,6 +446,13 @@ pub trait OpenStrategyCommon {
     fn open_state(&self) -> &OpenStrategyState;
     fn open_state_mut(&mut self) -> &mut OpenStrategyState;
 
+    /// 触发撤单动作的信号类型(SignalType as u8)，供 egress 测度 signal→submit 延迟分桶。
+    /// 撤单复用已存在的开仓 order，egress 前需用本方法刷新 order 的 signal_kind，
+    /// 否则会继承开仓的 ArbOpen 标签而错算。默认 0（不计入测度）；arb/mm open 策略 override。
+    fn cancel_signal_type_u8(&self) -> u8 {
+        0
+    }
+
     fn handoff_open_order_after_query_failure(
         &mut self,
         client_order_id: i64,
@@ -142,8 +465,12 @@ pub trait OpenStrategyCommon {
 
     fn open_order_action_log_name(&self) -> &'static str;
 
-    fn resolve_open_qty_multiplier(&self, venue: TradingVenue, symbol: &str)
-        -> Result<f64, String>;
+    fn resolve_open_qty_multiplier(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        price: f64,
+    ) -> Result<f64, String>;
 
     fn open_order_qty_to_base(&self, signed_qty: f64, qty_multiplier: f64) -> Result<f64, String> {
         Ok(signed_qty * qty_multiplier)
@@ -174,6 +501,20 @@ pub trait OpenStrategyCommon {
     }
 
     fn release_close_inventory_unfilled(&self, _client_order_id: i64, _reason: &str) {}
+
+    fn force_taker_taker_hedge(&self) -> bool {
+        false
+    }
+
+    /// 部分成交是否立刻推进开仓对冲。默认 false：等 Filled/Canceled。
+    /// ArbOpen 通过 env `ARB_OPEN_PARTIAL_HEDGE` 打开。
+    fn hedge_on_incremental_open_fill(&self) -> bool {
+        false
+    }
+
+    fn skip_open_total_exposure_risk_check(&self) -> bool {
+        false
+    }
 
     fn skip_open_position_risk_checks(&self) -> bool {
         false
@@ -210,6 +551,9 @@ pub trait OpenStrategyCommon {
         if !self.log_open_deleveraging_risk_rejects() {
             return;
         }
+        if risk_name == "限价挂单数量风控" {
+            return;
+        }
 
         let reduces_open_position = match side {
             Side::Sell => current_open_base_qty > OPEN_DELEVERAGING_EPS,
@@ -219,7 +563,7 @@ pub trait OpenStrategyCommon {
             return;
         }
 
-        info!(
+        debug!(
             "{}: strategy_id={} ArbOpen去杠杆方向被{}拒绝，未激活 symbol={} venue={:?} side={:?} current_open_base_qty={:.8} order_qty={:.8} reason={}",
             self.strategy_name(),
             self.strategy_id(),
@@ -244,31 +588,80 @@ pub trait OpenStrategyCommon {
         open_client_order_id: i64,
         update_detail: &str,
     ) -> bool {
-        if filled_base_qty <= 1e-12 {
-            return false;
-        }
-        let close_ts = self.open_terminal_close_ts();
-        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
-        let mut strategy_mgr = strategy_mgr.borrow_mut();
-        let updated = strategy_mgr.record_open_order_terminal(
-            symbol,
-            side,
-            order_base_qty,
-            filled_base_qty,
-            terminal_ts,
-            price,
-            close_ts,
-            open_client_order_id,
-        );
-        if !updated {
-            warn!(
-                "{}: strategy_id={} record open order terminal failed symbol={} side={:?} order_base_qty={:.8} filled_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
+        let target_base_qty = filled_base_qty.abs().min(order_base_qty.abs());
+        let already_recorded = self.open_order_state().hedge_watermark_base_qty;
+        let delta_base_qty = (target_base_qty - already_recorded).max(0.0);
+        if delta_base_qty <= 1e-12 {
+            debug!(
+                "{}: strategy_id={} skip open hedge record because watermark already covers fill symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} open_co_id={} detail={}",
                 self.strategy_name(),
                 self.strategy_id(),
                 symbol,
                 side,
                 order_base_qty,
-                filled_base_qty,
+                target_base_qty,
+                already_recorded,
+                terminal_ts,
+                price,
+                open_client_order_id,
+                update_detail
+            );
+            return false;
+        }
+        let close_ts = self.open_terminal_close_ts();
+        let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+        let mut strategy_mgr = strategy_mgr.borrow_mut();
+        if self.force_taker_taker_hedge()
+            && !strategy_mgr.register_force_close_open_id(symbol, open_client_order_id)
+        {
+            warn!(
+                "{}: strategy_id={} failed to register Force Close open id symbol={} open_co_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                open_client_order_id
+            );
+        }
+        let updated = strategy_mgr.record_open_order_terminal(
+            symbol,
+            side,
+            order_base_qty,
+            delta_base_qty,
+            terminal_ts,
+            price,
+            close_ts,
+            open_client_order_id,
+        );
+        drop(strategy_mgr);
+        if updated {
+            self.open_order_state_mut().hedge_watermark_base_qty = target_base_qty;
+            debug!(
+                "{}: strategy_id={} open hedge watermark advanced by terminal symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} delta_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side,
+                order_base_qty,
+                target_base_qty,
+                delta_base_qty,
+                target_base_qty,
+                terminal_ts,
+                price,
+                close_ts,
+                open_client_order_id,
+                update_detail
+            );
+        } else {
+            warn!(
+                "{}: strategy_id={} record open order hedge failed symbol={} side={:?} order_base_qty={:.8} target_base_qty={:.8} delta_base_qty={:.8} watermark_base_qty={:.8} terminal_ts={} price={:.8} close_ts={} open_co_id={} detail={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                symbol,
+                side,
+                order_base_qty,
+                target_base_qty,
+                delta_base_qty,
+                already_recorded,
                 terminal_ts,
                 price,
                 close_ts,
@@ -277,6 +670,215 @@ pub trait OpenStrategyCommon {
             );
         }
         updated
+    }
+
+    fn open_trade_lite_full_fill_eps_base_qty(
+        &self,
+        venue: TradingVenue,
+        symbol: &str,
+        qty_multiplier: f64,
+        order_base_qty: f64,
+    ) -> f64 {
+        let symbol_key = min_qty_symbol_key(venue, symbol);
+        let step_base_qty = MonitorChannel::instance()
+            .try_venue_min_qty_table(venue)
+            .and_then(|table| table.step_size(&symbol_key))
+            .map(|step| step * qty_multiplier)
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or(0.0);
+        let fallback_eps = (order_base_qty.abs() * 1e-9).max(1e-12);
+        if step_base_qty > 0.0 {
+            (step_base_qty * 0.5).max(fallback_eps)
+        } else {
+            fallback_eps
+        }
+    }
+
+    fn apply_trade_update_lite_common(&mut self, trade: &dyn TradeUpdateLite) -> bool {
+        let client_order_id = trade.client_order_id();
+        if client_order_id != self.open_order_id() {
+            debug!(
+                "{}: strategy_id={} ignore trade_lite client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        }
+
+        let trade_id = *trade.trade_id();
+        {
+            let state = self.open_order_state_mut();
+            if !state.seen_trade_lite_ids.insert(trade_id) {
+                debug!(
+                    "{}: strategy_id={} duplicate trade_lite ignored client_order_id={} trade_id={:?}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    trade_id
+                );
+                return false;
+            }
+        }
+
+        let order_mgr = MonitorChannel::instance().order_manager();
+        let order = order_mgr.borrow().get(client_order_id);
+        let Some(order) = order else {
+            warn!(
+                "{}: strategy_id={} trade_lite order missing client_order_id={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id
+            );
+            return false;
+        };
+
+        if order.status.is_terminal() {
+            debug!(
+                "{}: strategy_id={} drop trade_lite after terminal client_order_id={} symbol={} status={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                order.status
+            );
+            return false;
+        }
+        if trade.trading_venue() != order.venue {
+            debug!(
+                "{}: strategy_id={} drop trade_lite venue mismatch client_order_id={} symbol={} lite_venue={:?} order_venue={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                trade.trading_venue(),
+                order.venue
+            );
+            return false;
+        }
+        if !trade.symbol().eq_ignore_ascii_case(&order.symbol) {
+            debug!(
+                "{}: strategy_id={} drop trade_lite symbol mismatch client_order_id={} lite_symbol={} order_symbol={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                trade.symbol(),
+                order.symbol
+            );
+            return false;
+        }
+        if trade.side() != order.side {
+            debug!(
+                "{}: strategy_id={} drop trade_lite side mismatch client_order_id={} symbol={} lite_side={:?} order_side={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                trade.side(),
+                order.side
+            );
+            return false;
+        }
+
+        let lite_qty = trade.last_filled_quantity();
+        if !lite_qty.is_finite() || lite_qty <= 0.0 {
+            debug!(
+                "{}: strategy_id={} drop trade_lite invalid qty client_order_id={} symbol={} qty={:.12}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                order.symbol,
+                lite_qty
+            );
+            return false;
+        }
+
+        let lite_base_delta = MonitorChannel::instance()
+            .qty_to_base_at_price(order.venue, &order.symbol, lite_qty, trade.price())
+            .unwrap_or(lite_qty * order.qty_multiplier);
+        let (lite_cumulative_venue_qty, lite_cumulative_base_qty) = {
+            let state = self.open_order_state_mut();
+            state.trade_lite_cumulative_venue_qty += lite_qty;
+            state.trade_lite_cumulative_base_qty += lite_base_delta;
+            (
+                state.trade_lite_cumulative_venue_qty,
+                state.trade_lite_cumulative_base_qty,
+            )
+        };
+        let order_base_qty = order.quantity * order.qty_multiplier;
+        let lite_cumulative_base_qty = lite_cumulative_base_qty.max(0.0).min(order_base_qty);
+        let eps_base_qty = self.open_trade_lite_full_fill_eps_base_qty(
+            order.venue,
+            &order.symbol,
+            order.qty_multiplier,
+            order_base_qty,
+        );
+
+        if lite_cumulative_base_qty + eps_base_qty < order_base_qty {
+            if self.hedge_on_incremental_open_fill() {
+                let update_detail = format!(
+                    "trade_lite_partial_fill local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} lite_cum_venue_qty={:.8} lite_cum_base_qty={:.8} order_base_qty={:.8} eps_base_qty={:.12} trade_qty={:.8} maker={} trade_id={:?}",
+                    order.symbol,
+                    order.quantity,
+                    order.qty_multiplier,
+                    lite_cumulative_venue_qty,
+                    lite_cumulative_base_qty,
+                    order_base_qty,
+                    eps_base_qty,
+                    lite_qty,
+                    trade.is_maker(),
+                    trade_id
+                );
+                self.record_open_order_terminal_base_qty(
+                    &order.symbol,
+                    order.side,
+                    order_base_qty,
+                    lite_cumulative_base_qty,
+                    trade.trade_time().max(trade.event_time()),
+                    trade.price(),
+                    order.client_order_id,
+                    &update_detail,
+                );
+            } else {
+                debug!(
+                    "{}: strategy_id={} trade_lite cumulative below full hedge threshold client_order_id={} symbol={} lite_cum_base={:.8} order_base_qty={:.8} eps_base_qty={:.12} lite_qty={:.8} trade_id={:?}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    client_order_id,
+                    order.symbol,
+                    lite_cumulative_base_qty,
+                    order_base_qty,
+                    eps_base_qty,
+                    lite_qty,
+                    trade_id
+                );
+            }
+            return true;
+        }
+
+        let update_detail = format!(
+            "trade_lite_full_fill local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} lite_cum_venue_qty={:.8} lite_cum_base_qty={:.8} order_base_qty={:.8} eps_base_qty={:.12} trade_qty={:.8} maker={} trade_id={:?}",
+            order.symbol,
+            order.quantity,
+            order.qty_multiplier,
+            lite_cumulative_venue_qty,
+            lite_cumulative_base_qty,
+            order_base_qty,
+            eps_base_qty,
+            lite_qty,
+            trade.is_maker(),
+            trade_id
+        );
+        self.record_open_order_terminal_base_qty(
+            &order.symbol,
+            order.side,
+            order_base_qty,
+            order_base_qty,
+            trade.trade_time().max(trade.event_time()),
+            trade.price(),
+            order.client_order_id,
+            &update_detail,
+        )
     }
 
     fn apply_inventory_fill_delta(
@@ -297,50 +899,42 @@ pub trait OpenStrategyCommon {
         }
     }
 
-    fn send_open_order_common(&mut self, client_order_id: i64, symbol: &str) -> Result<(), String> {
-        let order = MonitorChannel::instance()
-            .order_manager()
-            .borrow()
-            .get(client_order_id);
-        let Some(order) = order else {
-            return Err(format!(
-                "order not found: client_order_id={}",
-                client_order_id
-            ));
-        };
-
-        let exchange = order.venue.trade_engine_exchange();
-        match order.get_order_request_bytes() {
-            Ok(req_bin) => {
-                if self.enable_open_order_rate_limit() {
-                    let stats = OrderRateLimiter::record(
-                        self.open_order_rate_bucket(),
-                        client_order_id,
-                        get_timestamp_us(),
-                    );
-                    info!(
-                        "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
-                        self.strategy_name(),
-                        self.strategy_id(),
-                        self.open_order_action_log_name(),
-                        client_order_id,
-                        stats.count_10s,
-                        stats.count_1m
-                    );
-                }
-                if let Err(e) =
-                    TradeEngHub::publish_order_request_for(client_order_id, exchange, &req_bin)
-                {
-                    return Err(format!(
-                        "publish order request failed: symbol={} exchange={} err={}",
-                        symbol, exchange, e
-                    ));
-                }
-                self.schedule_order_query_watchdog(client_order_id);
-                Ok(())
+    fn send_open_order_request_common(
+        &mut self,
+        client_order_id: i64,
+        symbol: &str,
+        venue: TradingVenue,
+        request: &PreparedTradeRequest,
+        watchdog_delay_us: i64,
+    ) -> Result<(), String> {
+        if self.enable_open_order_rate_limit() {
+            let stats = OrderRateLimiter::record(
+                self.open_order_rate_bucket(),
+                client_order_id,
+                get_timestamp_us(),
+            );
+            if !suppress_pre_submit_hot_path_logs() {
+                info!(
+                    "{}: strategy_id={} {} order action recorded client_order_id={} count_10s={} count_1m={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    self.open_order_action_log_name(),
+                    client_order_id,
+                    stats.count_10s,
+                    stats.count_1m
+                );
             }
-            Err(e) => Err(format!("get order request bytes failed: {}", e)),
         }
+        if let Err(e) =
+            TradeEngHub::publish_prepared_order_request_for_venue(client_order_id, venue, request)
+        {
+            return Err(format!(
+                "publish order request failed: symbol={} venue={:?} err={}",
+                symbol, venue, e
+            ));
+        }
+        self.schedule_order_query_watchdog_with_delay(client_order_id, watchdog_delay_us);
+        Ok(())
     }
 
     fn strategy_id(&self) -> i32 {
@@ -377,18 +971,31 @@ pub trait OpenStrategyCommon {
 
     fn uniform_open_publish_ctx(&self) -> UniformPublishCtx {
         let open_state = self.open_state();
+        let mut from_key = Vec::with_capacity(5 + open_state.from_key.len());
+        from_key.extend_from_slice(b"open|");
+        from_key.extend_from_slice(&open_state.from_key);
         UniformPublishCtx {
             signal_ts: open_state.signal_ts,
-            from_key: format!("open|{}", open_state.from_key).into_bytes(),
+            from_key,
+            signal_bbo: open_state.signal_bbo,
             price_offset: open_state.price_offset,
         }
     }
 
     fn handle_open_signal_common(
         &mut self,
-        input: OpenSignalInput,
+        input: OpenSignalInput<'_>,
     ) -> Option<OpenSignalInitResult> {
-        let symbol = normalize_symbol_for_internal(&input.opening_symbol);
+        let total_start_us = get_timestamp_us();
+        let is_arb_open = input.signal_type_u8 == SignalType::ArbOpen as u8;
+        let mut precreate_stage_start_us: i64;
+        let pre_order_gate_us: i64;
+        let pre_balance_gate_us: i64;
+        let symbol = if input.opening_symbol_normalized {
+            input.opening_symbol
+        } else {
+            Cow::Owned(normalize_symbol_for_internal(&input.opening_symbol))
+        };
         if symbol.is_empty() {
             warn!(
                 "{}: strategy_id={} empty symbol",
@@ -478,62 +1085,98 @@ pub trait OpenStrategyCommon {
             );
         }
 
+        let monitor = MonitorChannel::instance();
+        let order_manager = monitor.order_manager();
         let skip_position_risk_checks = self.skip_open_position_risk_checks();
-        let current_open_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
+        let symbol_ref = symbol.as_ref();
+        let current_open_base_qty = monitor.get_position_qty(symbol_ref, venue);
         if !skip_position_risk_checks {
-            if let Err(e) = MonitorChannel::instance().check_symbol_exposure(&symbol) {
-                self.log_open_deleveraging_risk_reject(
-                    "单品种敞口风控",
-                    &e,
-                    &symbol,
-                    venue,
-                    side,
-                    current_open_base_qty,
-                    input.qty,
-                );
-                error!(
-                    "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    symbol,
-                    e
-                );
-                self.mark_open_strategy_inactive(format!("symbol exposure risk failed: {}", e));
-                return None;
-            }
-            if let Err(e) = MonitorChannel::instance().check_total_exposure() {
-                self.log_open_deleveraging_risk_reject(
-                    "总敞口风控",
-                    &e,
-                    &symbol,
-                    venue,
-                    side,
-                    current_open_base_qty,
-                    input.qty,
-                );
-                error!(
-                    "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    e
-                );
-                self.mark_open_strategy_inactive(format!("total exposure risk failed: {}", e));
-                return None;
+            if let Err(err) = monitor.check_open_exposure(symbol_ref) {
+                match err {
+                    OpenExposureRiskError::Symbol(e) => {
+                        self.log_open_deleveraging_risk_reject(
+                            "单品种敞口风控",
+                            &e,
+                            symbol_ref,
+                            venue,
+                            side,
+                            current_open_base_qty,
+                            input.qty,
+                        );
+                        if !MonitorChannel::should_skip_small_symbol_exposure_risk_log(symbol_ref) {
+                            error!(
+                                "{}: strategy_id={} symbol={} 单品种敞口风控检查失败: {}，标记策略为不活跃",
+                                self.strategy_name(),
+                                self.strategy_id(),
+                                symbol_ref,
+                                e
+                            );
+                        }
+                        self.mark_open_strategy_inactive(format!(
+                            "symbol exposure risk failed: {}",
+                            e
+                        ));
+                        return None;
+                    }
+                    OpenExposureRiskError::Total(e)
+                        if self.skip_open_total_exposure_risk_check() =>
+                    {
+                        debug!(
+                            "{}: strategy_id={} Force Close ignores total exposure risk: {}",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            e
+                        );
+                    }
+                    OpenExposureRiskError::Total(e) => {
+                        self.log_open_deleveraging_risk_reject(
+                            "总敞口风控",
+                            &e,
+                            &symbol,
+                            venue,
+                            side,
+                            current_open_base_qty,
+                            input.qty,
+                        );
+                        error!(
+                            "{}: strategy_id={} 总敞口风控检查失败: {}，标记策略为不活跃",
+                            self.strategy_name(),
+                            self.strategy_id(),
+                            e
+                        );
+                        self.mark_open_strategy_inactive(format!(
+                            "total exposure risk failed: {}",
+                            e
+                        ));
+                        return None;
+                    }
+                }
             }
         }
+        precreate_stage_start_us = get_timestamp_us();
         if order_type == OrderType::Limit {
-            let monitor = MonitorChannel::instance();
-            let limit_check = match input.order_rate_bucket {
-                OrderRateBucket::ArbOpen => {
-                    monitor.check_pending_limit_order_for_arb(&symbol, side)
+            let limit_check = if input.pending_limit_prechecked {
+                Ok(())
+            } else {
+                match input.order_rate_bucket {
+                    OrderRateBucket::ArbOpen => {
+                        monitor.check_pending_limit_order_for_arb(symbol_ref, side)
+                    }
+                    _ => monitor.check_pending_limit_order(symbol_ref, side),
                 }
-                _ => monitor.check_pending_limit_order(&symbol, side),
             };
             if let Err(e) = limit_check {
+                log_pending_limit_summary(
+                    self.strategy_name(),
+                    Some(self.strategy_id()),
+                    symbol_ref,
+                    side,
+                    &e,
+                );
                 self.log_open_deleveraging_risk_reject(
                     "限价挂单数量风控",
                     &e,
-                    &symbol,
+                    symbol_ref,
                     venue,
                     side,
                     current_open_base_qty,
@@ -543,7 +1186,7 @@ pub trait OpenStrategyCommon {
                     "{}: strategy_id={} symbol={} 限价挂单数量风控检查失败: {}，标记策略为不活跃",
                     self.strategy_name(),
                     self.strategy_id(),
-                    symbol,
+                    symbol_ref,
                     e
                 );
                 self.mark_open_strategy_inactive(format!("pending limit order risk failed: {}", e));
@@ -563,34 +1206,27 @@ pub trait OpenStrategyCommon {
                     rate_params.open_order_rate_limit_10s(),
                 ),
             };
+            let now_us = get_timestamp_us();
             if let Err(e) = OrderRateLimiter::check_limit(
                 input.order_rate_bucket,
                 rate_per_min,
                 rate_10s,
-                get_timestamp_us(),
+                now_us,
             ) {
-                self.log_open_deleveraging_risk_reject(
-                    "开仓下单频率风控",
-                    &e,
-                    &symbol,
-                    venue,
-                    side,
-                    current_open_base_qty,
-                    input.qty,
-                );
-                info!(
-                    "{}: strategy_id={} symbol={} 开仓下单频率风控触发: {}，标记策略为不活跃",
+                summarize_open_order_rate_limit(
                     self.strategy_name(),
                     self.strategy_id(),
-                    symbol,
-                    e
+                    input.order_rate_bucket,
+                    &symbol,
+                    &e,
+                    now_us,
                 );
                 self.mark_open_strategy_inactive(format!("open order rate limit triggered: {}", e));
                 return None;
             }
         }
 
-        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
+        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol, input.price) {
             Ok(multiplier) => multiplier,
             Err(err) => {
                 error!(
@@ -608,6 +1244,9 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         };
+        let stage_done_us = get_timestamp_us();
+        pre_order_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
+        precreate_stage_start_us = stage_done_us;
 
         let order_qty = input.qty;
         let order_price = input.price;
@@ -617,15 +1256,16 @@ pub trait OpenStrategyCommon {
         };
 
         // 现货/保证金开仓腿借币规则：
-        // - Intra arb（任意同交易所 margin+futures）：默认所有 margin 都禁用借币；
+        // - Intra arb（由运行目录/启动参数确定）：默认所有 margin 都禁用借币；
         //   仅当账户处于 UNIFIED 模式 且 symbol 命中 intra_bwd 借贷白名单
         //   （Redis key `intra_bwd_trade_symbols:<exchange>`，由 trade_signal 维护）时放行。
         //   * Binance UNIFIED ≡ 非 STANDARD（STANDARD 模式交易所不会自动借币）
         //   * 其它交易所 margin 默认即视为 UNIFIED
         // - Binance STANDARD 在 FR / Cross arb 等非 intra 场景仍独立兜底。
         // - FR / Cross arb（非 intra）下不受此白名单影响。
-        let monitor = MonitorChannel::instance();
-        let binance_is_standard = monitor.order_manager().borrow().binance_is_standard();
+        let binance_is_standard = order_manager.borrow().binance_is_standard();
+        let order_query_watchdog_delay_us =
+            order_query_watchdog_delay_us_for_venue(venue, binance_is_standard);
         let venue_is_margin = matches!(
             venue,
             TradingVenue::BinanceMargin
@@ -634,24 +1274,23 @@ pub trait OpenStrategyCommon {
                 | TradingVenue::BitgetMargin
                 | TradingVenue::GateMargin
         );
-        let intra = venue_is_margin
-            && ArbMode::from_venues(monitor.open_venue(), monitor.hedge_venue())
-                == ArbMode::IntraArb;
+        let intra = venue_is_margin && monitor.arb_mode() == trade_signal::ArbMode::IntraArb;
         let venue_is_uniform = match venue {
             TradingVenue::BinanceMargin => !binance_is_standard,
             _ => true,
         };
-        let intra_borrow_bypass =
-            intra && venue_is_uniform && IntraBwdSymbolList::instance().contains(&symbol);
+        let intra_borrow_bypass = intra
+            && venue_is_uniform
+            && IntraBwdSymbolList::instance().contains_normalized(&symbol);
         let intra_no_borrow = intra && !intra_borrow_bypass;
         let binance_standard_gate = venue == TradingVenue::BinanceMargin && binance_is_standard;
         if (binance_standard_gate || intra_no_borrow) && !skip_position_risk_checks {
-            let (base_asset, quote_asset) = extract_assets_from_symbol(&symbol);
+            let (base_asset, quote_asset) = extract_assets_from_internal_symbol(&symbol);
             let (check_asset, required_amount) = match side {
                 Side::Buy => (quote_asset, order_qty * order_price),
                 Side::Sell => (base_asset, order_qty),
             };
-            let available_balance = monitor.balance_position_for_venue(venue, &check_asset);
+            let available_balance = monitor.balance_position_for_venue(venue, check_asset);
             if available_balance + OPEN_BALANCE_EPS < required_amount {
                 let gate = if binance_standard_gate {
                     "STANDARD"
@@ -671,24 +1310,24 @@ pub trait OpenStrategyCommon {
                     current_open_base_qty,
                     input.qty,
                 );
-                error!(
-                    "{}: strategy_id={} {:?} {} 余额不足，拒绝开仓并标记策略不活跃 symbol={} side={:?} asset={} required={:.8} available={:.8}",
-                    self.strategy_name(),
-                    self.strategy_id(),
+                summarize_open_balance_reject(OpenBalanceRejectSummaryInput {
+                    strategy_name: self.strategy_name(),
+                    strategy_id: self.strategy_id(),
                     venue,
                     gate,
-                    symbol,
+                    symbol: &symbol,
                     side,
-                    check_asset,
+                    asset: &check_asset,
                     required_amount,
-                    available_balance
-                );
+                    available_balance,
+                    now_us: get_timestamp_us(),
+                });
                 self.mark_open_strategy_inactive(reject_reason);
                 return None;
             }
         }
         if intra_borrow_bypass {
-            info!(
+            debug!(
                 "{}: strategy_id={} 命中 intra_bwd 借贷白名单，跳过 INTRA_NO_BORROW 余额预检 symbol={} side={:?}",
                 self.strategy_name(),
                 self.strategy_id(),
@@ -696,6 +1335,8 @@ pub trait OpenStrategyCommon {
                 side
             );
         }
+        let stage_done_us = get_timestamp_us();
+        pre_balance_gate_us = stage_done_us.saturating_sub(precreate_stage_start_us);
 
         let add_base_qty = match self.open_order_qty_to_base(signed_qty, qty_multiplier) {
             Ok(base_qty) => base_qty,
@@ -715,10 +1356,11 @@ pub trait OpenStrategyCommon {
                 return None;
             }
         };
-        let current_base_qty = MonitorChannel::instance().get_position_qty(&symbol, venue);
-        let next_base_qty = current_base_qty + add_base_qty;
-        if !skip_position_risk_checks && next_base_qty.abs() > current_base_qty.abs() + 1e-12_f64 {
-            if let Err(e) = MonitorChannel::instance().check_leverage() {
+        let next_base_qty = current_open_base_qty + add_base_qty;
+        if !skip_position_risk_checks
+            && next_base_qty.abs() > current_open_base_qty.abs() + 1e-12_f64
+        {
+            if let Err(e) = monitor.check_leverage() {
                 self.log_open_deleveraging_risk_reject(
                     "杠杆风控",
                     &e,
@@ -728,20 +1370,27 @@ pub trait OpenStrategyCommon {
                     current_open_base_qty,
                     input.qty,
                 );
-                error!(
-                    "{}: strategy_id={} 杠杆风控检查失败: {}，标记策略为不活跃",
+                log_open_risk_reject_summary(
                     self.strategy_name(),
-                    self.strategy_id(),
-                    e
+                    Some(self.strategy_id()),
+                    &symbol,
+                    "杠杆风控",
+                    &e,
                 );
                 self.mark_open_strategy_inactive(format!("leverage risk failed: {}", e));
                 return None;
             }
         }
         if !skip_position_risk_checks {
-            if let Err(e) =
-                MonitorChannel::instance().ensure_max_pos_u(&symbol, signed_qty, order_price)
-            {
+            if let Err(e) = monitor.ensure_max_pos_u_for_base_delta(
+                &symbol,
+                venue,
+                current_open_base_qty,
+                add_base_qty,
+                order_price,
+                signed_qty,
+                qty_multiplier,
+            ) {
                 self.log_open_deleveraging_risk_reject(
                     "仓位限制风控",
                     &e,
@@ -760,61 +1409,259 @@ pub trait OpenStrategyCommon {
                 self.mark_open_strategy_inactive(format!("max position risk failed: {}", e));
                 return None;
             }
+
+            if is_arb_open
+                && matches!(
+                    monitor.arb_mode(),
+                    trade_signal::ArbMode::FundingArb | trade_signal::ArbMode::IntraArb
+                )
+                && venue == TradingVenue::GateMargin
+                && monitor.hedge_venue() == TradingVenue::GateFutures
+            {
+                let current_futures_base_qty =
+                    monitor.get_position_qty(&symbol, TradingVenue::GateFutures);
+                let add_futures_base_qty = -add_base_qty;
+                if let Err(e) = GateFrRiskLimitGuard::ensure_projected_notional(
+                    &symbol,
+                    side,
+                    current_open_base_qty,
+                    add_base_qty,
+                    current_futures_base_qty,
+                    add_futures_base_qty,
+                    order_price,
+                    signed_qty,
+                    qty_multiplier,
+                ) {
+                    self.log_open_deleveraging_risk_reject(
+                        "Gate限仓风控",
+                        &e,
+                        &symbol,
+                        TradingVenue::GateFutures,
+                        side,
+                        current_futures_base_qty,
+                        input.qty,
+                    );
+                    error!(
+                        "{}: strategy_id={} Gate限仓检查失败: {}，标记策略为不活跃",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        e
+                    );
+                    self.mark_open_strategy_inactive(format!("gate risk_limit failed: {}", e));
+                    return None;
+                }
+            }
+
+            if is_arb_open
+                && monitor.arb_mode() == trade_signal::ArbMode::FundingArb
+                && venue == TradingVenue::BinanceMargin
+                && !binance_is_standard
+                && monitor.hedge_venue() == TradingVenue::BinanceFutures
+            {
+                let current_futures_base_qty =
+                    monitor.get_position_qty(&symbol, TradingVenue::BinanceFutures);
+                let add_futures_base_qty = -add_base_qty;
+                if let Err(e) = BinanceFrPositionLimitGuard::ensure_projected_notional(
+                    &symbol,
+                    side,
+                    current_open_base_qty,
+                    add_base_qty,
+                    current_futures_base_qty,
+                    add_futures_base_qty,
+                    order_price,
+                    signed_qty,
+                    qty_multiplier,
+                ) {
+                    self.log_open_deleveraging_risk_reject(
+                        "Binance限仓风控",
+                        &e,
+                        &symbol,
+                        TradingVenue::BinanceFutures,
+                        side,
+                        current_futures_base_qty,
+                        input.qty,
+                    );
+                    error!(
+                        "{}: strategy_id={} Binance限仓检查失败: {}，标记策略为不活跃",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        e
+                    );
+                    self.mark_open_strategy_inactive(format!(
+                        "binance position-limit failed: {}",
+                        e
+                    ));
+                    return None;
+                }
+            }
+
+            if is_arb_open
+                && (matches!(
+                    venue,
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ) || matches!(
+                    monitor.hedge_venue(),
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ))
+            {
+                let hedge_venue = monitor.hedge_venue();
+                let (current_bitget_open_base_qty, add_bitget_open_base_qty) = if venue
+                    == TradingVenue::BitgetMargin
+                    || matches!(
+                        venue,
+                        TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                    ) {
+                    (current_open_base_qty, add_base_qty)
+                } else {
+                    (0.0, 0.0)
+                };
+                let (current_bitget_futures_base_qty, add_bitget_futures_base_qty) = if matches!(
+                    hedge_venue,
+                    TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+                ) {
+                    (
+                        monitor.get_position_qty(&symbol, hedge_venue),
+                        -add_base_qty,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
+                if let Err(e) = BitgetPositionTierGuard::ensure_projected_notional(
+                    &symbol,
+                    side,
+                    current_bitget_open_base_qty,
+                    add_bitget_open_base_qty,
+                    current_bitget_futures_base_qty,
+                    add_bitget_futures_base_qty,
+                    order_price,
+                    signed_qty,
+                    qty_multiplier,
+                ) {
+                    self.log_open_deleveraging_risk_reject(
+                        "Bitget限仓风控",
+                        &e,
+                        &symbol,
+                        hedge_venue,
+                        side,
+                        current_bitget_futures_base_qty,
+                        input.qty,
+                    );
+                    error!(
+                        "{}: strategy_id={} Bitget限仓检查失败: {}，标记策略为不活跃",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        e
+                    );
+                    self.mark_open_strategy_inactive(format!("bitget position-tier failed: {}", e));
+                    return None;
+                }
+            }
+        }
+
+        if is_arb_open {
+            record_arb_open_latency(
+                "pt_open_pre_order_balance_gate",
+                pre_order_gate_us.saturating_add(pre_balance_gate_us),
+            );
+            record_arb_open_latency(
+                "pt_open_precreate_checks",
+                get_timestamp_us().saturating_sub(total_start_us),
+            );
         }
 
         {
             let state = self.open_state_mut();
-            state.open_symbol = symbol.clone();
             state.open_venue = Some(venue);
             state.order.open_expire_ts = (input.exp_time > 0).then_some(input.exp_time);
             state.order.open_side = Some(side);
-            state.signal_ts = input.create_ts;
-            state.from_key = String::from_utf8_lossy(&input.from_key).to_string();
-            state.price_qv = input.price_qv;
-            state.price_offset = input.price_offset;
         }
         let client_order_id = input
             .client_order_id
             .unwrap_or_else(|| Self::compose_order_id(self.strategy_id()));
-        self.open_order_state_mut().open_order_id = client_order_id;
-
-        MonitorChannel::instance()
-            .order_manager()
-            .borrow_mut()
-            .create_order(
-                venue,
-                client_order_id,
-                order_type,
-                symbol.clone(),
-                side,
-                order_qty,
-                order_price,
-                input.reduce_only,
-                qty_multiplier,
-            );
-
-        if input.mkt_ts > 0 {
-            let _ = MonitorChannel::instance()
-                .order_manager()
-                .borrow_mut()
-                .update(client_order_id, |order| order.set_mkt_time(input.mkt_ts));
+        {
+            let order = self.open_order_state_mut();
+            order.open_order_id = client_order_id;
+            order.hedge_watermark_base_qty = 0.0;
+            order.trade_lite_cumulative_venue_qty = 0.0;
+            order.trade_lite_cumulative_base_qty = 0.0;
+            order.trade_cumulative_base_qty = 0.0;
+            order.seen_trade_lite_ids.clear();
         }
 
-        info!(
-            "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
-            input.order_log_name,
-            self.strategy_id(),
-            client_order_id,
-            symbol,
+        let request_build_start_us = get_timestamp_us();
+        let quantity_qv = input.order_qty_qv.map(order_qv_from_quantized_value);
+        let price_qv = if order_type.is_limit() {
+            input.order_price_qv.map(order_qv_from_quantized_value)
+        } else {
+            None
+        };
+        let request_build_result = build_open_order_request_prepared_scoped(
+            order_manager.borrow_mut(),
             venue,
+            client_order_id,
+            order_type,
+            &symbol,
             side,
-            qv_decimal_or_fallback(order_qty),
-            qv_decimal_or_fallback(order_price),
+            order_qty,
+            order_price,
+            quantity_qv,
+            price_qv,
+            input.reduce_only,
+            input.bitget_spot_order,
             qty_multiplier,
-            input.from_key_len
+            input.create_ts,
+            input.signal_type_u8,
+            input.mkt_ts,
+            input.pre_trade_recv_ts,
+            input.pre_trade_handle_ts,
         );
+        let request = match request_build_result {
+            Ok(request) => request,
+            Err(err) => {
+                error!(
+                    "{}: strategy_id={} open order request build failed: {}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    err
+                );
+                self.mark_open_strategy_inactive(format!(
+                    "open order request build failed: {}",
+                    err
+                ));
+                self.handle_open_failed_cleanup(client_order_id);
+                return None;
+            }
+        };
+        if is_arb_open {
+            record_arb_open_latency(
+                "pt_open_request_build",
+                get_timestamp_us().saturating_sub(request_build_start_us),
+            );
+        }
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "📤 {}订单已创建: strategy_id={} client_order_id={} symbol={} {:?} side={:?} qty={} price={} qty_multiplier={:.8} from_key_len={}",
+                input.order_log_name,
+                self.strategy_id(),
+                client_order_id,
+                symbol,
+                venue,
+                side,
+                qv_decimal_or_fallback(order_qty),
+                qv_decimal_or_fallback(order_price),
+                qty_multiplier,
+                input.from_key_len
+            );
+        }
 
-        if let Err(err) = self.send_open_order_common(client_order_id, &symbol) {
+        let publish_start_us = get_timestamp_us();
+        if let Err(err) = self.send_open_order_request_common(
+            client_order_id,
+            &symbol,
+            venue,
+            &request,
+            order_query_watchdog_delay_us,
+        ) {
             error!(
                 "{}: strategy_id={} open order send failed: {}",
                 self.strategy_name(),
@@ -824,13 +1671,32 @@ pub trait OpenStrategyCommon {
             self.mark_open_strategy_inactive(format!("open order send failed: {}", err));
             self.handle_open_failed_cleanup(client_order_id);
             return None;
-        } else {
+        } else if !suppress_pre_submit_hot_path_logs() {
             info!(
                 "✅ {}订单已发送: strategy_id={} client_order_id={}",
                 input.order_log_name,
                 self.strategy_id(),
                 client_order_id
             );
+        }
+        if is_arb_open {
+            record_arb_open_latency(
+                "pt_open_publish_request",
+                get_timestamp_us().saturating_sub(publish_start_us),
+            );
+            record_arb_open_latency(
+                "pt_open_total_until_sent",
+                get_timestamp_us().saturating_sub(total_start_us),
+            );
+        }
+        {
+            let state = self.open_state_mut();
+            state.open_symbol = symbol.into_owned();
+            state.signal_ts = input.create_ts;
+            state.from_key = input.from_key.into_owned();
+            state.signal_bbo = input.signal_bbo;
+            state.price_qv = input.price_qv;
+            state.price_offset = input.price_offset;
         }
         Some(OpenSignalInitResult {
             qty_multiplier,
@@ -864,6 +1730,19 @@ pub trait OpenStrategyCommon {
             match order.get_order_cancel_bytes() {
                 Ok(cancel_bytes) => {
                     let exchange = order.venue.trade_engine_exchange();
+                    // 超时撤单由本地定时器触发，无 trade_signal 上下文。两个时间维度分开取：
+                    //   mkt_t   = expire_ts —— 市场意义上该撤单的预定时刻（不受调度抖动影响）；
+                    //   signal_t= now       —— 定时器实际判定/触发撤单的本地时刻。
+                    // 于是 signal_t - mkt_t 即定时器调度延迟。signal_kind 用本策略 cancel 类型，
+                    // 避免 egress 沿用开仓 ArbOpen 标签错算。
+                    let cancel_kind = self.cancel_signal_type_u8();
+                    let _ = MonitorChannel::instance()
+                        .order_manager()
+                        .borrow_mut()
+                        .update(client_order_id, |o| {
+                            o.set_signal_meta(now, cancel_kind);
+                            o.set_mkt_time(expire_ts);
+                        });
                     if let Err(e) = TradeEngHub::publish_order_request_for(
                         client_order_id,
                         exchange,
@@ -1026,6 +1905,15 @@ pub trait OpenStrategyCommon {
         match order.get_order_cancel_bytes() {
             Ok(cancel_bytes) => {
                 let exchange = order.venue.trade_engine_exchange();
+                // egress 测度：撤单发送前把 cancel 的 signal 元数据落到 order
+                // （signal_t=trigger_ts，覆盖开仓时的 signal_meta；开仓 egress 已先发生，不冲突）。
+                let cancel_kind = self.cancel_signal_type_u8();
+                let _ = MonitorChannel::instance()
+                    .order_manager()
+                    .borrow_mut()
+                    .update(open_order_id, |o| {
+                        o.set_signal_meta(input.trigger_ts, cancel_kind)
+                    });
                 if let Err(e) =
                     TradeEngHub::publish_order_request_for(open_order_id, exchange, &cancel_bytes)
                 {
@@ -1049,6 +1937,40 @@ pub trait OpenStrategyCommon {
                     self.open_order_state_mut().last_open_cancel_reason = Some(input.cancel_reason);
                     self.open_order_state_mut().last_cancel_trigger_ts = Some(input.trigger_ts);
                     self.schedule_cancel_query_watchdog(order.client_order_id);
+                    if input.signal_name == "ArbCancel" {
+                        match TradeEngHub::publish_internal_open_terminate_for(
+                            open_order_id,
+                            exchange,
+                            input.trigger_ts,
+                        ) {
+                            Ok(true) => {
+                                debug!(
+                                    "{}: strategy_id={} exchange={} published internal open terminate order_id={} trigger_ts={} reason={} from_key='{}'",
+                                    self.strategy_name(),
+                                    self.strategy_id(),
+                                    exchange,
+                                    open_order_id,
+                                    input.trigger_ts,
+                                    input.cancel_reason,
+                                    from_key_preview
+                                );
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                warn!(
+                                    "{}: strategy_id={} exchange={} internal open terminate publish failed order_id={} trigger_ts={} reason={} from_key='{}' err={}",
+                                    self.strategy_name(),
+                                    self.strategy_id(),
+                                    exchange,
+                                    open_order_id,
+                                    input.trigger_ts,
+                                    input.cancel_reason,
+                                    from_key_preview,
+                                    e
+                                );
+                            }
+                        }
+                    }
                     debug!(
                         "{}: strategy_id={} exchange={} reason={} 已发送开仓撤单请求 order_id={} trigger_ts={} from_key='{}'",
                         self.strategy_name(),
@@ -1092,16 +2014,18 @@ pub trait OpenStrategyCommon {
 
         match response.request_kind() {
             TradeRequestKind::Open => {
-                warn!(
-                    "{}: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
-                    self.strategy_name(),
-                    self.strategy_id(),
-                    response.req_type(),
-                    response.status(),
-                    response.error_code(),
-                    code_desc,
-                    client_order_id
-                );
+                if !suppress_pre_submit_hot_path_logs() {
+                    warn!(
+                        "{}: strategy_id={} open_failed: req_type={} status={} code={}({}) client_order_id={}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        response.req_type(),
+                        response.status(),
+                        response.error_code(),
+                        code_desc,
+                        client_order_id
+                    );
+                }
                 self.register_open_failure_signal_throttle(response, client_order_id);
                 self.handle_open_failed_cleanup(client_order_id);
             }
@@ -1185,7 +2109,6 @@ pub trait OpenStrategyCommon {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let prev_order_terminal = current_order.status.is_terminal();
         let incoming_cumulative_filled_qty = order_update.cumulative_filled_quantity();
         let protected_cumulative_fill =
             current_order.protected_cumulative_fill(incoming_cumulative_filled_qty);
@@ -1219,7 +2142,9 @@ pub trait OpenStrategyCommon {
                 }
                 order.status = OrderExecutionStatus::Create;
                 order.set_exchange_order_id(order_update.order_id());
-                order.set_create_time(order_update.event_time());
+                if order.timestamp.create_t == 0 {
+                    order.set_create_time(order_update.event_time());
+                }
                 debug!(
                     "{}: strategy_id={} open order NEW client_order_id={} exchange_order_id={} symbol={} side={:?} price={} qty={}",
                     self.strategy_name(),
@@ -1341,41 +2266,57 @@ pub trait OpenStrategyCommon {
             self.clear_live_order_query_state(client_order_id);
         }
 
-        if matches!(
+        let record_open_fill_hedge = matches!(
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Filled
-        ) {
-            let terminal_venue_qty = if prev_order_terminal {
-                effective_cumulative_filled_qty - prev_cumulative_filled_qty
+        ) || (self.hedge_on_incremental_open_fill()
+            && matches!(order_update.status(), OrderStatus::PartiallyFilled));
+        if record_open_fill_hedge {
+            let update_detail = if matches!(
+                order_update.status(),
+                OrderStatus::Canceled | OrderStatus::Filled
+            ) {
+                "order_update_terminal"
             } else {
-                effective_cumulative_filled_qty
+                "order_update_partial_fill"
             };
-            let terminal_base_qty = terminal_venue_qty * order.qty_multiplier;
-            let update_detail = format!(
-                "{} local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} terminal_venue_qty={:.8} terminal_base_qty={:.8} local_order_status={:?}",
-                order_update.debug_summary(),
-                order.symbol,
-                order.quantity,
-                order.qty_multiplier,
-                terminal_venue_qty,
-                terminal_base_qty,
-                order.status
-            );
+            let order_base_qty = order.quantity * order.qty_multiplier;
+            let cumulative_base_qty = self
+                .open_order_state()
+                .trade_cumulative_base_qty
+                .max(
+                    MonitorChannel::instance()
+                        .qty_to_base_at_price(
+                            order.venue,
+                            &order.symbol,
+                            effective_cumulative_filled_qty,
+                            order.price,
+                        )
+                        .unwrap_or(effective_cumulative_filled_qty * order.qty_multiplier),
+                )
+                .min(order_base_qty);
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
-                order.quantity * order.qty_multiplier,
-                terminal_base_qty,
+                order_base_qty,
+                cumulative_base_qty,
                 order_update.event_time(),
                 order.price,
                 order.client_order_id,
-                &update_detail,
+                update_detail,
             );
         }
 
         let fill_delta_venue_qty =
             (effective_cumulative_filled_qty - prev_cumulative_filled_qty).max(0.0);
-        let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
+        let fill_delta_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(
+                order.venue,
+                &order.symbol,
+                fill_delta_venue_qty,
+                order.price,
+            )
+            .unwrap_or(fill_delta_venue_qty * order.qty_multiplier);
         self.apply_inventory_fill_delta(
             order.venue,
             &order.symbol,
@@ -1403,11 +2344,26 @@ pub trait OpenStrategyCommon {
             order_update.status(),
             OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
         ) {
+            // 主动撤单引发的 terminal：signal_ts 改用 cancel 本地触发时间（trade_signal
+            // 决策撤单的时刻），与 open 的 signal_ts 对称，便于度量撤单链路延迟；
+            // Expired/ExpiredInMatch 非主动撤单、无 cancel 信号，保持开仓 signal_ts。
+            // mkt_ts 不动：撤单时 order.timestamp.mkt_t 已在各撤单路径覆写为该撤单的市场时刻——
+            // signal 驱动=撤单信号 max(open_leg, hedge_leg) 盘口时间，timeout=订单 expire_ts。
+            let mut term_ctx = ctx.clone();
+            if order_update.status() == OrderStatus::Canceled {
+                if let Some(ts) = self
+                    .open_order_state()
+                    .last_cancel_trigger_ts
+                    .filter(|t| *t > 0)
+                {
+                    term_ctx.signal_ts = ts;
+                }
+            }
             publish_uniform_terminal_order(
                 order_update,
                 &order,
                 prev_cumulative_filled_qty,
-                &ctx,
+                &term_ctx,
                 self.strategy_name(),
                 self.strategy_id(),
             );
@@ -1473,7 +2429,6 @@ pub trait OpenStrategyCommon {
         }
 
         let prev_cumulative_filled_qty = current_order.cumulative_filled_quantity;
-        let prev_order_terminal = current_order.status.is_terminal();
         let cumulative_qty = trade.cumulative_filled_quantity();
         let event_time = trade.event_time();
         let updated = order_manager.apply_remote_update(client_order_id, |order| {
@@ -1515,19 +2470,20 @@ pub trait OpenStrategyCommon {
             self.clear_live_order_query_state(client_order_id);
         }
 
-        let ctx = self.uniform_open_publish_ctx();
-        publish_uniform_trade_order(
-            trade,
-            &order,
-            prev_cumulative_filled_qty,
-            status,
-            &ctx,
-            self.strategy_name(),
-            self.strategy_id(),
-        );
-
         let fill_delta_venue_qty = (cumulative_qty - prev_cumulative_filled_qty).max(0.0);
-        let fill_delta_base_qty = fill_delta_venue_qty * order.qty_multiplier;
+        let fill_delta_base_qty = MonitorChannel::instance()
+            .qty_to_base_at_price(
+                order.venue,
+                &order.symbol,
+                fill_delta_venue_qty,
+                trade.price(),
+            )
+            .unwrap_or(fill_delta_venue_qty * order.qty_multiplier);
+        let cumulative_base_qty = {
+            let state = self.open_order_state_mut();
+            state.trade_cumulative_base_qty += fill_delta_base_qty;
+            state.trade_cumulative_base_qty
+        };
         self.apply_inventory_fill_delta(
             order.venue,
             &order.symbol,
@@ -1536,33 +2492,27 @@ pub trait OpenStrategyCommon {
             fill_delta_base_qty,
         );
 
-        if status == OrderStatus::Filled {
-            let terminal_venue_qty = if prev_order_terminal {
-                cumulative_qty - prev_cumulative_filled_qty
+        if status == OrderStatus::Filled
+            || (self.hedge_on_incremental_open_fill() && status == OrderStatus::PartiallyFilled)
+        {
+            let update_detail = if status == OrderStatus::Filled {
+                "trade_update_filled"
             } else {
-                cumulative_qty
+                "trade_update_partial_fill"
             };
-            let terminal_base_qty = terminal_venue_qty * order.qty_multiplier;
-            let update_detail = format!(
-                "{} local_order_symbol={} local_order_qty={:.8} qty_multiplier={:.8} terminal_venue_qty={:.8} terminal_base_qty={:.8} local_order_status={:?}",
-                trade.debug_summary(),
-                order.symbol,
-                order.quantity,
-                order.qty_multiplier,
-                terminal_venue_qty,
-                terminal_base_qty,
-                order.status
-            );
             self.record_open_order_terminal_base_qty(
                 &order.symbol,
                 order.side,
                 order.quantity * order.qty_multiplier,
-                terminal_base_qty,
+                cumulative_base_qty.min(order.quantity * order.qty_multiplier),
                 event_time,
-                order.price,
+                trade.price(),
                 order.client_order_id,
-                &update_detail,
+                update_detail,
             );
+        }
+
+        if status == OrderStatus::Filled {
             debug!(
                 "{}: strategy_id={} open trade filled client_order_id={} symbol={} cumulative={:.8} detail={}",
                 self.strategy_name(),
@@ -1578,6 +2528,17 @@ pub trait OpenStrategyCommon {
             self.open_state_mut().alive = false;
         }
 
+        let ctx = self.uniform_open_publish_ctx();
+        publish_uniform_trade_order(
+            trade,
+            &order,
+            prev_cumulative_filled_qty,
+            status,
+            &ctx,
+            self.strategy_name(),
+            self.strategy_id(),
+        );
+
         true
     }
 
@@ -1585,6 +2546,20 @@ pub trait OpenStrategyCommon {
         if client_order_id <= 0 {
             self.open_state_mut().alive = false;
             return false;
+        }
+        if self.force_taker_taker_hedge() {
+            if let Some(symbol) = self.open_strategy_symbol().map(str::to_string) {
+                let strategy_mgr = MonitorChannel::instance().strategy_mgr();
+                if !strategy_mgr
+                    .borrow_mut()
+                    .register_force_close_open_id(&symbol, client_order_id)
+                {
+                    warn!(
+                        "{}: strategy_id={} failed to preserve Force Close id during orphan handoff symbol={} open_co_id={}",
+                        self.strategy_name(), self.strategy_id(), symbol, client_order_id
+                    );
+                }
+            }
         }
         let role = self.orphan_strategy_role();
         warn!(
@@ -1696,20 +2671,76 @@ pub trait OpenStrategyCommon {
         out
     }
 
+    fn order_query_watchdog_delay_us_for_order_id(&self, client_order_id: i64) -> i64 {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return ORDER_QUERY_WATCHDOG_DELAY_US;
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return ORDER_QUERY_WATCHDOG_DELAY_US;
+        };
+        order_query_watchdog_delay_us(&order, mgr.binance_is_standard())
+    }
+
     fn schedule_order_query_watchdog(&mut self, client_order_id: i64) {
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
+        self.schedule_order_query_watchdog_with_delay(client_order_id, delay_us);
+    }
+
+    fn schedule_order_query_watchdog_with_delay(&mut self, client_order_id: i64, delay_us: i64) {
         self.set_order_query_watchdog(Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
+            due_ts_us: get_timestamp_us().saturating_add(delay_us),
             reason: PendingOrderQueryReason::OrderWatchdog,
         }));
     }
 
+    fn schedule_order_query_response_watchdog(
+        &mut self,
+        client_order_id: i64,
+        reason: PendingOrderQueryReason,
+    ) {
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
+        self.set_order_query_watchdog(Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: get_timestamp_us().saturating_add(delay_us),
+            reason,
+        }));
+    }
+
     fn schedule_cancel_query_watchdog(&mut self, client_order_id: i64) {
+        let delay_us = self.order_query_watchdog_delay_us_for_order_id(client_order_id);
         self.set_cancel_query_watchdog(Some(QueryWatchdog {
             client_order_id,
-            due_ts_us: get_timestamp_us().saturating_add(ORDER_QUERY_WATCHDOG_DELAY_US),
+            due_ts_us: get_timestamp_us().saturating_add(delay_us),
             reason: PendingOrderQueryReason::CancelWatchdog,
         }));
+        if let Some(existing) = self.pending_order_query() {
+            let incoming = PendingOrderQueryReason::CancelWatchdog;
+            let effective_reason = if should_promote_open_pending_query_reason(existing, incoming) {
+                self.set_pending_order_query(Some(incoming));
+                incoming
+            } else {
+                existing
+            };
+            if self
+                .order_query_watchdog()
+                .is_some_and(|w| w.client_order_id == client_order_id)
+            {
+                let due_ts_us = self
+                    .order_query_watchdog()
+                    .map(|w| w.due_ts_us)
+                    .unwrap_or_else(get_timestamp_us);
+                self.set_order_query_watchdog(Some(QueryWatchdog {
+                    client_order_id,
+                    due_ts_us,
+                    reason: effective_reason,
+                }));
+            } else {
+                self.schedule_order_query_response_watchdog(client_order_id, effective_reason);
+            }
+            return;
+        }
         if self
             .order_query_watchdog()
             .is_some_and(|w| w.client_order_id == client_order_id)
@@ -1723,7 +2754,23 @@ pub trait OpenStrategyCommon {
         response: &dyn TradeEngineResponse,
         client_order_id: i64,
     ) {
-        if !response.is_open_rejected() || self.skip_open_position_risk_checks() {
+        if !response.is_open_rejected() {
+            return;
+        }
+
+        if response.is_bybit_internal_system_error() {
+            register_bybit_internal_system_open_block(response.error_code());
+            warn!(
+                "{}: strategy_id={} registered Bybit account-wide open block after open_failed code={} client_order_id={} block_for_s={}",
+                self.strategy_name(),
+                self.strategy_id(),
+                response.error_code(),
+                client_order_id,
+                BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US / 1_000_000
+            );
+        }
+
+        if self.skip_open_position_risk_checks() {
             return;
         }
 
@@ -1747,11 +2794,12 @@ pub trait OpenStrategyCommon {
             return;
         };
 
-        if register_signal_throttle(
+        if register_signal_throttle_for_mode(
             &symbol,
             side,
             response.exchange_enum(),
             response.error_code(),
+            MonitorChannel::instance().arb_mode(),
         ) {
             info!(
                 "{}: strategy_id={} registered open signal throttle after open_failed symbol={} side={:?} code={} client_order_id={}",
@@ -1789,10 +2837,10 @@ pub trait OpenStrategyCommon {
         if self.pending_order_query() == Some(PendingOrderQueryReason::OrderWatchdog) {
             self.set_pending_order_query(None);
         }
-        if self
-            .order_query_watchdog()
-            .is_some_and(|w| w.client_order_id == client_order_id)
-        {
+        if self.order_query_watchdog().is_some_and(|w| {
+            w.client_order_id == client_order_id
+                && w.reason == PendingOrderQueryReason::OrderWatchdog
+        }) {
             self.set_order_query_watchdog(None);
         }
     }
@@ -1867,9 +2915,35 @@ pub trait OpenStrategyCommon {
 
     fn send_order_query(&mut self, client_order_id: i64, reason: PendingOrderQueryReason) -> bool {
         if let Some(existing) = self.pending_order_query() {
-            if reason.is_cancel_rejected() && !existing.is_cancel_rejected() {
-                self.set_pending_order_query(Some(PendingOrderQueryReason::CancelRejected));
+            let promoted = should_promote_open_pending_query_reason(existing, reason);
+            let effective_reason = if promoted { reason } else { existing };
+            if promoted {
+                self.set_pending_order_query(Some(reason));
             }
+
+            if let Some(watchdog) = self.order_query_watchdog() {
+                if watchdog.client_order_id == client_order_id
+                    && watchdog.reason != effective_reason
+                {
+                    self.set_order_query_watchdog(Some(QueryWatchdog {
+                        client_order_id,
+                        due_ts_us: watchdog.due_ts_us,
+                        reason: effective_reason,
+                    }));
+                }
+            } else {
+                self.schedule_order_query_response_watchdog(client_order_id, effective_reason);
+            }
+            debug!(
+                "{}: strategy_id={} skip order query because pending query exists: client_order_id={} existing={:?} incoming={:?} promoted={} effective={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                client_order_id,
+                existing,
+                reason,
+                promoted,
+                effective_reason
+            );
             return true;
         }
 
@@ -1915,6 +2989,7 @@ pub trait OpenStrategyCommon {
                     return false;
                 }
                 self.set_pending_order_query(Some(reason));
+                self.schedule_order_query_response_watchdog(client_order_id, reason);
                 debug!(
                     "{}: strategy_id={} order query sent: exchange={} client_order_id={} reason={:?}",
                     self.strategy_name(),
@@ -1948,7 +3023,9 @@ pub trait OpenStrategyCommon {
                 let order_mgr = MonitorChannel::instance().order_manager();
                 let order_opt = order_mgr.borrow().get(w.client_order_id);
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
+                    let delay_us =
+                        self.order_query_watchdog_delay_us_for_order_id(w.client_order_id);
+                    let scheduled_at = w.due_ts_us.saturating_sub(delay_us);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
                     info!(
                         "{}: strategy_id={} client_order_id={} symbol={} status={:?} exch_ord_id={:?} 等待{}ms仍未收到撤单/终态回报，发送order query回补 reason={:?}",
@@ -1974,10 +3051,27 @@ pub trait OpenStrategyCommon {
         if let Some(w) = self.order_query_watchdog() {
             if now >= w.due_ts_us {
                 self.set_order_query_watchdog(None);
+                if self.pending_order_query().is_some() {
+                    self.set_pending_order_query(None);
+                    warn!(
+                        "{}: strategy_id={} order query response timeout, handoff to orphan client_order_id={} reason={:?}",
+                        self.strategy_name(),
+                        self.strategy_id(),
+                        w.client_order_id,
+                        w.reason
+                    );
+                    self.handoff_open_order_after_query_failure(
+                        w.client_order_id,
+                        "query response timeout",
+                    );
+                    return;
+                }
                 let order_mgr = MonitorChannel::instance().order_manager();
                 let order_opt = order_mgr.borrow().get(w.client_order_id);
                 if let Some(order) = order_opt.as_ref().filter(|o| !o.status.is_terminal()) {
-                    let scheduled_at = w.due_ts_us.saturating_sub(ORDER_QUERY_WATCHDOG_DELAY_US);
+                    let delay_us =
+                        self.order_query_watchdog_delay_us_for_order_id(w.client_order_id);
+                    let scheduled_at = w.due_ts_us.saturating_sub(delay_us);
                     let waited_ms = now.saturating_sub(scheduled_at).saturating_div(1_000);
                     let since_submit_ms = now
                         .saturating_sub(order.timestamp.submit_t)
@@ -2007,5 +3101,224 @@ pub trait OpenStrategyCommon {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_open_order_request_bytes_scoped, build_open_order_request_prepared_scoped,
+        should_promote_open_pending_query_reason, OpenStrategyCommon, OpenStrategyState,
+        PendingOrderQueryReason, QueryWatchdog,
+    };
+    use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
+    use crate::strategy::manager::OrphanStrategyRole;
+    use order_common::{BinanceAccountMode, OrderManager, OrderType, Side, TradingVenue};
+    use std::cell::RefCell;
+
+    struct TestOpenStrategy {
+        state: OpenStrategyState,
+        handoffs: Vec<(i64, &'static str)>,
+    }
+
+    impl TestOpenStrategy {
+        fn new(strategy_id: i32) -> Self {
+            Self {
+                state: OpenStrategyState::new(strategy_id),
+                handoffs: Vec::new(),
+            }
+        }
+    }
+
+    impl OpenStrategyCommon for TestOpenStrategy {
+        fn strategy_name(&self) -> &'static str {
+            "TestOpenStrategy"
+        }
+
+        fn open_state(&self) -> &OpenStrategyState {
+            &self.state
+        }
+
+        fn open_state_mut(&mut self) -> &mut OpenStrategyState {
+            &mut self.state
+        }
+
+        fn handoff_open_order_after_query_failure(
+            &mut self,
+            client_order_id: i64,
+            marker: &'static str,
+        ) {
+            self.handoffs.push((client_order_id, marker));
+        }
+
+        fn orphan_strategy_role(&self) -> OrphanStrategyRole {
+            OrphanStrategyRole::Arb
+        }
+
+        fn open_order_rate_bucket(&self) -> OrderRateBucket {
+            OrderRateBucket::ArbOpen
+        }
+
+        fn open_order_action_log_name(&self) -> &'static str {
+            "test open"
+        }
+
+        fn resolve_open_qty_multiplier(
+            &self,
+            _venue: TradingVenue,
+            _symbol: &str,
+            _price: f64,
+        ) -> Result<f64, String> {
+            Ok(1.0)
+        }
+    }
+
+    #[test]
+    fn open_order_request_build_err_releases_order_manager_borrow() {
+        let order_manager = RefCell::new(OrderManager::new(Some(BinanceAccountMode::Unified)));
+        let result = build_open_order_request_bytes_scoped(
+            order_manager.borrow_mut(),
+            TradingVenue::AsterMargin,
+            (7_i64 << 32) | 1,
+            OrderType::Limit,
+            "BNBUSDT",
+            Side::Buy,
+            0.16,
+            618.25,
+            None,
+            None,
+            true,
+            1.0,
+            1,
+            0,
+            1,
+            1,
+            1,
+        );
+
+        assert!(result.is_err());
+        assert!(order_manager.borrow().get((7_i64 << 32) | 1).is_none());
+    }
+
+    #[test]
+    fn prepared_open_order_request_build_err_releases_order_manager_borrow() {
+        let order_manager = RefCell::new(OrderManager::new(Some(BinanceAccountMode::Unified)));
+        let result = build_open_order_request_prepared_scoped(
+            order_manager.borrow_mut(),
+            TradingVenue::AsterMargin,
+            (7_i64 << 32) | 2,
+            OrderType::Limit,
+            "BNBUSDT",
+            Side::Buy,
+            0.16,
+            618.25,
+            None,
+            None,
+            true,
+            false,
+            1.0,
+            1,
+            0,
+            1,
+            1,
+            1,
+        );
+
+        assert!(result.is_err());
+        assert!(order_manager.borrow().get((7_i64 << 32) | 2).is_none());
+    }
+
+    #[test]
+    fn open_pending_query_reason_promotes_cancel_reconcile() {
+        assert!(should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::OrderWatchdog,
+            PendingOrderQueryReason::CancelWatchdog
+        ));
+        assert!(should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::OrderWatchdog,
+            PendingOrderQueryReason::CancelRejected
+        ));
+        assert!(should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::CancelWatchdog,
+            PendingOrderQueryReason::CancelRejected
+        ));
+        assert!(!should_promote_open_pending_query_reason(
+            PendingOrderQueryReason::CancelRejected,
+            PendingOrderQueryReason::OrderWatchdog
+        ));
+    }
+
+    #[test]
+    fn incremental_open_fill_hedge_defaults_off() {
+        let strategy = TestOpenStrategy::new(7);
+        assert!(!strategy.hedge_on_incremental_open_fill());
+    }
+
+    #[test]
+    fn send_order_query_with_existing_pending_schedules_response_timeout() {
+        let client_order_id = (7_i64 << 32) | 1;
+        let mut strategy = TestOpenStrategy::new(7);
+        strategy.state.order.open_order_id = client_order_id;
+        strategy.state.order.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
+
+        assert!(strategy.send_order_query(client_order_id, PendingOrderQueryReason::CancelWatchdog));
+
+        assert_eq!(
+            strategy.state.order.pending_order_query,
+            Some(PendingOrderQueryReason::CancelWatchdog)
+        );
+        let watchdog = strategy.state.order.order_query_watchdog.unwrap();
+        assert_eq!(watchdog.client_order_id, client_order_id);
+        assert_eq!(watchdog.reason, PendingOrderQueryReason::CancelWatchdog);
+    }
+
+    #[test]
+    fn pending_order_query_response_timeout_handoffs_to_orphan() {
+        let client_order_id = (7_i64 << 32) | 1;
+        let mut strategy = TestOpenStrategy::new(7);
+        strategy.state.order.open_order_id = client_order_id;
+        strategy.state.order.pending_order_query = Some(PendingOrderQueryReason::OrderWatchdog);
+        strategy.state.order.order_query_watchdog = Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: 0,
+            reason: PendingOrderQueryReason::OrderWatchdog,
+        });
+
+        strategy.handle_query_watchdogs();
+
+        assert_eq!(
+            strategy.handoffs,
+            vec![(client_order_id, "query response timeout")]
+        );
+        assert!(strategy.state.order.pending_order_query.is_none());
+        assert!(strategy.state.order.order_query_watchdog.is_none());
+    }
+
+    #[test]
+    fn live_update_preserves_cancel_query_watchdog() {
+        let client_order_id = (7_i64 << 32) | 1;
+        let mut strategy = TestOpenStrategy::new(7);
+        strategy.state.order.open_order_id = client_order_id;
+        strategy.state.order.pending_order_query = Some(PendingOrderQueryReason::CancelWatchdog);
+        strategy.state.order.order_query_watchdog = Some(QueryWatchdog {
+            client_order_id,
+            due_ts_us: 123,
+            reason: PendingOrderQueryReason::CancelWatchdog,
+        });
+
+        strategy.clear_live_order_query_state(client_order_id);
+
+        assert_eq!(
+            strategy.state.order.pending_order_query,
+            Some(PendingOrderQueryReason::CancelWatchdog)
+        );
+        assert_eq!(
+            strategy.state.order.order_query_watchdog,
+            Some(QueryWatchdog {
+                client_order_id,
+                due_ts_us: 123,
+                reason: PendingOrderQueryReason::CancelWatchdog,
+            })
+        );
     }
 }

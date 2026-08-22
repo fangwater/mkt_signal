@@ -7,7 +7,7 @@ use clap::Parser;
 use log::info;
 
 use mkt_signal::factor_pub::trade_flow_feature_pub::app::TradeFlowFeaturePubApp;
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "trade_flow_feature_pub")]

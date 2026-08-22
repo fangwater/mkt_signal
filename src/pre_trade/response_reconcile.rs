@@ -1,17 +1,19 @@
 use log::debug;
 
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::{Order, OrderExecutionStatus};
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::query_engine_response::QueryEngineResponse;
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
-use crate::strategy::trade_engine_response::TradeEngineResponse;
 use crate::strategy::ws_order_update::WsOrderUpdate;
 use crate::strategy::Strategy;
-use crate::trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
+use order_common::OrderUpdate;
+use order_common::QueryEngineResponse;
+use order_common::TradeEngineResponse;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use runtime_common::time_util::get_timestamp_us;
+use trade_engine::query_parsers::compact_order::{
+    is_order_query_not_found_marker, CompactOrderQueryResp,
+};
 
 const DEFAULT_FILL_EPSILON: f64 = 1e-12;
 
@@ -123,21 +125,30 @@ pub fn apply_query_response_as_updates(
     }
 
     let body = response.body_bytes().as_ref();
-    if !body.iter().any(|&b| b != 0) {
-        return false;
-    }
     let actual_len = body
         .iter()
         .rposition(|&b| b != 0)
         .map(|pos| pos + 1)
         .unwrap_or(0);
-    if actual_len == 1 && matches!(body[0], b'E' | b'N') {
+    if actual_len == 0 {
+        strategy.reset_order_query_not_found(client_order_id);
+        return false;
+    }
+    if actual_len == 1 && body[0] == b'E' {
+        strategy.reset_order_query_not_found(client_order_id);
         return false;
     }
 
-    let Some(parsed) = parse_compact_order_query_resp(response.body_bytes()) else {
-        return false;
-    };
+    if is_order_query_not_found_marker(&body[..actual_len]) {
+        strategy.record_order_query_not_found(client_order_id);
+        debug!(
+            "ResponseReconcile: strategy_id={} order query not found recorded client_order_id={}",
+            strategy.get_id(),
+            client_order_id
+        );
+        return true;
+    }
+    strategy.reset_order_query_not_found(client_order_id);
 
     let Some(order_mgr) = MonitorChannel::try_order_manager() else {
         return false;
@@ -156,6 +167,10 @@ pub fn apply_query_response_as_updates(
         CompactOrderQueryApplyOptions::orphan_reconcile(DEFAULT_FILL_EPSILON)
     } else {
         CompactOrderQueryApplyOptions::open_reconcile()
+    };
+
+    let Some(parsed) = parse_compact_order_query_resp(response.body_bytes()) else {
+        return false;
     };
 
     apply_compact_order_query_updates(strategy, &order, parsed, options)
@@ -261,4 +276,119 @@ pub fn apply_compact_order_query_updates(
     }
 
     applied
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_query_response_as_updates;
+    use crate::strategy::Strategy;
+    use bytes::Bytes;
+    use order_common::OrderUpdate;
+    use order_common::QueryEngineResponseMessage;
+    use order_common::TradeEngineResponse;
+    use order_common::TradeUpdate;
+    use signal_common::trade_signal::TradeSignal;
+    use std::any::Any;
+    use trade_engine::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
+
+    struct RecordingStrategy {
+        strategy_id: i32,
+        client_order_id: i64,
+        order_updates: usize,
+        trade_updates: usize,
+        query_not_found: usize,
+        query_not_found_resets: usize,
+    }
+
+    impl RecordingStrategy {
+        fn new(strategy_id: i32, client_order_id: i64) -> Self {
+            Self {
+                strategy_id,
+                client_order_id,
+                order_updates: 0,
+                trade_updates: 0,
+                query_not_found: 0,
+                query_not_found_resets: 0,
+            }
+        }
+    }
+
+    impl Strategy for RecordingStrategy {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn get_id(&self) -> i32 {
+            self.strategy_id
+        }
+
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.client_order_id
+        }
+
+        fn handle_signal(&mut self, _signal: &TradeSignal) {}
+
+        fn apply_order_update(&mut self, _update: &dyn OrderUpdate) {
+            self.order_updates += 1;
+        }
+
+        fn apply_trade_update(&mut self, _trade: &dyn TradeUpdate) {
+            self.trade_updates += 1;
+        }
+
+        fn apply_trade_engine_response(&mut self, _response: &dyn TradeEngineResponse) {}
+
+        fn record_order_query_not_found(&mut self, client_order_id: i64) {
+            assert_eq!(client_order_id, self.client_order_id);
+            self.query_not_found += 1;
+        }
+
+        fn reset_order_query_not_found(&mut self, client_order_id: i64) {
+            assert_eq!(client_order_id, self.client_order_id);
+            self.query_not_found_resets += 1;
+        }
+
+        fn handle_period_clock(&mut self, _current_tp: i64) {}
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn symbol(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[test]
+    fn query_not_found_marker_is_recorded_without_direct_terminal_update() {
+        let client_order_id = 1987641311888408577;
+        let mut strategy = RecordingStrategy::new(462783819, client_order_id);
+        let response = QueryEngineResponseMessage::new(
+            0,
+            client_order_id,
+            Bytes::from_static(ORDER_QUERY_NOT_FOUND_MARKER),
+        );
+
+        assert!(apply_query_response_as_updates(&mut strategy, &response));
+        assert_eq!(strategy.order_updates, 0);
+        assert_eq!(strategy.trade_updates, 0);
+        assert_eq!(strategy.query_not_found, 1);
+        assert_eq!(strategy.query_not_found_resets, 0);
+    }
+
+    #[test]
+    fn query_error_resets_consecutive_not_found_evidence() {
+        let client_order_id = 1987641311888408577;
+        let mut strategy = RecordingStrategy::new(462783819, client_order_id);
+        let response =
+            QueryEngineResponseMessage::new(0, client_order_id, Bytes::from_static(b"E"));
+
+        assert!(!apply_query_response_as_updates(&mut strategy, &response));
+        assert_eq!(strategy.query_not_found, 0);
+        assert_eq!(strategy.query_not_found_resets, 1);
+    }
 }

@@ -90,19 +90,51 @@ IPC_NS="${IPC_NAMESPACE:-}"
 PROC_NAME="intra_te_${EXCHANGE}_${ENV_TAG}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
+# 绑核来源：env.sh 里 export TRADE_ENGINE_CORE；未设置则不绑。
+# trade_engine 现为单线程，TRADE_ENGINE_IPC_CORE 已废弃并被忽略。
+core_args=()
+if [[ -n "${TRADE_ENGINE_CORE:-}" ]]; then
+  if [[ ! "$TRADE_ENGINE_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_ENGINE_CORE 必须为单个整数 (got: $TRADE_ENGINE_CORE)" >&2
+    exit 1
+  fi
+  core_args+=(--core "$TRADE_ENGINE_CORE")
+  echo "[INFO] core bind ${TRADE_ENGINE_CORE} (main thread, from $ENV_FILE:TRADE_ENGINE_CORE)"
+fi
+if [[ -n "${TRADE_ENGINE_IPC_CORE:-}" ]]; then
+  echo "[WARN] TRADE_ENGINE_IPC_CORE=${TRADE_ENGINE_IPC_CORE} 已废弃（trade_engine 单线程），忽略；请从 env.sh 移除并回收该核"
+fi
+
 find_running_pids() {
   local exchange_arg="--exchange ${EXCHANGE}"
   local pids=()
+  local expected_bin="${BASE_DIR}/trade_engine"
+  local expected_real=""
+  if [[ -e "$expected_bin" ]]; then
+    expected_real="$(readlink -f "$expected_bin" 2>/dev/null || true)"
+  fi
   while IFS= read -r pid; do
-    if [[ -n "$pid" ]]; then
+    if [[ -z "$pid" || "$pid" == "$$" || "$pid" == "${BASHPID:-}" ]]; then
+      continue
+    fi
+    local exe_link="" exe_path="" cmdline=""
+    exe_link="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+    exe_path="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+    if [[ "$cmdline" != *"$exchange_arg"* ]]; then
+      continue
+    fi
+    if [[ -n "$expected_real" && "$exe_path" == "$expected_real" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_link" == "${BASE_DIR}/trade_engine" || "$exe_link" == "${BASE_DIR}/trade_engine (deleted)" ]]; then
+      pids+=("$pid")
+    elif [[ "$exe_path" == "${SCRIPT_DIR}/trade_engine" || "$exe_path" == "${BASE_DIR}/target/release/trade_engine" ]]; then
+      pids+=("$pid")
+    elif [[ "$cmdline" == "${BASE_DIR}/trade_engine"* || "$cmdline" == "${SCRIPT_DIR}/trade_engine"* || "$cmdline" == "${BASE_DIR}/target/release/trade_engine"* ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v base_dir="$BASE_DIR" -v exchange_arg="$exchange_arg" '
-      index($0, base_dir "/") > 0 && index($0, "trade_engine") > 0 && index($0, exchange_arg) > 0 {
-        print $1
-      }
-    '
+    ps -eo pid=,comm= | awk '$2 == "trade_engine" { print $1 }'
   )
   if [[ ${#pids[@]} -gt 0 ]]; then
     printf '%s\n' "${pids[@]}"
@@ -151,7 +183,14 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 json_ipc_ns="$(json_escape "$IPC_NS")"
-cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --exchange $(shell_quote "$EXCHANGE")"
+te_args=(--exchange "$EXCHANGE")
+if [[ ${#core_args[@]} -gt 0 ]]; then
+  te_args+=("${core_args[@]}")
+fi
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+for arg in "${te_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON

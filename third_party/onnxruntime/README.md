@@ -1,6 +1,6 @@
 # ONNX Runtime Third-Party Binaries
 
-This repository is configured to link ONNX Runtime from a local, vendored path instead of downloading binaries during `cargo build`.
+This repository is configured to load ONNX Runtime from a local, vendored path instead of downloading binaries during `cargo build`.
 
 ## Target
 
@@ -24,19 +24,19 @@ Recommended (keep symlinks/versioned files together):
 
 ## Build behavior
 
-`.cargo/config.toml` sets:
+`mkt_model_runtime` enables `ort`'s `load-dynamic` feature, and `.cargo/config.toml` sets:
 
-- `ORT_LIB_LOCATION=third_party/onnxruntime/linux-x86_64/lib`
-- `ORT_PREFER_DYNAMIC_LINK=1`
-- `ORT_SKIP_DOWNLOAD=1`
+- `ORT_DYLIB_PATH=third_party/onnxruntime/linux-x86_64/lib/libonnxruntime.so`
 
-So `ort-sys` links from this local path and does not perform network downloads.
+The library is loaded only when inference is first used. This also lets non-inference tests start without requiring ONNX Runtime to be present in the process loader's default search path.
 
 ## Runtime note
 
-If your runtime loader cannot find `libonnxruntime.so`, set:
+Cargo commands receive `ORT_DYLIB_PATH` from `.cargo/config.toml`. When running a copied binary outside Cargo, either set `ORT_DYLIB_PATH` to the full library path or make the library discoverable through `LD_LIBRARY_PATH`:
 
 ```bash
+export ORT_DYLIB_PATH="$PWD/third_party/onnxruntime/linux-x86_64/lib/libonnxruntime.so"
+# or
 export LD_LIBRARY_PATH="$PWD/third_party/onnxruntime/linux-x86_64/lib:${LD_LIBRARY_PATH:-}"
 ```
 

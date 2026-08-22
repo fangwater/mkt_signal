@@ -1,9 +1,5 @@
-use crate::common::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
-use crate::common::exchange::Exchange;
-use crate::common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use crate::common::min_qty_table::MinQtyTable;
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_exposure_manager::BasicExposureManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
@@ -13,17 +9,23 @@ use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
-use crate::signal::common::TradingVenue;
-use crate::viz::resample::{
+use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
+use anyhow::Result;
+use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
+use log::{debug, info, trace, warn};
+use mkt_parsers::msg::basic_account_msg::{AccountRiskLevelProvider, BasicAccountRiskMsg};
+use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::Duration;
+use viz_common::resample::{
     PreTradeAccountRiskView, PreTradeExposureResampleEntry, PreTradeExposureRow,
     PreTradeRiskResampleEntry, PreTradeVenueRiskResampleEntry,
 };
-use anyhow::Result;
-use log::{debug, info, trace, warn};
-use std::cell::OnceCell;
-use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
-use std::time::Duration;
 
 fn print_exposure_table(
     ts_ms: i64,
@@ -128,11 +130,12 @@ fn print_exposure_table(
 
 fn sum_position_usd(
     exchange: Exchange,
+    mark_price_exchange: Exchange,
     balance_mgrs: &[&BasicBalanceManager],
     um_mgrs: &[(&BasicUmManager, &MinQtyTable)],
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> f64 {
-    let price_mapper = create_symbol_mapper(exchange);
+    let price_mapper = create_symbol_mapper(mark_price_exchange);
     BasicExposureManager::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs)
         .into_iter()
         .filter(|entry| !entry.asset.eq_ignore_ascii_case("USDT"))
@@ -151,12 +154,46 @@ fn sum_position_usd(
         .sum()
 }
 
+fn sum_spot_equity_usd(
+    balance_mgr: &BasicBalanceManager,
+    mark_price_exchange: Exchange,
+    price_snapshot: &HashMap<String, PriceEntry>,
+) -> f64 {
+    let exchange = balance_mgr.exchange();
+    let price_mapper = create_symbol_mapper(mark_price_exchange);
+    BasicExposureManager::compute_exposures_for_exchange(
+        exchange,
+        std::slice::from_ref(&balance_mgr),
+        &[],
+    )
+    .into_iter()
+    .filter_map(|entry| {
+        let asset = entry.asset.to_ascii_uppercase();
+        let mark = if asset == "USDT" {
+            1.0
+        } else {
+            let symbol = price_mapper.asset_to_price_symbol(&asset);
+            price_snapshot
+                .get(&symbol)
+                .map(|p| p.mark_price)
+                .unwrap_or(0.0)
+        };
+        if mark <= 0.0 {
+            None
+        } else {
+            Some(entry.balance * mark)
+        }
+    })
+    .sum()
+}
+
 fn sum_borrow_interest_usd(
     balance_mgr: &BasicBalanceManager,
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    mark_price_exchange: Exchange,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> (f64, f64) {
     let exchange = balance_mgr.exchange();
-    let price_mapper = create_symbol_mapper(exchange);
+    let price_mapper = create_symbol_mapper(mark_price_exchange);
     let mut borrowed_usd = 0.0_f64;
     let mut interest_usd = 0.0_f64;
     for entry in BasicExposureManager::compute_exposures_for_exchange(
@@ -189,7 +226,7 @@ fn hedge_snapshot_symbol_key(symbol: &str) -> String {
 }
 
 fn build_account_risk_view(
-    scope: crate::common::basic_account_msg::BasicAccountScope,
+    scope: mkt_parsers::msg::basic_account_msg::BasicAccountScope,
     msg: &BasicAccountRiskMsg,
 ) -> PreTradeAccountRiskView {
     let state = msg
@@ -219,8 +256,9 @@ fn arb_hedge_snapshot_asset_key(symbol: &str) -> String {
 fn compute_leg_risk_entry(
     mon: &MonitorChannel,
     venue: TradingVenue,
+    mark_price_exchange: Exchange,
     include_usdt_scope: bool,
-    price_snapshot: &BTreeMap<String, PriceEntry>,
+    price_snapshot: &HashMap<String, PriceEntry>,
 ) -> PreTradeVenueRiskResampleEntry {
     let exchange = Exchange::from_str(venue.trade_engine_exchange()).unwrap_or(Exchange::Binance);
     let mut total_equity = 0.0_f64;
@@ -239,17 +277,16 @@ fn compute_leg_risk_entry(
     if let Some(balance_mgr) = balance_mgr {
         let mgr = balance_mgr.borrow();
         let mgr_ref: &BasicBalanceManager = &mgr;
-        let mut exposure_mgr =
-            BasicExposureManager::new_from_sources(exchange, std::slice::from_ref(&mgr_ref), &[]);
-        exposure_mgr.revalue_with_prices(price_snapshot);
-        total_equity += exposure_mgr.total_equity();
+        total_equity += sum_spot_equity_usd(mgr_ref, mark_price_exchange, price_snapshot);
         total_position += sum_position_usd(
             exchange,
+            mark_price_exchange,
             std::slice::from_ref(&mgr_ref),
             &[],
             price_snapshot,
         );
-        let (borrowed, interest) = sum_borrow_interest_usd(mgr_ref, price_snapshot);
+        let (borrowed, interest) =
+            sum_borrow_interest_usd(mgr_ref, mark_price_exchange, price_snapshot);
         borrowed_usd += borrowed;
         interest_usd += interest;
     }
@@ -268,6 +305,7 @@ fn compute_leg_risk_entry(
         let min_qty_ref: &MinQtyTable = &min_qty;
         total_position += sum_position_usd(
             exchange,
+            mark_price_exchange,
             &[],
             std::slice::from_ref(&(um_ref, min_qty_ref)),
             price_snapshot,
@@ -376,11 +414,7 @@ thread_local! {
     static RESAMPLE_CHANNEL: OnceCell<ResampleChannel> = const { OnceCell::new() };
 }
 
-/// 默认敞口采样频道名称
-pub const DEFAULT_EXPOSURE_CHANNEL: &str = "pre_trade_exposure";
-
-/// 默认风险采样频道名称
-pub const DEFAULT_RISK_CHANNEL: &str = "pre_trade_risk";
+pub use viz_common::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 
 /// 前端展示采样频道 - 负责发布敞口、风险采样数据
 ///
@@ -478,7 +512,7 @@ impl ResampleChannel {
         );
     }
 
-    fn print_exposure_table_snapshot(&self) {
+    pub fn print_exposure_table_snapshot(&self) {
         let mon = MonitorChannel::instance();
         let price_snapshot = mon.price_table().borrow().snapshot();
         let ts_ms = get_timestamp_us() / 1000;
@@ -674,6 +708,10 @@ impl ResampleChannel {
                 }
 
                 let symbol = exposure_price_mapper.asset_to_price_symbol(&asset_upper);
+                let arb_hedge_ret_qtl =
+                    PreTradeTakerDecisionModel::latest_observation_global(&symbol)
+                        .or(arb_hedge_ret_qtl);
+                let arb_hedge_score = PreTradeTakerDecisionModel::nn_score_global(&symbol);
                 let mark = price_snapshot
                     .get(&symbol)
                     .map(|p| p.mark_price)
@@ -736,6 +774,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms,
                     arb_hedge_is_taker,
                     arb_hedge_ret_qtl,
+                    arb_hedge_score,
                     arb_hedge_offset,
                     net_qty: Some(net_qty),
                     net_usdt: Some(net_usdt),
@@ -762,6 +801,7 @@ impl ResampleChannel {
                     arb_hedge_time_ms: None,
                     arb_hedge_is_taker: None,
                     arb_hedge_ret_qtl: None,
+                    arb_hedge_score: None,
                     arb_hedge_offset: None,
                     net_qty: None,
                     net_usdt: Some(exposure_sum_usdt),
@@ -779,10 +819,18 @@ impl ResampleChannel {
         if let Some(publisher) = self.risk_pub.as_ref() {
             let open_scope = mon.account_scope_for_venue(mon.open_venue());
             let hedge_scope = mon.account_scope_for_venue(mon.hedge_venue());
-            let open_leg = compute_leg_risk_entry(&mon, mon.open_venue(), true, &price_snapshot);
+            let mark_price_exchange = mon.mark_price_exchange();
+            let open_leg = compute_leg_risk_entry(
+                &mon,
+                mon.open_venue(),
+                mark_price_exchange,
+                true,
+                &price_snapshot,
+            );
             let hedge_leg = compute_leg_risk_entry(
                 &mon,
                 mon.hedge_venue(),
+                mark_price_exchange,
                 open_scope != hedge_scope,
                 &price_snapshot,
             );
@@ -790,8 +838,12 @@ impl ResampleChannel {
             let interest_usd = open_leg.interest_usd + hedge_leg.interest_usd;
             let params = PreTradeParamsLoader::instance();
             let max_leverage = params.max_leverage();
+            let unimmr_force_close_line = params.unimmr_force_close_line();
+            let unimmr_force_close_recover_line = params.unimmr_force_close_recover_line();
             let unimmr_trigger_line = params.unimmr_trigger_line();
             let unimmr_recover_line = params.unimmr_recover_line();
+            let usdt_max_available_margin = latest_usdt_max_available_margin_snapshot()
+                .map(|snapshot| snapshot.usdt_max_available_margin);
             // total_equity 口径：若涉及合约 venue，已包含 UPL。
             let leverage = if total_equity.abs() <= f64::EPSILON {
                 0.0
@@ -826,8 +878,11 @@ impl ResampleChannel {
                 um_unrealized_usd,
                 leverage,
                 max_leverage,
+                usdt_max_available_margin,
                 open_leg,
                 hedge_leg,
+                unimmr_force_close_line,
+                unimmr_force_close_recover_line,
                 unimmr_trigger_line,
                 unimmr_recover_line,
                 account_risks,
@@ -865,13 +920,50 @@ impl ResampleChannel {
 
 #[cfg(test)]
 mod tests {
-    use super::{arb_hedge_snapshot_asset_key, hedge_snapshot_symbol_key};
+    use super::{arb_hedge_snapshot_asset_key, hedge_snapshot_symbol_key, sum_position_usd};
+    use crate::common::min_qty_table::MinQtyTable;
+    use crate::pre_trade::{basic_um_manager::BasicUmManager, price_table::PriceTable};
+    use mkt_parsers::msg::basic_account_msg::BasicPositionMsg;
+    use runtime_common::exchange::Exchange;
 
     #[test]
     fn hedge_snapshot_symbol_key_normalizes_internal_and_price_symbols() {
         assert_eq!(hedge_snapshot_symbol_key("SOLUSDT"), "SOLUSDT");
         assert_eq!(hedge_snapshot_symbol_key("SOL_USDT"), "SOLUSDT");
         assert_eq!(hedge_snapshot_symbol_key("SOL-USDT-SWAP"), "SOLUSDT");
+    }
+
+    #[test]
+    fn leg_position_uses_mark_price_source_symbol_format() {
+        let mut um = BasicUmManager::new(Exchange::Bitget);
+        um.apply_position(&BasicPositionMsg::create(
+            1,
+            "BTCUSDT".to_string(),
+            'S',
+            0.5,
+        ));
+        let min_qty = MinQtyTable::new(Exchange::Bitget);
+        let mut prices = PriceTable::new();
+        prices.update_mark_price("BTC_USDT", 100.0, 1);
+        let snapshot = prices.snapshot();
+
+        let own_exchange_price = sum_position_usd(
+            Exchange::Bitget,
+            Exchange::Bitget,
+            &[],
+            std::slice::from_ref(&(&um, &min_qty)),
+            &snapshot,
+        );
+        let mark_source_price = sum_position_usd(
+            Exchange::Bitget,
+            Exchange::Gate,
+            &[],
+            std::slice::from_ref(&(&um, &min_qty)),
+            &snapshot,
+        );
+
+        assert_eq!(own_exchange_price, 0.0);
+        assert!((mark_source_price - 50.0).abs() < 1e-12);
     }
 
     #[test]

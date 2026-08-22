@@ -134,7 +134,7 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   echo "[INFO] 构建 $BIN_NAME (release)"
-  cargo build --release --bin "$BIN_NAME"
+  cargo build --release -p trade_signal --bin "$BIN_NAME"
 fi
 
 mkdir -p "$TARGET_DIR"
@@ -160,8 +160,10 @@ SCRIPTS_TO_SYNC=(
   "cancel_gate_pm_orders.py"
   "flatten_bybit_pm.py"
   "cancel_bybit_pm_orders.py"
+  "set_bybit_online_collateral.py"
   "flatten_bitget_pm.py"
   "cancel_bitget_pm_orders.py"
+  "set_online_futures_leverage.py"
   "sync_funding_rate_thresholds.py"
   "print_funding_rate_thresholds.py"
   "sync_fr_strategy_params.py"

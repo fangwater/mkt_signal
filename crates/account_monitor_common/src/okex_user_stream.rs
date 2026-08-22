@@ -1,0 +1,473 @@
+//! OKX 用户数据流 WebSocket 连接处理器
+//!
+//! 与 Binance 不同，OKX 私有频道需要：
+//! 1. 连接后发送 login 消息进行鉴权
+//! 2. 登录成功后订阅所需频道
+//! 3. 通过 WebSocket ping/pong frame 保持连接 (每 25 秒)
+
+use crate::raw_handler::{forward_raw_account_message, RawAccountMessageHandler};
+use account_common::okex_auth::OkexCredentials;
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures_util::{SinkExt, TryStreamExt};
+use log::{debug, error, info, warn};
+use runtime_common::okex_notice::parse_okex_notice;
+use runtime_common::ws_connection::{
+    MktConnection, MktConnectionHandler, MktConnectionRunner, WsConnector,
+};
+use std::time::Duration;
+use tokio::time::{self, Instant};
+use tokio_tungstenite::tungstenite::Message;
+
+/// OKX 用户数据流连接状态
+#[derive(Debug, Clone, PartialEq)]
+enum ConnectionState {
+    LoggingIn,
+    Subscribing,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OkexWsError {
+    code: String,
+    msg: String,
+    channel: Option<String>,
+}
+
+/// OKX 用户数据流连接处理器
+pub struct OkexUserDataConnection {
+    base_connection: MktConnection,
+    credentials: OkexCredentials,
+    subscribe_messages: Vec<serde_json::Value>,
+    session_max: Option<Duration>,
+    restart_count: u32,
+    raw_handler: Option<RawAccountMessageHandler>,
+}
+
+impl OkexUserDataConnection {
+    pub fn new(
+        connection: MktConnection,
+        credentials: OkexCredentials,
+        subscribe_messages: Vec<serde_json::Value>,
+        session_max: Option<Duration>,
+    ) -> Self {
+        Self {
+            base_connection: connection,
+            credentials,
+            subscribe_messages,
+            session_max,
+            restart_count: 0,
+            raw_handler: None,
+        }
+    }
+
+    pub fn set_raw_handler(&mut self, handler: RawAccountMessageHandler) {
+        self.raw_handler = Some(handler);
+    }
+
+    /// 检查消息是否为登录响应
+    fn is_login_response(text: &str) -> Option<bool> {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+            if json.get("event").and_then(|v| v.as_str()) == Some("login") {
+                let code = json.get("code").and_then(|v| v.as_str()).unwrap_or("");
+                return Some(code == "0");
+            }
+        }
+        None
+    }
+
+    /// 检查消息是否为订阅响应
+    fn is_subscribe_response(text: &str) -> Option<bool> {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+            if json.get("event").and_then(|v| v.as_str()) == Some("subscribe") {
+                // OKX 订阅成功时没有 code 字段，或 code 为 "0"
+                let code = json.get("code").and_then(|v| v.as_str());
+                return Some(code.is_none() || code == Some("0"));
+            }
+        }
+        None
+    }
+
+    /// 解析 OKX WS 错误消息
+    fn parse_error_message(text: &str) -> Option<OkexWsError> {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+            if json.get("event").and_then(|v| v.as_str()) == Some("error") {
+                let code = json
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let msg = json
+                    .get("msg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let channel = json
+                    .get("arg")
+                    .and_then(|arg| arg.get("channel"))
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned);
+                return Some(OkexWsError {
+                    code: code.to_owned(),
+                    msg: msg.to_owned(),
+                    channel,
+                });
+            }
+        }
+        None
+    }
+
+    fn is_optional_fills_permission_error(err: &OkexWsError) -> bool {
+        err.code == "64003" && matches!(err.channel.as_deref(), None | Some("fills"))
+    }
+
+    fn mark_subscription_complete(
+        pending_subscriptions: &mut usize,
+        state: &mut ConnectionState,
+        ping_timer: &mut Instant,
+        success_log: &str,
+    ) {
+        *pending_subscriptions = pending_subscriptions.saturating_sub(1);
+        info!("OKX: {}, remaining: {}", success_log, pending_subscriptions);
+
+        if *pending_subscriptions == 0 {
+            info!("OKX: All subscriptions complete, entering running state");
+            *state = ConnectionState::Running;
+            *ping_timer = Instant::now() + Duration::from_secs(25);
+        }
+    }
+}
+
+#[async_trait]
+impl MktConnectionRunner for OkexUserDataConnection {
+    async fn run_connection(&mut self) -> anyhow::Result<()> {
+        // start_ws() 已经完成底层 WS 连接并发送 login 消息，因此这里直接进入登录等待状态
+        let mut state = ConnectionState::LoggingIn;
+        let mut ping_timer = Instant::now() + Duration::from_secs(25);
+        let mut waiting_pong = false;
+        let session_start = Instant::now();
+        let mut pending_subscriptions = self.subscribe_messages.len();
+
+        loop {
+            // 检查会话时长限制
+            if let Some(max_duration) = self.session_max {
+                if session_start.elapsed() >= max_duration {
+                    info!("OKX: Session max duration reached, reconnecting...");
+                    break;
+                }
+            }
+
+            let mut ws_stream = self
+                .base_connection
+                .connection
+                .as_mut()
+                .unwrap()
+                .ws_stream
+                .lock()
+                .await;
+
+            tokio::select! {
+                // 处理关闭信号
+                _ = self.base_connection.shutdown_rx.changed() => {
+                    let should_close = *self.base_connection.shutdown_rx.borrow();
+                    if should_close {
+                        ws_stream.close(None).await?;
+                        return Ok(());
+                    }
+                }
+
+                // 处理 ping 定时器
+                _ = time::sleep_until(ping_timer) => {
+                    if state != ConnectionState::Running {
+                        // 还在握手阶段，跳过 ping
+                        ping_timer = Instant::now() + Duration::from_secs(25);
+                        continue;
+                    }
+
+                    if waiting_pong {
+                        warn!("OKX: Ping timeout, reconnecting...");
+                        ws_stream.close(None).await?;
+                        break;
+                    } else {
+                        // 发送 WebSocket ping frame
+                        if let Err(e) = ws_stream.send(Message::Ping(b"ping".to_vec())).await {
+                            error!("OKX: Failed to send ping: {:?}", e);
+                            break;
+                        }
+                        waiting_pong = true;
+                        ping_timer = Instant::now() + Duration::from_secs(25);
+                        debug!("OKX: Sent ping frame");
+                    }
+                }
+
+                // 处理 WebSocket 消息
+                msg = ws_stream.try_next() => {
+                    match msg {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                Message::Text(text) => {
+                                    if let Some(notice) = parse_okex_notice(&text) {
+                                        warn!(
+                                            "OKX: received notice code={} msg={} conn_id={:?}",
+                                            notice.code, notice.msg, notice.conn_id
+                                        );
+                                        if notice.is_service_upgrade() {
+                                            warn!(
+                                                "OKX: service upgrade notice 64008 received; reconnecting before forced close"
+                                            );
+                                            ws_stream.close(None).await?;
+                                            break;
+                                        }
+                                        continue;
+                                    }
+
+                                    // 检查错误
+                                    if let Some(err) = Self::parse_error_message(&text) {
+                                        error!(
+                                            "OKX: Received error: code={}, msg={}, channel={}",
+                                            err.code,
+                                            err.msg,
+                                            err.channel.as_deref().unwrap_or("-")
+                                        );
+                                        // 根据状态决定是否断开
+                                        if state == ConnectionState::LoggingIn {
+                                            error!("OKX: Login failed, will retry...");
+                                            break;
+                                        }
+                                        if state == ConnectionState::Subscribing
+                                            && Self::is_optional_fills_permission_error(&err)
+                                        {
+                                            if let Some(handler) = self.raw_handler.as_mut() {
+                                                handler(Bytes::copy_from_slice(text.as_bytes()));
+                                            }
+                                            warn!(
+                                                "OKX: Optional fills subscription denied by permission; continuing without fills"
+                                            );
+                                            Self::mark_subscription_complete(
+                                                &mut pending_subscriptions,
+                                                &mut state,
+                                                &mut ping_timer,
+                                                "Optional fills subscription skipped",
+                                            );
+                                        }
+                                        continue;
+                                    }
+
+                                    match state {
+                                        ConnectionState::LoggingIn => {
+                                            // 等待登录响应
+                                            if let Some(success) = Self::is_login_response(&text) {
+                                                if success {
+                                                    info!("OKX: Login successful");
+                                                    state = ConnectionState::Subscribing;
+
+                                                    // 发送所有订阅消息
+                                                    for sub_msg in &self.subscribe_messages {
+                                                        if let Err(e) = ws_stream.send(Message::Text(sub_msg.to_string())).await {
+                                                            error!("OKX: Failed to send subscribe: {:?}", e);
+                                                            break;
+                                                        }
+                                                        debug!("OKX: Sent subscribe: {}", sub_msg);
+                                                    }
+                                                } else {
+                                                    error!("OKX: Login failed");
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        ConnectionState::Subscribing => {
+                                            // 等待订阅响应
+                                            if let Some(success) = Self::is_subscribe_response(&text) {
+                                                if success {
+                                                    Self::mark_subscription_complete(
+                                                        &mut pending_subscriptions,
+                                                        &mut state,
+                                                        &mut ping_timer,
+                                                        "Subscribe successful",
+                                                    );
+                                                } else {
+                                                    warn!("OKX: Subscribe failed: {}", text);
+                                                }
+                                            } else {
+                                                // 可能已经开始收到数据了
+                                                debug!("OKX: Received data while subscribing: {}", text);
+                                            }
+                                        }
+                                        ConnectionState::Running => {
+                                            // 正常运行，重置 ping 定时器；若正在等待 pong，则继续等待 frame 级 pong。
+                                            if !waiting_pong {
+                                                ping_timer = Instant::now() + Duration::from_secs(25);
+                                            } else {
+                                                debug!("OKX: received business text while waiting for pong frame");
+                                            }
+
+                                            // 广播消息
+                                            let bytes = Bytes::from(text.into_bytes());
+                                            if !forward_raw_account_message(
+                                                &self.base_connection.tx,
+                                                self.raw_handler.as_mut(),
+                                                bytes,
+                                                "OKX: Failed to broadcast message",
+                                            ) {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                Message::Ping(payload) => {
+                                    debug!("OKX: Received protocol ping");
+                                    if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
+                                        error!("OKX: Failed to send pong: {:?}", e);
+                                        break;
+                                    }
+                                }
+                                Message::Pong(payload) => {
+                                    if waiting_pong {
+                                        waiting_pong = false;
+                                        ping_timer = Instant::now() + Duration::from_secs(25);
+                                        debug!("OKX: Received pong frame: {:?}", payload);
+                                    } else {
+                                        debug!("OKX: Received unsolicited pong frame: {:?}", payload);
+                                    }
+                                }
+                                Message::Close(frame) => {
+                                    warn!("OKX: Received close frame: {:?}", frame);
+                                    break;
+                                }
+                                _ => {
+                                    debug!("OKX: Received other message type");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.restart_count += 1;
+                            error!("OKX: WebSocket error (restart count: {}): {:?}", self.restart_count, e);
+                            break;
+                        }
+                        Ok(None) => {
+                            warn!("OKX: WebSocket connection closed by server");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_error_message_extracts_channel() {
+        let err = OkexUserDataConnection::parse_error_message(
+            r#"{"event":"error","code":"64003","msg":"You do not have access to this channel.","arg":{"channel":"fills"}}"#,
+        )
+        .expect("expected OKX error");
+
+        assert_eq!(err.code, "64003");
+        assert_eq!(err.msg, "You do not have access to this channel.");
+        assert_eq!(err.channel.as_deref(), Some("fills"));
+    }
+
+    #[test]
+    fn fills_permission_error_is_optional() {
+        let err = OkexWsError {
+            code: "64003".to_owned(),
+            msg: "You do not have access to this channel.".to_owned(),
+            channel: Some("fills".to_owned()),
+        };
+
+        assert!(OkexUserDataConnection::is_optional_fills_permission_error(
+            &err
+        ));
+    }
+
+    #[test]
+    fn fills_permission_error_without_channel_is_optional() {
+        let err = OkexWsError {
+            code: "64003".to_owned(),
+            msg: "Your trading fee tier doesn't meet the requirement to access this channel."
+                .to_owned(),
+            channel: None,
+        };
+
+        assert!(OkexUserDataConnection::is_optional_fills_permission_error(
+            &err
+        ));
+    }
+
+    #[test]
+    fn non_fills_error_is_not_optional() {
+        let err = OkexWsError {
+            code: "64003".to_owned(),
+            msg: "You do not have access to this channel.".to_owned(),
+            channel: Some("orders".to_owned()),
+        };
+
+        assert!(!OkexUserDataConnection::is_optional_fills_permission_error(
+            &err
+        ));
+    }
+}
+
+#[async_trait]
+impl MktConnectionHandler for OkexUserDataConnection {
+    async fn start_ws(&mut self) -> anyhow::Result<()> {
+        loop {
+            info!("OKX: Connecting to {}", &self.base_connection.url);
+
+            // 连接 WebSocket (不发送订阅消息，因为需要先登录)
+            let connect_result = if let Some(ref local_ip) = self.base_connection.local_ip {
+                WsConnector::connect_with_local_ip_raw(&self.base_connection.url, local_ip).await
+            } else {
+                WsConnector::connect_raw(&self.base_connection.url).await
+            };
+
+            match connect_result {
+                Ok(connection) => {
+                    debug!("OKX: Connected at {:?}", connection.connected_at);
+                    self.base_connection.connection = Some(connection);
+
+                    // 发送登录消息
+                    {
+                        let login_msg = self.credentials.build_login_message();
+                        let mut ws_stream = self
+                            .base_connection
+                            .connection
+                            .as_mut()
+                            .unwrap()
+                            .ws_stream
+                            .lock()
+                            .await;
+
+                        if let Err(e) = ws_stream.send(Message::Text(login_msg.to_string())).await {
+                            error!("OKX: Failed to send login message: {:?}", e);
+                            continue;
+                        }
+                        info!("OKX: Login message sent");
+                    }
+
+                    // 运行连接
+                    self.run_connection().await?;
+
+                    // 检查是否需要关闭
+                    if *self.base_connection.shutdown_rx.borrow() {
+                        break Ok(());
+                    } else {
+                        info!(
+                            "OKX: Connection closed, reconnecting... (total restart count: {})",
+                            self.restart_count
+                        );
+                        // 短暂等待后重连
+                        time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+                Err(e) => {
+                    error!("OKX: Failed to connect: {:?}", e);
+                    time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+}

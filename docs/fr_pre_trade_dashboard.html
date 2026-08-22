@@ -494,6 +494,10 @@
               <h3>Max Leverage</h3>
               <div class="value" id="risk-max-leverage">--</div>
             </div>
+            <div class="metric-card">
+              <h3>USDT可用最大保证金</h3>
+              <div class="value" id="risk-usdt-max-margin">--</div>
+            </div>
           </div>
           <div class="account-risks-grid" id="account-risks"></div>
           <div class="chips">
@@ -643,7 +647,12 @@
         const isNum = (x) => typeof x === "number" && Number.isFinite(x);
         const fmt = (x, f) => (isNum(x) ? f.format(x) : "--");
         const cls = (x) => (!isNum(x) ? "muted" : x > 0 ? "positive" : x < 0 ? "negative" : "");
-        const baseOf = (sym) => (sym || "").replace(/USDT$/i, "").replace(/_PERP$/i, "").toUpperCase();
+        const baseOf = (sym) => String(sym || "")
+          .toUpperCase()
+          .replace(new RegExp("[-_]?USDT[-_]?SWAP$", "i"), "")
+          .replace(new RegExp("[-_]?USDT[-_]?PERP$", "i"), "")
+          .replace(new RegExp("[-_]?PERP$", "i"), "")
+          .replace(new RegExp("[-_]?USDT$", "i"), "");
         const fmtTimeUtc8 = (ts) => isNum(ts) ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(ts)) : "--";
 
         // ---- DOM 引用 ----
@@ -658,6 +667,7 @@
           signalSummary: $("signal-summary"),
           riskEquity: $("risk-equity"), riskExposure: $("risk-exposure"), riskPosition: $("risk-position"),
           riskLeverage: $("risk-leverage"), riskMaxLeverage: $("risk-max-leverage"),
+          riskUsdtMaxMargin: $("risk-usdt-max-margin"),
           metricLeverage: $("metric-leverage"),
           riskBorrowed: $("risk-borrowed"), riskInterest: $("risk-interest"),
           riskUmUpl: $("risk-um-upl"), riskSpotEquity: $("risk-spot-equity"),
@@ -759,6 +769,7 @@
           el.riskPosition.textContent = e ? fmt(e.total_position, fmtUsd) : "--";
           el.riskLeverage.textContent = fmt(lev, fmtLev);
           el.riskMaxLeverage.textContent = e ? fmt(e.max_leverage, fmtLev) : "--";
+          el.riskUsdtMaxMargin.textContent = e ? fmt(e.usdt_max_available_margin, fmtUsd) : "--";
           if (e && isNum(lev) && isNum(e.max_leverage) && e.max_leverage > 0 && lev > e.max_leverage) {
             el.metricLeverage.classList.add("warn");
           } else {

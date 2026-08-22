@@ -1,8 +1,8 @@
-use crate::signal::common::TradingVenue;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use hmac::{Hmac, Mac};
+use order_common::TradingVenue;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -70,12 +70,14 @@ pub fn provider_for_venue(venue: TradingVenue) -> Box<dyn DelistScheduleProvider
     match venue {
         TradingVenue::BinanceMargin => Box::new(BinanceSpotDelistProvider::default()),
         TradingVenue::BinanceFutures => Box::new(BinanceFuturesDelistProvider::default()),
+        TradingVenue::BinanceCoinFutures => Box::new(BinanceCoinFuturesDelistProvider::default()),
         TradingVenue::AsterFutures => Box::new(AsterFuturesDelistProvider::default()),
         TradingVenue::OkexMargin => Box::new(OkxSpotDelistProvider::default()),
         TradingVenue::OkexFutures => Box::new(OkxSwapDelistProvider::default()),
         TradingVenue::BybitFutures => Box::new(BybitLinearDelistProvider::default()),
         TradingVenue::BitgetMargin => Box::new(BitgetSpotDelistProvider::default()),
-        TradingVenue::BitgetFutures => Box::new(BitgetUsdtFuturesDelistProvider::default()),
+        TradingVenue::BitgetFutures => Box::new(BitgetUsdtFuturesDelistProvider),
+        TradingVenue::BitgetCoinFutures => Box::new(BitgetCoinFuturesDelistProvider),
         TradingVenue::GateMargin => Box::new(GateSpotRiskProvider::default()),
         TradingVenue::GateFutures => Box::new(GateFuturesDelistProvider::default()),
         TradingVenue::BybitMargin
@@ -89,11 +91,13 @@ pub fn default_monitored_venues() -> Vec<TradingVenue> {
     vec![
         TradingVenue::BinanceMargin,
         TradingVenue::BinanceFutures,
+        TradingVenue::BinanceCoinFutures,
         TradingVenue::OkexMargin,
         TradingVenue::OkexFutures,
         TradingVenue::BybitFutures,
         TradingVenue::BitgetMargin,
         TradingVenue::BitgetFutures,
+        TradingVenue::BitgetCoinFutures,
         TradingVenue::GateMargin,
         TradingVenue::GateFutures,
         TradingVenue::AsterFutures,
@@ -229,6 +233,9 @@ impl DelistScheduleProvider for BinanceSpotDelistProvider {
 struct BinanceFuturesDelistProvider;
 
 #[derive(Default)]
+struct BinanceCoinFuturesDelistProvider;
+
+#[derive(Default)]
 struct AsterFuturesDelistProvider;
 
 #[derive(Debug, Deserialize)]
@@ -242,6 +249,7 @@ struct BinanceFuturesExchangeInfo {
 #[serde(rename_all = "camelCase")]
 struct BinanceFuturesSymbol {
     symbol: String,
+    #[serde(alias = "contractStatus")]
     status: String,
     contract_type: String,
     delivery_date: i64,
@@ -284,8 +292,16 @@ async fn fetch_binance_style_futures_delists(
     let events = info
         .symbols
         .into_iter()
-        .filter(|symbol| symbol.contract_type == "PERPETUAL")
-        .filter(|symbol| symbol.delivery_date != BINANCE_PERPETUAL_DEFAULT_DELIVERY_MS)
+        .filter(|symbol| {
+            if venue == TradingVenue::BinanceCoinFutures {
+                symbol.delivery_date > 0
+                    && (symbol.contract_type != "PERPETUAL"
+                        || symbol.delivery_date != BINANCE_PERPETUAL_DEFAULT_DELIVERY_MS)
+            } else {
+                symbol.contract_type == "PERPETUAL"
+                    && symbol.delivery_date != BINANCE_PERPETUAL_DEFAULT_DELIVERY_MS
+            }
+        })
         .filter_map(|symbol| {
             let delist_time = datetime_from_millis(symbol.delivery_date, "deliveryDate").ok()?;
             effective_query
@@ -316,6 +332,23 @@ impl DelistScheduleProvider for BinanceFuturesDelistProvider {
             self.venue(),
             "https://fapi.binance.com/fapi/v1/exchangeInfo",
             "binance_futures_exchange_info",
+            query,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl DelistScheduleProvider for BinanceCoinFuturesDelistProvider {
+    fn venue(&self) -> TradingVenue {
+        TradingVenue::BinanceCoinFutures
+    }
+
+    async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
+        fetch_binance_style_futures_delists(
+            self.venue(),
+            "https://dapi.binance.com/dapi/v1/exchangeInfo",
+            "binance_coin_futures_exchange_info",
             query,
         )
         .await
@@ -567,8 +600,9 @@ impl DelistScheduleProvider for BybitLinearDelistProvider {
     }
 }
 
-#[derive(Default)]
 struct BitgetUsdtFuturesDelistProvider;
+
+struct BitgetCoinFuturesDelistProvider;
 
 #[derive(Default)]
 struct BitgetSpotDelistProvider;
@@ -598,65 +632,85 @@ impl DelistScheduleProvider for BitgetUsdtFuturesDelistProvider {
     }
 
     async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
-        let url = "https://api.bitget.com/api/v3/market/instruments?category=USDT-FUTURES";
-        let response = http_client()?
-            .get(url)
-            .send()
-            .await
-            .context("request Bitget instruments failed")?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .context("read Bitget instruments response failed")?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "Bitget instruments request failed: status={} body={}",
-                status,
-                body
-            );
-        }
-        let parsed: BitgetResponse<BitgetInstrument> =
-            serde_json::from_str(&body).context("parse Bitget instruments JSON failed")?;
-        if parsed.code != "00000" {
-            anyhow::bail!(
-                "Bitget instruments API error: code={} msg={}",
-                parsed.code,
-                parsed.msg
-            );
-        }
-
-        let mut events = Vec::new();
-        for item in parsed.data {
-            let raw_time = item
-                .off_time
-                .as_deref()
-                .filter(|value| {
-                    let value = value.trim();
-                    !value.is_empty() && value != "0" && value != "-1"
-                })
-                .or_else(|| item.delivery_time.as_deref());
-            let Some(raw_time) = raw_time else {
-                continue;
-            };
-            let Some(delist_time) = parse_millis_str(raw_time, "offTime/deliveryTime")? else {
-                continue;
-            };
-            if query.contains(delist_time) {
-                events.push(DelistEvent {
-                    venue: self.venue(),
-                    market: DelistMarket::Futures,
-                    symbol: item.symbol,
-                    delist_time: Some(delist_time),
-                    risk_type: "scheduled_delist",
-                    source: "bitget_market_instruments",
-                    status: Some(item.status),
-                    detail: None,
-                });
-            }
-        }
-        Ok(events)
+        bitget_futures_delist_events(query, self.venue(), "USDT-FUTURES").await
     }
+}
+
+#[async_trait]
+impl DelistScheduleProvider for BitgetCoinFuturesDelistProvider {
+    fn venue(&self) -> TradingVenue {
+        TradingVenue::BitgetCoinFutures
+    }
+
+    async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
+        bitget_futures_delist_events(query, self.venue(), "COIN-FUTURES").await
+    }
+}
+
+async fn bitget_futures_delist_events(
+    query: &DelistScheduleQuery,
+    venue: TradingVenue,
+    category: &str,
+) -> Result<Vec<DelistEvent>> {
+    let url = "https://api.bitget.com/api/v3/market/instruments";
+    let response = http_client()?
+        .get(url)
+        .query(&[("category", category)])
+        .send()
+        .await
+        .context("request Bitget instruments failed")?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("read Bitget instruments response failed")?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "Bitget instruments request failed: status={} body={}",
+            status,
+            body
+        );
+    }
+    let parsed: BitgetResponse<BitgetInstrument> =
+        serde_json::from_str(&body).context("parse Bitget instruments JSON failed")?;
+    if parsed.code != "00000" {
+        anyhow::bail!(
+            "Bitget instruments API error: code={} msg={}",
+            parsed.code,
+            parsed.msg
+        );
+    }
+
+    let mut events = Vec::new();
+    for item in parsed.data {
+        let raw_time = item
+            .off_time
+            .as_deref()
+            .filter(|value| {
+                let value = value.trim();
+                !value.is_empty() && value != "0" && value != "-1"
+            })
+            .or_else(|| item.delivery_time.as_deref());
+        let Some(raw_time) = raw_time else {
+            continue;
+        };
+        let Some(delist_time) = parse_millis_str(raw_time, "offTime/deliveryTime")? else {
+            continue;
+        };
+        if query.contains(delist_time) {
+            events.push(DelistEvent {
+                venue,
+                market: DelistMarket::Futures,
+                symbol: item.symbol,
+                delist_time: Some(delist_time),
+                risk_type: "scheduled_delist",
+                source: "bitget_market_instruments",
+                status: Some(item.status),
+                detail: None,
+            });
+        }
+    }
+    Ok(events)
 }
 
 #[derive(Debug, Deserialize)]

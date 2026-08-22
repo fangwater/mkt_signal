@@ -46,28 +46,32 @@ impl AutoRepayService {
         }
         let names: Vec<String> = self.repayers.iter().map(|r| r.name().to_string()).collect();
         tokio::spawn(async move {
-            info!(
-                "auto-repay service started ({} repayer(s): {})",
-                self.repayers.len(),
-                names.join(", ")
-            );
-
-            // 启动即跑一轮
-            self.run_all_once("startup").await;
-
-            loop {
-                let wait = Self::time_until_next_55min();
-                info!(
-                    "next auto-repay tick in {} seconds (UTC :55)",
-                    wait.as_secs()
-                );
-                tokio::time::sleep(wait).await;
-                self.run_all_once("hourly_55").await;
-            }
+            self.run_loop(names).await;
         });
     }
 
-    async fn run_all_once(&self, reason: &str) {
+    async fn run_loop(self, names: Vec<String>) {
+        info!(
+            "auto-repay service started ({} repayer(s): {})",
+            self.repayers.len(),
+            names.join(", ")
+        );
+
+        // 启动即跑一轮
+        self.run_once("startup").await;
+
+        loop {
+            let wait = Self::time_until_next_55min();
+            info!(
+                "next auto-repay tick in {} seconds (UTC :55)",
+                wait.as_secs()
+            );
+            tokio::time::sleep(wait).await;
+            self.run_once("hourly_55").await;
+        }
+    }
+
+    pub async fn run_once(&self, reason: &str) {
         for repayer in &self.repayers {
             info!("auto-repay tick: name={} reason={}", repayer.name(), reason);
             repayer.check_and_repay().await;
@@ -75,7 +79,7 @@ impl AutoRepayService {
     }
 
     /// 计算到下一个 UTC :55 的等待时间。
-    fn time_until_next_55min() -> Duration {
+    pub fn time_until_next_55min() -> Duration {
         Self::time_until_next_55min_from(Utc::now())
     }
 

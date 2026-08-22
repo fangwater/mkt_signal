@@ -3,9 +3,10 @@ use iceoryx2::port::publisher::Publisher;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 
-use crate::common::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
+use mkt_parsers::msg::model_ipc::MODEL_PAYLOAD_MAX_BYTES;
 
 const MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+const MODEL_OUTPUT_MAX_SUBSCRIBERS: usize = 32;
 
 pub struct ModelPublisher {
     publisher: Publisher<ipc::Service, [u8; MODEL_PAYLOAD_MAX_BYTES], ()>,
@@ -21,7 +22,7 @@ impl ModelPublisher {
             .service_builder(&ServiceName::new(service_path)?)
             .publish_subscribe::<[u8; MODEL_PAYLOAD_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(MODEL_OUTPUT_MAX_SUBSCRIBERS)
             .subscriber_max_buffer_size(MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE)
             .history_size(128)
             .open_or_create()?;

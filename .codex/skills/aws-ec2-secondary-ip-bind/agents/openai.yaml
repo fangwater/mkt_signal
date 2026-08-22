@@ -1,0 +1,4 @@
+interface:
+  display_name: "AWS EC2 Secondary IP Bind"
+  short_description: "Bind AWS EIPs via EC2 private IPs"
+  default_prompt: "Use $aws-ec2-secondary-ip-bind to bind newly assigned AWS public IPs on an EC2 host network interface."

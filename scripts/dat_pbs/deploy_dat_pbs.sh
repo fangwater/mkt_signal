@@ -7,9 +7,9 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate" "aster")
 KNOWN_VENUES=(
   "okex-futures" "okex-margin"
-  "binance-futures" "binance-margin"
+  "binance-futures" "binance-coin-futures" "binance-margin"
   "bybit-futures" "bybit-margin"
-  "bitget-futures" "bitget-margin"
+  "bitget-futures" "bitget-coin-futures" "bitget-margin"
   "gate-futures" "gate-margin"
   "aster-futures" "aster-margin"
 )
@@ -196,7 +196,7 @@ if [[ -f "$ROOT_DIR/config/iceoryx2.toml" ]]; then
 fi
 
 # 远端分流：binance/bitget/gate 的 venue 推到 AWS 远端主机
-REMOTE_VENUE_REGEX='^(binance|bitget|gate)-(futures|margin)$'
+REMOTE_VENUE_REGEX='^((binance|bitget|gate)-(futures|margin)|(binance|bitget)-coin-futures)$'
 REMOTE_VENUES=()
 LOCAL_VENUES=()
 for v in "${VENUES[@]}"; do

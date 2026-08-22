@@ -68,7 +68,7 @@ cross_normalize_venue() {
 cross_ensure_venue() {
   local v
   v="$(cross_normalize_venue "$1")"
-  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ ]]; then
+  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ) ]]; then
     echo "[ERROR] 非法 cross venue: $1（必须是 -futures/-swap/-perp/-perpetual，禁止 margin/spot）" >&2
     return 1
   fi
@@ -114,4 +114,42 @@ cross_infer_pair_from_name() {
   if [[ -n "$open_ex" && -n "$hedge_ex" ]]; then
     echo "${open_ex},${hedge_ex}"
   fi
+}
+
+# 同步 cross 合约应急操作入口及其子脚本。
+# 这些脚本部署到目标目录的 cross_scripts/ 下，便于在目标目录执行：
+#   ./cross_scripts/cross_contract_ops.py cancel binance
+#   ./cross_scripts/cross_contract_ops.py flatten both --execute
+cross_sync_contract_ops_scripts() {
+  local root_dir="$1"
+  local target_dir="$2"
+  local dest_dir="$target_dir/cross_scripts"
+  mkdir -p "$dest_dir"
+
+  local files=(
+    "cross_scripts/cross_contract_ops.py"
+    "scripts/binance_cancel_all_std_um_ws_orders.py"
+    "scripts/flatten_binance_std_um.py"
+    "scripts/binance_local_ip.py"
+    "scripts/sell_margin_spot.py"
+    "scripts/okx_swap_open_orders.py"
+    "scripts/flatten_okx_swap_exposure.py"
+    "scripts/gate_cancel_all_um_orders.py"
+    "scripts/flatten_gate_um_exposure.py"
+    "scripts/bybit_cancel_all_um_orders.py"
+    "scripts/flatten_bybit_um_exposure.py"
+    "scripts/bitget_cancel_all_um_orders.py"
+    "scripts/flatten_bitget_um_exposure.py"
+  )
+
+  local file src
+  for file in "${files[@]}"; do
+    src="$root_dir/$file"
+    if [[ -f "$src" ]]; then
+      rsync -a "$src" "$dest_dir/"
+      chmod +x "$dest_dir/$(basename "$file")" 2>/dev/null || true
+    else
+      echo "[WARN] cross contract ops helper missing: $src" >&2
+    fi
+  done
 }

@@ -1,13 +1,14 @@
 use crate::cfg::Config;
-use crate::common::exchange::Exchange;
-use crate::signal::common::TradingVenue;
 use log::warn;
+use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 use serde_json::Value;
 use std::collections::HashSet;
 
 const BINANCE_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 const BINANCE_FUTURES_PUBLIC_WS_URL: &str = "wss://fstream.binance.com/public/ws";
 const BINANCE_FUTURES_MARKET_WS_URL: &str = "wss://fstream.binance.com/market/ws";
+const BINANCE_COIN_FUTURES_WS_URL: &str = "wss://dstream.binance.com/ws";
 const BYBIT_SPOT_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_LINEAR_PUBLIC_WS_URL: &str = "wss://stream.bybit.com/v5/public/linear";
 const BYBIT_SPOT_SBE_WS_URL: &str = "wss://stream.bybit.com/v5/public-sbe/spot";
@@ -29,9 +30,20 @@ pub enum BinanceFuturesStreamKind {
     Kline,
 }
 
+/// Bitget UTA v3 (SBE) 用小写 instType，且没有 MARGIN 类别（margin 在 v3 归 spot 端）。
+fn bitget_v3_inst_type_for_venue(venue: TradingVenue) -> &'static str {
+    match venue {
+        TradingVenue::BitgetFutures => "usdt-futures",
+        TradingVenue::BitgetCoinFutures => "coin-futures",
+        TradingVenue::BitgetMargin => "spot",
+        _ => panic!("unsupported venue for bitget v3: {:?}", venue),
+    }
+}
+
 fn bitget_inst_type_for_venue(venue: TradingVenue) -> &'static str {
     match venue {
         TradingVenue::BitgetFutures => "USDT-FUTURES",
+        TradingVenue::BitgetCoinFutures => "COIN-FUTURES",
         TradingVenue::BitgetMargin => "SPOT",
         _ => "USDT-FUTURES",
     }
@@ -46,7 +58,10 @@ fn gate_channel_prefix_for_venue(venue: TradingVenue) -> &'static str {
 }
 
 fn bitget_derivatives_supported_for_venue(venue: TradingVenue) -> bool {
-    venue == TradingVenue::BitgetFutures
+    matches!(
+        venue,
+        TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+    )
 }
 
 fn hyperliquid_coin_from_internal(symbol: &str) -> String {
@@ -155,22 +170,41 @@ fn construct_subscribe_message(
             }
         }
         Exchange::Bitget => {
-            // Bitget v2 API 格式
-            let inst_type = bitget_inst_type_for_venue(venue);
-            let args: Vec<Value> = symbols
-                .iter()
-                .map(|symbol| {
-                    serde_json::json!({
-                        "instType": inst_type,
-                        "channel": channel,
-                        "instId": symbol
+            // publicTrade 走 UTA v3 SBE 端口，命名约定: topic + symbol + 小写 instType
+            // 其他 channel (books / candle1m / books1) 还是 v2 端口的 channel + instId + 大写 instType
+            if channel == "publicTrade" {
+                let inst_type = bitget_v3_inst_type_for_venue(venue);
+                let args: Vec<Value> = symbols
+                    .iter()
+                    .map(|symbol| {
+                        serde_json::json!({
+                            "instType": inst_type,
+                            "topic": channel,
+                            "symbol": symbol
+                        })
                     })
+                    .collect();
+                serde_json::json!({
+                    "op": "subscribe",
+                    "args": args
                 })
-                .collect();
-            serde_json::json!({
-                "op": "subscribe",
-                "args": args
-            })
+            } else {
+                let inst_type = bitget_inst_type_for_venue(venue);
+                let args: Vec<Value> = symbols
+                    .iter()
+                    .map(|symbol| {
+                        serde_json::json!({
+                            "instType": inst_type,
+                            "channel": channel,
+                            "instId": symbol
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "op": "subscribe",
+                    "args": args
+                })
+            }
         }
         Exchange::Gate => {
             // Gate.io API 格式
@@ -417,7 +451,7 @@ impl BitgetPerpsSubscribeMsgs {
     pub async fn new(cfg: &Config) -> Self {
         if !bitget_derivatives_supported_for_venue(cfg.venue) {
             warn!(
-                "bitget derivatives metrics are only supported on bitget-futures; current venue={} will skip derivatives subscriptions",
+                "bitget derivatives metrics require a Bitget futures venue; current venue={} will skip derivatives subscriptions",
                 cfg.venue.data_pub_slug()
             );
             return Self {
@@ -447,7 +481,7 @@ pub struct GatePerpsSubscribeMsgs {
 }
 
 impl GatePerpsSubscribeMsgs {
-    pub const WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
+    pub const WS_URL: &'static str = "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe";
     pub const MAX_CHANNELS_PER_CONNECTION: usize = 100;
 
     pub async fn new(cfg: &Config) -> Self {
@@ -653,11 +687,15 @@ impl SubscribeMsgs {
             Exchange::Binance | Exchange::Aster => "trade".to_string(),
             Exchange::Okex => "trades".to_string(),
             Exchange::Bybit => "publicTrade".to_string(),
-            Exchange::Bitget => "trade".to_string(),
+            // Bitget 切换到 UTA v3 SBE: topic=publicTrade, URL=BITGET_TRADE_SBE_WS_URL
+            Exchange::Bitget => "publicTrade".to_string(),
             Exchange::Gate => "trades".to_string(),
             Exchange::Hyperliquid => "trades".to_string(),
         }
     }
+
+    /// Bitget trade 走的独立 SBE endpoint (与 v2 公共 endpoint 不同, 不需要鉴权)。
+    pub const BITGET_TRADE_SBE_WS_URL: &'static str = "wss://ws.bitget.com/v3/ws/public/sbe";
 
     fn get_ask_bid_spread_channel(exchange: &Exchange, venue: TradingVenue) -> String {
         match exchange {
@@ -737,6 +775,7 @@ impl SubscribeMsgs {
     ) -> &'static str {
         match venue {
             TradingVenue::BinanceMargin => BINANCE_SPOT_WS_URL,
+            TradingVenue::BinanceCoinFutures => BINANCE_COIN_FUTURES_WS_URL,
             _ => match route {
                 BinanceFuturesWsRoute::Public => BINANCE_FUTURES_PUBLIC_WS_URL,
                 BinanceFuturesWsRoute::Market => BINANCE_FUTURES_MARKET_WS_URL,
@@ -783,7 +822,7 @@ impl SubscribeMsgs {
             //Gate.io: 现货与合约分不同 endpoint
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
-                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe",
             },
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
@@ -813,7 +852,7 @@ impl SubscribeMsgs {
             //Gate.io: 现货与合约分不同 endpoint
             Exchange::Gate => match venue {
                 TradingVenue::GateMargin => "wss://api.gateio.ws/ws/v4/",
-                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt",
+                _ => "wss://fx-ws.gateio.ws/v4/ws/usdt/sbe",
             },
             //Bitget
             Exchange::Bitget => "wss://ws.bitget.com/v2/ws/public",
@@ -828,9 +867,14 @@ impl SubscribeMsgs {
     fn get_signal_subscribe_message(exchange: &Exchange, venue: TradingVenue) -> serde_json::Value {
         match exchange {
             Exchange::Binance | Exchange::Aster => {
+                let signal_symbol = if venue == TradingVenue::BinanceCoinFutures {
+                    "btcusd_perp"
+                } else {
+                    "btcusdt"
+                };
                 serde_json::json!({
                     "method": "SUBSCRIBE",
-                    "params": ["btcusdt@depth5@100ms"],
+                    "params": [format!("{}@depth5@100ms", signal_symbol)],
                     "id": 1,
                 })
             }
@@ -1093,6 +1137,29 @@ mod tests {
             BinancePerpsSubscribeMsgs::WS_URL,
             BINANCE_FUTURES_MARKET_WS_URL
         );
+    }
+
+    #[test]
+    fn binance_coin_futures_streams_use_dstream() {
+        for kind in [
+            BinanceFuturesStreamKind::Depth,
+            BinanceFuturesStreamKind::BookTicker,
+            BinanceFuturesStreamKind::Trade,
+            BinanceFuturesStreamKind::Kline,
+        ] {
+            assert_eq!(
+                SubscribeMsgs::get_binance_ws_url_for_stream_kind(
+                    TradingVenue::BinanceCoinFutures,
+                    kind,
+                ),
+                BINANCE_COIN_FUTURES_WS_URL
+            );
+        }
+        let msg = SubscribeMsgs::get_signal_subscribe_message(
+            &Exchange::Binance,
+            TradingVenue::BinanceCoinFutures,
+        );
+        assert_eq!(msg["params"][0], "btcusd_perp@depth5@100ms");
     }
 
     #[test]

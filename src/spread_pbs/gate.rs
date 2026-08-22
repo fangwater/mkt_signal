@@ -9,12 +9,17 @@
 //! - 心跳: 每 15s 发 `{"time":<unix>,"channel":"<prefix>.ping"}`，否则 25s 后被服务端断开。
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
+use mkt_parsers::gate as gate_codec;
 use serde_json::Value;
 use std::time::Duration;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite_v030::tungstenite::Message;
 
-use crate::signal::common::TradingVenue;
-use crate::spread_pbs::adapter::{BboFrame, KeepaliveSpec, VenueAdapter};
+use crate::spread_pbs::adapter::{
+    BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+};
+use mkt_parsers::msg::mkt_msg::{FundingRateMsg, IndexPriceMsg, MarkPriceMsg};
+use order_common::TradingVenue;
 
 const GATE_SPOT_WS_URL: &str = "wss://api.gateio.ws/ws/v4/";
 const GATE_FUTURES_WS_URL: &str = "wss://fx-ws.gateio.ws/v4/ws/usdt";
@@ -52,97 +57,85 @@ impl VenueAdapter for GateAdapter {
     }
 
     fn build_subscribe(&self, symbols: &[String]) -> Vec<Value> {
-        let chunk_size = GATE_SUBSCRIBE_CHUNK.max(1);
-        let prefix = self.channel_prefix();
-        let channel = format!("{}.book_ticker", prefix);
-        let mut out = Vec::new();
-        for chunk in symbols.chunks(chunk_size) {
-            let payload: Vec<String> = chunk.to_vec();
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            out.push(serde_json::json!({
-                "time": timestamp,
-                "channel": channel,
-                "event": "subscribe",
-                "payload": payload,
-            }));
-        }
-        out
+        self.build_channel_subscribe(symbols, "book_ticker")
     }
 
-    fn parse_frame(&self, value: &Value) -> Result<Vec<BboFrame>> {
+    fn build_trade_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        self.build_channel_subscribe(symbols, "trades")
+    }
+
+    fn build_incremental_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        self.build_order_book_update_subscribe(symbols)
+    }
+
+    fn parse_frame(
+        &self,
+        value: &Value,
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<()> {
         let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("");
         let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        if event == "update" && channel.ends_with(".book_ticker") {
+            if let Some(result) = value.get("result").and_then(|v| v.as_object()) {
+                if result.get("u").is_none() {
+                    return Err(anyhow!("gate {} missing result.u (updateId)", channel));
+                }
+            }
+        }
+
+        if let Some(bbo) = gate_codec::parse_bbo_json(value) {
+            emit(bbo_to_frame(bbo))?;
+            return Ok(());
+        }
+
         if event != "update" || !channel.ends_with(".book_ticker") {
+            return Ok(());
+        }
+        if let Some(result) = value.get("result").and_then(|v| v.as_object()) {
+            if result.get("u").is_none() {
+                return Err(anyhow!("gate {} missing result.u (updateId)", channel));
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_bbo_raw(
+        &self,
+        raw: &[u8],
+        emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+    ) -> Result<bool> {
+        if self.venue != TradingVenue::GateMargin {
+            return Ok(false);
+        }
+        let Some(bbo) = gate_codec::parse_spot_book_ticker_bbo_raw(raw) else {
+            return Ok(false);
+        };
+        emit(bbo_to_frame(bbo))?;
+        Ok(true)
+    }
+
+    fn parse_trade_frame(&self, value: &Value) -> Result<Vec<TradeFrame>> {
+        Ok(gate_codec::parse_trades_json(value)
+            .into_iter()
+            .map(trade_to_frame)
+            .collect())
+    }
+
+    fn parse_incremental_frame(&self, value: &Value) -> Result<Vec<IncrementalFrame>> {
+        Ok(gate_codec::parse_incremental_json(value)
+            .into_iter()
+            .map(book_to_incremental)
+            .collect())
+    }
+
+    fn parse_derivatives_frame(&self, value: &Value) -> Result<Vec<Bytes>> {
+        if self.venue != TradingVenue::GateFutures {
             return Ok(Vec::new());
         }
-
-        let res = value
-            .get("result")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| anyhow!("gate {} missing result object", channel))?;
-
-        // spot: `s`，futures: `s` 也有；个别老接口用 `contract`/`currency_pair`，做兜底
-        let symbol = res
-            .get("s")
-            .and_then(|v| v.as_str())
-            .or_else(|| res.get("contract").and_then(|v| v.as_str()))
-            .or_else(|| res.get("currency_pair").and_then(|v| v.as_str()))
-            .map(|s| s.replace('_', "").to_ascii_uppercase())
-            .ok_or_else(|| anyhow!("gate {} missing result.s", channel))?;
-
-        let seq_id = res
-            .get("u")
-            .and_then(parse_i64_loose)
-            .ok_or_else(|| anyhow!("gate {} missing result.u (updateId)", channel))?;
-
-        // result.t / time_ms 都是 ms；time 是秒。统一升精度到 µs（time 升 *1_000_000）
-        let ts_us = res
-            .get("t")
-            .and_then(parse_i64_loose)
-            .or_else(|| value.get("time_ms").and_then(parse_i64_loose))
-            .map(|ms| ms.saturating_mul(1000))
-            .or_else(|| {
-                value
-                    .get("time")
-                    .and_then(parse_i64_loose)
-                    .map(|s| s.saturating_mul(1_000_000))
-            })
-            .unwrap_or(0);
-
-        let bid_price = res
-            .get("b")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid b", channel, symbol))?;
-        let bid_amount = res
-            .get("B")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid B", channel, symbol))?;
-        let ask_price = res
-            .get("a")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid a", channel, symbol))?;
-        let ask_amount = res
-            .get("A")
-            .and_then(parse_f64_loose)
-            .ok_or_else(|| anyhow!("gate {} {} missing/invalid A", channel, symbol))?;
-
-        if bid_price <= 0.0 || ask_price <= 0.0 || bid_amount <= 0.0 || ask_amount <= 0.0 {
-            return Ok(Vec::new());
-        }
-
-        Ok(vec![BboFrame {
-            symbol,
-            ts_us,
-            seq_id,
-            reset_seq: false,
-            bid_price,
-            bid_amount,
-            ask_price,
-            ask_amount,
-        }])
+        Ok(gate_codec::parse_derivatives_json(value)
+            .into_iter()
+            .map(derivative_to_bytes)
+            .collect())
     }
 
     fn keepalive(&self) -> Option<KeepaliveSpec> {
@@ -157,32 +150,124 @@ impl VenueAdapter for GateAdapter {
                 "time": timestamp,
                 "channel": channel.clone(),
             });
-            Message::Text(body.to_string())
+            Message::Text(body.to_string().into())
         }))
     }
 }
 
-fn parse_i64_loose(v: &Value) -> Option<i64> {
-    if let Some(n) = v.as_i64() {
-        return Some(n);
+impl GateAdapter {
+    fn build_channel_subscribe(&self, symbols: &[String], channel: &str) -> Vec<Value> {
+        let chunk_size = GATE_SUBSCRIBE_CHUNK.max(1);
+        let channel = format!("{}.{}", self.channel_prefix(), channel);
+        let mut out = Vec::new();
+        for chunk in symbols.chunks(chunk_size) {
+            let payload: Vec<String> = chunk.to_vec();
+            let timestamp = now_unix_secs();
+            out.push(serde_json::json!({
+                "time": timestamp,
+                "channel": channel,
+                "event": "subscribe",
+                "payload": payload,
+            }));
+        }
+        out
     }
-    if let Some(n) = v.as_u64() {
-        return Some(n as i64);
+
+    fn build_order_book_update_subscribe(&self, symbols: &[String]) -> Vec<Value> {
+        let channel = format!("{}.order_book_update", self.channel_prefix());
+        let mut out = Vec::new();
+        for symbol in symbols {
+            let payload = match self.venue {
+                TradingVenue::GateMargin => serde_json::json!([symbol.as_str(), "100ms"]),
+                TradingVenue::GateFutures => serde_json::json!([symbol.as_str(), "100ms", "100"]),
+                _ => unreachable!(),
+            };
+            out.push(serde_json::json!({
+                "time": now_unix_secs(),
+                "channel": channel,
+                "event": "subscribe",
+                "payload": payload,
+            }));
+        }
+        out
     }
-    if let Some(s) = v.as_str() {
-        return s.parse::<i64>().ok();
-    }
-    None
 }
 
-fn parse_f64_loose(v: &Value) -> Option<f64> {
-    if let Some(n) = v.as_f64() {
-        return Some(n);
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub(crate) fn bbo_to_frame(bbo: gate_codec::Bbo) -> BboFrame {
+    BboFrame {
+        symbol: bbo.symbol,
+        ts_us: bbo.timestamp_us,
+        seq_id: bbo.seq_id,
+        reset_seq: false,
+        bid_price: bbo.bid_price,
+        bid_amount: bbo.bid_amount,
+        ask_price: bbo.ask_price,
+        ask_amount: bbo.ask_amount,
     }
-    if let Some(s) = v.as_str() {
-        return s.parse::<f64>().ok();
+}
+
+pub(crate) fn trade_to_frame(trade: gate_codec::Trade) -> TradeFrame {
+    TradeFrame {
+        symbol: trade.symbol,
+        timestamp_us: trade.timestamp_us,
+        seq_id: trade.seq_id,
+        trade_id: trade.trade_id,
+        side: trade.side,
+        price: trade.price,
+        amount: trade.amount,
     }
-    None
+}
+
+pub(crate) fn book_to_incremental(book: gate_codec::Book) -> IncrementalFrame {
+    IncrementalFrame::Book {
+        symbol: book.symbol,
+        timestamp: book.timestamp_us,
+        seq_id: book.seq_id,
+        prev_seq_id: book.prev_seq_id,
+        first_update_id: book.first_update_id,
+        final_update_id: book.final_update_id,
+        gap_check: book.gap_check,
+        is_snapshot: book.is_snapshot,
+        bids: book
+            .bids
+            .into_iter()
+            .map(|level| mkt_parsers::msg::mkt_msg::Level::from_values(level.price, level.amount))
+            .collect(),
+        asks: book
+            .asks
+            .into_iter()
+            .map(|level| mkt_parsers::msg::mkt_msg::Level::from_values(level.price, level.amount))
+            .collect(),
+    }
+}
+
+pub(crate) fn derivative_to_bytes(derivative: gate_codec::Derivative) -> Bytes {
+    match derivative {
+        gate_codec::Derivative::MarkPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        gate_codec::Derivative::IndexPrice {
+            symbol,
+            price,
+            timestamp_us,
+        } => IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes(),
+        gate_codec::Derivative::FundingRate {
+            symbol,
+            funding_rate,
+            next_funding_time_us,
+            timestamp_us,
+        } => FundingRateMsg::create(symbol, funding_rate, next_funding_time_us, timestamp_us)
+            .to_bytes(),
+    }
 }
 
 #[cfg(test)]
@@ -202,7 +287,7 @@ mod tests {
                       "b":"19177.79","B":"11","a":"19178.4","A":"1"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         let f = &frames[0];
         assert_eq!(f.symbol, "BTCUSDT");
@@ -221,10 +306,56 @@ mod tests {
                       "b":"3000","B":"0.5","a":"3001","A":"1.0"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateMargin);
-        let frames = a.parse_frame(&v(raw)).unwrap();
+        let frames = a.collect_frame(&v(raw)).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].symbol, "ETHUSDT");
         assert_eq!(frames[0].seq_id, 111);
+    }
+
+    #[test]
+    fn parses_spot_book_ticker_raw_fast_path() {
+        let raw = br#"{
+            "time":1700000000,"time_ms":1700000000123,
+            "channel":"spot.book_ticker","event":"update",
+            "result":{"t":1700000000123,"u":111,"s":"ETH_USDT",
+                      "b":"3000","B":"0.5","a":"3001","A":"1.0"}
+        }"#;
+        let a = GateAdapter::new(TradingVenue::GateMargin);
+        let mut frames = Vec::new();
+        let handled = a
+            .parse_bbo_raw(raw, &mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(handled);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].symbol, "ETHUSDT");
+        assert_eq!(frames[0].seq_id, 111);
+        assert_eq!(frames[0].ts_us, 1_700_000_000_123_000);
+        assert!((frames[0].bid_amount - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn raw_fast_path_does_not_handle_futures_gate_adapter() {
+        let raw = br#"{
+            "time":1700000000,"time_ms":1700000000123,
+            "channel":"futures.book_ticker","event":"update",
+            "result":{"t":1700000000123,"u":111,"s":"ETH_USDT",
+                      "b":"3000","B":"0.5","a":"3001","A":"1.0"}
+        }"#;
+        let a = GateAdapter::new(TradingVenue::GateFutures);
+        let mut frames = Vec::new();
+        let handled = a
+            .parse_bbo_raw(raw, &mut |frame| {
+                frames.push(frame);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(!handled);
+        assert!(frames.is_empty());
     }
 
     #[test]
@@ -234,7 +365,7 @@ mod tests {
             "result":{"t":1,"s":"BTC_USDT","b":"1","B":"1","a":"2","A":"1"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        assert!(a.parse_frame(&v(raw)).is_err());
+        assert!(a.collect_frame(&v(raw)).is_err());
     }
 
     #[test]
@@ -243,7 +374,7 @@ mod tests {
             "channel":"futures.book_ticker","event":"subscribe","result":{"status":"success"}
         }"#;
         let a = GateAdapter::new(TradingVenue::GateFutures);
-        assert!(a.parse_frame(&v(raw)).unwrap().is_empty());
+        assert!(a.collect_frame(&v(raw)).unwrap().is_empty());
     }
 
     #[test]
@@ -256,5 +387,63 @@ mod tests {
         assert_eq!(msgs[0]["event"], "subscribe");
         assert_eq!(msgs[0]["payload"].as_array().unwrap().len(), 100);
         assert_eq!(msgs[2]["payload"].as_array().unwrap().len(), 20);
+    }
+
+    #[test]
+    fn parses_spot_trade_direct() {
+        let raw = r#"{
+            "time":1764559450,"time_ms":1764559450123,
+            "channel":"spot.trades","event":"update",
+            "result":{"id":123456789,"create_time_ms":"1764559450123",
+                      "currency_pair":"BTC_USDT","side":"sell",
+                      "amount":"0.12","price":"86500.5"}
+        }"#;
+        let a = GateAdapter::new(TradingVenue::GateMargin);
+        let frames = a.parse_trade_frame(&v(raw)).unwrap();
+        assert_eq!(frames.len(), 1);
+        let f = &frames[0];
+        assert_eq!(f.symbol, "BTC_USDT");
+        assert_eq!(f.trade_id, 123456789);
+        assert_eq!(f.timestamp_us, 1764559450123 * 1000);
+        assert_eq!(f.side, 'S');
+        assert!((f.amount - 0.12).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parses_futures_incremental_direct() {
+        let raw = r#"{
+            "time":1764559550,"time_ms":1764559550999,
+            "channel":"futures.order_book_update","event":"update",
+            "result":{"s":"BTC_USDT","U":100,"u":101,"t":1764559550999,
+                      "b":[["86499.5","3"]],"a":[["86500.5","1"]]}
+        }"#;
+        let a = GateAdapter::new(TradingVenue::GateFutures);
+        let frames = a.parse_incremental_frame(&v(raw)).unwrap();
+        assert_eq!(frames.len(), 1);
+        match &frames[0] {
+            IncrementalFrame::Book {
+                symbol,
+                timestamp,
+                seq_id,
+                prev_seq_id,
+                first_update_id,
+                final_update_id,
+                gap_check,
+                bids,
+                asks,
+                ..
+            } => {
+                assert_eq!(symbol, "BTC_USDT");
+                assert_eq!(*timestamp, 1_764_559_550_999_000);
+                assert_eq!(*seq_id, 101);
+                assert_eq!(*prev_seq_id, i64::MIN);
+                assert_eq!(*first_update_id, 100);
+                assert_eq!(*final_update_id, 101);
+                assert!(!gap_check);
+                assert_eq!(bids.len(), 1);
+                assert_eq!(asks.len(), 1);
+            }
+            _ => panic!("expected book frame"),
+        }
     }
 }

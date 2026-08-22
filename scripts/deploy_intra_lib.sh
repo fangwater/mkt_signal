@@ -53,6 +53,41 @@ intra_atomic_install() {
   fi
 }
 
+intra_upsert_env_exports_block() {
+  local env_file="$1"
+  local marker="$2"
+  local comment="$3"
+  shift 3
+
+  local env_dir
+  env_dir="$(dirname "$env_file")"
+  mkdir -p "$env_dir"
+  touch "$env_file"
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v begin="# BEGIN ${marker}" -v end="# END ${marker}" '
+    $0 == begin { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+  ' "$env_file" > "$tmp"
+
+  {
+    cat "$tmp"
+    if [[ -s "$tmp" ]]; then
+      echo
+    fi
+    echo "# BEGIN ${marker}"
+    [[ -n "$comment" ]] && echo "# ${comment}"
+    local line
+    for line in "$@"; do
+      echo "export ${line}"
+    done
+    echo "# END ${marker}"
+  } > "$env_file"
+  rm -f "$tmp"
+}
+
 # 校验 exchange 名是否合法（同所期现只需要单 exchange）
 intra_ensure_exchange() {
   local ex

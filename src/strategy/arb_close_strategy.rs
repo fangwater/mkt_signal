@@ -1,32 +1,93 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
+use crate::pre_trade::log_throttle::{
+    log_close_below_min_trade_summary, log_pending_limit_summary,
+};
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
-use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::PersistChannel;
-use crate::signal::common::{SignalBytes, TradingVenue};
-use crate::signal::open_signal::ArbOpenCtx;
-use crate::signal::trade_signal::{SignalType, TradeSignal};
 use crate::strategy::manager::{OrphanStrategyRole, Strategy};
 use crate::strategy::open_strategy_common::{
-    OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
+    OpenCancelInput, OpenSignalInput, OpenStrategyCommon, OpenStrategyState,
 };
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::strategy::trade_update::TradeUpdate;
+use crate::strategy::uniform_order_helper::signal_bbo_from_legs;
 use log::{debug, info, warn};
+use order_common::OrderType;
+use order_common::OrderUpdate;
+use order_common::Side;
+use order_common::TradeEngineResponse;
+use order_common::TradeUpdate;
+use order_common::TradingVenue;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use signal_common::common::TradingLeg;
+use signal_common::open_signal::{ArbOpenCtx, ArbOpenCtxView};
+use signal_common::tick_math::QuantizedValue;
+use signal_common::trade_signal::{SignalType, TradeSignal};
 use std::any::Any;
+use std::borrow::Cow;
 
 const ARB_CLOSE_QTY_EPS: f64 = 1e-12;
+
+struct CloseViewInput<'a> {
+    opening_leg: TradingLeg,
+    hedging_leg: TradingLeg,
+    side: u8,
+    order_type: u8,
+    price_qv: QuantizedValue,
+    amount_qv: QuantizedValue,
+    exp_time: i64,
+    create_ts: i64,
+    price_offset: f64,
+    from_key_len: u32,
+    from_key: Cow<'a, [u8]>,
+}
+
+impl CloseViewInput<'_> {
+    fn price_value(&self) -> f64 {
+        self.price_qv.get_val()
+    }
+
+    fn amount_value(&self) -> f64 {
+        self.amount_qv.get_val()
+    }
+
+    fn price_count(&self) -> i64 {
+        self.price_qv.get_count()
+    }
+
+    fn amount_count(&self) -> i64 {
+        self.amount_qv.get_count()
+    }
+}
 
 /// Arb close 复用 common open 下单生命周期，按信号数量逐单执行。
 pub struct ArbCloseStrategy {
     open_state: OpenStrategyState,
+    force_taker_taker: bool,
 }
 
 impl ArbCloseStrategy {
     pub fn new(strategy_id: i32) -> Self {
         Self {
             open_state: OpenStrategyState::new(strategy_id),
+            force_taker_taker: false,
+        }
+    }
+
+    pub fn new_force(strategy_id: i32) -> Self {
+        Self {
+            open_state: OpenStrategyState::new(strategy_id),
+            force_taker_taker: true,
+        }
+    }
+
+    fn release_close_reservation(&self, client_order_id: i64, reason: &str, silent: bool) {
+        if self.force_taker_taker {
+            return;
+        }
+        if silent {
+            MonitorChannel::instance()
+                .release_close_inventory_unfilled_silent(client_order_id, reason);
+        } else {
+            MonitorChannel::instance().release_close_inventory_unfilled(client_order_id, reason);
         }
     }
 
@@ -34,8 +95,87 @@ impl ArbCloseStrategy {
         self.open_side()
     }
 
-    fn handle_arb_close_signal(&mut self, mut ctx: ArbOpenCtx) {
+    pub fn handle_unimmr_recover_cancel(&mut self, trigger_ts: i64) -> bool {
+        let Some(cancel_side) = self.close_side() else {
+            return false;
+        };
+        self.handle_open_cancel_signal_common(OpenCancelInput {
+            signal_name: "UniMMRRecoverCloseCancel",
+            target_strategy_id: self.strategy_id(),
+            target_client_order_id: 0,
+            cancel_side,
+            cancel_reason: "unimmr_recover",
+            trigger_ts,
+            from_key: b"unimmr_recover".to_vec(),
+            mkt_ts: 0,
+        });
+        true
+    }
+
+    pub fn handle_arb_close_ctx(&mut self, ctx: ArbOpenCtx) {
         let symbol = normalize_symbol_for_internal(&ctx.get_opening_symbol());
+        let hedging_symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
+        self.handle_arb_close_ctx_with_symbols(ctx, symbol, hedging_symbol);
+    }
+
+    pub fn handle_arb_close_ctx_with_symbols(
+        &mut self,
+        mut ctx: ArbOpenCtx,
+        symbol: String,
+        hedging_symbol: String,
+    ) {
+        ctx.set_opening_symbol(&symbol);
+        ctx.set_hedging_symbol(&hedging_symbol);
+        self.handle_arb_close_view_inner(
+            CloseViewInput {
+                opening_leg: ctx.opening_leg,
+                hedging_leg: ctx.hedging_leg,
+                side: ctx.side,
+                order_type: ctx.order_type,
+                price_qv: ctx.price_qv,
+                amount_qv: ctx.amount_qv,
+                exp_time: ctx.exp_time,
+                create_ts: ctx.create_ts,
+                price_offset: ctx.price_offset,
+                from_key_len: ctx.from_key_len,
+                from_key: Cow::Owned(ctx.from_key),
+            },
+            Cow::Owned(symbol),
+            Cow::Owned(hedging_symbol),
+        )
+    }
+
+    pub fn handle_arb_close_view_with_symbols(
+        &mut self,
+        ctx: ArbOpenCtxView<'_>,
+        symbol: &str,
+        hedging_symbol: &str,
+    ) {
+        self.handle_arb_close_view_inner(
+            CloseViewInput {
+                opening_leg: ctx.opening_leg,
+                hedging_leg: ctx.hedging_leg,
+                side: ctx.side,
+                order_type: ctx.order_type,
+                price_qv: ctx.price_qv,
+                amount_qv: ctx.amount_qv,
+                exp_time: ctx.exp_time,
+                create_ts: ctx.create_ts,
+                price_offset: ctx.price_offset,
+                from_key_len: ctx.from_key_len,
+                from_key: Cow::Borrowed(ctx.from_key),
+            },
+            Cow::Borrowed(symbol),
+            Cow::Borrowed(hedging_symbol),
+        )
+    }
+
+    fn handle_arb_close_view_inner(
+        &mut self,
+        ctx: CloseViewInput<'_>,
+        symbol: Cow<'_, str>,
+        _hedging_symbol: Cow<'_, str>,
+    ) {
         if symbol.is_empty() {
             warn!(
                 "ArbCloseStrategy: strategy_id={} empty opening symbol",
@@ -44,9 +184,6 @@ impl ArbCloseStrategy {
             self.open_state.alive = false;
             return;
         }
-        let hedging_symbol = normalize_symbol_for_internal(&ctx.get_hedging_symbol());
-        ctx.set_opening_symbol(&symbol);
-        ctx.set_hedging_symbol(&hedging_symbol);
 
         let Some(venue) = TradingVenue::from_u8(ctx.opening_leg.venue) else {
             warn!(
@@ -79,24 +216,28 @@ impl ArbCloseStrategy {
             return;
         }
 
-        if let Err(e) = MonitorChannel::instance().check_pending_limit_order_for_arb(&symbol, side)
-        {
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip because pending limit order limit hit symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} reason={}",
-                self.open_state.strategy_id,
-                symbol,
-                venue,
-                side,
-                open_pos,
-                ctx.amount_value(),
-                e
-            );
-            self.open_state.alive = false;
-            return;
+        if !self.force_taker_taker {
+            if let Err(e) =
+                MonitorChannel::instance().check_pending_limit_order_for_arb_close(&symbol, side)
+            {
+                log_pending_limit_summary(
+                    "ArbCloseStrategy",
+                    Some(self.open_state.strategy_id),
+                    &symbol,
+                    side,
+                    &e,
+                );
+                self.open_state.alive = false;
+                return;
+            }
         }
 
         let client_order_id = Self::compose_order_id(self.open_state.strategy_id);
-        let qty_multiplier = match self.resolve_open_qty_multiplier(venue, &symbol) {
+        let qty_multiplier = match self.resolve_open_qty_multiplier(
+            venue,
+            &symbol,
+            ctx.price_value(),
+        ) {
             Ok(multiplier) => multiplier,
             Err(err) => {
                 warn!(
@@ -108,109 +249,161 @@ impl ArbCloseStrategy {
             }
         };
         let requested_base_qty = ctx.amount_value() * qty_multiplier;
-        let grant = MonitorChannel::instance().reserve_close_inventory(
+        let raw_order_qty = if self.force_taker_taker {
+            ctx.amount_value()
+        } else {
+            let grant = MonitorChannel::instance().reserve_close_inventory_silent(
+                venue,
+                &symbol,
+                side,
+                requested_base_qty,
+                client_order_id,
+            );
+            if grant.granted_base_qty <= ARB_CLOSE_QTY_EPS {
+                if !close_residual_is_effectively_done(open_pos, requested_base_qty) {
+                    info!(
+                    "ArbCloseStrategy: strategy_id={} skip because close inventory unavailable symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} requested_base={:.8} available_before={:.8} inventory={:.8}",
+                    self.open_state.strategy_id,
+                    symbol,
+                    venue,
+                    side,
+                    open_pos,
+                    ctx.amount_value(),
+                    requested_base_qty,
+                    grant.available_before_base,
+                    grant.closable_inventory_base
+                );
+                }
+                self.open_state.alive = false;
+                return;
+            }
+            grant.granted_base_qty / qty_multiplier
+        };
+
+        // Close must never round up: topping up a dust close can open the opposite side.
+        // If the capped quantity is below venue step/min, release the reservation silently.
+        let (order_qty, order_price) = match MonitorChannel::instance().align_close_order_by_venue(
             venue,
             &symbol,
-            side,
-            requested_base_qty,
-            client_order_id,
-        );
-        if grant.granted_base_qty <= ARB_CLOSE_QTY_EPS {
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip because close inventory unavailable symbol={} venue={:?} side={:?} open_pos={:.8} signal_qty={:.8} requested_base={:.8} available_before={:.8} inventory={:.8}",
-                self.open_state.strategy_id,
-                symbol,
-                venue,
-                side,
-                open_pos,
-                ctx.amount_value(),
-                requested_base_qty,
-                grant.available_before_base,
-                grant.closable_inventory_base
-            );
-            self.open_state.alive = false;
-            return;
-        }
-        let order_qty = grant.granted_base_qty / qty_multiplier;
-        if order_qty + ARB_CLOSE_QTY_EPS < ctx.amount_value() {
-            info!(
-                "ArbCloseStrategy: strategy_id={} clip close qty by close inventory symbol={} venue={:?} side={:?} signal_qty={:.8} order_qty={:.8} requested_base={:.8} granted_base={:.8} inventory={:.8}",
-                self.open_state.strategy_id,
-                symbol,
-                venue,
-                side,
-                ctx.amount_value(),
-                order_qty,
-                requested_base_qty,
-                grant.granted_base_qty,
-                grant.closable_inventory_base
-            );
-        }
-
-        // 方向 & net 都通过后，再做 min_qty / min_notional 检查。
-        // close 不像 open 那样"凑齐到 min"——残余仓位本来就少，凑齐会过头去开反向仓位。
-        // 因此这里只查不补：低于最小要求 → info! 打印具体原因并跳过整张单。
-        let price_hint = {
-            let p = ctx.price_value();
-            if p > 0.0 {
-                Some(p)
-            } else {
-                None
+            raw_order_qty,
+            ctx.price_value(),
+        ) {
+            Ok(Some(aligned)) => aligned,
+            Ok(None) => {
+                self.release_close_reservation(
+                    client_order_id,
+                    "close_qty_below_step_or_min",
+                    true,
+                );
+                self.open_state.alive = false;
+                return;
+            }
+            Err(reason) => {
+                self.release_close_reservation(
+                    client_order_id,
+                    "close_qty_alignment_failed",
+                    false,
+                );
+                info!(
+                    "ArbCloseStrategy: strategy_id={} skip close qty alignment failed symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} raw_order_qty={:.12} price={:.8} reason={}",
+                    self.open_state.strategy_id,
+                    symbol,
+                    venue,
+                    open_pos,
+                    ctx.amount_value(),
+                    raw_order_qty,
+                    ctx.price_value(),
+                    reason
+                );
+                self.open_state.alive = false;
+                return;
             }
         };
+        let price_hint = Some(order_price);
         if let Err(reason) = MonitorChannel::instance()
             .check_min_trading_requirements(venue, &symbol, order_qty, price_hint)
         {
-            MonitorChannel::instance()
-                .release_close_inventory_unfilled(client_order_id, "below_min_trade_requirement");
-            info!(
-                "ArbCloseStrategy: strategy_id={} skip below min trade requirements symbol={} venue={:?} open_pos={:.8} signal_qty={:.8} price_hint={:?} reason={}",
-                self.open_state.strategy_id,
-                symbol,
+            self.release_close_reservation(client_order_id, "below_min_trade_requirement", true);
+            log_close_below_min_trade_summary(
+                "ArbCloseStrategy",
+                Some(self.open_state.strategy_id),
                 venue,
+                &symbol,
+                side,
                 open_pos,
                 order_qty,
                 price_hint,
-                reason
+                &reason,
             );
             self.open_state.alive = false;
             return;
         }
 
         let mkt_ts = ctx.opening_leg.ts.max(ctx.hedging_leg.ts);
+        let signal_bbo = (!self.force_taker_taker)
+            .then(|| signal_bbo_from_legs(Some(&ctx.opening_leg), Some(&ctx.hedging_leg)))
+            .flatten();
         let init = self.handle_open_signal_common(OpenSignalInput {
-            signal_kind: "ArbClose",
-            order_log_name: "ArbClose",
+            signal_kind: if self.force_taker_taker {
+                "ForceArbClose"
+            } else {
+                "ArbClose"
+            },
+            order_log_name: if self.force_taker_taker {
+                "ForceArbClose"
+            } else {
+                "ArbClose"
+            },
             order_rate_bucket: OrderRateBucket::ArbOpen,
             opening_symbol: symbol,
+            opening_symbol_normalized: true,
             venue_u8: ctx.opening_leg.venue,
             side_u8: ctx.side,
-            order_type_u8: ctx.order_type,
+            order_type_u8: if self.force_taker_taker {
+                OrderType::Market.to_u8()
+            } else {
+                ctx.order_type
+            },
             qty: order_qty,
-            price: ctx.price_value(),
+            price: order_price,
             price_count: ctx.price_count(),
             amount_count: ctx.amount_count(),
-            exp_time: ctx.exp_time,
+            exp_time: if self.force_taker_taker {
+                0
+            } else {
+                ctx.exp_time
+            },
             create_ts: ctx.create_ts,
             from_key_len: ctx.from_key_len,
             from_key: ctx.from_key,
+            signal_bbo,
             price_qv: ctx.price_qv,
-            price_offset: ctx.price_offset,
+            order_qty_qv: None,
+            order_price_qv: None,
+            price_offset: if self.force_taker_taker {
+                0.0
+            } else {
+                ctx.price_offset
+            },
             reduce_only: true,
+            bitget_spot_order: false,
             client_order_id: Some(client_order_id),
+            pending_limit_prechecked: true,
             close_ts: 0,
             mkt_ts,
+            signal_type_u8: SignalType::ArbClose as u8,
+            pre_trade_recv_ts: 0,
+            pre_trade_handle_ts: 0,
         });
         if init.is_none() {
-            MonitorChannel::instance()
-                .release_close_inventory_unfilled(client_order_id, "handle_open_signal_failed");
+            self.release_close_reservation(client_order_id, "handle_open_signal_failed", false);
         }
     }
 
     fn handle_signal(&mut self, signal: &TradeSignal) {
         match &signal.signal_type {
-            SignalType::ArbClose => match ArbOpenCtx::from_bytes(signal.context.clone()) {
-                Ok(ctx) => self.handle_arb_close_signal(ctx),
+            SignalType::ArbClose => match ArbOpenCtx::from_slice(signal.context.as_ref()) {
+                Ok(ctx) => self.handle_arb_close_ctx(ctx),
                 Err(err) => {
                     warn!(
                         "ArbCloseStrategy: strategy_id={} decode ArbClose failed: {}",
@@ -270,21 +463,36 @@ impl OpenStrategyCommon for ArbCloseStrategy {
         true
     }
 
+    fn force_taker_taker_hedge(&self) -> bool {
+        self.force_taker_taker
+    }
+
+    fn skip_open_total_exposure_risk_check(&self) -> bool {
+        self.force_taker_taker
+    }
+
+    fn enable_open_order_rate_limit(&self) -> bool {
+        !self.force_taker_taker
+    }
+
     fn update_close_inventory_for_close_fill(&self, client_order_id: i64, filled_base_delta: f64) {
-        MonitorChannel::instance()
-            .apply_close_inventory_fill_delta(client_order_id, filled_base_delta);
+        if !self.force_taker_taker {
+            MonitorChannel::instance()
+                .apply_close_inventory_fill_delta(client_order_id, filled_base_delta);
+        }
     }
 
     fn release_close_inventory_unfilled(&self, client_order_id: i64, reason: &str) {
-        MonitorChannel::instance().release_close_inventory_unfilled(client_order_id, reason);
+        self.release_close_reservation(client_order_id, reason, false);
     }
 
     fn resolve_open_qty_multiplier(
         &self,
         venue: TradingVenue,
         symbol: &str,
+        price: f64,
     ) -> Result<f64, String> {
-        MonitorChannel::instance().qty_multiplier_for_venue(venue, symbol)
+        MonitorChannel::instance().qty_multiplier_for_venue_at_price(venue, symbol, price)
     }
 }
 
@@ -344,5 +552,27 @@ impl Strategy for ArbCloseStrategy {
 impl Drop for ArbCloseStrategy {
     fn drop(&mut self) {
         self.cleanup_strategy_orders();
+    }
+}
+
+fn close_residual_is_effectively_done(open_pos: f64, requested_base_qty: f64) -> bool {
+    requested_base_qty.abs() > ARB_CLOSE_QTY_EPS && open_pos.abs() < requested_base_qty.abs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_residual_silences_open_pos_below_request() {
+        assert!(close_residual_is_effectively_done(7.984725, 640.0));
+        assert!(close_residual_is_effectively_done(80.0, 640.0));
+    }
+
+    #[test]
+    fn close_residual_keeps_logs_at_or_above_request() {
+        assert!(!close_residual_is_effectively_done(640.0, 640.0));
+        assert!(!close_residual_is_effectively_done(700.0, 640.0));
+        assert!(!close_residual_is_effectively_done(1.0, 0.0));
     }
 }

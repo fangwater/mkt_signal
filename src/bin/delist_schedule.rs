@@ -5,7 +5,7 @@ use log::warn;
 use mkt_signal::common::delist_schedule::{
     default_monitored_venues, provider_for_venue, DelistEvent, DelistScheduleQuery,
 };
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
 
 #[derive(Parser)]
 #[command(name = "delist_schedule")]

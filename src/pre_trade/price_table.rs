@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
@@ -38,14 +38,14 @@ impl Default for PriceEntry {
 #[derive(Debug, Default)]
 pub struct PriceTable {
     client: Client,
-    entries: BTreeMap<String, PriceEntry>,
+    entries: HashMap<String, PriceEntry>,
 }
 
 impl PriceTable {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            entries: BTreeMap::new(),
+            entries: HashMap::new(),
         }
     }
 
@@ -77,8 +77,11 @@ impl PriceTable {
 
         let mut map: HashMap<String, PriceEntry> = HashMap::new();
         for raw in raw_list {
-            let symbol = raw.symbol.to_uppercase();
-            if !interested.contains(&symbol) {
+            let symbol = price_symbol_key(&raw.symbol);
+            if !interested
+                .iter()
+                .any(|item| price_symbol_key(item) == symbol)
+            {
                 continue;
             }
             let entry = PriceEntry {
@@ -90,9 +93,12 @@ impl PriceTable {
             map.insert(symbol, entry);
         }
 
-        let mut entries: BTreeMap<String, PriceEntry> = interested
+        let mut entries: HashMap<String, PriceEntry> = interested
             .iter()
-            .map(|sym| (sym.clone(), PriceEntry::new(sym.clone())))
+            .map(|sym| {
+                let key = price_symbol_key(sym);
+                (key.clone(), PriceEntry::new(key))
+            })
             .collect();
 
         for (sym, entry) in map {
@@ -103,7 +109,7 @@ impl PriceTable {
             .iter()
             .filter(|sym| {
                 entries
-                    .get(*sym)
+                    .get(&price_symbol_key(sym))
                     .map(|entry| entry.mark_price == 0.0)
                     .unwrap_or(true)
             })
@@ -118,7 +124,7 @@ impl PriceTable {
     }
 
     pub fn update_mark_price(&mut self, symbol: &str, mark_price: f64, timestamp: i64) {
-        let symbol_upper = symbol.to_uppercase();
+        let symbol_upper = price_symbol_key(symbol);
         let entry = self
             .entries
             .entry(symbol_upper.clone())
@@ -128,7 +134,7 @@ impl PriceTable {
     }
 
     pub fn update_index_price(&mut self, symbol: &str, index_price: f64, timestamp: i64) {
-        let symbol_upper = symbol.to_uppercase();
+        let symbol_upper = price_symbol_key(symbol);
         let entry = self
             .entries
             .entry(symbol_upper.clone())
@@ -138,14 +144,22 @@ impl PriceTable {
     }
 
     pub fn mark_price(&self, symbol: &str) -> Option<f64> {
-        let key = symbol.to_uppercase();
+        let key = price_symbol_key(symbol);
         self.entries
             .get(&key)
             .map(|entry| entry.mark_price)
             .filter(|price| *price > 0.0)
     }
 
-    pub fn snapshot(&self) -> BTreeMap<String, PriceEntry> {
+    pub fn get(&self, symbol: &str) -> Option<&PriceEntry> {
+        self.entries.get(&price_symbol_key(symbol))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &PriceEntry)> {
+        self.entries.iter()
+    }
+
+    pub fn snapshot(&self) -> HashMap<String, PriceEntry> {
         self.entries.clone()
     }
 }
@@ -162,8 +176,60 @@ struct RawPremiumIndex {
     time: i64,
 }
 
+fn price_symbol_key(symbol: &str) -> String {
+    let upper = symbol.trim().to_ascii_uppercase();
+    let normalized = upper.replace(['-', '_', '/'], "");
+    let is_coin_perpetual = normalized.ends_with("USDPERP");
+    let is_bitget_coin_futures = normalized
+        .strip_suffix("CM")
+        .is_some_and(|root| root.ends_with("USD") && root.len() > "USD".len());
+    let is_coin_delivery = normalized.len() > 6
+        && normalized
+            .get(normalized.len() - 6..)
+            .is_some_and(|suffix| suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        && normalized
+            .get(..normalized.len() - 6)
+            .is_some_and(|root| root.ends_with("USD"));
+    if is_coin_perpetual || is_coin_delivery || is_bitget_coin_futures {
+        normalized
+    } else {
+        upper
+    }
+}
+
 fn parse_decimal(value: &str, field: &str, symbol: &str) -> Result<f64> {
     value
         .parse::<f64>()
         .with_context(|| format!("symbol={} field={}", symbol, field))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PriceTable;
+
+    #[test]
+    fn coin_futures_mark_price_keys_accept_exchange_and_internal_symbols() {
+        let mut table = PriceTable::new();
+        table.update_mark_price("BTCUSD_PERP", 50_000.0, 123);
+        assert_eq!(table.mark_price("BTCUSD_PERP"), Some(50_000.0));
+        assert_eq!(table.mark_price("BTCUSDPERP"), Some(50_000.0));
+        assert_eq!(table.get("BTCUSD_PERP").unwrap().symbol, "BTCUSDPERP");
+    }
+
+    #[test]
+    fn bitget_coin_futures_mark_price_keys_accept_exchange_and_internal_symbols() {
+        let mut table = PriceTable::new();
+        table.update_mark_price("BTCUSD_CM", 50_000.0, 123);
+        assert_eq!(table.mark_price("BTCUSD_CM"), Some(50_000.0));
+        assert_eq!(table.mark_price("BTCUSDCM"), Some(50_000.0));
+        assert_eq!(table.get("BTCUSD_CM").unwrap().symbol, "BTCUSDCM");
+    }
+
+    #[test]
+    fn non_coin_underscore_symbols_remain_distinct() {
+        let mut table = PriceTable::new();
+        table.update_mark_price("BTC_USDT", 50_000.0, 123);
+        assert_eq!(table.mark_price("BTC_USDT"), Some(50_000.0));
+        assert_eq!(table.mark_price("BTCUSDT"), None);
+    }
 }

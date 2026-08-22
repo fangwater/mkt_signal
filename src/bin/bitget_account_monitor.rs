@@ -7,33 +7,38 @@
 //! - 解析账户事件并通过 Iceoryx 转发
 //! - 支持主备双路连接
 
+use account_common::bitget_auth::{
+    build_account_subscribe_message, build_fast_fill_subscribe_message,
+    build_orders_subscribe_message, build_positions_subscribe_message, BitgetCredentials,
+    BitgetPrivateWsUrls,
+};
+use account_monitor_common::bitget_user_stream::BitgetUserDataConnection;
+use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::Result;
 use bytes::Bytes;
+use clap::Parser;
 use log::{debug, error, info, warn};
-use mkt_signal::common::basic_account_msg::{
+use mkt_parsers::account_event::bitget_account_event_parser::BitgetAccountEventParser;
+use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
+use mkt_parsers::msg::basic_account_msg::{
     split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
     BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
-    BasicUmUnrealizedMsg,
+    BasicTradeLiteMsg, BasicUmUnrealizedMsg,
 };
-use mkt_signal::common::bitget_account_msg::BitgetBasicOrderMsg;
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
-use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
-use mkt_signal::parser::bitget_account_event_parser::BitgetAccountEventParser;
-use mkt_signal::parser::default_parser::Parser;
-use mkt_signal::portfolio_margin::bitget_auth::{
-    build_account_subscribe_message, build_orders_subscribe_message,
-    build_positions_subscribe_message, BitgetCredentials, BitgetPrivateWsUrls,
-};
-use mkt_signal::portfolio_margin::bitget_user_stream::BitgetUserDataConnection;
-use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use mkt_signal::trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
+use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
+use runtime_common::affinity::maybe_pin_current_thread;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
+use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
+use trade_engine::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
+use trade_engine::query_parsers::bitget_positions_snapshot::parse_bitget_positions_snapshot;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -61,14 +66,117 @@ fn log_credential_preview(label: &str, value: &str) {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "bitget_account_monitor")]
+#[command(about = "Bitget account monitor")]
+struct Args {
+    /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
+}
+
+struct DirectAccountForwarder {
+    forwarder: PmForwarder,
+    deduper: AccountEventDeduper,
+}
+
+thread_local! {
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+}
+
+#[derive(Clone, Copy)]
+struct DirectAccountEventSink;
+
+impl AccountEventSink for DirectAccountEventSink {
+    fn emit(&self, msg: Bytes) -> bool {
+        emit_direct_account_event(msg, None)
+    }
+
+    fn emit_with_dedup_key(&self, msg: Bytes, dedup_key: u64) -> bool {
+        emit_direct_account_event(msg, Some(dedup_key))
+    }
+}
+
+fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
+    DIRECT_FORWARDER.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return false;
+        };
+        let should_forward = match dedup_key {
+            Some(key) => state.deduper.should_forward_key(key),
+            None => state.deduper.should_forward(&msg),
+        };
+        if should_forward {
+            let sent = state.forwarder.send_raw(&msg);
+            log_parsed_event(&msg);
+            sent
+        } else {
+            true
+        }
+    })
+}
+
+fn init_direct_forwarder(exchange: &str) -> Result<()> {
+    let state = DirectAccountForwarder {
+        forwarder: PmForwarder::new(exchange)?,
+        deduper: AccountEventDeduper::new(8192),
+    };
+    DIRECT_FORWARDER.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
+    Ok(())
+}
+
+fn forward_account_event(msg: Bytes) -> bool {
+    DirectAccountEventSink.emit(msg)
+}
+
+fn log_forwarder_stats() {
+    DIRECT_FORWARDER.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.forwarder.log_stats();
+        }
+    });
+}
+
+fn configured_venue_values() -> Vec<String> {
+    [
+        "OPEN_VENUE",
+        "HEDGE_VENUE",
+        "EXEC_VENUE",
+        "EXEC_START_VENUE",
+        "VENUE",
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .map(|value| value.trim().to_ascii_lowercase().replace('_', "-"))
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+fn coin_futures_enabled(configured_venues: &[String]) -> bool {
+    configured_venues
+        .iter()
+        .any(|value| value == "bitget-coin-futures")
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
+    maybe_pin_current_thread(args.core, "ACCOUNT_MONITOR_CORE")?;
 
     let credentials = BitgetCredentials::from_env()?;
     log_credential_preview("BITGET_API_KEY", &credentials.api_key);
     log_credential_preview("BITGET_API_SECRET", &credentials.secret_key);
     log_credential_preview("BITGET_API_PASSPHRASE", &credentials.passphrase);
+    let configured_venues = configured_venue_values();
+    let poll_coin_futures = coin_futures_enabled(&configured_venues);
+    info!(
+        "Bitget position scopes: usdt_futures=true coin_futures={} configured_venues={:?}",
+        poll_coin_futures, configured_venues
+    );
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     setup_signals(shutdown_tx.clone());
@@ -85,19 +193,19 @@ async fn main() -> Result<()> {
     let mut subscribe_messages = vec![
         build_account_subscribe_message(),
         build_positions_subscribe_message(),
+        build_fast_fill_subscribe_message(),
     ];
     subscribe_messages.extend(build_orders_subscribe_message());
 
-    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
-
-    let mut forwarder = PmForwarder::new("bitget")?;
-    let mut deduper = AccountEventDeduper::new(8192);
+    init_direct_forwarder("bitget")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
-    let mut balance_poll = spawn_bitget_balance_poll(
+    let mut balance_poll =
+        spawn_bitget_balance_poll(credentials.clone(), primary_ip.clone(), shutdown_rx.clone());
+    let mut position_poll = spawn_bitget_position_poll(
         credentials.clone(),
         primary_ip.clone(),
-        evt_tx.clone(),
         shutdown_rx.clone(),
+        poll_coin_futures,
     );
 
     let mut primary = spawn_bitget_stream_path(
@@ -107,7 +215,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         subscribe_messages.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut secondary = spawn_bitget_stream_path(
@@ -117,7 +224,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         subscribe_messages.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -125,14 +231,8 @@ async fn main() -> Result<()> {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => { break; }
-            Some(msg) = evt_rx.recv() => {
-                if deduper.should_forward(&msg) {
-                    log_parsed_event(&msg);
-                    forwarder.send_raw(&msg);
-                }
-            }
             _ = stats.tick() => {
-                forwarder.log_stats();
+                log_forwarder_stats();
             }
             res = &mut balance_poll => {
                 match res {
@@ -143,8 +243,21 @@ async fn main() -> Result<()> {
                     balance_poll = spawn_bitget_balance_poll(
                         credentials.clone(),
                         primary_ip.clone(),
-                        evt_tx.clone(),
                         shutdown_rx.clone(),
+                    );
+                }
+            }
+            res = &mut position_poll => {
+                match res {
+                    Ok(()) => warn!("position poll task exited; restarting"),
+                    Err(e) => warn!("position poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    position_poll = spawn_bitget_position_poll(
+                        credentials.clone(),
+                        primary_ip.clone(),
+                        shutdown_rx.clone(),
+                        poll_coin_futures,
                     );
                 }
             }
@@ -161,7 +274,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         subscribe_messages.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -179,7 +291,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         subscribe_messages.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -217,11 +328,23 @@ fn build_bitget_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result
 }
 
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
-    let event_type = mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+    let event_type = mkt_parsers::msg::basic_account_msg::get_basic_event_type(&payload);
     if matches!(event_type, BasicAccountEventType::Error) {
         return None;
     }
     Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
+}
+
+fn send_wrapped_payload(payload: Bytes, context: &str) {
+    send_wrapped_payload_for_scope(BasicAccountScope::BitgetUnified, payload, context);
+}
+
+fn send_wrapped_payload_for_scope(scope: BasicAccountScope, payload: Bytes, context: &str) {
+    if let Some(wrapped) = wrap_basic_payload(scope, payload) {
+        if !forward_account_event(wrapped) {
+            warn!("failed to forward {}", context);
+        }
+    }
 }
 
 fn sign_bitget_rest_request(
@@ -276,10 +399,42 @@ fn parse_bitget_account_assets_snapshot(json: &str) -> Option<Vec<Bytes>> {
     parse_bitget_account_balance_snapshot(json)
 }
 
+async fn bitget_rest_get_positions(
+    client: &reqwest::Client,
+    credentials: &BitgetCredentials,
+    category: &str,
+) -> Result<String> {
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
+    let path = "/api/v3/position/current-position";
+    let query = format!("category={category}");
+    let request_path = format!("{}?{}", path, query);
+    let sign = sign_bitget_rest_request(credentials, timestamp_ms, "GET", &request_path);
+    let url = format!("https://api.bitget.com{}", request_path);
+
+    let resp = client
+        .get(url)
+        .header("ACCESS-KEY", &credentials.api_key)
+        .header("ACCESS-SIGN", sign)
+        .header("ACCESS-TIMESTAMP", timestamp_ms.to_string())
+        .header("ACCESS-PASSPHRASE", &credentials.passphrase)
+        .header("locale", "zh-CN")
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "bitget current-position GET failed: status={} body={}",
+            status.as_u16(),
+            body
+        );
+    }
+    Ok(body)
+}
+
 fn spawn_bitget_balance_poll(
     credentials: BitgetCredentials,
     local_ip: String,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -307,13 +462,10 @@ fn spawn_bitget_balance_poll(
                                     if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(&payload) {
                                         current_borrow_symbols.insert(msg.symbol.clone());
                                     }
-                                    if let Some(wrapped) =
-                                        wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
-                                    {
-                                        if let Err(e) = evt_tx.send(wrapped) {
-                                            warn!("failed to send Bitget REST balance msg: {}", e);
-                                        }
-                                    }
+                                    send_wrapped_payload(
+                                        payload,
+                                        "Bitget REST balance msg",
+                                    );
                                 }
                                 let mut stale_symbols: Vec<String> = previous_borrow_symbols
                                     .difference(&current_borrow_symbols)
@@ -333,16 +485,10 @@ fn spawn_bitget_balance_poll(
                                         0.0,
                                     )
                                     .to_bytes();
-                                    if let Some(wrapped) =
-                                        wrap_basic_payload(BasicAccountScope::BitgetUnified, payload)
-                                    {
-                                        if let Err(e) = evt_tx.send(wrapped) {
-                                            warn!(
-                                                "failed to send Bitget REST zero borrow cleanup: {}",
-                                                e
-                                            );
-                                        }
-                                    }
+                                    send_wrapped_payload(
+                                        payload,
+                                        "Bitget REST zero borrow cleanup",
+                                    );
                                 }
                                 previous_borrow_symbols = current_borrow_symbols;
                             }
@@ -358,6 +504,97 @@ fn spawn_bitget_balance_poll(
     })
 }
 
+fn spawn_bitget_position_poll(
+    credentials: BitgetCredentials,
+    local_ip: String,
+    mut shutdown_rx: watch::Receiver<bool>,
+    include_coin_futures: bool,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = match build_bitget_rest_client(Some(&local_ip), Duration::from_secs(10)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("build Bitget REST client failed: {:?}", e);
+                return;
+            }
+        };
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut categories = vec![("USDT-FUTURES", BasicAccountScope::BitgetUnified)];
+        if include_coin_futures {
+            categories.push(("COIN-FUTURES", BasicAccountScope::BitgetUnifiedCoinFutures));
+        }
+        let mut previous_positions: HashMap<BasicAccountScope, HashSet<(String, char)>> =
+            HashMap::new();
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    for (category, scope) in &categories {
+                    match bitget_rest_get_positions(&client, &credentials, category).await {
+                        Ok(body) => {
+                            if let Some(msgs) = parse_bitget_positions_snapshot(&body) {
+                                let mut current_positions: HashSet<(String, char)> = HashSet::new();
+                                for payload in msgs {
+                                    let event_type =
+                                        mkt_parsers::msg::basic_account_msg::get_basic_event_type(&payload);
+                                    if matches!(event_type, BasicAccountEventType::PositionUpdate) {
+                                        if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
+                                            current_positions.insert((
+                                                msg.inst_id().to_string(),
+                                                msg.position_side(),
+                                            ));
+                                        }
+                                    }
+                                    send_wrapped_payload_for_scope(
+                                        *scope,
+                                        payload,
+                                        "Bitget REST position msg",
+                                    );
+                                }
+
+                                let previous = previous_positions.entry(*scope).or_default();
+                                let mut stale_positions: Vec<(String, char)> = previous
+                                    .difference(&current_positions)
+                                    .cloned()
+                                    .collect();
+                                stale_positions.sort();
+                                for (inst_id, side) in stale_positions {
+                                    let ts = chrono::Utc::now().timestamp_millis();
+                                    info!(
+                                        "Bitget REST position snapshot missing previously-seen position; emitting zero cleanup: category={} inst_id={} side={}",
+                                        category, inst_id, side
+                                    );
+                                    send_wrapped_payload_for_scope(
+                                        *scope,
+                                        BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
+                                            .to_bytes(),
+                                        "Bitget REST zero position cleanup",
+                                    );
+                                    send_wrapped_payload_for_scope(
+                                        *scope,
+                                        BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
+                                            .to_bytes(),
+                                        "Bitget REST zero pnl cleanup",
+                                    );
+                                }
+                                *previous = current_positions;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Bitget {} position poll failed: {:?}", category, e);
+                        }
+                    }
+                    }
+                }
+            }
+        }
+        info!("Bitget position poller exiting");
+    })
+}
+
 fn spawn_bitget_stream_path(
     name: &'static str,
     ws_url: &str,
@@ -365,7 +602,6 @@ fn spawn_bitget_stream_path(
     credentials: BitgetCredentials,
     subscribe_messages: Vec<serde_json::Value>,
     shutdown_rx: watch::Receiver<bool>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
 ) -> tokio::task::JoinHandle<()> {
     let ws_url = ws_url.to_string();
@@ -376,7 +612,7 @@ fn spawn_bitget_stream_path(
                 name, ws_url, local_ip
             );
 
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
 
             let mut conn = MktConnection::new(
                 ws_url.clone(),
@@ -394,36 +630,25 @@ fn spawn_bitget_stream_path(
                 subscribe_messages.clone(),
                 session_max,
             );
-
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let evt_tx_clone = evt_tx.clone();
-            let local_ip_log = local_ip.clone();
             let parser = BitgetAccountEventParser::new();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] bitget ws json: {}", name, local_ip_log, s);
-                                    } else {
-                                        debug!("[{}][ip={}] bitget ws bin: {} bytes", name, local_ip_log, b.len());
-                                    }
-                                    let _ = parser.parse(b, &evt_tx_clone);
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                    warn!("[{}] lagged: skipped {} msgs", name, skipped);
-                                }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
-                    }
+            let handler_name = name;
+            let handler_local_ip = local_ip.clone();
+            runner.set_raw_handler(Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    debug!(
+                        "[{}][ip={}] bitget ws json: {}",
+                        handler_name, handler_local_ip, s
+                    );
+                } else {
+                    debug!(
+                        "[{}][ip={}] bitget ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
                 }
-            });
+                let _ = parser.parse(b, &DirectAccountEventSink);
+            }));
 
             if let Err(e) = runner.start_ws().await {
                 error!("[{}] connection error: {}", name, e);
@@ -522,6 +747,23 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::TradeUpdateLite => {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
+                info!(
+                    "Bitget TradeUpdateLite: scope={} venue={} ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
+                    account_scope.as_str(),
+                    m.venue,
+                    m.event_time,
+                    m.symbol,
+                    m.client_order_id,
+                    m.trade_id_str(),
+                    m.side,
+                    m.is_maker,
+                    m.last_executed_price,
+                    m.last_executed_quantity
+                );
+            }
+        }
         _ => {}
     }
 }
@@ -539,6 +781,10 @@ impl AccountEventDeduper {
             order: VecDeque::with_capacity(capacity),
             capacity,
         }
+    }
+
+    fn should_forward_key(&mut self, key: u64) -> bool {
+        self.remember_key(key)
     }
 
     fn should_forward(&mut self, msg: &Bytes) -> bool {
@@ -567,7 +813,10 @@ impl AccountEventDeduper {
             BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => return true,
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_trade_lite(&msg)),
+            BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,
             BasicAccountEventType::Error => return true,
         };
 
@@ -577,6 +826,10 @@ impl AccountEventDeduper {
 
         let key = self.hash64(&[account_scope as u32 as u64, key]);
 
+        self.remember_key(key)
+    }
+
+    fn remember_key(&mut self, key: u64) -> bool {
         if self.seen.contains(&key) {
             return false;
         }
@@ -664,6 +917,17 @@ impl AccountEventDeduper {
             msg.event_time as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_trade_lite(&self, msg: &BasicTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.client_order_id as u64,
+            self.hash_str64(msg.trade_id_str()),
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }

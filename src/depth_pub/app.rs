@@ -2,26 +2,25 @@
 //!
 //! 订阅 mkt_pub 的 incremental 数据，维护订单簿，发布深度快照
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use indexmap::IndexSet;
 use log::{debug, info, warn};
-use std::collections::HashMap;
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::cfg::DepthPubConfig;
 use super::depth_msg::DepthMsg;
 use super::orderbook::OrderBook;
 use super::publisher::DepthMsgPublisher;
-use super::query_logic::build_query_response;
-use super::query_server::DepthQuerySocketServer;
+use super::query_logic::{build_query_response, DepthQuerySource};
 use super::query_snapshot::{QuerySnapshotStore, SymbolQuerySnapshot};
-use crate::signal::common::TradingVenue;
-use crate::signal::venue_min_qty_table::VenueMinQtyTable;
+use depth_pub_common::query_server::{DepthQueryConnection, DepthQuerySocketServer};
+use order_common::TradingVenue;
+use signal_common::venue_min_qty_table::VenueMinQtyTable;
 
 /// IceOryx 增量消息缓冲区大小 (与 mkt_pub 一致)
 const INC_MAX_BYTES: usize = 2048;
@@ -32,6 +31,10 @@ const DEDUP_WINDOW_SIZE: usize = 4096 * 2;
 const KEEPALIVE_PUSH_INTERVAL_MS: u64 = 1000;
 const BTC_DEPTH25_LOG_INTERVAL_SECS: u64 = 30;
 const PUBLISH_OUTCOME_LOG_INTERVAL_SECS: u64 = 10;
+const MAX_INC_DRAIN_PER_POLL: usize = 256;
+const MAX_QUERY_ACCEPTS_PER_POLL: usize = 8;
+const MAX_QUERY_REQUESTS_PER_POLL: usize = 64;
+const STATS_INTERVAL_SECS: u64 = 60;
 
 /// 每个 symbol 的状态
 struct SymbolState {
@@ -76,15 +79,16 @@ impl SymbolState {
 
 /// Depth Publisher 应用
 pub struct DepthPubApp {
-    config: DepthPubConfig,
     venue: TradingVenue,
     venue_slug: String,
     publisher: DepthMsgPublisher,
     subscriber: Subscriber<ipc::Service, [u8; INC_MAX_BYTES], ()>,
     query_snapshots: Arc<QuerySnapshotStore>,
+    query_server: DepthQuerySocketServer,
+    query_connections: Vec<DepthQueryConnection>,
     min_qty_table: VenueMinQtyTable,
     /// symbol -> SymbolState
-    symbols: HashMap<String, SymbolState>,
+    symbols: FastHashMap<String, SymbolState>,
     /// 推送间隔
     push_interval: Duration,
     /// 统计
@@ -102,10 +106,79 @@ pub struct DepthPubApp {
     last_publish_outcome_log: Instant,
 }
 
+struct DepthQueryAppSource {
+    snapshots: Arc<QuerySnapshotStore>,
+}
+
+impl DepthQuerySource for DepthQueryAppSource {
+    fn venue_slug(&self) -> &str {
+        self.snapshots.venue_slug()
+    }
+
+    fn resolve_snapshot(&self, symbol: &str) -> Option<Arc<SymbolQuerySnapshot>> {
+        self.snapshots.load(symbol)
+    }
+}
+
+pub struct DepthPubRunner {
+    apps: Vec<DepthPubApp>,
+}
+
+impl DepthPubRunner {
+    pub async fn new(venues: Vec<TradingVenue>) -> Result<Self> {
+        let mut seen = fast_hash_set();
+        let mut apps = Vec::with_capacity(venues.len());
+        for venue in venues {
+            if !seen.insert(venue) {
+                warn!(
+                    "duplicate depth_pub venue ignored: {}",
+                    venue.data_pub_slug()
+                );
+                continue;
+            }
+            apps.push(DepthPubApp::new(venue).await?);
+        }
+        if apps.is_empty() {
+            return Err(anyhow!("depth_pub requires at least one venue"));
+        }
+        let venues: Vec<&str> = apps.iter().map(|app| app.venue_slug.as_str()).collect();
+        info!("DepthPubRunner created: venues={}", venues.join(","));
+        Ok(Self { apps })
+    }
+
+    pub fn run(&mut self) -> Result<()> {
+        let venues: Vec<&str> = self
+            .apps
+            .iter()
+            .map(|app| app.venue_slug.as_str())
+            .collect();
+        info!(
+            "DepthPubRunner starting main loop: venues={}",
+            venues.join(",")
+        );
+        let mut last_stats_time = Instant::now();
+        loop {
+            let mut has_message = false;
+            for app in &mut self.apps {
+                has_message |= app.poll_once()?;
+            }
+            if !has_message {
+                thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
+            }
+            if last_stats_time.elapsed() >= Duration::from_secs(STATS_INTERVAL_SECS) {
+                for app in &mut self.apps {
+                    app.log_stats();
+                }
+                last_stats_time = Instant::now();
+            }
+        }
+    }
+}
+
 impl DepthPubApp {
     /// 创建应用实例
     /// venue: 例如 TradingVenue::BinanceFutures
-    pub async fn new(config: DepthPubConfig, venue: TradingVenue) -> Result<Self> {
+    pub async fn new(venue: TradingVenue) -> Result<Self> {
         let venue_slug = venue.data_pub_slug();
         let push_interval = Duration::from_millis(KEEPALIVE_PUSH_INTERVAL_MS);
         let idle_check_every = std::cmp::max(
@@ -117,11 +190,7 @@ impl DepthPubApp {
         min_qty_table.refresh().await?;
 
         // 创建发布器
-        let publisher = DepthMsgPublisher::new(
-            venue_slug,
-            config.depth_levels.enable_depth25,
-            config.depth_levels.enable_depth50,
-        )?;
+        let publisher = DepthMsgPublisher::new(venue_slug)?;
 
         // 创建订阅器
         let subscriber = Self::create_subscriber(publisher.node(), venue_slug)?;
@@ -129,26 +198,24 @@ impl DepthPubApp {
             "Subscribed to incremental channel: dat_pbs/{}/incremental",
             venue_slug
         );
-
         let query_snapshots = Arc::new(QuerySnapshotStore::new(venue_slug));
+        let query_server = DepthQuerySocketServer::bind(venue_slug)?;
 
         info!(
-            "DepthPubApp created for {}: keepalive_push_interval={}ms, depth25={}, depth50={}",
-            venue_slug,
-            KEEPALIVE_PUSH_INTERVAL_MS,
-            config.depth_levels.enable_depth25,
-            config.depth_levels.enable_depth50
+            "DepthPubApp created for {}: keepalive_push_interval={}ms, depth25=true",
+            venue_slug, KEEPALIVE_PUSH_INTERVAL_MS
         );
 
         Ok(Self {
-            config,
             venue,
             venue_slug: venue_slug.to_string(),
             publisher,
             subscriber,
             query_snapshots,
+            query_server,
+            query_connections: Vec::new(),
             min_qty_table,
-            symbols: HashMap::new(),
+            symbols: fast_hash_map(),
             push_interval,
             update_count: 0,
             push_count: 0,
@@ -182,83 +249,59 @@ impl DepthPubApp {
 
     /// 主循环
     pub fn run(&mut self) -> Result<()> {
-        let _query_thread = self.spawn_query_thread()?;
         info!("DepthMsgApp[{}] starting main loop", self.venue_slug);
         let mut last_stats_time = Instant::now();
-        let stats_interval = Duration::from_secs(60);
-
         loop {
-            // 处理订阅器的消息
-            let mut has_message = false;
-            while let Some(sample) = self.subscriber.receive()? {
-                has_message = true;
-                // 复制数据以避免借用冲突
-                let data = sample.payload().to_vec();
-                self.process_message(&data);
-            }
-
-            // 如果没有消息，短暂休眠避免 CPU 空转
+            let has_message = self.poll_once()?;
             if !has_message {
-                self.idle_check_counter += 1;
-                if self.idle_check_counter >= self.idle_check_every {
-                    self.idle_check_counter = 0;
-                    self.check_timer_push();
-                }
-                std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
-            } else {
-                self.idle_check_counter = 0;
+                thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
             }
-
-            // 定期打印统计
-            if last_stats_time.elapsed() >= stats_interval {
+            if last_stats_time.elapsed() >= Duration::from_secs(STATS_INTERVAL_SECS) {
                 self.log_stats();
                 last_stats_time = Instant::now();
             }
         }
     }
 
-    fn spawn_query_thread(&self) -> Result<thread::JoinHandle<()>> {
-        let venue_slug = self.venue_slug.clone();
-        let snapshots = Arc::clone(&self.query_snapshots);
-        let query_server = DepthQuerySocketServer::bind(&venue_slug)?;
-        let thread_name = format!("depth_query_{}", venue_slug.replace('-', "_"));
-        let handle = thread::Builder::new().name(thread_name).spawn(move || {
-            info!(
-                "Depth query thread started: venue={} socket={}",
-                venue_slug,
-                snapshots.venue_slug()
-            );
-            loop {
-                let Some(stream) = (match query_server.accept() {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        warn!("Depth query accept failed: {err:#}");
-                        thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
-                        continue;
-                    }
-                }) else {
-                    thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
-                    continue;
-                };
+    pub(crate) fn poll_once(&mut self) -> Result<bool> {
+        let mut has_message = false;
+        let mut inc_drained = 0usize;
+        while inc_drained < MAX_INC_DRAIN_PER_POLL {
+            let Some(sample) = self.subscriber.receive()? else {
+                break;
+            };
+            has_message = true;
+            inc_drained += 1;
+            let data = sample.payload().to_vec();
+            self.process_message(&data);
+        }
 
-                let snapshots = Arc::clone(&snapshots);
-                if let Err(err) = thread::Builder::new()
-                    .name("depth_query_conn".to_string())
-                    .spawn(move || {
-                        if let Err(err) =
-                            DepthQuerySocketServer::serve_stream(stream, |payload, resp| {
-                                build_query_response(snapshots.as_ref(), payload, resp)
-                            })
-                        {
-                            warn!("Depth query stream handling failed: {err:#}");
-                        }
-                    })
-                {
-                    warn!("Depth query worker spawn failed: {err:#}");
-                }
+        has_message |= self.poll_query_server()?;
+
+        if !has_message {
+            self.idle_check_counter += 1;
+            if self.idle_check_counter >= self.idle_check_every {
+                self.idle_check_counter = 0;
+                self.check_timer_push();
             }
-        })?;
-        Ok(handle)
+        } else {
+            self.idle_check_counter = 0;
+        }
+
+        Ok(has_message)
+    }
+
+    fn poll_query_server(&mut self) -> Result<bool> {
+        let source = DepthQueryAppSource {
+            snapshots: Arc::clone(&self.query_snapshots),
+        };
+        let activity = self.query_server.poll(
+            &mut self.query_connections,
+            MAX_QUERY_ACCEPTS_PER_POLL,
+            MAX_QUERY_REQUESTS_PER_POLL,
+            |payload, resp| build_query_response(&source, payload, resp),
+        )?;
+        Ok(activity > 0)
     }
 
     /// 处理增量消息
@@ -501,7 +544,6 @@ impl DepthPubApp {
         let amount_scale = self.depth_amount_scale(symbol);
         let mut snapshot_to_publish = None;
         let mut depth25_msg = None;
-        let mut depth50_msg = None;
         let mut attempted_channels = 0u8;
         let mut should_return_early = false;
 
@@ -544,19 +586,9 @@ impl DepthPubApp {
             if !should_return_early {
                 let timestamp = state.orderbook.timestamp;
 
-                if self.config.depth_levels.enable_depth25 {
-                    attempted_channels = attempted_channels.saturating_add(1);
-                    let (bids, asks) = scaled_depth_levels(&state.orderbook, 25, amount_scale);
-                    depth25_msg =
-                        Some(DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks));
-                }
-
-                if self.config.depth_levels.enable_depth50 {
-                    attempted_channels = attempted_channels.saturating_add(1);
-                    let (bids, asks) = scaled_depth_levels(&state.orderbook, 50, amount_scale);
-                    depth50_msg =
-                        Some(DepthMsg::depth50(symbol.to_string(), timestamp, bids, asks));
-                }
+                attempted_channels = attempted_channels.saturating_add(1);
+                let (bids, asks) = scaled_depth_levels(&state.orderbook, 25, amount_scale);
+                depth25_msg = Some(DepthMsg::depth25(symbol.to_string(), timestamp, bids, asks));
 
                 state.last_push_time = Instant::now();
             }
@@ -573,11 +605,6 @@ impl DepthPubApp {
         let mut sent_channels = 0u8;
         if let Some(msg) = depth25_msg.as_ref() {
             if self.publisher.publish_depth25(msg) {
-                sent_channels = sent_channels.saturating_add(1);
-            }
-        }
-        if let Some(msg) = depth50_msg.as_ref() {
-            if self.publisher.publish_depth50(msg) {
                 sent_channels = sent_channels.saturating_add(1);
             }
         }
@@ -638,7 +665,14 @@ impl DepthPubApp {
     }
 
     fn depth_amount_scale(&self, symbol: &str) -> f64 {
-        if !self.venue.is_futures() || matches!(self.venue, TradingVenue::BinanceFutures) {
+        if !self.venue.is_futures()
+            || matches!(
+                self.venue,
+                TradingVenue::BinanceFutures
+                    | TradingVenue::BinanceCoinFutures
+                    | TradingVenue::BitgetCoinFutures
+            )
+        {
             return 1.0;
         }
 

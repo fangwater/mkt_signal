@@ -329,6 +329,16 @@ impl RollingWelfordCovariance {
         }
         self.stats.corr().or(Some(0.0))
     }
+
+    /// Correlation for consumers where a non-finite observation invalidates
+    /// the complete rolling window. Degenerate finite windows remain neutral.
+    #[inline]
+    pub fn corr_strict(&self) -> Option<f64> {
+        if self.buf.len() < 2 || self.invalid_count > 0 {
+            return None;
+        }
+        self.stats.corr().or(Some(0.0))
+    }
 }
 
 #[cfg(test)]
@@ -500,5 +510,22 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn rolling_welford_covariance_strict_corr_rejects_invalid_window() {
+        let mut rolling = RollingWelfordCovariance::new(3);
+        rolling.push(1.0, 2.0);
+        rolling.push(2.0, 4.0);
+        assert!((rolling.corr_strict().unwrap() - 1.0).abs() < 1e-12);
+
+        rolling.push(f64::NAN, 6.0);
+        assert_eq!(rolling.corr(), Some(0.0));
+        assert_eq!(rolling.corr_strict(), None);
+
+        rolling.push(4.0, 8.0);
+        rolling.push(5.0, 10.0);
+        rolling.push(6.0, 12.0);
+        assert!((rolling.corr_strict().unwrap() - 1.0).abs() < 1e-12);
     }
 }

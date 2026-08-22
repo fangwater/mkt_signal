@@ -21,10 +21,10 @@ use prettytable::{Cell, Row};
 use reqwest::Client;
 use serde_json::json;
 
-use crate::portfolio_margin::gate_auth::GateCredentials;
 use crate::pre_trade::auto_repay::build_three_line_table;
 use crate::pre_trade::auto_repay_service::{looks_like_no_liability, Repayer};
-use crate::trade_engine::gate_query::{gate_rest_get, gate_rest_post};
+use account_common::gate_auth::GateCredentials;
+use trade_engine::gate_query::{gate_rest_get, gate_rest_post};
 
 const UNIFIED_ACCOUNTS_PATH: &str = "/api/v4/unified/accounts";
 const UNIFIED_LOANS_PATH: &str = "/api/v4/unified/loans";

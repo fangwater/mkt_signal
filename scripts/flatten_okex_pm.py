@@ -10,7 +10,7 @@ Four-phase pipeline per symbol (no dust convert):
   Phase S — clear-mode only — SELL spot for USDT (free>borrow case)
 
 Modes:
-  align (default) — net_qty = free + swap_position - borrowed = 0;
+  align (default) — net_qty = spot_net + swap_position = 0;
                     SWAP order is allowed to add/flip to match spot exposure
   clear           — close SWAP to 0 with reduceOnly; then B or S to drain asset
 
@@ -52,6 +52,12 @@ OKX_BORROW_REPAY_PATH = "/api/v5/account/borrow-repay"
 OKX_ORDER_PATH = "/api/v5/trade/order"
 OKX_INSTRUMENTS_PUBLIC = "/api/v5/public/instruments"
 
+DEFAULT_HTTP_HEADERS = {
+    "Accept": "application/json",
+    # OKX Cloudflare rejects Python urllib default UA with HTTP 403 / error code 1010.
+    "User-Agent": "curl/8.5.0",
+}
+
 ENV_DIR_PATTERN = re.compile(r"^(okex_fr_|okex[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE")
 ZERO = Decimal("0")
@@ -73,9 +79,10 @@ class SymbolSpec:
 @dataclass
 class SymbolState:
     spec: SymbolSpec
-    free: Decimal
-    borrowed: Decimal
-    interest: Decimal
+    available: Decimal            # OKX available balance, used only as repay/sell capacity
+    spot_net: Decimal             # cashBal/eq net spot balance
+    borrowed: Decimal             # positive liability
+    interest: Decimal             # positive accrued interest
     swap_position_coins: Decimal  # signed, base-coin amount
 
 
@@ -155,7 +162,9 @@ def http_request(
     timeout: int = 15,
 ) -> Tuple[int, str]:
     req = urllib.request.Request(url, data=data, method=method.upper())
-    for key, value in (headers or {}).items():
+    merged_headers = dict(DEFAULT_HTTP_HEADERS)
+    merged_headers.update(headers or {})
+    for key, value in merged_headers.items():
         req.add_header(key, value)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -371,28 +380,40 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
     return out
 
 
-def fetch_balance(api_key: str, api_secret: str, passphrase: str) -> Dict[str, Tuple[Decimal, Decimal, Decimal]]:
-    """Return {asset: (avail_eq, liability, interest)} from OKEx unified balance."""
+def parse_balance_details(details: List[Dict[str, Any]]) -> Dict[str, Tuple[Decimal, Decimal, Decimal, Decimal]]:
+    """Return {asset: (available, spot_net, borrowed, interest)} from OKX balance details."""
+    out: Dict[str, Tuple[Decimal, Decimal, Decimal, Decimal]] = {}
+    for d in details:
+        ccy = str(d.get("ccy", "")).upper()
+        if not ccy:
+            continue
+        available = decimal_or(d.get("availBal"))
+        if available == ZERO:
+            available = decimal_or(d.get("availEq"))
+        spot_net = decimal_or(d.get("cashBal"))
+        if spot_net == ZERO and d.get("cashBal") in (None, ""):
+            spot_net = decimal_or(d.get("eq"))
+        borrowed = abs(decimal_or(d.get("liab")))
+        interest = abs(decimal_or(d.get("interest")))
+        if borrowed >= interest:
+            borrowed -= interest
+        out[ccy] = (available, spot_net, borrowed, interest)
+    return out
+
+
+def fetch_balance(api_key: str, api_secret: str, passphrase: str) -> Dict[str, Tuple[Decimal, Decimal, Decimal, Decimal]]:
+    """Return {asset: (available, spot_net, borrowed, interest)} from OKX unified balance."""
     status, body = okx_private("GET", OKX_BALANCE_PATH, api_key, api_secret, passphrase)
     if not (200 <= status < 300):
         sys.exit(f"[ERROR] {OKX_BALANCE_PATH} status={status} body={body}")
     parsed = json.loads(body)
     if str(parsed.get("code", "")) != "0":
         sys.exit(f"[ERROR] {OKX_BALANCE_PATH}: {body}")
-    out: Dict[str, Tuple[Decimal, Decimal, Decimal]] = {}
+    out: Dict[str, Tuple[Decimal, Decimal, Decimal, Decimal]] = {}
     for account in parsed.get("data", []):
-        for d in account.get("details", []):
-            ccy = str(d.get("ccy", "")).upper()
-            if not ccy:
-                continue
-            avail = decimal_or(d.get("availEq"))
-            liab = decimal_or(d.get("liab"))
-            interest = decimal_or(d.get("interest"))
-            # `liab` in OKEx is signed: negative means borrow (debt).
-            # Convert to positive "borrowed" amount.
-            borrowed = -liab if liab < 0 else ZERO
-            interest_pos = -interest if interest < 0 else interest
-            out[ccy] = (avail, borrowed, interest_pos)
+        details = account.get("details", [])
+        if isinstance(details, list):
+            out.update(parse_balance_details([d for d in details if isinstance(d, dict)]))
     return out
 
 
@@ -432,15 +453,16 @@ def fetch_swap_positions(
 
 def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
     spec = state.spec
-    free = state.free
+    available = max(state.available, ZERO)
+    spot_net = state.spot_net
     borrowed = state.borrowed
     interest = state.interest
     pos_coins = state.swap_position_coins
 
-    repay_amt = min(free, borrowed) if (free > 0 and borrowed > 0) else ZERO
-    free_after = free - repay_amt
+    repay_amt = min(available, borrowed) if (available > 0 and borrowed > 0) else ZERO
+    free_after = available - repay_amt
     borrow_after = borrowed - repay_amt
-    net_qty = free_after - borrow_after + pos_coins
+    net_qty = spot_net + pos_coins
 
     swap_side: Optional[str] = None
     swap_contracts = ZERO
@@ -541,7 +563,7 @@ def print_plan(env_name: str, mode: str, plans: List[SymbolPlan], execute: bool)
         notes = "; ".join(notes_parts)
         print(
             f"{s.spec.symbol:<12} {s.spec.asset:<6} "
-            f"{format_decimal(s.free):>14} "
+            f"{format_decimal(s.available):>14} "
             f"{format_decimal(s.borrowed):>14} "
             f"{format_decimal(s.interest):>10} "
             f"{format_decimal(s.swap_position_coins):>14} "
@@ -703,6 +725,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--symbols",
+        "--symbol",
+        dest="symbols",
         required=True,
         help="Comma-separated symbol list (e.g. BTCUSDT,ETHUSDT); USDT-quoted only",
     )
@@ -726,12 +750,12 @@ def main() -> None:
     plans: List[SymbolPlan] = []
     for sym in symbols:
         spec = specs[sym]
-        free, borrowed, interest = balances.get(spec.asset, (ZERO, ZERO, ZERO))
+        available, spot_net, borrowed, interest = balances.get(spec.asset, (ZERO, ZERO, ZERO, ZERO))
         pos_contracts = swap_positions.get(spec.swap_inst, ZERO)
         pos_coins = pos_contracts * spec.swap_contract_size
         state = SymbolState(
-            spec=spec, free=free, borrowed=borrowed, interest=interest,
-            swap_position_coins=pos_coins,
+            spec=spec, available=available, spot_net=spot_net, borrowed=borrowed,
+            interest=interest, swap_position_coins=pos_coins,
         )
         plans.append(plan_symbol(state, args.mode))
 

@@ -10,6 +10,11 @@ if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
 fi
+CFG_ENV_FILE="${BASE_DIR}/config/tlen_config_server.env"
+if [[ -f "$CFG_ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CFG_ENV_FILE"
+fi
 
 APP_SCRIPT="${SCRIPT_DIR}/tlen_config_server.py"
 if [[ ! -f "$APP_SCRIPT" ]]; then
@@ -21,6 +26,10 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-6322}"
 DEFAULT_VENUE="${DEFAULT_VENUE:-${DEFAULT_OPEN_VENUE:-binance-futures}}"
 APP_NAME="${PM2_NAME:-tlen_config_server_shared}"
+REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_DB="${REDIS_DB:-0}"
+REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   if [[ -x "/home/ubuntu/jupyter_env/bin/python" ]]; then
@@ -57,19 +66,29 @@ if port_in_use "$PORT"; then
   exit 1
 fi
 
+pm2_args=(
+  --name "$APP_NAME"
+  --namespace "$NAMESPACE"
+  --interpreter none
+  --
+  "$APP_SCRIPT"
+  --host "$HOST"
+  --port "$PORT"
+  --redis-host "$REDIS_HOST"
+  --redis-port "$REDIS_PORT"
+  --redis-db "$REDIS_DB"
+  --default-venue "$DEFAULT_VENUE"
+)
+if [[ -n "$REDIS_PASSWORD" ]]; then
+  pm2_args+=(--redis-password "$REDIS_PASSWORD")
+fi
+
 echo "[INFO] 启动 tlen_config_server (port=${PORT}, namespace=${NAMESPACE}, app=${APP_NAME})"
 (
   cd "$BASE_DIR"
   HOST="$HOST" PORT="$PORT" DEFAULT_VENUE="$DEFAULT_VENUE" \
-  npx pm2 start "$PYTHON_BIN" \
-    --name "$APP_NAME" \
-    --namespace "$NAMESPACE" \
-    --interpreter none \
-    -- \
-    "$APP_SCRIPT" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --default-venue "$DEFAULT_VENUE"
+  REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" REDIS_DB="$REDIS_DB" REDIS_PASSWORD="$REDIS_PASSWORD" \
+  npx pm2 start "$PYTHON_BIN" "${pm2_args[@]}"
 )
 
 echo "[INFO] 已启动：npx pm2 status --namespace ${NAMESPACE} ${APP_NAME}"

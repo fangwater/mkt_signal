@@ -178,8 +178,10 @@ def http_request(
         return 0, str(exc), {}
 
 
-def load_json_response(url: str, *, timeout: int = 15) -> Any:
-    status, body, _headers = http_request(url, timeout=timeout)
+def load_json_response(
+    url: str, *, timeout: int = 15, headers: Optional[Dict[str, str]] = None
+) -> Any:
+    status, body, _headers = http_request(url, timeout=timeout, headers=headers)
     if not (200 <= status < 300):
         raise SystemExit(f"request failed: url={url} status={status} body={body}")
     try:
@@ -563,7 +565,11 @@ def fetch_okx_specs() -> Dict[str, OkxSpec]:
 
 
 def fetch_gate_specs() -> Dict[str, GateSpec]:
-    data = load_json_response(GATE_CONTRACTS_URL, timeout=15)
+    data = load_json_response(
+        GATE_CONTRACTS_URL,
+        timeout=15,
+        headers={"X-Gate-Size-Decimal": "1"},
+    )
     if not isinstance(data, list):
         raise SystemExit(f"failed to fetch Gate contracts: {data}")
     specs: Dict[str, GateSpec] = {}
@@ -572,11 +578,17 @@ def fetch_gate_specs() -> Dict[str, GateSpec]:
         if not contract.endswith("_USDT"):
             continue
         symbol = contract.replace("_", "")
+        min_contracts = decimal_or(item.get("order_size_min"), "0")
+        step_contracts = decimal_or(item.get("order_size_step"), "0")
+        if step_contracts <= 0 and bool(item.get("enable_decimal")) and ZERO < min_contracts < Decimal("1"):
+            step_contracts = min_contracts
+        if step_contracts <= 0:
+            step_contracts = Decimal("1")
         specs[symbol] = GateSpec(
             contract=contract,
             contract_size=decimal_or(item.get("quanto_multiplier"), "1"),
-            step_contracts=decimal_or(item.get("order_size_step"), "1"),
-            min_contracts=decimal_or(item.get("order_size_min"), "0"),
+            step_contracts=step_contracts,
+            min_contracts=min_contracts,
         )
     return specs
 

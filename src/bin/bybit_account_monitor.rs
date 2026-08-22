@@ -7,35 +7,38 @@
 //! - 解析账户事件并通过 Iceoryx 转发
 //! - 支持主备双路连接
 
-use anyhow::Result;
-use bytes::Bytes;
-use log::{debug, error, info, warn};
-use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
-    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
-    BasicUmUnrealizedMsg, BinanceTradeLiteMsg,
-};
-use mkt_signal::common::bybit_account_msg::BybitBasicOrderMsg;
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
-use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
-use mkt_signal::parser::bybit_account_event_parser::BybitAccountEventParser;
-use mkt_signal::parser::default_parser::Parser;
-use mkt_signal::portfolio_margin::bybit_auth::{
+use account_common::bybit_auth::{
     build_fast_execution_subscribe_message, build_order_subscribe_message,
     build_position_subscribe_message, build_wallet_subscribe_message, BybitCredentials,
     BybitPrivateWsUrls,
 };
-use mkt_signal::portfolio_margin::bybit_user_stream::BybitUserDataConnection;
-use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
-use mkt_signal::trade_engine::bybit_query::bybit_rest_get;
-use mkt_signal::trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
-use mkt_signal::trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot;
+use account_monitor_common::bybit_user_stream::BybitUserDataConnection;
+use account_monitor_common::pm_forwarder::PmForwarder;
+use anyhow::Result;
+use bytes::Bytes;
+use clap::Parser;
+use log::{debug, error, info, warn};
+use mkt_parsers::account_event::bybit_account_event_parser::BybitAccountEventParser;
+use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
+use mkt_parsers::msg::basic_account_msg::{
+    split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg,
+    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
+    BasicTradeLiteMsg, BasicUmUnrealizedMsg,
+};
+use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
+use runtime_common::affinity::maybe_pin_current_thread;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
+use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
+use trade_engine::bybit_query::{bybit_rest_get, bybit_rest_get_position_list_pages};
+use trade_engine::query_parsers::bybit_account_balance_snapshot::parse_bybit_account_balance_snapshot;
+use trade_engine::query_parsers::bybit_positions_snapshot::parse_bybit_positions_snapshot_pages;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -63,9 +66,85 @@ fn log_credential_preview(label: &str, value: &str) {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "bybit_account_monitor")]
+#[command(about = "Bybit account monitor")]
+struct Args {
+    /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
+}
+
+struct DirectAccountForwarder {
+    forwarder: PmForwarder,
+    deduper: AccountEventDeduper,
+}
+
+thread_local! {
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+}
+
+#[derive(Clone, Copy)]
+struct DirectAccountEventSink;
+
+impl AccountEventSink for DirectAccountEventSink {
+    fn emit(&self, msg: Bytes) -> bool {
+        emit_direct_account_event(msg, None)
+    }
+
+    fn emit_with_dedup_key(&self, msg: Bytes, dedup_key: u64) -> bool {
+        emit_direct_account_event(msg, Some(dedup_key))
+    }
+}
+
+fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>) -> bool {
+    DIRECT_FORWARDER.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return false;
+        };
+        let should_forward = match dedup_key {
+            Some(key) => state.deduper.should_forward_key(key),
+            None => state.deduper.should_forward(&msg),
+        };
+        if should_forward {
+            let sent = state.forwarder.send_raw(&msg);
+            log_parsed_event(&msg);
+            sent
+        } else {
+            true
+        }
+    })
+}
+
+fn init_direct_forwarder(exchange: &str) -> Result<()> {
+    let state = DirectAccountForwarder {
+        forwarder: PmForwarder::new(exchange)?,
+        deduper: AccountEventDeduper::new(8192),
+    };
+    DIRECT_FORWARDER.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
+    Ok(())
+}
+
+fn forward_account_event(msg: Bytes) -> bool {
+    DirectAccountEventSink.emit(msg)
+}
+
+fn log_forwarder_stats() {
+    DIRECT_FORWARDER.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.forwarder.log_stats();
+        }
+    });
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
+    maybe_pin_current_thread(args.core, "ACCOUNT_MONITOR_CORE")?;
 
     let credentials = BybitCredentials::from_env()?;
     log_credential_preview("BYBIT_API_KEY", &credentials.api_key);
@@ -90,23 +169,12 @@ async fn main() -> Result<()> {
         build_fast_execution_subscribe_message(),
     ];
 
-    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
-
-    let mut forwarder = PmForwarder::new("bybit")?;
-    let mut deduper = AccountEventDeduper::new(8192);
+    init_direct_forwarder("bybit")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
-    let mut balance_poll = spawn_bybit_balance_poll(
-        credentials.clone(),
-        primary_ip.clone(),
-        evt_tx.clone(),
-        shutdown_rx.clone(),
-    );
-    let mut position_poll = spawn_bybit_position_poll(
-        credentials.clone(),
-        primary_ip.clone(),
-        evt_tx.clone(),
-        shutdown_rx.clone(),
-    );
+    let mut balance_poll =
+        spawn_bybit_balance_poll(credentials.clone(), primary_ip.clone(), shutdown_rx.clone());
+    let mut position_poll =
+        spawn_bybit_position_poll(credentials.clone(), primary_ip.clone(), shutdown_rx.clone());
 
     let mut primary = spawn_bybit_stream_path(
         "primary",
@@ -115,7 +183,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         subscribe_messages.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut secondary = spawn_bybit_stream_path(
@@ -125,7 +192,6 @@ async fn main() -> Result<()> {
         credentials.clone(),
         subscribe_messages.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -133,14 +199,8 @@ async fn main() -> Result<()> {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => { break; }
-            Some(msg) = evt_rx.recv() => {
-                if deduper.should_forward(&msg) {
-                    log_parsed_event(&msg);
-                    forwarder.send_raw(&msg);
-                }
-            }
             _ = stats.tick() => {
-                forwarder.log_stats();
+                log_forwarder_stats();
             }
             res = &mut balance_poll => {
                 match res {
@@ -151,7 +211,6 @@ async fn main() -> Result<()> {
                     balance_poll = spawn_bybit_balance_poll(
                         credentials.clone(),
                         primary_ip.clone(),
-                        evt_tx.clone(),
                         shutdown_rx.clone(),
                     );
                 }
@@ -165,7 +224,6 @@ async fn main() -> Result<()> {
                     position_poll = spawn_bybit_position_poll(
                         credentials.clone(),
                         primary_ip.clone(),
-                        evt_tx.clone(),
                         shutdown_rx.clone(),
                     );
                 }
@@ -183,7 +241,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         subscribe_messages.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -201,7 +258,6 @@ async fn main() -> Result<()> {
                         credentials.clone(),
                         subscribe_messages.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -239,21 +295,17 @@ fn build_bybit_rest_client(local_ip: Option<&str>, timeout: Duration) -> Result<
 }
 
 fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Option<Bytes> {
-    let event_type = mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+    let event_type = mkt_parsers::msg::basic_account_msg::get_basic_event_type(&payload);
     if matches!(event_type, BasicAccountEventType::Error) {
         return None;
     }
     Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
 }
 
-fn send_wrapped_payload(
-    evt_tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
-    payload: Bytes,
-    context: &str,
-) {
+fn send_wrapped_payload(payload: Bytes, context: &str) {
     if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BybitUnified, payload) {
-        if let Err(e) = evt_tx.send(wrapped) {
-            warn!("failed to send {}: {}", context, e);
+        if !forward_account_event(wrapped) {
+            warn!("failed to forward {}", context);
         }
     }
 }
@@ -261,7 +313,6 @@ fn send_wrapped_payload(
 fn spawn_bybit_balance_poll(
     credentials: BybitCredentials,
     local_ip: String,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -294,11 +345,7 @@ fn spawn_bybit_balance_poll(
                                     if let Ok(msg) = BasicBorrowInterestMsg::from_bytes(&payload) {
                                         current_borrow_symbols.insert(msg.symbol.clone());
                                     }
-                                    send_wrapped_payload(
-                                        &evt_tx,
-                                        payload,
-                                        "Bybit REST balance msg",
-                                    );
+                                    send_wrapped_payload(payload, "Bybit REST balance msg");
                                 }
                                 let mut stale_symbols: Vec<String> = previous_borrow_symbols
                                     .difference(&current_borrow_symbols)
@@ -312,7 +359,6 @@ fn spawn_bybit_balance_poll(
                                         symbol
                                     );
                                     send_wrapped_payload(
-                                        &evt_tx,
                                         BasicBorrowInterestMsg::create(ts, symbol, 0.0, 0.0)
                                             .to_bytes(),
                                         "Bybit REST zero borrow cleanup",
@@ -341,7 +387,6 @@ fn spawn_bybit_balance_poll(
 fn spawn_bybit_position_poll(
     credentials: BybitCredentials,
     local_ip: String,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -361,18 +406,19 @@ fn spawn_bybit_position_poll(
                     if *shutdown_rx.borrow() {
                         break;
                     }
-                    match bybit_rest_get(
+                    match bybit_rest_get_position_list_pages(
                         &client,
                         &credentials,
                         "/v5/position/list",
                         "category=linear&settleCoin=USDT",
                     ).await {
-                        Ok((status, body)) if status == 200 => {
-                            if let Some(msgs) = parse_bybit_positions_snapshot(&body) {
+                        Ok(pages) => {
+                            let page_refs: Vec<&str> = pages.iter().map(String::as_str).collect();
+                            if let Some(msgs) = parse_bybit_positions_snapshot_pages(page_refs) {
                                 let mut current_positions: HashSet<(String, char)> = HashSet::new();
                                 for payload in msgs {
                                     let event_type =
-                                        mkt_signal::common::basic_account_msg::get_basic_event_type(&payload);
+                                        mkt_parsers::msg::basic_account_msg::get_basic_event_type(&payload);
                                     if matches!(event_type, BasicAccountEventType::PositionUpdate) {
                                         if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
                                             current_positions.insert((
@@ -381,11 +427,7 @@ fn spawn_bybit_position_poll(
                                             ));
                                         }
                                     }
-                                    send_wrapped_payload(
-                                        &evt_tx,
-                                        payload,
-                                        "Bybit REST position msg",
-                                    );
+                                    send_wrapped_payload(payload, "Bybit REST position msg");
                                 }
 
                                 let mut stale_positions: Vec<(String, char)> = previous_positions
@@ -400,26 +442,23 @@ fn spawn_bybit_position_poll(
                                         inst_id, side
                                     );
                                     send_wrapped_payload(
-                                        &evt_tx,
                                         BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
                                             .to_bytes(),
                                         "Bybit REST zero position cleanup",
                                     );
                                     send_wrapped_payload(
-                                        &evt_tx,
                                         BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
                                             .to_bytes(),
                                         "Bybit REST zero pnl cleanup",
                                     );
                                 }
                                 previous_positions = current_positions;
+                            } else {
+                                warn!(
+                                    "Bybit position poll parse failed across {} page(s); keeping previous snapshot state",
+                                    pages.len()
+                                );
                             }
-                        }
-                        Ok((status, body)) => {
-                            warn!(
-                                "Bybit position poll returned non-200: status={} body={}",
-                                status, body
-                            );
                         }
                         Err(e) => {
                             warn!("Bybit position poll failed: {:?}", e);
@@ -439,7 +478,6 @@ fn spawn_bybit_stream_path(
     credentials: BybitCredentials,
     subscribe_messages: Vec<serde_json::Value>,
     shutdown_rx: watch::Receiver<bool>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
 ) -> tokio::task::JoinHandle<()> {
     let ws_url = ws_url.to_string();
@@ -450,7 +488,7 @@ fn spawn_bybit_stream_path(
                 name, ws_url, local_ip
             );
 
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
 
             let mut conn = MktConnection::new(
                 ws_url.clone(),
@@ -469,36 +507,25 @@ fn spawn_bybit_stream_path(
                 subscribe_messages.clone(),
                 session_max,
             );
-
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let evt_tx_clone = evt_tx.clone();
-            let local_ip_log = local_ip.clone();
             let parser = BybitAccountEventParser::new();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] bybit ws json: {}", name, local_ip_log, s);
-                                    } else {
-                                        debug!("[{}][ip={}] bybit ws bin: {} bytes", name, local_ip_log, b.len());
-                                    }
-                                    let _ = parser.parse(b, &evt_tx_clone);
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                    warn!("[{}] lagged: skipped {} msgs", name, skipped);
-                                }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
-                    }
+            let handler_name = name;
+            let handler_local_ip = local_ip.clone();
+            runner.set_raw_handler(Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    debug!(
+                        "[{}][ip={}] bybit ws json: {}",
+                        handler_name, handler_local_ip, s
+                    );
+                } else {
+                    debug!(
+                        "[{}][ip={}] bybit ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
                 }
-            });
+                let _ = parser.parse(b, &DirectAccountEventSink);
+            }));
 
             if let Err(e) = runner.start_ws().await {
                 error!("[{}] connection error: {}", name, e);
@@ -590,17 +617,16 @@ fn log_parsed_event(msg: &Bytes) {
             }
         }
         BasicAccountEventType::TradeUpdateLite => {
-            if let Ok(m) = BinanceTradeLiteMsg::from_bytes(&payload) {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
                 info!(
-                    "Bybit TradeUpdateLite: scope={} venue={} ts={} trade_ts={} symbol={} oid={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
+                    "Bybit TradeUpdateLite: scope={} venue={} ts={} trade_ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
                     account_scope.as_str(),
                     m.venue,
                     m.event_time,
                     m.trade_time,
                     m.symbol,
-                    m.order_id,
                     m.client_order_id,
-                    m.trade_id,
+                    m.trade_id_str(),
                     m.side,
                     m.is_maker,
                     m.last_executed_price,
@@ -641,6 +667,10 @@ impl AccountEventDeduper {
         }
     }
 
+    fn should_forward_key(&mut self, key: u64) -> bool {
+        self.remember_key(key)
+    }
+
     fn should_forward(&mut self, msg: &Bytes) -> bool {
         let Some((event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
         else {
@@ -667,7 +697,10 @@ impl AccountEventDeduper {
             BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => return true,
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_trade_lite(&msg)),
+            BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,
             BasicAccountEventType::Error => return true,
         };
 
@@ -677,6 +710,10 @@ impl AccountEventDeduper {
 
         let key = self.hash64(&[account_scope as u32 as u64, key]);
 
+        self.remember_key(key)
+    }
+
+    fn remember_key(&mut self, key: u64) -> bool {
         if self.seen.contains(&key) {
             return false;
         }
@@ -765,6 +802,17 @@ impl AccountEventDeduper {
             msg.execution_type as u64,
             msg.order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_trade_lite(&self, msg: &BasicTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.client_order_id as u64,
+            self.hash_str64(msg.trade_id_str()),
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }

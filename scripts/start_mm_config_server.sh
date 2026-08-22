@@ -102,9 +102,9 @@ fi
 
 echo "[INFO] 启动 mm_config_server (exchange=${DEFAULT_EXCHANGE}, port=${PORT}, namespace=${NAMESPACE}, env=${ENV_NAME})"
 if [[ "$LEGACY_APP_NAME" != "$APP_NAME" ]]; then
-  npx pm2 delete "$LEGACY_APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 delete "$LEGACY_APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 fi
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
 (
   cd "$BASE_DIR"
@@ -118,7 +118,8 @@ npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
     --host "$HOST" \
     --port "$PORT" \
     --default-exchange "$DEFAULT_EXCHANGE" \
-    --env-name "$ENV_NAME"
+    --env-name "$ENV_NAME" \
+    </dev/null
 )
 
 echo "[INFO] 已启动：pm2 status --namespace ${NAMESPACE} ${APP_NAME}"

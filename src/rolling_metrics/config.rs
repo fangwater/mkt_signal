@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use log::{debug, warn};
 use serde_json::Value;
 
-use crate::common::redis_client::RedisClient;
+use runtime_common::redis_client::RedisClient;
 
 const DEFAULT_MAX_LENGTH: usize = 150_000;
 const DEFAULT_REFRESH_SEC: u64 = 60;

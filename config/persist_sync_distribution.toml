@@ -1,0 +1,143 @@
+# Global persist_manager gRPC sync source distribution table.
+#
+# Public endpoints stay inside 6300-6400. The 30 public ports reserved for
+# persist sync are: 6340-6359 and 6380-6389.
+#
+# Only sources explicitly requested by the operator are allocated here. Scripts
+# must fail closed for envs that are not listed.
+
+[strategy]
+public_range = "6300-6400"
+reserved_public_ports = "6340-6359,6380-6389"
+reserved_public_port_count = 30
+protocol = "plaintext gRPC over HTTP/2"
+source_id_rule = "env directory basename unless an allocation explicitly says otherwise"
+bind_rule = "127.0.0.1:(50000 + public_port - 6300)"
+nginx_mapping_rule = "local public_url sources use 127.0.0.1:<public_port> <bind_host>:<bind_port>; remote-public sources use <public_port> <bind_host>:<bind_port>"
+fail_closed = true
+notes = [
+  "Bybit intra arb01 is fixed on SG 6351 and should not be moved.",
+  "Bybit intra arb02 is fixed on SG 6353 and should not be moved.",
+  "Local arb01 sources on this machine use 127.0.0.1 with fixed ports 6342-6345.",
+  "Unmentioned strategies/envs must not receive concrete allocations.",
+]
+
+[regions.jp]
+host = "54.64.147.69"
+base_url = "http://54.64.147.69"
+
+[regions.hk]
+host = "47.238.128.48"
+base_url = "http://47.238.128.48"
+
+[regions.sg]
+# SG 行情网卡 data-plane EIP. SSH may still use 47.131.162.78 on 下单网卡.
+host = "47.128.92.224"
+base_url = "http://47.128.92.224"
+
+# Local intra/cross arb01 sources on this machine.
+[[allocations]]
+port = 6342
+region = "local"
+strategy = "intra"
+env = "binance-intra-arb01"
+source_id = "binance-intra-arb01"
+public_url = "http://127.0.0.1:6342"
+bind = "127.0.0.1:50042"
+status = "fixed"
+
+[[allocations]]
+port = 6343
+region = "local"
+strategy = "intra"
+env = "gate-intra-arb01"
+source_id = "gate-intra-arb01"
+public_url = "http://127.0.0.1:6343"
+bind = "127.0.0.1:50043"
+status = "fixed"
+
+[[allocations]]
+port = 6344
+region = "local"
+strategy = "intra"
+env = "bitget-intra-arb01"
+source_id = "bitget-intra-arb01"
+public_url = "http://127.0.0.1:6344"
+bind = "127.0.0.1:50044"
+status = "fixed"
+
+[[allocations]]
+port = 6345
+region = "local"
+strategy = "cross"
+env = "bitget-gate-cross-arb01"
+source_id = "bitget-gate-cross-arb01"
+public_url = "http://127.0.0.1:6345"
+bind = "127.0.0.1:50045"
+status = "fixed"
+
+# Fixed Bybit intra source on SG.
+[[allocations]]
+port = 6351
+region = "sg"
+strategy = "intra"
+env = "bybit-intra-arb01"
+source_id = "bybit-intra-arb01"
+public_url = "http://47.128.92.224:6351"
+bind = "127.0.0.1:50051"
+status = "fixed"
+
+[[allocations]]
+port = 6353
+region = "sg"
+strategy = "intra"
+env = "bybit-intra-arb02"
+source_id = "bybit-intra-arb02"
+public_url = "http://47.128.92.224:6353"
+bind = "127.0.0.1:50053"
+status = "fixed"
+
+# Fixed Bybit MM source on SG.
+[[allocations]]
+port = 6352
+region = "sg"
+strategy = "mm"
+env = "bybit_mm_alpha"
+source_id = "bybit_mm_alpha"
+public_url = "http://47.128.92.224:6352"
+bind = "127.0.0.1:50052"
+status = "fixed"
+
+# JP OKX MM persist sync source.
+[[allocations]]
+port = 6355
+region = "local"
+strategy = "mm"
+env = "okex_mm_alpha"
+source_id = "okex_mm_alpha"
+public_url = "http://127.0.0.1:6355"
+bind = "127.0.0.1:50055"
+status = "fixed"
+
+# JP Binance MM persist sync source.
+# 50049 collided with okex_fr_arb01 on jp-meta-elvpn; moved to 6356/50056.
+[[allocations]]
+port = 6356
+region = "local"
+strategy = "mm"
+env = "binance_mm_alpha"
+source_id = "binance_mm_alpha"
+public_url = "http://127.0.0.1:6356"
+bind = "127.0.0.1:50056"
+status = "fixed"
+
+# Requested OKEX intra source on HK.
+[[allocations]]
+port = 6354
+region = "hk"
+strategy = "intra"
+env = "okex-intra-arb01"
+source_id = "okex-intra-arb01"
+public_url = "http://47.238.128.48:6354"
+bind = "127.0.0.1:50054"
+status = "planned"

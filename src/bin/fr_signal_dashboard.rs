@@ -5,9 +5,9 @@ use log::info;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
-use mkt_signal::common::exchange::Exchange;
 use mkt_signal::fr_signal_dashboard::{run, FrDashboardConfig};
-use mkt_signal::signal::common::TradingVenue;
+use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 
 const PROCESS_NAME: &str = "fr_signal_dashboard";
 
@@ -70,12 +70,14 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
     match slug.as_str() {
         "binance-margin" => Some(TradingVenue::BinanceMargin),
         "binance-futures" => Some(TradingVenue::BinanceFutures),
+        "binance-coin-futures" => Some(TradingVenue::BinanceCoinFutures),
         "okex-margin" => Some(TradingVenue::OkexMargin),
         "okex-futures" => Some(TradingVenue::OkexFutures),
         "bybit-margin" => Some(TradingVenue::BybitMargin),
         "bybit-futures" => Some(TradingVenue::BybitFutures),
         "bitget-margin" => Some(TradingVenue::BitgetMargin),
         "bitget-futures" => Some(TradingVenue::BitgetFutures),
+        "bitget-coin-futures" => Some(TradingVenue::BitgetCoinFutures),
         "gate-margin" => Some(TradingVenue::GateMargin),
         "gate-futures" => Some(TradingVenue::GateFutures),
         _ => None,
@@ -142,7 +144,7 @@ fn resolve_config(args: Args) -> Result<FrDashboardConfig> {
                             )
                         })?;
                         let (open_venue, hedge_venue) =
-                            mkt_signal::funding_rate::common::venue_pair_for_exchange(inferred);
+                            trade_signal::common::venue_pair_for_exchange(inferred);
                         (open_venue, hedge_venue, inferred)
                     };
                 if let Some(cli_ex) = args.exchange {
@@ -167,7 +169,7 @@ fn resolve_config(args: Args) -> Result<FrDashboardConfig> {
                     "missing --exchange and failed to infer FR namespace from CWD".to_string()
                 })?;
                 let (open_venue, hedge_venue) =
-                    mkt_signal::funding_rate::common::venue_pair_for_exchange(exchange);
+                    trade_signal::common::venue_pair_for_exchange(exchange);
                 (
                     "fr".to_string(),
                     fr_symbol_key_suffix(open_venue, hedge_venue),

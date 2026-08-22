@@ -1,0 +1,615 @@
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
+use rocksdb::{
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, DBCompressionType, Direction, IteratorMode,
+    Options, WriteBatch, WriteOptions, DB,
+};
+
+#[derive(Debug, Clone, Default)]
+pub struct RocksDbTuning {
+    pub block_cache_bytes: Option<usize>,
+    pub write_buffer_size_bytes: Option<usize>,
+    pub db_write_buffer_size_bytes: Option<usize>,
+    pub max_write_buffer_number: Option<i32>,
+}
+
+impl RocksDbTuning {
+    fn apply_db_options(&self, opts: &mut Options) {
+        if let Some(size) = self.db_write_buffer_size_bytes {
+            opts.set_db_write_buffer_size(size);
+        }
+    }
+
+    fn apply_cf_options(&self, opts: &mut Options) {
+        if let Some(n) = self.max_write_buffer_number {
+            opts.set_max_write_buffer_number(n);
+        }
+        if let Some(size) = self.write_buffer_size_bytes {
+            opts.set_write_buffer_size(size);
+        }
+
+        if let Some(cache_bytes) = self.block_cache_bytes {
+            let mut block_opts = BlockBasedOptions::default();
+            if cache_bytes == 0 {
+                block_opts.disable_cache();
+            } else {
+                let cache = Cache::new_lru_cache(cache_bytes);
+                block_opts.set_block_cache(&cache);
+            }
+            opts.set_block_based_table_factory(&block_opts);
+        }
+    }
+}
+
+pub struct RocksDbStore {
+    db: Arc<DB>,
+    sync_writes: bool,
+    read_only: bool,
+    secondary: bool,
+}
+
+fn select_existing_column_families<'a>(
+    required_cf_names: &[&'a str],
+    optional_cf_names: &[&'a str],
+    existing_cf_names: &HashSet<String>,
+) -> Result<Vec<&'a str>> {
+    let missing = required_cf_names
+        .iter()
+        .copied()
+        .filter(|name| !existing_cf_names.contains(*name))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "required column families not found: {}",
+            missing.join(", ")
+        ));
+    }
+
+    let mut selected = required_cf_names.to_vec();
+    for name in optional_cf_names {
+        if existing_cf_names.contains(*name) && !selected.contains(name) {
+            selected.push(*name);
+        }
+    }
+    Ok(selected)
+}
+
+impl RocksDbStore {
+    #[allow(dead_code)]
+    pub fn open(path: &str, cf_names: &[&str], sync_writes: bool) -> Result<Self> {
+        Self::open_with_tuning(path, cf_names, sync_writes, &RocksDbTuning::default())
+    }
+
+    pub fn open_with_tuning(
+        path: &str,
+        cf_names: &[&str],
+        sync_writes: bool,
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if let Some(parent) = path_ref.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create parent directory {:?}", parent))?;
+            }
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut descriptors = vec![ColumnFamilyDescriptor::new("default", cf_opts.clone())];
+        let mut seen = HashSet::new();
+        for name in cf_names {
+            if seen.insert(*name) {
+                descriptors.push(ColumnFamilyDescriptor::new(*name, cf_opts.clone()));
+            }
+        }
+
+        let db = if descriptors.len() == 1 {
+            DB::open(&db_opts, path_ref)?
+        } else {
+            DB::open_cf_descriptors(&db_opts, path_ref, descriptors)?
+        };
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes,
+            read_only: false,
+            secondary: false,
+        })
+    }
+
+    pub fn open_read_only(path: &str, cf_names: &[&str]) -> Result<Self> {
+        Self::open_read_only_with_tuning(path, cf_names, &RocksDbTuning::default())
+    }
+
+    pub fn open_read_only_with_optional_cfs_and_tuning(
+        path: &str,
+        required_cf_names: &[&str],
+        optional_cf_names: &[&str],
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if !path_ref.exists() {
+            return Err(anyhow!("rocksdb path does not exist: {}", path));
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+        let existing_cf_names = DB::list_cf(&db_opts, path_ref)
+            .with_context(|| format!("failed to list column families for {}", path))?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let cf_names = select_existing_column_families(
+            required_cf_names,
+            optional_cf_names,
+            &existing_cf_names,
+        )?;
+
+        Self::open_read_only_with_tuning(path, &cf_names, tuning)
+    }
+
+    pub fn open_with_existing_cfs_and_tuning(
+        path: &str,
+        cf_names: &[String],
+        sync_writes: bool,
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if let Some(parent) = path_ref.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create parent directory {:?}", parent))?;
+            }
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut names = Vec::new();
+        if path_ref.exists() {
+            match DB::list_cf(&db_opts, path_ref) {
+                Ok(existing) => names.extend(existing),
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to list column families for {}", path));
+                }
+            }
+        }
+        names.push("default".to_string());
+        names.extend(cf_names.iter().cloned());
+        names.sort();
+        names.dedup();
+
+        let descriptors = names
+            .into_iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, cf_opts.clone()))
+            .collect::<Vec<_>>();
+
+        let db = DB::open_cf_descriptors(&db_opts, path_ref, descriptors)?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes,
+            read_only: false,
+            secondary: false,
+        })
+    }
+
+    pub fn open_read_only_with_tuning(
+        path: &str,
+        cf_names: &[&str],
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let path_ref = Path::new(path);
+        if !path_ref.exists() {
+            return Err(anyhow!("rocksdb path does not exist: {}", path));
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut cf_list = vec![("default", cf_opts.clone())];
+        let mut seen = HashSet::new();
+        seen.insert("default");
+        for name in cf_names {
+            if seen.insert(*name) {
+                cf_list.push((*name, cf_opts.clone()));
+            }
+        }
+
+        let db = DB::open_cf_with_opts_for_read_only(&db_opts, path_ref, cf_list, false)?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes: false,
+            read_only: true,
+            secondary: false,
+        })
+    }
+
+    pub fn open_secondary_with_tuning(
+        primary_path: &str,
+        secondary_path: &str,
+        cf_names: &[&str],
+        tuning: &RocksDbTuning,
+    ) -> Result<Self> {
+        let primary_ref = Path::new(primary_path);
+        if !primary_ref.exists() {
+            return Err(anyhow!(
+                "rocksdb primary path does not exist: {}",
+                primary_path
+            ));
+        }
+
+        let secondary_ref = Path::new(secondary_path);
+        if let Some(parent) = secondary_ref.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create secondary parent directory {:?}", parent)
+                })?;
+            }
+        }
+
+        let mut db_opts = Options::default();
+        db_opts.create_if_missing(false);
+        db_opts.create_missing_column_families(false);
+        db_opts.set_compression_type(DBCompressionType::Lz4);
+        db_opts.set_max_open_files(-1);
+        tuning.apply_db_options(&mut db_opts);
+
+        let mut cf_opts = Options::default();
+        tuning.apply_cf_options(&mut cf_opts);
+
+        let mut cf_names_to_open = DB::list_cf(&db_opts, primary_ref)
+            .with_context(|| format!("failed to list column families for {}", primary_path))?;
+        cf_names_to_open.push("default".to_string());
+        cf_names_to_open.extend(cf_names.iter().map(|name| (*name).to_string()));
+        cf_names_to_open.sort();
+        cf_names_to_open.dedup();
+
+        let descriptors = cf_names_to_open
+            .into_iter()
+            .map(|name| ColumnFamilyDescriptor::new(name, cf_opts.clone()))
+            .collect::<Vec<_>>();
+
+        let db = DB::open_cf_descriptors_as_secondary(
+            &db_opts,
+            primary_ref,
+            secondary_ref,
+            descriptors,
+        )?;
+
+        Ok(Self {
+            db: Arc::new(db),
+            sync_writes: false,
+            read_only: true,
+            secondary: true,
+        })
+    }
+
+    pub fn try_catch_up_with_primary(&self) -> Result<()> {
+        if !self.secondary {
+            return Ok(());
+        }
+        self.db
+            .try_catch_up_with_primary()
+            .with_context(|| "rocksdb secondary failed to catch up with primary")
+    }
+
+    pub fn has_column_family(&self, cf_name: &str) -> bool {
+        self.db.cf_handle(cf_name).is_some()
+    }
+
+    pub fn put(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db
+            .put_cf_opt(cf, key, value, &write_opts)
+            .with_context(|| format!("failed to write to column family {}", cf_name))
+    }
+
+    pub fn put_many(&self, writes: &[(String, Vec<u8>, Vec<u8>)]) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let mut batch = WriteBatch::default();
+        for (cf_name, key, value) in writes {
+            let cf = self
+                .db
+                .cf_handle(cf_name.as_str())
+                .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+            batch.put_cf(cf, key, value);
+        }
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db
+            .write_opt(batch, &write_opts)
+            .with_context(|| "failed to write rocksdb batch")
+    }
+
+    pub fn delete_many(&self, cf_name: &str, keys: &[Vec<u8>]) -> Result<usize> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+        let mut batch = WriteBatch::default();
+        for key in keys {
+            batch.delete_cf(cf, key);
+        }
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db.write_opt(batch, &write_opts).with_context(|| {
+            format!(
+                "failed to delete rocksdb batch from column family {}",
+                cf_name
+            )
+        })?;
+        Ok(keys.len())
+    }
+
+    pub fn get(&self, cf_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+        self.db
+            .get_cf(cf, key)
+            .with_context(|| format!("failed to read from column family {}", cf_name))
+            .map(|opt| opt.map(|v| v.to_vec()))
+    }
+
+    pub fn delete(&self, cf_name: &str, key: &[u8]) -> Result<()> {
+        if self.read_only {
+            return Err(anyhow!("rocksdb store is read-only"));
+        }
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+        let mut write_opts = WriteOptions::default();
+        write_opts.set_sync(self.sync_writes);
+        self.db
+            .delete_cf_opt(cf, key, &write_opts)
+            .with_context(|| format!("failed to delete from column family {}", cf_name))
+    }
+
+    pub fn scan(
+        &self,
+        cf_name: &str,
+        start_key: Option<&[u8]>,
+        reverse: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+
+        let mode = match (start_key, reverse) {
+            (Some(key), true) => IteratorMode::From(key, Direction::Reverse),
+            (Some(key), false) => IteratorMode::From(key, Direction::Forward),
+            (None, true) => IteratorMode::End,
+            (None, false) => IteratorMode::Start,
+        };
+
+        let iter = self.db.iterator_cf(cf, mode);
+        let mut entries = Vec::new();
+        for (idx, item) in iter.enumerate() {
+            if let Some(max) = limit {
+                if idx >= max {
+                    break;
+                }
+            }
+            let (key, value) = item?;
+            entries.push((key.as_ref().to_vec(), value.as_ref().to_vec()));
+        }
+        Ok(entries)
+    }
+
+    pub fn scan_range(
+        &self,
+        cf_name: &str,
+        start_key: &[u8],
+        end_key_exclusive: &[u8],
+        limit: Option<usize>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        if start_key >= end_key_exclusive {
+            return Ok(Vec::new());
+        }
+
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(start_key, Direction::Forward));
+        let mut entries = Vec::new();
+
+        for item in iter {
+            let (key, value) = item?;
+            if key.as_ref() >= end_key_exclusive {
+                break;
+            }
+
+            entries.push((key.as_ref().to_vec(), value.as_ref().to_vec()));
+            if let Some(max) = limit {
+                if entries.len() >= max {
+                    break;
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    pub fn scan_range_batches<F>(
+        &self,
+        cf_name: &str,
+        start_key: &[u8],
+        end_key_exclusive: &[u8],
+        batch_size: usize,
+        mut on_batch: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(Vec<(Vec<u8>, Vec<u8>)>) -> Result<()>,
+    {
+        if start_key >= end_key_exclusive {
+            return Ok(0);
+        }
+
+        let cf = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
+
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(start_key, Direction::Forward));
+        let batch_size = batch_size.max(1);
+        let mut entries = Vec::with_capacity(batch_size);
+        let mut total = 0usize;
+
+        for item in iter {
+            let (key, value) = item?;
+            if key.as_ref() >= end_key_exclusive {
+                break;
+            }
+
+            entries.push((key.as_ref().to_vec(), value.as_ref().to_vec()));
+            total += 1;
+            if entries.len() >= batch_size {
+                let batch = std::mem::replace(&mut entries, Vec::with_capacity(batch_size));
+                on_batch(batch)?;
+            }
+        }
+
+        if !entries.is_empty() {
+            on_batch(entries)?;
+        }
+
+        Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "persist_manager_storage_{label}_{}_{}",
+            std::process::id(),
+            unique
+        ))
+    }
+
+    #[test]
+    fn optional_column_family_can_be_absent() {
+        let existing = ["default", "orders"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+
+        let selected =
+            select_existing_column_families(&["orders"], &["order_queue_positions"], &existing)
+                .unwrap();
+
+        assert_eq!(selected, vec!["orders"]);
+    }
+
+    #[test]
+    fn required_column_family_must_exist() {
+        let existing = ["default"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+
+        let err = select_existing_column_families(&["orders"], &[], &existing).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("required column families not found: orders"));
+    }
+
+    #[test]
+    fn writable_open_preserves_retired_column_families() {
+        let path = temp_db_path("retired_cf");
+        let path_str = path.to_str().unwrap();
+        let tuning = RocksDbTuning::default();
+
+        {
+            let store = RocksDbStore::open_with_existing_cfs_and_tuning(
+                path_str,
+                &["retired".to_string()],
+                false,
+                &tuning,
+            )
+            .unwrap();
+            store.put("retired", b"key", b"value").unwrap();
+        }
+
+        {
+            let store = RocksDbStore::open_with_existing_cfs_and_tuning(
+                path_str,
+                &["current".to_string()],
+                false,
+                &tuning,
+            )
+            .unwrap();
+            assert!(store.has_column_family("retired"));
+            assert!(store.has_column_family("current"));
+            assert_eq!(
+                store.get("retired", b"key").unwrap(),
+                Some(b"value".to_vec())
+            );
+        }
+
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

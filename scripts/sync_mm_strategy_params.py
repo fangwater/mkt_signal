@@ -73,6 +73,39 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Sync mm strategy params to Redis (venue is inferred from current directory)"
     )
+    p.add_argument(
+        "--return-model-service",
+        default=None,
+        help="Return model service name, e.g. binance-futures-mid-chg-1m; '-' disables it",
+    )
+    p.add_argument(
+        "--environment-model-service",
+        default=None,
+        help="Environment model service name; '-' disables it",
+    )
+    p.add_argument(
+        "--enable-return-score-adjust-hedge",
+        choices=("true", "false"),
+        default=None,
+        help="Enable return-score hedge offset adjustment",
+    )
+    p.add_argument(
+        "--enable-environment-model",
+        choices=("true", "false"),
+        default=None,
+        help="Enable environment-model open gate",
+    )
+    p.add_argument(
+        "--enable-return-score-cancel",
+        choices=("true", "false"),
+        default=None,
+        help="Enable model-score based open order cancel",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and print params without writing Redis",
+    )
     return p.parse_args()
 
 
@@ -93,8 +126,8 @@ STRATEGY_PARAMS = {
     "hedge_offset_ratio": "1.3",
     "hedge_window_scale_low": "0.8",
     "hedge_window_scale_high": "1.3",
-    "enable_return_score_adjust_hegde": "true",
-    "enable_environment_model": "true",
+    "enable_return_score_adjust_hegde": "false",
+    "enable_environment_model": "false",
     "enable_volatility_limit": "true",
     "open_volatility_limit": "70",
     "enable_tradecount_limit": "false",
@@ -105,6 +138,7 @@ STRATEGY_PARAMS = {
     "enable_return_score_cancel": "false",
     "return_score_buy_cancel_quantile": "90",
     "return_score_sell_cancel_quantile": "10",
+    "return_score_rolling_mean_window": "3",
     "enable_tlen_cancel": "false",
     "tlen_cancel_freq_ms": "3000",
     "return_model_service": "-",
@@ -159,9 +193,10 @@ PARAM_COMMENTS: Dict[str, str] = {
     "enable_open_time_block": "是否启用 UTC 时间段开仓阻断（true=在 open_block_utc_time_range 内 trade signal 不发开仓单）",
     "open_block_utc_time_range": "UTC 开仓阻断时间段，格式 HH:MM-HH:MM，允许跨天，开始/结束不能相同",
     "hedge_aggressive_seq_threshold": "对冲激进阈值(request_seq>=该值时不偏移，但仍为maker限价单)",
-    "enable_return_score_cancel": "是否启用基于模型 score_quantile 的 MM open 方向撤单",
-    "return_score_buy_cancel_quantile": "score_quantile*100 大于该分位数时，撤掉 symbol 所有 sell 方向 open 单；范围 (0,99)，默认 90",
-    "return_score_sell_cancel_quantile": "score_quantile*100 小于该分位数时，撤掉 symbol 所有 buy/long 方向 open 单；范围 (0,99)，默认 10",
+    "enable_return_score_cancel": "是否启用基于 rolling return score 与模型分位阈值的 MM open 方向撤单",
+    "return_score_buy_cancel_quantile": "从 model_score_rolling_thresholds_* 选择高分位 score threshold；rolling score 高于阈值时撤 sell，默认 90",
+    "return_score_sell_cancel_quantile": "从 model_score_rolling_thresholds_* 选择低分位 score threshold；rolling score 低于阈值时撤 buy，默认 10",
+    "return_score_rolling_mean_window": "return score rolling mean 窗口，正整数，默认 3",
     "enable_tlen_cancel": "是否启用基于 tlen 的 MM open 撤单链路（true=允许发 MMCancelTrigger 并走 query/cancel）",
     "tlen_cancel_freq_ms": "MMCancelTrigger 触发频率(ms)，需为正整数，默认 3000",
     "return_model_service": "收益率模型输出通道名（'-' 表示禁用）",
@@ -198,6 +233,7 @@ PARAM_PRINT_ORDER = [
     "enable_return_score_cancel",
     "return_score_buy_cancel_quantile",
     "return_score_sell_cancel_quantile",
+    "return_score_rolling_mean_window",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
     "return_model_service",
@@ -225,6 +261,21 @@ def validate_open_block_utc_time_range(raw: str) -> str:
     return text
 
 
+def apply_cli_overrides(params: Dict[str, str], args: argparse.Namespace) -> Dict[str, str]:
+    out = dict(params)
+    if args.return_model_service is not None:
+        out["return_model_service"] = args.return_model_service.strip() or "-"
+    if args.environment_model_service is not None:
+        out["environment_model_service"] = args.environment_model_service.strip() or "-"
+    if args.enable_return_score_adjust_hedge is not None:
+        out["enable_return_score_adjust_hegde"] = args.enable_return_score_adjust_hedge
+    if args.enable_environment_model is not None:
+        out["enable_environment_model"] = args.enable_environment_model
+    if args.enable_return_score_cancel is not None:
+        out["enable_return_score_cancel"] = args.enable_return_score_cancel
+    return out
+
+
 def validate_strategy_params(params: Dict[str, str]) -> None:
     if "open_block_utc_time_range" in params:
         validate_open_block_utc_time_range(params["open_block_utc_time_range"])
@@ -233,6 +284,12 @@ def validate_strategy_params(params: Dict[str, str]) -> None:
             value = float(params[key])
             if not (0.0 < value < 99.0):
                 raise ValueError(f"{key} 必须在 (0,99) 内: {value}")
+    if "return_score_rolling_mean_window" in params:
+        window = int(params["return_score_rolling_mean_window"])
+        if window <= 0:
+            raise ValueError(
+                f"return_score_rolling_mean_window 必须 > 0: {window}"
+            )
     if "enable_clock_shift_ms" in params:
         shift = int(params["enable_clock_shift_ms"])
         if shift < 0:
@@ -245,17 +302,33 @@ def validate_strategy_params(params: Dict[str, str]) -> None:
                 f"enable_clock_shift_ms={shift} order_interval_ms={order_interval_ms} "
                 f"next_query_delay_ms={next_query_delay_ms}"
             )
+    return_model_service = params.get("return_model_service", "-").strip()
+    if params.get("enable_return_score_adjust_hegde", "false").strip().lower() == "true":
+        if not return_model_service or return_model_service == "-":
+            raise ValueError(
+                "enable_return_score_adjust_hegde=true 时必须配置 return_model_service"
+            )
+    if params.get("enable_return_score_cancel", "false").strip().lower() == "true":
+        if not return_model_service or return_model_service == "-":
+            raise ValueError("enable_return_score_cancel=true 时必须配置 return_model_service")
+    env_model_service = params.get("environment_model_service", "-").strip()
+    if params.get("enable_environment_model", "false").strip().lower() == "true":
+        if not env_model_service or env_model_service == "-":
+            raise ValueError("enable_environment_model=true 时必须配置 environment_model_service")
 
 
-def sync_strategy_params(rds, key: str) -> int:
-    validate_strategy_params(STRATEGY_PARAMS)
-    rds.hset(key, mapping=STRATEGY_PARAMS)
+def sync_strategy_params(rds, key: str, params: Dict[str, str], dry_run: bool = False) -> int:
+    validate_strategy_params(params)
+    if dry_run:
+        print(f"🧪 dry-run: 不写入 Redis HASH '{key}'")
+        return len(params)
+    rds.hset(key, mapping=params)
     if REMOVED_KEYS:
         rds.hdel(key, *REMOVED_KEYS)
-    print(f"✅ 已写入 {len(STRATEGY_PARAMS)} 个参数到 HASH '{key}'")
+    print(f"✅ 已写入 {len(params)} 个参数到 HASH '{key}'")
     if REMOVED_KEYS:
         print(f"🧹 已删除旧字段: {', '.join(REMOVED_KEYS)}")
-    return len(STRATEGY_PARAMS)
+    return len(params)
 
 
 def print_params(rds, key: str) -> None:
@@ -293,7 +366,7 @@ def print_params(rds, key: str) -> None:
 
 
 def main() -> int:
-    _args = parse_args()
+    args = parse_args()
     redis = try_import_redis()
     if redis is None:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
@@ -313,12 +386,23 @@ def main() -> int:
     print(f"🏷️ venue: {venue}")
     print("📍 Redis: 127.0.0.1:6379/0")
 
+    params = apply_cli_overrides(STRATEGY_PARAMS, args)
     try:
-        sync_strategy_params(rds, key)
+        sync_strategy_params(rds, key, params, dry_run=args.dry_run)
     except ValueError as exc:
         print(f"❌ mm 策略参数校验失败: {exc}", file=sys.stderr)
         return 1
-    print_params(rds, key)
+    if args.dry_run:
+        print("\n📊 dry-run mm 策略参数配置:")
+        for k in PARAM_PRINT_ORDER:
+            if k in params:
+                comment = PARAM_COMMENTS.get(k, "")
+                if comment:
+                    print(f"  {k:28} {params[k]:>12}  # {comment}")
+                else:
+                    print(f"  {k:28} {params[k]:>12}")
+    else:
+        print_params(rds, key)
     print()
     return 0
 

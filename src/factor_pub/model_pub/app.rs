@@ -12,16 +12,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::cfg::ModelPubConfig;
+use super::cfg::{ModelPubConfig, ModelPubVersion};
 use super::factor_pool::{
     build_extract_indices, build_factor_indices, build_factor_position_map,
-    load_symbol_factor_names_from_tlen_server, parse_venue_slug_from_input_service,
+    load_symbol_factor_names_from_tlen_server, normalize_symbol_key,
+    parse_venue_slug_from_input_service,
 };
 use super::model::OnnxModel;
 use super::publisher::ModelPublisher;
 use super::score_rolling::InlineScoreRolling;
-use crate::common::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
-use crate::factor_pub::fusion_factor_pub::publisher::FUSION_FACTOR_PAYLOAD_MAX_BYTES;
+use crate::factor_pub::fusion_factor_pub::publisher::{
+    FUSION_FACTOR_MAX_SUBSCRIBERS, FUSION_FACTOR_PAYLOAD_MAX_BYTES,
+};
+use mkt_parsers::msg::mkt_msg::{FeatureMsg, FeatureStatus, ModelMsg, MODEL_STATUS_OK};
 
 const INPUT_MAX_BYTES: usize = FUSION_FACTOR_PAYLOAD_MAX_BYTES;
 const IDLE_SLEEP_MICROS: u64 = 200;
@@ -103,6 +106,35 @@ impl ModelPubApp {
         model_name: &str,
         warming_dir: Option<&Path>,
     ) -> Result<Self> {
+        Self::new_with_version(
+            config_path,
+            model_name,
+            warming_dir,
+            ModelPubVersion::Default,
+        )
+        .await
+    }
+
+    pub async fn new_one_minute(
+        config_path: &str,
+        model_name: &str,
+        warming_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::new_with_version(
+            config_path,
+            model_name,
+            warming_dir,
+            ModelPubVersion::OneMinute,
+        )
+        .await
+    }
+
+    async fn new_with_version(
+        config_path: &str,
+        model_name: &str,
+        warming_dir: Option<&Path>,
+        version: ModelPubVersion,
+    ) -> Result<Self> {
         let model_name = normalize_model_name(model_name)?;
 
         let config = ModelPubConfig::load(config_path)?;
@@ -111,14 +143,19 @@ impl ModelPubApp {
         let input_service = config.input_service.trim().to_string();
         let output_service = config.output_service.trim().to_string();
         let venue_slug = parse_venue_slug_from_input_service(&input_service)?;
-        let symbol_factor_names = load_symbol_factor_names_from_tlen_server(&config, &venue_slug)
-            .await
-            .with_context(|| {
-                format!(
-                    "load symbol factor plans from tlen_server failed: venue={}",
-                    venue_slug
-                )
-            })?;
+        let factor_plan_config_type = version.factor_plan_config_type();
+        let symbol_factor_names = load_symbol_factor_names_from_tlen_server(
+            &config,
+            &venue_slug,
+            factor_plan_config_type,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "load symbol factor plans from tlen_server failed: venue={} config_type={}",
+                venue_slug, factor_plan_config_type
+            )
+        })?;
 
         let models_by_symbol =
             Self::load_models_from_model_manager(&config, &model_name, &symbol_factor_names)
@@ -164,8 +201,12 @@ impl ModelPubApp {
             );
         }
 
-        let subscriber = Self::create_subscriber(&model_name, &input_service)?;
-        let publisher_node = format!("model_pub_{}_out", sanitize_node_suffix(&model_name));
+        let subscriber = Self::create_subscriber(version, &model_name, &input_service)?;
+        let publisher_node = format!(
+            "{}_{}_out",
+            version.node_prefix(),
+            sanitize_node_suffix(&model_name)
+        );
         let publisher = ModelPublisher::new(&publisher_node, &output_service)?;
         let mut score_rolling = InlineScoreRolling::new(&model_name, &config.score_rolling).await?;
         if let Some(dir) = warming_dir {
@@ -179,11 +220,13 @@ impl ModelPubApp {
         }
 
         info!(
-            "ModelPubApp started: input={} output={} symbols={} venue={} symbol_factor_plans={} warming_dir={}",
+            "ModelPubApp started: version={} input={} output={} symbols={} venue={} factor_plan_config={} symbol_factor_plans={} warming_dir={}",
+            version.label(),
             input_service,
             output_service,
             models_by_symbol.len(),
             venue_slug,
+            factor_plan_config_type,
             symbol_factor_names.len(),
             warming_dir
                 .map(|dir| dir.display().to_string())
@@ -280,10 +323,15 @@ impl ModelPubApp {
     }
 
     fn create_subscriber(
+        version: ModelPubVersion,
         model_name: &str,
         service_path: &str,
     ) -> Result<Subscriber<ipc::Service, [u8; INPUT_MAX_BYTES], ()>> {
-        let node_name = format!("model_pub_{}_in", sanitize_node_suffix(model_name));
+        let node_name = format!(
+            "{}_{}_in",
+            version.node_prefix(),
+            sanitize_node_suffix(model_name)
+        );
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
@@ -292,7 +340,7 @@ impl ModelPubApp {
             .service_builder(&ServiceName::new(service_path)?)
             .publish_subscribe::<[u8; INPUT_MAX_BYTES]>()
             .max_publishers(1)
-            .max_subscribers(10)
+            .max_subscribers(FUSION_FACTOR_MAX_SUBSCRIBERS)
             .subscriber_max_buffer_size(8192)
             .history_size(128)
             .open_or_create()
@@ -503,6 +551,7 @@ impl ModelPubApp {
             ts_in_ms,
             0.0,
             Some(NEUTRAL_SCORE_QUANTILE),
+            false,
             MODEL_STATUS_OK,
             &[],
             &[],
@@ -520,12 +569,15 @@ impl ModelPubApp {
         factor_indices: &[u16],
         factor_values: &[f32],
     ) -> Result<()> {
-        let score_quantile = self.score_rolling.preview_score_quantile(symbol, score);
+        let (score_quantile, score_ready) = self
+            .score_rolling
+            .preview_score_quantile_and_ready(symbol, score);
         self.publish_result(
             symbol,
             ts_in_ms,
             score,
             score_quantile,
+            score_ready,
             status,
             factor_indices,
             factor_values,
@@ -540,6 +592,7 @@ impl ModelPubApp {
         ts_in_ms: i64,
         score: f64,
         score_quantile: Option<f64>,
+        score_ready: bool,
         status: u8,
         factor_indices: &[u16],
         factor_values: &[f32],
@@ -553,6 +606,7 @@ impl ModelPubApp {
             0,
             score,
             score_quantile,
+            score_ready,
             status,
             factor_indices.to_vec(),
             factor_values.to_vec(),
@@ -759,10 +813,6 @@ fn normalize_model_name(raw: &str) -> Result<String> {
         anyhow::bail!("model_name must not be empty");
     }
     Ok(normalized.to_string())
-}
-
-fn normalize_symbol_key(raw: &str) -> String {
-    raw.trim().to_uppercase()
 }
 
 fn sanitize_node_suffix(raw: &str) -> String {

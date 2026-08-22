@@ -1,6 +1,6 @@
-use crate::common::trade_flow_feature_msg::TradeFlowFeatureMsg;
 use anyhow::{bail, Result};
 use bytes::{Buf, Bytes};
+use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
 
 /// 消息类型枚举（与mkt_signal保持一致）
 #[repr(u32)]
@@ -19,6 +19,7 @@ pub enum MktMsgType {
     FactorValue = 2001,
     PairMmResample = 3001,
     TradeFlowFeature = 3002,
+    TradeNotionalKll = 3003,
     Feature = 4101,
     Model = 4102,
     Error = 2222,

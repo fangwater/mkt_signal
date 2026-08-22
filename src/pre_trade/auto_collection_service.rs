@@ -41,23 +41,27 @@ impl AutoCollectionService {
     /// 启动“启动即执行 + 每天 UTC+8 12:00 执行”任务。
     pub fn start_startup_and_daily_task(self) {
         tokio::spawn(async move {
-            info!("自动资金归集服务已启动（startup + daily UTC+8 12:00）");
-            self.try_auto_collect("startup").await;
-
-            loop {
-                let wait_duration = Self::time_until_next_shanghai_noon();
-                info!(
-                    "下次自动资金归集时间: {} 秒后（UTC+8 12:00）",
-                    wait_duration.as_secs()
-                );
-                tokio::time::sleep(wait_duration).await;
-
-                self.try_auto_collect("daily_utc8_noon").await;
-            }
+            self.run_loop().await;
         });
     }
 
-    async fn try_auto_collect(&self, reason: &str) {
+    async fn run_loop(self) {
+        info!("自动资金归集服务已启动（startup + daily UTC+8 12:00）");
+        self.run_once("startup").await;
+
+        loop {
+            let wait_duration = Self::time_until_next_shanghai_noon();
+            info!(
+                "下次自动资金归集时间: {} 秒后（UTC+8 12:00）",
+                wait_duration.as_secs()
+            );
+            tokio::time::sleep(wait_duration).await;
+
+            self.run_once("daily_utc8_noon").await;
+        }
+    }
+
+    pub async fn run_once(&self, reason: &str) {
         match self.auto_collect_all_assets().await {
             Ok((status, body, used_weight)) => {
                 info!(
@@ -136,7 +140,7 @@ impl AutoCollectionService {
         Ok(hex::encode(result.into_bytes()))
     }
 
-    fn time_until_next_shanghai_noon() -> Duration {
+    pub fn time_until_next_shanghai_noon() -> Duration {
         let now_utc = Utc::now();
         let now_shanghai = now_utc + chrono::Duration::hours(8);
 

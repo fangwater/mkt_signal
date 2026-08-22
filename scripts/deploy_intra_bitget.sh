@@ -2,8 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=lib/fr_remote_deploy.sh
-source "$ROOT_DIR/scripts/lib/fr_remote_deploy.sh"
 
 usage() {
   cat <<'EOF'
@@ -12,16 +10,14 @@ usage() {
   scripts/deploy_intra_bitget.sh <suffix>
 
 说明:
-  - 部署到远端 ${FR_DEPLOY_HOST:-ubuntu@54.64.147.69}（不启动进程）。
-  - 子脚本仍在本地生成 $HOME/$ENV_NAME/，随后 rsync 到远端。
+  - 默认只部署到本机 $HOME/bitget-intra-<suffix>/（不启动进程）。
   - 部署 Bitget 同所期现 intra 环境：
       open=bitget-margin
       hedge=bitget-futures
   - 环境目录固定: $HOME/bitget-intra-<suffix>
   - 仅部署，不启动任何进程
-  - 支持 suffix: trade、arb01、arb02、arb03
+  - 支持 suffix: arb01、arb02、arb03
   - 固定端口（bitget intra）:
-      trade -> 18134
       arb01 -> 19211
       arb02 -> 19212
       arb03 -> 19213
@@ -39,6 +35,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-suffix) ENV_SUFFIX="${2:-}"; shift 2 ;;
     --bin)        BIN_MODE="1"; shift ;;
+    --remote)
+      echo "[ERROR] --remote 已移除；bitget intra 入口现在只部署本机" >&2
+      exit 1 ;;
     -h|--help)    usage; exit 0 ;;
     *)
       if [[ -z "$ENV_SUFFIX" ]]; then
@@ -51,33 +50,28 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ENV_SUFFIX" ]]; then
-  echo "[ERROR] 需要传入 env suffix（trade|arb01|arb02|arb03）" >&2
+  echo "[ERROR] 需要传入 env suffix（arb01|arb02|arb03）" >&2
   usage; exit 1
 fi
 
 ENV_SUFFIX="$(echo "$ENV_SUFFIX" | tr 'A-Z' 'a-z')"
 case "$ENV_SUFFIX" in
-  trade) CONFIG_PORT="18134" ;;
   arb01) CONFIG_PORT="19211" ;;
   arb02) CONFIG_PORT="19212" ;;
   arb03) CONFIG_PORT="19213" ;;
   *)
-    echo "[ERROR] 仅支持 suffix: trade|arb01|arb02|arb03（收到: ${ENV_SUFFIX}）" >&2
+    echo "[ERROR] 仅支持 suffix: arb01|arb02|arb03（收到: ${ENV_SUFFIX}）" >&2
     exit 1 ;;
 esac
 
 EXCHANGE="bitget"
 ENV_NAME="${EXCHANGE}-intra-${ENV_SUFFIX}"
 INTRA_ENV_SUFFIX="intra-${ENV_SUFFIX}"
+TARGET_DIR="$HOME/$ENV_NAME"
 
-if [[ "$BIN_MODE" == "1" && ! -d "$HOME/$ENV_NAME" ]]; then
+if [[ "$BIN_MODE" == "1" && ! -d "$TARGET_DIR" ]]; then
   echo "[ERROR] --bin 模式要求本地环境目录已存在: $HOME/$ENV_NAME" >&2
   exit 1
-fi
-
-fr_remote_init "$ROOT_DIR" "$ENV_NAME"
-if [[ "$BIN_MODE" != "1" ]]; then
-  fr_remote_fetch_nginx_mapping "$ROOT_DIR"
 fi
 
 run_deploy() {
@@ -103,6 +97,7 @@ echo "[INFO] exchange=${EXCHANGE} (open=${EXCHANGE}-margin, hedge=${EXCHANGE}-fu
 echo "[INFO] config_port=${CONFIG_PORT}"
 echo "[INFO] 不会执行 start 命令"
 [[ "$BIN_MODE" == "1" ]] && echo "[INFO] mode=bin"
+echo "[INFO] target=local ${TARGET_DIR}"
 
 cd "$ROOT_DIR"
 
@@ -115,8 +110,7 @@ if [[ "$BIN_MODE" != "1" ]]; then
   run_deploy bash scripts/deploy_intra_config_server.sh \
     --env-name "$ENV_NAME" \
     --exchange "$EXCHANGE" \
-    --port "$CONFIG_PORT" \
-    --nginx-mapping-file "$FR_NGINX_STAGING"
+    --port "$CONFIG_PORT"
 fi
 
 run_deploy bash scripts/deploy_intra_monitors.sh \
@@ -132,8 +126,7 @@ run_deploy bash scripts/deploy_intra_trade_engine.sh \
 run_deploy bash scripts/deploy_intra_viz_server.sh \
   --env-name "$ENV_NAME" \
   --env-suffix "$INTRA_ENV_SUFFIX" \
-  --exchange "$EXCHANGE" \
-  --nginx-mapping-file "$FR_NGINX_STAGING"
+  --exchange "$EXCHANGE"
 
 run_deploy bash scripts/deploy_intra_persist_manager.sh \
   --env-name "$ENV_NAME" \
@@ -152,13 +145,5 @@ run_deploy bash scripts/deploy_intra_trade_signal.sh \
   --exchange "$EXCHANGE" \
   --sync-scripts
 
-if [[ "$BIN_MODE" == "1" ]]; then
-  fr_remote_sync_binaries "$ENV_NAME"
-else
-  fr_remote_sync_env_dir "$ENV_NAME"
-  fr_remote_apply_nginx "$ENV_NAME"
-fi
-
-echo "[INFO] Bitget intra 部署完成（远端 ${FR_DEPLOY_HOST}，未启动进程）"
-echo "[INFO] 远端环境目录: ${FR_REMOTE_HOME}/${ENV_NAME}"
-echo "[INFO] 注意: env.sh 不参与 rsync——首次部署需要手动在远端写入 BITGET_API_KEY/SECRET/PASSPHRASE"
+echo "[INFO] Bitget intra 部署完成（未启动进程）"
+echo "[INFO] 本机环境目录: ${TARGET_DIR}"

@@ -363,9 +363,9 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
     cd "$ROOT_DIR"
     if [[ -n "$CARGO_TARGET_DIR_OVERRIDE" ]]; then
       CARGO_TARGET_DIR="$CARGO_TARGET_DIR_EFFECTIVE" \
-        cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
+        cargo build --release -p viz_server --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
     else
-      cargo build --release --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
+      cargo build --release -p viz_server --bin "$BIN_NAME" ${BUILD_JOBS:+--jobs "$BUILD_JOBS"}
     fi
   )
 fi

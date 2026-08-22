@@ -268,6 +268,8 @@ FILES=(
   "scripts/sync_fr_symbol_lists.py"
   "scripts/sync_fr_strategy_params.py"
   "scripts/sync_fr_spread_thresholds.py"
+  "scripts/set_online_futures_leverage.py"
+  "scripts/set_bybit_online_collateral.py"
 )
 
 for file in "${FILES[@]}"; do

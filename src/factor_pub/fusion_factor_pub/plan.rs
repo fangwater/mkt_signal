@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -10,8 +10,24 @@ use super::factor_enum::FusionFactorId;
 const TLEN_SHARED_CONFIG_FIELD: &str = "__shared__";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SymbolFactorPlan {
+pub struct SymbolFactorPlan {
     pub(crate) ordered_factors: Vec<FactorBinding>,
+}
+
+impl SymbolFactorPlan {
+    pub fn from_factor_names(scope: &str, factors: Vec<String>) -> Result<Self> {
+        build_factor_plan(scope, factors)
+    }
+
+    pub fn factor_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.ordered_factors
+            .iter()
+            .map(|binding| binding.name.as_str())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ordered_factors.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +74,10 @@ pub enum ExtraFactorId {
     NetBuyPct,
     NetBuyMedium,
     NetBuySmall,
+    Bid0Price1,
+    Bid0Volume1,
+    Ask0Price1,
+    Ask0Volume1,
 }
 
 impl ExtraFactorId {
@@ -98,6 +118,10 @@ impl ExtraFactorId {
             "net_buy_pct" => Some(Self::NetBuyPct),
             "net_buy_medium" => Some(Self::NetBuyMedium),
             "net_buy_small" => Some(Self::NetBuySmall),
+            "bid0p_1" => Some(Self::Bid0Price1),
+            "bid0v_1" => Some(Self::Bid0Volume1),
+            "ask0p_1" => Some(Self::Ask0Price1),
+            "ask0v_1" => Some(Self::Ask0Volume1),
             _ => None,
         }
     }
@@ -140,6 +164,10 @@ impl ExtraFactorId {
             Self::NetBuyPct => EXTRA_FACTOR_BASE + 32,
             Self::NetBuyMedium => EXTRA_FACTOR_BASE + 33,
             Self::NetBuySmall => EXTRA_FACTOR_BASE + 34,
+            Self::Bid0Price1 => EXTRA_FACTOR_BASE + 35,
+            Self::Bid0Volume1 => EXTRA_FACTOR_BASE + 36,
+            Self::Ask0Price1 => EXTRA_FACTOR_BASE + 37,
+            Self::Ask0Volume1 => EXTRA_FACTOR_BASE + 38,
         }
     }
 
@@ -181,6 +209,10 @@ impl ExtraFactorId {
             x if x == EXTRA_FACTOR_BASE + 32 => Some(Self::NetBuyPct),
             x if x == EXTRA_FACTOR_BASE + 33 => Some(Self::NetBuyMedium),
             x if x == EXTRA_FACTOR_BASE + 34 => Some(Self::NetBuySmall),
+            x if x == EXTRA_FACTOR_BASE + 35 => Some(Self::Bid0Price1),
+            x if x == EXTRA_FACTOR_BASE + 36 => Some(Self::Bid0Volume1),
+            x if x == EXTRA_FACTOR_BASE + 37 => Some(Self::Ask0Price1),
+            x if x == EXTRA_FACTOR_BASE + 38 => Some(Self::Ask0Volume1),
             _ => None,
         }
     }
@@ -222,6 +254,10 @@ impl ExtraFactorId {
             Self::NetBuyPct => "net_buy_pct",
             Self::NetBuyMedium => "net_buy_medium",
             Self::NetBuySmall => "net_buy_small",
+            Self::Bid0Price1 => "bid0p_1",
+            Self::Bid0Volume1 => "bid0v_1",
+            Self::Ask0Price1 => "ask0p_1",
+            Self::Ask0Volume1 => "ask0v_1",
         })
     }
 }
@@ -237,13 +273,13 @@ struct FactorPlanItem {
     factors: Vec<String>,
 }
 
-fn build_factor_plan(scope: &str, factors: Vec<String>) -> SymbolFactorPlan {
+fn build_factor_plan(scope: &str, factors: Vec<String>) -> Result<SymbolFactorPlan> {
     let mut ordered_factors = Vec::with_capacity(factors.len());
     for name in factors {
         let factor_id = FusionFactorId::from_name(&name);
         let extra_factor_id = ExtraFactorId::from_name(&name);
         if factor_id.is_none() && extra_factor_id.is_none() {
-            panic!("factor-plan unmapped: {} {}", scope, name);
+            bail!("factor-plan unmapped: {} {}", scope, name);
         }
         ordered_factors.push(FactorBinding {
             name,
@@ -252,7 +288,7 @@ fn build_factor_plan(scope: &str, factors: Vec<String>) -> SymbolFactorPlan {
         });
     }
 
-    SymbolFactorPlan { ordered_factors }
+    Ok(SymbolFactorPlan { ordered_factors })
 }
 
 fn decode_symbol_factor_plans(
@@ -268,7 +304,7 @@ fn decode_symbol_factor_plans(
             continue;
         }
         let normalized_symbol = key.to_uppercase();
-        let plan = build_factor_plan(&normalized_symbol, item.factors);
+        let plan = build_factor_plan(&normalized_symbol, item.factors)?;
         if plan.ordered_factors.is_empty() {
             continue;
         }
@@ -280,6 +316,7 @@ fn decode_symbol_factor_plans(
 pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
     tlen: &TlenServerConfig,
     venue_slug: &str,
+    config_type: &str,
 ) -> Result<HashMap<String, SymbolFactorPlan>> {
     let base_url = tlen.base_url.trim_end_matches('/');
     let client = Client::builder()
@@ -290,7 +327,7 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
     let url = format!("{}/api/thresholds", base_url);
     let resp = client
         .get(&url)
-        .query(&[("venue", venue_slug), ("config_type", "factor_plan")])
+        .query(&[("venue", venue_slug), ("config_type", config_type)])
         .send()
         .await
         .with_context(|| format!("GET {} failed", url))?
@@ -303,8 +340,8 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
         .with_context(|| format!("decode factor plan response failed: {}", url))?;
     decode_symbol_factor_plans(payload).with_context(|| {
         format!(
-            "decode symbol factor plans from tlen_server failed: venue={}",
-            venue_slug
+            "decode symbol factor plans from tlen_server failed: venue={} config_type={}",
+            venue_slug, config_type
         )
     })
 }
@@ -312,7 +349,7 @@ pub(crate) async fn load_symbol_factor_plans_from_tlen_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
+    use mkt_parsers::msg::trade_flow_feature_msg::TRADE_FLOW_FEATURE_FIELD_NAMES;
 
     fn factor_item(factors: &[&str]) -> FactorPlanItem {
         FactorPlanItem {
@@ -351,12 +388,52 @@ mod tests {
     }
 
     #[test]
+    fn public_factor_plan_constructor_validates_names_and_preserves_order() {
+        let plan = SymbolFactorPlan::from_factor_names(
+            "BTCUSDT",
+            vec![
+                "factor_118".to_string(),
+                "baseline_118".to_string(),
+                "TD_TI_015".to_string(),
+                "avg_price".to_string(),
+            ],
+        )
+        .expect("mapped factor plan");
+        assert_eq!(
+            plan.factor_names().collect::<Vec<_>>(),
+            ["factor_118", "baseline_118", "TD_TI_015", "avg_price"]
+        );
+        assert!(
+            SymbolFactorPlan::from_factor_names("BTCUSDT", vec!["not_a_factor".to_string()])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn all_trade_flow_feature_fields_have_extra_factor_ids() {
         for name in TRADE_FLOW_FEATURE_FIELD_NAMES {
             assert!(
                 ExtraFactorId::from_name(name).is_some(),
                 "missing ExtraFactorId mapping for {}",
                 name
+            );
+        }
+    }
+
+    #[test]
+    fn level_one_depth_fields_have_stable_extra_factor_ids() {
+        let expected = [
+            ("bid0p_1", ExtraFactorId::Bid0Price1),
+            ("bid0v_1", ExtraFactorId::Bid0Volume1),
+            ("ask0p_1", ExtraFactorId::Ask0Price1),
+            ("ask0v_1", ExtraFactorId::Ask0Volume1),
+        ];
+
+        for (name, factor_id) in expected {
+            assert_eq!(ExtraFactorId::from_name(name), Some(factor_id));
+            assert_eq!(
+                ExtraFactorId::index_to_name(factor_id.as_index()),
+                Some(name)
             );
         }
     }

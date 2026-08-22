@@ -70,7 +70,12 @@ done
 
 mkdir -p "$TARGET_DIR/config"
 if [[ -f "$ROOT_DIR/config/model_pub.toml" ]]; then
-  rsync -a "$ROOT_DIR/config/model_pub.toml" "$TARGET_DIR/config/"
+  escaped_model_name="${MODEL_NAME//\\/\\\\}"
+  escaped_model_name="${escaped_model_name//&/\\&}"
+  sed \
+    -e "s|{model_name}|${escaped_model_name}|g" \
+    -e "s|^output_service = .*|output_service = \"model_output/${escaped_model_name}\"|" \
+    "$ROOT_DIR/config/model_pub.toml" >"$TARGET_DIR/config/model_pub.toml"
 fi
 
 echo "[INFO] $BIN_NAME 部署完成"

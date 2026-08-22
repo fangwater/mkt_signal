@@ -345,7 +345,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
         </div>
       </div>
       <div class="hint">
-        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 的 rolling 挂靠按真实 venue 解析：会读取该 venue 所属交易所的 `margin-futures` rolling params，并按 venue 类型选择 `open_vol` 或 `hedge_vol`。
+        `enable_tlen_cancel` 控制基于 tlen 的 open 撤单 trigger/query/cancel 链路；`tlen_cancel_freq_ms` 控制 trigger 频率(ms)；`spread_cancel_cooldown_ms` 控制 spread cancel 的去抖冷却(ms，默认 100，可设 0 关闭)。`open_volatility_limit` 使用 trade_signal 进程内 inline volatility 采样；`enable_fr_open_spread_limit` 启用后，FR open 还需满足 `fr_fwd_open_spread` / `fr_bwd_open_spread` 固定 spread_rate 约束。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-vol-preview" class="status"></div>
@@ -544,7 +544,7 @@ __PER_SYMBOL_PANELS_HTML__
         const rawValue = values[key] ?? defaults[key] ?? '';
         const useBooleanSelect =
           containerId === 'strategy-table' &&
-          ['enable_tlen_cancel', 'enable_volatility_limit'].includes(key) &&
+          ['enable_tlen_cancel', 'enable_volatility_limit', 'enable_fr_open_spread_limit'].includes(key) &&
           isBooleanParamValue(rawValue);
         let input;
         if (useBooleanSelect) {
@@ -602,21 +602,19 @@ __PER_SYMBOL_PANELS_HTML__
 
       const raw = String(input.value || '').trim();
       if (!raw) {
-        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法预判挂靠的 rolling vol 配置。', 'warn');
+        setStatus('strategy-vol-preview', '未填写 open_volatility_limit，无法校验 inline volatility percentile。', 'warn');
         return;
       }
 
       try {
         const data = await fetchJson(`${apiUrl('open-volatility-preview')}?exchange=${encodeURIComponent(normalizeExchange(exchangeSelect.value))}&open_venue=${encodeURIComponent(openVenueInput.value.trim())}&hedge_venue=${encodeURIComponent(hedgeVenueInput.value.trim())}&percentile=${encodeURIComponent(raw)}`);
-        const factorRef = `${data.factor}_${data.percentile_text}`;
-        const prefix = `挂靠检查: ${data.source_key} / ${factorRef} (venue=${data.venue})`;
-        if (data.will_modify) {
-          setStatus('strategy-vol-preview', `${prefix}，当前未就绪，运行时会自动补配置${data.modification_detail ? `（${data.modification_detail}）` : ''}`, 'warn');
-        } else {
-          setStatus('strategy-vol-preview', `${prefix}，当前已存在，不会额外改 rolling 配置`, 'ok');
-        }
+        setStatus(
+          'strategy-vol-preview',
+          `Inline volatility gate: percentile=${data.percentile_text}，按 open symbol 在 trade_signal 内采样；窗口 ${data.window_capacity}，至少 ${data.min_samples} 个样本后生效，不读取/写入 rolling_metrics_params。`,
+          'ok'
+        );
       } catch (err) {
-        setStatus('strategy-vol-preview', `挂靠检查失败: ${err}`, 'err');
+        setStatus('strategy-vol-preview', `Inline volatility 参数校验失败: ${err}`, 'err');
       }
     }
 
@@ -1006,16 +1004,6 @@ def normalize_exchange(exchange: str) -> str:
     return "okex" if ex == "okx" else ex
 
 
-def attached_vol_source_key_for_venue(venue: str) -> str:
-    exchange = normalize_exchange((venue or "").split("-", 1)[0])
-    return f"rolling_metrics_params_{exchange}-margin_{exchange}-futures"
-
-
-def attached_vol_factor_name_for_venue(venue: str) -> str:
-    normalized = (venue or "").strip().lower()
-    return "hedge_vol" if normalized.endswith("-futures") else "open_vol"
-
-
 def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
     text = str(raw).strip()
     if not text:
@@ -1035,93 +1023,15 @@ def normalize_percentile_text(raw: Any) -> Tuple[float, str]:
 
 
 def preview_open_volatility_source(rds, venue: str, percentile_raw: Any) -> Dict[str, Any]:
+    del rds
     percentile_value, percentile_text = normalize_percentile_text(percentile_raw)
-    source_key = attached_vol_source_key_for_venue(venue)
-    factor_name = attached_vol_factor_name_for_venue(venue)
-    raw_values = read_hash(rds, source_key)
-    if not raw_values:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "source hash missing",
-            "current_quantiles": [],
-        }
-
-    factors_raw = raw_values.get("factors", "").strip()
-    if not factors_raw:
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": "factors missing",
-            "current_quantiles": [],
-        }
-
-    try:
-        factors = json.loads(factors_raw)
-    except Exception as exc:
-        raise ValueError(f"invalid factors json in {source_key}: {exc}") from exc
-    if not isinstance(factors, dict):
-        raise ValueError(f"invalid factors object in {source_key}")
-
-    factor_cfg = factors.get(factor_name)
-    if not isinstance(factor_cfg, dict):
-        return {
-            "venue": venue,
-            "source_key": source_key,
-            "factor": factor_name,
-            "percentile": percentile_value,
-            "percentile_text": percentile_text,
-            "exists": False,
-            "will_modify": True,
-            "modification_detail": f"{factor_name} missing",
-            "current_quantiles": [],
-        }
-
-    quantiles_raw = factor_cfg.get("quantiles")
-    quantiles_list = quantiles_raw if isinstance(quantiles_raw, list) else []
-    normalized_quantiles: List[str] = []
-    requested_exists = False
-    for item in quantiles_list:
-        try:
-            value = float(item)
-        except Exception:
-            continue
-        text = str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.12g}"
-        normalized_quantiles.append(text)
-        if abs(value - percentile_value) < 1e-9:
-            requested_exists = True
-
-    will_trim = len(quantiles_list) > 8
-    will_modify = (not requested_exists) or will_trim
-    if not requested_exists:
-        modification_detail = f"{factor_name}_{percentile_text} missing"
-        if len(quantiles_list) >= 8:
-            modification_detail += ", append then trim oldest"
-    elif will_trim:
-        modification_detail = "quantiles exceed limit, will trim oldest"
-    else:
-        modification_detail = ""
-
     return {
         "venue": venue,
-        "source_key": source_key,
-        "factor": factor_name,
+        "mode": "inline",
         "percentile": percentile_value,
         "percentile_text": percentile_text,
-        "exists": requested_exists,
-        "will_modify": will_modify,
-        "modification_detail": modification_detail,
-        "current_quantiles": normalized_quantiles,
+        "window_capacity": 720,
+        "min_samples": 10,
     }
 
 
@@ -1309,6 +1219,22 @@ def normalize_nonnegative_int_text(raw: Any, field_name: str) -> str:
     return str(value)
 
 
+def normalize_percentile_param_text(raw: Any, field_name: str) -> str:
+    _, text = normalize_percentile_text(raw)
+    return text
+
+
+def normalize_finite_float_text(raw: Any, field_name: str) -> str:
+    text = str(raw).strip()
+    try:
+        value = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a finite number: {text}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field_name} must be finite: {text}")
+    return f"{value:.12g}"
+
+
 def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, str]:
     normalized = dict(mapping)
     if "tlen_cancel_freq_ms" in normalized:
@@ -1319,6 +1245,15 @@ def normalize_strategy_params_by_schema(mapping: Dict[str, str]) -> Dict[str, st
         normalized["spread_cancel_cooldown_ms"] = normalize_nonnegative_int_text(
             normalized["spread_cancel_cooldown_ms"], "spread_cancel_cooldown_ms"
         )
+    if "open_volatility_limit" in normalized:
+        normalized["open_volatility_limit"] = normalize_percentile_param_text(
+            normalized["open_volatility_limit"], "open_volatility_limit"
+        )
+    for field_name in ("fr_fwd_open_spread", "fr_bwd_open_spread"):
+        if field_name in normalized:
+            normalized[field_name] = normalize_finite_float_text(
+                normalized[field_name], field_name
+            )
     return normalized
 
 
@@ -1337,6 +1272,59 @@ def normalize_unimmr_control_lines(mapping: Dict[str, str]) -> Dict[str, str]:
         )
     normalized["unimmr_trigger_line"] = f"{trigger:g}"
     normalized["unimmr_recover_line"] = f"{recover:g}"
+    return normalized
+
+
+def normalize_unimmr_force_close_lines(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    trigger_field = "unimmr_force_close_line"
+    recover_field = "unimmr_force_close_recover_line"
+    if trigger_field not in normalized and recover_field not in normalized:
+        return normalized
+    if trigger_field not in normalized or recover_field not in normalized:
+        raise ValueError(
+            "unimmr_force_close_line and unimmr_force_close_recover_line must be provided together"
+        )
+    try:
+        trigger = float(str(normalized[trigger_field]).strip())
+        recover = float(str(normalized[recover_field]).strip())
+    except Exception as exc:
+        raise ValueError("unimmr force close lines must be numbers") from exc
+    if not (math.isfinite(trigger) and math.isfinite(recover) and 1.0 < trigger < recover):
+        raise ValueError(
+            "unimmr force close lines must satisfy 1.0 < unimmr_force_close_line < unimmr_force_close_recover_line"
+        )
+    normalized[trigger_field] = f"{trigger:g}"
+    normalized[recover_field] = f"{recover:g}"
+    return normalized
+
+
+def normalize_fr_position_concentration_ratios(mapping: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(mapping)
+    alert_field = "fr_position_concentration_alert_ratio"
+    dump_field = "fr_position_concentration_dump_ratio"
+    if alert_field not in normalized and dump_field not in normalized:
+        return normalized
+    if alert_field not in normalized or dump_field not in normalized:
+        raise ValueError(
+            "fr_position_concentration_alert_ratio and fr_position_concentration_dump_ratio must be provided together"
+        )
+    try:
+        alert_ratio = float(str(normalized[alert_field]).strip())
+        dump_ratio = float(str(normalized[dump_field]).strip())
+    except Exception as exc:
+        raise ValueError("FR position concentration ratios must be numbers") from exc
+
+    if not (
+        math.isfinite(alert_ratio)
+        and math.isfinite(dump_ratio)
+        and 0 < alert_ratio < dump_ratio <= 1
+    ):
+        raise ValueError(
+            "FR position concentration ratios must satisfy 0 < alert_ratio < dump_ratio <= 1"
+        )
+    normalized[alert_field] = f"{alert_ratio:g}"
+    normalized[dump_field] = f"{dump_ratio:g}"
     return normalized
 
 
@@ -1565,6 +1553,94 @@ def sync_spread_thresholds(
     }
 
 
+FR_OPEN_SPREAD_LIMIT_EXAMPLE = {
+    "BTCUSDT": {"fr_fwd_open_spread": 0.04, "fr_bwd_open_spread": -0.04},
+    "ETHUSDT": {"fr_fwd_open_spread": 0.03, "fr_bwd_open_spread": -0.03},
+}
+
+
+def render_fr_open_spread_limit_panel_html() -> str:
+    return """
+    <section class="panel">
+      <div class="section-header">
+        <h2>Per-Symbol FR Open Spread Limit Overrides</h2>
+        <div class="actions">
+          <button id="load-fr-open-spread-limit" class="secondary">读取</button>
+          <button id="reset-fr-open-spread-limit" class="ghost">示例</button>
+          <button id="save-fr-open-spread-limit">保存</button>
+        </div>
+      </div>
+      <div class="hint">
+        JSON 结构 <code>{"SYMBOL":{"fr_fwd_open_spread":0.04,"fr_bwd_open_spread":-0.04}}</code>。
+        Redis String <code>&lt;env_name&gt;:&lt;open_venue&gt;:&lt;hedge_venue&gt;:fr_open_spread_limit_overrides</code>。
+        仅在 <code>enable_fr_open_spread_limit=true</code> 时生效；命中 symbol 即覆盖全局 fwd/bwd 固定 spread_rate 阈值。
+      </div>
+      <div class="hint">示例：</div>
+      <pre id="fr-open-spread-limit-example" class="mono"></pre>
+      <textarea id="fr-open-spread-limit-text" class="mono" spellcheck="false"></textarea>
+      <div id="fr-open-spread-limit-status" class="status"></div>
+    </section>
+"""
+
+
+def render_fr_open_spread_limit_panel_js() -> str:
+    example_json = json.dumps(FR_OPEN_SPREAD_LIMIT_EXAMPLE, ensure_ascii=False)
+    return f"""
+    const FR_OPEN_SPREAD_LIMIT_PANEL_EXAMPLE = {example_json};
+
+    async function loadFrOpenSpreadLimit() {{
+      _psSetStatus('fr-open-spread-limit-status', '读取中...');
+      try {{
+        const data = await _psFetch('fr-open-spread-limit');
+        document.getElementById('fr-open-spread-limit-text').value =
+          JSON.stringify(data.values || {{}}, null, 2);
+        _psSetStatus('fr-open-spread-limit-status',
+          '已读取 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      }} catch (err) {{
+        _psSetStatus('fr-open-spread-limit-status', '读取失败: ' + _psFormatError(err), 'err');
+      }}
+    }}
+
+    async function saveFrOpenSpreadLimit() {{
+      _psSetStatus('fr-open-spread-limit-status', '保存中...');
+      let values;
+      try {{ values = JSON.parse(document.getElementById('fr-open-spread-limit-text').value || '{{}}'); }}
+      catch (err) {{ _psSetStatus('fr-open-spread-limit-status', 'JSON 解析失败: ' + err.message, 'err'); return; }}
+      try {{
+        const data = await _psFetch('fr-open-spread-limit', {{method: 'POST', body: _psBody(values)}});
+        document.getElementById('fr-open-spread-limit-text').value =
+          JSON.stringify(data.values || {{}}, null, 2);
+        _psSetStatus('fr-open-spread-limit-status',
+          '已保存 ' + (data.count || 0) + ' 个 symbol ' + (data.key || ''), 'ok');
+      }} catch (err) {{
+        _psSetStatus('fr-open-spread-limit-status', '保存失败: ' + _psFormatError(err), 'err');
+      }}
+    }}
+
+    function resetFrOpenSpreadLimit() {{
+      document.getElementById('fr-open-spread-limit-text').value =
+        JSON.stringify(FR_OPEN_SPREAD_LIMIT_PANEL_EXAMPLE, null, 2);
+      _psSetStatus('fr-open-spread-limit-status', '已填入示例，尚未写入 Redis', 'warn');
+    }}
+
+    const _psBaseBindPerSymbolPanelsForFrOpenSpreadLimit = bindPerSymbolPanels;
+    bindPerSymbolPanels = function() {{
+      _psBaseBindPerSymbolPanelsForFrOpenSpreadLimit();
+      const map = [
+        ['load-fr-open-spread-limit', loadFrOpenSpreadLimit],
+        ['save-fr-open-spread-limit', saveFrOpenSpreadLimit],
+        ['reset-fr-open-spread-limit', resetFrOpenSpreadLimit],
+      ];
+      for (const [id, fn] of map) {{
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', fn);
+      }}
+      const ex = document.getElementById('fr-open-spread-limit-example');
+      if (ex) ex.textContent = JSON.stringify(FR_OPEN_SPREAD_LIMIT_PANEL_EXAMPLE, null, 2);
+    }};
+"""
+
+
 def render_index_html(default_exchange: str) -> str:
     bootstrap = {
         "exchanges": SUPPORTED_EXCHANGES,
@@ -1592,8 +1668,14 @@ def render_index_html(default_exchange: str) -> str:
     }
 
     html = INDEX_HTML_TEMPLATE.replace("__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False))
-    html = html.replace("__PER_SYMBOL_PANELS_HTML__", ps_overrides.render_per_symbol_panels_html())
-    html = html.replace("__PER_SYMBOL_PANELS_JS__", ps_overrides.render_per_symbol_panels_js())
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_HTML__",
+        ps_overrides.render_per_symbol_panels_html() + render_fr_open_spread_limit_panel_html(),
+    )
+    html = html.replace(
+        "__PER_SYMBOL_PANELS_JS__",
+        ps_overrides.render_per_symbol_panels_js() + render_fr_open_spread_limit_panel_js(),
+    )
     return html
 
 
@@ -1616,6 +1698,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -1625,6 +1708,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         data = body.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -1653,6 +1737,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         open_venue = (params.get("open_venue") or [None])[0]
         hedge_venue = (params.get("hedge_venue") or [None])[0]
         return resolve_venues(exchange, open_venue, hedge_venue)
+
+    def _resolve_payload_context(self, payload: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        exchange = normalize_exchange(
+            str(payload.get("exchange") or self.server.context.default_exchange)
+        )
+        open_venue = payload.get("open_venue")
+        hedge_venue = payload.get("hedge_venue")
+        return resolve_venues(
+            exchange,
+            str(open_venue) if open_venue is not None else None,
+            str(hedge_venue) if hedge_venue is not None else None,
+        )
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1819,6 +1915,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/fr-open-spread-limit",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -1839,8 +1936,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     data = ps_overrides.read_hedge_offset_limits(
                         rds, env_name, open_venue, hedge_venue
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     data = ps_overrides.read_open_offset_lower(
+                        rds, env_name, open_venue, hedge_venue
+                    )
+                else:
+                    data = ps_overrides.read_fr_open_spread_limit(
                         rds, env_name, open_venue, hedge_venue
                     )
             except ValueError as exc:
@@ -1989,6 +2090,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     values, DEFAULT_RISK_PARAMS, RISK_PARAM_COMMENTS, RISK_PARAM_ORDER
                 )
                 mapping = normalize_unimmr_control_lines(mapping)
+                mapping = normalize_unimmr_force_close_lines(mapping)
+                mapping = normalize_fr_position_concentration_ratios(mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
@@ -2131,6 +2234,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/max-pos-u",
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
+            "/api/fr-open-spread-limit",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2152,8 +2256,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     result = ps_overrides.write_hedge_offset_limits(
                         rds, env_name, open_v, hedge_v, values
                     )
-                else:
+                elif parsed.path == "/api/open-offset-lower":
                     result = ps_overrides.write_open_offset_lower(
+                        rds, env_name, open_v, hedge_v, values
+                    )
+                else:
+                    result = ps_overrides.write_fr_open_spread_limit(
                         rds, env_name, open_v, hedge_v, values
                     )
             except ValueError as exc:

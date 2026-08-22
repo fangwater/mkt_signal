@@ -99,9 +99,19 @@ RISK_PARAMS = {
     # 最大杠杆倍数（>0）
     "max_leverage": "1.75",
 
+    # 单币双腿总仓位 / (max_leverage * 两边交易所总权益)：告警/ArbOpen 硬锁与 dump 线。
+    # 要求 0 < alert < dump <= 1；低于 dump 停止隐式 dump，低于 alert 解除报警与硬锁。
+    "fr_position_concentration_alert_ratio": "0.12",
+    "fr_position_concentration_dump_ratio": "0.15",
+
     # UniMMR 算法平仓触发/恢复线（固定交易所 warning 上沿 1.5；要求 1.5 < trigger < recover）
     "unimmr_trigger_line": "2.0",
     "unimmr_recover_line": "2.2",
+
+    # UniMMR taker-taker 强制平仓触发/恢复线；与普通两条线独立配置。
+    # 要求 1.0 < force_close < force_recover。
+    "unimmr_force_close_line": "1.3",
+    "unimmr_force_close_recover_line": "1.5",
 
     # 最大挂单数（>=0）
     "max_pending_limit_orders": "10",
@@ -109,6 +119,10 @@ RISK_PARAMS = {
     # 套利买/卖侧最大限价挂单数（>=0，0 表示关闭方向风控）
     "arb_max_pending_limit_buy_orders": "0",
     "arb_max_pending_limit_sell_orders": "0",
+
+    # 套利平仓买/卖侧最大限价挂单数（>=0，0 表示关闭方向风控）
+    "arb_close_max_pending_limit_buy_orders": "10",
+    "arb_close_max_pending_limit_sell_orders": "10",
 
     # 套利开仓 60s/10s 下单数频率上限（>=0，0 表示不限）
     "arb_open_order_rate_limit_per_min": "0",
@@ -126,11 +140,17 @@ PARAM_COMMENTS: Dict[str, str] = {
     "max_symbol_exposure_ratio": "单币种最大敞口比例",
     "max_total_exposure_ratio": "总敞口比例",
     "max_leverage": "最大杠杆倍数",
+    "fr_position_concentration_alert_ratio": "单币仓位/最大容量告警与ArbOpen硬锁线",
+    "fr_position_concentration_dump_ratio": "单币仓位/最大容量隐式dump触发线",
     "unimmr_trigger_line": "UniMMR 算法平仓触发线（>1.5 且 < recover）",
     "unimmr_recover_line": "UniMMR 算法平仓恢复线（> trigger）",
+    "unimmr_force_close_line": "UniMMR taker-taker 强制平仓触发线（>1.0）",
+    "unimmr_force_close_recover_line": "UniMMR taker-taker 强制平仓恢复线（> force close）",
     "max_pending_limit_orders": "最大挂单数",
     "arb_max_pending_limit_buy_orders": "套利买侧最大挂单数",
     "arb_max_pending_limit_sell_orders": "套利卖侧最大挂单数",
+    "arb_close_max_pending_limit_buy_orders": "套利平仓买侧最大挂单数",
+    "arb_close_max_pending_limit_sell_orders": "套利平仓卖侧最大挂单数",
     "arb_open_order_rate_limit_per_min": "套利开仓60s频率上限",
     "arb_open_order_rate_limit_10s": "套利开仓10s频率上限",
     "arb_hedge_order_rate_limit_per_min": "套利对冲60s频率上限",

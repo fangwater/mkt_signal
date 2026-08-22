@@ -5,10 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROCESS_MATCH_LIB="${SCRIPT_DIR}/process_match_lib.sh"
 
-if [[ -f "$PROCESS_MATCH_LIB" ]]; then
-  # shellcheck disable=SC1090
-  source "$PROCESS_MATCH_LIB"
+# safe_find_running_pids() 在这个 lib 里定义,find_running_pids() 强依赖它。
+# 旧版做了 soft skip,缺文件时 stop 流程 silently 跳过 leak 兜底 → 改成硬错误。
+if [[ ! -f "$PROCESS_MATCH_LIB" ]]; then
+  echo "[ERROR] required helper missing: $PROCESS_MATCH_LIB" >&2
+  echo "[HINT] re-deploy via scripts/deploy_public_bridge.sh / scripts/deploy_ipc_bridge.sh" >&2
+  echo "[HINT] or manually scp scripts/process_match_lib.sh into the same dir" >&2
+  exit 1
 fi
+# shellcheck disable=SC1090
+source "$PROCESS_MATCH_LIB"
 
 usage() {
   cat <<'USAGE'

@@ -1,9 +1,9 @@
-use crate::common::mkt_msg::{
+use crate::parser::default_parser::Parser;
+use bytes::Bytes;
+use mkt_parsers::msg::mkt_msg::{
     AskBidSpreadMsg, FundingRateMsg, IncMsg, KlineMsg, Level, MarkPriceMsg, SignalMsg,
     SignalSource, TradeMsg,
 };
-use crate::parser::default_parser::Parser;
-use bytes::Bytes;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,6 +1,5 @@
 use crate::cfg::Config;
-use crate::common::exchange::Exchange;
-use crate::connection::connection::construct_connection_with_ip;
+use crate::connection::factory::construct_connection_with_ip;
 use crate::parser::binance_parser::{
     BinanceAskBidSpreadParser, BinanceDerivativesMetricsParser, BinanceIncParser,
     BinanceKlineParser, BinanceSignalParser, BinanceTradeParser,
@@ -26,10 +25,11 @@ use crate::parser::okex_parser::{
     OkexAskBidSpreadParser, OkexDerivativesMetricsParser, OkexIncParser, OkexKlineParser,
     OkexSignalParser, OkexTradeParser,
 };
-use crate::signal::common::TradingVenue;
 use crate::sub_msg::{BinanceFuturesStreamKind, DerivativesMetricsSubscribeMsgs, SubscribeMsgs};
 use bytes::Bytes;
 use log::{debug, error, info};
+use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinSet;
@@ -233,7 +233,7 @@ impl MktManager {
                             BinanceFuturesStreamKind::Depth,
                         )
                         .to_string();
-                        let parser = BinanceIncParser::futures_incremental(max_levels);
+                        let parser = BinanceIncParser::futures_incremental_raw_only(max_levels);
                         self.spawn_connection_with_mpsc(
                             exchange,
                             url,
@@ -251,7 +251,7 @@ impl MktManager {
                     let parser = if self.cfg.venue == TradingVenue::AsterMargin {
                         BinanceIncParser::spot_incremental(max_levels)
                     } else {
-                        BinanceIncParser::futures_incremental(max_levels)
+                        BinanceIncParser::futures_incremental_raw_only(max_levels)
                     };
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -367,7 +367,7 @@ impl MktManager {
                         BinanceFuturesStreamKind::Depth,
                     )
                     .to_string(),
-                    BinanceIncParser::futures_snapshot(max_levels),
+                    BinanceIncParser::futures_snapshot_raw_only(max_levels),
                 ),
                 (Exchange::Aster, TradingVenue::AsterMargin) => (
                     SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string(),
@@ -375,7 +375,7 @@ impl MktManager {
                 ),
                 (Exchange::Aster, _) => (
                     SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string(),
-                    BinanceIncParser::futures_snapshot(max_levels),
+                    BinanceIncParser::futures_snapshot_raw_only(max_levels),
                 ),
                 _ => unreachable!(),
             };
@@ -420,7 +420,7 @@ impl MktManager {
                             BinanceFuturesStreamKind::Trade,
                         )
                         .to_string();
-                        let parser = BinanceTradeParser::new();
+                        let parser = BinanceTradeParser::raw_only();
                         self.spawn_connection_with_mpsc(
                             exchange,
                             url,
@@ -435,7 +435,7 @@ impl MktManager {
                 Exchange::Aster => {
                     let url =
                         SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
-                    let parser = BinanceTradeParser::new();
+                    let parser = BinanceTradeParser::raw_only();
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url,
@@ -477,7 +477,9 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Bitget => {
-                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
+                    // trade 走独立 SBE endpoint (公开行情, 无鉴权), 与 ask_bid_spread/kline 等
+                    // v2 endpoint 分开。topic=publicTrade, 帧是 SBE binary (templateId=1003)。
+                    let url = SubscribeMsgs::BITGET_TRADE_SBE_WS_URL.to_string();
                     let parser = BitgetTradeParser::new();
                     self.spawn_connection_with_mpsc(
                         exchange,
@@ -542,7 +544,11 @@ impl MktManager {
 
             match exchange {
                 Exchange::Binance => {
-                    let parser = BinanceKlineParser::new();
+                    let parser = if self.cfg.venue == TradingVenue::BinanceMargin {
+                        BinanceKlineParser::new()
+                    } else {
+                        BinanceKlineParser::raw_only()
+                    };
                     let url = SubscribeMsgs::get_binance_ws_url_for_stream_kind(
                         self.cfg.venue,
                         BinanceFuturesStreamKind::Kline,
@@ -559,7 +565,11 @@ impl MktManager {
                     .await;
                 }
                 Exchange::Aster => {
-                    let parser = BinanceKlineParser::new();
+                    let parser = if self.cfg.venue == TradingVenue::AsterMargin {
+                        BinanceKlineParser::new()
+                    } else {
+                        BinanceKlineParser::raw_only()
+                    };
                     let url =
                         SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
                     self.spawn_connection_with_mpsc(
@@ -668,7 +678,7 @@ impl MktManager {
                             BinanceFuturesStreamKind::BookTicker,
                         )
                         .to_string();
-                        let parser = BinanceAskBidSpreadParser::new();
+                        let parser = BinanceAskBidSpreadParser::raw_only();
                         self.spawn_connection_with_mpsc(
                             exchange,
                             url,
@@ -683,7 +693,7 @@ impl MktManager {
                 Exchange::Aster => {
                     let url =
                         SubscribeMsgs::get_aster_ws_url_with_venue(self.cfg.venue).to_string();
-                    let parser = BinanceAskBidSpreadParser::new();
+                    let parser = BinanceAskBidSpreadParser::raw_only();
                     self.spawn_connection_with_mpsc(
                         exchange,
                         url,
@@ -819,8 +829,8 @@ impl MktManager {
             .get_active_symbols();
 
         info!("Starting Aster derivatives connections");
-        let parser1 = BinanceDerivativesMetricsParser::new(symbols.clone());
-        let parser2 = BinanceDerivativesMetricsParser::new(symbols.clone());
+        let parser1 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
+        let parser2 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
 
         self.spawn_connection_with_mpsc(
             exchange,
@@ -847,7 +857,11 @@ impl MktManager {
         msgs: &crate::sub_msg::BinancePerpsSubscribeMsgs,
     ) {
         let exchange = self.cfg.get_exchange();
-        let url = crate::sub_msg::BinancePerpsSubscribeMsgs::WS_URL.to_string();
+        let url = SubscribeMsgs::get_binance_ws_url_with_route(
+            self.cfg.venue,
+            crate::sub_msg::BinanceFuturesWsRoute::Market,
+        )
+        .to_string();
         let tx = self.derivatives_tx.clone();
         let symbols = self
             .derivatives_subscribe_msgs
@@ -856,8 +870,8 @@ impl MktManager {
             .get_active_symbols();
 
         info!("Starting Binance derivatives connections");
-        let parser1 = BinanceDerivativesMetricsParser::new(symbols.clone());
-        let parser2 = BinanceDerivativesMetricsParser::new(symbols.clone());
+        let parser1 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
+        let parser2 = BinanceDerivativesMetricsParser::raw_only(symbols.clone());
 
         self.spawn_connection_with_mpsc(
             exchange,
@@ -1010,7 +1024,10 @@ impl MktManager {
         &mut self,
         msgs: &crate::sub_msg::BitgetPerpsSubscribeMsgs,
     ) {
-        if self.cfg.venue != TradingVenue::BitgetFutures {
+        if !matches!(
+            self.cfg.venue,
+            TradingVenue::BitgetFutures | TradingVenue::BitgetCoinFutures
+        ) {
             info!(
                 "Skipping Bitget derivatives connections for unsupported venue={}",
                 self.cfg.venue.data_pub_slug()
@@ -1113,7 +1130,20 @@ impl MktManager {
         let tx = self.signal_tx.clone();
 
         let signal_parser: Box<dyn Parser> = match exchange {
-            Exchange::Binance | Exchange::Aster => Box::new(BinanceSignalParser::new(false)),
+            Exchange::Binance => {
+                if self.cfg.venue == TradingVenue::BinanceMargin {
+                    Box::new(BinanceSignalParser::new(false))
+                } else {
+                    Box::new(BinanceSignalParser::raw_only(false))
+                }
+            }
+            Exchange::Aster => {
+                if self.cfg.venue == TradingVenue::AsterMargin {
+                    Box::new(BinanceSignalParser::new(false))
+                } else {
+                    Box::new(BinanceSignalParser::raw_only(false))
+                }
+            }
             Exchange::Okex => Box::new(OkexSignalParser::new(false)),
             Exchange::Bybit => Box::new(BybitSignalParser::new(false)),
             Exchange::Bitget => Box::new(BitgetSignalParser::new()),

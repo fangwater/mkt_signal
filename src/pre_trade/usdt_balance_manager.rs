@@ -1,11 +1,13 @@
-use crate::common::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
-use crate::common::exchange::Exchange;
+use mkt_parsers::msg::basic_account_msg::{BasicBalanceMsg, BasicBorrowInterestMsg};
+use runtime_common::exchange::Exchange;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UsdtBalanceSnapshot {
     pub wallet: f64,
     pub borrowed: f64,
     pub cumulative_interest: f64,
+    pub wallet_timestamp: i64,
+    pub liability_timestamp: i64,
     pub last_timestamp: i64,
 }
 
@@ -43,16 +45,24 @@ impl UsdtBalanceManager {
         if !msg.symbol.eq_ignore_ascii_case("USDT") {
             return;
         }
+        if msg.timestamp < self.state.wallet_timestamp {
+            return;
+        }
         self.state.wallet = msg.wallet;
-        self.state.last_timestamp = msg.timestamp;
+        self.state.wallet_timestamp = msg.timestamp;
+        self.state.last_timestamp = self.state.last_timestamp.max(msg.timestamp);
     }
 
     pub fn apply_borrow_interest(&mut self, msg: &BasicBorrowInterestMsg) {
         if !msg.symbol.eq_ignore_ascii_case("USDT") {
             return;
         }
+        if msg.timestamp < self.state.liability_timestamp {
+            return;
+        }
         self.state.borrowed = msg.borrowed;
         self.state.cumulative_interest = msg.interest;
+        self.state.liability_timestamp = msg.timestamp;
         self.state.last_timestamp = self.state.last_timestamp.max(msg.timestamp);
     }
 
@@ -81,6 +91,47 @@ mod tests {
         ));
 
         assert!((mgr.net_usdt_position() - 48.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_usdt_borrow_interest_does_not_override_newer_state() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(20, "USDT".to_string(), 100.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            20,
+            "USDT".to_string(),
+            30.0,
+            2.0,
+        ));
+        assert!((mgr.net_usdt_position() - 68.0).abs() < 1e-12);
+
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            10,
+            "USDT".to_string(),
+            90.0,
+            5.0,
+        ));
+        assert!((mgr.net_usdt_position() - 68.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stale_usdt_balance_does_not_override_newer_wallet() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Okex);
+        mgr.apply_balance(&BasicBalanceMsg::create(20, "USDT".to_string(), 100.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            25,
+            "USDT".to_string(),
+            30.0,
+            2.0,
+        ));
+        mgr.apply_balance(&BasicBalanceMsg::create(10, "USDT".to_string(), 999.0));
+
+        let snap = mgr.snapshot();
+        assert_eq!(snap.wallet, 100.0);
+        assert_eq!(snap.wallet_timestamp, 20);
+        assert_eq!(snap.liability_timestamp, 25);
+        assert_eq!(snap.last_timestamp, 25);
+        assert!((mgr.net_usdt_position() - 68.0).abs() < 1e-12);
     }
 
     #[test]

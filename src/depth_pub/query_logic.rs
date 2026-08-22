@@ -3,7 +3,8 @@ use std::sync::Arc;
 use log::{debug, warn};
 
 use super::orderbook::price_to_key;
-use super::query_msg::{
+use super::query_snapshot::SymbolQuerySnapshot;
+use depth_pub_common::query_msg::{
     resp_status_name, tick_index_to_price, DepthQueryHeader, DepthQueryLoadTlenBatchReq,
     DepthQueryLoadTlenBatchResp, DepthQueryLoadTlenSingleReq, DepthQueryLoadTlenSingleResp,
     DepthQueryTop5PriceTlenReq, DepthQueryTop5PriceTlenResp, DepthQueryType, DEPTH_QUERY_PAYLOAD,
@@ -11,7 +12,6 @@ use super::query_msg::{
     RESP_STATUS_PAYLOAD_TOO_LARGE, RESP_STATUS_SYMBOL_MISSING, RESP_STATUS_UNSUPPORTED_TYPE,
     TLEN_QUERY_AMOUNT_INVALID,
 };
-use super::query_snapshot::SymbolQuerySnapshot;
 
 pub trait DepthQuerySource {
     fn venue_slug(&self) -> &str;

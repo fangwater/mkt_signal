@@ -1,24 +1,28 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::OrderExecutionStatus;
+use crate::pre_trade::order_manager::PreTradeOrderRequestExt;
 use crate::pre_trade::{QueryEngHub, TradeEngHub};
-use crate::signal::common::{ExecutionType, OrderStatus};
-use crate::signal::trade_signal::TradeSignal;
 use crate::strategy::manager::{OrphanHandoff, OrphanSourceKind, Strategy};
 use crate::strategy::order_query_builder::build_order_query_request;
-use crate::strategy::order_update::OrderUpdate;
 use crate::strategy::orphan_order_common::{
-    format_orphan_query_table, order_query_time_utc, ORPHAN_QUERY_LOG_THRESHOLD,
+    commit_query_policy_for, format_orphan_query_table, infer_query_time_in_force,
+    order_query_time_utc, orphan_initial_query_ticks_for, query_backoff_ticks,
+    standard_commit_query_policy, COMMIT_QUERY_BACKOFF_SHIFT, ORPHAN_QUERY_LOG_THRESHOLD,
 };
-use crate::strategy::trade_update::TradeUpdate;
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
 };
 use log::{info, warn};
+use order_common::OrderExecutionStatus;
+use order_common::OrderQueryOrderUpdate;
+use order_common::OrderUpdate;
+use order_common::TradeUpdate;
+use order_common::{ExecutionType, OrderStatus};
+use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use runtime_common::time_util::get_timestamp_us;
+use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
 
 const HEDGE_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
 const HEDGE_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
@@ -39,9 +43,9 @@ struct HedgeOrphanQueryState {
 pub struct HedgeOrphanOrderStrategy {
     strategy_id: i32,
     symbol: String,
-    order_ids: HashSet<i64>,
-    order_owners: HashMap<i64, HedgeOrphanOrderOwner>,
-    query_states: HashMap<i64, HedgeOrphanQueryState>,
+    order_ids: FastHashSet<i64>,
+    order_owners: FastHashMap<i64, HedgeOrphanOrderOwner>,
+    query_states: FastHashMap<i64, HedgeOrphanQueryState>,
     active: bool,
 }
 
@@ -50,9 +54,9 @@ impl HedgeOrphanOrderStrategy {
         Self {
             strategy_id,
             symbol: normalize_symbol_for_internal(&symbol.into()),
-            order_ids: HashSet::new(),
-            order_owners: HashMap::new(),
-            query_states: HashMap::new(),
+            order_ids: fast_hash_set(),
+            order_owners: fast_hash_map(),
+            query_states: fast_hash_map(),
             active: true,
         }
     }
@@ -61,6 +65,33 @@ impl HedgeOrphanOrderStrategy {
         HedgeOrphanQueryState {
             query_count: 0,
             ticks_until_next_query: HEDGE_ORPHAN_QUERY_BASE_TICKS,
+        }
+    }
+
+    fn initial_query_state_for_order(client_order_id: i64) -> HedgeOrphanQueryState {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return Self::initial_query_state();
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return Self::initial_query_state();
+        };
+        let binance_is_standard = mgr.binance_is_standard();
+        if order.status == OrderExecutionStatus::Commit {
+            return HedgeOrphanQueryState {
+                query_count: 0,
+                ticks_until_next_query: commit_query_policy_for(order.venue, binance_is_standard)
+                    .base_ticks,
+            };
+        }
+        let ticks_until_next_query = orphan_initial_query_ticks_for(
+            order.venue,
+            binance_is_standard,
+            HEDGE_ORPHAN_QUERY_BASE_TICKS,
+        );
+        HedgeOrphanQueryState {
+            query_count: 0,
+            ticks_until_next_query,
         }
     }
 
@@ -73,10 +104,57 @@ impl HedgeOrphanOrderStrategy {
             .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
     }
 
+    fn commit_next_query_ticks(base_ticks: u32, query_count: u8) -> u32 {
+        query_backoff_ticks(
+            base_ticks,
+            HEDGE_ORPHAN_QUERY_MAX_TICKS,
+            query_count,
+            COMMIT_QUERY_BACKOFF_SHIFT,
+        )
+    }
+
+    fn commit_query_policy_for_order(
+        client_order_id: i64,
+    ) -> crate::strategy::orphan_order_common::CommitQueryPolicy {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            return standard_commit_query_policy();
+        };
+        let mgr = order_mgr.borrow();
+        let Some(order) = mgr.get(client_order_id) else {
+            return standard_commit_query_policy();
+        };
+        commit_query_policy_for(order.venue, mgr.binance_is_standard())
+    }
+
+    fn commit_query_due_now(&mut self, client_order_id: i64) -> Option<CommitQueryAction> {
+        let policy = Self::commit_query_policy_for_order(client_order_id);
+        let Some(query_state) = self.query_states.get_mut(&client_order_id) else {
+            return None;
+        };
+        if query_state.query_count == 0 {
+            query_state.ticks_until_next_query =
+                query_state.ticks_until_next_query.min(policy.base_ticks);
+        }
+        if query_state.ticks_until_next_query > 0 {
+            query_state.ticks_until_next_query -= 1;
+            return None;
+        }
+        if query_state.query_count >= policy.max_attempts {
+            return Some(CommitQueryAction::Close);
+        }
+
+        query_state.query_count = query_state.query_count.saturating_add(1);
+        query_state.ticks_until_next_query =
+            Self::commit_next_query_ticks(policy.base_ticks, query_state.query_count);
+        Some(CommitQueryAction::Query {
+            query_count: query_state.query_count,
+        })
+    }
+
     fn ensure_query_state(&mut self, client_order_id: i64) {
         self.query_states
             .entry(client_order_id)
-            .or_insert_with(Self::initial_query_state);
+            .or_insert_with(|| Self::initial_query_state_for_order(client_order_id));
     }
 
     fn track_order_id(&mut self, client_order_id: i64) {
@@ -148,8 +226,22 @@ impl HedgeOrphanOrderStrategy {
                     (
                         order.symbol.clone(),
                         order.side,
-                        order.quantity * order.qty_multiplier,
-                        order.cumulative_filled_quantity * order.qty_multiplier,
+                        MonitorChannel::instance()
+                            .qty_to_base_at_price(
+                                order.venue,
+                                &order.symbol,
+                                order.quantity,
+                                order.price,
+                            )
+                            .unwrap_or(order.quantity * order.qty_multiplier),
+                        MonitorChannel::instance()
+                            .qty_to_base_at_price(
+                                order.venue,
+                                &order.symbol,
+                                order.cumulative_filled_quantity,
+                                order.price,
+                            )
+                            .unwrap_or(order.cumulative_filled_quantity * order.qty_multiplier),
                         order.price,
                     )
                 })
@@ -183,6 +275,7 @@ impl HedgeOrphanOrderStrategy {
                             event_time,
                             price,
                             0,
+                            client_order_id,
                         ),
                     };
                     if !recorded {
@@ -303,6 +396,46 @@ impl HedgeOrphanOrderStrategy {
         }
     }
 
+    fn close_commit_order_after_query_budget(&mut self, client_order_id: i64) {
+        let Some(order_mgr) = MonitorChannel::try_order_manager() else {
+            self.forget_order_id(
+                client_order_id,
+                "commit query budget exhausted without order manager",
+            );
+            return;
+        };
+        let Some(order) = order_mgr.borrow().get(client_order_id) else {
+            self.forget_order_id(
+                client_order_id,
+                "commit query budget exhausted missing local order",
+            );
+            return;
+        };
+        if order.status != OrderExecutionStatus::Commit {
+            return;
+        }
+
+        let query_count = self
+            .query_states
+            .get(&client_order_id)
+            .map(|state| state.query_count)
+            .unwrap_or_default();
+        warn!(
+            "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} commit order query budget exhausted; closing local orphan client_order_id={} symbol={} venue={:?} query_count={}",
+            self.strategy_id, client_order_id, order.symbol, order.venue, query_count
+        );
+        let update = OrderQueryOrderUpdate::new(
+            &order,
+            order.exchange_order_id.unwrap_or(order.client_order_id),
+            get_timestamp_us(),
+            OrderStatus::Expired,
+            ExecutionType::Rejected,
+            order.cumulative_filled_quantity,
+            infer_query_time_in_force(&order),
+        );
+        self.apply_order_update(&update);
+    }
+
     fn log_orders_over_query_threshold(&self) {
         let Some(order_mgr) = MonitorChannel::try_order_manager() else {
             return;
@@ -330,6 +463,12 @@ impl HedgeOrphanOrderStrategy {
             format_orphan_query_table(&rows)
         );
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitQueryAction {
+    Query { query_count: u8 },
+    Close,
 }
 
 impl Strategy for HedgeOrphanOrderStrategy {
@@ -406,10 +545,10 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 });
         }
 
-        if let Some(ctx) = uniform_ctx.as_ref() {
+        let terminal_publish_snapshot = if let Some(ctx) = uniform_ctx.as_ref() {
             let updated_order = MonitorChannel::try_order_manager()
                 .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
-            if let Some(order) = updated_order {
+            if let Some(order) = updated_order.as_ref() {
                 if update.status() == OrderStatus::New {
                     publish_uniform_new_order(
                         update,
@@ -420,23 +559,12 @@ impl Strategy for HedgeOrphanOrderStrategy {
                         self.strategy_id,
                     );
                 }
-                if matches!(
-                    update.status(),
-                    OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
-                ) {
-                    publish_uniform_terminal_order(
-                        update,
-                        &order,
-                        prev_cumulative_filled_qty,
-                        ctx,
-                        "HedgeOrphanOrderStrategy",
-                        self.strategy_id,
-                    );
-                }
-                if matches!(
-                    update.status(),
-                    OrderStatus::PartiallyFilled | OrderStatus::Filled
-                ) {
+                if !update.status().is_finished()
+                    && matches!(
+                        update.status(),
+                        OrderStatus::PartiallyFilled | OrderStatus::Filled
+                    )
+                {
                     publish_uniform_trade_order_from_order_update(
                         update,
                         &order,
@@ -447,7 +575,10 @@ impl Strategy for HedgeOrphanOrderStrategy {
                     );
                 }
             }
-        }
+            updated_order.map(|order| (order, ctx.clone()))
+        } else {
+            None
+        };
 
         if matches!(
             update.status(),
@@ -463,6 +594,30 @@ impl Strategy for HedgeOrphanOrderStrategy {
             );
         } else {
             self.request_cancel_if_needed(update);
+        }
+        if let Some((order, ctx)) = terminal_publish_snapshot.as_ref() {
+            if matches!(
+                update.status(),
+                OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::ExpiredInMatch
+            ) {
+                publish_uniform_terminal_order(
+                    update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    ctx,
+                    "HedgeOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            } else if update.status() == OrderStatus::Filled {
+                publish_uniform_trade_order_from_order_update(
+                    update,
+                    order,
+                    prev_cumulative_filled_qty,
+                    ctx,
+                    "HedgeOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            }
         }
         info!(
             "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted order_update symbol={} client_order_id={} order_id={} x={:?} X={:?}",
@@ -535,15 +690,21 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 });
         }
 
-        if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
-            let updated_order = MonitorChannel::try_order_manager()
-                .and_then(|order_mgr| order_mgr.borrow().get(client_order_id));
-            if let Some(order) = updated_order {
+        let trade_publish_snapshot =
+            if let (Some(ctx), Some(status)) = (uniform_ctx.as_ref(), trade.order_status()) {
+                MonitorChannel::try_order_manager()
+                    .and_then(|order_mgr| order_mgr.borrow().get(client_order_id))
+                    .map(|order| (order, ctx.clone(), status))
+            } else {
+                None
+            };
+        if let Some((order, ctx, status)) = trade_publish_snapshot.as_ref() {
+            if !status.is_finished() {
                 publish_uniform_trade_order(
                     trade,
-                    &order,
+                    order,
                     prev_cumulative_filled_qty,
-                    status,
+                    *status,
                     ctx,
                     "HedgeOrphanOrderStrategy",
                     self.strategy_id,
@@ -565,6 +726,19 @@ impl Strategy for HedgeOrphanOrderStrategy {
                 trade.event_time(),
                 "terminal trade update",
             );
+        }
+        if let Some((order, ctx, status)) = trade_publish_snapshot.as_ref() {
+            if status.is_finished() {
+                publish_uniform_trade_order(
+                    trade,
+                    order,
+                    prev_cumulative_filled_qty,
+                    *status,
+                    ctx,
+                    "HedgeOrphanOrderStrategy",
+                    self.strategy_id,
+                );
+            }
         }
         info!(
             "HedgeOrphanOrderStrategy: strategy_role=hedge_orphan strategy_id={} adopted trade_update symbol={} client_order_id={} order_id={} cumulative_qty={:.8} status={:?}",
@@ -595,6 +769,21 @@ impl Strategy for HedgeOrphanOrderStrategy {
                     get_timestamp_us(),
                     "terminal local order on period clock",
                 );
+                continue;
+            }
+            if order.status == OrderExecutionStatus::Commit {
+                match self.commit_query_due_now(client_order_id) {
+                    Some(CommitQueryAction::Query { query_count }) => {
+                        let _ = self.send_order_query(client_order_id);
+                        if query_count > ORPHAN_QUERY_LOG_THRESHOLD {
+                            self.log_orders_over_query_threshold();
+                        }
+                    }
+                    Some(CommitQueryAction::Close) => {
+                        self.close_commit_order_after_query_budget(client_order_id);
+                    }
+                    None => {}
+                }
                 continue;
             }
 

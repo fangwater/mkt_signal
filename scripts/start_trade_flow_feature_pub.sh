@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VENUE_DIR_REGEX='^[a-z0-9]+-(futures|margin)$'
+VENUE_DIR_REGEX='^([a-z0-9]+-(futures|margin)|(binance|bitget)-coin-futures)$'
 
 usage() {
   cat <<'USAGE'
@@ -135,8 +135,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting ${name}"
-"${PMDAEMON[@]}" delete "$legacy_name" >/dev/null 2>&1 || true
-"${PMDAEMON[@]}" delete "$name" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_trade_flow_feature_pub.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
+fi
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$name"
 
 echo ""

@@ -9,13 +9,12 @@ use log::{error, info, warn};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::common::mkt_msg::FactorValueMsg;
-use crate::common::trade_flow_feature_msg::{
+use factor_engine::factor_index::{factor_name_to_channel, factor_name_to_index};
+use mkt_parsers::msg::mkt_msg::FactorValueMsg;
+use mkt_parsers::msg::trade_flow_feature_msg::{
     TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
 };
-use crate::factor_pub::factor_index::{factor_name_to_channel, factor_name_to_index};
 const SUBSCRIBER_MAX_BUFFER_SIZE: usize = 8192;
-const PUBLISH_GAP_ERROR_THRESHOLD: Duration = Duration::from_secs(6);
 const EXCEED_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const RL_FACTOR_NAME: &str = "rl_return_volatility";
 const RL_FACTOR_PAYLOAD_MAX_BYTES: usize = 256;
@@ -158,7 +157,9 @@ impl RlFactorPublisher {
 
 pub struct TradeFlowFeaturePublisher {
     venue_slug: String,
+    channel: String,
     publisher: Publisher<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>,
+    publish_gap_error_threshold: Duration,
     published: u64,
     dropped: u64,
     last_publish_at_by_symbol: HashMap<String, Instant>,
@@ -167,13 +168,25 @@ pub struct TradeFlowFeaturePublisher {
 }
 
 impl TradeFlowFeaturePublisher {
-    pub fn new(venue_slug: &str) -> Result<Self> {
-        let node_name = format!("trade_flow_feature_pub_{}", venue_slug.replace('-', "_"));
+    pub fn new(
+        venue_slug: &str,
+        channel: &str,
+        publish_gap_error_threshold: Duration,
+    ) -> Result<Self> {
+        let node_name = if channel == "trade_flow_feature" {
+            format!("trade_flow_feature_pub_{}", venue_slug.replace('-', "_"))
+        } else {
+            format!(
+                "trade_flow_feature_pub_{}_{}",
+                venue_slug.replace('-', "_"),
+                channel.replace('-', "_")
+            )
+        };
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
 
-        let service_path = format!("factor_pub/{}/trade_flow_feature", venue_slug);
+        let service_path = format!("factor_pub/{}/{}", venue_slug, channel);
         let service = node
             .service_builder(&ServiceName::new(&service_path)?)
             .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
@@ -205,7 +218,9 @@ impl TradeFlowFeaturePublisher {
 
         Ok(Self {
             venue_slug: venue_slug.to_string(),
+            channel: channel.to_string(),
             publisher,
+            publish_gap_error_threshold,
             published: 0,
             dropped: 0,
             last_publish_at_by_symbol: HashMap::new(),
@@ -245,11 +260,12 @@ impl TradeFlowFeaturePublisher {
                             .insert(symbol.to_string(), vec![exceed_at_ms]);
                     }
                     error!(
-                        "TradeFlowFeature publish gap exceeded: venue={} symbol={} gap_ms={} threshold_ms={} exceed_at_ms={}",
+                        "TradeFlowFeature publish gap exceeded: venue={} channel={} symbol={} gap_ms={} threshold_ms={} exceed_at_ms={}",
                         self.venue_slug,
+                        self.channel,
                         symbol,
                         gap.as_millis(),
-                        PUBLISH_GAP_ERROR_THRESHOLD.as_millis(),
+                        self.publish_gap_error_threshold.as_millis(),
                         exceed_at_ms
                     );
                 }
@@ -264,8 +280,8 @@ impl TradeFlowFeaturePublisher {
 
     pub fn log_stats(&mut self) {
         info!(
-            "TradeFlowFeaturePublisher[{}] stats: published={}, dropped={}",
-            self.venue_slug, self.published, self.dropped
+            "TradeFlowFeaturePublisher[{}:{}] stats: published={}, dropped={}",
+            self.venue_slug, self.channel, self.published, self.dropped
         );
         self.published = 0;
         self.dropped = 0;
@@ -283,7 +299,7 @@ impl TradeFlowFeaturePublisher {
         };
 
         match gap {
-            Some(gap) if gap > PUBLISH_GAP_ERROR_THRESHOLD => Some(gap),
+            Some(gap) if gap > self.publish_gap_error_threshold => Some(gap),
             _ => None,
         }
     }
@@ -308,8 +324,9 @@ impl TradeFlowFeaturePublisher {
         exceeded_symbol_details.sort();
 
         info!(
-            "TradeFlowFeature publish gap summary: venue={} window_secs={} exceeded_symbol_count={} exceeded_symbol_times=[{}] summary_at_ms={}",
+            "TradeFlowFeature publish gap summary: venue={} channel={} window_secs={} exceeded_symbol_count={} exceeded_symbol_times=[{}] summary_at_ms={}",
             self.venue_slug,
+            self.channel,
             EXCEED_SUMMARY_LOG_INTERVAL.as_secs(),
             self.exceeded_events_in_window.len(),
             exceeded_symbol_details.join(","),
@@ -332,20 +349,22 @@ fn current_unix_time_ms() -> u64 {
 mod tests {
     use super::*;
 
+    const TEST_PUBLISH_GAP_ERROR_THRESHOLD: Duration = Duration::from_secs(6);
+
     #[test]
     fn publish_gap_equal_to_threshold_is_not_reported() {
         let prev = Instant::now();
-        let now = prev + PUBLISH_GAP_ERROR_THRESHOLD;
+        let now = prev + TEST_PUBLISH_GAP_ERROR_THRESHOLD;
         let gap = now.saturating_duration_since(prev);
-        assert!(gap <= PUBLISH_GAP_ERROR_THRESHOLD);
+        assert!(gap <= TEST_PUBLISH_GAP_ERROR_THRESHOLD);
     }
 
     #[test]
     fn publish_gap_above_threshold_is_reported() {
         let prev = Instant::now();
-        let now = prev + PUBLISH_GAP_ERROR_THRESHOLD + Duration::from_millis(1);
+        let now = prev + TEST_PUBLISH_GAP_ERROR_THRESHOLD + Duration::from_millis(1);
         let gap = now.saturating_duration_since(prev);
-        assert!(gap > PUBLISH_GAP_ERROR_THRESHOLD);
+        assert!(gap > TEST_PUBLISH_GAP_ERROR_THRESHOLD);
     }
 
     #[test]

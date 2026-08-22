@@ -1,0 +1,11 @@
+[package]
+name = "queue_position_engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "queue_position_engine"
+path = "src/lib.rs"
+
+[dependencies]
+ahash.workspace = true

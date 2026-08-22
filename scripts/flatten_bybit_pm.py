@@ -18,6 +18,7 @@ Modes:
 Behavior:
   - CWD basename must match ^bybit_fr_ or ^bybit-intra-.
   - Auto-sources ./env.sh; BYBIT_API_KEY/SECRET — env.sh always wins.
+  - Binds all Bybit HTTP requests to local_ips[0] from ./trade_engine.toml.
   - Dry-run by default; --execute required.
 
 Usage:
@@ -30,6 +31,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import http.client
+import ipaddress
 import json
 import os
 import re
@@ -41,7 +44,13 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - deployed hosts use Python 3.11+
+    tomllib = None  # type: ignore[assignment]
 
 
 BYBIT_BASE = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com").rstrip("/")
@@ -49,7 +58,9 @@ RECV_WINDOW_MS = "5000"
 
 ENV_DIR_PATTERN = re.compile(r"^(bybit_fr_|bybit[-_]intra[-_])")
 AUTHORITATIVE_KEYS = ("BYBIT_API_KEY", "BYBIT_API_SECRET")
+TRADE_ENGINE_CFG_NAMES = ("trade_engine.toml", "trade engine.toml")
 ZERO = Decimal("0")
+_HTTP_OPENER: Optional[urllib.request.OpenerDirector] = None
 
 
 @dataclass
@@ -107,6 +118,74 @@ class SymbolResult:
 # -------------------- helpers --------------------
 
 
+class SourceAddressHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, local_address: str):
+        super().__init__()
+        self._source_address = (local_address, 0)
+
+    def http_open(self, req):
+        return self.do_open(
+            lambda host, **kwargs: http.client.HTTPConnection(
+                host, source_address=self._source_address, **kwargs
+            ),
+            req,
+        )
+
+
+class SourceAddressHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, local_address: str):
+        super().__init__()
+        self._source_address = (local_address, 0)
+
+    def https_open(self, req):
+        return self.do_open(
+            lambda host, **kwargs: http.client.HTTPSConnection(
+                host, source_address=self._source_address, **kwargs
+            ),
+            req,
+        )
+
+
+def load_trade_engine_local_address(env_dir: str) -> Tuple[str, Path]:
+    root = Path(env_dir)
+    configs = [root / name for name in TRADE_ENGINE_CFG_NAMES if (root / name).is_file()]
+    if not configs:
+        names = " or ".join(TRADE_ENGINE_CFG_NAMES)
+        sys.exit(f"[ERROR] missing {names} in {root}; refusing unbound Bybit requests")
+    if len(configs) > 1:
+        joined = ", ".join(str(path) for path in configs)
+        sys.exit(f"[ERROR] multiple trade engine configs found: {joined}")
+    if tomllib is None:
+        sys.exit("[ERROR] Python 3.11+ is required to parse trade_engine.toml")
+
+    path = configs[0]
+    try:
+        with path.open("rb") as fh:
+            config = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        sys.exit(f"[ERROR] failed to read {path}: {exc}")
+
+    local_ips = config.get("local_ips")
+    if not isinstance(local_ips, list) or not local_ips:
+        sys.exit(f"[ERROR] {path} must provide a non-empty local_ips array")
+    local_address = str(local_ips[0]).strip()
+    try:
+        parsed = ipaddress.ip_address(local_address)
+    except ValueError as exc:
+        sys.exit(f"[ERROR] invalid {path} local_ips[0]={local_address!r}: {exc}")
+    if parsed.is_unspecified:
+        sys.exit(f"[ERROR] {path} local_ips[0] cannot be {local_address}")
+    return local_address, path
+
+
+def configure_http_source(local_address: str) -> None:
+    global _HTTP_OPENER
+    _HTTP_OPENER = urllib.request.build_opener(
+        SourceAddressHTTPHandler(local_address),
+        SourceAddressHTTPSHandler(local_address),
+    )
+
+
 def decimal_or(value, default="0"):
     if value in (None, ""):
         return Decimal(default)
@@ -136,11 +215,13 @@ def format_decimal(value):
 
 
 def http_request(url, *, method="GET", headers=None, data=None, timeout=15):
+    if _HTTP_OPENER is None:
+        raise RuntimeError("HTTP source address is not configured")
     req = urllib.request.Request(url, data=data, method=method.upper())
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _HTTP_OPENER.open(req, timeout=timeout) as resp:
             return resp.getcode(), resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")
@@ -638,6 +719,12 @@ def main() -> None:
     auto_source_env_sh()
     api_key, api_secret = load_credentials()
     symbols = parse_symbols(args.symbols)
+    local_address, trade_engine_config = load_trade_engine_local_address(os.getcwd())
+    configure_http_source(local_address)
+    print(
+        f"[info] Bybit REST source local IP: {local_address} "
+        f"({trade_engine_config} local_ips[0])"
+    )
 
     specs = fetch_specs(symbols)
     balances = fetch_wallet(api_key, api_secret)

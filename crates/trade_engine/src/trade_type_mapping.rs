@@ -1,0 +1,419 @@
+use super::trade_request::TradeRequestType;
+
+pub struct TradeTypeMapping;
+
+impl TradeTypeMapping {
+    /// 判断请求类型是否走 WebSocket
+    pub fn is_websocket(request_type: TradeRequestType) -> bool {
+        match request_type {
+            // Binance REST 请求
+            TradeRequestType::BinanceNewUMOrder
+            | TradeRequestType::BinanceNewUMConditionalOrder
+            | TradeRequestType::BinanceNewMarginOrder
+            | TradeRequestType::BinanceCancelUMOrder
+            | TradeRequestType::BinanceCancelAllUMOrders
+            | TradeRequestType::BinanceCancelUMConditionalOrder
+            | TradeRequestType::BinanceCancelAllUMConditionalOrders
+            | TradeRequestType::BinanceCancelMarginOrder
+            | TradeRequestType::BinanceModifyUMOrder
+            | TradeRequestType::BinanceUMSetLeverage
+            | TradeRequestType::BinanceStdMainToUmTransfer
+            | TradeRequestType::BinanceStdUmToMainTransfer
+            | TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => false,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => false,
+            TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => true,
+
+            // OKEx 所有请求走 WebSocket
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => true,
+
+            // Gate 统一账户 / 合约走 WebSocket
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder
+            | TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder
+            | TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => true,
+        }
+    }
+
+    /// 根据请求类型获取endpoint（仅用于 REST）
+    pub fn get_endpoint(request_type: TradeRequestType) -> &'static str {
+        match request_type {
+            TradeRequestType::BinanceNewUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceNewUMConditionalOrder => "/papi/v1/um/conditional/order",
+            TradeRequestType::BinanceNewMarginOrder => "/papi/v1/margin/order",
+            TradeRequestType::BinanceCancelUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceCancelAllUMOrders => "/papi/v1/um/allOpenOrders",
+            TradeRequestType::BinanceCancelUMConditionalOrder => "/papi/v1/um/conditional/order",
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => {
+                "/papi/v1/um/conditional/allOpenOrders"
+            }
+            TradeRequestType::BinanceCancelMarginOrder => "/papi/v1/margin/order",
+            TradeRequestType::BinanceModifyUMOrder => "/papi/v1/um/order",
+            TradeRequestType::BinanceUMSetLeverage => "/papi/v1/um/leverage",
+            TradeRequestType::BinanceStdMainToUmTransfer
+            | TradeRequestType::BinanceStdUmToMainTransfer => "/sapi/v1/asset/transfer",
+            TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCancelCmOrder => {
+                "/dapi/v1/order"
+            }
+            TradeRequestType::BinanceCmSetLeverage => "/dapi/v1/leverage",
+            TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCancelCmOrder => {
+                "/papi/v1/cm/order"
+            }
+            TradeRequestType::BinancePmCmSetLeverage => "/papi/v1/cm/leverage",
+            TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => {
+                unreachable!("Binance ws requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
+                unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+        }
+    }
+
+    /// 根据请求类型获取HTTP方法（仅用于 REST）
+    pub fn get_method(request_type: TradeRequestType) -> &'static str {
+        match request_type {
+            TradeRequestType::BinanceNewUMOrder => "POST",
+            TradeRequestType::BinanceNewUMConditionalOrder => "POST",
+            TradeRequestType::BinanceNewMarginOrder => "POST",
+            TradeRequestType::BinanceCancelUMOrder => "DELETE",
+            TradeRequestType::BinanceCancelAllUMOrders => "DELETE",
+            TradeRequestType::BinanceCancelUMConditionalOrder => "DELETE",
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => "DELETE",
+            TradeRequestType::BinanceCancelMarginOrder => "DELETE",
+            TradeRequestType::BinanceModifyUMOrder => "PUT",
+            TradeRequestType::BinanceUMSetLeverage => "POST",
+            TradeRequestType::BinanceStdMainToUmTransfer
+            | TradeRequestType::BinanceStdUmToMainTransfer => "POST",
+            TradeRequestType::BinanceNewCmOrder | TradeRequestType::BinanceCmSetLeverage => "POST",
+            TradeRequestType::BinanceCancelCmOrder => "DELETE",
+            TradeRequestType::BinancePmNewCmOrder | TradeRequestType::BinancePmCmSetLeverage => {
+                "POST"
+            }
+            TradeRequestType::BinancePmCancelCmOrder => "DELETE",
+            TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => {
+                unreachable!("Binance ws requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
+                unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+        }
+    }
+
+    /// 根据请求类型获取API权重（仅用于 REST）
+    pub fn get_weight(request_type: TradeRequestType) -> u32 {
+        match request_type {
+            TradeRequestType::BinanceNewUMOrder => 1,
+            TradeRequestType::BinanceNewUMConditionalOrder => 1,
+            TradeRequestType::BinanceNewMarginOrder => 1,
+            TradeRequestType::BinanceCancelUMOrder => 1,
+            TradeRequestType::BinanceCancelAllUMOrders => 1,
+            TradeRequestType::BinanceCancelUMConditionalOrder => 1,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => 1,
+            TradeRequestType::BinanceCancelMarginOrder => 2,
+            TradeRequestType::BinanceModifyUMOrder => 1,
+            TradeRequestType::BinanceUMSetLeverage => 1,
+            TradeRequestType::BinanceStdMainToUmTransfer
+            | TradeRequestType::BinanceStdUmToMainTransfer => 900,
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => 1,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => 1,
+            TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => {
+                unreachable!("Binance ws requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
+                unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+        }
+    }
+
+    /// 检查请求类型是否需要签名（仅用于 REST）
+    pub fn requires_signature(request_type: TradeRequestType) -> bool {
+        match request_type {
+            TradeRequestType::BinanceNewUMOrder => true,
+            TradeRequestType::BinanceNewUMConditionalOrder => true,
+            TradeRequestType::BinanceNewMarginOrder => true,
+            TradeRequestType::BinanceCancelUMOrder => true,
+            TradeRequestType::BinanceCancelAllUMOrders => true,
+            TradeRequestType::BinanceCancelUMConditionalOrder => true,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
+            TradeRequestType::BinanceCancelMarginOrder => true,
+            TradeRequestType::BinanceModifyUMOrder => true,
+            TradeRequestType::BinanceUMSetLeverage => true,
+            TradeRequestType::BinanceStdMainToUmTransfer
+            | TradeRequestType::BinanceStdUmToMainTransfer => true,
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => true,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => true,
+            TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => {
+                unreachable!("Binance ws requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
+                unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+        }
+    }
+
+    /// 检查请求类型是否需要API Key（仅用于 REST）
+    pub fn requires_api_key(request_type: TradeRequestType) -> bool {
+        match request_type {
+            TradeRequestType::BinanceNewUMOrder => true,
+            TradeRequestType::BinanceNewUMConditionalOrder => true,
+            TradeRequestType::BinanceNewMarginOrder => true,
+            TradeRequestType::BinanceCancelUMOrder => true,
+            TradeRequestType::BinanceCancelAllUMOrders => true,
+            TradeRequestType::BinanceCancelUMConditionalOrder => true,
+            TradeRequestType::BinanceCancelAllUMConditionalOrders => true,
+            TradeRequestType::BinanceCancelMarginOrder => true,
+            TradeRequestType::BinanceModifyUMOrder => true,
+            TradeRequestType::BinanceUMSetLeverage => true,
+            TradeRequestType::BinanceStdMainToUmTransfer
+            | TradeRequestType::BinanceStdUmToMainTransfer => true,
+            TradeRequestType::BinanceNewCmOrder
+            | TradeRequestType::BinanceCancelCmOrder
+            | TradeRequestType::BinanceCmSetLeverage => true,
+            TradeRequestType::BinancePmNewCmOrder
+            | TradeRequestType::BinancePmCancelCmOrder
+            | TradeRequestType::BinancePmCmSetLeverage => true,
+            TradeRequestType::BinanceWsNewUMOrder
+            | TradeRequestType::BinanceWsCancelUMOrder
+            | TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceWsCancelMarginOrder => {
+                unreachable!("Binance ws requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::OkexNewMarginOrder
+            | TradeRequestType::OkexNewUMOrder
+            | TradeRequestType::OkexCancelMarginOrder
+            | TradeRequestType::OkexCancelUMOrder => {
+                unreachable!("Okex requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::GateUnifiedNewOrder
+            | TradeRequestType::GateUnifiedCancelOrder
+            | TradeRequestType::GateFuturesNewOrder
+            | TradeRequestType::GateFuturesCancelOrder => {
+                unreachable!("Gate requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BybitNewMarginOrder
+            | TradeRequestType::BybitNewUMOrder
+            | TradeRequestType::BybitCancelMarginOrder
+            | TradeRequestType::BybitCancelUMOrder => {
+                unreachable!("Bybit requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::BitgetNewMarginOrder
+            | TradeRequestType::BitgetNewUMOrder
+            | TradeRequestType::BitgetNewSpotOrder
+            | TradeRequestType::BitgetCancelMarginOrder
+            | TradeRequestType::BitgetCancelUMOrder
+            | TradeRequestType::BitgetCancelSpotOrder
+            | TradeRequestType::BitgetNewCoinFuturesOrder
+            | TradeRequestType::BitgetCancelCoinFuturesOrder => {
+                unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+        }
+    }
+
+    pub fn counts_toward_order_limit(request_type: TradeRequestType) -> bool {
+        !matches!(
+            request_type,
+            TradeRequestType::BinanceStdMainToUmTransfer
+                | TradeRequestType::BinanceStdUmToMainTransfer
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TradeTypeMapping;
+    use order_common::TradeRequestType;
+
+    #[test]
+    fn binance_standard_transfers_map_to_sapi() {
+        for req_type in [
+            TradeRequestType::BinanceStdMainToUmTransfer,
+            TradeRequestType::BinanceStdUmToMainTransfer,
+        ] {
+            assert!(!TradeTypeMapping::is_websocket(req_type));
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(req_type),
+                "/sapi/v1/asset/transfer"
+            );
+            assert_eq!(TradeTypeMapping::get_method(req_type), "POST");
+            assert_eq!(TradeTypeMapping::get_weight(req_type), 900);
+            assert!(TradeTypeMapping::requires_signature(req_type));
+            assert!(TradeTypeMapping::requires_api_key(req_type));
+            assert!(!TradeTypeMapping::counts_toward_order_limit(req_type));
+        }
+    }
+
+    #[test]
+    fn binance_coin_orders_map_to_standard_and_portfolio_margin_endpoints() {
+        for (new_type, cancel_type, leverage_type, prefix) in [
+            (
+                TradeRequestType::BinanceNewCmOrder,
+                TradeRequestType::BinanceCancelCmOrder,
+                TradeRequestType::BinanceCmSetLeverage,
+                "/dapi/v1",
+            ),
+            (
+                TradeRequestType::BinancePmNewCmOrder,
+                TradeRequestType::BinancePmCancelCmOrder,
+                TradeRequestType::BinancePmCmSetLeverage,
+                "/papi/v1/cm",
+            ),
+        ] {
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(new_type),
+                format!("{prefix}/order")
+            );
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(cancel_type),
+                format!("{prefix}/order")
+            );
+            assert_eq!(
+                TradeTypeMapping::get_endpoint(leverage_type),
+                format!("{prefix}/leverage")
+            );
+            assert_eq!(TradeTypeMapping::get_method(new_type), "POST");
+            assert_eq!(TradeTypeMapping::get_method(cancel_type), "DELETE");
+            assert_eq!(TradeTypeMapping::get_method(leverage_type), "POST");
+        }
+    }
+}

@@ -1,0 +1,41 @@
+# Offline fusion factor replay. Input rows are 5s baseline bars written by
+# tardis_ipc_replay. The output is one wide table: (symbol, ts) is a row and
+# each named factor below becomes a Float64 column holding its raw value.
+venue = "binance-futures"
+symbols = ["XRPUSDT", "DOGEUSDT", "SOLUSDT", "ETHUSDT", "BTCUSDT", "BNBUSDT"]
+start_date = "2025-12-29"
+end_date = "2026-07-31"
+replay_workers = 48
+replay_chunk_days = 1
+replay_warmup_days = 1
+
+# Load the ordered per-symbol raw-factor plans used by the live 5s publisher.
+# The response is fetched once at startup and remains fixed for the whole run.
+# Append all baseline factors currently implemented by fusion_factor, then build
+# the ordered union and compute that same factor vector for every symbol.
+[factor_plan]
+base_url = "http://52.69.209.108:6322"
+config_type = "factor_plan"
+request_timeout_ms = 30000
+uniform_factor_shape = true
+include_all_supported_baselines = true
+
+# Computed after baseline rows exist. Rows before start_date warm the rolling
+# state; insufficient history in the requested range is stored as NULL.
+[rl_vol]
+enabled = true
+bar_ms = 5000
+pct_change_period = 12
+rolling_window = 30
+scale_factor = 1.3
+
+[clickhouse]
+url = "http://127.0.0.1:18123"
+input_database = "baseline"
+# trade and depth are independently append-only staging tables. The replay
+# joins them by (symbol, ts); no full baseline table is materialized.
+input_trade_table = "baseline_binance_futures_5s_trade"
+input_depth_table = "binance_futures_5s_depth"
+output_database = "fusion"
+output_table = "fusion_factor_binance_futures_5s"
+batch_rows = 10000

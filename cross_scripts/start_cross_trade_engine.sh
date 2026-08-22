@@ -134,6 +134,39 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+validate_core_value() {
+  local var_name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] ${var_name} 必须为单个整数 (got: $value)" >&2
+    exit 1
+  fi
+}
+
+# trade_engine 现为单线程，只需绑定主核；历史的 *_IPC_CORE 变量不再使用。
+side_core_args() {
+  local side="$1"
+  local main_var="" main_core=""
+  if [[ "$side" == "open" ]]; then
+    main_var="TRADE_ENGINE_OPEN_CORE"
+  else
+    main_var="TRADE_ENGINE_HEDGE_CORE"
+  fi
+
+  main_core="${!main_var:-}"
+
+  if [[ -z "$main_core" && -n "${TRADE_ENGINE_CORE:-}" ]]; then
+    main_var="TRADE_ENGINE_CORE"
+    main_core="$TRADE_ENGINE_CORE"
+  fi
+
+  if [[ -n "$main_core" ]]; then
+    validate_core_value "$main_var" "$main_core"
+    printf '%s\n' "--core" "$main_core"
+    echo "[INFO] core bind ${main_core} for ${side} trade_engine main (from $ENV_FILE:${main_var})" >&2
+  fi
+}
+
 proc_base_name() {
   if [[ "$OPEN_EXCHANGE" == "$HEDGE_EXCHANGE" ]]; then
     echo "cross_te_${OPEN_EXCHANGE}_${ENV_TAG}"
@@ -163,6 +196,9 @@ start_one() {
   cfg_file="$(mktemp)"
   TMP_CFGS+=("$cfg_file")
 
+  local core_args=()
+  mapfile -t core_args < <(side_core_args "$side")
+
   local json_name json_base json_rust_log json_ipc_ns json_shell json_cmd cmd
   json_name="$(json_escape "$proc_name")"
   json_shell="$(json_escape "/bin/bash")"
@@ -170,6 +206,9 @@ start_one() {
   json_rust_log="$(json_escape "$RUST_LOG")"
   json_ipc_ns="$(json_escape "$IPC_NS")"
   cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH") --exchange $(shell_quote "$exchange")"
+  for arg in "${core_args[@]}"; do
+    cmd+=" $(shell_quote "$arg")"
+  done
   json_cmd="$(json_escape "$cmd")"
 
   cat >"$cfg_file" <<JSON
@@ -190,7 +229,12 @@ start_one() {
 JSON
 
   echo "[INFO] Restarting $proc_name (exchange=$exchange)"
-  "${PMDAEMON[@]}" delete "$proc_name" >/dev/null 2>&1 || true
+  STOP_SCRIPT="${SCRIPT_DIR}/stop_cross_trade_engine.sh"
+  if [[ ! -x "$STOP_SCRIPT" ]]; then
+    echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+    exit 1
+  fi
+  "$STOP_SCRIPT" "$side"
   "${PMDAEMON[@]}" --config "$cfg_file" start --name "$proc_name"
 }
 

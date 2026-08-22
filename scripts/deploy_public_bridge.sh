@@ -8,16 +8,18 @@ BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/deploy_public_bridge.sh --env <jp|hk> [--target-dir <path>] [--scripts-only|--bin-only]
+  scripts/deploy_public_bridge.sh --env <jp|hk|sg> [--target-dir <path>] [--scripts-only|--bin-only]
 
 Behavior:
   - Deploys the standalone public bridge only.
   - Default target dir:
       jp -> $HOME/bridge_jp_public
       hk -> $HOME/bridge_hk_public
+      sg -> $HOME/bridge_sg_public
   - Default config template:
       jp -> config/ipc_bridge_public_jp.yaml
       hk -> config/ipc_bridge_public_hk.yaml
+      sg -> config/ipc_bridge_public_sg.yaml
   - Public bridge carries only global streams:
       - bridge/<venue> market data
       - model_output/binance_futures_direction_model
@@ -26,6 +28,7 @@ Behavior:
 Examples:
   bash scripts/deploy_public_bridge.sh --env jp
   bash scripts/deploy_public_bridge.sh --env hk
+  bash scripts/deploy_public_bridge.sh --env sg
   bash scripts/deploy_public_bridge.sh --env jp --target-dir "$HOME/bridge_jp_public_v2"
 USAGE
 }
@@ -94,10 +97,10 @@ fi
 
 ENV_TAG="$(echo "$ENV_TAG" | tr 'A-Z' 'a-z')"
 case "$ENV_TAG" in
-  jp|hk)
+  jp|hk|sg)
     ;;
   *)
-    echo "[ERROR] unsupported env: $ENV_TAG (expect jp or hk)" >&2
+    echo "[ERROR] unsupported env: $ENV_TAG (expect jp, hk, or sg)" >&2
     exit 1
     ;;
 esac

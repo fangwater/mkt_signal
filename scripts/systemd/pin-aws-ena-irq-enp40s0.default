@@ -1,0 +1,2 @@
+# Dedicated SG 行情网卡 ENA IRQ CPU (isolated; no userspace).
+IRQ_CPUS=11

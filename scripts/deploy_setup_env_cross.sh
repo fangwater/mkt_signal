@@ -122,7 +122,7 @@ normalize_venue() {
 ensure_cross_venue() {
   local v
   v="$(normalize_venue "$1")"
-  if [[ -z "$v" || ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ ]]; then
+  if [[ -z "$v" || ( ! "$v" =~ ^[a-z0-9]+-(futures|swap|perp|perpetual)$ && "$v" != "binance-coin-futures" && "$v" != "bitget-coin-futures" ) ]]; then
     echo "[ERROR] 非法 cross venue（必须是 -futures/-swap/-perp/-perpetual）: $1"
     exit 1
   fi
@@ -163,6 +163,34 @@ EOF
 # Binance credentials (required when any venue exchange is binance)
 export BINANCE_API_KEY="${BINANCE_API_KEY:-}"
 export BINANCE_API_SECRET="${BINANCE_API_SECRET:-}"
+# Cross contract mode uses Binance STANDARD UM, never PM/unified.
+export BINANCE_ACCOUNT_MODE="STANDARD"
+EOF
+      ;;
+    gate)
+      cat <<'EOF'
+
+# Gate credentials (required when any venue exchange is gate)
+export GATE_API_KEY="${GATE_API_KEY:-}"
+export GATE_API_SECRET="${GATE_API_SECRET:-}"
+EOF
+      ;;
+    bybit)
+      cat <<'EOF'
+
+# Bybit credentials (required when any venue exchange is bybit)
+export BYBIT_API_KEY="${BYBIT_API_KEY:-}"
+export BYBIT_API_SECRET="${BYBIT_API_SECRET:-}"
+EOF
+      ;;
+    bitget)
+      cat <<'EOF'
+
+# Bitget credentials (required when any venue exchange is bitget)
+export BITGET_API_KEY="${BITGET_API_KEY:-}"
+export BITGET_API_SECRET="${BITGET_API_SECRET:-}"
+export BITGET_API_PASSPHRASE="${BITGET_API_PASSPHRASE:-${BITGET_PASSPHRASE:-}}"
+export BITGET_PASSPHRASE="${BITGET_PASSPHRASE:-${BITGET_API_PASSPHRASE:-}}"
 EOF
       ;;
   esac
@@ -191,7 +219,11 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR"
 
 ENV_FILE="$TARGET_DIR/env.sh"
-cat > "$ENV_FILE" << EOF
+if [[ -f "$ENV_FILE" ]]; then
+  echo "[INFO] $ENV_FILE 已存在，不重写（保留现有凭证）"
+  echo "[INFO] 如需重新生成，先 mv/rm 现有 env.sh 再跑 deploy"
+else
+  cat > "$ENV_FILE" << EOF
 #!/usr/bin/env bash
 # 自动生成的环境配置文件（cross）
 # 环境后缀: $ENV_SUFFIX
@@ -201,6 +233,7 @@ cat > "$ENV_FILE" << EOF
 
 # IceOryx 命名空间（非 dat_pbs 通道会被加上该前缀）
 export IPC_NAMESPACE='$NAMESPACE'
+export TRADE_SIGNAL_ENABLE_QUEUE_POSITION='0'
 
 # cross 两侧 venue
 export OPEN_VENUE='$OPEN_VENUE'
@@ -213,9 +246,9 @@ export CROSS_SIDE='${CROSS_SIDE}'
 # RUST_LOG 配置
 export RUST_LOG="\${RUST_LOG:-info,funding_rate_signal=info,mkt_signal=info,hyper=warn,hyper_util=warn,h2=warn,reqwest=warn}"
 EOF
+  chmod +x "$ENV_FILE"
+  echo "[INFO] 环境配置已部署到 $TARGET_DIR"
+fi
 
-chmod +x "$ENV_FILE"
-
-echo "[INFO] 环境配置已部署到 $TARGET_DIR"
 echo "[INFO] 使用方法: source $ENV_FILE"
 echo "[INFO] namespace: $NAMESPACE"

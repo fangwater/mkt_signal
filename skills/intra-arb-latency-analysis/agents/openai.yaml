@@ -1,0 +1,4 @@
+interface:
+  display_name: "Intra Arb Latency Analysis"
+  short_description: "Compare spot/futures intra-arb latency"
+  default_prompt: "Use $intra-arb-latency-analysis to compare spot-triggered, futures-triggered, and hedge order latency from a uniform_orders parquet snapshot."

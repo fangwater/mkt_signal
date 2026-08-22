@@ -15,31 +15,37 @@
 //! cargo run --bin okex_account_monitor
 //! ```
 
+use account_common::okex_auth::{
+    build_account_subscribe_message, build_balance_and_position_subscribe_message,
+    build_fills_subscribe_message, build_orders_subscribe_message,
+    build_positions_subscribe_message, OkexCredentials, OkexPrivateWsUrls,
+};
+use account_monitor_common::okex_rest::{fetch_borrow_interest, okex_rest_get};
+use account_monitor_common::okex_user_stream::OkexUserDataConnection;
+use account_monitor_common::pm_forwarder::PmForwarder;
 use anyhow::Result;
 use bytes::Bytes;
+use clap::Parser;
 use log::{debug, error, info, warn};
-use mkt_signal::common::basic_account_msg::{
-    split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg, BasicBalanceMsg,
-    BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
+use mkt_parsers::account_event::okex_account_event_parser::OkexAccountEventParser;
+use mkt_parsers::account_event::{AccountEventSink, Parser as AccountEventParser};
+use mkt_parsers::msg::basic_account_msg::{
+    get_basic_event_type, split_basic_account_event, BasicAccountEventMsg, BasicAccountEventType,
+    BasicAccountRiskMsg, BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg,
+    BasicPositionMsg, BasicTradeLiteMsg, BasicUmUnrealizedMsg, OkexOrderMsg,
 };
-use mkt_signal::common::mkt_cfg::load_local_ips_preferring_trade_engine;
-use mkt_signal::connection::connection::{MktConnection, MktConnectionHandler};
-use mkt_signal::parser::default_parser::Parser;
-use mkt_signal::parser::okex_account_event_parser::OkexAccountEventParser;
-use mkt_signal::portfolio_margin::okex_auth::{
-    build_account_subscribe_message, build_balance_and_position_subscribe_message,
-    build_orders_subscribe_message, OkexCredentials, OkexPrivateWsUrls,
-};
-use mkt_signal::portfolio_margin::okex_rest::fetch_borrow_interest;
-use mkt_signal::portfolio_margin::okex_user_stream::OkexUserDataConnection;
-use mkt_signal::portfolio_margin::pm_forwarder::PmForwarder;
 use reqwest::Client;
+use runtime_common::affinity::maybe_pin_current_thread;
+use runtime_common::mkt_cfg::load_local_ips_preferring_trade_engine;
+use runtime_common::ws_connection::{MktConnection, MktConnectionHandler};
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
+use trade_engine::query_parsers::okex_positions_snapshot::parse_okex_positions_snapshot;
 
 fn credential_edges(value: &str) -> (String, String, usize) {
     let trimmed = value.trim();
@@ -67,9 +73,101 @@ fn log_credential_preview(label: &str, value: &str) {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "okex_account_monitor")]
+#[command(about = "OKEx account monitor")]
+struct Args {
+    /// Bind the main runtime thread to a CPU core. Falls back to ACCOUNT_MONITOR_CORE.
+    #[arg(long)]
+    core: Option<usize>,
+}
+
+const OKEX_POSITIONS_SNAPSHOT_PATH: &str = "/api/v5/account/positions?instType=SWAP";
+
+struct DirectAccountForwarder {
+    forwarder: PmForwarder,
+    deduper: AccountEventDeduper,
+}
+
+thread_local! {
+    static DIRECT_FORWARDER: RefCell<Option<DirectAccountForwarder>> = RefCell::new(None);
+}
+
+#[derive(Clone, Copy)]
+struct SourceAccountEventSink {
+    source: &'static str,
+}
+
+impl AccountEventSink for SourceAccountEventSink {
+    fn emit(&self, msg: Bytes) -> bool {
+        emit_direct_account_event(msg, None, self.source)
+    }
+
+    fn emit_with_dedup_key(&self, msg: Bytes, dedup_key: u64) -> bool {
+        emit_direct_account_event(msg, Some(dedup_key), self.source)
+    }
+}
+
+fn emit_direct_account_event(msg: Bytes, dedup_key: Option<u64>, source: &str) -> bool {
+    DIRECT_FORWARDER.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            warn!(
+                "failed to forward OKX account event: source={} forwarder_uninitialized",
+                source
+            );
+            return false;
+        };
+        let should_forward = match dedup_key {
+            Some(key) => state.deduper.should_forward_key(key),
+            None => state.deduper.should_forward(&msg),
+        };
+        if should_forward {
+            let sent = state.forwarder.send_raw(&msg);
+            log_parsed_event(&msg, source);
+            sent
+        } else {
+            true
+        }
+    })
+}
+
+fn init_direct_forwarder(exchange: &str) -> Result<()> {
+    let state = DirectAccountForwarder {
+        forwarder: PmForwarder::new(exchange)?,
+        deduper: AccountEventDeduper::new(8192),
+    };
+    DIRECT_FORWARDER.with(|cell| {
+        *cell.borrow_mut() = Some(state);
+    });
+    Ok(())
+}
+
+fn send_wrapped_payload(payload: Bytes, source: &'static str) -> bool {
+    let event_type = get_basic_event_type(payload.as_ref());
+    let event = BasicAccountEventMsg::create(event_type, BasicAccountScope::OkexUnified, payload);
+    if !emit_direct_account_event(event.to_bytes(), None, source) {
+        warn!("failed to forward {}", source);
+        false
+    } else {
+        true
+    }
+}
+
+fn log_forwarder_stats() {
+    DIRECT_FORWARDER.with(|cell| {
+        if let Some(state) = cell.borrow_mut().as_mut() {
+            state.forwarder.log_stats();
+        }
+    });
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
+    maybe_pin_current_thread(args.core, "ACCOUNT_MONITOR_CORE")?;
+
     // 从环境变量加载 OKEx 凭证
     let credentials = OkexCredentials::from_env()?;
     log_credential_preview("OKX_API_KEY", &credentials.api_key);
@@ -91,25 +189,22 @@ async fn main() -> Result<()> {
         primary_ip, secondary_ip, session_max, ip_source
     );
 
-    // 构建订阅消息。
-    // account 频道提供 eq 余额口径；balance_and_position 提供实时仓位数量。
-    // UPL 保留由 pre_trade 侧的周期性 positions snapshot 补齐/展示，避免与 eq 双计。
-    let subscribe_messages = vec![
+    // 基础订阅消息（不含 fills，fills 在 spawn 内按 VIP 标志动态拼入）。
+    let base_subscribe_messages = vec![
         build_orders_subscribe_message("SPOT"),
         build_orders_subscribe_message("SWAP"),
         build_account_subscribe_message(),
         build_balance_and_position_subscribe_message(),
+        build_positions_subscribe_message("SWAP"),
     ];
-
-    // 创建事件收集通道
-    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    // fills 频道需要 VIP4+；收到 64003 后永久关闭，避免无效重连循环。
+    let (fills_disabled_tx, fills_disabled_rx) = watch::channel(false);
 
     // 创建 PM 转发器 (account_pubs/okex/pm)
-    let mut forwarder = PmForwarder::new("okex")?;
-    let mut deduper = AccountEventDeduper::new(8192);
+    init_direct_forwarder("okex")?;
     let mut stats = tokio::time::interval(Duration::from_secs(30));
-    let mut interest_poll =
-        spawn_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+    let mut interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
+    let mut positions_poll = spawn_positions_poll(credentials.clone(), shutdown_rx.clone());
 
     // 启动主备双路连接
     let mut primary = spawn_okex_stream_path(
@@ -117,9 +212,10 @@ async fn main() -> Result<()> {
         &ws_url,
         primary_ip.clone(),
         credentials.clone(),
-        subscribe_messages.clone(),
+        base_subscribe_messages.clone(),
+        fills_disabled_rx.clone(),
+        fills_disabled_tx.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
     let mut secondary = spawn_okex_stream_path(
@@ -127,9 +223,10 @@ async fn main() -> Result<()> {
         &ws_url,
         secondary_ip.clone(),
         credentials.clone(),
-        subscribe_messages.clone(),
+        base_subscribe_messages.clone(),
+        fills_disabled_rx.clone(),
+        fills_disabled_tx.clone(),
         shutdown_rx.clone(),
-        evt_tx.clone(),
         session_max,
     );
 
@@ -138,16 +235,8 @@ async fn main() -> Result<()> {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => { break; }
-            Some(msg) = evt_rx.recv() => {
-                // 统一去重后再发送
-                if deduper.should_forward(&msg) {
-                    // 打印解析后的消息
-                    log_parsed_event(&msg);
-                    forwarder.send_raw(&msg);
-                }
-            }
             _ = stats.tick() => {
-                forwarder.log_stats();
+                log_forwarder_stats();
             }
             res = &mut interest_poll => {
                 match res {
@@ -155,7 +244,16 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("interest poll task join error: {}; restarting", e),
                 }
                 if !*shutdown_rx.borrow() {
-                    interest_poll = spawn_borrow_interest_poll(credentials.clone(), evt_tx.clone(), shutdown_rx.clone());
+                    interest_poll = spawn_borrow_interest_poll(credentials.clone(), shutdown_rx.clone());
+                }
+            }
+            res = &mut positions_poll => {
+                match res {
+                    Ok(()) => warn!("positions poll task exited; restarting"),
+                    Err(e) => warn!("positions poll task join error: {}; restarting", e),
+                }
+                if !*shutdown_rx.borrow() {
+                    positions_poll = spawn_positions_poll(credentials.clone(), shutdown_rx.clone());
                 }
             }
             res = &mut primary => {
@@ -169,9 +267,10 @@ async fn main() -> Result<()> {
                         &ws_url,
                         primary_ip.clone(),
                         credentials.clone(),
-                        subscribe_messages.clone(),
+                        base_subscribe_messages.clone(),
+                        fills_disabled_rx.clone(),
+                        fills_disabled_tx.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -187,9 +286,10 @@ async fn main() -> Result<()> {
                         &ws_url,
                         secondary_ip.clone(),
                         credentials.clone(),
-                        subscribe_messages.clone(),
+                        base_subscribe_messages.clone(),
+                        fills_disabled_rx.clone(),
+                        fills_disabled_tx.clone(),
                         shutdown_rx.clone(),
-                        evt_tx.clone(),
                         session_max,
                     );
                 }
@@ -212,7 +312,6 @@ fn setup_signals(shutdown_tx: watch::Sender<bool>) {
 
 fn spawn_borrow_interest_poll(
     credentials: OkexCredentials,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -229,13 +328,17 @@ fn spawn_borrow_interest_poll(
                         Ok(items) => {
                             for msg in items {
                                 let payload = msg.to_bytes();
-                                let event = mkt_signal::common::basic_account_msg::BasicAccountEventMsg::create(
+                                let event = mkt_parsers::msg::basic_account_msg::BasicAccountEventMsg::create(
                                     msg.msg_type,
-                                    mkt_signal::common::basic_account_msg::BasicAccountScope::OkexUnified,
+                                    mkt_parsers::msg::basic_account_msg::BasicAccountScope::OkexUnified,
                                     payload,
                                 );
-                                if let Err(e) = evt_tx.send(event.to_bytes()) {
-                                    warn!("failed to send borrow interest msg: {}", e);
+                                if !emit_direct_account_event(
+                                    event.to_bytes(),
+                                    None,
+                                    "rest_interest_poll",
+                                ) {
+                                    warn!("failed to forward borrow interest msg");
                                 }
                             }
                         }
@@ -250,14 +353,93 @@ fn spawn_borrow_interest_poll(
     })
 }
 
+fn spawn_positions_poll(
+    credentials: OkexCredentials,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = Client::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        let mut previous_positions: HashSet<(String, char)> = HashSet::new();
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                _ = ticker.tick() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    match okex_rest_get(&client, &credentials, OKEX_POSITIONS_SNAPSHOT_PATH).await {
+                        Ok((200, body)) => {
+                            if let Some(msgs) = parse_okex_positions_snapshot(&body) {
+                                let mut current_positions: HashSet<(String, char)> = HashSet::new();
+                                let mut explicit_positions: HashSet<(String, char)> = HashSet::new();
+                                for payload in msgs {
+                                    if matches!(
+                                        get_basic_event_type(payload.as_ref()),
+                                        BasicAccountEventType::PositionUpdate
+                                    ) {
+                                        if let Ok(msg) = BasicPositionMsg::from_bytes(&payload) {
+                                            let key = (msg.inst_id().to_string(), msg.position_side());
+                                            explicit_positions.insert(key.clone());
+                                            if msg.position_amount != 0.0 {
+                                                current_positions.insert(key);
+                                            }
+                                        }
+                                    }
+                                    send_wrapped_payload(payload, "rest_positions_poll");
+                                }
+
+                                let mut stale_positions: Vec<(String, char)> = previous_positions
+                                    .difference(&current_positions)
+                                    .filter(|key| !explicit_positions.contains(*key))
+                                    .cloned()
+                                    .collect();
+                                stale_positions.sort();
+                                for (inst_id, side) in stale_positions {
+                                    let ts = chrono::Utc::now().timestamp_millis();
+                                    info!(
+                                        "OKX REST position snapshot missing previously-seen position; emitting zero cleanup: inst_id={} side={}",
+                                        inst_id, side
+                                    );
+                                    send_wrapped_payload(
+                                        BasicPositionMsg::create(ts, inst_id.clone(), side, 0.0)
+                                            .to_bytes(),
+                                        "rest_positions_zero_cleanup",
+                                    );
+                                    send_wrapped_payload(
+                                        BasicUmUnrealizedMsg::create(ts, inst_id, side, 0.0)
+                                            .to_bytes(),
+                                        "rest_positions_zero_pnl_cleanup",
+                                    );
+                                }
+                                previous_positions = current_positions;
+                            } else {
+                                warn!("OKX position poll parse failed; body_len={}", body.len());
+                            }
+                        }
+                        Ok((status, body)) => {
+                            warn!("OKX position poll http {} body={}", status, body);
+                        }
+                        Err(err) => {
+                            warn!("OKX position poll failed: {:?}", err);
+                        }
+                    }
+                }
+            }
+        }
+        info!("OKX position poller exiting");
+    })
+}
+
 fn spawn_okex_stream_path(
     name: &'static str,
     ws_url: &str,
     local_ip: String,
     credentials: OkexCredentials,
-    subscribe_messages: Vec<serde_json::Value>,
+    base_subscribe_messages: Vec<serde_json::Value>,
+    fills_disabled_rx: watch::Receiver<bool>,
+    fills_disabled_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
-    evt_tx: tokio::sync::mpsc::UnboundedSender<Bytes>,
     session_max: Option<Duration>,
 ) -> tokio::task::JoinHandle<()> {
     let ws_url = ws_url.to_string();
@@ -268,13 +450,17 @@ fn spawn_okex_stream_path(
                 name, ws_url, local_ip
             );
 
-            // 创建原始消息广播通道
-            let (raw_tx, mut raw_rx) = broadcast::channel::<Bytes>(8192);
+            let (raw_tx, _) = tokio::sync::broadcast::channel::<Bytes>(1);
 
-            // 创建 MktConnection（注意：OKEx 不需要在 URL 中传递订阅消息）
+            // 每次重连动态拼 fills（VIP 不足后不再加入）
+            let mut subscribe_messages = base_subscribe_messages.clone();
+            if !*fills_disabled_rx.borrow() {
+                subscribe_messages.push(build_fills_subscribe_message());
+            }
+
             let mut conn = MktConnection::new(
                 ws_url.clone(),
-                serde_json::json!({}), // OKEx 在登录后发送订阅消息
+                serde_json::json!({}),
                 raw_tx.clone(),
                 shutdown_rx.clone(),
             );
@@ -282,66 +468,86 @@ fn spawn_okex_stream_path(
                 conn.local_ip = Some(local_ip.clone());
             }
 
-            // 创建 OKEx 用户数据连接
             let mut runner = OkexUserDataConnection::new(
                 conn,
                 credentials.clone(),
-                subscribe_messages.clone(),
+                subscribe_messages,
                 session_max,
             );
 
-            // 启动消费者任务
-            let mut consumer_shutdown = shutdown_rx.clone();
-            let evt_tx_clone = evt_tx.clone();
-            let local_ip_log = local_ip.clone();
             let parser = OkexAccountEventParser::new();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        msg = raw_rx.recv() => {
-                            match msg {
-                                Ok(b) => {
-                                    if let Ok(s) = std::str::from_utf8(&b) {
-                                        debug!("[{}][ip={}] okex ws json: {}", name, local_ip_log, s);
-                                    } else {
-                                        debug!("[{}][ip={}] okex ws bin: {} bytes", name, local_ip_log, b.len());
-                                    }
-                                    // 解析并通过通道发送解析后的账户事件（二进制）
-                                    let _ = parser.parse(b, &evt_tx_clone);
-                                }
-                                Err(broadcast::error::RecvError::Closed) => break,
-                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                    warn!("[{}] lagged: skipped {} msgs", name, skipped);
-                                }
-                            }
-                        }
-                        _ = consumer_shutdown.changed() => {
-                            if *consumer_shutdown.borrow() { break; }
-                        }
+            let handler_name = name;
+            let handler_local_ip = local_ip.clone();
+            let handler_fills_disabled_tx = fills_disabled_tx.clone();
+            runner.set_raw_handler(Box::new(move |b: Bytes| {
+                if let Ok(s) = std::str::from_utf8(&b) {
+                    debug!(
+                        "[{}][ip={}] okex ws json: {}",
+                        handler_name, handler_local_ip, s
+                    );
+                    if is_fills_vip_error(s) {
+                        warn!("[{}] OKX fills channel requires VIP4+, disabling fills subscription (code 64003)", handler_name);
+                        let _ = handler_fills_disabled_tx.send(true);
                     }
+                } else {
+                    debug!(
+                        "[{}][ip={}] okex ws bin: {} bytes",
+                        handler_name,
+                        handler_local_ip,
+                        b.len()
+                    );
                 }
-            });
+                let source = if handler_name == "primary" {
+                    "ws_primary"
+                } else {
+                    "ws_secondary"
+                };
+                let parsed = parser.parse(b, &SourceAccountEventSink { source });
+                if parsed > 0 {
+                    info!(
+                        "OKX ws account event parsed: source={} parsed_count={}",
+                        source, parsed
+                    );
+                }
+            }));
 
-            // 运行连接直到退出（关闭或错误）
             if let Err(e) = runner.start_ws().await {
                 error!("[{}] connection error: {}", name, e);
             }
 
-            // 检查是否需要关闭
             if *shutdown_rx.borrow() {
                 info!("[{}] shutdown signal received, exiting", name);
                 break;
             }
 
-            // 等待2秒后重连
             info!("[{}] connection closed, reconnecting in 2s...", name);
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     })
 }
 
+/// 判断消息是否为 fills 频道 VIP 不足错误（code 64003）。
+fn is_fills_vip_error(s: &str) -> bool {
+    if !s.contains("64003") {
+        return false;
+    }
+    // 快速路径：检查 event=error + code=64003 + channel=fills
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+        let is_error = v.get("event").and_then(|e| e.as_str()) == Some("error");
+        let code_ok = v.get("code").and_then(|c| c.as_str()) == Some("64003");
+        let channel_ok = v
+            .get("arg")
+            .and_then(|a| a.get("channel"))
+            .and_then(|c| c.as_str())
+            .map(|c| c == "fills")
+            .unwrap_or(true); // arg 缺失时保守处理（也认为是 fills 导致）
+        return is_error && code_ok && channel_ok;
+    }
+    false
+}
+
 /// 打印解析后的账户事件
-fn log_parsed_event(msg: &Bytes) {
+fn log_parsed_event(msg: &Bytes, source: &str) {
     let Some((okex_event_type, account_scope, payload)) = split_basic_account_event(msg.as_ref())
     else {
         return;
@@ -356,7 +562,8 @@ fn log_parsed_event(msg: &Bytes) {
             if let Ok(m) = OkexOrderMsg::from_bytes(&payload) {
                 let order_status = m.state;
                 info!(
-                    "OKEx basic OrderUpdate: scope={} inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
+                    "OKEx basic OrderUpdate: source={} scope={} inst={} side={} state={} ord_id={} cli_id={} price={} qty={} filled={} update_time={}",
+                    source,
                     account_scope.as_str(),
                     m.inst_id,
                     m.side,
@@ -373,7 +580,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BalanceUpdate => {
             if let Ok(m) = BasicBalanceMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic BalanceUpdate: scope={} ts={} symbol={} wallet={}",
+                    "OKEx basic BalanceUpdate: source={} scope={} ts={} symbol={} wallet={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.symbol,
@@ -384,7 +592,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::PositionUpdate => {
             if let Ok(m) = BasicPositionMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic PositionUpdate: scope={} ts={} inst={} side={} amt={}",
+                    "OKEx basic PositionUpdate: source={} scope={} ts={} inst={} side={} amt={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.inst_id,
@@ -396,7 +605,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::BorrowInterest => {
             if let Ok(m) = BasicBorrowInterestMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic BorrowInterest: scope={} ts={} symbol={} borrowed={} interest={}",
+                    "OKEx basic BorrowInterest: source={} scope={} ts={} symbol={} borrowed={} interest={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.symbol,
@@ -408,7 +618,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::UnrealizedPnlUpdate => {
             if let Ok(m) = BasicUmUnrealizedMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic UnrealizedPnl: scope={} ts={} inst={} side={} pnl={}",
+                    "OKEx basic UnrealizedPnl: source={} scope={} ts={} inst={} side={} pnl={}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.inst_id,
@@ -420,7 +631,8 @@ fn log_parsed_event(msg: &Bytes) {
         BasicAccountEventType::AccountRisk => {
             if let Ok(m) = BasicAccountRiskMsg::from_bytes(&payload) {
                 info!(
-                    "OKEx basic AccountRisk: scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    "OKEx basic AccountRisk: source={} scope={} ts={} adj_eq_usd={:.2} actual_eq_usd={:.2} maint_margin_usd={:.2} initial_margin_usd={:.2} margin_ratio={:.6}",
+                    source,
                     account_scope.as_str(),
                     m.timestamp,
                     m.adj_equity_usd,
@@ -431,9 +643,27 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::TradeUpdateLite => {
+            if let Ok(m) = BasicTradeLiteMsg::from_bytes(&payload) {
+                info!(
+                    "OKEx TradeUpdateLite: scope={} venue={} ts={} symbol={} cloid={} trade_id={} side={} maker={} last_px={} last_qty={}",
+                    account_scope.as_str(),
+                    m.venue,
+                    m.event_time,
+                    m.symbol,
+                    m.client_order_id,
+                    m.trade_id_str(),
+                    m.side,
+                    m.is_maker,
+                    m.last_executed_price,
+                    m.last_executed_quantity
+                );
+            }
+        }
         _ => {
             info!(
-                "OKEx basic msg: scope={} type={:?}",
+                "OKEx basic msg: source={} scope={} type={:?}",
+                source,
                 account_scope.as_str(),
                 okex_event_type
             );
@@ -455,6 +685,10 @@ impl AccountEventDeduper {
             order: VecDeque::with_capacity(capacity),
             capacity,
         }
+    }
+
+    fn should_forward_key(&mut self, key: u64) -> bool {
+        self.remember_key(key)
     }
 
     /// 检查是否应该转发此消息（返回 true 表示应该转发，false 表示重复消息）
@@ -487,7 +721,10 @@ impl AccountEventDeduper {
             BasicAccountEventType::AccountRisk => BasicAccountRiskMsg::from_bytes(&payload)
                 .ok()
                 .map(|msg| self.key_okex_account_risk(&msg)),
-            BasicAccountEventType::TradeUpdateLite => return true,
+            BasicAccountEventType::TradeUpdateLite => BasicTradeLiteMsg::from_bytes(&payload)
+                .ok()
+                .map(|msg| self.key_trade_lite(&msg)),
+            BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,
             BasicAccountEventType::Error => return true,
         };
 
@@ -497,23 +734,24 @@ impl AccountEventDeduper {
 
         let key = self.hash64(&[account_scope as u32 as u64, key]);
 
-        // 检查是否重复
+        self.remember_key(key)
+    }
+
+    fn remember_key(&mut self, key: u64) -> bool {
         if self.seen.contains(&key) {
-            return false; // 重复消息，不转发
+            return false;
         }
 
-        // 记录新消息
         self.seen.insert(key);
         self.order.push_back(key);
 
-        // 容量控制
         if self.order.len() > self.capacity {
             if let Some(old) = self.order.pop_front() {
                 self.seen.remove(&old);
             }
         }
 
-        true // 新消息，转发
+        true
     }
 
     fn hash64(&self, parts: &[u64]) -> u64 {
@@ -588,6 +826,17 @@ impl AccountEventDeduper {
             msg.update_time as u64,
             order_status as u64,
             msg.cumulative_filled_quantity.to_bits(),
+        ])
+    }
+
+    fn key_trade_lite(&self, msg: &BasicTradeLiteMsg) -> u64 {
+        self.hash64(&[
+            BasicAccountEventType::TradeUpdateLite as u32 as u64,
+            msg.client_order_id as u64,
+            self.hash_str64(msg.trade_id_str()),
+            msg.event_time as u64,
+            msg.last_executed_price.to_bits(),
+            msg.last_executed_quantity.to_bits(),
         ])
     }
 }

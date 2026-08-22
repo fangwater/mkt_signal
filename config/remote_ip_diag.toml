@@ -1,0 +1,52 @@
+# remote_ip_diag：remote IP 池诊断/维护配置（独立进程）。
+# 每 target：DNS 发现(url) + 静态 ips 合并 → 周期 TCP:443 建连探针 → 打分淘汰 →
+# 定时把健康快照（含 Live IP 排名）写入 Redis。
+# 独立进程运行，不接入 trade_engine 选路（本期只维护 + 写 Redis）。
+
+# 出站 IP 池：对每个候选 remote 从每个出站 IP 都探一遍，打分单元 = (出站, remote)。
+# 输出会给出最优 (出站 → remote) 组合排名，告诉你该绑哪个本地 IP、连哪个 remote。
+# 留空则回落到 probe_source_ip（单出站）或不 bind。
+source_ips = [
+  "172.31.35.228",
+  "172.31.35.229",
+  "172.31.35.230",
+  "172.31.35.231",
+  "172.31.35.232",
+  "172.31.35.233",
+  "172.31.35.234",
+]
+# probe_source_ip = "172.31.35.228"   # source_ips 为空时的单出站兜底
+
+# —— 探针 / 淘汰参数（省略走默认）——
+discovery_interval_ms = 1000   # DNS 发现周期
+health_interval_ms    = 1000   # TCP 建连探针周期（对所有候选并行）
+probe_timeout_ms      = 1000   # 单次建连超时
+snapshot_log_ms       = 5000   # 快照日志周期
+window                = 30     # 每 IP 探针滚动窗口
+min_samples           = 3      # 判定所需最少样本
+min_success_pct       = 90     # 健康：窗口成功率下限(%)
+max_rtt_us            = 20000  # 健康：建连 RTT p95 上限(us)
+evict_cooldown_ms     = 30000  # 淘汰后冷却
+dns_age_out_ms        = 300000 # 候选在 DNS 消失超时且非 Live 则老化删除
+
+# —— Redis 输出 ——
+redis_key_prefix = "remote_ip_diag:"   # 最终 key = <prefix><target.name>
+redis_refresh_ms = 1000                # 写 Redis 刷新周期（省略取 snapshot_log_ms）
+
+[redis]
+host = "127.0.0.1"
+port = 6379
+db = 0
+# password = "xxx"
+
+# —— 每个 target：url + 对应的 IP 池 ——
+# ips 为静态种子（与 DNS 发现 union，永不因 DNS 缺席老化）；留空则纯靠 DNS。
+[[targets]]
+name = "binance-um"
+url = "wss://ws-fapi.binance.com/ws-fapi/v1"
+ips = []
+
+[[targets]]
+name = "binance-spot"
+url = "wss://ws-api.binance.com:443/ws-api/v3"
+ips = []

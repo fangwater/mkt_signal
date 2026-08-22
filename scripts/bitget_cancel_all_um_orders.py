@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlencode
 
 import requests
@@ -76,6 +76,7 @@ def request(
     *,
     params: Optional[Dict[str, Any]] = None,
     payload: Optional[Dict[str, Any]] = None,
+    ok_error_codes: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     query = urlencode([(k, v) for k, v in (params or {}).items() if v not in ("", None)])
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True) if payload else ""
@@ -96,6 +97,9 @@ def request(
         data = resp.json()
     except ValueError:
         raise RuntimeError(f"Bitget {method} {path} returned non-JSON: {resp.status_code} {resp.text}")
+    code = str(data.get("code") or "")
+    if code in (ok_error_codes or set()):
+        return data
     if resp.status_code >= 300 or data.get("code") not in ("00000", "0", None):
         raise RuntimeError(f"Bitget {method} {path} failed: http={resp.status_code} body={data}")
     return data
@@ -129,6 +133,7 @@ def cancel_all(api_key: str, api_secret: str, passphrase: str, symbol: Optional[
         "POST",
         "/api/v3/trade/cancel-symbol-order",
         payload=payload,
+        ok_error_codes={"25204"},
     )
 
 
@@ -180,7 +185,15 @@ def main() -> int:
         return 0
 
     if symbols:
+        symbols_with_orders = {
+            normalize_symbol(str(order.get("symbol") or ""))
+            for order in all_orders
+            if normalize_symbol(str(order.get("symbol") or ""))
+        }
         for symbol in symbols:
+            if symbol not in symbols_with_orders:
+                print(json.dumps({"symbol": symbol, "result": "no_open_orders"}, ensure_ascii=True, sort_keys=True))
+                continue
             result = cancel_all(api_key, api_secret, passphrase, symbol)
             print(json.dumps({"symbol": symbol, "result": result.get("data")}, ensure_ascii=True, sort_keys=True))
     else:

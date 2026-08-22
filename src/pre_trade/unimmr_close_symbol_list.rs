@@ -34,10 +34,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::common::redis_client::{RedisClient, RedisSettings};
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::signal::common::TradingVenue;
-use crate::symbol_match::normalize_symbol_for_whitelist;
+use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
+use order_common::TradingVenue;
+use runtime_common::redis_client::{RedisClient, RedisSettings};
 
 const POSITION_EPSILON: f64 = 1e-12;
 

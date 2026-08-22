@@ -56,18 +56,39 @@ ENV_TAG="$(printf '%s' "$ENV_TAG" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')
 PROC_NAME="intra_${EXCHANGE}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${EXCHANGE}"
 RUST_LOG="${RUST_LOG:-info}"
+QUEUE_POSITION_ENABLED="${TRADE_SIGNAL_ENABLE_QUEUE_POSITION:-0}"
+QUEUE_POSITION_ENABLED="${QUEUE_POSITION_ENABLED,,}"
+case "$QUEUE_POSITION_ENABLED" in
+  1|true|yes|on|0|false|no|off) ;;
+  *) echo "[ERROR] TRADE_SIGNAL_ENABLE_QUEUE_POSITION must be a boolean" >&2; exit 1 ;;
+esac
+
+# 绑核来源：env.sh 里 export TRADE_SIGNAL_CORE=<N>，单个整数；未设置则不绑。
+core_args=()
+if [[ -n "${TRADE_SIGNAL_CORE:-}" ]]; then
+  if [[ ! "$TRADE_SIGNAL_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] TRADE_SIGNAL_CORE 必须为单个整数 (got: $TRADE_SIGNAL_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$TRADE_SIGNAL_CORE")
+  echo "[INFO] core bind ${TRADE_SIGNAL_CORE} (from $ENV_FILE:TRADE_SIGNAL_CORE)"
+fi
 
 echo "[INFO] Restarting ${PROC_NAME} (namespace=${NAMESPACE})"
-npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+npx pm2 delete "$LEGACY_PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
+npx pm2 delete "$PROC_NAME" --namespace "$NAMESPACE" </dev/null >/dev/null 2>&1 || true
 
-RUST_LOG="${RUST_LOG}" npx pm2 start "$BIN_PATH" \
-  --name "$PROC_NAME" \
-  --namespace "$NAMESPACE" \
-  --cwd "$BASE_DIR"
+pm2_cmd=(npx pm2 start "$BIN_PATH"
+  --name "$PROC_NAME"
+  --namespace "$NAMESPACE"
+  --cwd "$BASE_DIR")
+if [[ ${#core_args[@]} -gt 0 ]]; then
+  pm2_cmd+=(-- "${core_args[@]}")
+fi
+RUST_LOG="${RUST_LOG}" TRADE_SIGNAL_ENABLE_QUEUE_POSITION="${QUEUE_POSITION_ENABLED}" "${pm2_cmd[@]}" </dev/null
 
 echo ""
-echo "[INFO] Started trade_signal (exchange=${EXCHANGE} env=${ENV_TAG})"
+echo "[INFO] Started trade_signal (exchange=${EXCHANGE} env=${ENV_TAG} queue_position=${QUEUE_POSITION_ENABLED})"
 echo "Namespace: ${NAMESPACE}"
 echo "Logs: npx pm2 logs --namespace ${NAMESPACE} ${PROC_NAME}"
 echo "Status: npx pm2 status --namespace ${NAMESPACE}"

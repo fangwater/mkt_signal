@@ -8,7 +8,6 @@
   1. intra_dump_symbols:{exchange}        - 平仓列表
   2. intra_fwd_trade_symbols:{exchange}   - 正套建仓列表
   3. intra_bwd_trade_symbols:{exchange}   - 反套建仓列表
-  4. {env_name}:intra_unimmr_close_symbols:{open_venue}_{hedge_venue}
                                             - UniMMR 算法平仓候选列表
 
 key_suffix 为单一 exchange（同所期现），可通过 --exchange / --env-name / CWD 推断。
@@ -104,9 +103,10 @@ def resolve_venues(args: argparse.Namespace, exchange: str) -> tuple[str, str]:
     return open_venue, hedge_venue
 
 
-def unimmr_close_key(env_name: str, open_venue: str, hedge_venue: str) -> str:
-    suffix = f"{open_venue.strip().lower()}_{hedge_venue.strip().lower()}"
-    return f"{env_name}:intra_unimmr_close_symbols:{suffix}" if env_name else f"intra_unimmr_close_symbols:{suffix}"
+def symbol_list_key(env_name: str, name: str, exchange: str) -> str:
+    if not env_name:
+        raise ValueError("env_name is required for intra symbol lists")
+    return f"{env_name}:intra_{name}:{exchange}"
 
 
 def print_symbol_list(rds, key: str, title: str) -> int:
@@ -158,22 +158,16 @@ def main() -> int:
     print("\n📊 intra 交易对列表配置:")
     print("=" * 80)
     total = 0
-    total += print_symbol_list(rds, f"{NAMESPACE}_dump_symbols:{exchange}", "🔴 dump_symbols")
-    total += print_symbol_list(rds, f"{NAMESPACE}_fwd_trade_symbols:{exchange}", "🟢 fwd_trade_symbols")
-    total += print_symbol_list(rds, f"{NAMESPACE}_bwd_trade_symbols:{exchange}", "🔴 bwd_trade_symbols")
-    total += print_symbol_list(
-        rds,
-        unimmr_close_key(env_name, open_venue, hedge_venue),
-        "🟠 unimmr_close_symbols",
-    )
+    total += print_symbol_list(rds, symbol_list_key(env_name, "dump_symbols", exchange), "🔴 dump_symbols")
+    total += print_symbol_list(rds, symbol_list_key(env_name, "fwd_trade_symbols", exchange), "🟢 fwd_trade_symbols")
+    total += print_symbol_list(rds, symbol_list_key(env_name, "bwd_trade_symbols", exchange), "🔴 bwd_trade_symbols")
 
     print("\n📈 统计摘要:")
     print("=" * 80)
     for k in [
-        f"{NAMESPACE}_dump_symbols:{exchange}",
-        f"{NAMESPACE}_fwd_trade_symbols:{exchange}",
-        f"{NAMESPACE}_bwd_trade_symbols:{exchange}",
-        unimmr_close_key(env_name, open_venue, hedge_venue),
+        symbol_list_key(env_name, "dump_symbols", exchange),
+        symbol_list_key(env_name, "fwd_trade_symbols", exchange),
+        symbol_list_key(env_name, "bwd_trade_symbols", exchange),
     ]:
         data = rds.get(k)
         if not data:

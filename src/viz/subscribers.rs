@@ -9,12 +9,12 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::Instant;
 
-use crate::common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::resample_channel::{DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL};
 use crate::viz::config::{PreTradeSrcCfg, VizServerCfg};
 use crate::viz::resample::{PreTradeExposureResampleEntry, PreTradeRiskResampleEntry};
 use crate::viz::server::WsHub;
+use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
+use runtime_common::time_util::get_timestamp_us;
 
 const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;
 const PRE_TRADE_RISK_CHANNEL: &str = DEFAULT_RISK_CHANNEL;
@@ -172,8 +172,11 @@ fn spawn_pre_trade_risk_listener(
                     "um_unrealized_usd": entry.um_unrealized_usd,
                     "leverage": entry.leverage,
                     "max_leverage": entry.max_leverage,
+                    "usdt_max_available_margin": entry.usdt_max_available_margin,
                     "open_leg": entry.open_leg,
                     "hedge_leg": entry.hedge_leg,
+                    "unimmr_force_close_line": entry.unimmr_force_close_line,
+                    "unimmr_force_close_recover_line": entry.unimmr_force_close_recover_line,
                     "unimmr_trigger_line": entry.unimmr_trigger_line,
                     "unimmr_recover_line": entry.unimmr_recover_line,
                     "account_risks": entry.account_risks,

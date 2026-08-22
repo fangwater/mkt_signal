@@ -1,0 +1,4 @@
+interface:
+  display_name: "Binance Account Align"
+  short_description: "Align Binance leverage and wallet balances"
+  default_prompt: "Use $binance-intra-account-align to inspect Binance wallet balances and safely plan account transfers."

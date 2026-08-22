@@ -1,0 +1,415 @@
+use anyhow::Result;
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::*;
+use iceoryx2::service::ipc;
+use log::{info, warn};
+use serde_json::json;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+use tokio::time::Instant;
+
+use crate::config::{PreTradeSrcCfg, VizServerCfg};
+use crate::server::WsHub;
+use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD as ICEORYX_RESAMPLE_PAYLOAD;
+use runtime_common::time_util::get_timestamp_us;
+use viz_common::resample::{
+    ExecAccountRiskResampleEntry, ExecStrategyStateResampleEntry, PreTradeExposureResampleEntry,
+    PreTradeRiskResampleEntry,
+};
+use viz_common::{
+    DEFAULT_EXPOSURE_CHANNEL, DEFAULT_RISK_CHANNEL, EXEC_RISK_CHANNEL, EXEC_STATE_CHANNEL,
+};
+
+const PRE_TRADE_EXPOSURE_CHANNEL: &str = DEFAULT_EXPOSURE_CHANNEL;
+const PRE_TRADE_RISK_CHANNEL: &str = DEFAULT_RISK_CHANNEL;
+
+pub const RESAMPLE_PAYLOAD: usize = ICEORYX_RESAMPLE_PAYLOAD;
+
+const MAX_SAMPLES_BEFORE_YIELD: usize = 64;
+const IDLE_POLL_SLEEP: Duration = Duration::from_millis(100);
+
+fn resolve_default_namespaces(server: &VizServerCfg) -> Result<Vec<String>> {
+    if server.namespaces.is_empty() {
+        return Err(anyhow::anyhow!("viz: missing required config `namespaces`"));
+    }
+    Ok(server.namespaces.clone())
+}
+
+fn resolve_pre_trade_namespaces(
+    server: &VizServerCfg,
+    pre_trade: &PreTradeSrcCfg,
+) -> Result<Vec<String>> {
+    if !pre_trade.namespaces.is_empty() {
+        return Ok(pre_trade.namespaces.clone());
+    }
+    resolve_default_namespaces(server)
+}
+
+/// 订阅 pre-trade 三路重采样并转发到 WS（不维护任何本地状态）
+pub fn spawn_pre_trade_resample_listeners_with_cfg(
+    hub: WsHub,
+    server: &VizServerCfg,
+) -> Result<()> {
+    let pre_trade = &server.pre_trade;
+    if !pre_trade.enabled {
+        return Ok(());
+    }
+
+    if !pre_trade.instances.is_empty() {
+        for inst in &pre_trade.instances {
+            let target_namespaces: Vec<String> = if let Some(ns) = inst.namespace.as_ref() {
+                vec![ns.clone()]
+            } else {
+                resolve_pre_trade_namespaces(server, pre_trade).map_err(|err| {
+                    anyhow::anyhow!(
+                        "viz: pre_trade instance `{}` missing `namespace` and no `namespaces` configured: {err}",
+                        inst.label
+                    )
+                })?
+            };
+            for ns in target_namespaces {
+                spawn_pre_trade_exposure_listener(
+                    hub.clone(),
+                    &ns,
+                    inst.exposure_channel.as_str(),
+                    Some(inst.label.as_str()),
+                )?;
+                spawn_pre_trade_risk_listener(
+                    hub.clone(),
+                    &ns,
+                    inst.risk_channel.as_str(),
+                    Some(inst.label.as_str()),
+                )?;
+            }
+        }
+        return Ok(());
+    }
+
+    let namespaces = resolve_pre_trade_namespaces(server, pre_trade)?;
+    // default single-instance behavior (subscribe each namespace)
+    for ns in namespaces {
+        spawn_pre_trade_exposure_listener(hub.clone(), &ns, PRE_TRADE_EXPOSURE_CHANNEL, None)?;
+        spawn_pre_trade_risk_listener(hub.clone(), &ns, PRE_TRADE_RISK_CHANNEL, None)?;
+    }
+    Ok(())
+}
+
+pub fn spawn_exec_pre_trade_resample_listeners_with_cfg(
+    hub: WsHub,
+    server: &VizServerCfg,
+) -> Result<()> {
+    let exec = &server.exec_pre_trade;
+    if !exec.enabled {
+        return Ok(());
+    }
+    let namespace = exec.namespace.trim();
+    anyhow::ensure!(
+        !namespace.is_empty(),
+        "viz: exec_pre_trade.enabled requires an explicit exec_pre_trade.namespace"
+    );
+
+    spawn_exec_state_listener(hub.clone(), namespace)?;
+    spawn_exec_risk_listener(hub, namespace)
+}
+
+fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
+    let namespace = namespace.to_string();
+    let namespace_for_msg = namespace.clone();
+    let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_STATE_CHANNEL);
+    spawn_resample_channel(
+        &format!("viz_exec_state_{}", sanitize_node_component(&namespace)),
+        &service_name,
+        move |entry: ExecStrategyStateResampleEntry, hub: WsHub| {
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "exec_pre_trade_state",
+                "namespace": namespace_for_msg.as_str(),
+                "channel": EXEC_STATE_CHANNEL,
+                "ts_ms": get_timestamp_us() / 1000,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        hub,
+    )
+}
+
+fn spawn_exec_risk_listener(hub: WsHub, namespace: &str) -> Result<()> {
+    let namespace = namespace.to_string();
+    let namespace_for_msg = namespace.clone();
+    let service_name = format!("{}/viz_pubs/{}", namespace, EXEC_RISK_CHANNEL);
+    spawn_resample_channel(
+        &format!("viz_exec_risk_{}", sanitize_node_component(&namespace)),
+        &service_name,
+        move |entry: ExecAccountRiskResampleEntry, hub: WsHub| {
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "exec_pre_trade_risk",
+                "namespace": namespace_for_msg.as_str(),
+                "channel": EXEC_RISK_CHANNEL,
+                "ts_ms": get_timestamp_us() / 1000,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        hub,
+    )
+}
+
+fn spawn_pre_trade_exposure_listener(
+    hub: WsHub,
+    namespace: &str,
+    channel: &str,
+    label: Option<&str>,
+) -> Result<()> {
+    let namespace = namespace.to_string();
+    let channel = channel.to_string();
+    let channel_for_msg = channel.clone();
+    let label = label.map(|s| s.to_string());
+    let label_for_msg = label.clone();
+    let namespace_for_msg = namespace.clone();
+
+    let service_name = format!("{}/viz_pubs/{}", namespace, channel);
+    spawn_resample_channel(
+        &format!(
+            "viz_pretrade_exposure{}_{}",
+            label
+                .as_deref()
+                .map(|s| format!("_{}", s))
+                .unwrap_or_default(),
+            sanitize_node_component(&namespace),
+        ),
+        &service_name,
+        move |entry: PreTradeExposureResampleEntry, hub: WsHub| {
+            let now_ts_ms = get_timestamp_us() / 1000;
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "pre_trade_exposure",
+                "namespace": namespace_for_msg.as_str(),
+                "source": label_for_msg.as_deref(),
+                "channel": channel_for_msg.as_str(),
+                "ts_ms": now_ts_ms,
+                "entry": entry,
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        hub,
+    )
+}
+
+fn spawn_pre_trade_risk_listener(
+    hub: WsHub,
+    namespace: &str,
+    channel: &str,
+    label: Option<&str>,
+) -> Result<()> {
+    let namespace = namespace.to_string();
+    let channel = channel.to_string();
+    let channel_for_msg = channel.clone();
+    let label = label.map(|s| s.to_string());
+    let label_for_msg = label.clone();
+    let namespace_for_msg = namespace.clone();
+
+    let service_name = format!("{}/viz_pubs/{}", namespace, channel);
+    spawn_resample_channel(
+        &format!(
+            "viz_pretrade_risk{}_{}",
+            label
+                .as_deref()
+                .map(|s| format!("_{}", s))
+                .unwrap_or_default(),
+            sanitize_node_component(&namespace),
+        ),
+        &service_name,
+        move |entry: PreTradeRiskResampleEntry, hub: WsHub| {
+            let now_ts_ms = get_timestamp_us() / 1000;
+            if let Ok(msg) = serde_json::to_string(&json!({
+                "type": "pre_trade_risk",
+                "namespace": namespace_for_msg.as_str(),
+                "source": label_for_msg.as_deref(),
+                "channel": channel_for_msg.as_str(),
+                "ts_ms": now_ts_ms,
+                "entry": {
+                    "ts_ms": entry.ts_ms,
+                    "signal_counts": entry.signal_counts,
+                    "total_equity": entry.total_equity,
+                    "total_exposure": entry.total_exposure,
+                    "total_position": entry.total_position,
+                    "spot_equity_usd": entry.spot_equity_usd,
+                    "borrowed_usd": entry.borrowed_usd,
+                    "interest_usd": entry.interest_usd,
+                    "um_unrealized_usd": entry.um_unrealized_usd,
+                    "leverage": entry.leverage,
+                    "max_leverage": entry.max_leverage,
+                    "usdt_max_available_margin": entry.usdt_max_available_margin,
+                    "open_leg": entry.open_leg,
+                    "hedge_leg": entry.hedge_leg,
+                    "unimmr_force_close_line": entry.unimmr_force_close_line,
+                    "unimmr_force_close_recover_line": entry.unimmr_force_close_recover_line,
+                    "unimmr_trigger_line": entry.unimmr_trigger_line,
+                    "unimmr_recover_line": entry.unimmr_recover_line,
+                    "account_risks": entry.account_risks,
+                },
+            })) {
+                hub.broadcast(msg);
+            }
+        },
+        hub,
+    )
+}
+
+fn spawn_resample_channel<T, F>(
+    node_suffix: &str,
+    service_name: &str,
+    on_entry: F,
+    hub: WsHub,
+) -> Result<()>
+where
+    T: serde::de::DeserializeOwned + Clone + 'static,
+    F: Fn(T, WsHub) + 'static,
+{
+    let node_suffix = node_suffix.to_string();
+    let service_name = service_name.to_string();
+
+    struct Stats {
+        window_start: Instant,
+        count: usize,
+        dropped: usize,
+    }
+    let stats = Rc::new(RefCell::new(Stats {
+        window_start: Instant::now(),
+        count: 0,
+        dropped: 0,
+    }));
+
+    tokio::task::spawn_local(async move {
+        let stats = stats;
+        let channel_label: &'static str = Box::leak(service_name.clone().into_boxed_str());
+        let node_name = format!("{}_{}", node_suffix, sanitize_node_component(channel_label));
+        let result = async move {
+            let node = NodeBuilder::new()
+                .name(&NodeName::new(&node_name)?)
+                .create::<ipc::Service>()?;
+            let service = node
+                .service_builder(&ServiceName::new(&service_name)?)
+                .publish_subscribe::<[u8; RESAMPLE_PAYLOAD]>()
+                .max_publishers(1)
+                .max_subscribers(32)
+                .history_size(128)
+                .subscriber_max_buffer_size(256)
+                .open_or_create()?;
+            let subscriber: Subscriber<ipc::Service, [u8; RESAMPLE_PAYLOAD], ()> =
+                service.subscriber_builder().create()?;
+            info!(
+                "viz resample relay subscribed: service={} node={}",
+                service.name(),
+                node_name
+            );
+
+            let mut samples_before_yield = 0usize;
+            loop {
+                match subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        samples_before_yield += 1;
+                        let payload = sample.payload();
+                        if payload.len() < 4 {
+                            stats.borrow_mut().dropped += 1;
+                        } else {
+                            let mut len_bytes = [0u8; 4];
+                            len_bytes.copy_from_slice(&payload[..4]);
+                            let data_len = u32::from_le_bytes(len_bytes) as usize;
+                            if data_len == 0 || 4 + data_len > payload.len() {
+                                stats.borrow_mut().dropped += 1;
+                            } else {
+                                let data = &payload[4..4 + data_len];
+                                match bincode::deserialize::<T>(data) {
+                                    Ok(entry) => {
+                                        on_entry(entry.clone(), hub.clone());
+
+                                        let mut st = stats.borrow_mut();
+                                        st.count += 1;
+                                        if st.window_start.elapsed() >= Duration::from_secs(3) {
+                                            info!(
+                                                "viz resample relay {} received count={} dropped={}",
+                                                channel_label, st.count, st.dropped
+                                            );
+                                            st.window_start = Instant::now();
+                                            st.count = 0;
+                                            st.dropped = 0;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        stats.borrow_mut().dropped += 1;
+                                        warn!(
+                                            "viz resample decode failed ({}): {err:#}",
+                                            channel_label
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        if samples_before_yield >= MAX_SAMPLES_BEFORE_YIELD {
+                            samples_before_yield = 0;
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    Ok(None) => {
+                        samples_before_yield = 0;
+                        tokio::time::sleep(IDLE_POLL_SLEEP).await;
+                    }
+                    Err(err) => {
+                        samples_before_yield = 0;
+                        warn!("viz resample receive error ({}): {err}", channel_label);
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
+        if let Err(err) = result.await {
+            warn!(
+                "viz resample relay listener exited ({}): {err:?}",
+                channel_label
+            );
+        }
+    });
+
+    Ok(())
+}
+
+fn sanitize_node_component(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spawn_exec_pre_trade_resample_listeners_with_cfg;
+    use crate::config::VizCfg;
+    use crate::server::WsHub;
+
+    #[test]
+    fn exec_listener_never_falls_back_to_normal_namespace() {
+        let cfg: VizCfg = toml::from_str(
+            r#"
+                [[servers]]
+                namespaces = ["normal_trade"]
+
+                [servers.exec_pre_trade]
+                enabled = true
+            "#,
+        )
+        .unwrap();
+
+        let err = spawn_exec_pre_trade_resample_listeners_with_cfg(WsHub::new(4), &cfg.servers[0])
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("explicit exec_pre_trade.namespace"));
+    }
+}

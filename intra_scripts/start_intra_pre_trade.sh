@@ -108,9 +108,23 @@ fi
 DEFAULT_PROC_NAME="intra_pt_${EXCHANGE}_${ENV_TAG}"
 PROC_NAME="${PMDAEMON_NAME:-${PM2_NAME:-$DEFAULT_PROC_NAME}}"
 
+# 绑核来源：env.sh 里 export PRE_TRADE_CORE=<N>，单个整数；未设置则不绑。
+core_args=()
+if [[ -n "${PRE_TRADE_CORE:-}" ]]; then
+  if [[ ! "$PRE_TRADE_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] PRE_TRADE_CORE 必须为单个整数 (got: $PRE_TRADE_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$PRE_TRADE_CORE")
+  echo "[INFO] core bind ${PRE_TRADE_CORE} (from $ENV_FILE:PRE_TRADE_CORE)"
+fi
+
 args=(--open-venue "$OPEN_VENUE" --hedge-venue "$HEDGE_VENUE")
 if [[ -n "$RESAMPLE_SUFFIX" ]]; then
   args+=(--resample-suffix "$RESAMPLE_SUFFIX")
+fi
+if [[ ${#core_args[@]} -gt 0 ]]; then
+  args+=("${core_args[@]}")
 fi
 
 json_escape() {
@@ -153,7 +167,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] Restarting $PROC_NAME (exchange=$EXCHANGE open=$OPEN_VENUE hedge=$HEDGE_VENUE namespace=$IPC_NAMESPACE)"
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_intra_pre_trade.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
+fi
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] Started $PROC_NAME"

@@ -1,0 +1,21 @@
+[package]
+name = "period_pbs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ahash.workspace = true
+anyhow.workspace = true
+clap = { version = "4.0", features = ["derive"] }
+env_logger = "0.10"
+flate2 = "1.0"
+libc = "0.2"
+ipc_common = { path = "../ipc_common" }
+log = "0.4"
+prost = "0.13"
+rdkafka = "0.36"
+runtime_common = { path = "../runtime_common" }
+serde = { version = "1.0", features = ["derive"] }
+snap = "1.1"
+toml = "0.8"
+zmq = "0.10"

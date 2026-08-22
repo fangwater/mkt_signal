@@ -113,17 +113,14 @@ proc_name_for_side() {
 
 find_running_pids() {
   local exchange="$1"
+  local bin="${BASE_DIR}/account_monitor_${exchange}"
   local pids=()
   while IFS= read -r pid; do
     if [[ -n "$pid" ]]; then
       pids+=("$pid")
     fi
   done < <(
-    ps -eo pid=,args= | awk -v exchange="$exchange" -v base_dir="$BASE_DIR" '
-      index($0, "account_monitor") > 0 && index($0, exchange) > 0 && index($0, base_dir) > 0 {
-        print $1
-      }
-    '
+    ps -eo pid=,args= | awk -v bin="$bin" '$2 == bin { print $1 }'
   )
 
   if [[ ${#pids[@]} -gt 0 ]]; then

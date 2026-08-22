@@ -137,3 +137,30 @@
 - 连接建立后即可开始接收上述多种报文，需按 `type` 判断具体处理逻辑；对没有 `type` 的报文，可通过是否包含 `account` 字段识别为账户快照。
 - 若需要初始全量数据，前端应等待下一次重采样推送（当前实现不提供额外的历史补偿）。
 - 建议在客户端记录 `ts_ms` 与本地时间的差值，用于绘制延迟或掉线提示。
+
+### 4. Exec 目标仓位状态 `exec_pre_trade_state`
+
+- **触发来源**：Exec namespace 下的 `viz_pubs/exec_pre_trade_state`。
+- **判别方式**：`type` 为 `exec_pre_trade_state`。
+- `entry.position_ready` 表示首次账户仓位快照已完成，且所有策略仓位分账已恢复。
+- `entry.rows[]` 按 `strategy_name + symbol` 输出；同一个 symbol 可以同时出现在多个
+  strategy 中。
+- `current_qty` / `current_usdt` 是该 strategy 的分配仓位，成交按订单所属
+  `strategy_name` 更新。
+- `account_position_qty` / `account_position_usdt` 是交易所综合实仓，会在同 symbol 的
+  多条 strategy row 中重复，聚合时只能取一份，不能逐行求和。
+- `position_allocated` 表示该 strategy 的分账已经完成启动恢复；未完成时不会发单。
+- `execution_complete=true` 表示该 strategy 已无活动 batch/子单，并已因达到目标、
+  进入 `target_tolerance_usdt`，或剩余量低于交易所 `minQty/minNotional` 而结束执行。
+  `completion_reason` 分别为 `target_reached`、`target_tolerance`、
+  `exchange_minimum`；结束时尾差仍保留在 delta/pending 字段中。
+- 其余字段包含目标、差额、live/pending 数量和金额以及 active batch 数量。
+
+### 5. Exec 账户风险 `exec_pre_trade_risk`
+
+- **触发来源**：Exec namespace 下的 `viz_pubs/exec_pre_trade_risk`。
+- **判别方式**：`type` 为 `exec_pre_trade_risk`。
+- `entry` 包含账户净值、long/short notional、net/gross notional 和杠杆率。
+
+Exec 频道必须通过 `[servers.exec_pre_trade].namespace` 显式订阅，不继承普通
+pre-trade 的 `servers.namespaces`。

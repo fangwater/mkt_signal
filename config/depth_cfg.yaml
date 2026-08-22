@@ -1,8 +1,4 @@
 # Depth Publisher 配置
 
-depth_levels:
-  enable_depth25: true    # 25档深度
-  enable_depth50: true    # 50档深度
-
 push_config:
   min_push_interval_ms: 100   # 兼容字段（当前未使用，保活固定1000ms）

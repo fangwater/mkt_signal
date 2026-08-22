@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::order_manager::Side;
-use crate::signal::common::TradingVenue;
+use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use log::{debug, info, warn};
+use order_common::TradingVenue;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
 
 const CLOSE_INVENTORY_EPS: f64 = 1e-12;
 
@@ -43,6 +44,25 @@ impl CloseInventoryLedger {
     }
 
     pub fn seed_if_absent(&mut self, venue: TradingVenue, symbol: &str, snapshot_pos_base: f64) {
+        self.seed_if_absent_inner(venue, symbol, snapshot_pos_base, true);
+    }
+
+    pub fn seed_if_absent_silent(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        snapshot_pos_base: f64,
+    ) {
+        self.seed_if_absent_inner(venue, symbol, snapshot_pos_base, false);
+    }
+
+    fn seed_if_absent_inner(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        snapshot_pos_base: f64,
+        log_seed: bool,
+    ) {
         let symbol = normalize_symbol_for_internal(symbol);
         if symbol.is_empty() {
             return;
@@ -53,10 +73,41 @@ impl CloseInventoryLedger {
         }
         entry.seeded = true;
         entry.closable_inventory_base = finite_or_zero(snapshot_pos_base);
-        info!(
-            "CloseInventory: seed symbol={} venue={:?} closable_inventory_base={:.8}",
-            symbol, venue, entry.closable_inventory_base
+        if log_seed && !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: seed symbol={} venue={:?} closable_inventory_base={:.8}",
+                symbol, venue, entry.closable_inventory_base
+            );
+        }
+    }
+
+    pub fn force_sync_from_snapshot(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        snapshot_pos_base: f64,
+        reason: &str,
+    ) -> Option<(f64, f64)> {
+        let symbol = normalize_symbol_for_internal(symbol);
+        if symbol.is_empty() {
+            return None;
+        }
+        let entry = self.entries.entry((venue, symbol.clone())).or_default();
+        let old_inventory = entry.closable_inventory_base;
+        let new_inventory = finite_or_zero(snapshot_pos_base);
+        entry.seeded = true;
+        entry.closable_inventory_base = new_inventory;
+        debug!(
+            "CloseInventory: force sync symbol={} venue={:?} reason={} old_inventory={:.8} new_inventory={:.8} reserved_sell={:.8} reserved_buy={:.8}",
+            symbol,
+            venue,
+            reason,
+            old_inventory,
+            new_inventory,
+            entry.reserved_sell_close_base,
+            entry.reserved_buy_close_base
         );
+        Some((old_inventory, new_inventory))
     }
 
     pub fn reserve_close(
@@ -68,6 +119,47 @@ impl CloseInventoryLedger {
         client_order_id: i64,
         snapshot_pos_base: f64,
     ) -> CloseReservationGrant {
+        self.reserve_close_inner(
+            venue,
+            symbol,
+            side,
+            requested_base_qty,
+            client_order_id,
+            snapshot_pos_base,
+            true,
+        )
+    }
+
+    pub fn reserve_close_silent(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        requested_base_qty: f64,
+        client_order_id: i64,
+        snapshot_pos_base: f64,
+    ) -> CloseReservationGrant {
+        self.reserve_close_inner(
+            venue,
+            symbol,
+            side,
+            requested_base_qty,
+            client_order_id,
+            snapshot_pos_base,
+            false,
+        )
+    }
+
+    fn reserve_close_inner(
+        &mut self,
+        venue: TradingVenue,
+        symbol: &str,
+        side: Side,
+        requested_base_qty: f64,
+        client_order_id: i64,
+        snapshot_pos_base: f64,
+        log_reserve: bool,
+    ) -> CloseReservationGrant {
         let symbol = normalize_symbol_for_internal(symbol);
         if symbol.is_empty() || requested_base_qty <= CLOSE_INVENTORY_EPS {
             return CloseReservationGrant {
@@ -77,7 +169,7 @@ impl CloseInventoryLedger {
                 closable_inventory_base: 0.0,
             };
         }
-        self.seed_if_absent(venue, &symbol, snapshot_pos_base);
+        self.seed_if_absent_inner(venue, &symbol, snapshot_pos_base, log_reserve);
         let entry = self
             .entries
             .entry((venue, symbol.clone()))
@@ -103,15 +195,17 @@ impl CloseInventoryLedger {
         let available_before_base = Self::available_for_side(entry, side);
         let granted_base_qty = requested_base_qty.min(available_before_base).max(0.0);
         if granted_base_qty <= CLOSE_INVENTORY_EPS {
-            debug!(
-                "CloseInventory: reserve denied symbol={} venue={:?} side={:?} requested={:.8} available={:.8} inventory={:.8}",
-                symbol,
-                venue,
-                side,
-                requested_base_qty,
-                available_before_base,
-                entry.closable_inventory_base
-            );
+            if log_reserve {
+                debug!(
+                    "CloseInventory: reserve denied symbol={} venue={:?} side={:?} requested={:.8} available={:.8} inventory={:.8}",
+                    symbol,
+                    venue,
+                    side,
+                    requested_base_qty,
+                    available_before_base,
+                    entry.closable_inventory_base
+                );
+            }
             return CloseReservationGrant {
                 requested_base_qty,
                 granted_base_qty: 0.0,
@@ -133,17 +227,19 @@ impl CloseInventoryLedger {
                 filled_base_qty: 0.0,
             },
         );
-        info!(
-            "CloseInventory: reserve symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} granted={:.8} available_before={:.8} inventory={:.8}",
-            symbol,
-            venue,
-            side,
-            client_order_id,
-            requested_base_qty,
-            granted_base_qty,
-            available_before_base,
-            entry.closable_inventory_base
-        );
+        if log_reserve && !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: reserve symbol={} venue={:?} side={:?} client_order_id={} requested={:.8} granted={:.8} available_before={:.8} inventory={:.8}",
+                symbol,
+                venue,
+                side,
+                client_order_id,
+                requested_base_qty,
+                granted_base_qty,
+                available_before_base,
+                entry.closable_inventory_base
+            );
+        }
         CloseReservationGrant {
             requested_base_qty,
             granted_base_qty,
@@ -174,10 +270,12 @@ impl CloseInventoryLedger {
             Side::Buy => entry.closable_inventory_base += filled_base_delta,
             Side::Sell => entry.closable_inventory_base -= filled_base_delta,
         }
-        info!(
-            "CloseInventory: open fill symbol={} venue={:?} side={:?} delta={:.8} inventory={:.8}",
-            symbol, venue, side, filled_base_delta, entry.closable_inventory_base
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: open fill symbol={} venue={:?} side={:?} delta={:.8} inventory={:.8}",
+                symbol, venue, side, filled_base_delta, entry.closable_inventory_base
+            );
+        }
     }
 
     pub fn apply_close_fill_delta(&mut self, client_order_id: i64, filled_base_delta: f64) -> bool {
@@ -214,22 +312,37 @@ impl CloseInventoryLedger {
                     (entry.reserved_buy_close_base - applied_delta).max(0.0);
             }
         }
-        info!(
-            "CloseInventory: close fill symbol={} venue={:?} side={:?} client_order_id={} delta={:.8} applied={:.8} filled={:.8}/{:.8} inventory={:.8}",
-            symbol,
-            venue,
-            reservation.side,
-            client_order_id,
-            filled_base_delta,
-            applied_delta,
-            reservation.filled_base_qty,
-            reservation.reserved_base_qty,
-            entry.closable_inventory_base
-        );
+        if !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: close fill symbol={} venue={:?} side={:?} client_order_id={} delta={:.8} applied={:.8} filled={:.8}/{:.8} inventory={:.8}",
+                symbol,
+                venue,
+                reservation.side,
+                client_order_id,
+                filled_base_delta,
+                applied_delta,
+                reservation.filled_base_qty,
+                reservation.reserved_base_qty,
+                entry.closable_inventory_base
+            );
+        }
         true
     }
 
     pub fn release_close_unfilled(&mut self, client_order_id: i64, reason: &str) -> bool {
+        self.release_close_unfilled_inner(client_order_id, reason, true)
+    }
+
+    pub fn release_close_unfilled_silent(&mut self, client_order_id: i64, reason: &str) -> bool {
+        self.release_close_unfilled_inner(client_order_id, reason, false)
+    }
+
+    fn release_close_unfilled_inner(
+        &mut self,
+        client_order_id: i64,
+        reason: &str,
+        log_release: bool,
+    ) -> bool {
         let Some(((venue, symbol), entry)) = self.find_order_entry_mut(client_order_id) else {
             return false;
         };
@@ -249,18 +362,20 @@ impl CloseInventoryLedger {
                 }
             }
         }
-        info!(
-            "CloseInventory: release symbol={} venue={:?} side={:?} client_order_id={} reason={} unfilled={:.8} filled={:.8}/{:.8} inventory={:.8}",
-            symbol,
-            venue,
-            reservation.side,
-            client_order_id,
-            reason,
-            unfilled,
-            reservation.filled_base_qty,
-            reservation.reserved_base_qty,
-            entry.closable_inventory_base
-        );
+        if log_release && !suppress_pre_submit_hot_path_logs() {
+            info!(
+                "CloseInventory: release symbol={} venue={:?} side={:?} client_order_id={} reason={} unfilled={:.8} filled={:.8}/{:.8} inventory={:.8}",
+                symbol,
+                venue,
+                reservation.side,
+                client_order_id,
+                reason,
+                unfilled,
+                reservation.filled_base_qty,
+                reservation.reserved_base_qty,
+                entry.closable_inventory_base
+            );
+        }
         true
     }
 
@@ -400,5 +515,26 @@ mod tests {
             ledger.closable_inventory_base(venue, "COTIUSDT"),
             Some(70.0)
         );
+    }
+
+    #[test]
+    fn force_sync_from_snapshot_allows_close_after_stale_zero_seed() {
+        let mut ledger = CloseInventoryLedger::new();
+        let venue = TradingVenue::GateMargin;
+
+        ledger.seed_if_absent(venue, "LABUSDT", 0.0);
+
+        let denied = ledger.reserve_close(venue, "LABUSDT", Side::Sell, 10.0, 1, 800.0);
+        assert_eq!(denied.granted_base_qty, 0.0);
+        assert_eq!(denied.closable_inventory_base, 0.0);
+
+        assert_eq!(
+            ledger.force_sync_from_snapshot(venue, "LABUSDT", 800.0, "test"),
+            Some((0.0, 800.0))
+        );
+
+        let granted = ledger.reserve_close(venue, "LABUSDT", Side::Sell, 10.0, 2, 800.0);
+        assert_eq!(granted.granted_base_qty, 10.0);
+        assert_eq!(granted.available_before_base, 800.0);
     }
 }

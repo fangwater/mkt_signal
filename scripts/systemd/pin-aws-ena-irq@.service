@@ -1,0 +1,15 @@
+[Unit]
+Description=Pin AWS ENA IRQ affinity for %i
+After=network-online.target
+Wants=network-online.target
+Conflicts=irqbalance.service
+ConditionPathExists=/sys/class/net/%i
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/pin-aws-ena-irq-%i
+ExecStart=/usr/local/sbin/pin_aws_ena_irq_affinity.sh --iface %i --cpus ${IRQ_CPUS} --stop-irqbalance --allow-pending-effective --execute
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

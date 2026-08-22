@@ -4,41 +4,94 @@ use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use log::{debug, info, warn};
+use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
 
-use crate::common::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
-};
-use crate::common::exchange::Exchange;
-use crate::common::iceoryx_publisher::{QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD};
-use crate::common::ipc_service_name::build_service_name;
-use crate::common::time_util::get_timestamp_us;
+use crate::pre_trade::account_open_block::handle_account_open_block_query_response;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
 use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
 use crate::pre_trade::PersistChannel;
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
-use crate::strategy::query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage};
-use crate::strategy::query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
-use crate::trade_engine::query_request::QueryRequestType;
+use ipc_common::iceoryx_publisher::{
+    QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD, QUERY_SUBSCRIBER_MAX_BUFFER_SIZE,
+};
+use mkt_parsers::msg::basic_account_msg::{
+    get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
+    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+};
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
+use order_common::{QueryEngineResponse, QueryEngineResponseMessage};
+use runtime_common::exchange::Exchange;
+use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
+use runtime_common::ipc_service_name::build_service_name;
+use runtime_common::time_util::get_timestamp_us;
+use trade_engine::query_request::{is_snapshot_complete_body, QueryRequestType};
 
 thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = const { OnceCell::new() };
 }
 
-const QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
+const QUERY_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
+
+fn query_request_create_time_us(bytes: &Bytes) -> Option<i64> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
+}
+
+fn snapshot_initializes_exec_venue(
+    req_type: QueryRequestType,
+    venue: TradingVenue,
+    binance_is_standard: bool,
+) -> bool {
+    match venue {
+        TradingVenue::BinanceMargin => {
+            if binance_is_standard {
+                req_type == QueryRequestType::BinanceSpotAccountSnapshotStd
+            } else {
+                req_type == QueryRequestType::BinancePmBalanceSnapshot
+            }
+        }
+        TradingVenue::BinanceFutures => {
+            if binance_is_standard {
+                req_type == QueryRequestType::BinanceUmAccountSnapshotStd
+            } else {
+                req_type == QueryRequestType::BinanceUmAccountSnapshot
+            }
+        }
+        TradingVenue::BinanceCoinFutures => {
+            if binance_is_standard {
+                req_type == QueryRequestType::BinanceCmAccountSnapshotStd
+            } else {
+                req_type == QueryRequestType::BinancePmCmAccountSnapshot
+            }
+        }
+        TradingVenue::OkexMargin => req_type == QueryRequestType::OkexAccountBalanceSnapshot,
+        TradingVenue::OkexFutures => req_type == QueryRequestType::OkexPositionsSnapshot,
+        TradingVenue::GateMargin => req_type == QueryRequestType::GateUnifiedBalanceSnapshot,
+        TradingVenue::GateFutures => req_type == QueryRequestType::GateUnifiedPositionsSnapshot,
+        TradingVenue::BybitMargin => req_type == QueryRequestType::BybitAccountBalanceSnapshot,
+        TradingVenue::BybitFutures => req_type == QueryRequestType::BybitPositionsSnapshot,
+        TradingVenue::BitgetMargin => req_type == QueryRequestType::BitgetAccountBalanceSnapshot,
+        TradingVenue::BitgetFutures => req_type == QueryRequestType::BitgetPositionsSnapshot,
+        TradingVenue::BitgetCoinFutures => {
+            req_type == QueryRequestType::BitgetCoinPositionsSnapshot
+        }
+        _ => false,
+    }
+}
 
 fn dispatch_query_response_to_strategy_manager(
     strategy_mgr: &Rc<RefCell<StrategyManager>>,
     strategy_id: i32,
     response: &dyn QueryEngineResponse,
 ) -> bool {
+    let client_order_id = response.client_query_id();
     let strategy_opt = {
         let mut mgr = strategy_mgr.borrow_mut();
         if mgr.contains(strategy_id) {
@@ -48,11 +101,14 @@ fn dispatch_query_response_to_strategy_manager(
         }
     };
     if let Some(mut strategy) = strategy_opt {
-        let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        let matched = strategy.is_strategy_order(client_order_id);
+        if matched {
+            let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        }
         if strategy.is_active() {
             strategy_mgr.borrow_mut().insert(strategy);
         }
-        true
+        matched
     } else {
         false
     }
@@ -63,27 +119,33 @@ fn dispatch_query_response_to_orphan_manager(
     strategy_id: i32,
     response: &dyn QueryEngineResponse,
 ) -> bool {
+    let client_order_id = response.client_query_id();
     let strategy_opt = {
         let mut mgr = orphan_strategy_mgr.borrow_mut();
-        if mgr.contains(strategy_id) {
+        if let Some(strategy) = mgr.take_by_order_id(client_order_id) {
+            Some(strategy)
+        } else if mgr.contains(strategy_id) {
             mgr.take(strategy_id)
         } else {
             None
         }
     };
     if let Some(mut strategy) = strategy_opt {
-        let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        let matched = strategy.is_strategy_order(client_order_id);
+        if matched {
+            let _ = apply_query_response_as_updates(strategy.as_mut(), response);
+        }
         if strategy.is_active() {
             orphan_strategy_mgr.borrow_mut().insert(strategy);
         }
-        true
+        matched
     } else {
         false
     }
 }
 
 pub struct QueryEngHub {
-    channels: RefCell<HashMap<String, QueryEngChannel>>,
+    channels: RefCell<FastHashMap<String, QueryEngChannel>>,
 }
 
 impl QueryEngHub {
@@ -129,6 +191,32 @@ impl QueryEngHub {
         Self::with(|hub| hub.publish_to_exchange(exchange, bytes))
     }
 
+    pub fn drain_pending_responses() -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner())
+    }
+
+    pub fn drain_pending_responses_limit(max_responses: usize) -> bool {
+        Self::with(|hub| hub.drain_pending_responses_inner_limit(max_responses))
+    }
+
+    fn drain_pending_responses_inner(&self) -> bool {
+        self.drain_pending_responses_inner_limit(usize::MAX)
+    }
+
+    fn drain_pending_responses_inner_limit(&self, max_responses: usize) -> bool {
+        let mut any = false;
+        let mut received = 0usize;
+        for channel in self.channels.borrow_mut().values_mut() {
+            if received >= max_responses {
+                break;
+            }
+            let count = channel.drain_query_responses_limit(max_responses - received);
+            received += count;
+            any |= count > 0;
+        }
+        any
+    }
+
     /// 发布 query 请求并同步刷新对应订单的最近一次发送时间戳（submit_t）。
     ///
     /// 调用方在 strategy 层有 `client_order_id` 时统一走该 helper：先把 OrderManager
@@ -138,26 +226,57 @@ impl QueryEngHub {
         exchange: &str,
         bytes: &Bytes,
     ) -> Result<()> {
-        let now = get_timestamp_us();
+        let publish_start_us = get_timestamp_us();
+        let create_time_us = query_request_create_time_us(bytes);
         if let Some(om) = MonitorChannel::try_order_manager() {
             om.borrow_mut().update(client_order_id, |order| {
-                order.set_submit_time(now);
+                order.set_submit_time(publish_start_us);
             });
         }
-        Self::publish_query_request(exchange, bytes)
+        let result = Self::publish_query_request(exchange, bytes);
+        let publish_done_us = get_timestamp_us();
+        let publish_cost_us = publish_done_us.saturating_sub(publish_start_us);
+        let build_to_publish_done_us = create_time_us
+            .filter(|create_time_us| *create_time_us > 0)
+            .map(|create_time_us| publish_done_us.saturating_sub(create_time_us));
+        let build_to_publish_slow = build_to_publish_done_us
+            .map(|latency_us| latency_us >= QUERY_REQ_PUBLISH_SLOW_WARN_US)
+            .unwrap_or(false);
+        if publish_cost_us >= QUERY_REQ_PUBLISH_SLOW_WARN_US || build_to_publish_slow {
+            let result_status = if result.is_ok() { "ok" } else { "err" };
+            warn!(
+                "QueryReqLatency: publish_slow client_order_id={} exchange={} bytes_len={} create_time_us={:?} publish_start_us={} publish_done_us={} publish_cost_us={} build_to_publish_done_us={:?} result={}",
+                client_order_id,
+                exchange,
+                bytes.len(),
+                create_time_us,
+                publish_start_us,
+                publish_done_us,
+                publish_cost_us,
+                build_to_publish_done_us,
+                result_status
+            );
+        }
+        result
     }
 
     fn new() -> Self {
         Self {
-            channels: RefCell::new(HashMap::new()),
+            channels: RefCell::new(fast_hash_map()),
         }
     }
 
     fn publish_to_exchange(&self, exchange: &str, bytes: &Bytes) -> Result<()> {
-        self.ensure_exchange(exchange)?;
         let key = Self::normalize_exchange(exchange);
+        {
+            let channels = self.channels.borrow();
+            if let Some(channel) = channels.get(key.as_ref()) {
+                return channel.publish_query_request(bytes);
+            }
+        }
+        self.ensure_exchange_key(key.as_ref())?;
         let channels = self.channels.borrow();
-        let Some(channel) = channels.get(&key) else {
+        let Some(channel) = channels.get(key.as_ref()) else {
             return Err(anyhow!("QueryEngHub: exchange '{}' not registered", key));
         };
         channel.publish_query_request(bytes)
@@ -165,7 +284,11 @@ impl QueryEngHub {
 
     fn ensure_exchange(&self, exchange: &str) -> Result<()> {
         let key = Self::normalize_exchange(exchange);
-        if self.channels.borrow().contains_key(&key) {
+        self.ensure_exchange_key(key.as_ref())
+    }
+
+    fn ensure_exchange_key(&self, key: &str) -> Result<()> {
+        if self.channels.borrow().contains_key(key) {
             return Ok(());
         }
 
@@ -173,18 +296,27 @@ impl QueryEngHub {
             "QueryEngHub: registering query engine channel for exchange '{}'",
             key
         );
-        let channel = QueryEngChannel::new(&key)?;
-        self.channels.borrow_mut().insert(key, channel);
+        let channel = QueryEngChannel::new(key)?;
+        self.channels.borrow_mut().insert(key.to_string(), channel);
         Ok(())
     }
 
-    fn normalize_exchange(exchange: &str) -> String {
-        exchange.trim().to_ascii_lowercase()
+    fn normalize_exchange(exchange: &str) -> Cow<'_, str> {
+        let trimmed = exchange.trim();
+        if trimmed.bytes().all(|b| !b.is_ascii_uppercase()) {
+            Cow::Borrowed(trimmed)
+        } else {
+            Cow::Owned(trimmed.to_ascii_lowercase())
+        }
     }
 }
 
 struct QueryEngChannel {
+    exchange: String,
+    exchange_enum: Exchange,
     query_req_publisher: Publisher<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>,
+    _resp_node: Node<ipc::Service>,
+    resp_subscriber: Subscriber<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()>,
 }
 
 impl QueryEngChannel {
@@ -202,7 +334,7 @@ impl QueryEngChannel {
         let req_service = req_node
             .service_builder(&ServiceName::new(&query_req_service)?)
             .publish_subscribe::<[u8; QUERY_REQ_PAYLOAD]>()
-            .subscriber_max_buffer_size(QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
+            .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let query_req_publisher = req_service.publisher_builder().create()?;
@@ -211,21 +343,17 @@ impl QueryEngChannel {
             query_req_service, exchange
         );
 
-        let resp_service_name = query_resp_service.clone();
-        let exchange_name = exchange.to_string();
-        tokio::task::spawn_local(async move {
-            if let Err(err) =
-                Self::run_query_resp_listener(&exchange_name, &resp_service_name).await
-            {
-                warn!(
-                    "Query response listener exited (exchange={} service={}): {err:?}",
-                    exchange_name, resp_service_name
-                );
-            }
-        });
+        let exchange_enum = Exchange::from_str(exchange)
+            .ok_or_else(|| anyhow!("QueryEngHub: unsupported exchange '{}'", exchange))?;
+        let (resp_node, resp_subscriber) =
+            Self::create_query_resp_subscriber(exchange, &query_resp_service)?;
 
         Ok(Self {
+            exchange: exchange.to_string(),
+            exchange_enum,
             query_req_publisher,
+            _resp_node: resp_node,
+            resp_subscriber,
         })
     }
 
@@ -252,9 +380,13 @@ impl QueryEngChannel {
         Ok(())
     }
 
-    async fn run_query_resp_listener(exchange: &str, service_name: &str) -> Result<()> {
-        let exchange_enum = Exchange::from_str(exchange)
-            .ok_or_else(|| anyhow!("QueryEngHub: unsupported exchange '{}'", exchange))?;
+    fn create_query_resp_subscriber(
+        exchange: &str,
+        service_name: &str,
+    ) -> Result<(
+        Node<ipc::Service>,
+        Subscriber<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()>,
+    )> {
         let node = NodeBuilder::new()
             .name(&NodeName::new(&format!(
                 "pre_trade_query_resp_{}",
@@ -265,7 +397,7 @@ impl QueryEngChannel {
         let service = node
             .service_builder(&ServiceName::new(service_name)?)
             .publish_subscribe::<[u8; QUERY_RESP_PAYLOAD]>()
-            .subscriber_max_buffer_size(QUERY_ENG_SUBSCRIBER_MAX_BUFFER_SIZE)
+            .subscriber_max_buffer_size(QUERY_SUBSCRIBER_MAX_BUFFER_SIZE)
             .open_or_create()?;
 
         let subscriber: Subscriber<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()> =
@@ -276,13 +408,66 @@ impl QueryEngChannel {
             service_name, exchange
         );
 
-        loop {
-            match subscriber.receive() {
+        Ok((node, subscriber))
+    }
+
+    fn drain_query_responses_limit(&mut self, max_responses: usize) -> usize {
+        let exchange = self.exchange.as_str();
+        let exchange_enum = self.exchange_enum;
+        let mut received = 0usize;
+        while received < max_responses {
+            match self.resp_subscriber.receive() {
                 Ok(Some(sample)) => {
+                    received += 1;
                     let payload = sample.payload();
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
                             let req_type = QueryRequestType::try_from(resp.req_type()).ok();
+                            let body = resp.body_bytes().as_ref();
+                            let actual_len = body
+                                .iter()
+                                .rposition(|&b| b != 0)
+                                .map(|pos| pos + 1)
+                                .unwrap_or(0);
+                            if matches!(
+                                req_type,
+                                Some(
+                                    QueryRequestType::BinanceWsMarginQuery
+                                        | QueryRequestType::BinanceWsUMQuery
+                                        | QueryRequestType::BinanceMarginQuery
+                                        | QueryRequestType::BinanceUMQuery
+                                )
+                            ) {
+                                let body_kind = if actual_len == 0 {
+                                    "empty"
+                                } else if actual_len == 1 && body[0] == b'E' {
+                                    "error_marker"
+                                } else if actual_len == 1 && body[0] == b'N' {
+                                    "not_found_marker"
+                                } else if parse_compact_order_query_resp(resp.body_bytes())
+                                    .is_some()
+                                {
+                                    "compact_order"
+                                } else {
+                                    "opaque"
+                                };
+                                info!(
+                                    "QueryEngHub: recv binance query response req_type={:?} client_query_id={} body_kind={} body_len={}",
+                                    req_type,
+                                    resp.client_query_id(),
+                                    body_kind,
+                                    actual_len
+                                );
+                            }
+                            if let Some(req_type) = req_type {
+                                if handle_account_open_block_query_response(
+                                    req_type,
+                                    resp.client_query_id(),
+                                    resp.body_bytes(),
+                                ) {
+                                    continue;
+                                }
+                            }
 
                             // Snapshot queries return basic account messages (no huge JSON body).
                             if matches!(
@@ -316,20 +501,48 @@ impl QueryEngChannel {
                                         .unwrap_or(exchange_enum);
                                 let binance_is_standard =
                                     mc.order_manager().borrow().binance_is_standard();
+                                if is_snapshot_complete_body(body) {
+                                    if open_venue == hedge_venue
+                                        && req_type.is_some_and(|req_type| {
+                                            snapshot_initializes_exec_venue(
+                                                req_type,
+                                                open_venue,
+                                                binance_is_standard,
+                                            )
+                                        })
+                                    {
+                                        mc.mark_exec_position_snapshot_ready(
+                                            "query_snapshot_complete",
+                                        );
+                                    }
+                                    continue;
+                                }
                                 if matches!(
                                     req_type,
                                     Some(
                                         QueryRequestType::BinanceUmAccountSnapshot
                                             | QueryRequestType::BinanceUmAccountSnapshotStd
+                                            | QueryRequestType::BinanceCmAccountSnapshotStd
+                                            | QueryRequestType::BinancePmCmAccountSnapshot
                                             | QueryRequestType::OkexPositionsSnapshot
                                             | QueryRequestType::GateUnifiedPositionsSnapshot
                                             | QueryRequestType::BybitPositionsSnapshot
                                             | QueryRequestType::BitgetPositionsSnapshot
+                                            | QueryRequestType::BitgetCoinPositionsSnapshot
                                     )
                                 ) && body_is_empty
                                 {
                                     let mut cleared = false;
-                                    if open_venue.is_futures() && exchange_enum == open_exchange {
+                                    if open_venue.is_futures()
+                                        && exchange_enum == open_exchange
+                                        && req_type.is_some_and(|request_type| {
+                                            snapshot_initializes_exec_venue(
+                                                request_type,
+                                                open_venue,
+                                                binance_is_standard,
+                                            )
+                                        })
+                                    {
                                         if let Some((um, _)) = mc.open_um_mgr() {
                                             um.borrow_mut().clear();
                                             cleared = true;
@@ -339,7 +552,16 @@ impl QueryEngChannel {
                                             );
                                         }
                                     }
-                                    if hedge_venue.is_futures() && exchange_enum == hedge_exchange {
+                                    if hedge_venue.is_futures()
+                                        && exchange_enum == hedge_exchange
+                                        && req_type.is_some_and(|request_type| {
+                                            snapshot_initializes_exec_venue(
+                                                request_type,
+                                                hedge_venue,
+                                                binance_is_standard,
+                                            )
+                                        })
+                                    {
                                         if let Some((um, _)) = mc.hedge_um_mgr() {
                                             um.borrow_mut().clear();
                                             cleared = true;
@@ -354,6 +576,19 @@ impl QueryEngChannel {
                                             "positions snapshot returned empty list; cleared pre_trade UM state exchange={} req_type={:?}",
                                             exchange, req_type
                                         );
+                                        if open_venue == hedge_venue
+                                            && req_type.is_some_and(|req_type| {
+                                                snapshot_initializes_exec_venue(
+                                                    req_type,
+                                                    open_venue,
+                                                    binance_is_standard,
+                                                )
+                                            })
+                                        {
+                                            mc.mark_exec_position_snapshot_ready(
+                                                "query_positions_empty",
+                                            );
+                                        }
                                     }
                                     continue;
                                 }
@@ -368,12 +603,21 @@ impl QueryEngChannel {
                                     | Some(QueryRequestType::BinanceUmAccountSnapshotStd) => {
                                         BasicAccountScope::BinanceStdUm
                                     }
+                                    Some(QueryRequestType::BinanceCmQuery)
+                                    | Some(QueryRequestType::BinanceCmBalanceSnapshotStd)
+                                    | Some(QueryRequestType::BinanceCmAccountSnapshotStd) => {
+                                        BasicAccountScope::BinanceStdCm
+                                    }
                                     Some(QueryRequestType::BinanceSpotAccountSnapshotStd) => {
                                         BasicAccountScope::BinanceStdSpot
                                     }
                                     Some(QueryRequestType::BinanceMarginQuery)
                                     | Some(QueryRequestType::BinanceUMQuery) => {
                                         BasicAccountScope::BinanceUnified
+                                    }
+                                    Some(QueryRequestType::BinancePmCmQuery)
+                                    | Some(QueryRequestType::BinancePmCmAccountSnapshot) => {
+                                        BasicAccountScope::BinanceUnifiedCm
                                     }
                                     Some(QueryRequestType::OkexMarginQuery)
                                     | Some(QueryRequestType::OkexUMQuery) => {
@@ -386,6 +630,10 @@ impl QueryEngChannel {
                                     Some(QueryRequestType::GateUnifiedOrderQuery)
                                     | Some(QueryRequestType::GateFuturesOrderQuery) => {
                                         BasicAccountScope::GateUnified
+                                    }
+                                    Some(QueryRequestType::BitgetCoinFuturesQuery)
+                                    | Some(QueryRequestType::BitgetCoinPositionsSnapshot) => {
+                                        BasicAccountScope::BitgetUnifiedCoinFutures
                                     }
                                     _ => match exchange_enum {
                                         Exchange::Binance => {
@@ -418,6 +666,13 @@ impl QueryEngChannel {
                                                 scope == BasicAccountScope::BinanceUnified
                                             }
                                         }
+                                        TradingVenue::BinanceCoinFutures => {
+                                            if binance_is_standard {
+                                                scope == BasicAccountScope::BinanceStdCm
+                                            } else {
+                                                scope == BasicAccountScope::BinanceUnifiedCm
+                                            }
+                                        }
                                         TradingVenue::OkexMargin | TradingVenue::OkexFutures => {
                                             scope == BasicAccountScope::OkexUnified
                                         }
@@ -427,6 +682,9 @@ impl QueryEngChannel {
                                         TradingVenue::BitgetMargin
                                         | TradingVenue::BitgetFutures => {
                                             scope == BasicAccountScope::BitgetUnified
+                                        }
+                                        TradingVenue::BitgetCoinFutures => {
+                                            scope == BasicAccountScope::BitgetUnifiedCoinFutures
                                         }
                                         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                                             scope == BasicAccountScope::BybitUnified
@@ -482,7 +740,9 @@ impl QueryEngChannel {
                                                     );
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::BorrowInterest => {
@@ -532,7 +792,9 @@ impl QueryEngChannel {
                                                     );
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::PositionUpdate => {
@@ -541,9 +803,11 @@ impl QueryEngChannel {
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
@@ -560,9 +824,11 @@ impl QueryEngChannel {
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
@@ -576,7 +842,9 @@ impl QueryEngChannel {
                                                     );
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::UnrealizedPnlUpdate => {
@@ -585,9 +853,12 @@ impl QueryEngChannel {
                                             if matches!(
                                                 open_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
+                                                    | TradingVenue::BybitFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
@@ -599,9 +870,12 @@ impl QueryEngChannel {
                                             if matches!(
                                                 hedge_venue,
                                                 TradingVenue::BinanceFutures
+                                                    | TradingVenue::BinanceCoinFutures
                                                     | TradingVenue::OkexFutures
                                                     | TradingVenue::GateFutures
                                                     | TradingVenue::BitgetFutures
+                                                    | TradingVenue::BitgetCoinFutures
+                                                    | TradingVenue::BybitFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
@@ -610,13 +884,28 @@ impl QueryEngChannel {
                                                     applied = true;
                                                 }
                                             }
-                                            let _ = applied;
+                                            if applied {
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                         }
                                     }
                                     BasicAccountEventType::AccountRisk => {
                                         match BasicAccountRiskMsg::from_bytes(body) {
-                                            Ok(msg) => MonitorChannel::instance()
-                                                .apply_account_risk(account_scope, msg),
+                                            Ok(msg) => {
+                                                crate::pre_trade::account_open_block::apply_bitget_unified_account_risk(&msg);
+                                                crate::pre_trade::account_open_block::apply_bybit_unified_account_risk(&msg);
+                                                crate::pre_trade::unimmr_open_lock::UnimmrOpenLock::apply_account_risk(
+                                                    account_scope,
+                                                    &msg,
+                                                );
+                                                crate::pre_trade::unimmr_force_close::UnimmrForceClose::apply_account_risk(
+                                                    account_scope,
+                                                    &msg,
+                                                );
+                                                MonitorChannel::instance()
+                                                    .apply_account_risk(account_scope, msg);
+                                                MonitorChannel::mark_basic_state_dirty();
+                                            }
                                             Err(err) => warn!(
                                                 "AccountRisk decode failed via query_eng_channel: scope={} err={err:#}",
                                                 account_scope.as_str()
@@ -638,6 +927,9 @@ impl QueryEngChannel {
                                         | QueryRequestType::OkexUMQuery
                                         | QueryRequestType::BybitMarginQuery
                                         | QueryRequestType::BybitUMQuery
+                                        | QueryRequestType::BitgetMarginQuery
+                                        | QueryRequestType::BitgetUMQuery
+                                        | QueryRequestType::BitgetCoinFuturesQuery
                                         | QueryRequestType::GateUnifiedOrderQuery
                                         | QueryRequestType::GateFuturesOrderQuery
                                 ) {
@@ -681,13 +973,17 @@ impl QueryEngChannel {
                         }
                     }
                 }
-                Ok(None) => tokio::task::yield_now().await,
+                Ok(None) => break,
                 Err(err) => {
-                    warn!("Query response receive error: {err}");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    warn!(
+                        "Query response receive error exchange={}: {err}",
+                        self.exchange
+                    );
+                    break;
                 }
             }
         }
+        received
     }
 }
 
@@ -695,19 +991,71 @@ impl QueryEngChannel {
 mod tests {
     use super::{
         dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
+        snapshot_initializes_exec_venue,
     };
-    use crate::signal::trade_signal::TradeSignal;
-    use crate::strategy::query_engine_response::QueryEngineResponseMessage;
-    use crate::strategy::{order_update::OrderUpdate, trade_update::TradeUpdate};
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
+    use order_common::QueryEngineResponseMessage;
+    use order_common::{OrderUpdate, TradeUpdate};
+    use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use trade_engine::query_request::QueryRequestType;
+
+    #[test]
+    fn exec_position_snapshot_mapping_matches_venue_and_account_mode() {
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinancePmBalanceSnapshot,
+            order_common::TradingVenue::BinanceMargin,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceSpotAccountSnapshotStd,
+            order_common::TradingVenue::BinanceMargin,
+            true,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceUmAccountSnapshot,
+            order_common::TradingVenue::BinanceFutures,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceUmAccountSnapshotStd,
+            order_common::TradingVenue::BinanceFutures,
+            true,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinancePmCmAccountSnapshot,
+            order_common::TradingVenue::BinanceCoinFutures,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::BinanceCmAccountSnapshotStd,
+            order_common::TradingVenue::BinanceCoinFutures,
+            true,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::OkexPositionsSnapshot,
+            order_common::TradingVenue::OkexFutures,
+            false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::GateUnifiedPositionsSnapshot,
+            order_common::TradingVenue::GateFutures,
+            false,
+        ));
+        assert!(!snapshot_initializes_exec_venue(
+            QueryRequestType::OkexAccountBalanceSnapshot,
+            order_common::TradingVenue::OkexFutures,
+            false,
+        ));
+    }
 
     struct ReentrantQueryStrategy {
         id: i32,
         active: bool,
+        order_id: i64,
     }
 
     impl Strategy for ReentrantQueryStrategy {
@@ -723,8 +1071,8 @@ mod tests {
             self.id
         }
 
-        fn is_strategy_order(&self, _order_id: i64) -> bool {
-            false
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.order_id
         }
 
         fn handle_signal(&mut self, _signal: &TradeSignal) {}
@@ -747,6 +1095,7 @@ mod tests {
     struct ReentrantOrphanQueryStrategy {
         id: i32,
         active: bool,
+        order_id: i64,
     }
 
     impl Strategy for ReentrantOrphanQueryStrategy {
@@ -762,8 +1111,8 @@ mod tests {
             self.id
         }
 
-        fn is_strategy_order(&self, _order_id: i64) -> bool {
-            false
+        fn is_strategy_order(&self, order_id: i64) -> bool {
+            order_id == self.order_id
         }
 
         fn handle_signal(&mut self, _signal: &TradeSignal) {}
@@ -791,6 +1140,7 @@ mod tests {
             .insert(Box::new(ReentrantQueryStrategy {
                 id: 301,
                 active: true,
+                order_id: 301_i64 << 32,
             }));
         let response = QueryEngineResponseMessage::new(0, 301_i64 << 32, Bytes::new());
 
@@ -808,6 +1158,7 @@ mod tests {
             .insert(Box::new(ReentrantOrphanQueryStrategy {
                 id: 302,
                 active: true,
+                order_id: 302_i64 << 32,
             }));
         let response = QueryEngineResponseMessage::new(0, 302_i64 << 32, Bytes::new());
 
@@ -815,6 +1166,39 @@ mod tests {
 
         assert!(matched);
         assert!(manager.borrow().contains(302));
+    }
+
+    #[test]
+    fn query_dispatch_does_not_steal_unowned_order_from_orphan_manager() {
+        let source_manager = Rc::new(RefCell::new(StrategyManager::new()));
+        source_manager
+            .borrow_mut()
+            .insert(Box::new(ReentrantQueryStrategy {
+                id: 301,
+                active: true,
+                order_id: (301_i64 << 32) | 1,
+            }));
+
+        let orphan_manager = Rc::new(RefCell::new(OrphanStrategyManager::new()));
+        orphan_manager
+            .borrow_mut()
+            .insert(Box::new(ReentrantOrphanQueryStrategy {
+                id: 401,
+                active: true,
+                order_id: (301_i64 << 32) | 2,
+            }));
+
+        let response = QueryEngineResponseMessage::new(0, (301_i64 << 32) | 2, Bytes::new());
+
+        let matched_source =
+            dispatch_query_response_to_strategy_manager(&source_manager, 301, &response);
+        let matched_orphan =
+            dispatch_query_response_to_orphan_manager(&orphan_manager, 301, &response);
+
+        assert!(!matched_source);
+        assert!(matched_orphan);
+        assert!(source_manager.borrow().contains(301));
+        assert!(orphan_manager.borrow().contains(401));
     }
 }
 

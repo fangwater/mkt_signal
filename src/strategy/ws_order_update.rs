@@ -1,12 +1,12 @@
-use crate::common::time_util::get_timestamp_us;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::pre_trade::order_manager::{Order, OrderExecutionStatus, OrderType, Side};
-use crate::signal::common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use crate::strategy::manager::Strategy;
-use crate::strategy::order_update::OrderUpdate;
-use crate::strategy::trade_engine_response::TradeEngineResponse;
-use crate::trade_engine::trade_request::TradeRequestType;
 use log::{info, warn};
+use order_common::OrderUpdate;
+use order_common::TradeEngineResponse;
+use order_common::TradeRequestType;
+use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{Order, OrderExecutionStatus, OrderType, Side};
+use runtime_common::time_util::get_timestamp_us;
 
 #[derive(Debug, Clone)]
 pub struct WsOrderUpdate {
@@ -35,16 +35,18 @@ impl WsOrderUpdate {
                 | TradeRequestType::BinanceWsCancelMarginOrder
                 | TradeRequestType::BybitNewMarginOrder
                 | TradeRequestType::BybitNewUMOrder
-                | TradeRequestType::BybitCancelMarginOrder
-                | TradeRequestType::BybitCancelUMOrder
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder
                 | TradeRequestType::GateFuturesNewOrder
                 | TradeRequestType::BitgetNewMarginOrder
                 | TradeRequestType::BitgetNewUMOrder
+                | TradeRequestType::BitgetNewSpotOrder
+                | TradeRequestType::BitgetNewCoinFuturesOrder
                 | TradeRequestType::BitgetCancelMarginOrder
-                | TradeRequestType::BitgetCancelUMOrder)
+                | TradeRequestType::BitgetCancelUMOrder
+                | TradeRequestType::BitgetCancelSpotOrder
+                | TradeRequestType::BitgetCancelCoinFuturesOrder)
         )
     }
 
@@ -86,6 +88,7 @@ impl WsOrderUpdate {
         }
         match venue {
             TradingVenue::BinanceFutures
+            | TradingVenue::BinanceCoinFutures
             | TradingVenue::BybitMargin
             | TradingVenue::BybitFutures
             | TradingVenue::OkexMargin
@@ -93,7 +96,8 @@ impl WsOrderUpdate {
             | TradingVenue::GateMargin
             | TradingVenue::GateFutures
             | TradingVenue::BitgetMargin
-            | TradingVenue::BitgetFutures => TimeInForce::GTX,
+            | TradingVenue::BitgetFutures
+            | TradingVenue::BitgetCoinFutures => TimeInForce::GTX,
             _ => TimeInForce::GTC,
         }
     }
@@ -291,4 +295,42 @@ fn ws_strategy_name<S: ?Sized>() -> &'static str {
         .rsplit("::")
         .next()
         .unwrap_or("Strategy")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bybit_cancel_response_does_not_drive_ws_order_update() {
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitNewUMOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitNewMarginOrder as u32
+        ));
+
+        assert!(!WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitCancelUMOrder as u32
+        ));
+        assert!(!WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BybitCancelMarginOrder as u32
+        ));
+    }
+
+    #[test]
+    fn binance_ws_cancel_response_still_drives_ws_order_update() {
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsNewUMOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsCancelUMOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsNewMarginOrder as u32
+        ));
+        assert!(WsOrderUpdate::supports_trade_response_req_type(
+            TradeRequestType::BinanceWsCancelMarginOrder as u32
+        ));
+    }
 }

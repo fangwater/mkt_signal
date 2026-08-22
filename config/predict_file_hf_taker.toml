@@ -1,0 +1,169 @@
+instance = "hf_taker"
+out_dir = "predict_file"
+flush_every = 512
+flush_interval_ms = 1000
+poll_interval_ms = 5
+max_drain_per_source = 256
+stats_secs = 30
+cache_minutes = 30
+cache_cleanup_ms = 30000
+http_bind = "127.0.0.1"
+http_port = 8818
+pm2_namespace = "predict_file"
+pm2_name = "predict_file-hf_taker"
+rust_log = "info"
+
+[[models]]
+model_name = "binance-futures-mid-re-1m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/binance-futures-mid-re-1m"
+interval_ms = 1000
+max_subscribers = 10
+[[models]]
+model_name = "binance-futures-mid-re-30s"
+group = "guoqi"
+source = "ipc"
+service = "model_output/binance-futures-mid-re-30s"
+interval_ms = 1000
+max_subscribers = 10
+[[models]]
+model_name = "binance-futures-mid-re-5m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/binance-futures-mid-re-5m"
+interval_ms = 1000
+max_subscribers = 10
+[[models]]
+model_name = "cta-binance-futures-mid-chg-15m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-chg-15m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-chg-30m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-chg-30m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-chg-5m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-chg-5m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-chg-60m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-chg-60m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-re-15m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-re-15m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-re-30m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-re-30m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-re-5m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-re-5m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid-re-60m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid-re-60m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_chg-15m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_chg-15m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_chg-1m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_chg-1m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_chg-30m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_chg-30m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_chg-5m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_chg-5m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_chg-60m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_chg-60m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_re-15m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_re-15m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_re-1m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_re-1m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_re-30m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_re-30m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_re-5m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_re-5m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "cta-binance-futures-mid_re-60m"
+group = "guoqi"
+source = "ipc"
+service = "model_output/cta-binance-futures-mid_re-60m"
+interval_ms = 1000
+max_subscribers = 32
+[[models]]
+model_name = "predict_rnn_layer"
+group = "rpan"
+source = "zmq"
+endpoint = "ipc:///tmp/predict_rnn_layer.ipc"
+topic = "model_output/"
+interval_ms = 1000

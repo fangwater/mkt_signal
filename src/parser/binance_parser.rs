@@ -1,42 +1,63 @@
-use crate::mkt_msg::{
-    AskBidSpreadMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, SignalMsg, SignalSource, TradeMsg,
-};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
+use mkt_parsers::binance as binance_codec;
+use mkt_parsers::msg::mkt_msg::{
+    ask_bid_spread_msg_bytes_borrowed, funding_rate_msg_bytes_borrowed, inc_msg_bytes_borrowed,
+    index_price_msg_bytes_borrowed, kline_msg_bytes_borrowed, liquidation_msg_bytes_borrowed,
+    mark_price_msg_bytes_borrowed, signal_msg_bytes, trade_msg_bytes_borrowed, AskBidSpreadMsg,
+    FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg,
+    SignalSource, TradeMsg,
+};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct BinanceSignalParser {
     source: SignalSource,
+    raw_only: bool,
 }
 
 impl BinanceSignalParser {
     pub fn new(is_ipc: bool) -> Self {
+        Self::with_raw_only(is_ipc, false)
+    }
+
+    pub fn raw_only(is_ipc: bool) -> Self {
+        Self::with_raw_only(is_ipc, true)
+    }
+
+    fn with_raw_only(is_ipc: bool, raw_only: bool) -> Self {
         Self {
             source: if is_ipc {
                 SignalSource::Ipc
             } else {
                 SignalSource::Tcp
             },
+            raw_only,
         }
     }
 }
 
 impl Parser for BinanceSignalParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(timestamp) = binance_codec::parse_event_time_ms_raw(&msg) {
+            return if tx.send(signal_msg_bytes(self.source, timestamp)).is_ok() {
+                1
+            } else {
+                0
+            };
+        }
+        if self.raw_only {
+            return 0;
+        }
+
         // Parse Binance depth message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // Extract Binance timestamp field "E"
                 if let Some(timestamp) = json_value.get("E").and_then(|v| v.as_i64()) {
-                    // Create signal message
-                    let signal_msg = SignalMsg::create(self.source, timestamp);
-                    let signal_bytes = signal_msg.to_bytes();
-
                     // Send signal
-                    if tx.send(signal_bytes).is_err() {
+                    if tx.send(signal_msg_bytes(self.source, timestamp)).is_err() {
                         return 0;
                     }
 
@@ -49,7 +70,9 @@ impl Parser for BinanceSignalParser {
 }
 
 #[derive(Clone)]
-pub struct BinanceKlineParser;
+pub struct BinanceKlineParser {
+    raw_only: bool,
+}
 
 impl Default for BinanceKlineParser {
     fn default() -> Self {
@@ -59,12 +82,36 @@ impl Default for BinanceKlineParser {
 
 impl BinanceKlineParser {
     pub fn new() -> Self {
-        Self
+        Self::with_raw_only(false)
+    }
+
+    pub fn raw_only() -> Self {
+        Self::with_raw_only(true)
+    }
+
+    fn with_raw_only(raw_only: bool) -> Self {
+        Self { raw_only }
     }
 }
 
 impl Parser for BinanceKlineParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(kline) = binance_codec::parse_kline_raw_borrowed(&msg) {
+            let kline_bytes = kline_msg_bytes_borrowed(
+                kline.symbol,
+                kline.open_price,
+                kline.high_price,
+                kline.low_price,
+                kline.close_price,
+                kline.volume,
+                kline.timestamp,
+            );
+            return if tx.send(kline_bytes).is_ok() { 1 } else { 0 };
+        }
+        if self.raw_only {
+            return 0;
+        }
+
         // Parse Binance kline message
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -134,200 +181,203 @@ impl Parser for BinanceKlineParser {
 #[derive(Clone)]
 pub struct BinanceDerivativesMetricsParser {
     symbols: HashSet<String>,
+    raw_only: bool,
 }
 
 impl BinanceDerivativesMetricsParser {
     pub fn new(symbols_set: HashSet<String>) -> Self {
+        Self::with_raw_only(symbols_set, false)
+    }
+
+    pub fn raw_only(symbols_set: HashSet<String>) -> Self {
+        Self::with_raw_only(symbols_set, true)
+    }
+
+    fn with_raw_only(symbols_set: HashSet<String>, raw_only: bool) -> Self {
         Self {
-            // Binance WS symbols are uppercase (e.g. "BTCUSDT"), while this parser uses
-            // lowercase keys for lookups.
-            symbols: symbols_set.into_iter().map(|s| s.to_lowercase()).collect(),
+            symbols: symbols_set
+                .into_iter()
+                .map(|s| s.to_ascii_uppercase())
+                .collect(),
+            raw_only,
         }
     }
 }
 
 impl Parser for BinanceDerivativesMetricsParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // Parse Binance derivatives metrics messages (liquidations + mark price)
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // Handle mark price array format: [{e: "markPriceUpdate", ...}, ...]
-                if let Some(data_array) = json_value.as_array() {
-                    return self.parse_mark_price_array(data_array, tx);
-                }
-
-                // Handle single liquidation event format: {e: "forceOrder", ...}
-                if let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) {
-                    match event_type {
-                        "forceOrder" => return self.parse_liquidation_event(&json_value, tx),
-                        "markPriceUpdate" => return self.parse_single_mark_price(&json_value, tx),
-                        _ => return 0,
-                    }
-                }
-            }
+        if let Some(count) = self.publish_derivatives_raw(&msg, tx) {
+            return count;
         }
-        0
+        if self.raw_only {
+            return 0;
+        }
+
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        let derivatives = binance_codec::parse_derivatives_json(&json_value);
+        self.publish_derivatives(derivatives, tx)
     }
 }
 
 impl BinanceDerivativesMetricsParser {
-    fn parse_liquidation_event(
+    fn publish_derivatives_raw(
         &self,
-        json_value: &serde_json::Value,
+        msg: &[u8],
         tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        // Parse liquidation order data
-        if let Some(order_data) = json_value.get("o") {
-            if let (
-                Some(symbol),
-                Some(side),
-                Some(quantity_str),
-                Some(avg_price_str),
-                Some(timestamp),
-            ) = (
-                order_data.get("s").and_then(|v| v.as_str()),
-                order_data.get("S").and_then(|v| v.as_str()),
-                order_data.get("z").and_then(|v| v.as_str()), // Order Filled Accumulated Quantity
-                order_data.get("ap").and_then(|v| v.as_str()), // Average Price
-                order_data.get("T").and_then(|v| v.as_i64()), // Order Trade Time
-            ) {
-                // Check if symbol is in the allowed list (case-insensitive)
-                let symbol_lower = symbol.to_lowercase();
-                if !self.symbols.contains(&symbol_lower) {
-                    return 0;
+    ) -> Option<usize> {
+        let mut total_parsed = 0usize;
+        binance_codec::parse_derivatives_raw_borrowed(msg, |derivative| {
+            match derivative {
+                binance_codec::RawDerivative::MarkPrice {
+                    symbol,
+                    mark_price,
+                    index_price,
+                    funding_rate,
+                    next_funding_time_us,
+                    timestamp_us,
+                } => {
+                    if !self.symbols.contains(symbol) {
+                        return Some(());
+                    }
+                    if let Some(price) = mark_price.filter(|price| *price > 0.0) {
+                        if tx
+                            .send(mark_price_msg_bytes_borrowed(symbol, price, timestamp_us))
+                            .is_ok()
+                        {
+                            total_parsed += 1;
+                        }
+                    }
+                    if let Some(price) = index_price.filter(|price| *price > 0.0) {
+                        if tx
+                            .send(index_price_msg_bytes_borrowed(symbol, price, timestamp_us))
+                            .is_ok()
+                        {
+                            total_parsed += 1;
+                        }
+                    }
+                    if let (Some(funding_rate), Some(next_funding_time_us)) =
+                        (funding_rate, next_funding_time_us)
+                    {
+                        if tx
+                            .send(funding_rate_msg_bytes_borrowed(
+                                symbol,
+                                funding_rate,
+                                next_funding_time_us,
+                                timestamp_us,
+                            ))
+                            .is_ok()
+                        {
+                            total_parsed += 1;
+                        }
+                    }
                 }
-                // Parse quantity and price
-                if let (Ok(quantity), Ok(avg_price)) =
-                    (quantity_str.parse::<f64>(), avg_price_str.parse::<f64>())
-                {
-                    // Convert Binance side to liquidation_side char
-                    let liquidation_side = match side {
-                        "BUY" => 'B',  // 买入强平
-                        "SELL" => 'S', // 卖出强平
-                        _ => return 0,
-                    };
-
-                    // Create liquidation message
-                    let liquidation_msg = LiquidationMsg::create(
-                        symbol.to_string(),
-                        liquidation_side,
-                        quantity,
-                        avg_price,
-                        timestamp,
-                    );
-
-                    // Send liquidation message
-                    if tx.send(liquidation_msg.to_bytes()).is_ok() {
-                        return 1;
+                binance_codec::RawDerivative::Liquidation {
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    timestamp_us,
+                } => {
+                    if self.symbols.contains(symbol)
+                        && tx
+                            .send(liquidation_msg_bytes_borrowed(
+                                symbol,
+                                side,
+                                amount,
+                                price,
+                                timestamp_us,
+                            ))
+                            .is_ok()
+                    {
+                        total_parsed += 1;
                     }
                 }
             }
-        }
-        0
+            Some(())
+        })?;
+        Some(total_parsed)
     }
 
-    fn parse_mark_price_array(
+    fn publish_derivatives(
         &self,
-        data_array: &Vec<serde_json::Value>,
+        derivatives: Vec<binance_codec::Derivative>,
         tx: &mpsc::UnboundedSender<Bytes>,
     ) -> usize {
         let mut total_parsed = 0;
-
-        for item in data_array {
-            total_parsed += self.parse_single_mark_price(item, tx);
-        }
-        total_parsed
-    }
-
-    fn parse_single_mark_price(
-        &self,
-        item: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        // Check if this is a markPriceUpdate event
-        if let Some(event_type) = item.get("e").and_then(|v| v.as_str()) {
-            if event_type == "markPriceUpdate" {
-                if let (
-                    Some(symbol),
-                    Some(mark_price_str),
-                    Some(index_price_str),
-                    Some(funding_rate_str),
-                    Some(event_time),
-                    Some(next_funding_time),
-                ) = (
-                    item.get("s").and_then(|v| v.as_str()),
-                    item.get("p").and_then(|v| v.as_str()),
-                    item.get("i").and_then(|v| v.as_str()),
-                    item.get("r").and_then(|v| v.as_str()),
-                    item.get("E").and_then(|v| v.as_i64()),
-                    item.get("T").and_then(|v| v.as_i64()),
-                ) {
-                    // Check if symbol is in the allowed list (case-insensitive)
-                    let symbol_lower = symbol.to_lowercase();
-                    if !self.symbols.contains(&symbol_lower) {
-                        return 0;
+        for derivative in derivatives {
+            match derivative {
+                binance_codec::Derivative::MarkPrice {
+                    symbol,
+                    price,
+                    timestamp_us,
+                } => {
+                    if self.symbols.contains(&symbol.to_ascii_uppercase())
+                        && tx
+                            .send(MarkPriceMsg::create(symbol, price, timestamp_us).to_bytes())
+                            .is_ok()
+                    {
+                        total_parsed += 1;
                     }
-                    // Parse price values
-                    if let (Ok(mark_price), Ok(index_price), Ok(funding_rate)) = (
-                        mark_price_str.parse::<f64>(),
-                        index_price_str.parse::<f64>(),
-                        funding_rate_str.parse::<f64>(),
-                    ) {
-                        let mut parsed_count = 0;
-
-                        let s_lower = symbol.to_lowercase();
-                        if matches!(s_lower.as_str(), "btcusdt" | "ethusdt" | "bnbusdt") {
-                            log::debug!(
-                                "binance funding msg: symbol={} mark={} index={} funding={} next={} event={}",
-                                symbol,
-                                mark_price,
-                                index_price,
-                                funding_rate,
-                                next_funding_time,
-                                event_time
-                            );
-                        }
-
-                        // Create and send MarkPriceMsg
-                        let mark_price_msg =
-                            MarkPriceMsg::create(symbol.to_string(), mark_price, event_time);
-                        if tx.send(mark_price_msg.to_bytes()).is_ok() {
-                            parsed_count += 1;
-                        }
-
-                        // Create and send IndexPriceMsg
-                        let index_price_msg =
-                            IndexPriceMsg::create(symbol.to_string(), index_price, event_time);
-                        if tx.send(index_price_msg.to_bytes()).is_ok() {
-                            parsed_count += 1;
-                        }
-
-                        // Create and send FundingRateMsg
-                        let funding_rate_msg = FundingRateMsg::create(
-                            symbol.to_string(),
-                            funding_rate,
-                            next_funding_time,
-                            event_time,
-                        );
-                        if tx.send(funding_rate_msg.to_bytes()).is_ok() {
-                            parsed_count += 1;
-                            if matches!(s_lower.as_str(), "btcusdt" | "ethusdt" | "bnbusdt") {
-                                log::debug!(
-                                    "mkt pub funding_rate_msg: symbol={} funding={} next={} event={}",
+                }
+                binance_codec::Derivative::IndexPrice {
+                    symbol,
+                    price,
+                    timestamp_us,
+                } => {
+                    if self.symbols.contains(&symbol.to_ascii_uppercase())
+                        && tx
+                            .send(IndexPriceMsg::create(symbol, price, timestamp_us).to_bytes())
+                            .is_ok()
+                    {
+                        total_parsed += 1;
+                    }
+                }
+                binance_codec::Derivative::FundingRate {
+                    symbol,
+                    funding_rate,
+                    next_funding_time_us,
+                    timestamp_us,
+                } => {
+                    let symbol_upper = symbol.to_ascii_uppercase();
+                    if self.symbols.contains(&symbol_upper)
+                        && tx
+                            .send(
+                                FundingRateMsg::create(
                                     symbol,
                                     funding_rate,
-                                    next_funding_time,
-                                    event_time
-                                );
-                            }
-                        }
-
-                        return parsed_count;
+                                    next_funding_time_us,
+                                    timestamp_us,
+                                )
+                                .to_bytes(),
+                            )
+                            .is_ok()
+                    {
+                        total_parsed += 1;
+                    }
+                }
+                binance_codec::Derivative::Liquidation {
+                    symbol,
+                    side,
+                    amount,
+                    price,
+                    timestamp_us,
+                } => {
+                    if self.symbols.contains(&symbol.to_ascii_uppercase())
+                        && tx
+                            .send(
+                                LiquidationMsg::create(symbol, side, amount, price, timestamp_us)
+                                    .to_bytes(),
+                            )
+                            .is_ok()
+                    {
+                        total_parsed += 1;
                     }
                 }
             }
         }
-        0
+        total_parsed
     }
 }
 
@@ -352,8 +402,43 @@ impl BinanceSnapshotParser {
     }
 }
 
+fn normalize_snapshot_raw_book(book: &mut binance_codec::RawBook<'_>) {
+    let update_id = book.seq_id.saturating_add(1);
+    book.seq_id = update_id;
+    book.prev_seq_id = update_id;
+    book.first_update_id = update_id;
+    book.final_update_id = update_id;
+}
+
+fn normalize_snapshot_raw_book_view(book: &mut binance_codec::RawBookView<'_>) {
+    let update_id = book.seq_id.saturating_add(1);
+    book.seq_id = update_id;
+    book.prev_seq_id = update_id;
+    book.first_update_id = update_id;
+    book.final_update_id = update_id;
+}
+
 impl Parser for BinanceSnapshotParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+        if let Some(book) = binance_codec::parse_incremental_raw(&msg) {
+            match book {
+                binance_codec::RawBookParse::Parsed(mut book) => {
+                    if !book.is_snapshot {
+                        return 0;
+                    }
+                    normalize_snapshot_raw_book(&mut book);
+                    return publish_raw_book_chunks(&book, self.max_levels, tx);
+                }
+                binance_codec::RawBookParse::View(mut book) => {
+                    if !book.is_snapshot {
+                        return 0;
+                    }
+                    normalize_snapshot_raw_book_view(&mut book);
+                    return publish_raw_book_view_chunks(&book, self.max_levels, tx);
+                }
+            }
+        }
+
         // 解析币安快照消息
         if let Ok(json_str) = std::str::from_utf8(&msg) {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
@@ -411,10 +496,230 @@ fn parse_order_book_levels_with_offset(
     }
 }
 
-// 公共函数：解析订单簿层级数据（f64 pairs, 支持偏移量）
-fn parse_order_book_levels_from_pairs(
-    bids: &[(f64, f64)],
-    asks: &[(f64, f64)],
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LevelChunk {
+    bids_start: usize,
+    bids_count: usize,
+    asks_start: usize,
+    asks_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LevelChunks {
+    total_bids: usize,
+    total_asks: usize,
+    max_levels: usize,
+    bids_sent: usize,
+    asks_sent: usize,
+    done_single: bool,
+}
+
+impl LevelChunks {
+    fn new(total_bids: usize, total_asks: usize, max_levels: Option<usize>) -> Self {
+        let total = total_bids + total_asks;
+        let max_levels = match max_levels {
+            Some(max) if total > max && max > 0 => max,
+            _ => total,
+        };
+        Self {
+            total_bids,
+            total_asks,
+            max_levels,
+            bids_sent: 0,
+            asks_sent: 0,
+            done_single: false,
+        }
+    }
+
+    fn total_chunks(self) -> usize {
+        let total = self.total_bids + self.total_asks;
+        if total == 0 || total <= self.max_levels {
+            1
+        } else {
+            total.div_ceil(self.max_levels)
+        }
+    }
+}
+
+impl Iterator for LevelChunks {
+    type Item = LevelChunk;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total = self.total_bids + self.total_asks;
+        if total <= self.max_levels {
+            if self.done_single {
+                return None;
+            }
+            self.done_single = true;
+            return Some(LevelChunk {
+                bids_start: 0,
+                bids_count: self.total_bids,
+                asks_start: 0,
+                asks_count: self.total_asks,
+            });
+        }
+
+        if self.bids_sent >= self.total_bids && self.asks_sent >= self.total_asks {
+            return None;
+        }
+
+        let bids_remaining = self.total_bids - self.bids_sent;
+        let asks_remaining = self.total_asks - self.asks_sent;
+        let remaining = bids_remaining + asks_remaining;
+        let chunk_bids = if remaining <= self.max_levels {
+            bids_remaining
+        } else if bids_remaining == 0 {
+            0
+        } else {
+            let ratio = bids_remaining as f64 / remaining as f64;
+            ((self.max_levels as f64 * ratio).round() as usize)
+                .max(1)
+                .min(bids_remaining)
+        };
+        let chunk_asks = (self.max_levels - chunk_bids).min(asks_remaining);
+        let chunk = LevelChunk {
+            bids_start: self.bids_sent,
+            bids_count: chunk_bids,
+            asks_start: self.asks_sent,
+            asks_count: chunk_asks,
+        };
+        self.bids_sent += chunk_bids;
+        self.asks_sent += chunk_asks;
+        Some(chunk)
+    }
+}
+
+fn split_levels(total_bids: usize, total_asks: usize, max_levels: Option<usize>) -> LevelChunks {
+    LevelChunks::new(total_bids, total_asks, max_levels)
+}
+
+fn publish_book_chunks(
+    book: &binance_codec::Book,
+    max_levels: Option<usize>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let chunks = split_levels(book.bids.len(), book.asks.len(), max_levels);
+    let total_chunks = chunks.total_chunks();
+    let mut sent_count = 0;
+
+    for (chunk_idx, chunk) in chunks.enumerate() {
+        let mut inc_msg = IncMsg::create(
+            book.symbol.clone(),
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            chunk.bids_count as u32,
+            chunk.asks_count as u32,
+        );
+        inc_msg.set_chunk_index(chunk_idx as u8);
+        inc_msg.set_is_last(chunk_idx == total_chunks - 1);
+        set_inc_levels_from_parsed(
+            &book.bids,
+            &book.asks,
+            chunk.bids_start,
+            chunk.bids_count,
+            chunk.asks_start,
+            chunk.asks_count,
+            &mut inc_msg,
+        );
+        if tx.send(inc_msg.to_bytes()).is_ok() {
+            sent_count += 1;
+        }
+    }
+
+    sent_count
+}
+
+fn publish_raw_book_chunks(
+    book: &binance_codec::RawBook<'_>,
+    max_levels: Option<usize>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let chunks = split_levels(book.bids.len(), book.asks.len(), max_levels);
+    let total_chunks = chunks.total_chunks();
+    let mut sent_count = 0;
+
+    for (chunk_idx, chunk) in chunks.enumerate() {
+        let inc_bytes = inc_msg_bytes_borrowed(
+            book.symbol,
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            chunk_idx == total_chunks - 1,
+            chunk_idx as u8,
+            chunk.bids_count as u32,
+            chunk.asks_count as u32,
+            book.bids
+                .as_slice()
+                .iter()
+                .skip(chunk.bids_start)
+                .take(chunk.bids_count)
+                .copied()
+                .map(|level| Level::from_values(level.price, level.amount)),
+            book.asks
+                .as_slice()
+                .iter()
+                .skip(chunk.asks_start)
+                .take(chunk.asks_count)
+                .copied()
+                .map(|level| Level::from_values(level.price, level.amount)),
+        );
+        if tx.send(inc_bytes).is_ok() {
+            sent_count += 1;
+        }
+    }
+
+    sent_count
+}
+
+fn publish_raw_book_view_chunks(
+    book: &binance_codec::RawBookView<'_>,
+    max_levels: Option<usize>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let chunks = split_levels(book.bids_count, book.asks_count, max_levels);
+    let total_chunks = chunks.total_chunks();
+    let mut sent_count = 0;
+    let Some(mut bids_iter) = binance_codec::raw_levels_iter(book.bids_raw) else {
+        return 0;
+    };
+    let Some(mut asks_iter) = binance_codec::raw_levels_iter(book.asks_raw) else {
+        return 0;
+    };
+
+    for (chunk_idx, chunk) in chunks.enumerate() {
+        let inc_bytes = inc_msg_bytes_borrowed(
+            book.symbol,
+            book.first_update_id,
+            book.final_update_id,
+            book.timestamp_us,
+            book.is_snapshot,
+            chunk_idx == total_chunks - 1,
+            chunk_idx as u8,
+            chunk.bids_count as u32,
+            chunk.asks_count as u32,
+            bids_iter
+                .by_ref()
+                .take(chunk.bids_count)
+                .map(|level| Level::from_values(level.price, level.amount)),
+            asks_iter
+                .by_ref()
+                .take(chunk.asks_count)
+                .map(|level| Level::from_values(level.price, level.amount)),
+        );
+        if tx.send(inc_bytes).is_ok() {
+            sent_count += 1;
+        }
+    }
+
+    sent_count
+}
+
+fn set_inc_levels_from_parsed(
+    bids: &[binance_codec::Level],
+    asks: &[binance_codec::Level],
     bids_start: usize,
     bids_count: usize,
     asks_start: usize,
@@ -423,67 +728,52 @@ fn parse_order_book_levels_from_pairs(
 ) {
     for i in 0..bids_count {
         let src_idx = bids_start + i;
-        if src_idx >= bids.len() {
-            break;
+        if let Some(level) = bids.get(src_idx) {
+            inc_msg.set_bid_level(i, Level::from_values(level.price, level.amount));
         }
-        let (price, amount) = bids[src_idx];
-        inc_msg.set_bid_level(i, Level::from_values(price, amount));
     }
-
     for i in 0..asks_count {
         let src_idx = asks_start + i;
-        if src_idx >= asks.len() {
-            break;
+        if let Some(level) = asks.get(src_idx) {
+            inc_msg.set_ask_level(i, Level::from_values(level.price, level.amount));
         }
-        let (price, amount) = asks[src_idx];
-        inc_msg.set_ask_level(i, Level::from_values(price, amount));
     }
 }
 
-/// 计算如何拆分 levels 成多个 chunk
-/// 返回 Vec<(bids_start, bids_count, asks_start, asks_count)>
-/// 每个 chunk 的总档数不超过 max_levels
-fn split_levels(
-    total_bids: usize,
-    total_asks: usize,
-    max_levels: Option<usize>,
-) -> Vec<(usize, usize, usize, usize)> {
-    let total = total_bids + total_asks;
-
-    match max_levels {
-        Some(max) if total > max && max > 0 => {
-            let mut chunks = Vec::new();
-            let mut bids_sent = 0;
-            let mut asks_sent = 0;
-
-            while bids_sent < total_bids || asks_sent < total_asks {
-                let bids_remaining = total_bids - bids_sent;
-                let asks_remaining = total_asks - asks_sent;
-                let remaining = bids_remaining + asks_remaining;
-
-                // 按比例分配本次 chunk 的 bids 和 asks
-                let chunk_bids = if remaining <= max {
-                    bids_remaining
-                } else {
-                    // 按原始比例分配
-                    let ratio = bids_remaining as f64 / remaining as f64;
-                    ((max as f64 * ratio).round() as usize)
-                        .max(1)
-                        .min(bids_remaining)
-                };
-                let chunk_asks = (max - chunk_bids).min(asks_remaining);
-
-                chunks.push((bids_sent, chunk_bids, asks_sent, chunk_asks));
-                bids_sent += chunk_bids;
-                asks_sent += chunk_asks;
-            }
-
-            chunks
+fn publish_trades(trades: Vec<binance_codec::Trade>, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
+    let mut sent_count = 0;
+    for trade in trades {
+        let trade_msg = TradeMsg::create(
+            trade.symbol,
+            trade.trade_id,
+            trade.timestamp_us,
+            trade.side,
+            trade.price,
+            trade.amount,
+        );
+        if tx.send(trade_msg.to_bytes()).is_ok() {
+            sent_count += 1;
         }
-        _ => {
-            // 不需要拆分，返回单个 chunk
-            vec![(0, total_bids, 0, total_asks)]
-        }
+    }
+    sent_count
+}
+
+fn publish_raw_trade(
+    trade: binance_codec::RawTrade<'_>,
+    tx: &mpsc::UnboundedSender<Bytes>,
+) -> usize {
+    let trade_bytes = trade_msg_bytes_borrowed(
+        trade.symbol,
+        trade.trade_id,
+        trade.timestamp_us,
+        trade.side,
+        trade.price,
+        trade.amount,
+    );
+    if tx.send(trade_bytes).is_ok() {
+        1
+    } else {
+        0
     }
 }
 
@@ -496,96 +786,6 @@ impl BinanceSbeDepthSnapshotParser {
     pub fn with_max_levels(max_levels: Option<usize>) -> Self {
         Self { max_levels }
     }
-
-    fn parse_snapshot(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let header = match read_sbe_header(msg) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if header.template_id != 10002 {
-            return 0;
-        }
-
-        let base = header.body_offset;
-        if msg.len() < base + header.block_length {
-            return 0;
-        }
-
-        let event_time = match read_i64_le(msg, base) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let book_update_id = match read_i64_le(msg, base + 8) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let price_exponent = match read_i8(msg, base + 16) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let qty_exponent = match read_i8(msg, base + 17) {
-            Some(v) => v,
-            None => return 0,
-        };
-
-        let mut offset = base + header.block_length;
-        let (bids, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
-        {
-            Some(v) => v,
-            None => return 0,
-        };
-        offset = next_offset;
-        let (asks, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
-        {
-            Some(v) => v,
-            None => return 0,
-        };
-        offset = next_offset;
-
-        let symbol = match read_var_string8(msg, offset) {
-            Some((s, _)) => s.to_uppercase(),
-            None => return 0,
-        };
-
-        // SBE timestamps are in microseconds; keep ms alignment with other parsers.
-        let timestamp = event_time / 1000;
-        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
-        let total_chunks = chunks.len();
-        let mut sent_count = 0;
-
-        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-            chunks.into_iter().enumerate()
-        {
-            let mut inc_msg = IncMsg::create(
-                symbol.clone(),
-                book_update_id,
-                book_update_id,
-                timestamp,
-                true,
-                bids_count as u32,
-                asks_count as u32,
-            );
-
-            inc_msg.set_chunk_index(chunk_idx as u8);
-            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-
-            parse_order_book_levels_from_pairs(
-                &bids,
-                &asks,
-                bids_start,
-                bids_count,
-                asks_start,
-                asks_count,
-                &mut inc_msg,
-            );
-
-            if tx.send(inc_msg.to_bytes()).is_ok() {
-                sent_count += 1;
-            }
-        }
-
-        sent_count
-    }
 }
 
 impl Parser for BinanceSbeDepthSnapshotParser {
@@ -596,7 +796,13 @@ impl Parser for BinanceSbeDepthSnapshotParser {
         if msg[0] == b'{' || msg[0] == b'[' {
             return 0;
         }
-        self.parse_snapshot(&msg, tx)
+        let Some(book) = binance_codec::parse_sbe_incremental(&msg) else {
+            return 0;
+        };
+        if !book.is_snapshot {
+            return 0;
+        }
+        publish_book_chunks(&book, self.max_levels, tx)
     }
 }
 
@@ -609,99 +815,6 @@ impl BinanceSbeDepthDiffParser {
     pub fn with_max_levels(max_levels: Option<usize>) -> Self {
         Self { max_levels }
     }
-
-    fn parse_diff(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let header = match read_sbe_header(msg) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if header.template_id != 10003 {
-            return 0;
-        }
-
-        let base = header.body_offset;
-        if msg.len() < base + header.block_length {
-            return 0;
-        }
-
-        let event_time = match read_i64_le(msg, base) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let first_update_id = match read_i64_le(msg, base + 8) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let last_update_id = match read_i64_le(msg, base + 16) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let price_exponent = match read_i8(msg, base + 24) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let qty_exponent = match read_i8(msg, base + 25) {
-            Some(v) => v,
-            None => return 0,
-        };
-
-        let mut offset = base + header.block_length;
-        let (bids, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
-        {
-            Some(v) => v,
-            None => return 0,
-        };
-        offset = next_offset;
-        let (asks, next_offset) = match read_group_levels(msg, offset, price_exponent, qty_exponent)
-        {
-            Some(v) => v,
-            None => return 0,
-        };
-        offset = next_offset;
-
-        let symbol = match read_var_string8(msg, offset) {
-            Some((s, _)) => s.to_uppercase(),
-            None => return 0,
-        };
-
-        let timestamp = event_time / 1000;
-        let chunks = split_levels(bids.len(), asks.len(), self.max_levels);
-        let total_chunks = chunks.len();
-        let mut sent_count = 0;
-
-        for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-            chunks.into_iter().enumerate()
-        {
-            let mut inc_msg = IncMsg::create(
-                symbol.clone(),
-                first_update_id,
-                last_update_id,
-                timestamp,
-                false,
-                bids_count as u32,
-                asks_count as u32,
-            );
-
-            inc_msg.set_chunk_index(chunk_idx as u8);
-            inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-
-            parse_order_book_levels_from_pairs(
-                &bids,
-                &asks,
-                bids_start,
-                bids_count,
-                asks_start,
-                asks_count,
-                &mut inc_msg,
-            );
-
-            if tx.send(inc_msg.to_bytes()).is_ok() {
-                sent_count += 1;
-            }
-        }
-
-        sent_count
-    }
 }
 
 impl Parser for BinanceSbeDepthDiffParser {
@@ -712,7 +825,13 @@ impl Parser for BinanceSbeDepthDiffParser {
         if msg[0] == b'{' || msg[0] == b'[' {
             return 0;
         }
-        self.parse_diff(&msg, tx)
+        let Some(book) = binance_codec::parse_sbe_incremental(&msg) else {
+            return 0;
+        };
+        if book.is_snapshot {
+            return 0;
+        }
+        publish_book_chunks(&book, self.max_levels, tx)
     }
 }
 
@@ -729,77 +848,6 @@ impl BinanceSbeBestBidAskParser {
     pub fn new() -> Self {
         Self
     }
-
-    fn parse_bbo(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let header = match read_sbe_header(msg) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if header.template_id != 10001 {
-            return 0;
-        }
-
-        let base = header.body_offset;
-        if msg.len() < base + header.block_length {
-            return 0;
-        }
-
-        let event_time = match read_i64_le(msg, base) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let _book_update_id = match read_i64_le(msg, base + 8) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let price_exponent = match read_i8(msg, base + 16) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let qty_exponent = match read_i8(msg, base + 17) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let bid_price = match read_i64_le(msg, base + 18) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let bid_qty = match read_i64_le(msg, base + 26) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let ask_price = match read_i64_le(msg, base + 34) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let ask_qty = match read_i64_le(msg, base + 42) {
-            Some(v) => v,
-            None => return 0,
-        };
-
-        let symbol = match read_var_string8(msg, base + header.block_length) {
-            Some((s, _)) => s.to_uppercase(),
-            None => return 0,
-        };
-
-        let timestamp = event_time / 1000;
-        let bid_price = scale_mantissa(bid_price, price_exponent);
-        let bid_amount = scale_mantissa(bid_qty, qty_exponent);
-        let ask_price = scale_mantissa(ask_price, price_exponent);
-        let ask_amount = scale_mantissa(ask_qty, qty_exponent);
-
-        if bid_price <= 0.0 || bid_amount <= 0.0 || ask_price <= 0.0 || ask_amount <= 0.0 {
-            return 0;
-        }
-
-        let spread_msg = AskBidSpreadMsg::create(
-            symbol, timestamp, bid_price, bid_amount, ask_price, ask_amount,
-        );
-        if tx.send(spread_msg.to_bytes()).is_ok() {
-            return 1;
-        }
-        0
-    }
 }
 
 impl Parser for BinanceSbeBestBidAskParser {
@@ -810,7 +858,22 @@ impl Parser for BinanceSbeBestBidAskParser {
         if msg[0] == b'{' || msg[0] == b'[' {
             return 0;
         }
-        self.parse_bbo(&msg, tx)
+        let Some(bbo) = binance_codec::parse_sbe_bbo(&msg) else {
+            return 0;
+        };
+        let spread_msg = AskBidSpreadMsg::create(
+            bbo.symbol,
+            bbo.timestamp_us,
+            bbo.bid_price,
+            bbo.bid_amount,
+            bbo.ask_price,
+            bbo.ask_amount,
+        );
+        if tx.send(spread_msg.to_bytes()).is_ok() {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -827,99 +890,6 @@ impl BinanceSbeTradeParser {
     pub fn new() -> Self {
         Self
     }
-
-    fn parse_trades(&self, msg: &[u8], tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        let header = match read_sbe_header(msg) {
-            Some(h) => h,
-            None => return 0,
-        };
-        if header.template_id != 10000 {
-            return 0;
-        }
-
-        let base = header.body_offset;
-        if msg.len() < base + header.block_length {
-            return 0;
-        }
-
-        let event_time = match read_i64_le(msg, base) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let _transact_time = match read_i64_le(msg, base + 8) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let price_exponent = match read_i8(msg, base + 16) {
-            Some(v) => v,
-            None => return 0,
-        };
-        let qty_exponent = match read_i8(msg, base + 17) {
-            Some(v) => v,
-            None => return 0,
-        };
-
-        let mut offset = base + header.block_length;
-        if msg.len() < offset + 6 {
-            return 0;
-        }
-        let block_length = match read_u16_le(msg, offset) {
-            Some(v) => v as usize,
-            None => return 0,
-        };
-        let num_in_group = match read_u32_le(msg, offset + 2) {
-            Some(v) => v as usize,
-            None => return 0,
-        };
-        offset += 6;
-
-        let mut trades = Vec::with_capacity(num_in_group);
-        for _ in 0..num_in_group {
-            if msg.len() < offset + block_length || block_length < 25 {
-                break;
-            }
-            let trade_id = match read_i64_le(msg, offset) {
-                Some(v) => v,
-                None => break,
-            };
-            let price = match read_i64_le(msg, offset + 8) {
-                Some(v) => v,
-                None => break,
-            };
-            let qty = match read_i64_le(msg, offset + 16) {
-                Some(v) => v,
-                None => break,
-            };
-            let is_buyer_maker = msg.get(offset + 24).copied().unwrap_or(0) != 0;
-            trades.push((trade_id, price, qty, is_buyer_maker));
-            offset += block_length;
-        }
-
-        let symbol = match read_var_string8(msg, offset) {
-            Some((s, _)) => s.to_uppercase(),
-            None => return 0,
-        };
-
-        let timestamp = event_time / 1000;
-        let mut sent_count = 0;
-
-        for (trade_id, price, qty, is_buyer_maker) in trades {
-            let price = scale_mantissa(price, price_exponent);
-            let amount = scale_mantissa(qty, qty_exponent);
-            if price <= 0.0 || amount <= 0.0 {
-                continue;
-            }
-
-            let side = if is_buyer_maker { 'S' } else { 'B' };
-            let trade_msg =
-                TradeMsg::create(symbol.clone(), trade_id, timestamp, side, price, amount);
-            if tx.send(trade_msg.to_bytes()).is_ok() {
-                sent_count += 1;
-            }
-        }
-
-        sent_count
-    }
 }
 
 impl Parser for BinanceSbeTradeParser {
@@ -930,112 +900,9 @@ impl Parser for BinanceSbeTradeParser {
         if msg[0] == b'{' || msg[0] == b'[' {
             return 0;
         }
-        self.parse_trades(&msg, tx)
+        let trades = binance_codec::parse_sbe_trades(&msg);
+        publish_trades(trades, tx)
     }
-}
-
-struct SbeHeader {
-    block_length: usize,
-    template_id: u16,
-    body_offset: usize,
-}
-
-fn read_sbe_header(msg: &[u8]) -> Option<SbeHeader> {
-    if msg.len() < 8 {
-        return None;
-    }
-    let block_length = read_u16_le(msg, 0)? as usize;
-    let template_id = read_u16_le(msg, 2)?;
-    Some(SbeHeader {
-        block_length,
-        template_id,
-        body_offset: 8,
-    })
-}
-
-fn read_u16_le(msg: &[u8], offset: usize) -> Option<u16> {
-    if msg.len() < offset + 2 {
-        return None;
-    }
-    Some(u16::from_le_bytes([msg[offset], msg[offset + 1]]))
-}
-
-fn read_u32_le(msg: &[u8], offset: usize) -> Option<u32> {
-    if msg.len() < offset + 4 {
-        return None;
-    }
-    Some(u32::from_le_bytes([
-        msg[offset],
-        msg[offset + 1],
-        msg[offset + 2],
-        msg[offset + 3],
-    ]))
-}
-
-fn read_i64_le(msg: &[u8], offset: usize) -> Option<i64> {
-    if msg.len() < offset + 8 {
-        return None;
-    }
-    Some(i64::from_le_bytes([
-        msg[offset],
-        msg[offset + 1],
-        msg[offset + 2],
-        msg[offset + 3],
-        msg[offset + 4],
-        msg[offset + 5],
-        msg[offset + 6],
-        msg[offset + 7],
-    ]))
-}
-
-fn read_i8(msg: &[u8], offset: usize) -> Option<i8> {
-    msg.get(offset).map(|v| *v as i8)
-}
-
-fn scale_mantissa(mantissa: i64, exponent: i8) -> f64 {
-    let factor = 10_f64.powi(exponent as i32);
-    (mantissa as f64) * factor
-}
-
-fn read_group_levels(
-    msg: &[u8],
-    offset: usize,
-    price_exponent: i8,
-    qty_exponent: i8,
-) -> Option<(Vec<(f64, f64)>, usize)> {
-    if msg.len() < offset + 4 {
-        return None;
-    }
-    let block_length = read_u16_le(msg, offset)? as usize;
-    let num_in_group = read_u16_le(msg, offset + 2)? as usize;
-    let mut pos = offset + 4;
-    let mut levels = Vec::with_capacity(num_in_group);
-
-    for _ in 0..num_in_group {
-        if msg.len() < pos + block_length || block_length < 16 {
-            break;
-        }
-        let price = read_i64_le(msg, pos)?;
-        let qty = read_i64_le(msg, pos + 8)?;
-        levels.push((
-            scale_mantissa(price, price_exponent),
-            scale_mantissa(qty, qty_exponent),
-        ));
-        pos += block_length;
-    }
-
-    Some((levels, pos))
-}
-
-fn read_var_string8(msg: &[u8], offset: usize) -> Option<(String, usize)> {
-    let len = msg.get(offset).copied()? as usize;
-    let start = offset + 1;
-    if msg.len() < start + len {
-        return None;
-    }
-    let data = &msg[start..start + len];
-    let s = std::str::from_utf8(data).ok()?.to_string();
-    Some((s, start + len))
 }
 
 impl BinanceSnapshotParser {
@@ -1053,12 +920,10 @@ impl BinanceSnapshotParser {
         ) {
             // 计算拆分方案
             let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
-            let total_chunks = chunks.len();
+            let total_chunks = chunks.total_chunks();
             let mut sent_count = 0;
 
-            for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-                chunks.into_iter().enumerate()
-            {
+            for (chunk_idx, chunk) in chunks.enumerate() {
                 // 创建快照消息
                 let mut inc_msg = IncMsg::create(
                     symbol.to_string(),
@@ -1066,8 +931,8 @@ impl BinanceSnapshotParser {
                     last_update_id + 1, // final_update_id（对于快照相同）
                     0,                  // timestamp（快照没有实际时间戳）
                     true,               // is_snapshot = true
-                    bids_count as u32,
-                    asks_count as u32,
+                    chunk.bids_count as u32,
+                    chunk.asks_count as u32,
                 );
 
                 // 设置 chunk_index 和 is_last
@@ -1078,10 +943,10 @@ impl BinanceSnapshotParser {
                 parse_order_book_levels_with_offset(
                     bids_array,
                     asks_array,
-                    bids_start,
-                    bids_count,
-                    asks_start,
-                    asks_count,
+                    chunk.bids_start,
+                    chunk.bids_count,
+                    chunk.asks_start,
+                    chunk.asks_count,
                     &mut inc_msg,
                 );
 
@@ -1101,6 +966,7 @@ pub struct BinanceIncParser {
     max_levels: Option<usize>,
     is_snapshot: bool,
     mode: BinanceDepthMode,
+    raw_only: bool,
 }
 
 impl Default for BinanceIncParser {
@@ -1123,71 +989,141 @@ impl BinanceIncParser {
     }
 
     pub fn futures_incremental(max_levels: Option<usize>) -> Self {
-        Self {
+        Self::with_depth_mode(
             max_levels,
-            is_snapshot: false,
-            mode: BinanceDepthMode::FuturesDepthUpdate,
-        }
+            false,
+            BinanceDepthMode::FuturesDepthUpdate,
+            false,
+        )
+    }
+
+    pub fn futures_incremental_raw_only(max_levels: Option<usize>) -> Self {
+        Self::with_depth_mode(
+            max_levels,
+            false,
+            BinanceDepthMode::FuturesDepthUpdate,
+            true,
+        )
     }
 
     pub fn futures_snapshot(max_levels: Option<usize>) -> Self {
-        Self {
+        Self::with_depth_mode(
             max_levels,
-            is_snapshot: true,
-            mode: BinanceDepthMode::FuturesDepthUpdate,
-        }
+            true,
+            BinanceDepthMode::FuturesDepthUpdate,
+            false,
+        )
+    }
+
+    pub fn futures_snapshot_raw_only(max_levels: Option<usize>) -> Self {
+        Self::with_depth_mode(max_levels, true, BinanceDepthMode::FuturesDepthUpdate, true)
     }
 
     pub fn spot_incremental(max_levels: Option<usize>) -> Self {
-        Self {
-            max_levels,
-            is_snapshot: false,
-            mode: BinanceDepthMode::SpotDepthUpdate,
-        }
+        Self::with_depth_mode(max_levels, false, BinanceDepthMode::SpotDepthUpdate, false)
     }
 
     pub fn spot_snapshot(max_levels: Option<usize>) -> Self {
+        Self::with_depth_mode(max_levels, true, BinanceDepthMode::SpotSnapshot, false)
+    }
+
+    fn with_depth_mode(
+        max_levels: Option<usize>,
+        is_snapshot: bool,
+        mode: BinanceDepthMode,
+        raw_only: bool,
+    ) -> Self {
         Self {
             max_levels,
-            is_snapshot: true,
-            mode: BinanceDepthMode::SpotSnapshot,
+            is_snapshot,
+            mode,
+            raw_only,
         }
+    }
+
+    fn apply_depth_mode_raw(&self, book: &mut binance_codec::RawBook<'_>) -> bool {
+        match self.mode {
+            BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                if book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+            BinanceDepthMode::SpotSnapshot => {
+                if !book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+        }
+        true
+    }
+
+    fn apply_depth_mode_raw_view(&self, book: &mut binance_codec::RawBookView<'_>) -> bool {
+        match self.mode {
+            BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                if book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+            BinanceDepthMode::SpotSnapshot => {
+                if !book.is_snapshot {
+                    return false;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+        }
+        true
     }
 }
 
 impl Parser for BinanceIncParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // 解析币安增量/深度20快照消息
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let (payload, stream_symbol) = match (
-                    json_value.get("data"),
-                    json_value.get("stream").and_then(|v| v.as_str()),
-                ) {
-                    (Some(data), Some(stream)) => (data, parse_binance_stream_symbol(stream)),
-                    _ => (&json_value, None),
-                };
-
-                match self.mode {
-                    BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
-                        let is_depth_update = payload
-                            .get("e")
-                            .and_then(|v| v.as_str())
-                            .map(|e| e == "depthUpdate")
-                            .unwrap_or(false)
-                            || (payload.get("U").is_some() && payload.get("u").is_some());
-                        if !is_depth_update {
-                            return 0;
-                        }
-                        return self.parse_depth_update(payload, stream_symbol.as_deref(), tx);
+        if let Some(book) = binance_codec::parse_incremental_raw(&msg) {
+            match book {
+                binance_codec::RawBookParse::Parsed(mut book) => {
+                    if !self.apply_depth_mode_raw(&mut book) {
+                        return 0;
                     }
-                    BinanceDepthMode::SpotSnapshot => {
-                        return self.parse_spot_snapshot(payload, stream_symbol.as_deref(), tx);
+                    return publish_raw_book_chunks(&book, self.max_levels, tx);
+                }
+                binance_codec::RawBookParse::View(mut book) => {
+                    if !self.apply_depth_mode_raw_view(&mut book) {
+                        return 0;
                     }
+                    return publish_raw_book_view_chunks(&book, self.max_levels, tx);
                 }
             }
         }
-        0
+
+        if self.raw_only {
+            return 0;
+        }
+
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        let Some(mut book) = binance_codec::parse_incremental_json(&json_value) else {
+            return 0;
+        };
+
+        match self.mode {
+            BinanceDepthMode::FuturesDepthUpdate | BinanceDepthMode::SpotDepthUpdate => {
+                if book.is_snapshot {
+                    return 0;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+            BinanceDepthMode::SpotSnapshot => {
+                if !book.is_snapshot {
+                    return 0;
+                }
+                book.is_snapshot = self.is_snapshot;
+            }
+        }
+
+        publish_book_chunks(&book, self.max_levels, tx)
     }
 }
 
@@ -1198,153 +1134,10 @@ enum BinanceDepthMode {
     SpotSnapshot,
 }
 
-fn parse_binance_stream_symbol(stream: &str) -> Option<String> {
-    stream.split('@').next().map(|s| s.to_uppercase())
-}
-
-impl BinanceIncParser {
-    fn parse_depth_update(
-        &self,
-        json_value: &serde_json::Value,
-        symbol_override: Option<&str>,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        // futures/spot 增量：depthUpdate (U/u + b/a)
-        let symbol = json_value
-            .get("s")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| symbol_override.map(|s| s.to_uppercase()));
-        if let (
-            Some(symbol),
-            Some(first_update_id),
-            Some(final_update_id),
-            Some(event_time),
-            Some(bids_array),
-            Some(asks_array),
-        ) = (
-            symbol,
-            json_value.get("U").and_then(|v| v.as_i64()),
-            json_value.get("u").and_then(|v| v.as_i64()),
-            json_value
-                .get("E")
-                .and_then(|v| v.as_i64())
-                .or_else(|| json_value.get("T").and_then(|v| v.as_i64())),
-            json_value.get("b").and_then(|v| v.as_array()),
-            json_value.get("a").and_then(|v| v.as_array()),
-        ) {
-            // 计算拆分方案
-            let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
-            let total_chunks = chunks.len();
-            let mut sent_count = 0;
-
-            for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-                chunks.into_iter().enumerate()
-            {
-                // 创建增量消息
-                let mut inc_msg = IncMsg::create(
-                    symbol.clone(),
-                    first_update_id,
-                    final_update_id,
-                    event_time,
-                    self.is_snapshot,
-                    bids_count as u32,
-                    asks_count as u32,
-                );
-
-                // 设置 chunk_index 和 is_last
-                inc_msg.set_chunk_index(chunk_idx as u8);
-                inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-
-                // 解析订单簿层级（带偏移量）
-                parse_order_book_levels_with_offset(
-                    bids_array,
-                    asks_array,
-                    bids_start,
-                    bids_count,
-                    asks_start,
-                    asks_count,
-                    &mut inc_msg,
-                );
-
-                // 发送消息
-                if tx.send(inc_msg.to_bytes()).is_ok() {
-                    sent_count += 1;
-                }
-            }
-            return sent_count;
-        }
-        0
-    }
-
-    fn parse_spot_snapshot(
-        &self,
-        json_value: &serde_json::Value,
-        symbol_override: Option<&str>,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        // spot/margin depth20 快照：lastUpdateId + bids/asks
-        let symbol = json_value
-            .get("s")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .or_else(|| symbol_override.map(|s| s.to_uppercase()));
-
-        if let (Some(symbol), Some(last_update_id), Some(bids_array), Some(asks_array)) = (
-            symbol,
-            json_value.get("lastUpdateId").and_then(|v| v.as_i64()),
-            json_value.get("bids").and_then(|v| v.as_array()),
-            json_value.get("asks").and_then(|v| v.as_array()),
-        ) {
-            let chunks = split_levels(bids_array.len(), asks_array.len(), self.max_levels);
-            let total_chunks = chunks.len();
-            let mut sent_count = 0;
-            let event_time = json_value
-                .get("E")
-                .and_then(|v| v.as_i64())
-                .or_else(|| json_value.get("T").and_then(|v| v.as_i64()))
-                .unwrap_or(0);
-
-            for (chunk_idx, (bids_start, bids_count, asks_start, asks_count)) in
-                chunks.into_iter().enumerate()
-            {
-                let mut inc_msg = IncMsg::create(
-                    symbol.clone(),
-                    last_update_id,
-                    last_update_id,
-                    event_time,
-                    self.is_snapshot,
-                    bids_count as u32,
-                    asks_count as u32,
-                );
-
-                inc_msg.set_chunk_index(chunk_idx as u8);
-                inc_msg.set_is_last(chunk_idx == total_chunks - 1);
-
-                parse_order_book_levels_with_offset(
-                    bids_array,
-                    asks_array,
-                    bids_start,
-                    bids_count,
-                    asks_start,
-                    asks_count,
-                    &mut inc_msg,
-                );
-
-                if tx.send(inc_msg.to_bytes()).is_ok() {
-                    sent_count += 1;
-                }
-            }
-
-            return sent_count;
-        }
-
-        0
-    }
-}
-
 #[derive(Clone)]
-pub struct BinanceTradeParser;
+pub struct BinanceTradeParser {
+    raw_only: bool,
+}
 
 impl Default for BinanceTradeParser {
     fn default() -> Self {
@@ -1354,12 +1147,18 @@ impl Default for BinanceTradeParser {
 
 impl BinanceTradeParser {
     pub fn new() -> Self {
-        Self
+        Self { raw_only: false }
+    }
+
+    pub fn raw_only() -> Self {
+        Self { raw_only: true }
     }
 }
 
 #[derive(Clone)]
-pub struct BinanceAskBidSpreadParser;
+pub struct BinanceAskBidSpreadParser {
+    raw_only: bool,
+}
 
 impl Default for BinanceAskBidSpreadParser {
     fn default() -> Self {
@@ -1369,145 +1168,404 @@ impl Default for BinanceAskBidSpreadParser {
 
 impl BinanceAskBidSpreadParser {
     pub fn new() -> Self {
-        Self
+        Self { raw_only: false }
+    }
+
+    pub fn raw_only() -> Self {
+        Self { raw_only: true }
     }
 }
 
 impl Parser for BinanceTradeParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // Parse Binance trade message
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                // Check if this is a trade event
-                if let Some(event_type) = json_value.get("e").and_then(|v| v.as_str()) {
-                    if event_type == "trade" {
-                        return self.parse_trade_event(&json_value, tx);
-                    }
-                }
-            }
+        if let Some(trade) = binance_codec::parse_trade_raw_borrowed(&msg) {
+            return publish_raw_trade(trade, tx);
         }
-        0
-    }
-}
-
-impl BinanceTradeParser {
-    fn parse_trade_event(
-        &self,
-        json_value: &serde_json::Value,
-        tx: &mpsc::UnboundedSender<Bytes>,
-    ) -> usize {
-        // Extract trade data from Binance trade message
-        if let (
-            Some(symbol),
-            Some(trade_id),
-            Some(price_str),
-            Some(qty_str),
-            Some(event_time),
-            Some(is_maker),
-        ) = (
-            json_value.get("s").and_then(|v| v.as_str()),  // 交易对
-            json_value.get("t").and_then(|v| v.as_i64()),  // 交易ID
-            json_value.get("p").and_then(|v| v.as_str()),  // 成交价格
-            json_value.get("q").and_then(|v| v.as_str()),  // 成交数量
-            json_value.get("E").and_then(|v| v.as_i64()),  // 事件时间
-            json_value.get("m").and_then(|v| v.as_bool()), // 买方是否是做市方
-        ) {
-            // Parse price and quantity
-            if let (Ok(price), Ok(amount)) = (price_str.parse::<f64>(), qty_str.parse::<f64>()) {
-                // Filter out zero values - 币安有时候price和amount会是0，过滤掉不发送
-                if price <= 0.0 || amount <= 0.0 {
-                    return 0;
-                }
-
-                // Determine side: 买方是否是做市方，'S'表示卖出，'B'表示买入
-                // 如果买方是做市方(true)，那么这是一个主动卖出单，标记为'S'
-                // 如果买方不是做市方(false)，那么这是一个主动买入单，标记为'B'
-                let side = if is_maker { 'S' } else { 'B' };
-
-                // Create trade message
-                let trade_msg = TradeMsg::create(
-                    symbol.to_string(),
-                    trade_id,
-                    event_time,
-                    side,
-                    price,
-                    amount,
-                );
-
-                // Send trade message
-                if tx.send(trade_msg.to_bytes()).is_ok() {
-                    return 1;
-                }
-            }
+        if self.raw_only {
+            return 0;
         }
-        0
+
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        let Some(trade) = binance_codec::parse_trade_json(&json_value) else {
+            return 0;
+        };
+        publish_trades(vec![trade], tx)
     }
 }
 
 impl Parser for BinanceAskBidSpreadParser {
     fn parse(&self, msg: Bytes, tx: &mpsc::UnboundedSender<Bytes>) -> usize {
-        // Parse Binance bookTicker message
-        if let Ok(json_str) = std::str::from_utf8(&msg) {
-            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
-                if let (
-                    Some(symbol),
-                    Some(bid_price_str),
-                    Some(bid_qty_str),
-                    Some(ask_price_str),
-                    Some(ask_qty_str),
-                ) = (
-                    json_value.get("s").and_then(|v| v.as_str()), // symbol
-                    json_value.get("b").and_then(|v| v.as_str()), // best bid price
-                    json_value.get("B").and_then(|v| v.as_str()), // best bid qty
-                    json_value.get("a").and_then(|v| v.as_str()), // best ask price
-                    json_value.get("A").and_then(|v| v.as_str()), // best ask qty
-                ) {
-                    let parse_ts = |key: &str| {
-                        json_value.get(key).and_then(|v| {
-                            v.as_i64()
-                                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-                        })
-                    };
-                    // 优先使用事件时间 E（ms），fallback 到 T，再 fallback 到 u
-                    let timestamp = parse_ts("E")
-                        .or_else(|| parse_ts("T"))
-                        .or_else(|| parse_ts("u"))
-                        .unwrap_or(0);
-
-                    // Parse prices and amounts
-                    if let (Ok(bid_price), Ok(bid_amount), Ok(ask_price), Ok(ask_amount)) = (
-                        bid_price_str.parse::<f64>(),
-                        bid_qty_str.parse::<f64>(),
-                        ask_price_str.parse::<f64>(),
-                        ask_qty_str.parse::<f64>(),
-                    ) {
-                        // Filter out zero values
-                        if bid_price <= 0.0
-                            || bid_amount <= 0.0
-                            || ask_price <= 0.0
-                            || ask_amount <= 0.0
-                        {
-                            return 0;
-                        }
-
-                        // Create spread message
-                        let spread_msg = AskBidSpreadMsg::create(
-                            symbol.to_string(),
-                            timestamp,
-                            bid_price,
-                            bid_amount,
-                            ask_price,
-                            ask_amount,
-                        );
-
-                        // Send message
-                        if tx.send(spread_msg.to_bytes()).is_ok() {
-                            return 1;
-                        }
-                    }
-                }
-            }
+        if let Some(bbo) = binance_codec::parse_bbo_raw_borrowed(&msg) {
+            let spread_bytes = ask_bid_spread_msg_bytes_borrowed(
+                bbo.symbol,
+                bbo.timestamp_us,
+                bbo.bid_price,
+                bbo.bid_amount,
+                bbo.ask_price,
+                bbo.ask_amount,
+            );
+            return if tx.send(spread_bytes).is_ok() { 1 } else { 0 };
         }
-        0
+        if self.raw_only {
+            return 0;
+        }
+
+        let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&msg) else {
+            return 0;
+        };
+        let Some(bbo) = binance_codec::parse_bbo_json(&json_value) else {
+            return 0;
+        };
+        let spread_msg = AskBidSpreadMsg::create(
+            bbo.symbol,
+            bbo.timestamp_us,
+            bbo.bid_price,
+            bbo.bid_amount,
+            bbo.ask_price,
+            bbo.ask_amount,
+        );
+        if tx.send(spread_msg.to_bytes()).is_ok() {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mkt_parsers::msg::mkt_msg::{get_msg_type, MktMsgType};
+
+    fn parse_one(parser: &dyn Parser, raw: &'static [u8]) -> Vec<Bytes> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let count = parser.parse(Bytes::from_static(raw), &tx);
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(msg);
+        }
+        assert_eq!(count, out.len());
+        out
+    }
+
+    fn chunk_tuple(chunk: LevelChunk) -> (usize, usize, usize, usize) {
+        (
+            chunk.bids_start,
+            chunk.bids_count,
+            chunk.asks_start,
+            chunk.asks_count,
+        )
+    }
+
+    #[test]
+    fn level_chunks_iterates_without_materializing_plan() {
+        let chunks = split_levels(4, 3, Some(3));
+        assert_eq!(chunks.total_chunks(), 3);
+        assert_eq!(
+            chunks.map(chunk_tuple).collect::<Vec<_>>(),
+            vec![(0, 2, 0, 1), (2, 2, 1, 1), (4, 0, 2, 1)]
+        );
+
+        let chunks = split_levels(1, 1, Some(1));
+        assert_eq!(chunks.total_chunks(), 2);
+        assert_eq!(
+            chunks.map(chunk_tuple).collect::<Vec<_>>(),
+            vec![(0, 1, 0, 0), (1, 0, 0, 1)]
+        );
+
+        let chunks = split_levels(2, 1, None);
+        assert_eq!(chunks.total_chunks(), 1);
+        assert_eq!(
+            chunks.map(chunk_tuple).collect::<Vec<_>>(),
+            vec![(0, 2, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn binance_trade_parser_uses_raw_trade_shape() {
+        let parser = BinanceTradeParser::new();
+        let out = parse_one(
+            &parser,
+            br#"{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::TradeInfo);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(trade_timestamp(&out[0]), 1_700_000_000_001_000);
+    }
+
+    #[test]
+    fn binance_trade_raw_only_drops_json_fallback_shape() {
+        let parser = BinanceTradeParser::raw_only();
+        let out = parse_one(
+            &parser,
+            br#"{"data":{"e":"bookTicker","s":"BTCUSDT","u":1,"b":"25","B":"1","a":"25.1","A":"1"}}"#,
+        );
+
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn binance_bbo_parser_uses_raw_depth_top_shape() {
+        let parser = BinanceAskBidSpreadParser::new();
+        let out = parse_one(
+            &parser,
+            br#"{"stream":"btcusdt@depth5@0ms","data":{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":1,"u":2,
+            "b":[["25.0","1"]],"a":[["25.1","3"]]}}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::AskBidSpread);
+        assert_eq!(AskBidSpreadMsg::get_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(
+            AskBidSpreadMsg::get_timestamp(&out[0]),
+            1_700_000_000_001_000
+        );
+    }
+
+    #[test]
+    fn binance_bbo_raw_only_drops_json_fallback_shape() {
+        let parser = BinanceAskBidSpreadParser::raw_only();
+        let out = parse_one(
+            &parser,
+            br#"{"data":{"e":"trade","E":1700000000001,"s":"BTCUSDT","t":1001,"p":"25.0","q":"100","m":true}}"#,
+        );
+
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn binance_incremental_parser_uses_raw_depth_shape() {
+        let parser = BinanceIncParser::futures_incremental(Some(1));
+        let out = parse_one(
+            &parser,
+            br#"{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#,
+        );
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
+    }
+
+    #[test]
+    fn binance_incremental_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"\u0073":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#;
+
+        let fallback_parser = BinanceIncParser::futures_incremental(Some(1));
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 2);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::OrderBookInc);
+
+        let raw_only_parser = BinanceIncParser::futures_incremental_raw_only(Some(1));
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
+    fn binance_derivatives_parser_uses_raw_array_shape() {
+        let parser = BinanceDerivativesMetricsParser::new(HashSet::from(["BTCUSDT".to_string()]));
+        let out = parse_one(
+            &parser,
+            br#"{"data":[
+            {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
+            {"e":"markPriceUpdate","E":1700000000001,"s":"ETHUSDT","p":"26.0","i":"25.9","r":"0.0002","T":1700003600000}
+        ]}"#,
+        );
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::MarkPrice);
+        assert_eq!(get_msg_type(&out[1]), MktMsgType::IndexPrice);
+        assert_eq!(get_msg_type(&out[2]), MktMsgType::FundingRate);
+    }
+
+    #[test]
+    fn binance_derivatives_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"\u0065":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0"}"#;
+
+        let fallback_parser =
+            BinanceDerivativesMetricsParser::new(HashSet::from(["BTCUSDT".to_string()]));
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 1);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::MarkPrice);
+
+        let raw_only_parser =
+            BinanceDerivativesMetricsParser::raw_only(HashSet::from(["BTCUSDT".to_string()]));
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
+    fn binance_signal_parser_uses_raw_event_time() {
+        let parser = BinanceSignalParser::new(false);
+        let out = parse_one(
+            &parser,
+            br#"{"e":"depthUpdate","E":1700000000001,"s":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::TimeSignal);
+        assert_eq!(signal_timestamp(&out[0]), 1_700_000_000_001);
+    }
+
+    #[test]
+    fn binance_signal_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"\u0045":1700000000001}"#;
+
+        let fallback_parser = BinanceSignalParser::new(false);
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 1);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::TimeSignal);
+
+        let raw_only_parser = BinanceSignalParser::raw_only(false);
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
+    fn binance_kline_parser_uses_raw_closed_kline() {
+        let parser = BinanceKlineParser::new();
+        let out = parse_one(
+            &parser,
+            br#"{"e":"kline","E":1700000000001,"s":"BTCUSDT",
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":true}}"#,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::Kline);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(kline_timestamp(&out[0]), 1_700_000_000_000);
+    }
+
+    #[test]
+    fn binance_kline_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"e":"kline","E":1700000000001,"\u0073":"BTCUSDT",
+            "k":{"t":1700000000000,"o":"25.0","h":"26.0","l":"24.5","c":"25.5","v":"123.4","x":true}}"#;
+
+        let fallback_parser = BinanceKlineParser::new();
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 1);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::Kline);
+
+        let raw_only_parser = BinanceKlineParser::raw_only();
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
+    fn binance_snapshot_parser_uses_raw_snapshot_shape() {
+        let parser = BinanceSnapshotParser::with_max_levels(Some(1));
+        let out = parse_one(
+            &parser,
+            br#"{"lastUpdateId":22345,"s":"BTCUSDT",
+            "bids":[["25.0","100"]],"asks":[["25.1","50"]]}"#,
+        );
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+        assert_eq!(inc_first_update_id(&out[0]), 22346);
+    }
+
+    #[test]
+    fn binance_snapshot_raw_only_drops_json_fallback_shape() {
+        let raw = br#"{"e":"depthUpdate","E":1700000000001,"\u0073":"BTCUSDT","U":101,"u":103,
+            "b":[["25.0","100"]],"a":[["25.1","50"]]}"#;
+
+        let fallback_parser = BinanceIncParser::futures_snapshot(Some(1));
+        let fallback_out = parse_one(&fallback_parser, raw);
+        assert_eq!(fallback_out.len(), 2);
+        assert_eq!(get_msg_type(&fallback_out[0]), MktMsgType::OrderBookInc);
+
+        let raw_only_parser = BinanceIncParser::futures_snapshot_raw_only(Some(1));
+        let raw_only_out = parse_one(&raw_only_parser, raw);
+        assert!(raw_only_out.is_empty());
+    }
+
+    #[test]
+    fn binance_incremental_parser_uses_raw_view_for_large_books() {
+        let parser = BinanceIncParser::futures_incremental(Some(50));
+        let mut raw = br#"{"e":"depthUpdate","s":"BTCUSDT","U":1,"u":2,"b":["#.to_vec();
+        for i in 0..70 {
+            if i > 0 {
+                raw.push(b',');
+            }
+            raw.extend_from_slice(br#"["25.0","1"]"#);
+        }
+        raw.extend_from_slice(br#"],"a":[["25.1","2"]]}"#);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let count = parser.parse(Bytes::from(raw), &tx);
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(msg);
+        }
+
+        assert_eq!(count, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(get_msg_type(&out[0]), MktMsgType::OrderBookInc);
+        assert_eq!(msg_symbol(&out[0]), "BTCUSDT");
+    }
+
+    fn msg_symbol(data: &[u8]) -> &str {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        std::str::from_utf8(&data[8..8 + len]).unwrap()
+    }
+
+    fn trade_timestamp(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len + 8;
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
+    }
+
+    fn signal_timestamp(data: &[u8]) -> i64 {
+        i64::from_le_bytes([
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+        ])
+    }
+
+    fn kline_timestamp(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len + 5 * 8;
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
+    }
+
+    fn inc_first_update_id(data: &[u8]) -> i64 {
+        let len = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let offset = 8 + len;
+        i64::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ])
     }
 }

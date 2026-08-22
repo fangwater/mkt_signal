@@ -1,0 +1,23 @@
+# China-futures cn_features replay. This path is independent from crypto fusion.
+# Empty symbols selects every contract present in the trading-day range.
+exchange = "xsge"
+feature_set = "cn_features"
+symbols = []
+start_date = "2025-11-03"
+end_date = "2025-11-03"
+
+# cn_features_all expands to all 632 independently named CN migrations.
+# Bare crypto names remain invalid.
+factors = ["cn_features_all"]
+
+replay_workers = 1
+dry_run = true
+
+[clickhouse]
+url = "http://127.0.0.1:18123"
+input_database = "baseline"
+input_trade_table = "baseline_xsge_future_5s_trade"
+input_depth_table = "baseline_xsge_future_5s_depth"
+output_database = "cn_features"
+output_table = "cn_features_xsge_5s"
+batch_rows = 10000

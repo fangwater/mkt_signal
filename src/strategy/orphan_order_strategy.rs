@@ -1,11 +1,11 @@
-use crate::common::symbol_util::normalize_symbol_for_internal;
 use crate::pre_trade::monitor_channel::MonitorChannel;
-use crate::signal::trade_signal::TradeSignal;
-use crate::strategy::manager::{OrphanHandoff, Strategy};
-use crate::strategy::order_update::OrderUpdate;
+use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy};
 use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
-use crate::strategy::trade_update::TradeUpdate;
 use log::{info, warn};
+use order_common::OrderUpdate;
+use order_common::TradeUpdate;
+use runtime_common::symbol_util::normalize_symbol_for_internal;
+use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
 
 const ORPHAN_QUERY_BASE_TICKS: u32 = 25;
@@ -39,7 +39,11 @@ impl OrphanOrderStrategy {
         }
     }
 
-    pub(crate) fn adopt_orphan_order_id(&mut self, handoff: &OrphanHandoff) -> bool {
+    pub(crate) fn adopt_orphan_order_id(
+        &mut self,
+        source_role: OrphanStrategyRole,
+        handoff: &OrphanHandoff,
+    ) -> bool {
         if handoff.client_order_id <= 0 {
             return false;
         }
@@ -66,6 +70,7 @@ impl OrphanOrderStrategy {
             OrphanOrderOwner {
                 source_strategy_id: handoff.source_strategy_id,
                 source_kind: handoff.source_kind,
+                source_role,
                 uniform_ctx: handoff.uniform_ctx.clone(),
             },
         );
@@ -127,6 +132,15 @@ impl Strategy for OrphanOrderStrategy {
         let _ = self
             .orders
             .apply_trade_update(ORPHAN_ROLE, self.strategy_id, trade);
+    }
+
+    fn record_order_query_not_found(&mut self, client_order_id: i64) {
+        self.orders
+            .record_order_query_not_found(ORPHAN_ROLE, self.strategy_id, client_order_id);
+    }
+
+    fn reset_order_query_not_found(&mut self, client_order_id: i64) {
+        self.orders.reset_order_query_not_found(client_order_id);
     }
 
     fn handle_period_clock(&mut self, _current_tp: i64) {

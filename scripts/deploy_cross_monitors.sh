@@ -12,11 +12,11 @@ usage() {
 
 说明:
   - 跨所合约对套利专用：open/hedge 必须都是 -futures/-swap/-perp，且不相同。
-  - 构建并部署 cross 所需的账户 monitor（二进制为 okex_account_monitor / binance_account_monitor）。
+  - 构建并部署 cross 所需的账户 monitor（二进制为 <exchange>_account_monitor）。
   - 若 env-name 以 `_open` / `_hedge` 结尾，则只部署对应一侧。
   - 输出到 $HOME/<open>-<hedge>-<env_suffix>/（默认 env_suffix=cross-trade）：
-      account_monitor_okex
-      account_monitor_binance
+      account_monitor_<open_exchange>
+      account_monitor_<hedge_exchange>
       cross_scripts/start_cross_monitors.sh
       cross_scripts/stop_cross_monitors.sh
 
@@ -150,16 +150,12 @@ deploy_one() {
   local bin_name=""
   local out_name=""
   case "$exchange" in
-    okex)
-      bin_name="okex_account_monitor"
-      out_name="account_monitor_okex"
-      ;;
-    binance)
-      bin_name="binance_account_monitor"
-      out_name="account_monitor_binance"
+    binance|okex|bybit|bitget|gate)
+      bin_name="${exchange}_account_monitor"
+      out_name="account_monitor_${exchange}"
       ;;
     *)
-      echo "[ERROR] cross monitors 当前仅支持 okex/binance：got exchange=$exchange"
+      echo "[ERROR] cross monitors 当前仅支持 binance/okex/bybit/bitget/gate：got exchange=$exchange"
       exit 1
       ;;
   esac

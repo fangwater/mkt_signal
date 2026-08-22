@@ -1,7 +1,7 @@
-use crate::common::exchange::Exchange;
-use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
 use crate::pre_trade::symbol_util::extract_base_asset;
+use order_common::Side;
+use runtime_common::exchange::Exchange;
 
 pub(crate) const HEDGE_QUERY_INTERVAL_US: i64 = 30_000_000;
 pub(crate) const HEDGE_QUERY_WATCHDOG_US: i64 = 30_000;

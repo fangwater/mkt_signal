@@ -56,11 +56,15 @@ if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]fr([_-](.+))?$ ]]; then
   MODE="fr"
   EXCHANGE="${BASH_REMATCH[1]}"
   ENV_TAG="$(echo "${BASH_REMATCH[3]:-fr}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]exec([_-](.+))?$ ]]; then
+  MODE="exec"
+  EXCHANGE="${BASH_REMATCH[1]}"
+  ENV_TAG="$(echo "${BASH_REMATCH[3]:-exec}" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
 elif type mm_parse_deploy_dir >/dev/null 2>&1 && read -r EXCHANGE ENV_TAG < <(mm_parse_deploy_dir "$dir_lc"); then
   MODE="mm"
 else
   echo "[ERROR] 无法从部署目录名推断 account_monitor 环境: ${dir_name}" >&2
-  echo "[ERROR] 期望如 okex_fr_trade / binance_mm_alpha" >&2
+  echo "[ERROR] 期望如 okex_fr_trade / binance_exec_trade / binance_mm_alpha" >&2
   exit 1
 fi
 
@@ -90,7 +94,11 @@ else
         ;;
     esac
   }
-  DEFAULT_PROC_NAME="fr_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  if [[ "$MODE" == "exec" ]]; then
+    DEFAULT_PROC_NAME="exec_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  else
+    DEFAULT_PROC_NAME="fr_am_$(short_exchange "$EXCHANGE")_${ENV_TAG}"
+  fi
 fi
 
 PROC_NAME="${PMDAEMON_NAME:-$DEFAULT_PROC_NAME}"
@@ -117,6 +125,16 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+core_args=()
+if [[ -n "${ACCOUNT_MONITOR_CORE:-}" ]]; then
+  if [[ ! "$ACCOUNT_MONITOR_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] ACCOUNT_MONITOR_CORE 必须为单个整数 (got: $ACCOUNT_MONITOR_CORE)" >&2
+    exit 1
+  fi
+  core_args=(--core "$ACCOUNT_MONITOR_CORE")
+  echo "[INFO] core bind ${ACCOUNT_MONITOR_CORE} (from $ENV_FILE:ACCOUNT_MONITOR_CORE)"
+fi
+
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT
 
@@ -125,6 +143,9 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+for arg in "${core_args[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
@@ -144,14 +165,12 @@ cat >"$cfg_file" <<JSON
 JSON
 
 echo "[INFO] 启动 ${PROC_NAME} (exchange=${EXCHANGE})"
-"${PMDAEMON[@]}" delete "$LEGACY_PROC_NAME" >/dev/null 2>&1 || true
-if [[ -n "$LEGACY_FR_PROC_NAME" && "$LEGACY_FR_PROC_NAME" != "$PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$LEGACY_FR_PROC_NAME" >/dev/null 2>&1 || true
+STOP_SCRIPT="${SCRIPT_DIR}/stop_account_monitor.sh"
+if [[ ! -x "$STOP_SCRIPT" ]]; then
+  echo "[ERROR] stop script not found or not executable: $STOP_SCRIPT" >&2
+  exit 1
 fi
-if [[ -n "$BUGGY_MM_PROC_NAME" ]]; then
-  "${PMDAEMON[@]}" delete "$BUGGY_MM_PROC_NAME" >/dev/null 2>&1 || true
-fi
-"${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
+"$STOP_SCRIPT"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"
 
 echo "[INFO] ${PROC_NAME} 已启动"
