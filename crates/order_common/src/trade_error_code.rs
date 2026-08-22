@@ -43,6 +43,10 @@ mod tests {
             Some("Cancel rejected")
         );
         assert_eq!(
+            describe_trade_error_code(Exchange::Binance, binance::MAX_LEVERAGE_RATIO),
+            Some("Exceeded maximum allowable position at current leverage")
+        );
+        assert_eq!(
             describe_trade_error_code(Exchange::Binance, -4116),
             Some("Duplicated client order id")
         );
@@ -284,6 +288,10 @@ mod tests {
         assert_eq!(
             describe_non_retryable_order_error(Exchange::Binance, -4004),
             Some("QTY_LESS_THAN_MIN_QTY/数量小于最小值")
+        );
+        assert_eq!(
+            describe_non_retryable_order_error(Exchange::Binance, binance::MAX_LEVERAGE_RATIO),
+            Some("MAX_LEVERAGE_RATIO/当前杠杆下超过最大允许仓位")
         );
         assert_eq!(
             describe_non_retryable_order_error(Exchange::Binance, 51169),

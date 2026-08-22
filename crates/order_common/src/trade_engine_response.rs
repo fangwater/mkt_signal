@@ -1,4 +1,4 @@
-use crate::trade_error_code::{bitget, bybit, gate};
+use crate::trade_error_code::{binance, bitget, bybit, gate};
 use crate::TradeRequestType;
 /// TradeEngineResponse trait 提供 trade engine 返回结果的通用访问接口
 use symbol_utils::Exchange;
@@ -145,6 +145,12 @@ pub trait TradeEngineResponse {
             }
             _ => false,
         }
+    }
+
+    fn is_binance_max_leverage_ratio(&self) -> bool {
+        matches!(self.exchange_enum(), Some(Exchange::Binance))
+            && self.is_open_request()
+            && self.error_code() == binance::MAX_LEVERAGE_RATIO
     }
 
     fn is_bybit_open_interest_position_limit(&self) -> bool {
@@ -427,6 +433,32 @@ mod tests {
         assert!(resp.is_open_request());
         assert!(resp.is_open_rejected());
         assert!(resp.is_insufficient_margin());
+    }
+
+    #[test]
+    fn detects_binance_max_leverage_ratio_as_open_reject_only() {
+        let binance_ex = symbol_utils::Exchange::Binance as u32;
+        let resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceNewUMOrder as u32,
+            binance_ex,
+            123,
+            binance::MAX_LEVERAGE_RATIO,
+        );
+
+        assert!(resp.is_open_request());
+        assert!(resp.is_open_rejected());
+        assert!(resp.is_binance_max_leverage_ratio());
+        assert!(!resp.is_insufficient_margin());
+
+        let cancel_resp = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceCancelUMOrder as u32,
+            binance_ex,
+            123,
+            binance::MAX_LEVERAGE_RATIO,
+        );
+        assert!(!cancel_resp.is_binance_max_leverage_ratio());
     }
 
     #[test]

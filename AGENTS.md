@@ -202,6 +202,15 @@ Do not create a new dated copy. Edit the living file and bump its `最后更新`
 
 ## Git Hygiene
 
+### Production Branch
+
+`arbmm` is the only production branch. All production builds, publishes, starts,
+stops, and deployments must run from an up-to-date `arbmm` worktree. Never
+deploy from `main` or another branch. Before any production operation, verify
+that `git branch --show-current` returns `arbmm` and that it is synchronized
+with `origin/arbmm`. `main` may receive merges for integration, but it is not a
+production deployment source.
+
 Check worktree state before editing:
 
 ```bash

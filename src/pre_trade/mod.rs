@@ -64,3 +64,5 @@ pub use runner::{
 };
 pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL_CHANNEL};
 pub use trade_eng_channel::TradeEngHub;
+
+pub(crate) const POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER: f64 = 1.2;

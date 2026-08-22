@@ -1,3 +1,5 @@
+pub const MAX_LEVERAGE_RATIO: i32 = -2027;
+
 /// Binance trade/rest/ws error codes to short descriptions.
 pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
     match code {
@@ -12,6 +14,7 @@ pub fn describe_trade_error_code(code: i32) -> Option<&'static str> {
         -2018 => Some("Balance insufficient"),
         -2019 => Some("Margin insufficient"),
         -2020 => Some("Unable to fill"),
+        MAX_LEVERAGE_RATIO => Some("Exceeded maximum allowable position at current leverage"),
         -4116 => Some("Duplicated client order id"),
         -4118 => Some("Reduce only margin check failed"),
         -4131 => Some("Market order rejected: price outside percent-price filter"),
@@ -45,6 +48,7 @@ pub fn describe_non_retryable_order_error(code: i32) -> Option<&'static str> {
         -4007 => Some("STOP_PRICE_GREATER_THAN_MAX_PRICE/触发价大于最大值"),
         -4008 => Some("TICK_SIZE_LESS_THAN_ZERO/价格精度小于0"),
         -4009 => Some("MAX_PRICE_LESS_THAN_MIN_PRICE/最大价格小于最小价格"),
+        MAX_LEVERAGE_RATIO => Some("MAX_LEVERAGE_RATIO/当前杠杆下超过最大允许仓位"),
         // Binance PAPI 资产抵押上限：短期重试通常无效，转入 residual 等后续流程处理。
         51169 => Some("PLEDGED_COLLATERAL_LIMIT_REACHED/抵押上限已达"),
         _ => None,

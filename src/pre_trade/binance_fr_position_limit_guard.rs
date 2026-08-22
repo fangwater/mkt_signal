@@ -17,6 +17,7 @@ use std::time::Duration;
 use trade_signal::ArbMode;
 
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -261,7 +262,7 @@ impl BinanceFrPositionLimitGuard {
         );
     }
 
-    fn request_refresh(source: &'static str) {
+    pub(crate) fn request_refresh(source: &'static str) {
         let Some(refresh_ctx) = Self::try_begin_refresh() else {
             return;
         };
@@ -412,31 +413,35 @@ impl BinanceFrPositionLimitGuard {
         add_open_base_qty: f64,
         current_futures_base_qty: f64,
         add_futures_base_qty: f64,
-        price: f64,
+        mark_price: f64,
         raw_open_qty: f64,
         open_qty_multiplier: f64,
     ) -> Result<(), String> {
-        if !(price.is_finite() && price > 0.0) {
+        if !(mark_price.is_finite() && mark_price > 0.0) {
             return Err(format!(
-                "Binance FR position-limit check missing price symbol={} price={}",
-                symbol, price
+                "Binance FR position-limit check missing mark price symbol={} mark_price={}",
+                symbol, mark_price
             ));
         }
         let cap = Self::cap_for_symbol(symbol, side)?;
-        let open_leg =
-            projected_leg_notional(current_open_base_qty, add_open_base_qty, price, cap.cap);
+        let open_leg = projected_leg_notional(
+            current_open_base_qty,
+            add_open_base_qty,
+            mark_price,
+            cap.cap,
+        );
         let futures_leg = projected_leg_notional(
             current_futures_base_qty,
             add_futures_base_qty,
-            price,
+            mark_price,
             cap.cap,
         );
         if open_leg.exceeds || futures_leg.exceeds {
             info!(
-                "Binance FR position-limit reject detail: symbol={} side={} price={:.8} current_open_qty={:.8} add_open_qty={:.8} next_open_qty={:.8} open_current_usdt={:.4} open_order_usdt={:.4} open_next_usdt={:.4} current_futures_qty={:.8} add_futures_qty={:.8} next_futures_qty={:.8} futures_current_usdt={:.4} futures_order_usdt={:.4} futures_next_usdt={:.4} exceeded_open={} exceeded_futures={} max_notional_value={:.4} buffer={:.4} cap={:.4} pending_limit_orders={} amount_u={:.4} leverage={:?} current_notional={:?} bracket_notional_cap={:?} raw_open_qty={:.8} open_qty_multiplier={:.8}",
+                "Binance FR position-limit reject detail: symbol={} side={} mark_price={:.8} current_open_qty={:.8} add_open_qty={:.8} next_open_qty={:.8} open_current_usdt={:.4} open_order_usdt={:.4} open_next_usdt={:.4} current_futures_qty={:.8} add_futures_qty={:.8} next_futures_qty={:.8} futures_current_usdt={:.4} futures_order_usdt={:.4} futures_next_usdt={:.4} exceeded_open={} exceeded_futures={} max_notional_value={:.4} buffer={:.4} buffer_multiplier={:.2} cap={:.4} pending_limit_orders={} amount_u={:.4} leverage={:?} current_notional={:?} bracket_notional_cap={:?} raw_open_qty={:.8} open_qty_multiplier={:.8}",
                 cap.symbol,
                 side.as_str(),
-                price,
+                mark_price,
                 current_open_base_qty,
                 add_open_base_qty,
                 open_leg.next_qty,
@@ -453,6 +458,7 @@ impl BinanceFrPositionLimitGuard {
                 futures_leg.exceeds,
                 cap.max_notional_value,
                 cap.buffer,
+                POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER,
                 cap.cap,
                 cap.pending_limit_orders,
                 cap.amount_u,
@@ -556,7 +562,7 @@ fn calculate_cap_for_record(
             symbol, amount_u
         ));
     }
-    let buffer = pending_limit_orders as f64 * amount_u;
+    let buffer = pending_limit_orders as f64 * amount_u * POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER;
     let cap = max_notional_value - buffer;
     if !(cap.is_finite() && cap > 0.0) {
         return Err(format!(

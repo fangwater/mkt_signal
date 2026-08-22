@@ -2018,6 +2018,20 @@ impl MonitorChannel {
         Self::try_with_inner(|inner| inner.price_table.clone())
     }
 
+    pub fn mark_price_for_symbol(&self, symbol: &str) -> Option<f64> {
+        Self::with_inner(|inner| {
+            let base_asset = extract_base_asset_key(symbol)?;
+            let price_mapper = create_symbol_mapper(Self::mark_price_exchange_for_venues(
+                inner.open_venue,
+                inner.hedge_venue,
+            ));
+            let price_table = inner.price_table.borrow();
+            let mark_price =
+                Self::mark_price_for_asset(&*price_mapper, &price_table, base_asset.as_ref());
+            (mark_price.is_finite() && mark_price > 0.0).then_some(mark_price)
+        })
+    }
+
     pub fn open_venue(&self) -> TradingVenue {
         Self::with_inner(|inner| inner.open_venue)
     }

@@ -1421,6 +1421,7 @@ pub trait OpenStrategyCommon {
                 let current_futures_base_qty =
                     monitor.get_position_qty(&symbol, TradingVenue::GateFutures);
                 let add_futures_base_qty = -add_base_qty;
+                let mark_price = monitor.mark_price_for_symbol(&symbol).unwrap_or(0.0);
                 if let Err(e) = GateFrRiskLimitGuard::ensure_projected_notional(
                     &symbol,
                     side,
@@ -1428,7 +1429,7 @@ pub trait OpenStrategyCommon {
                     add_base_qty,
                     current_futures_base_qty,
                     add_futures_base_qty,
-                    order_price,
+                    mark_price,
                     signed_qty,
                     qty_multiplier,
                 ) {
@@ -1461,6 +1462,7 @@ pub trait OpenStrategyCommon {
                 let current_futures_base_qty =
                     monitor.get_position_qty(&symbol, TradingVenue::BinanceFutures);
                 let add_futures_base_qty = -add_base_qty;
+                let mark_price = monitor.mark_price_for_symbol(&symbol).unwrap_or(0.0);
                 if let Err(e) = BinanceFrPositionLimitGuard::ensure_projected_notional(
                     &symbol,
                     side,
@@ -1468,7 +1470,7 @@ pub trait OpenStrategyCommon {
                     add_base_qty,
                     current_futures_base_qty,
                     add_futures_base_qty,
-                    order_price,
+                    mark_price,
                     signed_qty,
                     qty_multiplier,
                 ) {
@@ -1526,6 +1528,7 @@ pub trait OpenStrategyCommon {
                 } else {
                     (0.0, 0.0)
                 };
+                let mark_price = monitor.mark_price_for_symbol(&symbol).unwrap_or(0.0);
                 if let Err(e) = BitgetPositionTierGuard::ensure_projected_notional(
                     &symbol,
                     side,
@@ -1533,7 +1536,7 @@ pub trait OpenStrategyCommon {
                     add_bitget_open_base_qty,
                     current_bitget_futures_base_qty,
                     add_bitget_futures_base_qty,
-                    order_price,
+                    mark_price,
                     signed_qty,
                     qty_multiplier,
                 ) {
