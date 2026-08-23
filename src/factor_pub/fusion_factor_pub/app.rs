@@ -53,7 +53,7 @@ const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
 const TRADE_FLOW_MAX_SUBSCRIBERS: usize = 10;
 pub const MAX_SYMBOL_HISTORY: usize = 4096;
-const MAX_DEPTH_LEVELS_CACHE: usize = 20;
+pub const MAX_DEPTH_LEVELS_CACHE: usize = 20;
 const APPENDED_DEPTH_VALUES: usize = MAX_DEPTH_LEVELS_CACHE * 4;
 const FACTOR_118_WINDOW: usize = 120;
 const FACTOR_118_VWAP_LEVELS: usize = 5;
@@ -106,12 +106,50 @@ pub struct DepthLevel {
 pub struct DepthSnapshot {
     pub bids: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
     pub asks: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
+    pub level_count: usize,
+}
+
+impl DepthSnapshot {
+    /// Keeps a venue-native book at its actual depth. Trailing cache slots are
+    /// NaN sentinels, never fabricated book levels.
+    pub fn from_native_levels(bids: &[DepthLevel], asks: &[DepthLevel]) -> Result<Self> {
+        if bids.is_empty() || asks.is_empty() {
+            bail!("native depth requires at least one bid and one ask level");
+        }
+        if bids.len() != asks.len() {
+            bail!(
+                "native depth side length mismatch: bids={} asks={}",
+                bids.len(),
+                asks.len()
+            );
+        }
+        if bids.len() > MAX_DEPTH_LEVELS_CACHE {
+            bail!(
+                "native depth has {} levels, maximum is {MAX_DEPTH_LEVELS_CACHE}",
+                bids.len()
+            );
+        }
+
+        let missing = DepthLevel {
+            price: f64::NAN,
+            amount: f64::NAN,
+        };
+        let mut out = Self {
+            bids: [missing; MAX_DEPTH_LEVELS_CACHE],
+            asks: [missing; MAX_DEPTH_LEVELS_CACHE],
+            level_count: bids.len(),
+        };
+        out.bids[..bids.len()].copy_from_slice(bids);
+        out.asks[..asks.len()].copy_from_slice(asks);
+        Ok(out)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct DepthDerived {
     pub bids: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
     pub asks: [DepthLevel; MAX_DEPTH_LEVELS_CACHE],
+    available_levels: usize,
     bid_amount_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
     ask_amount_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
     bid_price_prefix: [f64; MAX_DEPTH_LEVELS_CACHE + 1],
@@ -125,6 +163,7 @@ impl DepthDerived {
         let mut out = Self {
             bids: depth.bids,
             asks: depth.asks,
+            available_levels: depth.level_count.min(MAX_DEPTH_LEVELS_CACHE),
             bid_amount_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
             ask_amount_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
             bid_price_prefix: [0.0; MAX_DEPTH_LEVELS_CACHE + 1],
@@ -160,53 +199,93 @@ impl DepthDerived {
     }
 
     #[inline]
-    fn clamp_limit(limit: usize) -> usize {
-        limit.min(MAX_DEPTH_LEVELS_CACHE)
+    pub fn levels(&self, requested: usize) -> usize {
+        requested
+            .min(self.available_levels)
+            .min(MAX_DEPTH_LEVELS_CACHE)
     }
 
     #[inline]
     pub fn bid_amount(&self, idx: usize) -> f64 {
-        self.bids.get(idx).map(|l| l.amount).unwrap_or(f64::NAN)
+        (idx < self.available_levels)
+            .then(|| self.bids[idx].amount)
+            .unwrap_or(f64::NAN)
     }
 
     #[inline]
     pub fn ask_amount(&self, idx: usize) -> f64 {
-        self.asks.get(idx).map(|l| l.amount).unwrap_or(f64::NAN)
+        (idx < self.available_levels)
+            .then(|| self.asks[idx].amount)
+            .unwrap_or(f64::NAN)
     }
 
     #[inline]
     pub fn bid_price(&self, idx: usize) -> f64 {
-        self.bids.get(idx).map(|l| l.price).unwrap_or(f64::NAN)
+        (idx < self.available_levels)
+            .then(|| self.bids[idx].price)
+            .unwrap_or(f64::NAN)
     }
 
     #[inline]
     pub fn ask_price(&self, idx: usize) -> f64 {
-        self.asks.get(idx).map(|l| l.price).unwrap_or(f64::NAN)
+        (idx < self.available_levels)
+            .then(|| self.asks[idx].price)
+            .unwrap_or(f64::NAN)
     }
 
     #[inline]
     pub fn sum_bid_amount(&self, limit: usize) -> f64 {
-        self.bid_amount_prefix[Self::clamp_limit(limit)]
+        self.bid_amount_prefix[self.levels(limit)]
     }
 
     #[inline]
     pub fn sum_ask_amount(&self, limit: usize) -> f64 {
-        self.ask_amount_prefix[Self::clamp_limit(limit)]
+        self.ask_amount_prefix[self.levels(limit)]
     }
 
     #[inline]
     pub fn sum_bid_price(&self, limit: usize) -> f64 {
-        self.bid_price_prefix[Self::clamp_limit(limit)]
+        self.bid_price_prefix[self.levels(limit)]
     }
 
     #[inline]
     pub fn sum_ask_price(&self, limit: usize) -> f64 {
-        self.ask_price_prefix[Self::clamp_limit(limit)]
+        self.ask_price_prefix[self.levels(limit)]
+    }
+
+    #[inline]
+    pub fn sum_bid_pxv(&self, limit: usize) -> f64 {
+        self.bid_pxv_prefix[self.levels(limit)]
+    }
+
+    #[inline]
+    pub fn sum_ask_pxv(&self, limit: usize) -> f64 {
+        self.ask_pxv_prefix[self.levels(limit)]
+    }
+
+    #[inline]
+    pub fn mean_bid_pxv(&self, limit: usize) -> f64 {
+        let l = self.levels(limit);
+        if l == 0 {
+            f64::NAN
+        } else {
+            self.sum_bid_pxv(l) / l as f64
+        }
+    }
+
+    #[inline]
+    pub fn mean_ask_pxv(&self, limit: usize) -> f64 {
+        let l = self.levels(limit);
+        if l == 0 {
+            f64::NAN
+        } else {
+            self.sum_ask_pxv(l) / l as f64
+        }
     }
 
     #[inline]
     pub fn mean_bid_amount(&self, limit: usize) -> f64 {
-        let l = Self::clamp_limit(limit);
+        let l = self.levels(limit);
         if l == 0 {
             return f64::NAN;
         }
@@ -215,7 +294,7 @@ impl DepthDerived {
 
     #[inline]
     pub fn mean_ask_amount(&self, limit: usize) -> f64 {
-        let l = Self::clamp_limit(limit);
+        let l = self.levels(limit);
         if l == 0 {
             return f64::NAN;
         }
@@ -224,7 +303,7 @@ impl DepthDerived {
 
     #[inline]
     pub fn mean_bid_price(&self, limit: usize) -> f64 {
-        let l = Self::clamp_limit(limit);
+        let l = self.levels(limit);
         if l == 0 {
             return f64::NAN;
         }
@@ -233,7 +312,7 @@ impl DepthDerived {
 
     #[inline]
     pub fn mean_ask_price(&self, limit: usize) -> f64 {
-        let l = Self::clamp_limit(limit);
+        let l = self.levels(limit);
         if l == 0 {
             return f64::NAN;
         }
@@ -242,7 +321,7 @@ impl DepthDerived {
 
     #[inline]
     pub fn bid_vwap(&self, limit: usize) -> Option<f64> {
-        let l = Self::clamp_limit(limit);
+        let l = self.levels(limit);
         if l == 0 {
             return None;
         }
@@ -255,7 +334,7 @@ impl DepthDerived {
 
     #[inline]
     pub fn ask_vwap(&self, limit: usize) -> Option<f64> {
-        let l = Self::clamp_limit(limit);
+        let l = self.levels(limit);
         if l == 0 {
             return None;
         }
@@ -416,6 +495,25 @@ impl BaselineReplayState {
             .map_err(anyhow::Error::msg)?;
         let depth =
             parse_embedded_depth(&msg).map(|snapshot| DepthDerived::from_snapshot(&snapshot));
+        self.push_prepared(msg, depth)
+    }
+
+    /// Push an offline row with a native-depth snapshot. This bypasses the
+    /// fixed 20-level IPC tail for venues such as LSEG/CME with a source-native
+    /// ten-level book.
+    pub fn push_with_native_depth(
+        &mut self,
+        msg: TradeFlowFeatureMsg,
+        snapshot: DepthSnapshot,
+    ) -> Result<()> {
+        self.push_prepared(msg, Some(DepthDerived::from_snapshot(&snapshot)))
+    }
+
+    fn push_prepared(
+        &mut self,
+        msg: TradeFlowFeatureMsg,
+        depth: Option<DepthDerived>,
+    ) -> Result<()> {
         self.state.push_trade_flow(&msg);
         if let Some(depth) = depth.as_ref() {
             self.state.push_depth_metrics_derived(depth);
@@ -545,8 +643,23 @@ impl SymbolCalcState {
         push_with_limit(&mut self.total_volume20_sum, total_bid20 + total_ask20);
         push_with_limit(&mut self.top10_bid_volume, top10_bid);
         push_with_limit(&mut self.top10_ask_volume, top10_ask);
-        push_with_limit(&mut self.top10_bid_mean, top10_bid / 10.0);
-        push_with_limit(&mut self.top10_ask_mean, top10_ask / 10.0);
+        let top_levels = depth.levels(10);
+        push_with_limit(
+            &mut self.top10_bid_mean,
+            if top_levels == 0 {
+                f64::NAN
+            } else {
+                top10_bid / top_levels as f64
+            },
+        );
+        push_with_limit(
+            &mut self.top10_ask_mean,
+            if top_levels == 0 {
+                f64::NAN
+            } else {
+                top10_ask / top_levels as f64
+            },
+        );
         push_with_limit(&mut self.bid9v, depth.bid_amount(9));
         push_with_limit(&mut self.ask9v, depth.ask_amount(9));
         push_with_limit(&mut self.bid9p, depth.bid_price(9));
@@ -560,8 +673,8 @@ impl SymbolCalcState {
         push_with_limit(&mut self.mean_bid_price20, depth.mean_bid_price(20));
         push_with_limit(&mut self.avg_ask_price5, depth.mean_ask_price(5));
         push_with_limit(&mut self.mean_ask_price15, depth.mean_ask_price(15));
-        push_with_limit(&mut self.ask_pv15_mean, depth_mean_pxv(&depth.asks, 15));
-        push_with_limit(&mut self.bid_pv15_mean, depth_mean_pxv(&depth.bids, 15));
+        push_with_limit(&mut self.ask_pv15_mean, depth.mean_ask_pxv(15));
+        push_with_limit(&mut self.bid_pv15_mean, depth.mean_bid_pxv(15));
         let ratio_031 = {
             let num = depth.mean_bid_price(15);
             if mid.abs() > 1e-12 {
@@ -577,8 +690,15 @@ impl SymbolCalcState {
                 depth
                     .bids
                     .iter()
+                    .take(depth.levels(20))
                     .map(|level| level.price)
-                    .chain(depth.asks.iter().map(|level| level.price)),
+                    .chain(
+                        depth
+                            .asks
+                            .iter()
+                            .take(depth.levels(20))
+                            .map(|level| level.price),
+                    ),
             )
             .unwrap_or(f64::NAN),
         );
@@ -605,7 +725,7 @@ impl SymbolCalcState {
         push_with_limit(&mut self.ask0v, ask0v);
 
         let bid_prices10: Vec<f64> = (0..10).map(|i| depth.bid_price(i)).collect();
-        let ask_prices20: Vec<f64> = (0..20).map(|i| depth.ask_price(i)).collect();
+        let ask_prices20: Vec<f64> = (0..depth.levels(20)).map(|i| depth.ask_price(i)).collect();
         push_with_limit(
             &mut self.factor_127_bid_price_kurt,
             cross_sectional_kurtosis(&bid_prices10, true, false).unwrap_or(f64::NAN),
@@ -715,8 +835,14 @@ impl SymbolCalcState {
 
         let mut curr_ratios = [f64::NAN; 10];
         for (k, level_idx) in FACTOR_160_RANDOM_LEVELS.iter().enumerate() {
-            let bid = depth.bid_amount(*level_idx);
-            let ask = depth.ask_amount(*level_idx);
+            let level_idx = if depth.levels(20) == 10 {
+                k
+            } else {
+                (*level_idx * depth.levels(20) / MAX_DEPTH_LEVELS_CACHE)
+                    .min(depth.levels(20).saturating_sub(1))
+            };
+            let bid = depth.bid_amount(level_idx);
+            let ask = depth.ask_amount(level_idx);
             let den = bid + ask;
             curr_ratios[k] = if den.abs() > 1e-12 {
                 bid / den
@@ -3701,8 +3827,8 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_003(depth: &DepthDerived) -> Option<f64> {
-        let bid = depth_sum_price(&depth.bids, 15);
-        let ask = depth_sum_price(&depth.asks, 15);
+        let bid = depth.sum_bid_price(15);
+        let ask = depth.sum_ask_price(15);
         let den = bid + ask;
         if den.abs() <= 1e-12 {
             return Some(0.0);
@@ -3779,8 +3905,8 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_012(depth: &DepthDerived) -> Option<f64> {
-        let bid = depth.bid_pxv_prefix[20];
-        let ask = depth.ask_pxv_prefix[20];
+        let bid = depth.sum_bid_pxv(20);
+        let ask = depth.sum_ask_pxv(20);
         let den = bid + ask;
         if den.abs() <= 1e-12 {
             return Some(0.0);
@@ -3789,8 +3915,8 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_014(depth: &DepthDerived) -> Option<f64> {
-        let top5 = depth_sum_amount(&depth.asks, 5);
-        let total = depth_sum_amount(&depth.asks, 20);
+        let top5 = depth.sum_ask_amount(5);
+        let total = depth.sum_ask_amount(20);
         if total.abs() <= 1e-12 {
             return Some(0.0);
         }
@@ -3798,12 +3924,12 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_016(depth: &DepthDerived) -> Option<f64> {
-        let total_ask_price = depth_sum_price(&depth.asks, 20);
+        let total_ask_price = depth.sum_ask_price(20);
         if (total_ask_price + 1e-6).abs() <= 1e-12 {
             return Some(0.0);
         }
         let mut weighted_depth = 0.0;
-        for i in 0..20 {
+        for i in 0..depth.levels(20) {
             let askv = depth_level_amount(&depth.asks, i);
             let askp = depth_level_price(&depth.asks, i);
             if askv.is_finite() && askp.is_finite() {
@@ -3814,7 +3940,7 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_017(depth: &DepthDerived) -> Option<f64> {
-        let bids: Vec<f64> = (0..20)
+        let bids: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
         let mean = bids.iter().filter(|v| v.is_finite()).sum::<f64>() / bids.len() as f64;
@@ -3824,7 +3950,7 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_018(depth: &DepthDerived) -> Option<f64> {
-        let asks: Vec<f64> = (0..20)
+        let asks: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
         let mean = asks.iter().sum::<f64>() / asks.len() as f64;
@@ -3916,8 +4042,8 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_025(depth: &DepthDerived) -> Option<f64> {
-        let top3 = depth_sum_amount(&depth.bids, 3);
-        let bottom17 = (3..20)
+        let top3 = depth.sum_bid_amount(3);
+        let bottom17 = (3..depth.levels(20))
             .map(|i| depth_level_amount(&depth.bids, i))
             .filter(|v| v.is_finite())
             .sum::<f64>();
@@ -3937,28 +4063,28 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_027(depth: &DepthDerived) -> Option<f64> {
-        let bids: Vec<f64> = (0..20)
+        let bids: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
-        rolling_skew_last(&bids, 20, false).ok().flatten()
+        rolling_skew_last(&bids, bids.len(), false).ok().flatten()
     }
 
     fn compute_factor_028(depth: &DepthDerived) -> Option<f64> {
-        let asks: Vec<f64> = (0..20)
+        let asks: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
-        rolling_skew_last(&asks, 20, false).ok().flatten()
+        rolling_skew_last(&asks, asks.len(), false).ok().flatten()
     }
 
     fn compute_factor_029(depth: &DepthDerived) -> Option<f64> {
-        let bids: Vec<f64> = (0..20)
+        let bids: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.bids, i))
             .collect();
         cross_sectional_kurtosis(&bids, true, false)
     }
 
     fn compute_factor_030(depth: &DepthDerived) -> Option<f64> {
-        let asks: Vec<f64> = (0..20)
+        let asks: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
         cross_sectional_kurtosis(&asks, true, false)
@@ -3988,8 +4114,8 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_035(depth: &DepthDerived) -> Option<f64> {
-        let bid = depth_vwap(&depth.bids, 5)?;
-        let ask = depth_vwap(&depth.asks, 5)?;
+        let bid = depth.bid_vwap(5)?;
+        let ask = depth.ask_vwap(5)?;
         if ask.abs() <= 1e-12 {
             return Some(0.0);
         }
@@ -4009,14 +4135,14 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_037(depth: &DepthDerived) -> Option<f64> {
-        let bid5 = depth_vwap(&depth.bids, 5)?;
-        let bid15 = depth_vwap(&depth.bids, 15)?;
+        let bid5 = depth.bid_vwap(5)?;
+        let bid15 = depth.bid_vwap(15)?;
         finite_opt(Some(bid5 - bid15))
     }
 
     fn compute_factor_038(depth: &DepthDerived) -> Option<f64> {
-        let vwap5 = depth_vwap(&depth.asks, 5)?;
-        let vwap15 = depth_vwap(&depth.asks, 15)?;
+        let vwap5 = depth.ask_vwap(5)?;
+        let vwap15 = depth.ask_vwap(15)?;
         let value = vwap5 - vwap15;
         if value.is_finite() {
             Some(value)
@@ -4129,7 +4255,7 @@ impl FusionFactorPubApp {
     fn compute_factor_054(depth: &DepthDerived) -> Option<f64> {
         let mut num = 0.0;
         let mut den = 0.0;
-        for i in 0..20 {
+        for i in 0..depth.levels(20) {
             let bidp = depth_level_price(&depth.bids, i);
             let bidv = depth_level_amount(&depth.bids, i);
             let askp = depth_level_price(&depth.asks, i);
@@ -4344,14 +4470,14 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_086(depth: &DepthDerived) -> Option<f64> {
-        let bid = depth_sum_amount(&depth.bids, 15);
-        let ask = depth_sum_amount(&depth.asks, 15);
+        let bid = depth.sum_bid_amount(15);
+        let ask = depth.sum_ask_amount(15);
         finite_opt(Some(bid - ask))
     }
 
     fn compute_factor_087(depth: &DepthDerived) -> Option<f64> {
-        let bid = depth_sum_amount(&depth.bids, 20);
-        let ask = depth_sum_amount(&depth.asks, 20);
+        let bid = depth.sum_bid_amount(20);
+        let ask = depth.sum_ask_amount(20);
         if ask.abs() <= 1e-12 {
             return Some(0.0);
         }
@@ -4398,11 +4524,11 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_095(depth: &DepthDerived) -> Option<f64> {
-        median_from_iter((0..20).map(|i| depth_level_amount(&depth.bids, i)))
+        median_from_iter((0..depth.levels(20)).map(|i| depth.bid_amount(i)))
     }
 
     fn compute_factor_096(depth: &DepthDerived) -> Option<f64> {
-        let mut asks: Vec<f64> = (0..20)
+        let mut asks: Vec<f64> = (0..depth.levels(20))
             .map(|i| depth_level_amount(&depth.asks, i))
             .collect();
         asks.sort_by(|a, b| a.total_cmp(b));
@@ -4591,8 +4717,8 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_123(depth: &DepthDerived) -> Option<f64> {
-        let top3 = depth_sum_amount(&depth.bids, 3);
-        let total15 = depth_sum_amount(&depth.bids, 15);
+        let top3 = depth.sum_bid_amount(3);
+        let total15 = depth.sum_bid_amount(15);
         if total15.abs() <= 1e-12 {
             return Some(0.0);
         }
@@ -4713,7 +4839,7 @@ impl FusionFactorPubApp {
     }
 
     fn compute_factor_144(depth: &DepthDerived) -> Option<f64> {
-        let diffs: Vec<f64> = (0..15)
+        let diffs: Vec<f64> = (0..depth.levels(15))
             .map(|i| depth_level_price(&depth.bids, i) - depth_level_price(&depth.asks, i))
             .collect();
         let mut sum = 0.0;
@@ -6553,7 +6679,11 @@ fn parse_embedded_depth(msg: &TradeFlowFeatureMsg) -> Option<DepthSnapshot> {
         return None;
     }
 
-    Some(DepthSnapshot { bids, asks })
+    Some(DepthSnapshot {
+        bids,
+        asks,
+        level_count: MAX_DEPTH_LEVELS_CACHE,
+    })
 }
 
 #[cfg(test)]
@@ -6569,7 +6699,11 @@ mod tests {
             price: 100.1 + i as f64 * 0.1,
             amount: 11.0 + i as f64,
         });
-        DepthDerived::from_snapshot(&DepthSnapshot { bids, asks })
+        DepthDerived::from_snapshot(&DepthSnapshot {
+            bids,
+            asks,
+            level_count: MAX_DEPTH_LEVELS_CACHE,
+        })
     }
 
     fn flat_depth() -> DepthDerived {
@@ -6581,7 +6715,11 @@ mod tests {
             price: 100.1 + i as f64 * 0.1,
             amount: 10.0,
         });
-        DepthDerived::from_snapshot(&DepthSnapshot { bids, asks })
+        DepthDerived::from_snapshot(&DepthSnapshot {
+            bids,
+            asks,
+            level_count: MAX_DEPTH_LEVELS_CACHE,
+        })
     }
 
     fn replay_message(ts: i64) -> TradeFlowFeatureMsg {

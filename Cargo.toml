@@ -157,6 +157,10 @@ name = "cn_features_replay"
 path = "src/bin/futures_fusion_factor_replay.rs"
 
 [[bin]]
+name = "lseg_futures_fusion_factor_replay"
+path = "src/bin/lseg_futures_fusion_factor_replay.rs"
+
+[[bin]]
 name = "db_fusion_factor_replay"
 path = "src/bin/db_fusion_factor_replay.rs"
 
@@ -299,6 +303,7 @@ zmq = "0.10"
 mkt_model_runtime = { path = "crates/mkt_model_runtime", optional = true }
 indexmap = "2"
 rayon = "1.10"
+polars = { version = "0.43.1", default-features = false, features = ["parquet"] }
 arc-swap = "1.7"
 
 

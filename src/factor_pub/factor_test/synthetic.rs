@@ -87,6 +87,7 @@ fn make_depth(bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> DepthSnapshot {
     DepthSnapshot {
         bids: bid_levels,
         asks: ask_levels,
+        level_count: DEPTH_LEVELS,
     }
 }
 
