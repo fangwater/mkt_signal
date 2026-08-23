@@ -1,0 +1,33 @@
+# Dedicated high-parallel scan for TAS Type=Settlement Price.
+# It writes only cme_settlement and settlement_scan_meta in the existing TAS
+# RocksDB; it never reads or changes replay_meta.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+period = "2026-01-01_2026-06-01"
+periods = [
+    "2024-01-01_2025-01-01",
+    "2025-01-01_2026-01-01",
+    "2026-01-01_2026-06-01",
+]
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb"
+
+# Optional exact RIC allowlist after the 51-root route. Empty means every
+# fixed-expiry research RIC. The source still has to be decompressed in full.
+rics = []
+
+# The source parts are the only safe parallel boundary. Do not start a second
+# process against this DB while this process owns the RocksDB write lock.
+workers = 32
+part_index = 0
+
+# Omit for a full run. A cap requires workers = 1 and an empty throwaway DB.
+# max_source_rows = 20000
+
+progress_every = 10000000
+sample_rows = 5
+# Do not retain table-reader metadata for every SST in the multi-terabyte DB.
+max_open_files = 4096
+dry_run = false
+# Only set via --reset-incomplete after a failed scan. It refuses any done or
+# unrelated writing settlement period before deleting cme_settlement rows.
+reset_incomplete = false
+log_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_settlement_scan.log"

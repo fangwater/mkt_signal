@@ -14,8 +14,9 @@ use cme_tas_replay::{
     overlay_price_limit, parse_aggressor, parse_change_type, parse_date_time_ns, parse_exch_hms_ns,
     parse_price_e9, parse_volume, period_meta_key, quote_has_complete_side, tradeday_yyyymmdd,
     validate_period, ColumnRules, EventKind, PeriodStatus, SlimPriceLimit, SlimQuote,
-    SlimSymbologyChange, SlimTrade, CF_CME_PRICE_LIMIT, CF_CME_QUOTE, CF_CME_SPECIAL, CF_CME_TRADE,
-    CF_REPLAY_META, CF_SYMBOLOGY_CHANGE, KEY_LEN, RESEARCH_PRODUCT_ROOTS,
+    SlimSymbologyChange, SlimTrade, CF_CME_PRICE_LIMIT, CF_CME_QUOTE, CF_CME_SETTLEMENT,
+    CF_CME_SPECIAL, CF_CME_TRADE, CF_REPLAY_META, CF_SETTLEMENT_SCAN_META,
+    CF_SYMBOLOGY_CHANGE, KEY_LEN, RESEARCH_PRODUCT_ROOTS,
 };
 use csv::StringRecord;
 use flate2::read::MultiGzDecoder;
@@ -463,6 +464,7 @@ fn open_rocksdb(path: &Path) -> Result<DB> {
     let mut db_opts = Options::default();
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
+    db_opts.set_max_open_files(4_096);
     db_opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
     db_opts.increase_parallelism(32);
     db_opts.set_max_background_jobs(32);
@@ -494,7 +496,9 @@ fn open_rocksdb(path: &Path) -> Result<DB> {
         ColumnFamilyDescriptor::new(CF_CME_QUOTE, quote_opts),
         ColumnFamilyDescriptor::new(CF_SYMBOLOGY_CHANGE, cf_opts.clone()),
         ColumnFamilyDescriptor::new(CF_CME_PRICE_LIMIT, cf_opts.clone()),
-        ColumnFamilyDescriptor::new(CF_REPLAY_META, cf_opts),
+        ColumnFamilyDescriptor::new(CF_CME_SETTLEMENT, cf_opts.clone()),
+        ColumnFamilyDescriptor::new(CF_REPLAY_META, cf_opts.clone()),
+        ColumnFamilyDescriptor::new(CF_SETTLEMENT_SCAN_META, cf_opts),
     ];
     DB::open_cf_descriptors(&db_opts, path, descriptors)
         .with_context(|| format!("open rocksdb {}", path.display()))

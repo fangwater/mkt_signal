@@ -17,6 +17,7 @@ pub const CME_TRADE_LEN: usize = 80;
 pub const CME_QUOTE_LEN: usize = 64;
 pub const SYMBOLOGY_CHANGE_LEN: usize = 64;
 pub const CME_PRICE_LIMIT_LEN: usize = 48;
+pub const CME_SETTLEMENT_LEN: usize = 40;
 pub const RIC_LEN: usize = 16;
 pub const KEY_TS_LEN: usize = 8;
 pub const KEY_PART_LEN: usize = 2;
@@ -29,6 +30,7 @@ pub const KIND_CME_SPECIAL: u8 = 2;
 pub const KIND_CME_QUOTE: u8 = 3;
 pub const KIND_SYMBOLOGY_CHANGE: u8 = 4;
 pub const KIND_CME_PRICE_LIMIT: u8 = 5;
+pub const KIND_CME_SETTLEMENT: u8 = 6;
 pub const CHANGE_TYPE_RIC: u8 = 1;
 pub const EXPECTED_COLUMN_COUNT: usize = 294;
 pub const PRICE_SCALE: i128 = 1_000_000_000;
@@ -42,7 +44,9 @@ pub const CF_CME_SPECIAL: &str = "cme_special";
 pub const CF_CME_QUOTE: &str = "cme_quote";
 pub const CF_SYMBOLOGY_CHANGE: &str = "symbology_change";
 pub const CF_CME_PRICE_LIMIT: &str = "cme_price_limit";
+pub const CF_CME_SETTLEMENT: &str = "cme_settlement";
 pub const CF_REPLAY_META: &str = "replay_meta";
+pub const CF_SETTLEMENT_SCAN_META: &str = "settlement_scan_meta";
 pub const PERIOD_META_PREFIX: &str = "period:";
 pub const PERIOD_STATUS_WRITING: &str = "writing";
 pub const PERIOD_STATUS_DONE: &str = "done";
@@ -382,6 +386,17 @@ pub struct SlimPriceLimit {
     pub ts_utc_ns: u64,
     pub up_lim: i64,
     pub lo_lim: i64,
+}
+
+/// One source `Type=Settlement Price` message. The source timestamp is kept
+/// because a RIC can publish more than one settlement update in a session.
+#[derive(Debug, Clone)]
+pub struct SlimSettlement {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub price: i64,
+    /// Source `Date` as YYYYMMDD, or zero when the source cell is empty.
+    pub source_date_yyyymmdd: u32,
 }
 
 pub fn encode_ric(ric: &str) -> Result<[u8; RIC_LEN]> {
@@ -904,6 +919,53 @@ pub fn decode_cme_price_limit(buf: &[u8]) -> Result<SlimPriceLimit> {
             row.up_lim,
             row.lo_lim
         );
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_settlement(row: &SlimSettlement) -> Result<[u8; CME_SETTLEMENT_LEN]> {
+    if row.price == MISSING_PRICE {
+        bail!("settlement {} missing Price", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let mut buf = [0u8; CME_SETTLEMENT_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_SETTLEMENT;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.price.to_le_bytes());
+    buf[36..40].copy_from_slice(&row.source_date_yyyymmdd.to_le_bytes());
+    Ok(buf)
+}
+
+pub fn decode_cme_settlement(buf: &[u8]) -> Result<SlimSettlement> {
+    if buf.len() != CME_SETTLEMENT_LEN {
+        bail!(
+            "cme_settlement must be {CME_SETTLEMENT_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_settlement magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_settlement version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_SETTLEMENT {
+        bail!(
+            "cme_settlement kind is {}, expected {KIND_CME_SETTLEMENT}",
+            buf[3]
+        );
+    }
+    let row = SlimSettlement {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        price: i64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        source_date_yyyymmdd: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
+    };
+    if row.price == MISSING_PRICE {
+        bail!("decoded settlement {} missing Price", row.ric);
     }
     Ok(row)
 }
@@ -1565,6 +1627,31 @@ mod tests {
             ..lo_only
         };
         assert!(encode_cme_price_limit(&empty).is_err());
+    }
+
+    #[test]
+    fn packs_a_settlement_price() {
+        let row = SlimSettlement {
+            ric: "ADF26".to_string(),
+            ts_utc_ns: parse_date_time_ns("2026-01-01T22:00:00.000000000Z").unwrap(),
+            price: parse_price_e9("0.6673").unwrap(),
+            source_date_yyyymmdd: 20260101,
+        };
+        let bytes = encode_cme_settlement(&row).unwrap();
+        assert_eq!(bytes.len(), CME_SETTLEMENT_LEN);
+        assert_eq!(&bytes[0..2], b"CT");
+        assert_eq!(bytes[2], VERSION);
+        assert_eq!(bytes[3], KIND_CME_SETTLEMENT);
+        let back = decode_cme_settlement(&bytes).unwrap();
+        assert_eq!(back.ric, "ADF26");
+        assert_eq!(back.ts_utc_ns, row.ts_utc_ns);
+        assert_eq!(back.price, 667_300_000);
+        assert_eq!(back.source_date_yyyymmdd, 20260101);
+        let missing = SlimSettlement {
+            price: MISSING_PRICE,
+            ..row
+        };
+        assert!(encode_cme_settlement(&missing).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # CME TAS replay
 
-`cme_tas_replay` 读本机 LSEG Tick History Time and Sales 的 gzip part，把可打印成交、Special、Quote、RIC 更名、价格笼子写成定长 `msg`，写入**一座** RocksDB。不是 JSONL，不写 ClickHouse，不写 parquet。小时 notional KLL 是独立工具 `cme_tas_kll`，只读 `cme_trade`，见 [cme_tas_kll.md](cme_tas_kll.md)。
+`cme_tas_replay` 读本机 LSEG Tick History Time and Sales 的 gzip part，把可打印成交、Special、Quote、RIC 更名、价格笼子写成定长 `msg`，写入**一座** RocksDB。不是 JSONL，不写 ClickHouse，不写 parquet。日结算价由独立的 `cme_tas_settlement_scan` 补扫，不能当作成交。小时 notional KLL 是独立工具 `cme_tas_kll`，只读 `cme_trade`，见 [cme_tas_kll.md](cme_tas_kll.md)。
 
 默认 `workers = 32`：一进程读 `periods` 里全部年份的 gzip part，直接往正式目录续写。当前配置是 2024、2025、2026 H1 共 32 个 part，一个 worker 对应一个 part。`workers = 1` 仍只读第一个 period 的 `part_index`。源 part 是多段 gzip 拼在一起的，必须用 `MultiGzDecoder`；只解第一段会在大约一百万行处假装读完。解压用 `zlib-ng`。热路径按表头下标取格、缓存 RIC 是否落在 51 根上，并只扫剩余禁列，不再对每行做 294 列按名查找。
 
@@ -34,9 +34,10 @@ Part 按 `#RIC` 字典序切，不是按日。Part 0 先是指数 RIC，再是�
 | `cme_quote` | 写。`kind=3`，64 字节，L1 盘口 |
 | `symbology_change` | 写。`kind=4`，64 字节，RIC 更名：本包已见 `ADF26` → `ADF26^2` |
 | `cme_price_limit` | 写。`kind=5`，48 字节，当日涨跌停。价量都空的 Trade 上出现 `UpLim` 和/或 `LoLim`。只有一侧也写，缺的一侧用价格哨兵 |
+| `cme_settlement` | 由独立扫描器写。`kind=6`，40 字节，保留 `Settlement Price` 与源 `Date`；不进成交、KLL 或 Backtest |
 | `replay_meta` | 写。每个 TAS `period` 一条水位：`writing` → `done` |
+| `settlement_scan_meta` | 独立结算扫描的 `settlement_period:<period>` 水位：`writing` → `done` |
 | Status / Correction / Auction / 指数 | 只分类计数，不写 |
-| `Settlement Price` | 分类为 `cme_settlement`，不写。日结算价，不是成交 |
 
 Key（大端，按 RIC + 时间可扫）：
 
