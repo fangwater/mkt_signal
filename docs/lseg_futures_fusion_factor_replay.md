@@ -1,9 +1,15 @@
-# LSEG Futures 1-Minute Fusion Factors
+# LSEG Features 1-Minute Replay
 
-`lseg_futures_fusion_factor_replay` computes every current implemented fusion
-factor for fixed-expiry LSEG/CME contracts at one-minute frequency. It does not
-make a dominant-contract series and it does not change the raw LSEG data
-directories.
+`lseg_futures_fusion_factor_replay` computes the independent 632-factor
+`lseg_features` registry for fixed-expiry LSEG/CME contracts at one-minute
+frequency. It is parallel to `cn_features`, but consumes native ten-level CME
+books and TAS-derived trades rather than domestic five-level snapshots.
+
+The registry is generated from the same
+`final_factor_pool_update20260123.py` reference as `cn_features`. Its static
+`lseg_features_all` plan validates every one of the 632 computation paths at
+startup; it does not probe or silently reduce to the legacy generic-fusion
+subset.
 
 ## Inputs
 
@@ -19,29 +25,29 @@ For a trade bar whose `ts` is the UTC left edge of `[t, t+60s)`, the factor
 input book has `depth_ts = t+59s`: the final complete one-second snapshot of
 that closed bar. The output keeps `ts=t` and records `depth_ts` explicitly.
 Missing `t+59s` depth means there is no factor row; the replay never carries a
-book through an unobserved second.
+book through an unobserved second. The reader projects only identity and
+price/size columns, then retains only these `t+59s` snapshots, rather than
+materializing a whole day of one-second books in replay state.
+Depth parquet is consumed in bounded row-group batches, so the complete daily
+one-second table is never held in a DataFrame at once.
 
 ## Semantics
 
 The replay maintains one state per `contract_id` and resets it on every gap
 larger than one minute. It therefore cannot carry rolling windows over the CME
 maintenance/closed interval or between contracts. It does not forward-fill any
-source price field. Bars before all required source price fields are initialized
-are skipped. Factor values that are warming up, mathematically invalid, or
-depend on unavailable source values are written as parquet null.
+source price field. Special-only and one-sided minutes remain rows; only the
+individual factors needing their unavailable source values become parquet null.
 
 `replay_workers` distributes independent fixed-expiry contracts across stable
 worker lanes. A single contract always stays on one lane, so its rolling state
 is serialized across all trading days; output remains one parquet file per
 input product/day.
 
-The depth adapter preserves the native ten levels. Its internal cache uses NaN
-sentinels after level ten; levels 11 through 20 are not invented with zeroes,
-copied prices, or order-count fields. A formula requesting 15 or 20 levels uses
-all available native levels instead. Sums become visible-book sums; means,
-VWAPs, quantiles, and cross-sectional statistics use the actual number of
-available levels. This preserves every implemented factor without silently
-adding synthetic depth.
+The depth adapter preserves the native ten levels. No levels 11 through 20 are
+invented with zeroes, copied prices, or order-count fields. Formula depth
+windows are natively ten-level, with full-book sums, means, VWAPs, quantiles,
+and cross-sectional statistics calculated from the observed LL2 levels.
 
 ## Run
 

@@ -5,6 +5,7 @@ pub mod cn_features;
 pub mod factor_test;
 pub mod fusion_factor_pub;
 pub(crate) mod kline_factors;
+pub mod lseg_features;
 #[cfg(feature = "model-ort")]
 pub mod model_pub;
 pub mod pairmm_resample;

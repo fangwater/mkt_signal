@@ -8,14 +8,14 @@
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use clap::Parser;
+use futures::executor::block_on;
 use log::info;
 use mkt_parsers::msg::trade_flow_feature_msg::{
-    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
+    TRADE_FLOW_FEATURE_DIM, TRADE_FLOW_FEATURE_FIELD_NAMES,
 };
-use mkt_signal::factor_pub::fusion_factor_pub::app::{
-    BaselineReplayState, DepthLevel, DepthSnapshot,
+use mkt_signal::factor_pub::lseg_features::{
+    LsegDepth10, LsegFactorPlan, LsegFeatureState, LsegFusionInput, LsegTradeBar,
 };
-use mkt_signal::factor_pub::fusion_factor_pub::{FusionFactorId, SymbolFactorPlan};
 use polars::prelude::{
     DataFrame, Float64Chunked, NamedFrom, ParquetReader, ParquetWriter, SerReader, Series,
     StringChunked,
@@ -26,13 +26,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-const FEATURE_SET: &str = "lseg_futures_1m";
-const ALL_FACTORS: &str = "lseg_futures_all";
+const FEATURE_SET: &str = "lseg_features";
 const LSEG_DEPTH_LEVELS: usize = 10;
 const MINUTE_SECONDS: i64 = 60;
 const CLOSED_BAR_LAST_SECOND: i64 = MINUTE_SECONDS - 1;
-
-const REQUIRED_PRICE_FIELDS: [usize; 7] = [0, 1, 2, 3, 23, 24, 25];
+const DEPTH_PARQUET_BATCH_ROWS: usize = 65_536;
 
 #[derive(Parser, Debug)]
 #[command(name = "lseg_futures_fusion_factor_replay")]
@@ -74,7 +72,7 @@ struct ValidatedConfig {
     end_date: NaiveDate,
     products: HashSet<String>,
     contracts: HashSet<String>,
-    plan: SymbolFactorPlan,
+    plan: LsegFactorPlan,
     factor_names: Vec<String>,
     replay_workers: usize,
 }
@@ -96,8 +94,10 @@ struct TradeRow {
 
 #[derive(Debug, Clone)]
 struct DepthBook {
-    bids: [DepthLevel; LSEG_DEPTH_LEVELS],
-    asks: [DepthLevel; LSEG_DEPTH_LEVELS],
+    bid_prices: [f64; LSEG_DEPTH_LEVELS],
+    bid_amounts: [f64; LSEG_DEPTH_LEVELS],
+    ask_prices: [f64; LSEG_DEPTH_LEVELS],
+    ask_amounts: [f64; LSEG_DEPTH_LEVELS],
 }
 
 #[derive(Debug)]
@@ -108,15 +108,14 @@ struct DepthRow {
 
 #[derive(Default)]
 struct ContractReplayState {
-    replay: BaselineReplayState,
-    last_ts: Option<i64>,
+    features: LsegFeatureState,
+    last_source_ts: Option<i64>,
 }
 
 #[derive(Default)]
 struct ReplayStats {
     source_rows: u64,
     written_rows: u64,
-    skipped_uninitialized_prices: u64,
     skipped_missing_depth: u64,
     skipped_invalid_bbo: u64,
     segment_resets: u64,
@@ -126,9 +125,6 @@ impl ReplayStats {
     fn add(&mut self, other: Self) {
         self.source_rows = self.source_rows.saturating_add(other.source_rows);
         self.written_rows = self.written_rows.saturating_add(other.written_rows);
-        self.skipped_uninitialized_prices = self
-            .skipped_uninitialized_prices
-            .saturating_add(other.skipped_uninitialized_prices);
         self.skipped_missing_depth = self
             .skipped_missing_depth
             .saturating_add(other.skipped_missing_depth);
@@ -203,9 +199,8 @@ fn validate_config(config: &Config) -> Result<ValidatedConfig> {
 
     let products = normalize_products(&config.products)?;
     let contracts = normalize_contracts(&config.contracts)?;
-    let factor_names = expand_factor_names(&config.factors)?;
-    let plan = SymbolFactorPlan::from_factor_names(FEATURE_SET, factor_names.clone())?;
-    BaselineReplayState::validate_factor_plan(&plan)?;
+    let plan = LsegFactorPlan::from_factor_names(config.factors.clone())?;
+    let factor_names = plan.factor_names().map(ToOwned::to_owned).collect();
     Ok(ValidatedConfig {
         start_date,
         end_date,
@@ -270,50 +265,6 @@ fn normalize_contracts(raw: &[String]) -> Result<HashSet<String>> {
     Ok(contracts)
 }
 
-fn expand_factor_names(raw: &[String]) -> Result<Vec<String>> {
-    if raw.is_empty() {
-        bail!("at least one factor is required; use {ALL_FACTORS} for the full fusion registry");
-    }
-    let mut names = Vec::new();
-    let supported = supported_fusion_factor_names()?;
-    let supported_set: HashSet<&str> = supported.iter().map(String::as_str).collect();
-    for raw_name in raw {
-        let name = raw_name.trim();
-        if name == ALL_FACTORS {
-            names.extend(supported.iter().cloned());
-        } else if name.is_empty() {
-            bail!("factor name must not be empty");
-        } else {
-            names.push(name.to_string());
-        }
-    }
-    let mut seen = HashSet::with_capacity(names.len());
-    for name in &names {
-        if !seen.insert(name.clone()) {
-            bail!("duplicate factor name: {name}");
-        }
-        if !supported_set.contains(name.as_str()) {
-            bail!("factor has no fusion implementation: {name}");
-        }
-    }
-    Ok(names)
-}
-
-fn supported_fusion_factor_names() -> Result<Vec<String>> {
-    let mut supported = Vec::new();
-    for factor in FusionFactorId::ALL {
-        let name = factor.as_name().to_string();
-        let plan = SymbolFactorPlan::from_factor_names(FEATURE_SET, vec![name.clone()])?;
-        if BaselineReplayState::validate_factor_plan(&plan).is_ok() {
-            supported.push(name);
-        }
-    }
-    if supported.is_empty() {
-        bail!("the fusion registry has no executable factors");
-    }
-    Ok(supported)
-}
-
 fn replay(config: &Config, validated: ValidatedConfig) -> Result<()> {
     let jobs = discover_jobs(config, &validated)?;
     if jobs.is_empty() {
@@ -374,10 +325,9 @@ fn replay(config: &Config, validated: ValidatedConfig) -> Result<()> {
         );
     }
     info!(
-        "LSEG futures fusion complete: source_rows={} output_rows={} skipped_uninitialized_prices={} skipped_missing_depth={} skipped_invalid_bbo={} segment_resets={} contracts={}",
+        "LSEG features replay complete: source_rows={} output_rows={} skipped_missing_depth={} skipped_invalid_bbo={} segment_resets={} contracts={}",
         stats.source_rows,
         stats.written_rows,
-        stats.skipped_uninitialized_prices,
         stats.skipped_missing_depth,
         stats.skipped_invalid_bbo,
         stats.segment_resets,
@@ -548,12 +498,6 @@ fn process_contract_lane(
                 source_path.display()
             );
         }
-        if !has_initialized_prices(&trade.values) {
-            stats.skipped_uninitialized_prices =
-                stats.skipped_uninitialized_prices.saturating_add(1);
-            continue;
-        }
-
         let depth_ts = close_book_timestamp(trade.ts)?;
         let Some(book) = depth_at(&depths, &trade.contract_id, depth_ts) else {
             stats.skipped_missing_depth = stats.skipped_missing_depth.saturating_add(1);
@@ -565,42 +509,41 @@ fn process_contract_lane(
         }
 
         let state = states.entry(trade.contract_id.clone()).or_default();
-        if state
-            .last_ts
-            .is_some_and(|previous| trade.ts != previous + MINUTE_SECONDS)
-        {
-            state.replay = BaselineReplayState::default();
+        let segment_break = state
+            .last_source_ts
+            .is_some_and(|previous| trade.ts != previous + MINUTE_SECONDS);
+        if segment_break {
             stats.segment_resets = stats.segment_resets.saturating_add(1);
         }
-        let snapshot = DepthSnapshot::from_native_levels(&book.bids, &book.asks)
-            .context("build native ten-level LSEG snapshot")?;
-        let ts_us = trade
-            .ts
-            .checked_mul(1_000_000)
-            .with_context(|| format!("trade timestamp overflows microseconds: {}", trade.ts))?;
-        let message = TradeFlowFeatureMsg::from_indexed_values(
-            trade.contract_id.clone(),
-            0,
-            ts_us,
-            &trade.values,
+        let depth = LsegDepth10::from_slices(
+            &book.bid_prices,
+            &book.bid_amounts,
+            &book.ask_prices,
+            &book.ask_amounts,
         )
-        .context("build LSEG trade-flow feature message")?;
-        state
-            .replay
-            .push_with_native_depth(message, snapshot)
-            .with_context(|| {
-                format!(
-                    "push LSEG fusion row contract_id={} ts={}",
-                    trade.contract_id, trade.ts
-                )
-            })?;
-        state.last_ts = Some(trade.ts);
+        .context("build native ten-level LSEG depth")?;
+        let ts_ms = trade
+            .ts
+            .checked_mul(1_000)
+            .with_context(|| format!("trade timestamp overflows milliseconds: {}", trade.ts))?;
+        let input = LsegFusionInput {
+            ts_ms,
+            symbol: trade.contract_id.clone(),
+            trade: LsegTradeBar::from_slice(&trade.values).context("build LSEG trade-flow bar")?,
+            depth,
+            segment_break,
+        };
+        state.features.push(input).with_context(|| {
+            format!(
+                "push LSEG features row contract_id={} ts={}",
+                trade.contract_id, trade.ts
+            )
+        })?;
+        state.last_source_ts = Some(trade.ts);
         let factors = state
-            .replay
+            .features
             .factor_values(&validated.plan)
-            .into_iter()
-            .map(|value| value.is_finite().then_some(value))
-            .collect();
+            .context("compute LSEG feature values")?;
         output.push(OutputRow {
             contract_id: trade.contract_id,
             ric: trade.ric,
@@ -623,12 +566,6 @@ fn contract_lane(contract_id: &str, lanes: usize) -> usize {
     (hash as usize) % lanes
 }
 
-fn has_initialized_prices(values: &[f64; TRADE_FLOW_FEATURE_DIM]) -> bool {
-    REQUIRED_PRICE_FIELDS
-        .iter()
-        .all(|index| values[*index].is_finite())
-}
-
 fn close_book_timestamp(bar_ts: i64) -> Result<i64> {
     if bar_ts.rem_euclid(MINUTE_SECONDS) != 0 {
         bail!("LSEG trade bar timestamp is not a minute boundary: {bar_ts}");
@@ -639,12 +576,12 @@ fn close_book_timestamp(bar_ts: i64) -> Result<i64> {
 }
 
 fn valid_best_book(book: &DepthBook) -> bool {
-    book.bids[0].price.is_finite()
-        && book.bids[0].amount.is_finite()
-        && book.bids[0].amount >= 0.0
-        && book.asks[0].price.is_finite()
-        && book.asks[0].amount.is_finite()
-        && book.asks[0].amount >= 0.0
+    book.bid_prices[0].is_finite()
+        && book.bid_amounts[0].is_finite()
+        && book.bid_amounts[0] >= 0.0
+        && book.ask_prices[0].is_finite()
+        && book.ask_amounts[0].is_finite()
+        && book.ask_amounts[0] >= 0.0
 }
 
 fn depth_at<'a>(
@@ -659,7 +596,17 @@ fn depth_at<'a>(
 }
 
 fn read_trade_rows(path: &Path, contracts: &HashSet<String>) -> Result<Vec<TradeRow>> {
-    let dataframe = read_parquet(path)?;
+    let mut columns = vec![
+        "contract_id".to_string(),
+        "ric".to_string(),
+        "ts".to_string(),
+    ];
+    columns.extend(
+        TRADE_FLOW_FEATURE_FIELD_NAMES
+            .iter()
+            .map(|name| (*name).to_string()),
+    );
+    let dataframe = read_parquet(path, columns)?;
     let contract_id = string_column(&dataframe, "contract_id")?;
     let ric = string_column(&dataframe, "ric")?;
     let ts = i64_column(&dataframe, "ts")?;
@@ -689,7 +636,38 @@ fn read_depth_rows(
     path: &Path,
     contracts: &HashSet<String>,
 ) -> Result<HashMap<String, Vec<DepthRow>>> {
-    let dataframe = read_parquet(path)?;
+    let mut columns = vec!["contract_id".to_string(), "ts".to_string()];
+    for side in ["bid", "ask"] {
+        for level in 0..LSEG_DEPTH_LEVELS {
+            columns.push(format!("{side}{level}p"));
+            columns.push(format!("{side}{level}v"));
+        }
+    }
+    let file = File::open(path).with_context(|| format!("open parquet {}", path.display()))?;
+    let mut reader = ParquetReader::new(file)
+        .with_columns(Some(columns))
+        .set_low_memory(true)
+        .batched(DEPTH_PARQUET_BATCH_ROWS)
+        .with_context(|| format!("open batched parquet reader {}", path.display()))?;
+
+    let mut by_contract: HashMap<String, Vec<DepthRow>> = HashMap::new();
+    while let Some(batches) = block_on(reader.next_batches(1))
+        .with_context(|| format!("read depth parquet batch {}", path.display()))?
+    {
+        for dataframe in batches {
+            append_depth_batch(&dataframe, path, contracts, &mut by_contract)?;
+        }
+    }
+    finalize_depth_rows(path, &mut by_contract)?;
+    Ok(by_contract)
+}
+
+fn append_depth_batch(
+    dataframe: &DataFrame,
+    path: &Path,
+    contracts: &HashSet<String>,
+    by_contract: &mut HashMap<String, Vec<DepthRow>>,
+) -> Result<()> {
     let contract_id = string_column(&dataframe, "contract_id")?;
     let ts = i64_column(&dataframe, "ts")?;
     let bid_prices: Vec<&Float64Chunked> = (0..LSEG_DEPTH_LEVELS)
@@ -705,29 +683,44 @@ fn read_depth_rows(
         .map(|level| f64_column(&dataframe, &format!("ask{level}v")))
         .collect::<Result<_>>()?;
 
-    let mut by_contract: HashMap<String, Vec<DepthRow>> = HashMap::new();
     for index in 0..dataframe.height() {
+        let row_ts = required_i64(ts, index, "ts", path)?;
+        if row_ts.rem_euclid(MINUTE_SECONDS) != CLOSED_BAR_LAST_SECOND {
+            continue;
+        }
         let contract = required_str(contract_id, index, "contract_id", path)?;
         if !contracts.is_empty() && !contracts.contains(contract) {
             continue;
         }
-        let bids = std::array::from_fn(|level| DepthLevel {
-            price: bid_prices[level].get(index).unwrap_or(f64::NAN),
-            amount: bid_amounts[level].get(index).unwrap_or(f64::NAN),
-        });
-        let asks = std::array::from_fn(|level| DepthLevel {
-            price: ask_prices[level].get(index).unwrap_or(f64::NAN),
-            amount: ask_amounts[level].get(index).unwrap_or(f64::NAN),
-        });
+        let bid_prices =
+            std::array::from_fn(|level| bid_prices[level].get(index).unwrap_or(f64::NAN));
+        let bid_amounts =
+            std::array::from_fn(|level| bid_amounts[level].get(index).unwrap_or(f64::NAN));
+        let ask_prices =
+            std::array::from_fn(|level| ask_prices[level].get(index).unwrap_or(f64::NAN));
+        let ask_amounts =
+            std::array::from_fn(|level| ask_amounts[level].get(index).unwrap_or(f64::NAN));
         by_contract
             .entry(contract.to_string())
             .or_default()
             .push(DepthRow {
-                ts: required_i64(ts, index, "ts", path)?,
-                book: DepthBook { bids, asks },
+                ts: row_ts,
+                book: DepthBook {
+                    bid_prices,
+                    bid_amounts,
+                    ask_prices,
+                    ask_amounts,
+                },
             });
     }
-    for (contract, rows) in &mut by_contract {
+    Ok(())
+}
+
+fn finalize_depth_rows(
+    path: &Path,
+    by_contract: &mut HashMap<String, Vec<DepthRow>>,
+) -> Result<()> {
+    for (contract, rows) in by_contract {
         rows.sort_by_key(|row| row.ts);
         if rows.windows(2).any(|pair| pair[0].ts == pair[1].ts) {
             bail!(
@@ -737,12 +730,14 @@ fn read_depth_rows(
             );
         }
     }
-    Ok(by_contract)
+    Ok(())
 }
 
-fn read_parquet(path: &Path) -> Result<DataFrame> {
+fn read_parquet(path: &Path, columns: Vec<String>) -> Result<DataFrame> {
     let file = File::open(path).with_context(|| format!("open parquet {}", path.display()))?;
     ParquetReader::new(file)
+        .with_columns(Some(columns))
+        .set_low_memory(true)
         .finish()
         .with_context(|| format!("read parquet {}", path.display()))
 }
@@ -858,7 +853,6 @@ fn write_output(path: &Path, rows: &[OutputRow], factor_names: &[String]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mkt_signal::factor_pub::fusion_factor_pub::app::DepthDerived;
 
     #[test]
     fn close_book_uses_the_final_second_of_the_closed_minute() {
@@ -867,72 +861,43 @@ mod tests {
     }
 
     #[test]
-    fn all_factor_selector_expands_the_complete_registry_once() {
-        let factors = expand_factor_names(&[ALL_FACTORS.to_string()]).unwrap();
-        assert!(!factors.is_empty());
-        assert_eq!(
-            factors.len(),
-            supported_fusion_factor_names().unwrap().len()
-        );
-        let registry_positions: Vec<usize> = factors
-            .iter()
-            .map(|name| {
-                FusionFactorId::ALL
-                    .iter()
-                    .position(|factor| factor.as_name() == name)
-                    .expect("selected factor belongs to the fusion registry")
-            })
-            .collect();
-        assert!(registry_positions
-            .windows(2)
-            .all(|window| window[0] < window[1]));
-        assert!(!factors.iter().any(|factor| factor == "baseline_023"));
-        assert!(factors.iter().any(|factor| factor == "factor_007"));
-        assert!(factors.iter().any(|factor| factor == "factor_071"));
-        assert!(expand_factor_names(&[ALL_FACTORS.to_string(), "factor_001".to_string()]).is_err());
-    }
-
-    #[test]
-    fn native_ten_level_snapshot_has_no_synthetic_deep_levels() {
-        let bids: [DepthLevel; LSEG_DEPTH_LEVELS] = std::array::from_fn(|level| DepthLevel {
-            price: 100.0 - level as f64,
-            amount: 1.0 + level as f64,
-        });
-        let asks: [DepthLevel; LSEG_DEPTH_LEVELS] = std::array::from_fn(|level| DepthLevel {
-            price: 101.0 + level as f64,
-            amount: 2.0 + level as f64,
-        });
-        let snapshot = DepthSnapshot::from_native_levels(&bids, &asks).unwrap();
-        assert_eq!(snapshot.bids[9].price, 91.0);
-        assert!(snapshot.bids[10].price.is_nan());
-        assert!(snapshot.asks[10].amount.is_nan());
-    }
-
-    #[test]
-    fn native_ten_levels_supply_the_full_depth_aggregates() {
-        let bids: [DepthLevel; LSEG_DEPTH_LEVELS] = std::array::from_fn(|level| DepthLevel {
-            price: 100.0 - level as f64,
-            amount: 1.0 + level as f64,
-        });
-        let asks: [DepthLevel; LSEG_DEPTH_LEVELS] = std::array::from_fn(|level| DepthLevel {
-            price: 101.0 + level as f64,
-            amount: 2.0 + level as f64,
-        });
-        let snapshot = DepthSnapshot::from_native_levels(&bids, &asks).unwrap();
-        let depth = DepthDerived::from_snapshot(&snapshot);
-        assert_eq!(depth.levels(20), LSEG_DEPTH_LEVELS);
-        assert_eq!(depth.sum_bid_amount(20), depth.sum_bid_amount(10));
-        assert_eq!(depth.mean_bid_amount(20), depth.mean_bid_amount(10));
-        assert_eq!(depth.ask_vwap(20), depth.ask_vwap(10));
-
-        let plan =
-            SymbolFactorPlan::from_factor_names(FEATURE_SET, vec!["factor_007".into()]).unwrap();
-        let mut replay = BaselineReplayState::default();
-        let values = [1.0; TRADE_FLOW_FEATURE_DIM];
-        let message =
-            TradeFlowFeatureMsg::from_indexed_values("CME:ES:2024-03".into(), 0, 0, &values)
-                .unwrap();
-        replay.push_with_native_depth(message, snapshot).unwrap();
-        assert!(replay.factor_values(&plan)[0].is_finite());
+    fn depth_batch_retains_only_minute_close_snapshots() {
+        let mut columns = vec![
+            Series::new("contract_id".into(), vec!["CME:ES:2024-03"; 3]),
+            Series::new(
+                "ts".into(),
+                vec![1_704_754_858_i64, 1_704_754_859, 1_704_754_919],
+            ),
+        ];
+        for side in ["bid", "ask"] {
+            for level in 0..LSEG_DEPTH_LEVELS {
+                let price = if side == "bid" {
+                    100.0 - level as f64 * 0.1
+                } else {
+                    100.1 + level as f64 * 0.1
+                };
+                columns.push(Series::new(
+                    format!("{side}{level}p").into(),
+                    vec![price; 3],
+                ));
+                columns.push(Series::new(
+                    format!("{side}{level}v").into(),
+                    vec![10.0 + level as f64; 3],
+                ));
+            }
+        }
+        let dataframe = DataFrame::new(columns).unwrap();
+        let mut rows = HashMap::new();
+        append_depth_batch(
+            &dataframe,
+            Path::new("depth-test.parquet"),
+            &HashSet::new(),
+            &mut rows,
+        )
+        .unwrap();
+        let selected = rows.get("CME:ES:2024-03").unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].ts, 1_704_754_859);
+        assert_eq!(selected[1].ts, 1_704_754_919);
     }
 }
