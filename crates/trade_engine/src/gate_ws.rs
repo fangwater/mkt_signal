@@ -175,6 +175,8 @@ fn push_gate_unified_new_req_param(
     if params.order_type.is_limit() {
         push_qv_json_field(out, "price", params.price_qv, &mut first);
         push_json_field(out, "time_in_force", "poc", &mut first);
+    } else {
+        push_json_field(out, "time_in_force", "ioc", &mut first);
     }
 }
 
@@ -369,6 +371,31 @@ mod tests {
         assert_eq!(req_param["amount"], json!("0.010"));
         assert_eq!(req_param["auto_borrow"], json!(true));
         assert_eq!(req_param["time_in_force"], json!("poc"));
+    }
+
+    #[test]
+    fn builds_gate_unified_market_order_with_ioc() {
+        let params = GateNewOrderParams {
+            symbol: "BTC_USDT".to_string(),
+            side: Side::Sell,
+            order_type: OrderType::Market,
+            quantity_qv: QuantizedValue::from_parts(1, -3, 10),
+            price_qv: QuantizedValue::zero(),
+            reduce_only: true,
+            auto_borrow_repay: false,
+        };
+        let params = params.to_bytes().expect("typed params");
+        let msg = trade_msg(TradeRequestType::GateUnifiedNewOrder, 123, &params);
+
+        let payload = build_api_payload(&msg, 999).expect("payload");
+        let val: Value = serde_json::from_str(&payload).expect("json");
+        let req_param = &val["payload"]["req_param"];
+        assert_eq!(val["channel"], json!("spot.order_place"));
+        assert_eq!(req_param["type"], json!("market"));
+        assert_eq!(req_param["side"], json!("sell"));
+        assert_eq!(req_param["amount"], json!("0.010"));
+        assert_eq!(req_param["time_in_force"], json!("ioc"));
+        assert!(req_param.get("reduce_only").is_none());
     }
 
     #[test]
