@@ -528,6 +528,25 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
             futures_qty = ZERO
             futures_side = None
 
+    # Align can either add/flip or partially close the existing futures leg.
+    # Mark the latter reduce-only so Bitget applies close-order risk handling.
+    if (
+        not futures_reduce_only
+        and futures_side == "buy"
+        and pos < 0
+        and futures_qty > 0
+        and futures_qty <= -pos
+    ):
+        futures_reduce_only = True
+    elif (
+        not futures_reduce_only
+        and futures_side == "sell"
+        and pos > 0
+        and futures_qty > 0
+        and futures_qty <= pos
+    ):
+        futures_reduce_only = True
+
     if mode == "clear":
         # Negative spot net means BUY is needed to extinguish borrow (auto-repay).
         # For Bitget UTA Spot/Margin market buys, qty is quote coin (USDT),
