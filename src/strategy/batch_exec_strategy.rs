@@ -182,6 +182,70 @@ impl BatchExecConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchExecConfigOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_order_usdt: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orders_per_batch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_batch: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maker_price_anchor: Option<MakerPriceAnchor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tick_spacing: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_interval_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maker_timeout_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_maker_requotes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_tolerance_usdt: Option<f64>,
+}
+
+impl BatchExecConfigOverride {
+    pub fn is_empty(&self) -> bool {
+        self.single_order_usdt.is_none()
+            && self.orders_per_batch.is_none()
+            && self.max_batch.is_none()
+            && self.maker_price_anchor.is_none()
+            && self.tick_spacing.is_none()
+            && self.batch_interval_ms.is_none()
+            && self.maker_timeout_ms.is_none()
+            && self.max_maker_requotes.is_none()
+            && self.target_tolerance_usdt.is_none()
+    }
+
+    pub fn apply_to(&self, defaults: &BatchExecConfig) -> BatchExecConfig {
+        BatchExecConfig {
+            single_order_usdt: self.single_order_usdt.unwrap_or(defaults.single_order_usdt),
+            orders_per_batch: self.orders_per_batch.unwrap_or(defaults.orders_per_batch),
+            max_batch: self.max_batch.unwrap_or(defaults.max_batch),
+            maker_price_anchor: self
+                .maker_price_anchor
+                .unwrap_or(defaults.maker_price_anchor),
+            tick_spacing: self.tick_spacing.unwrap_or(defaults.tick_spacing),
+            batch_interval_ms: self.batch_interval_ms.unwrap_or(defaults.batch_interval_ms),
+            maker_timeout_ms: self.maker_timeout_ms.unwrap_or(defaults.maker_timeout_ms),
+            max_maker_requotes: self
+                .max_maker_requotes
+                .unwrap_or(defaults.max_maker_requotes),
+            target_tolerance_usdt: self
+                .target_tolerance_usdt
+                .unwrap_or(defaults.target_tolerance_usdt),
+        }
+    }
+
+    pub fn validate(&self, defaults: &BatchExecConfig) -> Result<(), String> {
+        if self.is_empty() {
+            return Err("symbol override must replace at least one parameter".to_string());
+        }
+        self.apply_to(defaults).validate()
+    }
+}
+
 fn estimate_batch_progress(
     config: &BatchExecConfig,
     delta_usdt: f64,
@@ -3283,5 +3347,24 @@ mod tests {
             .unwrap();
             assert!(plans.iter().all(|plan| plan.order_type == OrderType::Limit));
         }
+    }
+
+    #[test]
+    fn symbol_config_override_inherits_unspecified_global_fields() {
+        let defaults = config();
+        let override_config = BatchExecConfigOverride {
+            single_order_usdt: Some(250.0),
+            max_maker_requotes: Some(0),
+            ..Default::default()
+        };
+        let effective = override_config.apply_to(&defaults);
+        assert_eq!(effective.single_order_usdt, 250.0);
+        assert_eq!(effective.max_maker_requotes, 0);
+        assert_eq!(effective.orders_per_batch, defaults.orders_per_batch);
+        assert_eq!(effective.maker_price_anchor, defaults.maker_price_anchor);
+        assert!(override_config.validate(&defaults).is_ok());
+        assert!(BatchExecConfigOverride::default()
+            .validate(&defaults)
+            .is_err());
     }
 }

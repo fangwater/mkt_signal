@@ -173,6 +173,34 @@ class ExecConfigServerTests(unittest.TestCase):
         self.assertEqual(store.load("trend_a")["targets"], current["targets"])
         self.assertEqual(store.client.get(store.index_key), index_before)
 
+    def test_order_parameter_save_preserves_symbol_overrides(self):
+        store = fake_store()
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["targets"] = {"BTCUSDT": 0.2}
+        config["symbol_overrides"] = {
+            "btcusdt": {
+                "single_order_usdt": 250,
+                "maker_timeout_ms": 200,
+            }
+        }
+        current = store.save("trend_a", config)
+        parameters = order_parameters(current)
+        parameters["orders_per_batch"] = 5
+
+        updated = store.save_order_parameters(
+            "trend_a", parameters, current["updated_at_us"]
+        )
+
+        self.assertEqual(
+            updated["symbol_overrides"],
+            {
+                "BTCUSDT": {
+                    "single_order_usdt": 250.0,
+                    "maker_timeout_ms": 200,
+                }
+            },
+        )
+
     def test_stale_order_parameter_save_does_not_modify_redis(self):
         store = fake_store()
         config = dict(MODULE.DEFAULT_CONFIG)
@@ -568,6 +596,31 @@ class ExecConfigServerTests(unittest.TestCase):
                 "ETHUSDT": {"qty": -0.5, "signal": 0},
             },
         )
+
+    def test_symbol_overrides_normalize_partial_parameters(self):
+        config = dict(MODULE.DEFAULT_CONFIG)
+        config["symbol_overrides"] = {
+            "btcusdt": {
+                "single_order_usdt": 250,
+                "maker_price_anchor": "opposite_best_plus_one_tick",
+            }
+        }
+
+        normalized = MODULE.normalize_exec_config(config)
+
+        self.assertEqual(
+            normalized["symbol_overrides"],
+            {
+                "BTCUSDT": {
+                    "single_order_usdt": 250.0,
+                    "maker_price_anchor": "opposite_best_plus_one_tick",
+                }
+            },
+        )
+
+        config["symbol_overrides"] = {"BTCUSDT": {}}
+        with self.assertRaisesRegex(ValueError, "must override at least one"):
+            MODULE.normalize_exec_config(config)
 
     def test_invalid_target_signal_is_rejected(self):
         config = dict(MODULE.DEFAULT_CONFIG)

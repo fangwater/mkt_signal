@@ -30,7 +30,8 @@ ORDER_PARAMETER_FIELDS = (
     "max_maker_requotes",
     "target_tolerance_usdt",
 )
-CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets"}
+REQUIRED_CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets"}
+CONFIG_FIELDS = REQUIRED_CONFIG_FIELDS | {"symbol_overrides"}
 OPTIONAL_CONFIG_FIELDS = {"updated_at_us"}
 ALLOWED_TARGET_SIGNALS = (-2, -1, 0, 1, 2)
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -129,6 +130,32 @@ def normalize_targets(raw: Any) -> Dict[str, Dict[str, Any]]:
     return dict(sorted(targets.items()))
 
 
+def normalize_order_parameter_override(raw: Any, field: str) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field} must be an object")
+    if not raw:
+        raise ValueError(f"{field} must override at least one parameter")
+    unknown = sorted(set(raw) - set(ORDER_PARAMETER_FIELDS))
+    if unknown:
+        raise ValueError(f"unknown {field} fields: {', '.join(unknown)}")
+    normalized = normalize_exec_config({**DEFAULT_CONFIG, **raw, "targets": {}})
+    return {name: normalized[name] for name in raw}
+
+
+def normalize_symbol_overrides(raw: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        raise ValueError("symbol_overrides must be an object")
+    overrides: Dict[str, Dict[str, Any]] = {}
+    for raw_symbol, raw_override in raw.items():
+        symbol = normalize_symbol(raw_symbol)
+        if symbol in overrides:
+            raise ValueError(f"duplicate symbol override: {symbol}")
+        overrides[symbol] = normalize_order_parameter_override(
+            raw_override, f"symbol_overrides.{symbol}"
+        )
+    return dict(sorted(overrides.items()))
+
+
 def integer(raw: Any, field: str, *, positive: bool = False) -> int:
     if isinstance(raw, bool):
         raise ValueError(f"{field} must be an integer")
@@ -152,7 +179,7 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     raw = {**raw}
     raw.setdefault("max_batch", DEFAULT_CONFIG["max_batch"])
     unknown = sorted(set(raw) - CONFIG_FIELDS - OPTIONAL_CONFIG_FIELDS)
-    missing = sorted(CONFIG_FIELDS - set(raw))
+    missing = sorted(REQUIRED_CONFIG_FIELDS - set(raw))
     if unknown:
         raise ValueError(f"unknown fields: {', '.join(unknown)}")
     if missing:
@@ -188,6 +215,10 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         "target_tolerance_usdt": tolerance,
         "targets": targets,
     }
+    if "symbol_overrides" in raw:
+        symbol_overrides = normalize_symbol_overrides(raw["symbol_overrides"])
+        if symbol_overrides:
+            normalized["symbol_overrides"] = symbol_overrides
     updated_at_us = raw.get("updated_at_us")
     if updated_at_us is not None:
         if isinstance(updated_at_us, bool) or not isinstance(updated_at_us, int):
@@ -736,6 +767,7 @@ def make_handler(
                         "order_parameters": {
                             field: config[field] for field in ORDER_PARAMETER_FIELDS
                         },
+                        "symbol_overrides": config.get("symbol_overrides", {}),
                         "updated_at_us": config["updated_at_us"],
                     }
                     self.log_update_response(200, response)

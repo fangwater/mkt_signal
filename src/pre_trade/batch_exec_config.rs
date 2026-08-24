@@ -1,5 +1,6 @@
 use crate::strategy::batch_exec_strategy::{
-    BatchExecConfig, BatchExecStrategy, BatchExecTarget, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+    BatchExecConfig, BatchExecConfigOverride, BatchExecStrategy, BatchExecTarget,
+    BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
 };
 use crate::strategy::StrategyManager;
 use account_common::BinanceAccountMode;
@@ -22,6 +23,8 @@ pub struct BatchExecRedisValue {
     pub config: BatchExecConfig,
     pub targets: BTreeMap<String, BatchExecTarget>,
     #[serde(default)]
+    pub symbol_overrides: BTreeMap<String, BatchExecConfigOverride>,
+    #[serde(default)]
     pub updated_at_us: Option<i64>,
 }
 
@@ -39,6 +42,7 @@ impl BatchExecRedisValue {
                 anyhow::bail!("target_qty must be finite: symbol={symbol}");
             }
         }
+        self.normalized_symbol_overrides()?;
         Ok(())
     }
 
@@ -49,6 +53,32 @@ impl BatchExecRedisValue {
             if normalized.insert(symbol.clone(), *target).is_some() {
                 anyhow::bail!(
                     "duplicate normalized target symbol: raw_symbol={raw_symbol} normalized={symbol}"
+                );
+            }
+        }
+        Ok(normalized)
+    }
+
+    fn normalized_symbol_overrides(&self) -> Result<BTreeMap<String, BatchExecConfigOverride>> {
+        let mut normalized = BTreeMap::new();
+        for (raw_symbol, override_config) in &self.symbol_overrides {
+            let symbol = normalize_symbol_for_internal(raw_symbol);
+            if symbol.is_empty() {
+                anyhow::bail!("symbol override must not be empty");
+            }
+            if override_config.is_empty() {
+                anyhow::bail!("symbol override must replace at least one parameter: {raw_symbol}");
+            }
+            override_config
+                .validate(&self.config)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("invalid BatchExec symbol override: {raw_symbol}"))?;
+            if normalized
+                .insert(symbol.clone(), override_config.clone())
+                .is_some()
+            {
+                anyhow::bail!(
+                    "duplicate normalized symbol override: raw_symbol={raw_symbol} normalized={symbol}"
                 );
             }
         }
@@ -1124,12 +1154,21 @@ impl BatchExecConfigReloader {
             let normalized_targets = payload
                 .normalized_targets()
                 .with_context(|| format!("invalid BatchExec targets key={key}"))?;
-            loaded.push((strategy_name, key, payload, normalized_targets));
+            let normalized_symbol_overrides = payload
+                .normalized_symbol_overrides()
+                .with_context(|| format!("invalid BatchExec symbol overrides key={key}"))?;
+            loaded.push((
+                strategy_name,
+                key,
+                payload,
+                normalized_targets,
+                normalized_symbol_overrides,
+            ));
         }
 
         let required_leverage_symbols = loaded
             .iter()
-            .flat_map(|(_, _, _, targets)| targets.iter())
+            .flat_map(|(_, _, _, targets, _)| targets.iter())
             .filter(|(_, target)| target.qty.abs() > POSITION_ALLOCATION_EPS)
             .map(|(symbol, _)| symbol.clone())
             .collect::<BTreeSet<_>>();
@@ -1141,12 +1180,14 @@ impl BatchExecConfigReloader {
         self.queue_removed_strategies(strategy_mgr, &removal_requests)
             .await?;
 
-        for (strategy_name, key, payload, targets) in loaded {
+        for (strategy_name, key, payload, targets, symbol_overrides) in loaded {
             if self.pending_removals.contains(&strategy_name) {
                 continue;
             }
             let previous = self.snapshots.get(&strategy_name);
-            let config_changed = previous.is_none_or(|old| old.config != payload.config);
+            let config_changed = previous.is_none_or(|old| {
+                old.config != payload.config || old.symbol_overrides != payload.symbol_overrides
+            });
             let previous_targets = previous
                 .map(BatchExecRedisValue::normalized_targets)
                 .transpose()?
@@ -1166,6 +1207,10 @@ impl BatchExecConfigReloader {
                 let old_target = previous_targets.get(&symbol).copied();
                 let target_changed =
                     old_target != Some(target) || leverage_retry_symbols.contains(&symbol);
+                let effective_config = symbol_overrides
+                    .get(&symbol)
+                    .map(|override_config| override_config.apply_to(&payload.config))
+                    .unwrap_or_else(|| payload.config.clone());
 
                 if target.qty.abs() > POSITION_ALLOCATION_EPS
                     && self.leverage_blocked_symbols.contains(&symbol)
@@ -1179,7 +1224,7 @@ impl BatchExecConfigReloader {
                         &strategy_name,
                         &symbol,
                         self.venue,
-                        payload.config.clone(),
+                        effective_config,
                     );
                 let strategy = { strategy_mgr.borrow_mut().take(strategy_id) };
                 if let Some(mut strategy) = strategy {
@@ -1196,10 +1241,11 @@ impl BatchExecConfigReloader {
 
             if config_changed || previous_targets != targets {
                 info!(
-                    "BatchExec Redis applied: strategy_name={} config_changed={} targets={}",
+                    "BatchExec Redis applied: strategy_name={} config_changed={} targets={} symbol_overrides={}",
                     strategy_name,
                     config_changed,
-                    payload.targets.len()
+                    payload.targets.len(),
+                    payload.symbol_overrides.len()
                 );
             }
             self.snapshots.insert(strategy_name, payload);
@@ -1511,6 +1557,34 @@ mod tests {
         assert!(validate_strategy_name("removed_strategy_names").is_err());
         validate_strategy_name(BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME).unwrap();
         assert!(validate_config_strategy_name(BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME).is_err());
+    }
+
+    #[test]
+    fn symbol_override_is_normalized_and_applied_to_global_config() {
+        let value: BatchExecRedisValue = serde_json::from_str(
+            r#"{
+                "single_order_usdt": 100.0,
+                "orders_per_batch": 3,
+                "max_batch": 20,
+                "maker_price_anchor": "own_best",
+                "tick_spacing": 2,
+                "batch_interval_ms": 500,
+                "maker_timeout_ms": 1000,
+                "max_maker_requotes": 2,
+                "target_tolerance_usdt": 10.0,
+                "targets": {"BTCUSDT": {"qty": 0.02, "signal": 0}},
+                "symbol_overrides": {
+                    "btcusdt": {"single_order_usdt": 250.0, "orders_per_batch": 5}
+                }
+            }"#,
+        )
+        .unwrap();
+        value.validate().unwrap();
+        let overrides = value.normalized_symbol_overrides().unwrap();
+        let effective = overrides["BTCUSDT"].apply_to(&value.config);
+        assert_eq!(effective.single_order_usdt, 250.0);
+        assert_eq!(effective.orders_per_batch, 5);
+        assert_eq!(effective.max_batch, value.config.max_batch);
     }
 
     #[test]
