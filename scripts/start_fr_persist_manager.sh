@@ -128,7 +128,9 @@ PROC_NAME="${PMDAEMON_NAME:-fr_pm_$(short_exchange "$EXCHANGE")_${env_tag}}"
 LEGACY_PROC_NAME="persist_manager_${dir_tag}"
 RUST_LOG="${RUST_LOG:-info}"
 
-mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
+# Leave the RocksDB path absent on first start so RocksDbStore can initialize
+# its column families instead of trying to open an empty directory.
+mkdir -p "${BASE_DIR}/data" >/dev/null 2>&1 || true
 
 core_args=()
 if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then
