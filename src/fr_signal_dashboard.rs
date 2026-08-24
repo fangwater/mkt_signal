@@ -1,4 +1,7 @@
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,11 +11,16 @@ use axum::extract::State as AxumState;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::*;
+use iceoryx2::service::ipc;
+use ipc_common::iceoryx_publisher::RESAMPLE_PAYLOAD;
 use log::{info, warn};
 use parking_lot::RwLock;
 use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+use viz_common::resample::PreTradeExposureResampleEntry;
 
 use crate::pre_trade::account_open_block::latest_usdt_max_available_margin_snapshot;
 use order_common::TradingVenue;
@@ -25,6 +33,12 @@ use trade_signal::{
     load_all_once_with_namespace, spawn_config_loader_with_namespace, ArbDecision, ArbSignalKind,
     FundingRateFactor, MktChannel, RateFetcher, SymbolList,
 };
+
+const PRE_TRADE_EXPOSURE_CHANNEL: &str = "pre_trade_exposure";
+const HELD_POSITION_EPSILON: f64 = 1e-9;
+const EXPOSURE_IDLE_POLL: Duration = Duration::from_millis(100);
+
+type HeldSymbols = Rc<RefCell<HashSet<String>>>;
 
 #[derive(Debug, Clone)]
 pub struct FrDashboardConfig {
@@ -111,6 +125,7 @@ pub struct FrDashboardRuleState {
 #[derive(Debug, Clone, Serialize)]
 pub struct FrDashboardRow {
     pub symbol: String,
+    pub read_only_observation: bool,
     pub period: String,
     pub signal: String,
     pub signal_tone: String,
@@ -179,6 +194,17 @@ pub async fn run(cfg: FrDashboardConfig, token: CancellationToken) -> Result<()>
     }
     RateFetcher::init_for_venues(cfg.open_venue, cfg.hedge_venue)?;
     let _ = FundingRateFactor::instance();
+    let held_symbols: HeldSymbols = Rc::new(RefCell::new(HashSet::new()));
+    match dashboard_ipc_namespace() {
+        Ok(namespace) => {
+            if let Err(err) =
+                spawn_held_symbol_listener(&namespace, cfg.hedge_venue, held_symbols.clone())
+            {
+                warn!("fr_signal_dashboard holding observer disabled: {err:#}");
+            }
+        }
+        Err(err) => warn!("fr_signal_dashboard holding observer disabled: {err:#}"),
+    }
     spawn_config_loader_with_namespace(
         redis,
         cfg.symbol_namespace.clone(),
@@ -187,7 +213,7 @@ pub async fn run(cfg: FrDashboardConfig, token: CancellationToken) -> Result<()>
         cfg.hedge_venue,
     );
 
-    let initial_snapshot = build_snapshot(&cfg);
+    let initial_snapshot = build_snapshot(&cfg, &held_symbols.borrow());
     let hub = DashboardHub::new(128, initial_snapshot.clone());
     hub.publish_snapshot(initial_snapshot);
 
@@ -199,6 +225,7 @@ pub async fn run(cfg: FrDashboardConfig, token: CancellationToken) -> Result<()>
     let poll_cfg = cfg.clone();
     let poll_hub = hub.clone();
     let poll_token = token.clone();
+    let poll_held_symbols = held_symbols.clone();
     tokio::task::spawn_local(async move {
         let mut interval =
             tokio::time::interval(Duration::from_millis(poll_cfg.refresh_ms.max(200)));
@@ -206,7 +233,7 @@ pub async fn run(cfg: FrDashboardConfig, token: CancellationToken) -> Result<()>
             tokio::select! {
                 _ = poll_token.cancelled() => break,
                 _ = interval.tick() => {
-                    poll_hub.publish_snapshot(build_snapshot(&poll_cfg));
+                    poll_hub.publish_snapshot(build_snapshot(&poll_cfg, &poll_held_symbols.borrow()));
                 }
             }
         }
@@ -239,14 +266,180 @@ fn default_redis_settings() -> RedisSettings {
     }
 }
 
-fn build_snapshot(cfg: &FrDashboardConfig) -> FrDashboardSnapshot {
-    let mut symbols = SymbolList::instance().get_online_symbols();
+fn dashboard_ipc_namespace() -> Result<String> {
+    if let Ok(namespace) = std::env::var("IPC_NAMESPACE") {
+        let namespace = namespace.trim();
+        if !namespace.is_empty() {
+            return Ok(namespace.to_string());
+        }
+    }
+
+    let cwd = std::env::current_dir()?;
+    let env_name = cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing IPC_NAMESPACE and unable to infer env name"))?;
+    Ok(env_name.to_string())
+}
+
+fn held_symbols_from_exposure(entry: &PreTradeExposureResampleEntry) -> HashSet<String> {
+    entry
+        .rows
+        .iter()
+        .filter(|row| {
+            !row.is_total
+                && [row.open_qty, row.hedge_qty, row.arb_hedge_net_qty]
+                    .into_iter()
+                    .flatten()
+                    .any(|qty| qty.abs() > HELD_POSITION_EPSILON)
+        })
+        .filter_map(|row| {
+            let asset = row.asset.trim().to_ascii_uppercase();
+            if asset == "USDT"
+                || asset.is_empty()
+                || !asset.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            {
+                return None;
+            }
+            Some(if asset.ends_with("USDT") {
+                asset
+            } else {
+                format!("{asset}USDT")
+            })
+        })
+        .collect()
+}
+
+fn spawn_held_symbol_listener(
+    namespace: &str,
+    hedge_venue: TradingVenue,
+    held_symbols: HeldSymbols,
+) -> Result<()> {
+    let namespace = namespace.to_string();
+    let service_name = format!("{namespace}/viz_pubs/{PRE_TRADE_EXPOSURE_CHANNEL}");
+    let node_name = format!(
+        "fr_dashboard_held_{}",
+        namespace
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>()
+    );
+
+    tokio::task::spawn_local(async move {
+        let result = async move {
+            let node = NodeBuilder::new()
+                .name(&NodeName::new(&node_name)?)
+                .create::<ipc::Service>()?;
+            let service = node
+                .service_builder(&ServiceName::new(&service_name)?)
+                .publish_subscribe::<[u8; RESAMPLE_PAYLOAD]>()
+                .max_publishers(1)
+                .max_subscribers(32)
+                .history_size(128)
+                .subscriber_max_buffer_size(256)
+                .open_or_create()?;
+            let subscriber: Subscriber<ipc::Service, [u8; RESAMPLE_PAYLOAD], ()> =
+                service.subscriber_builder().create()?;
+
+            info!(
+                "fr_signal_dashboard observing held symbols from exposure service={} node={}",
+                service_name, node_name
+            );
+
+            loop {
+                match subscriber.receive() {
+                    Ok(Some(sample)) => {
+                        let payload = sample.payload();
+                        if payload.len() < 4 {
+                            warn!(
+                                "fr_signal_dashboard ignored short exposure payload service={}",
+                                service_name
+                            );
+                            continue;
+                        }
+                        let mut len_bytes = [0u8; 4];
+                        len_bytes.copy_from_slice(&payload[..4]);
+                        let data_len = u32::from_le_bytes(len_bytes) as usize;
+                        if data_len == 0 || data_len + 4 > payload.len() {
+                            warn!(
+                                "fr_signal_dashboard ignored invalid exposure payload service={} len={}",
+                                service_name, data_len
+                            );
+                            continue;
+                        }
+
+                        match PreTradeExposureResampleEntry::from_bytes(&payload[4..4 + data_len]) {
+                            Ok(entry) => {
+                                let next_symbols = held_symbols_from_exposure(&entry);
+                                let changed = {
+                                    let mut current_symbols = held_symbols.borrow_mut();
+                                    if *current_symbols == next_symbols {
+                                        false
+                                    } else {
+                                        *current_symbols = next_symbols.clone();
+                                        true
+                                    }
+                                };
+                                if changed {
+                                    RateFetcher::set_read_only_observed_symbols(
+                                        hedge_venue,
+                                        next_symbols.iter().cloned(),
+                                    );
+                                    let mut symbols: Vec<_> = next_symbols.into_iter().collect();
+                                    symbols.sort_unstable();
+                                    info!(
+                                        "fr_signal_dashboard updated read-only held-symbol watch count={} symbols={}",
+                                        symbols.len(),
+                                        symbols.join(",")
+                                    );
+                                }
+                            }
+                            Err(err) => warn!(
+                                "fr_signal_dashboard failed to decode exposure payload service={}: {err:#}",
+                                service_name
+                            ),
+                        }
+                    }
+                    Ok(None) => tokio::time::sleep(EXPOSURE_IDLE_POLL).await,
+                    Err(err) => {
+                        warn!(
+                            "fr_signal_dashboard exposure receive error service={}: {err}",
+                            service_name
+                        );
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
+        if let Err(err) = result.await {
+            warn!("fr_signal_dashboard holding observer exited: {err:#}");
+        }
+    });
+
+    Ok(())
+}
+
+fn build_snapshot(cfg: &FrDashboardConfig, held_symbols: &HashSet<String>) -> FrDashboardSnapshot {
+    let strategy_symbols: HashSet<String> = SymbolList::instance()
+        .get_online_symbols()
+        .into_iter()
+        .collect();
+    let mut symbols: Vec<String> = strategy_symbols
+        .iter()
+        .cloned()
+        .chain(held_symbols.iter().cloned())
+        .collect();
     symbols.sort_unstable();
     symbols.dedup();
 
     let rows: Vec<FrDashboardRow> = symbols
         .iter()
-        .map(|symbol| build_row(cfg, symbol))
+        .map(|symbol| build_row(cfg, symbol, !strategy_symbols.contains(symbol)))
         .collect();
     let thresholds = build_threshold_legends();
     let summary = build_summary(&rows);
@@ -270,7 +463,7 @@ fn build_snapshot(cfg: &FrDashboardConfig) -> FrDashboardSnapshot {
 
 fn build_summary(rows: &[FrDashboardRow]) -> FrDashboardSummary {
     let mut summary = FrDashboardSummary {
-        total_symbols: rows.len(),
+        total_symbols: rows.iter().filter(|row| !row.read_only_observation).count(),
         active_signals: 0,
         forward_open: 0,
         forward_close: 0,
@@ -279,7 +472,7 @@ fn build_summary(rows: &[FrDashboardRow]) -> FrDashboardSummary {
         neutral: 0,
     };
 
-    for row in rows {
+    for row in rows.iter().filter(|row| !row.read_only_observation) {
         match row.signal.as_str() {
             "FwdOpen" => {
                 summary.forward_open += 1;
@@ -356,7 +549,7 @@ fn push_threshold_legend(
     });
 }
 
-fn build_row(cfg: &FrDashboardConfig, symbol: &str) -> FrDashboardRow {
+fn build_row(cfg: &FrDashboardConfig, symbol: &str, read_only_observation: bool) -> FrDashboardRow {
     let factor = FundingRateFactor::instance();
     let rate_fetcher = RateFetcher::instance();
     let mkt_channel = MktChannel::instance();
@@ -379,44 +572,53 @@ fn build_row(cfg: &FrDashboardConfig, symbol: &str) -> FrDashboardRow {
         .map(|(fr, loan)| fr + loan * BWD_OPEN_LOAN_RATE_MULTIPLIER);
     let ma_plus_cur_loan = fr_ma.zip(cur_loan).map(|(fr, loan)| fr + loan);
 
-    let signal = ArbDecision::evaluate_funding_rate_signal(symbol, cfg.hedge_venue)
-        .ok()
-        .flatten();
+    let signal = if read_only_observation {
+        None
+    } else {
+        ArbDecision::evaluate_funding_rate_signal(symbol, cfg.hedge_venue)
+            .ok()
+            .flatten()
+    };
     let signal_name = signal.map(|item| item.as_str()).unwrap_or("-");
 
-    let rules = vec![
-        build_rule_state(
-            "fwd_open",
-            "FwdOpen",
-            factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Open),
-            pred_fr,
-            signal,
-        ),
-        build_rule_state(
-            "fwd_close",
-            "FwdClose",
-            factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Close),
-            fr_ma,
-            signal,
-        ),
-        build_rule_state(
-            "bwd_open",
-            "BwdOpen",
-            factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Open),
-            fr_plus_pred_loan,
-            signal,
-        ),
-        build_rule_state(
-            "bwd_close",
-            "BwdClose",
-            factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Close),
-            ma_plus_cur_loan,
-            signal,
-        ),
-    ];
+    let rules = if read_only_observation {
+        Vec::new()
+    } else {
+        vec![
+            build_rule_state(
+                "fwd_open",
+                "FwdOpen",
+                factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Open),
+                pred_fr,
+                signal,
+            ),
+            build_rule_state(
+                "fwd_close",
+                "FwdClose",
+                factor.get_threshold_config(period, ArbDirection::Forward, OperationType::Close),
+                fr_ma,
+                signal,
+            ),
+            build_rule_state(
+                "bwd_open",
+                "BwdOpen",
+                factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Open),
+                fr_plus_pred_loan,
+                signal,
+            ),
+            build_rule_state(
+                "bwd_close",
+                "BwdClose",
+                factor.get_threshold_config(period, ArbDirection::Backward, OperationType::Close),
+                ma_plus_cur_loan,
+                signal,
+            ),
+        ]
+    };
 
     FrDashboardRow {
         symbol: symbol.to_string(),
+        read_only_observation,
         period: period.as_str().to_string(),
         signal: signal_name.to_string(),
         signal_tone: signal.map(signal_tone).unwrap_or("neutral").to_string(),
@@ -1218,3 +1420,62 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{held_symbols_from_exposure, PreTradeExposureResampleEntry};
+    use viz_common::resample::PreTradeExposureRow;
+
+    fn row(
+        asset: &str,
+        open_qty: Option<f64>,
+        hedge_qty: Option<f64>,
+        arb_hedge_net_qty: Option<f64>,
+        is_total: bool,
+    ) -> PreTradeExposureRow {
+        PreTradeExposureRow {
+            asset: asset.to_string(),
+            open_qty,
+            open_usdt: None,
+            hedge_qty,
+            hedge_usdt: None,
+            hedge_net_qty: None,
+            hedge_time_ms: None,
+            hedge_is_taker: None,
+            hedge_ret_qtl: None,
+            hedge_offset_low: None,
+            hedge_offset_high: None,
+            arb_hedge_net_qty,
+            arb_pending_hedge_qty: None,
+            arb_due_hedge_qty: None,
+            arb_hedge_time_ms: None,
+            arb_hedge_is_taker: None,
+            arb_hedge_ret_qtl: None,
+            arb_hedge_score: None,
+            arb_hedge_offset: None,
+            net_qty: None,
+            net_usdt: None,
+            is_total,
+        }
+    }
+
+    #[test]
+    fn held_symbols_include_nonzero_position_legs_only() {
+        let entry = PreTradeExposureResampleEntry {
+            ts_ms: 1,
+            rows: vec![
+                row("btc", Some(0.1), None, None, false),
+                row("ETH", None, Some(-0.2), None, false),
+                row("sol", None, None, Some(0.3), false),
+                row("USDT", Some(1.0), None, None, false),
+                row("TOTAL", Some(1.0), None, None, true),
+                row("ZERO", Some(0.0), Some(0.0), Some(0.0), false),
+                row("bad-token", Some(1.0), None, None, false),
+            ],
+        };
+
+        let mut symbols: Vec<_> = held_symbols_from_exposure(&entry).into_iter().collect();
+        symbols.sort_unstable();
+        assert_eq!(symbols, ["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+    }
+}

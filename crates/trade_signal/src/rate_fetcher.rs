@@ -358,6 +358,8 @@ struct RateFetcherInner {
     funding_periods: HashMap<TradingVenue, HashMap<String, FundingRatePeriod>>,
     /// 交易所状态：TradingVenue -> VenueState
     venue_states: HashMap<TradingVenue, VenueState>,
+    /// 只读消费者额外观察的 symbol。它们不会写入策略 SymbolList。
+    observed_symbols: HashMap<TradingVenue, HashSet<String>>,
     /// HTTP 客户端
     http_client: Client,
     /// Binance API Key (可选)
@@ -419,6 +421,7 @@ impl RateFetcher {
                     lending_rates: HashMap::new(),
                     funding_periods: HashMap::new(),
                     venue_states: HashMap::new(),
+                    observed_symbols: HashMap::new(),
                     http_client,
                     binance_api_key: None,
                     binance_api_secret: None,
@@ -638,6 +641,42 @@ impl RateFetcher {
             Self::init_bitget_coin_futures();
         }
         Ok(())
+    }
+
+    /// Replaces the symbols requested by a read-only consumer in addition to
+    /// its strategy list. This never changes `SymbolList` or decision routing.
+    pub fn set_read_only_observed_symbols(
+        venue: TradingVenue,
+        symbols: impl IntoIterator<Item = String>,
+    ) {
+        let normalized = symbols
+            .into_iter()
+            .map(|symbol| Self::normalize_symbol_for_lookup(&symbol, venue))
+            .filter(|symbol| !symbol.is_empty())
+            .collect();
+        Self::with_inner_mut(|inner| {
+            inner.observed_symbols.insert(venue, normalized);
+        });
+    }
+
+    fn symbols_with_read_only_observations(
+        venue: TradingVenue,
+        symbols: Vec<String>,
+    ) -> Vec<String> {
+        let mut merged: HashSet<String> = symbols
+            .into_iter()
+            .map(|symbol| Self::normalize_symbol_for_lookup(&symbol, venue))
+            .filter(|symbol| !symbol.is_empty())
+            .collect();
+        Self::with_inner(|inner| {
+            if let Some(observed) = inner.observed_symbols.get(&venue) {
+                merged.extend(observed.iter().cloned());
+            }
+        });
+
+        let mut merged: Vec<String> = merged.into_iter().collect();
+        merged.sort_unstable();
+        merged
     }
 
     fn init_binance_coin_futures() {
@@ -2153,10 +2192,12 @@ impl RateFetcher {
 
     async fn fetch_gate_rates(is_full_fetch: bool) -> Result<()> {
         let symbol_list = SymbolList::instance();
-        let mut online_symbols = symbol_list.get_online_symbols();
-        if online_symbols.is_empty() {
-            online_symbols = GATE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
+        let mut strategy_symbols = symbol_list.get_online_symbols();
+        if strategy_symbols.is_empty() {
+            strategy_symbols = GATE_TEST_SYMBOLS.iter().map(|s| s.to_string()).collect();
         }
+        let online_symbols =
+            Self::symbols_with_read_only_observations(GATE_CONFIG.venue, strategy_symbols.clone());
 
         let (new_symbols, all_changed) =
             Self::update_symbol_cache(GATE_CONFIG.venue, &online_symbols, is_full_fetch);
@@ -2180,13 +2221,13 @@ impl RateFetcher {
 
         Self::check_initial_rates_if_needed(
             GATE_CONFIG.venue,
-            &online_symbols,
+            &strategy_symbols,
             true,
             all_changed || is_full_fetch,
         );
 
         if all_changed || is_full_fetch {
-            Self::print_gate_rate_table(&online_symbols);
+            Self::print_gate_rate_table(&strategy_symbols);
         }
         Ok(())
     }
