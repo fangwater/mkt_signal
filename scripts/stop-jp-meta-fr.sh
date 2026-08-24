@@ -15,7 +15,7 @@ Usage: scripts/stop-jp-meta-fr.sh --env-name <name> [options]
 
 Options:
   --host <ssh-host>    SSH config host (default: jp-meta-elvpn)
-  --env-name <name>   Binance/Gate FR environment (required)
+  --env-name <name>   Binance/Gate/Bitget FR environment (required)
   --check-only        Validate the target and show matching processes only
   -h, --help          Show this help
 
@@ -57,8 +57,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|gate)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
-  echo "[ERROR] env-name must match binance_fr_<suffix> or gate_fr_<suffix>: $ENV_NAME" >&2
+if [[ ! "$ENV_NAME" =~ ^(binance|gate|bitget)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "[ERROR] env-name must match binance_fr_<suffix>, gate_fr_<suffix>, or bitget_fr_<suffix>: $ENV_NAME" >&2
   exit 2
 fi
 EXCHANGE="${BASH_REMATCH[1]}"
@@ -137,6 +137,10 @@ case "$exchange" in
     api_key_name="GATE_API_KEY"
     api_secret_name="GATE_API_SECRET"
     ;;
+  bitget)
+    api_key_name="BITGET_API_KEY"
+    api_secret_name="BITGET_API_SECRET"
+    ;;
   *)
     echo "[ERROR] unsupported exchange: $exchange" >&2
     exit 1
@@ -159,6 +163,7 @@ target_executables=(
   "$target/account_monitor"
   "$target/binance_account_monitor"
   "$target/gate_account_monitor"
+  "$target/bitget_account_monitor"
   "$target/viz_server"
   "$target/pre_trade"
   "$target/trade_engine"

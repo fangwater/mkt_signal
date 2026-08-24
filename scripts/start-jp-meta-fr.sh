@@ -18,7 +18,7 @@ Usage: scripts/start-jp-meta-fr.sh --env-name <name> [options]
 
 Options:
   --host <ssh-host>    SSH config host (default: jp-meta-elvpn)
-  --env-name <name>   Binance/Gate FR environment (required)
+  --env-name <name>   Binance/Gate/Bitget FR environment (required)
   --check-only        Validate the target and show process state without starting
   -h, --help          Show this help
 
@@ -61,8 +61,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|gate)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
-  echo "[ERROR] env-name must match binance_fr_<suffix> or gate_fr_<suffix>: $ENV_NAME" >&2
+if [[ ! "$ENV_NAME" =~ ^(binance|gate|bitget)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "[ERROR] env-name must match binance_fr_<suffix>, gate_fr_<suffix>, or bitget_fr_<suffix>: $ENV_NAME" >&2
   exit 2
 fi
 EXCHANGE="${BASH_REMATCH[1]}"
@@ -177,6 +177,7 @@ short_exchange() {
   case "$1" in
     binance) echo "bn" ;;
     gate) echo "gt" ;;
+    bitget) echo "bg" ;;
     *)
       echo "[ERROR] unsupported exchange: $1" >&2
       return 1
