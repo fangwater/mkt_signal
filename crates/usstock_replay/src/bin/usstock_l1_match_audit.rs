@@ -1,6 +1,7 @@
 //! Read-only audit of whether venue-local L1 reflects subsequent trade size.
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::DateTime;
 use clap::Parser;
 use csv::StringRecord;
 use flate2::read::MultiGzDecoder;
@@ -45,6 +46,12 @@ struct Level {
     size: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct EventKey {
+    ts_utc_ns: u64,
+    source_row: u64,
+}
+
 #[derive(Debug, Clone)]
 struct VenueBook {
     bid: Option<Level>,
@@ -76,6 +83,7 @@ impl VenueBook {
 
 #[derive(Debug, Clone)]
 struct PendingDecrement {
+    trade_event: EventKey,
     price: i64,
     before_size: i64,
     summed_volume: i64,
@@ -87,6 +95,9 @@ struct Stats {
     quote_qualifier_contains: String,
     source_rows: u64,
     ric_rows: u64,
+    timestamp_parse_errors: u64,
+    timestamp_regressions: u64,
+    same_timestamp_rows: u64,
     quote_rows_total: u64,
     quote_rows_used: u64,
     quote_side_updates: u64,
@@ -107,7 +118,9 @@ struct Stats {
     trade_at_locked_book: u64,
     trade_not_at_prior_best: u64,
     pending_buckets_resolved: u64,
-    exact_decrement_buckets: u64,
+    resolved_same_timestamp: u64,
+    resolved_later_timestamp: u64,
+    same_price_size_delta_equals_volume: u64,
     decrement_smaller_than_trade_volume: u64,
     decrement_larger_than_trade_volume: u64,
     quote_size_increased: u64,
@@ -120,6 +133,7 @@ struct Stats {
 struct Audit {
     books: BTreeMap<String, VenueBook>,
     pending: BTreeMap<(String, Side), PendingDecrement>,
+    last_event: Option<EventKey>,
     stats: Stats,
 }
 
@@ -128,18 +142,38 @@ impl Audit {
         Self {
             books: BTreeMap::new(),
             pending: BTreeMap::new(),
+            last_event: None,
             stats: Stats::default(),
         }
     }
 
-    fn on_quote_side(&mut self, venue: &str, side: Side, after: Option<Level>) {
+    fn accept_event(&mut self, event: EventKey) -> bool {
+        if let Some(previous) = self.last_event {
+            if event.ts_utc_ns < previous.ts_utc_ns {
+                self.stats.timestamp_regressions += 1;
+                return false;
+            }
+            if event.ts_utc_ns == previous.ts_utc_ns {
+                self.stats.same_timestamp_rows += 1;
+            }
+        }
+        self.last_event = Some(event);
+        true
+    }
+
+    fn on_quote_side(&mut self, venue: &str, side: Side, after: Option<Level>, event: EventKey) {
         if let Some(pending) = self.pending.remove(&(venue.to_string(), side)) {
+            if event.ts_utc_ns == pending.trade_event.ts_utc_ns {
+                self.stats.resolved_same_timestamp += 1;
+            } else {
+                self.stats.resolved_later_timestamp += 1;
+            }
             self.stats.pending_buckets_resolved += 1;
             match after {
                 Some(level) if level.price == pending.price => {
                     let decrement = pending.before_size - level.size;
                     if decrement == pending.summed_volume {
-                        self.stats.exact_decrement_buckets += 1;
+                        self.stats.same_price_size_delta_equals_volume += 1;
                     } else if decrement < 0 {
                         self.stats.quote_size_increased += 1;
                     } else if decrement < pending.summed_volume {
@@ -159,7 +193,7 @@ impl Audit {
         self.stats.quote_side_updates += 1;
     }
 
-    fn on_trade(&mut self, venue: &str, price: i64, volume: i64) {
+    fn on_trade(&mut self, venue: &str, price: i64, volume: i64, event: EventKey) {
         let Some(book) = self.books.get(venue) else {
             self.stats.trade_without_prior_venue_book += 1;
             return;
@@ -199,6 +233,7 @@ impl Audit {
                 self.pending.insert(
                     key,
                     PendingDecrement {
+                        trade_event: event,
                         price: level.price,
                         before_size: level.size,
                         summed_volume: volume,
@@ -210,6 +245,7 @@ impl Audit {
                 self.pending.insert(
                     key,
                     PendingDecrement {
+                        trade_event: event,
                         price: level.price,
                         before_size: level.size,
                         summed_volume: volume,
@@ -250,6 +286,7 @@ impl Audit {
 #[derive(Debug, Clone)]
 struct Header {
     ric: usize,
+    date_time: usize,
     event_type: usize,
     venue: usize,
     price: usize,
@@ -275,9 +312,9 @@ impl Header {
                 .copied()
                 .ok_or_else(|| anyhow!("TAS header missing {name}"))
         };
-        required("Date-Time")?;
         Ok(Self {
             ric: required("#RIC")?,
+            date_time: required("Date-Time")?,
             event_type: required("Type")?,
             venue: required("Ex/Cntrb.ID")?,
             price: required("Price")?,
@@ -330,6 +367,15 @@ fn positive_l1(raw: &str, field: &str) -> Result<Option<i64>> {
     Ok(parse_e9(raw, field)?.filter(|value| *value > 0))
 }
 
+fn parse_timestamp_ns(raw: &str) -> Result<u64> {
+    let timestamp = DateTime::parse_from_rfc3339(raw)
+        .map_err(|err| anyhow!("invalid Date-Time {raw:?}: {err}"))?;
+    let nanos = timestamp
+        .timestamp_nanos_opt()
+        .ok_or_else(|| anyhow!("Date-Time {raw:?} outside nanosecond range"))?;
+    u64::try_from(nanos).map_err(|_| anyhow!("Date-Time {raw:?} predates Unix epoch"))
+}
+
 fn quote_level(
     venue: &str,
     price_raw: &str,
@@ -363,12 +409,27 @@ fn process_row(
     row: &StringRecord,
     target_ric: &str,
     quote_qualifier_contains: &str,
+    source_row: u64,
 ) -> Result<()> {
     let ric = header.cell(row, header.ric);
     if ric != target_ric {
         return Ok(());
     }
     audit.stats.ric_rows += 1;
+    let ts_utc_ns = match parse_timestamp_ns(header.cell(row, header.date_time)) {
+        Ok(timestamp) => timestamp,
+        Err(_) => {
+            audit.stats.timestamp_parse_errors += 1;
+            return Ok(());
+        }
+    };
+    let event = EventKey {
+        ts_utc_ns,
+        source_row,
+    };
+    if !audit.accept_event(event) {
+        return Ok(());
+    }
     let qualifiers = header.cell(row, header.qualifiers);
     if qualifiers.contains("AGGRS_SID1") {
         audit.stats.qualifiers_with_aggrs_sid1 += 1;
@@ -386,7 +447,7 @@ fn process_row(
                 header.cell(row, header.bid_size),
                 &mut audit.stats,
             )? {
-                audit.on_quote_side(&venue, Side::Bid, level);
+                audit.on_quote_side(&venue, Side::Bid, level, event);
             }
             if let Some((venue, level)) = quote_level(
                 header.cell(row, header.ask_venue),
@@ -394,7 +455,7 @@ fn process_row(
                 header.cell(row, header.ask_size),
                 &mut audit.stats,
             )? {
-                audit.on_quote_side(&venue, Side::Ask, level);
+                audit.on_quote_side(&venue, Side::Ask, level, event);
             }
         }
         "Trade" => {
@@ -410,7 +471,7 @@ fn process_row(
                         positive_l1(header.cell(row, header.bid_price), "trade row bid")?,
                         positive_l1(header.cell(row, header.ask_price), "trade row ask")?,
                     );
-                    audit.on_trade(venue, price, volume)
+                    audit.on_trade(venue, price, volume, event)
                 }
                 _ => audit.stats.trade_without_price_or_volume += 1,
             }
@@ -447,12 +508,14 @@ fn run(config: &Config) -> Result<Stats> {
         }
         let row = result?;
         audit.stats.source_rows += 1;
+        let source_row = audit.stats.source_rows;
         process_row(
             &mut audit,
             &header,
             &row,
             &config.ric,
             &config.quote_qualifier_contains,
+            source_row,
         )?;
     }
     Ok(audit.finish())
@@ -486,6 +549,13 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    fn event(source_row: u64) -> EventKey {
+        EventKey {
+            ts_utc_ns: 1_000 + source_row,
+            source_row,
+        }
+    }
+
     #[test]
     fn venue_books_do_not_cross_and_exact_ask_decrement_matches() {
         let mut audit = Audit::new();
@@ -496,6 +566,7 @@ mod tests {
                 price: 100_000_000_000,
                 size: 10_000_000_000,
             }),
+            event(1),
         );
         audit.on_quote_side(
             "BAT",
@@ -504,8 +575,9 @@ mod tests {
                 price: 100_000_000_000,
                 size: 10_000_000_000,
             }),
+            event(2),
         );
-        audit.on_trade("DEX", 100_000_000_000, 1_000_000_000);
+        audit.on_trade("DEX", 100_000_000_000, 1_000_000_000, event(3));
         audit.on_quote_side(
             "BAT",
             Side::Ask,
@@ -513,6 +585,7 @@ mod tests {
                 price: 100_000_000_000,
                 size: 9_000_000_000,
             }),
+            event(4),
         );
         assert_eq!(audit.stats.pending_buckets_resolved, 0);
         audit.on_quote_side(
@@ -522,14 +595,15 @@ mod tests {
                 price: 100_000_000_000,
                 size: 9_000_000_000,
             }),
+            event(5),
         );
-        assert_eq!(audit.stats.exact_decrement_buckets, 1);
+        assert_eq!(audit.stats.same_price_size_delta_equals_volume, 1);
     }
 
     #[test]
     fn prior_bid_marks_sell_and_missing_book_is_not_defaulted() {
         let mut audit = Audit::new();
-        audit.on_trade("DEX", 99_000_000_000, 1_000_000_000);
+        audit.on_trade("DEX", 99_000_000_000, 1_000_000_000, event(1));
         assert_eq!(audit.stats.trade_without_prior_venue_book, 1);
         audit.on_quote_side(
             "DEX",
@@ -538,8 +612,9 @@ mod tests {
                 price: 99_000_000_000,
                 size: 5_000_000_000,
             }),
+            event(2),
         );
-        audit.on_trade("DEX", 99_000_000_000, 1_000_000_000);
+        audit.on_trade("DEX", 99_000_000_000, 1_000_000_000, event(3));
         assert_eq!(audit.stats.trade_at_prior_bid, 1);
     }
 
@@ -551,5 +626,16 @@ mod tests {
         let missing_venue = quote_level("", "0", "0", &mut stats).unwrap();
         assert!(missing_venue.is_none());
         assert_eq!(stats.quote_side_without_venue, 1);
+    }
+
+    #[test]
+    fn timestamp_regression_is_not_applied_to_book_state() {
+        let mut audit = Audit::new();
+        assert!(audit.accept_event(event(2)));
+        assert!(!audit.accept_event(EventKey {
+            ts_utc_ns: 1_001,
+            source_row: 3,
+        }));
+        assert_eq!(audit.stats.timestamp_regressions, 1);
     }
 }
