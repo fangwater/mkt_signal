@@ -5135,6 +5135,19 @@ mod tests {
         marks.insert("BTC".to_string(), 100_000.0);
         assert!(missing_position_mark_assets(&exposures, &marks).is_empty());
     }
+
+    #[test]
+    fn gate_mark_price_lookup_maps_internal_symbol_to_contract_symbol() {
+        let mapper = create_symbol_mapper(Exchange::Gate);
+        let mut price_table = PriceTable::new();
+        price_table.update_mark_price("PIPPIN_USDT", 0.01856, 0);
+
+        assert_eq!(
+            MonitorChannel::mark_price_for_asset(&*mapper, &price_table, "PIPPIN"),
+            0.01856
+        );
+    }
+
     #[test]
     fn monitor_fast_poll_budget_maps_messages_to_tokens() {
         assert_eq!(
