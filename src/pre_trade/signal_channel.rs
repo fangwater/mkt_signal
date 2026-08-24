@@ -31,9 +31,9 @@ use iceoryx2::port::subscriber::Subscriber;
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use ipc_common::iceoryx_publisher::{SignalPublisher, TradeSignalIpcPayload, SIGNAL_PAYLOAD};
-use log::{debug, info, warn};
+use log::{debug, info, warn, Level};
 use order_common::TradingVenue;
-use rolling_common::arb_open_latency::record_arb_open_latency;
+use rolling_common::arb_open_latency::record_arb_open_latency_with_level;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
@@ -51,6 +51,7 @@ use signal_common::trade_signal::{SignalType, TradeSignalView};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
+use trade_signal::ArbMode;
 
 thread_local! {
     static SIGNAL_CHANNEL: OnceCell<SignalChannel> = const { OnceCell::new() };
@@ -68,6 +69,19 @@ const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 const ARB_OPEN_MAX_RECEIVE_LAG_US: i64 = 100;
 const TAKER_DECISION_MODEL_OPEN_GATE_LOG_INTERVAL_US: i64 = 20_000_000;
 const SIGNAL_COUNT_BUCKETS: usize = 14;
+
+fn arb_open_latency_log_level(arb_mode: ArbMode) -> Level {
+    if arb_mode == ArbMode::FundingArb {
+        Level::Debug
+    } else {
+        Level::Info
+    }
+}
+
+fn record_pre_trade_arb_open_latency(stage: &'static str, delta_us: i64) {
+    let log_level = arb_open_latency_log_level(MonitorChannel::instance().arb_mode());
+    record_arb_open_latency_with_level(stage, delta_us, log_level);
+}
 
 fn normalize_fixed_symbol_for_internal(symbol: &[u8; 32]) -> String {
     normalize_fixed_symbol_for_internal_cow(symbol).into_owned()
@@ -601,7 +615,7 @@ impl SignalListener {
                             if matches!(signal.signal_type, SignalType::ArbOpen)
                                 && signal.generation_time > 0
                             {
-                                record_arb_open_latency(
+                                record_pre_trade_arb_open_latency(
                                     "pt_receive_minus_generation",
                                     receive_us.saturating_sub(signal.generation_time),
                                 );
@@ -784,7 +798,7 @@ impl SignalChannel {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_position_reducing, normalize_fixed_symbol_for_internal,
+        arb_open_latency_log_level, is_position_reducing, normalize_fixed_symbol_for_internal,
         normalize_fixed_symbol_for_internal_cow, should_drop_open_signal_for_slow_round,
         should_drop_startup_buffered_signal, should_suppress_arb_open_inactive_warning,
         stale_arb_open_receive_lag_us, OpenSignalDropReason, ARB_OPEN_MAX_RECEIVE_LAG_US,
@@ -792,12 +806,29 @@ mod tests {
     use bytes::Bytes;
     use signal_common::trade_signal::{SignalType, TradeSignal};
     use std::borrow::Cow;
+    use trade_signal::ArbMode;
 
     fn fixed_symbol(value: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
         let bytes = value.as_bytes();
         out[..bytes.len().min(32)].copy_from_slice(&bytes[..bytes.len().min(32)]);
         out
+    }
+
+    #[test]
+    fn funding_arb_open_latency_logs_at_debug_level() {
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::FundingArb),
+            log::Level::Debug
+        );
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::IntraArb),
+            log::Level::Info
+        );
+        assert_eq!(
+            arb_open_latency_log_level(ArbMode::CrossArb),
+            log::Level::Info
+        );
     }
 
     #[test]
@@ -1286,7 +1317,7 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 receive_us,
                 handle_start_us,
             );
-            record_arb_open_latency(
+            record_pre_trade_arb_open_latency(
                 "pt_handle_strategy_total",
                 get_timestamp_us().saturating_sub(handle_start_us),
             );

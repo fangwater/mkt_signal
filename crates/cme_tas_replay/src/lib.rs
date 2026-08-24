@@ -2,6 +2,8 @@
 
 pub mod drop_special_1min;
 pub mod hourly_kll;
+pub mod ylabel_1m;
+pub mod ll2_1min;
 pub mod sparse_1s;
 
 use anyhow::{anyhow, bail, Context, Result};

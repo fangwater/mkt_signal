@@ -10,9 +10,12 @@
 //! Compute unit is the expiry RIC. Write unit is the product day file.
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone};
+use chrono_tz::America::Chicago;
 use clap::Parser;
 use cme_tas_replay::drop_special_1min::{
-    route_for_row, synthesize_drop_special_1min, write_drop_special_parquet, DropSpecialMinute,
+    fill_full_session_minutes, route_for_row, synthesize_drop_special_1min,
+    write_drop_special_parquet, DropSpecialMinute, MinuteFillState,
 };
 use cme_tas_replay::{
     decode_cme_special, decode_cme_trade, decode_ric, encode_key, encode_ric, key_ts_utc_ns,
@@ -50,6 +53,123 @@ const DEFAULT_READAHEAD_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_WORKERS: usize = 32;
 const DEFAULT_WRITE_WORKERS: usize = 4;
 
+#[derive(Debug)]
+struct SessionCalendar {
+    by_group: BTreeMap<String, Vec<(i64, i64)>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionCsvRow {
+    schedule_group: String,
+    is_trading: String,
+    open_utc: Option<String>,
+    close_utc: Option<String>,
+}
+
+impl SessionCalendar {
+    fn load(path: &Path) -> Result<Self> {
+        let mut reader = csv::Reader::from_path(path)
+            .with_context(|| format!("open CME session CSV {}", path.display()))?;
+        let mut by_group: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+        for record in reader.deserialize() {
+            let row: SessionCsvRow =
+                record.with_context(|| format!("parse CME session CSV {}", path.display()))?;
+            if row.is_trading != "1" {
+                continue;
+            }
+            let open = row
+                .open_utc
+                .as_deref()
+                .ok_or_else(|| anyhow!("trading session row has no open_utc"))?;
+            let close = row
+                .close_utc
+                .as_deref()
+                .ok_or_else(|| anyhow!("trading session row has no close_utc"))?;
+            let start = DateTime::parse_from_rfc3339(open)
+                .with_context(|| format!("parse open_utc {open:?}"))?
+                .timestamp();
+            let end = DateTime::parse_from_rfc3339(close)
+                .with_context(|| format!("parse close_utc {close:?}"))?
+                .timestamp();
+            if end <= start {
+                bail!(
+                    "invalid session interval [{start}, {end}) in {}",
+                    path.display()
+                );
+            }
+            by_group
+                .entry(row.schedule_group)
+                .or_default()
+                .push((start, end));
+        }
+        for intervals in by_group.values_mut() {
+            intervals.sort_unstable();
+        }
+        if by_group.is_empty() {
+            bail!(
+                "CME session CSV {} has no trading intervals",
+                path.display()
+            );
+        }
+        Ok(Self { by_group })
+    }
+
+    fn intervals_for(&self, product: &str, trading_day: u32) -> Result<Vec<(i64, i64)>> {
+        let group = schedule_group(product)?;
+        let date = trading_day_date(trading_day)?;
+        let end_local = Chicago
+            .from_local_datetime(&date.and_hms_opt(17, 0, 0).expect("valid 17:00"))
+            .single()
+            .ok_or_else(|| anyhow!("ambiguous Chicago 17:00 for {trading_day}"))?;
+        let start_local = end_local - ChronoDuration::days(1);
+        let window_start = start_local.timestamp();
+        let window_end = end_local.timestamp();
+        let intervals = self
+            .by_group
+            .get(group)
+            .ok_or_else(|| anyhow!("CME session CSV has no group {group}"))?
+            .iter()
+            .copied()
+            .filter_map(|(start, end)| {
+                if start < window_end && end > window_start {
+                    Some((start.max(window_start), end.min(window_end)))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(intervals)
+    }
+}
+
+fn trading_day_date(trading_day: u32) -> Result<NaiveDate> {
+    let year = trading_day / 10_000;
+    let month = (trading_day / 100) % 100;
+    let day = trading_day % 100;
+    NaiveDate::from_ymd_opt(year as i32, month, day)
+        .ok_or_else(|| anyhow!("invalid trading day {trading_day}"))
+}
+
+fn trading_day_key(date: NaiveDate) -> u32 {
+    date.year() as u32 * 10_000 + date.month() * 100 + date.day()
+}
+
+fn schedule_group(product: &str) -> Result<&'static str> {
+    let group = match product {
+        "C" | "W" | "KW" | "S" | "SM" | "BO" => "grains_oilseeds",
+        "FF" | "TU" | "FV" | "TY" | "TN" | "US" | "U" | "S1R" | "SRA" => "interest_rates",
+        "YM" | "ES" | "NQ" | "RTY" | "MEM" => "equity_indices",
+        "AD" | "BP" | "BR" | "CD" | "JY" | "KRW" | "MP" | "NE" | "NOKA" | "PLZ" | "SEK" | "SF"
+        | "URO" => "fx",
+        "BTC" | "ETH" => "cryptocurrency",
+        "FC" | "LC" | "LH" => "livestock",
+        "CL" | "WTCL" | "HO" | "RB" | "NG" | "JKM" => "energy",
+        "GC" | "SI" | "HG" | "ALI" | "HRC" | "PL" | "PA" => "metals",
+        other => return Err(anyhow!("no CME session group for product {other}")),
+    };
+    Ok(group)
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "cme_tas_drop_special_1min")]
 struct Args {
@@ -65,6 +185,8 @@ struct DropSpecialConfig {
     secondary_dir: PathBuf,
     #[serde(default = "default_out_root")]
     out_root: PathBuf,
+    #[serde(default = "default_session_csv")]
+    session_csv: PathBuf,
     #[serde(default)]
     rics: Vec<String>,
     #[serde(default)]
@@ -82,11 +204,19 @@ struct DropSpecialConfig {
 }
 
 fn default_secondary_dir() -> PathBuf {
-    PathBuf::from("/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb.drop_special.secondary")
+    PathBuf::from(
+        "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb.drop_special.secondary",
+    )
 }
 
 fn default_out_root() -> PathBuf {
     PathBuf::from("/mnt/hdd-raid5-72t/liang_torch/lseg_data/baseline_data_1m_drop_special")
+}
+
+fn default_session_csv() -> PathBuf {
+    PathBuf::from(
+        "/home/u171/fanghaizhou/cme_globex_daily_trading_intervals_utc_2024_to_2026-08-22_audited_v2.csv",
+    )
 }
 
 fn default_readahead_bytes() -> usize {
@@ -147,9 +277,7 @@ fn parse_bound(raw: Option<&str>) -> Result<Option<u64>> {
     }
 }
 
-fn next_item(
-    iter: &mut rocksdb::DBIterator<'_>,
-) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+fn next_item(iter: &mut rocksdb::DBIterator<'_>) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
     match iter.next() {
         None => Ok(None),
         Some(item) => Ok(Some(item.context("rocksdb iterator")?)),
@@ -172,7 +300,11 @@ fn next_ric_seek_key(ric: &str) -> Result<Option<[u8; KEY_LEN]>> {
     Ok(None)
 }
 
-fn collect_rics_from_cf(db: &DB, cf_name: &str, readahead_bytes: usize) -> Result<BTreeSet<String>> {
+fn collect_rics_from_cf(
+    db: &DB,
+    cf_name: &str,
+    readahead_bytes: usize,
+) -> Result<BTreeSet<String>> {
     let Some(cf) = db.cf_handle(cf_name) else {
         return Ok(BTreeSet::new());
     };
@@ -314,6 +446,7 @@ fn scan_one_ric(
     start_ns: Option<u64>,
     end_ns: Option<u64>,
     readahead_bytes: usize,
+    session_calendar: &SessionCalendar,
 ) -> Result<Vec<DropSpecialMinute>> {
     let trades = scan_cf(
         db,
@@ -333,14 +466,70 @@ fn scan_one_ric(
         readahead_bytes,
         decode_cme_special,
     )?;
-    synthesize_drop_special_1min(&trades, &specials, None)
+    let raw = synthesize_drop_special_1min(&trades, &specials, None)?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (exchange, product, _) = route_for_row(&raw[0])?;
+    let contract_id = raw[0].contract_id.clone();
+    let first_ric = raw[0].ric.clone();
+    if first_ric != ric {
+        bail!("scan for {ric} synthesized row for {first_ric}");
+    }
+    let mut by_day: BTreeMap<u32, Vec<DropSpecialMinute>> = BTreeMap::new();
+    for row in raw {
+        let (row_exchange, row_product, day) = route_for_row(&row)?;
+        if row_exchange != exchange || row_product != product || row.contract_id != contract_id {
+            bail!("RIC {ric} changed route or contract_id while scanning");
+        }
+        by_day.entry(day).or_default().push(row);
+    }
+    let first_day = *by_day.first_key_value().expect("raw rows are nonempty").0;
+    let last_day = *by_day.last_key_value().expect("raw rows are nonempty").0;
+    let mut current_date = trading_day_date(first_day)?;
+    let last_date = trading_day_date(last_day)?;
+    let mut filled = Vec::new();
+    let mut state = MinuteFillState::default();
+    loop {
+        let day = trading_day_key(current_date);
+        let intervals = session_calendar.intervals_for(&product, day)?;
+        let day_rows = by_day.remove(&day).unwrap_or_default();
+        let day_filled =
+            fill_full_session_minutes(day_rows, &contract_id, ric, &intervals, &mut state)?;
+        filled.extend(day_filled);
+        if current_date == last_date {
+            break;
+        }
+        current_date = current_date
+            .succ_opt()
+            .ok_or_else(|| anyhow!("trading-day overflow after {day}"))?;
+    }
+    filled.sort_by(|left, right| left.ts.cmp(&right.ts));
+    Ok(filled)
 }
 
-fn unlink_year_files(out_root: &Path, year: &str) -> Result<u64> {
+fn is_day_in_overwrite_window(
+    trading_day: u32,
+    start_day: Option<u32>,
+    end_day: Option<u32>,
+) -> bool {
+    start_day.is_none_or(|start| trading_day >= start)
+        && end_day.is_none_or(|end| trading_day <= end)
+}
+
+fn unlink_overwrite_files(
+    out_root: &Path,
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+) -> Result<u64> {
     let mut removed = 0u64;
     if !out_root.exists() {
         return Ok(0);
     }
+    let start_day = start_ns
+        .map(cme_tas_replay::tradeday_yyyymmdd)
+        .transpose()?;
+    let end_day = end_ns.map(cme_tas_replay::tradeday_yyyymmdd).transpose()?;
     for exchange in fs::read_dir(out_root)? {
         let exchange = exchange?;
         if !exchange.file_type()?.is_dir() {
@@ -353,9 +542,23 @@ fn unlink_year_files(out_root: &Path, year: &str) -> Result<u64> {
             }
             for file in fs::read_dir(product.path())? {
                 let file = file?;
-                let name = file.file_name();
-                let name = name.to_string_lossy();
-                if name.starts_with(year) && name.ends_with(".parquet") {
+                if !file.file_type()?.is_file() {
+                    continue;
+                }
+                let path = file.path();
+                if path.extension().is_none_or(|ext| ext != "parquet") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                let Ok(trading_day) = stem.parse::<u32>() else {
+                    continue;
+                };
+                if trading_day_date(trading_day).is_err() {
+                    continue;
+                }
+                if is_day_in_overwrite_window(trading_day, start_day, end_day) {
                     fs::remove_file(file.path())?;
                     removed += 1;
                 }
@@ -427,6 +630,11 @@ fn run(config: &DropSpecialConfig) -> Result<()> {
     }
     let start_ns = parse_bound(config.start.as_deref())?;
     let end_ns = parse_bound(config.end.as_deref())?;
+    let session_calendar = Arc::new(SessionCalendar::load(&config.session_csv)?);
+    info!(
+        "using CME session calendar {}",
+        config.session_csv.display()
+    );
     info!(
         "opening rocksdb secondary {} from {}",
         config.secondary_dir.display(),
@@ -452,14 +660,15 @@ fn run(config: &DropSpecialConfig) -> Result<()> {
         write_workers
     );
     if config.overwrite {
-        if let Some(start) = start_ns {
-            let year = format!("{:04}", tradeday_year(start)?);
-            let removed = unlink_year_files(&config.out_root, &year)?;
-            info!(
-                "overwrite removed {removed} {year}*.parquet under {}",
-                config.out_root.display()
-            );
-        }
+        let removed = unlink_overwrite_files(&config.out_root, start_ns, end_ns)?;
+        info!(
+            "overwrite removed {removed} parquet files under {} for trade-day range {:?}..{:?}",
+            config.out_root.display(),
+            start_ns
+                .map(cme_tas_replay::tradeday_yyyymmdd)
+                .transpose()?,
+            end_ns.map(cme_tas_replay::tradeday_yyyymmdd).transpose()?
+        );
     }
     fs::create_dir_all(&config.out_root)?;
 
@@ -524,19 +733,20 @@ fn run(config: &DropSpecialConfig) -> Result<()> {
                         let mut pending_guard = pending.lock().expect("drop_special pending lock");
                         let mut remaining_guard =
                             remaining.lock().expect("drop_special remaining lock");
-                        let batch = pending_guard.entry(key.clone()).or_insert_with(|| {
-                            ProductBatch {
-                                key: ProductKey {
-                                    exchange: result.job.exchange,
-                                    product: result.job.product,
-                                },
-                                rows: Vec::new(),
-                            }
-                        });
+                        let batch =
+                            pending_guard
+                                .entry(key.clone())
+                                .or_insert_with(|| ProductBatch {
+                                    key: ProductKey {
+                                        exchange: result.job.exchange,
+                                        product: result.job.product,
+                                    },
+                                    rows: Vec::new(),
+                                });
                         batch.rows.extend(result.rows);
-                        let left = remaining_guard
-                            .get_mut(&key)
-                            .ok_or_else(|| anyhow!("reducer saw unknown product {}/{}", key.0, key.1))?;
+                        let left = remaining_guard.get_mut(&key).ok_or_else(|| {
+                            anyhow!("reducer saw unknown product {}/{}", key.0, key.1)
+                        })?;
                         if *left == 0 {
                             bail!("reducer underflow for {}/{}", key.0, key.1);
                         }
@@ -565,6 +775,7 @@ fn run(config: &DropSpecialConfig) -> Result<()> {
         let result_tx = result_tx.clone();
         let abort = Arc::clone(&abort);
         let rics_done = Arc::clone(&rics_done);
+        let session_calendar = Arc::clone(&session_calendar);
         let readahead = config.readahead_bytes;
         let handle = thread::Builder::new()
             .name(format!("cme-tas-ds-compute-{worker_id}"))
@@ -574,7 +785,14 @@ fn run(config: &DropSpecialConfig) -> Result<()> {
                     if abort.load(AtomicOrdering::Relaxed) {
                         break;
                     }
-                    match scan_one_ric(&db, &job.ric, start_ns, end_ns, readahead) {
+                    match scan_one_ric(
+                        &db,
+                        &job.ric,
+                        start_ns,
+                        end_ns,
+                        readahead,
+                        &session_calendar,
+                    ) {
                         Ok(rows) => {
                             stats.rics += 1;
                             stats.rows += rows.len() as u64;
@@ -677,10 +895,6 @@ fn run(config: &DropSpecialConfig) -> Result<()> {
     Ok(())
 }
 
-fn tradeday_year(ts_utc_ns: u64) -> Result<u32> {
-    Ok(cme_tas_replay::tradeday_yyyymmdd(ts_utc_ns)? / 10_000)
-}
-
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_secs()
@@ -698,5 +912,39 @@ fn main() {
     if let Err(err) = run(&config) {
         eprintln!("{err:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_day_in_overwrite_window;
+
+    #[test]
+    fn overwrite_without_bounds_removes_every_output_day() {
+        assert!(is_day_in_overwrite_window(20260403, None, None));
+    }
+
+    #[test]
+    fn overwrite_bounds_include_only_selected_trade_days() {
+        assert!(!is_day_in_overwrite_window(
+            20260402,
+            Some(20260403),
+            Some(20260406)
+        ));
+        assert!(is_day_in_overwrite_window(
+            20260403,
+            Some(20260403),
+            Some(20260406)
+        ));
+        assert!(is_day_in_overwrite_window(
+            20260406,
+            Some(20260403),
+            Some(20260406)
+        ));
+        assert!(!is_day_in_overwrite_window(
+            20260407,
+            Some(20260403),
+            Some(20260406)
+        ));
     }
 }

@@ -10,10 +10,10 @@ use bytes::Bytes;
 use clap::Parser;
 use cme_tas_replay::hourly_kll::timestamp_us_from_utc_ns;
 use cme_tas_replay::sparse_1s::{
-    encode_market_1s_clickhouse_row, encode_ylabel_clickhouse_row, market_1s_clickhouse_columns_sql,
-    top_of_book_from_quote, trade_price_amount, trade_price_amount_reject_reason,
-    ylabel_clickhouse_columns_sql, ylabel_table_name, Sparse1sAggregator, SparseYlabelAggregator,
-    YLABEL_HORIZON_MS, BACKTEST_TABLE,
+    encode_market_1s_clickhouse_row, encode_ylabel_clickhouse_row,
+    market_1s_clickhouse_columns_sql, top_of_book_from_quote, trade_price_amount,
+    trade_price_amount_reject_reason, ylabel_clickhouse_columns_sql, ylabel_table_name,
+    Sparse1sAggregator, SparseYlabelAggregator, BACKTEST_TABLE, YLABEL_HORIZON_MS,
 };
 use cme_tas_replay::{
     decode_cme_quote, decode_cme_trade, decode_ric, encode_key, encode_ric, key_ts_utc_ns,
@@ -483,12 +483,18 @@ fn apply_quote(
     let timestamp_us = timestamp_us_from_utc_ns(ts_utc_ns)?;
     for bar in state.bars.on_quote(timestamp_us, book)? {
         state.bar_rows = state.bar_rows.saturating_add(1);
-        send_row(bar_sender, Bytes::from(encode_market_1s_clickhouse_row(&state.ric, &bar)))?;
+        send_row(
+            bar_sender,
+            Bytes::from(encode_market_1s_clickhouse_row(&state.ric, &bar)),
+        )?;
     }
     let midp = book.midp();
     for (agg, sender) in state.ylabels.iter_mut().zip(ylabel_senders.iter()) {
         for y in agg.on_midp(timestamp_us, midp)? {
-            send_row(sender, Bytes::from(encode_ylabel_clickhouse_row(&state.ric, &y)))?;
+            send_row(
+                sender,
+                Bytes::from(encode_ylabel_clickhouse_row(&state.ric, &y)),
+            )?;
         }
     }
     state.quotes = state.quotes.saturating_add(1);
@@ -531,13 +537,22 @@ fn apply_trade(
         return Ok(());
     }
     let timestamp_us = timestamp_us_from_utc_ns(ts_utc_ns)?;
-    for bar in state.bars.on_trade(timestamp_us, rec.aggressor, price, amount)? {
+    for bar in state
+        .bars
+        .on_trade(timestamp_us, rec.aggressor, price, amount)?
+    {
         state.bar_rows = state.bar_rows.saturating_add(1);
-        send_row(bar_sender, Bytes::from(encode_market_1s_clickhouse_row(&state.ric, &bar)))?;
+        send_row(
+            bar_sender,
+            Bytes::from(encode_market_1s_clickhouse_row(&state.ric, &bar)),
+        )?;
     }
     for (agg, sender) in state.ylabels.iter_mut().zip(ylabel_senders.iter()) {
         for y in agg.on_trade(timestamp_us, price, amount)? {
-            send_row(sender, Bytes::from(encode_ylabel_clickhouse_row(&state.ric, &y)))?;
+            send_row(
+                sender,
+                Bytes::from(encode_ylabel_clickhouse_row(&state.ric, &y)),
+            )?;
         }
     }
     state.trades = state.trades.saturating_add(1);
@@ -587,7 +602,11 @@ fn next_ric_seek_key(ric: &str) -> Result<Option<[u8; KEY_LEN]>> {
     Ok(None)
 }
 
-fn collect_rics_from_cf(db: &DB, cf_name: &str, readahead_bytes: usize) -> Result<BTreeSet<String>> {
+fn collect_rics_from_cf(
+    db: &DB,
+    cf_name: &str,
+    readahead_bytes: usize,
+) -> Result<BTreeSet<String>> {
     let cf = db
         .cf_handle(cf_name)
         .ok_or_else(|| anyhow!("column family {cf_name} missing"))?;

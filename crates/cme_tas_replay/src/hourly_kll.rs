@@ -104,7 +104,8 @@ pub fn trade_notional(price_e9: i64, volume: u32) -> Result<f64> {
     if volume == MISSING_VOLUME {
         bail!("printable trade missing Volume");
     }
-    let price = price_e9_to_f64(price_e9).ok_or_else(|| anyhow!("printable trade missing Price"))?;
+    let price =
+        price_e9_to_f64(price_e9).ok_or_else(|| anyhow!("printable trade missing Price"))?;
     Ok(price * f64::from(volume))
 }
 

@@ -1,0 +1,24 @@
+# CME Group continuous 1-minute Depth10 and factor replay.
+# Fixed-expiry trade/depth inputs remain immutable.  Only roots certified as
+# continuous in PostgreSQL are emitted, with price fields back-adjusted by
+# the audited cumulative additive factor.
+trade_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/baseline_data_1m_drop_special"
+depth_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/level2_1min"
+continuous_output_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/baseline_data_1m_drop_special_depth10"
+factor_output_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/lseg_cme_continuous_features_1m"
+start_date = "2024-01-02"
+end_date = "2026-06-01"
+
+# Empty processes every PG-certified continuous root.
+products = []
+factors = ["lseg_features_all"]
+workers = 8
+overwrite = false
+dry_run = false
+
+[postgres]
+host = "/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run"
+port = 5433
+user = "u171"
+database = "market_metadata"
+connect_timeout_secs = 10

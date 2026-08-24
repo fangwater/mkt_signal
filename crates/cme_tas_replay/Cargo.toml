@@ -28,8 +28,28 @@ name = "cme_tas_drop_special_1min"
 path = "src/bin/cme_tas_drop_special_1min.rs"
 
 [[bin]]
+name = "cme_tas_ylabel_1m"
+path = "src/bin/cme_tas_ylabel_1m.rs"
+
+[[bin]]
+name = "cme_tas_export_backtest_1s"
+path = "src/bin/cme_tas_export_backtest_1s.rs"
+
+[[bin]]
 name = "cme_tas_settlement_scan"
 path = "src/bin/cme_tas_settlement_scan.rs"
+
+[[bin]]
+name = "cme_tas_settlement_export"
+path = "src/bin/cme_tas_settlement_export.rs"
+
+[[bin]]
+name = "cme_ll2_1min_replay"
+path = "src/bin/cme_ll2_1min_replay.rs"
+
+[[bin]]
+name = "cme_ll2_1min_export"
+path = "src/bin/cme_ll2_1min_export.rs"
 
 [dependencies]
 anyhow = "1.0"

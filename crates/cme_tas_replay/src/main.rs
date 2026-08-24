@@ -15,8 +15,8 @@ use cme_tas_replay::{
     parse_price_e9, parse_volume, period_meta_key, quote_has_complete_side, tradeday_yyyymmdd,
     validate_period, ColumnRules, EventKind, PeriodStatus, SlimPriceLimit, SlimQuote,
     SlimSymbologyChange, SlimTrade, CF_CME_PRICE_LIMIT, CF_CME_QUOTE, CF_CME_SETTLEMENT,
-    CF_CME_SPECIAL, CF_CME_TRADE, CF_REPLAY_META, CF_SETTLEMENT_SCAN_META,
-    CF_SYMBOLOGY_CHANGE, KEY_LEN, RESEARCH_PRODUCT_ROOTS,
+    CF_CME_SPECIAL, CF_CME_TRADE, CF_REPLAY_META, CF_SETTLEMENT_SCAN_META, CF_SYMBOLOGY_CHANGE,
+    KEY_LEN, RESEARCH_PRODUCT_ROOTS,
 };
 use csv::StringRecord;
 use flate2::read::MultiGzDecoder;

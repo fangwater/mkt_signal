@@ -164,7 +164,6 @@ impl OpenSecond {
         }
         self.count += 1;
     }
-
 }
 
 /// Sparse 1s aggregator. Idle seconds are jumped, not filled. A quote at
@@ -194,7 +193,11 @@ impl Sparse1sAggregator {
         Self::default()
     }
 
-    pub fn on_quote(&mut self, timestamp_us: i64, book: TopOfBook) -> Result<Vec<TradeMarket1sBar>> {
+    pub fn on_quote(
+        &mut self,
+        timestamp_us: i64,
+        book: TopOfBook,
+    ) -> Result<Vec<TradeMarket1sBar>> {
         if !book.is_valid() {
             return Ok(Vec::new());
         }
@@ -283,7 +286,12 @@ impl Sparse1sAggregator {
         self.current.book_at_open = self.last_book;
         let traded = current.count > 0;
         let (bid0p, bid0v, ask0p, ask0v) = match current.book_at_open {
-            Some(book) => (book.bid_price, book.bid_amount, book.ask_price, book.ask_amount),
+            Some(book) => (
+                book.bid_price,
+                book.bid_amount,
+                book.ask_price,
+                book.ask_amount,
+            ),
             None => (f64::NAN, f64::NAN, f64::NAN, f64::NAN),
         };
         let fill_price = if traded {

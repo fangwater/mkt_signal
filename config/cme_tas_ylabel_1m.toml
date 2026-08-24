@@ -1,0 +1,19 @@
+# CME TAS 1-minute, 60-column supervision labels.
+# twap/vwap are replayed directly from RocksDB cme_trade; midp is taken from
+# the last valid two-sided second-start book in exported backtest_1s parquet.
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb"
+secondary_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb.ylabel_1m.secondary"
+backtest_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/backtest_1s"
+out_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/baseline_data_1m_drop_special_ylabel_1m"
+
+# Empty means all routed fixed-expiry RICs present in either source.
+rics = []
+
+# Optional output trading-day range. The replay still reads full source
+# history/future context so 30/1440-point windows at the boundary are correct.
+# start = "2024-01-01T00:00:00Z"
+# end = "2024-02-01T00:00:00Z"
+
+readahead_bytes = 16777216
+workers = 32
+overwrite = false

@@ -9,9 +9,8 @@ use clap::Parser;
 use cme_tas_replay::{
     compare_priced_minute, decode_cme_special, decode_cme_trade, decode_ric, encode_key,
     format_utc_ns_z, key_ts_utc_ns, parse_date_time_ns, parse_price_e9, parse_volume,
-    synthesize_1min_from_trade_and_special, write_synth_minutes_parquet, CompareVerdict,
-    SlimTrade, SynthBar, SynthMinute, CF_CME_SPECIAL, CF_CME_TRADE, KEY_LEN, MISSING_PRICE,
-    RIC_LEN,
+    synthesize_1min_from_trade_and_special, write_synth_minutes_parquet, CompareVerdict, SlimTrade,
+    SynthBar, SynthMinute, CF_CME_SPECIAL, CF_CME_TRADE, KEY_LEN, MISSING_PRICE, RIC_LEN,
 };
 use csv::StringRecord;
 use flate2::read::MultiGzDecoder;

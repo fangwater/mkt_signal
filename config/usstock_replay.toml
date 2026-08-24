@@ -1,0 +1,30 @@
+# LSEG US equities/ETF Time and Sales replay.  This source is a curated RIC
+# list, not the full US equity market.  It contains L1 quote events and trades;
+# it is not options data.  Keep this RocksDB separate from cme_tas_rocksdb.
+#
+# The source directory contains annual TAS directories named
+# shanghai_evolution_equities_time_and_sales_ric_list_0_tas_<period>.
+# `merged-Data.csv.gz` is used for a single-file period.  Older periods have
+# `merged-Data-part-*.csv.gz`; only part 0 includes the CSV header.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/normalised"
+period = "2026-07-01_2026-08-14"
+periods = ["2026-07-01_2026-08-14"]
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_tas_rocksdb"
+
+# Empty replays every RIC in the source package.  Before replay, each period's
+# merged-Report.csv.gz pre-creates one `us_stock:<RIC>` column family.  Set exact
+# RICs such as ["AAPL.O", "SPY.P"] only for bounded investigations; they are
+# also required when a deliberately small fixture has no Report file.
+rics = []
+
+# All source files for the selected periods share this worker pool.  Do not
+# start a second writer process against the same RocksDB directory.
+workers = 16
+progress_every = 1000000
+
+# Optional diagnostic cap per gzip input.  Capped writes do not mark a period
+# complete and must use a disposable RocksDB directory.
+# max_source_rows = 100000
+
+log_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/usstock_replay.log"
+unparsed_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/usstock_replay_unparsed.log"

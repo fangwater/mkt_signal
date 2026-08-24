@@ -470,9 +470,7 @@ pub fn validate_market_1s_day(
         );
     }
     if bars[0].ts_sec < start || bars.last().unwrap().ts_sec >= day_end {
-        bail!(
-            "{symbol} {day}: 1s rows outside UTC day start={start} end={day_end}"
-        );
+        bail!("{symbol} {day}: 1s rows outside UTC day start={start} end={day_end}");
     }
     if bars.last().unwrap().ts_sec != day_end - 1 {
         bail!(

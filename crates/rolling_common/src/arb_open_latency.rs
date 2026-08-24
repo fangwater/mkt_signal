@@ -1,4 +1,5 @@
 use crate::latency_kll::LatencyKll;
+use log::Level;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -10,6 +11,10 @@ thread_local! {
 }
 
 pub fn record_arb_open_latency(stage: &'static str, delta_us: i64) {
+    record_arb_open_latency_with_level(stage, delta_us, Level::Info);
+}
+
+pub fn record_arb_open_latency_with_level(stage: &'static str, delta_us: i64, log_level: Level) {
     if !(0..=ARB_OPEN_LATENCY_MAX_US).contains(&delta_us) {
         return;
     }
@@ -17,9 +22,10 @@ pub fn record_arb_open_latency(stage: &'static str, delta_us: i64) {
         map.borrow_mut()
             .entry(stage)
             .or_insert_with(|| {
-                LatencyKll::with_capacity(
+                LatencyKll::with_capacity_and_log_level(
                     format!("arb_open_path {stage}"),
                     ARB_OPEN_LATENCY_CAPACITY,
+                    log_level,
                 )
             })
             .push(delta_us as f64);

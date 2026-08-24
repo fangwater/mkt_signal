@@ -2,7 +2,8 @@
 //!
 //! Python correctness baseline: `lseg/cme_tas_drop_special_1min.py`.
 //! Special has no Price: only `special_count` / `special_volume`. ylabel is not
-//! written here. Minutes with neither a printable trade nor a Special are skipped.
+//! written here. The raw aggregator emits observed minutes; the session-aware
+//! fill pass emits internal empty minutes with causal K-line values.
 
 use anyhow::{anyhow, bail, Context, Result};
 use polars::prelude::{DataFrame, NamedFrom, ParquetWriter, Series};
@@ -143,6 +144,228 @@ pub struct DropSpecialMinute {
     pub net_buy_large: f64,
     pub net_buy_medium: f64,
     pub net_buy_small: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MinuteFillState {
+    close: Option<f64>,
+    vwap: Option<f64>,
+    twap: Option<f64>,
+    buy_vwap: Option<f64>,
+    sell_vwap: Option<f64>,
+    buy_twap: Option<f64>,
+    sell_twap: Option<f64>,
+    implied_vwap: Option<f64>,
+    implied_twap: Option<f64>,
+}
+
+fn valid_price(value: Option<f64>) -> bool {
+    value.is_some_and(|value| value.is_finite() && value > 0.0)
+}
+
+fn carry_price(slot: &mut Option<f64>, previous: Option<f64>, close: Option<f64>) {
+    if !valid_price(*slot) {
+        *slot = previous.or(close);
+    }
+}
+
+fn normalize_filled_row(row: &mut DropSpecialMinute, state: &mut MinuteFillState) {
+    let close = if valid_price(row.close) {
+        row.close
+    } else {
+        state.close
+    };
+    if let Some(close) = close {
+        if !valid_price(row.open) {
+            row.open = Some(close);
+        }
+        if !valid_price(row.high) {
+            row.high = Some(close);
+        }
+        if !valid_price(row.low) {
+            row.low = Some(close);
+        }
+        row.close = Some(close);
+    }
+    carry_price(&mut row.vwap, state.vwap, close);
+    carry_price(&mut row.twap, state.twap, close);
+    carry_price(&mut row.buy_vwap, state.buy_vwap, close);
+    carry_price(&mut row.sell_vwap, state.sell_vwap, close);
+    carry_price(&mut row.buy_twap, state.buy_twap, close);
+    carry_price(&mut row.sell_twap, state.sell_twap, close);
+    carry_price(&mut row.implied_vwap, state.implied_vwap, close);
+    carry_price(&mut row.implied_twap, state.implied_twap, close);
+    if row.net_buy_pct.is_none() {
+        row.net_buy_pct = Some(0.0);
+    }
+    state.close = row.close;
+    state.vwap = row.vwap;
+    state.twap = row.twap;
+    state.buy_vwap = row.buy_vwap;
+    state.sell_vwap = row.sell_vwap;
+    state.buy_twap = row.buy_twap;
+    state.sell_twap = row.sell_twap;
+    state.implied_vwap = row.implied_vwap;
+    state.implied_twap = row.implied_twap;
+}
+
+fn empty_minute_row(
+    contract_id: &str,
+    ric: &str,
+    ts: i64,
+    state: &MinuteFillState,
+) -> DropSpecialMinute {
+    let close = state.close;
+    DropSpecialMinute {
+        contract_id: contract_id.to_string(),
+        ric: ric.to_string(),
+        ts,
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: 0.0,
+        amount: 0.0,
+        count: 0.0,
+        special_count: 0.0,
+        special_volume: 0.0,
+        avg_amount: 0.0,
+        vwap: state.vwap.or(close),
+        twap: state.twap.or(close),
+        buy_count: 0.0,
+        sell_count: 0.0,
+        buy_volume: 0.0,
+        sell_volume: 0.0,
+        buy_amount: 0.0,
+        sell_amount: 0.0,
+        buy_vwap: state.buy_vwap.or(close),
+        sell_vwap: state.sell_vwap.or(close),
+        buy_twap: state.buy_twap.or(close),
+        sell_twap: state.sell_twap.or(close),
+        buy_high: None,
+        sell_low: None,
+        net_buy_amount: 0.0,
+        net_buy_volume: 0.0,
+        net_buy_pct: Some(0.0),
+        implied_count: 0.0,
+        implied_volume: 0.0,
+        implied_amount: 0.0,
+        implied_vwap: state.implied_vwap.or(close),
+        implied_twap: state.implied_twap.or(close),
+        large_order: 0.0,
+        medium_order: 0.0,
+        small_order: 0.0,
+        large_buy: 0.0,
+        large_sell: 0.0,
+        medium_buy: 0.0,
+        medium_sell: 0.0,
+        small_buy: 0.0,
+        small_sell: 0.0,
+        net_buy_large: 0.0,
+        net_buy_medium: 0.0,
+        net_buy_small: 0.0,
+    }
+}
+
+/// Fill only gaps inside supplied continuous UTC session intervals.
+///
+/// The input is one RIC for one or more trade days. Rows outside the supplied
+/// intervals are dropped. Leading rows without a causal close remain null;
+/// this function never backward-fills from a future print.
+pub fn fill_empty_minutes(
+    rows: Vec<DropSpecialMinute>,
+    session_intervals: &[(i64, i64)],
+    seed_close: Option<f64>,
+) -> Result<Vec<DropSpecialMinute>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ric = rows[0].ric.clone();
+    if rows.iter().any(|row| row.ric != ric) {
+        bail!("fill_empty_minutes requires one RIC, got mixed rows");
+    }
+    let mut by_ts = BTreeMap::new();
+    for row in rows {
+        by_ts.insert(row.ts, row);
+    }
+    let observed: Vec<DropSpecialMinute> = by_ts.into_values().collect();
+    let mut output = Vec::new();
+    let mut state = MinuteFillState {
+        close: seed_close.filter(|value| valid_price(Some(*value))),
+        ..MinuteFillState::default()
+    };
+    for &(start, end) in session_intervals {
+        if end <= start {
+            bail!("invalid session interval [{start}, {end})");
+        }
+        let segment: Vec<&DropSpecialMinute> = observed
+            .iter()
+            .filter(|row| row.ts >= start && row.ts < end)
+            .collect();
+        if segment.is_empty() {
+            continue;
+        }
+        let mut last_ts = None;
+        for source in segment {
+            if let Some(previous_ts) = last_ts {
+                let mut ts = previous_ts + 60;
+                while ts < source.ts {
+                    output.push(empty_minute_row(
+                        &source.contract_id,
+                        &source.ric,
+                        ts,
+                        &state,
+                    ));
+                    ts += 60;
+                }
+            }
+            let mut row = source.clone();
+            normalize_filled_row(&mut row, &mut state);
+            last_ts = Some(row.ts);
+            output.push(row);
+        }
+    }
+    output.sort_by(|left, right| left.ts.cmp(&right.ts));
+    Ok(output)
+}
+
+/// Emit every minute in each supplied half-open session interval.
+///
+/// ``state`` is retained by the caller across trading days of a fixed-expiry
+/// RIC. A session with no source rows is therefore represented by zero-flow
+/// bars priced from the prior causal state. Leading minutes of a RIC's first
+/// observed session remain null until a price is actually seen.
+pub fn fill_full_session_minutes(
+    rows: Vec<DropSpecialMinute>,
+    contract_id: &str,
+    ric: &str,
+    session_intervals: &[(i64, i64)],
+    state: &mut MinuteFillState,
+) -> Result<Vec<DropSpecialMinute>> {
+    let mut observed = BTreeMap::new();
+    for row in rows {
+        if row.contract_id != contract_id || row.ric != ric {
+            bail!("fill_full_session_minutes received mixed RIC rows");
+        }
+        observed.insert(row.ts, row);
+    }
+    let mut output = Vec::new();
+    for &(start, end) in session_intervals {
+        if end <= start || start.rem_euclid(60) != 0 || end.rem_euclid(60) != 0 {
+            bail!("invalid minute-aligned session interval [{start}, {end})");
+        }
+        let mut ts = start;
+        while ts < end {
+            if let Some(mut row) = observed.remove(&ts) {
+                normalize_filled_row(&mut row, state);
+                output.push(row);
+            } else {
+                output.push(empty_minute_row(contract_id, ric, ts, state));
+            }
+            ts += 60;
+        }
+    }
+    Ok(output)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -701,10 +924,7 @@ mod tests {
     }
 
     fn almost(left: f64, right: f64) {
-        assert!(
-            (left - right).abs() < 1e-12,
-            "{left} != {right}"
-        );
+        assert!((left - right).abs() < 1e-12, "{left} != {right}");
     }
 
     #[test]
@@ -751,12 +971,24 @@ mod tests {
         almost(row.volume, 7.0);
         almost(row.count, 3.0);
         almost(row.amount, 100.0 + 202.0 + 408.0);
-        almost(row.volume, row.buy_volume + row.sell_volume + row.implied_volume);
-        almost(row.count, row.buy_count + row.sell_count + row.implied_count);
-        almost(row.amount, row.buy_amount + row.sell_amount + row.implied_amount);
+        almost(
+            row.volume,
+            row.buy_volume + row.sell_volume + row.implied_volume,
+        );
+        almost(
+            row.count,
+            row.buy_count + row.sell_count + row.implied_count,
+        );
+        almost(
+            row.amount,
+            row.buy_amount + row.sell_amount + row.implied_amount,
+        );
         almost(row.special_count, 0.0);
         almost(row.special_volume, 0.0);
-        almost(row.twap.unwrap(), (100.0 * 9.0 + 101.0 * 10.0 + 102.0 * 40.0) / 60.0);
+        almost(
+            row.twap.unwrap(),
+            (100.0 * 9.0 + 101.0 * 10.0 + 102.0 * 40.0) / 60.0,
+        );
         almost(row.buy_twap.unwrap(), 100.0 * 59.0 / 60.0);
         almost(row.sell_twap.unwrap(), 101.0 * 50.0 / 60.0);
         almost(row.implied_twap.unwrap(), 102.0 * 40.0 / 60.0);
@@ -822,21 +1054,114 @@ mod tests {
 
     #[test]
     fn empty_minutes_are_not_emitted() {
-        let rows =
-            synthesize_drop_special_1min(&[trade(0, "100", 1, 1), trade(120, "101", 1, 1)], &[], None)
-                .unwrap();
+        let rows = synthesize_drop_special_1min(
+            &[trade(0, "100", 1, 1), trade(120, "101", 1, 1)],
+            &[],
+            None,
+        )
+        .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].ts - rows[0].ts, 120);
     }
 
     #[test]
-    fn parquet_keeps_null_ohlc_on_special_only() {
-        let rows = synthesize_drop_special_1min(
-            &[trade(1, "100", 1, 1)],
-            &[special(120, 2)],
+    fn session_fill_uses_previous_close_and_zero_flow() {
+        let raw = synthesize_drop_special_1min(
+            &[trade(0, "100", 1, 1), trade(120, "101", 1, 1)],
+            &[],
             None,
         )
         .unwrap();
+        let filled = fill_empty_minutes(
+            raw,
+            &[(
+                parse_date_time_ns(MINUTE).unwrap() as i64 / NS_PER_SEC as i64,
+                parse_date_time_ns(MINUTE).unwrap() as i64 / NS_PER_SEC as i64 + 180,
+            )],
+            None,
+        )
+        .unwrap();
+        assert_eq!(filled.len(), 3);
+        let empty = &filled[1];
+        assert_eq!(empty.ts - filled[0].ts, 60);
+        assert_eq!(empty.open, Some(100.0));
+        assert_eq!(empty.high, Some(100.0));
+        assert_eq!(empty.low, Some(100.0));
+        assert_eq!(empty.close, Some(100.0));
+        assert_eq!(empty.volume, 0.0);
+        assert_eq!(empty.amount, 0.0);
+        assert_eq!(empty.vwap, Some(100.0));
+        assert_eq!(empty.twap, Some(100.0));
+        assert!(empty.buy_high.is_none());
+        assert!(empty.sell_low.is_none());
+    }
+
+    #[test]
+    fn session_fill_does_not_cross_maintenance() {
+        let raw = synthesize_drop_special_1min(
+            &[trade(0, "100", 1, 1), trade(120, "101", 1, 1)],
+            &[],
+            None,
+        )
+        .unwrap();
+        let start = parse_date_time_ns(MINUTE).unwrap() as i64 / NS_PER_SEC as i64;
+        let filled = fill_empty_minutes(
+            raw,
+            &[(start, start + 60), (start + 120, start + 180)],
+            None,
+        )
+        .unwrap();
+        assert_eq!(filled.len(), 2);
+        assert_eq!(filled[1].ts - filled[0].ts, 120);
+    }
+
+    #[test]
+    fn full_session_fill_covers_open_through_close() {
+        let raw = synthesize_drop_special_1min(&[trade(60, "100", 1, 1)], &[], None).unwrap();
+        let contract_id = raw[0].contract_id.clone();
+        let ric = raw[0].ric.clone();
+        let start = parse_date_time_ns(MINUTE).unwrap() as i64 / NS_PER_SEC as i64;
+        let mut state = MinuteFillState {
+            close: Some(99.0),
+            ..MinuteFillState::default()
+        };
+        let filled =
+            fill_full_session_minutes(raw, &contract_id, &ric, &[(start, start + 180)], &mut state)
+                .unwrap();
+        assert_eq!(filled.len(), 3);
+        assert_eq!(filled[0].ts, start);
+        assert_eq!(filled[0].close, Some(99.0));
+        assert_eq!(filled[0].volume, 0.0);
+        assert_eq!(filled[1].close, Some(100.0));
+        assert_eq!(filled[2].close, Some(100.0));
+        assert_eq!(filled[2].amount, 0.0);
+    }
+
+    #[test]
+    fn full_session_fill_emits_an_entire_zero_trade_session() {
+        let mut state = MinuteFillState {
+            close: Some(100.0),
+            ..MinuteFillState::default()
+        };
+        let start = parse_date_time_ns(MINUTE).unwrap() as i64 / NS_PER_SEC as i64;
+        let filled = fill_full_session_minutes(
+            Vec::new(),
+            "NYMEX:CL:2024-02",
+            "CLG24",
+            &[(start, start + 120)],
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(filled.len(), 2);
+        assert!(filled.iter().all(|row| row.close == Some(100.0)));
+        assert!(filled.iter().all(|row| row.volume == 0.0));
+        assert!(filled.iter().all(|row| row.count == 0.0));
+    }
+
+    #[test]
+    fn parquet_keeps_null_ohlc_on_special_only() {
+        let rows = synthesize_drop_special_1min(&[trade(1, "100", 1, 1)], &[special(120, 2)], None)
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("drop_special.parquet");
         write_drop_special_parquet(&path, &rows).unwrap();

@@ -498,7 +498,9 @@ fn scan_trades(
     } else {
         Some(rics.iter().map(|s| s.as_str()).collect())
     };
-    let last_allowed = allow.as_ref().and_then(|set| set.iter().next_back().copied());
+    let last_allowed = allow
+        .as_ref()
+        .and_then(|set| set.iter().next_back().copied());
     let start_key = match allow.as_ref().and_then(|set| set.iter().next().copied()) {
         Some(ric) => encode_key(ric, start_ns.unwrap_or(0), 0, 0)?,
         None => [0u8; KEY_LEN],
@@ -555,7 +557,8 @@ fn scan_trades(
             send_row(sender, row)?;
         }
         source_trades = source_trades.saturating_add(1);
-        if source_trades % PROGRESS_TRADES == 0 || last_progress.elapsed() >= Duration::from_secs(30)
+        if source_trades % PROGRESS_TRADES == 0
+            || last_progress.elapsed() >= Duration::from_secs(30)
         {
             info!(
                 "Hourly KLL progress: ric={} trades={} rics_done={} elapsed={:.2?}",
@@ -590,11 +593,7 @@ fn replay(config: &KllConfig) -> Result<()> {
     } else {
         config.clickhouse.table.clone()
     };
-    ensure_hourly_kll_table(
-        &config.clickhouse.url,
-        &config.clickhouse.database,
-        &table,
-    )?;
+    ensure_hourly_kll_table(&config.clickhouse.url, &config.clickhouse.database, &table)?;
     if config.overwrite_existing {
         let start_ms = start_ns.map(ns_to_hour_ms).transpose()?;
         let end_ms = end_ns.map(ns_to_hour_ms).transpose()?;

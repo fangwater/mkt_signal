@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/account_common",
     "crates/cme_tas_replay",
+    "crates/usstock_replay",
     "crates/account_monitor_common",
     "crates/depth_pub",
     "crates/factor_engine",
@@ -159,6 +160,10 @@ path = "src/bin/futures_fusion_factor_replay.rs"
 [[bin]]
 name = "lseg_futures_fusion_factor_replay"
 path = "src/bin/lseg_futures_fusion_factor_replay.rs"
+
+[[bin]]
+name = "lseg_cme_continuous_1min_replay"
+path = "src/bin/lseg_cme_continuous_1min_replay.rs"
 
 [[bin]]
 name = "db_fusion_factor_replay"

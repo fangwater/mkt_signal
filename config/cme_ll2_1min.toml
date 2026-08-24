@@ -1,0 +1,18 @@
+# Direct Normalized LL2 -> final Depth10 per UTC minute.
+# The importer never creates a raw-event or 1-second RocksDB layer.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalisedLL2"
+period = "2026-01-01_2026-06-01"
+periods = [
+    "2024-01-01_2025-01-01",
+    "2025-01-01_2026-01-01",
+    "2026-01-01_2026-06-01",
+]
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_ll2_1min_rocksdb"
+session_csv = "/home/u171/fanghaizhou/cme_globex_daily_trading_intervals_utc_2024_to_2026-08-22_audited_v2.csv"
+
+# Empty retains every fixed-expiry RIC in the 51 research roots.
+rics = []
+
+# Gzip parts are the safe parallelism boundary. 16 parallel readers balance
+# HDD throughput, decompression, and one shared RocksDB writer process.
+workers = 16
