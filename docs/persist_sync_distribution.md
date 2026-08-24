@@ -38,6 +38,7 @@ Regions:
 | ---: | --- | --- | --- | --- | --- | --- | --- |
 | 6340 | jp | fr | `gate_fr_arb01` | `gate_fr_arb01` | `http://54.64.147.69:6340` | `127.0.0.1:50040` | planned |
 | 6341 | jp | fr | `bitget_fr_arb02` | `bitget_fr_arb02` | `http://54.64.147.69:6341` | `127.0.0.1:50041` | planned |
+| 6357 | jp | fr | `bitget_fr_arb01` | `bitget_fr_arb01` | `http://54.64.147.69:6357` | `127.0.0.1:50057` | planned |
 | 6351 | sg | intra | `bybit-intra-arb01` | `bybit-intra-arb01` | `http://47.128.92.224:6351` | `127.0.0.1:50051` | fixed |
 | 6352 | sg | mm | `bybit_mm_alpha` | `bybit_mm_alpha` | `http://47.128.92.224:6352` | `127.0.0.1:50052` | fixed |
 | 6353 | sg | intra | `bybit-intra-arb02` | `bybit-intra-arb02` | `http://47.128.92.224:6353` | `127.0.0.1:50053` | fixed |

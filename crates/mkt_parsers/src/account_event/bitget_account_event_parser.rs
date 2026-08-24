@@ -10,7 +10,7 @@ use crate::msg::basic_account_msg::{
     BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicTradeLiteMsg,
     BasicUmUnrealizedMsg,
 };
-use crate::msg::bitget_account_msg::BitgetBasicOrderMsg;
+use crate::msg::bitget_account_msg::{bitget_margin_ratio_from_mmr, BitgetBasicOrderMsg};
 use bytes::Bytes;
 use log::{debug, warn};
 use serde_json::{Map, Value};
@@ -69,11 +69,8 @@ impl BitgetAccountEventParser {
                 let adj_equity_usd =
                     lazy_json::get_f64(&account, &["effEquity"]).unwrap_or(actual_equity_usd);
                 let maintenance_margin_usd = lazy_json::get_f64(&account, &["mmr"]).unwrap_or(0.0);
-                let margin_ratio = if maintenance_margin_usd.abs() > f64::EPSILON {
-                    adj_equity_usd / maintenance_margin_usd
-                } else {
-                    0.0
-                };
+                let margin_ratio =
+                    bitget_margin_ratio_from_mmr(adj_equity_usd, maintenance_margin_usd);
                 let msg = BasicAccountRiskMsg::create(
                     timestamp,
                     adj_equity_usd,
@@ -878,6 +875,32 @@ mod tests {
         assert!((risk.margin_ratio - (99_876.50 / 1_500.0)).abs() < 1e-12);
         assert!((risk.borrowed_usd - 100.0).abs() < 1e-12);
         assert!((risk.notional_usd - 300_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn account_risk_treats_mmr_at_or_below_floor_as_safe() {
+        let parser = BitgetAccountEventParser::new();
+        let sink = TestAccountEventSink::new();
+        let account = Bytes::from_static(
+            br#"{
+                "arg":{"channel":"account","instType":"UTA"},
+                "data":[{
+                    "uTime":"1710000000123",
+                    "totalEquity":"100",
+                    "effEquity":"99",
+                    "mmr":"0.5"
+                }]
+            }"#,
+        );
+
+        assert_eq!(parser.parse(account, &sink), 1);
+        let wrapped_risk = sink.recv().expect("risk event");
+        let (_, _, payload) = split_basic_account_event(&wrapped_risk).expect("wrapped risk");
+        let risk = BasicAccountRiskMsg::from_bytes(payload).expect("risk payload");
+        assert_eq!(
+            risk.margin_ratio,
+            crate::msg::bitget_account_msg::BITGET_SAFE_MARGIN_RATIO
+        );
     }
 
     #[test]

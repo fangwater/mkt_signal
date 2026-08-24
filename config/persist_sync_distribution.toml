@@ -35,6 +35,18 @@ base_url = "http://47.238.128.48"
 host = "47.128.92.224"
 base_url = "http://47.128.92.224"
 
+# JP Bitget FR source. The manager stays stopped until the operator starts
+# the new environment; this allocation reserves its local gRPC bind now.
+[[allocations]]
+port = 6357
+region = "jp"
+strategy = "fr"
+env = "bitget_fr_arb01"
+source_id = "bitget_fr_arb01"
+public_url = "http://54.64.147.69:6357"
+bind = "127.0.0.1:50057"
+status = "planned"
+
 # Local intra/cross arb01 sources on this machine.
 [[allocations]]
 port = 6342

@@ -3,6 +3,34 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::basic_account_msg::BasicAccountEventType;
 
+pub const BITGET_MMR_VALID_FLOOR: f64 = 0.5;
+pub const BITGET_SAFE_MARGIN_RATIO: f64 = 99_999_999.0;
+
+/// Bitget may report a sub-dollar or zero MMR when there is no effective
+/// maintenance-margin requirement. Keep the risk value finite so a prior
+/// UniMMR force-close state can recover from a subsequent safe snapshot.
+pub fn bitget_margin_ratio_from_mmr(adj_equity_usd: f64, mmr_usd: f64) -> f64 {
+    if mmr_usd > BITGET_MMR_VALID_FLOOR {
+        adj_equity_usd / mmr_usd
+    } else {
+        BITGET_SAFE_MARGIN_RATIO
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bitget_margin_ratio_from_mmr, BITGET_SAFE_MARGIN_RATIO};
+
+    #[test]
+    fn bitget_mmr_requires_more_than_half_a_dollar() {
+        assert_eq!(
+            bitget_margin_ratio_from_mmr(99.0, 0.5),
+            BITGET_SAFE_MARGIN_RATIO
+        );
+        assert!((bitget_margin_ratio_from_mmr(99.0, 0.51) - (99.0 / 0.51)).abs() < 1e-12);
+    }
+}
+
 /// Bitget 订单更新消息（紧凑版，结构参考 GateBasicOrderMsg）
 #[derive(Debug, Clone)]
 pub struct BitgetBasicOrderMsg {

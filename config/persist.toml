@@ -24,6 +24,10 @@ id = "bitget_fr_arb02"
 url = "http://127.0.0.1:6341"
 
 [[sources]]
+id = "bitget_fr_arb01"
+url = "http://127.0.0.1:50057"
+
+[[sources]]
 id = "binance-intra-arb01"
 url = "http://127.0.0.1:6342"
 
