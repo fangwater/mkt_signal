@@ -2,9 +2,9 @@
 
 pub mod drop_special_1min;
 pub mod hourly_kll;
-pub mod ylabel_1m;
 pub mod ll2_1min;
 pub mod sparse_1s;
+pub mod ylabel_1m;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Datelike, NaiveTime, Timelike};
@@ -1103,8 +1103,8 @@ pub fn price_e9_to_f64(price: i64) -> Option<f64> {
 }
 
 pub fn format_utc_ns_z(ns: u64) -> Result<String> {
-    let secs = i64::try_from(ns / 1_000_000_000)
-        .map_err(|_| anyhow!("Date-Time ns {ns} out of range"))?;
+    let secs =
+        i64::try_from(ns / 1_000_000_000).map_err(|_| anyhow!("Date-Time ns {ns} out of range"))?;
     let nsec = (ns % 1_000_000_000) as u32;
     let utc = DateTime::from_timestamp(secs, nsec)
         .ok_or_else(|| anyhow!("Date-Time ns {ns} is not a UTC instant"))?;
@@ -1194,9 +1194,10 @@ pub fn write_synth_minutes_parquet(path: &Path, minutes: &[SynthMinute]) -> Resu
     for row in minutes {
         ric.push(row.ric.clone());
         ts.push((row.minute_utc_ns / 1_000_000_000) as i64);
-        ts_utc_ns.push(i64::try_from(row.minute_utc_ns).with_context(|| {
-            format!("minute {} overflowed i64", row.minute_utc_ns)
-        })?);
+        ts_utc_ns.push(
+            i64::try_from(row.minute_utc_ns)
+                .with_context(|| format!("minute {} overflowed i64", row.minute_utc_ns))?,
+        );
         date_time.push(format_utc_ns_z(row.minute_utc_ns)?);
         open.push(price_e9_to_f64(row.open));
         high.push(price_e9_to_f64(row.high));
@@ -1865,8 +1866,12 @@ mod tests {
             no_trades: 99,
         };
         assert_eq!(
-            compare_priced_minute(&minutes[1].as_trade_bar(), &summary, minutes[1].special_volume)
-                .verdict,
+            compare_priced_minute(
+                &minutes[1].as_trade_bar(),
+                &summary,
+                minutes[1].special_volume
+            )
+            .verdict,
             CompareVerdict::Approximate
         );
     }
@@ -1915,7 +1920,10 @@ mod tests {
         assert!(df.column("open").unwrap().f64().unwrap().get(0).is_none());
         let priced_close = df.column("close").unwrap().f64().unwrap().get(1).unwrap();
         assert!((priced_close - 2999.75).abs() < 1e-12);
-        assert_eq!(df.column("volume").unwrap().i64().unwrap().get(1).unwrap(), 1);
+        assert_eq!(
+            df.column("volume").unwrap().i64().unwrap().get(1).unwrap(),
+            1
+        );
         assert_eq!(
             df.column("volume_total")
                 .unwrap()
