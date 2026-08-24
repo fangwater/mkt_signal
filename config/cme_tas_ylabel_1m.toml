@@ -9,8 +9,8 @@ out_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/baseline_data_1m_drop_speci
 # Empty means all routed fixed-expiry RICs present in either source.
 rics = []
 
-# Optional output trading-day range. The replay still reads full source
-# history/future context so 30/1440-point windows at the boundary are correct.
+# Optional output trading-day range. Replay workers run one full trading day at
+# a time with the prior day parquet as context; session gaps remain missing.
 # start = "2024-01-01T00:00:00Z"
 # end = "2024-02-01T00:00:00Z"
 

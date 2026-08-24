@@ -6,7 +6,7 @@
 # shanghai_evolution_equities_time_and_sales_ric_list_0_tas_<period>.
 # `merged-Data.csv.gz` is used for a single-file period.  Older periods have
 # `merged-Data-part-*.csv.gz`; only part 0 includes the CSV header.
-data_root = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/normalised"
+data_root = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/raw_data/normalised"
 period = "2026-07-01_2026-08-14"
 periods = ["2026-07-01_2026-08-14"]
 rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_tas_rocksdb"

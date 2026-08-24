@@ -5,18 +5,19 @@
 //! midprice of each minute. Neither source is forward-filled here.
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{Duration as ChronoDuration, NaiveDate, TimeZone};
+use chrono_tz::America::Chicago;
 use clap::Parser;
-use cme_tas_replay::drop_special_1min::{
-    chicago_trade_date_yyyymmdd, synthesize_drop_special_1min, DropSpecialMinute,
-};
+use cme_tas_replay::drop_special_1min::{synthesize_drop_special_1min, DropSpecialMinute};
 use cme_tas_replay::ylabel_1m::{
-    build_ylabel_rows, causal_prices_from_minutes, write_ylabel_parquet, YlabelRow,
+    build_ylabel_rows, causal_prices_from_minutes, write_ylabel_parquet,
 };
 use cme_tas_replay::{
     decode_cme_trade, decode_ric, encode_key, encode_ric, key_ts_utc_ns, parse_date_time_ns,
     research_root_exchange, research_root_of, SlimTrade, CF_CME_TRADE, KEY_LEN,
     RESEARCH_PRODUCT_ROOTS, RIC_LEN,
 };
+use crossbeam_channel::unbounded;
 use log::info;
 use polars::prelude::{
     DataFrame, Float64Chunked, Int64Chunked, ParquetReader, SerReader, StringChunked,
@@ -39,7 +40,7 @@ struct Args {
     config: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct Config {
     rocksdb_dir: PathBuf,
@@ -51,8 +52,8 @@ struct Config {
     out_root: PathBuf,
     #[serde(default)]
     rics: Vec<String>,
-    /// Restrict the emitted trading days. Input scans retain full history and
-    /// future context so rolling/range values at the boundary remain correct.
+    /// Restrict the emitted trading days. Each replay task retains its prior
+    /// day context; missing session minutes remain missing instead of filling.
     #[serde(default)]
     start: Option<String>,
     /// Exclusive UTC timestamp bound for emitted trading days.
@@ -77,6 +78,21 @@ struct BacktestRic {
     contract_id: Option<String>,
     // Raw minute left edge -> final valid second-start midprice in that minute.
     minute_midp: BTreeMap<i64, (i64, f64)>,
+}
+
+#[derive(Debug, Clone)]
+struct DayInput {
+    day: u32,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct DayJob {
+    key: ProductKey,
+    day: u32,
+    previous_backtest: Option<PathBuf>,
+    backtest: PathBuf,
+    trade_rics: Vec<String>,
 }
 
 fn default_secondary_dir() -> PathBuf {
@@ -203,11 +219,17 @@ fn collect_trade_rics(
     Ok(output)
 }
 
-fn scan_trades(db: &DB, ric: &str, readahead_bytes: usize) -> Result<Vec<SlimTrade>> {
+fn scan_trades(
+    db: &DB,
+    ric: &str,
+    start_ns: u64,
+    end_ns: u64,
+    readahead_bytes: usize,
+) -> Result<Vec<SlimTrade>> {
     let cf = db
         .cf_handle(CF_CME_TRADE)
         .ok_or_else(|| anyhow!("missing {CF_CME_TRADE} column family"))?;
-    let start = encode_key(ric, 0, 0, 0)?;
+    let start = encode_key(ric, start_ns, 0, 0)?;
     let mut output = Vec::new();
     for item in db.iterator_cf_opt(
         cf,
@@ -222,6 +244,9 @@ fn scan_trades(db: &DB, ric: &str, readahead_bytes: usize) -> Result<Vec<SlimTra
             break;
         }
         let key_ts = key_ts_utc_ns(&key)?;
+        if key_ts >= end_ns {
+            break;
+        }
         let record = decode_cme_trade(&value)?;
         if record.ric != ric || record.ts_utc_ns != key_ts {
             bail!("{CF_CME_TRADE} key/value mismatch for {ric}");
@@ -332,77 +357,81 @@ fn add_backtest_file(
     Ok(())
 }
 
-fn load_backtest_product(
-    root: &Path,
-    key: &ProductKey,
-    allowed_rics: Option<&BTreeSet<String>>,
-) -> Result<BTreeMap<String, BacktestRic>> {
+fn list_backtest_days(root: &Path, key: &ProductKey) -> Result<Vec<DayInput>> {
     let dir = root.join(&key.exchange).join(&key.product);
     if !dir.exists() {
-        return Ok(BTreeMap::new());
+        return Ok(Vec::new());
     }
-    let mut paths = fs::read_dir(&dir)
-        .with_context(|| format!("read {}", dir.display()))?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            entry.file_type().ok().and_then(|kind| {
-                (kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "parquet"))
-                    .then_some(entry.path())
-            })
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
-    let mut output = BTreeMap::new();
-    for path in paths {
-        add_backtest_file(&path, key, allowed_rics, &mut output)?;
+    let mut output = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || entry
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != "parquet")
+        {
+            continue;
+        }
+        let path = entry.path();
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("invalid parquet filename {}", path.display()))?;
+        let day = stem
+            .parse::<u32>()
+            .with_context(|| format!("parse trading day in {}", path.display()))?;
+        NaiveDate::parse_from_str(stem, "%Y%m%d")
+            .with_context(|| format!("invalid trading day in {}", path.display()))?;
+        output.push(DayInput { day, path });
     }
+    output.sort_by_key(|input| input.day);
     Ok(output)
 }
 
-fn scan_trade_rows_parallel(
-    db: Arc<DB>,
-    rics: Vec<String>,
-    readahead_bytes: usize,
-    workers: usize,
-) -> Result<BTreeMap<String, Vec<DropSpecialMinute>>> {
-    if rics.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let workers = workers.min(rics.len()).max(1);
-    let tasks = Arc::new(std::sync::Mutex::new(rics.into_iter()));
-    let mut joins = Vec::with_capacity(workers);
-    for worker_id in 0..workers {
-        let db = Arc::clone(&db);
-        let tasks = Arc::clone(&tasks);
-        joins.push(
-            thread::Builder::new()
-                .name(format!("cme-tas-ylabel-trade-{worker_id}"))
-                .spawn(move || -> Result<Vec<(String, Vec<DropSpecialMinute>)>> {
-                    let mut output = Vec::new();
-                    loop {
-                        let next = tasks.lock().expect("ylabel task lock").next();
-                        let Some(ric) = next else {
-                            break;
-                        };
-                        let trades = scan_trades(&db, &ric, readahead_bytes)?;
-                        let minutes = synthesize_drop_special_1min(&trades, &[], None)?;
-                        output.push((ric, minutes));
-                    }
-                    Ok(output)
-                })
-                .with_context(|| format!("spawn ylabel trade worker {worker_id}"))?,
-        );
-    }
+fn load_backtest_context(
+    job: &DayJob,
+    allowed_rics: Option<&BTreeSet<String>>,
+) -> Result<BTreeMap<String, BacktestRic>> {
     let mut output = BTreeMap::new();
-    for join in joins {
-        for (ric, rows) in join
-            .join()
-            .map_err(|_| anyhow!("ylabel trade worker panicked"))??
-        {
-            if output.insert(ric.clone(), rows).is_some() {
-                bail!("duplicate trade result for {ric}");
-            }
-        }
+    if let Some(previous) = &job.previous_backtest {
+        add_backtest_file(previous, &job.key, allowed_rics, &mut output)?;
+    }
+    add_backtest_file(&job.backtest, &job.key, allowed_rics, &mut output)?;
+    Ok(output)
+}
+
+fn trading_day_bounds_ns(day: u32) -> Result<(u64, u64)> {
+    let date = NaiveDate::parse_from_str(&day.to_string(), "%Y%m%d")
+        .with_context(|| format!("invalid trading day {day}"))?;
+    let end = Chicago
+        .from_local_datetime(&date.and_hms_opt(17, 0, 0).expect("valid 17:00"))
+        .single()
+        .ok_or_else(|| anyhow!("ambiguous Chicago 17:00 for {day}"))?;
+    let start = end - ChronoDuration::days(1);
+    let start_ns = u64::try_from(start.timestamp())
+        .map_err(|_| anyhow!("trading day {day} starts before Unix epoch"))?
+        .checked_mul(1_000_000_000)
+        .ok_or_else(|| anyhow!("trading day {day} start overflows ns"))?;
+    let end_ns = u64::try_from(end.timestamp())
+        .map_err(|_| anyhow!("trading day {day} ends before Unix epoch"))?
+        .checked_mul(1_000_000_000)
+        .ok_or_else(|| anyhow!("trading day {day} end overflows ns"))?;
+    Ok((start_ns, end_ns))
+}
+
+fn scan_trade_rows(
+    db: &DB,
+    rics: &[String],
+    start_ns: u64,
+    end_ns: u64,
+    readahead_bytes: usize,
+) -> Result<BTreeMap<String, Vec<DropSpecialMinute>>> {
+    let mut output = BTreeMap::new();
+    for ric in rics {
+        let trades = scan_trades(db, ric, start_ns, end_ns, readahead_bytes)?;
+        let minutes = synthesize_drop_special_1min(&trades, &[], None)?;
+        output.insert(ric.clone(), minutes);
     }
     Ok(output)
 }
@@ -487,37 +516,71 @@ fn unlink_overwrite_files(
     Ok(removed)
 }
 
-fn write_product_days(
+fn process_day(
+    job: &DayJob,
+    db: &DB,
     out_root: &Path,
-    key: &ProductKey,
-    rows: Vec<YlabelRow>,
+    allowed_rics: Option<&BTreeSet<String>>,
+    readahead_bytes: usize,
     overwrite: bool,
-    start_day: Option<u32>,
-    end_day: Option<u32>,
 ) -> Result<(u64, u64)> {
-    let mut by_day: BTreeMap<u32, Vec<YlabelRow>> = BTreeMap::new();
-    for row in rows {
-        let day = chicago_trade_date_yyyymmdd(row.ts)?;
-        if output_day_selected(day, start_day, end_day) {
-            by_day.entry(day).or_default().push(row);
-        }
+    let destination = out_root
+        .join(&job.key.exchange)
+        .join(&job.key.product)
+        .join(format!("{}.parquet", job.day));
+    if destination.exists() && !overwrite {
+        return Ok((0, 0));
     }
-    let mut files = 0u64;
-    let mut written = 0u64;
-    for (day, mut rows) in by_day {
-        rows.sort_by(|left, right| left.ts.cmp(&right.ts).then(left.ric.cmp(&right.ric)));
-        let path = out_root
-            .join(&key.exchange)
-            .join(&key.product)
-            .join(format!("{day}.parquet"));
-        if path.exists() && !overwrite {
-            continue;
-        }
-        write_ylabel_parquet(&path, &rows)?;
-        files += 1;
-        written += rows.len() as u64;
+    let backtest = load_backtest_context(job, allowed_rics)?;
+    let (day_start, day_end) = trading_day_bounds_ns(job.day)?;
+    let trade_rows = scan_trade_rows(
+        db,
+        &job.trade_rics,
+        day_start.saturating_sub(60 * 1_000_000_000),
+        day_end,
+        readahead_bytes,
+    )?;
+    let rics = trade_rows
+        .iter()
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(ric, _)| ric)
+        .chain(backtest.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut rows = Vec::new();
+    let day_start_sec = i64::try_from(day_start / 1_000_000_000)
+        .map_err(|_| anyhow!("day {} start exceeds i64 seconds", job.day))?;
+    let day_end_sec = i64::try_from(day_end / 1_000_000_000)
+        .map_err(|_| anyhow!("day {} end exceeds i64 seconds", job.day))?;
+    for ric in rics {
+        let trade = trade_rows.get(&ric).map(Vec::as_slice).unwrap_or(&[]);
+        let backtest_ric = backtest.get(&ric);
+        let contract_id = trade
+            .first()
+            .map(|row| row.contract_id.as_str())
+            .or_else(|| backtest_ric.and_then(|item| item.contract_id.as_deref()))
+            .ok_or_else(|| anyhow!("{ric} has neither trade nor backtest contract_id"))?;
+        let midps = backtest_ric
+            .map(|item| {
+                item.minute_midp
+                    .iter()
+                    .map(|(&minute, &(_, midp))| (minute, midp))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let prices = causal_prices_from_minutes(trade, &midps)?;
+        rows.extend(
+            build_ylabel_rows(contract_id, &ric, &prices)
+                .into_iter()
+                .filter(|row| row.ts >= day_start_sec && row.ts < day_end_sec),
+        );
     }
-    Ok((files, written))
+    if rows.is_empty() {
+        return Ok((0, 0));
+    }
+    rows.sort_by(|left, right| left.ts.cmp(&right.ts).then(left.ric.cmp(&right.ric)));
+    write_ylabel_parquet(&destination, &rows)?;
+    Ok((1, rows.len() as u64))
 }
 
 fn run(config: &Config) -> Result<()> {
@@ -564,67 +627,92 @@ fn run(config: &Config) -> Result<()> {
     fs::create_dir_all(&config.out_root)
         .with_context(|| format!("create {}", config.out_root.display()))?;
 
-    let mut totals = (0u64, 0u64, 0u64);
+    let mut trade_rics_by_product: BTreeMap<ProductKey, Vec<String>> = BTreeMap::new();
+    for ric in trade_rics {
+        trade_rics_by_product
+            .entry(product_key_for_ric(&ric)?)
+            .or_default()
+            .push(ric);
+    }
+    let total_trade_rics = trade_rics_by_product.values().map(Vec::len).sum::<usize>();
+    let mut jobs = Vec::new();
     for key in all_product_keys() {
-        let product_trade_rics = trade_rics
-            .iter()
-            .filter_map(|ric| {
-                (product_key_for_ric(ric).ok().as_ref() == Some(&key)).then(|| ric.clone())
-            })
-            .collect::<Vec<_>>();
-        let backtest = load_backtest_product(&config.backtest_root, &key, allowed_rics.as_ref())?;
-        if product_trade_rics.is_empty() && backtest.is_empty() {
-            continue;
+        let days = list_backtest_days(&config.backtest_root, &key)?;
+        let product_trade_rics = trade_rics_by_product.remove(&key).unwrap_or_default();
+        for (index, day) in days.iter().enumerate() {
+            if !output_day_selected(day.day, start_day, end_day) {
+                continue;
+            }
+            jobs.push(DayJob {
+                key: key.clone(),
+                day: day.day,
+                previous_backtest: index.checked_sub(1).map(|prior| days[prior].path.clone()),
+                backtest: day.path.clone(),
+                trade_rics: product_trade_rics.clone(),
+            });
         }
-        let trade_rows = scan_trade_rows_parallel(
-            Arc::clone(&db),
-            product_trade_rics,
-            config.readahead_bytes,
-            config.workers,
-        )?;
-        let rics = trade_rows
-            .keys()
-            .chain(backtest.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let mut rows = Vec::new();
-        for ric in rics {
-            let trade = trade_rows.get(&ric).map(Vec::as_slice).unwrap_or(&[]);
-            let backtest_ric = backtest.get(&ric);
-            let contract_id = trade
-                .first()
-                .map(|row| row.contract_id.as_str())
-                .or_else(|| backtest_ric.and_then(|item| item.contract_id.as_deref()))
-                .ok_or_else(|| anyhow!("{ric} has neither trade nor backtest contract_id"))?;
-            let midps = backtest_ric
-                .map(|item| {
-                    item.minute_midp
-                        .iter()
-                        .map(|(&minute, &(_, midp))| (minute, midp))
-                        .collect::<BTreeMap<_, _>>()
-                })
-                .unwrap_or_default();
-            let prices = causal_prices_from_minutes(trade, &midps)?;
-            rows.extend(build_ylabel_rows(contract_id, &ric, &prices));
-        }
-        let (files, written) = write_product_days(
-            &config.out_root,
-            &key,
-            rows,
-            config.overwrite,
-            start_day,
-            end_day,
-        )?;
-        totals.0 += 1;
-        totals.1 += files;
-        totals.2 += written;
-        info!(
-            "ylabel wrote {}/{}/ files={} rows={}",
-            key.exchange, key.product, files, written
+    }
+    if jobs.is_empty() {
+        bail!(
+            "no selected backtest_1s parquet days under {}",
+            config.backtest_root.display()
         );
     }
+    let workers = config.workers.min(jobs.len()).max(1);
     info!(
-        "cme_tas_ylabel_1m complete products={} files={} rows={}",
+        "cme_tas_ylabel_1m day_jobs={} workers={} trade_rics={} out={}",
+        jobs.len(),
+        workers,
+        total_trade_rics,
+        config.out_root.display()
+    );
+    let (job_tx, job_rx) = unbounded();
+    for job in jobs {
+        job_tx.send(job).context("enqueue ylabel day")?;
+    }
+    drop(job_tx);
+    let mut joins = Vec::with_capacity(workers);
+    for worker_id in 0..workers {
+        let db = Arc::clone(&db);
+        let job_rx = job_rx.clone();
+        let out_root = config.out_root.clone();
+        let allowed_rics = allowed_rics.clone();
+        let readahead_bytes = config.readahead_bytes;
+        let overwrite = config.overwrite;
+        joins.push(
+            thread::Builder::new()
+                .name(format!("cme-tas-ylabel-day-{worker_id}"))
+                .spawn(move || -> Result<(u64, u64, u64)> {
+                    let mut totals = (0u64, 0u64, 0u64);
+                    while let Ok(job) = job_rx.recv() {
+                        let (files, rows) = process_day(
+                            &job,
+                            &db,
+                            &out_root,
+                            allowed_rics.as_ref(),
+                            readahead_bytes,
+                            overwrite,
+                        )?;
+                        totals.0 += 1;
+                        totals.1 += files;
+                        totals.2 += rows;
+                    }
+                    Ok(totals)
+                })
+                .with_context(|| format!("spawn ylabel day worker {worker_id}"))?,
+        );
+    }
+    let mut totals = (0u64, 0u64, 0u64);
+    for join in joins {
+        let worker_totals = join
+            .join()
+            .map_err(|_| anyhow!("ylabel day worker panicked"))??;
+        totals.0 += worker_totals.0;
+        totals.1 += worker_totals.1;
+        totals.2 += worker_totals.2;
+    }
+    info!(
+        "cme_tas_ylabel_1m complete day_jobs={} files={} rows={}",
         totals.0, totals.1, totals.2
     );
     Ok(())
@@ -642,5 +730,123 @@ fn main() {
     if let Err(err) = run(&config) {
         eprintln!("{err:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cme_tas_replay::{encode_cme_trade, MISSING_PRICE, MISSING_VOLUME};
+    use polars::prelude::{NamedFrom, ParquetWriter, Series};
+    use rocksdb::ColumnFamilyDescriptor;
+    use tempfile::TempDir;
+
+    const BASE: i64 = 1_704_150_000;
+
+    fn trade(ric: &str, ts: i64, price: f64) -> SlimTrade {
+        SlimTrade {
+            ric: ric.to_string(),
+            ts_utc_ns: u64::try_from(ts).unwrap() * 1_000_000_000 + 1_000_000,
+            exch_hms_ns: u64::MAX,
+            price: (price * 1_000_000_000.0) as i64,
+            volume: 1,
+            bid: MISSING_PRICE,
+            bid_size: MISSING_VOLUME,
+            ask: MISSING_PRICE,
+            ask_size: MISSING_VOLUME,
+            aggressor: 1,
+        }
+    }
+
+    fn setup_rocksdb(dir: &Path) -> Result<()> {
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let descriptors = vec![
+            ColumnFamilyDescriptor::new("default", Options::default()),
+            ColumnFamilyDescriptor::new(CF_CME_TRADE, Options::default()),
+        ];
+        let db = DB::open_cf_descriptors(&options, dir, descriptors)?;
+        let cf = db.cf_handle(CF_CME_TRADE).unwrap();
+        for (sequence, record) in [
+            trade("CLG24", BASE, 100.0),
+            trade("CLG24", BASE + 300, 104.0),
+            // This RIC is active elsewhere in RocksDB but not in the tested
+            // day. It must not abort the product-day replay.
+            trade("CLH24", BASE + 86_400, 105.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.put_cf(
+                &cf,
+                encode_key(&record.ric, record.ts_utc_ns, 0, sequence as u32)?,
+                encode_cme_trade(&record)?,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn setup_backtest(root: &Path) -> Result<()> {
+        let path = root.join("NYMEX").join("CL").join("20240102.parquet");
+        fs::create_dir_all(path.parent().unwrap())?;
+        let mut frame = DataFrame::new(vec![
+            Series::new(
+                "contract_id".into(),
+                vec!["NYMEX:CL:2024-02", "NYMEX:CL:2024-02"],
+            ),
+            Series::new("ric".into(), vec!["CLG24", "CLG24"]),
+            Series::new("ts".into(), vec![BASE, BASE + 300]),
+            Series::new("bid0p".into(), vec![100.0, 104.0]),
+            Series::new("ask0p".into(), vec![100.0, 104.0]),
+        ])?;
+        let file = File::create(path)?;
+        ParquetWriter::new(file).finish(&mut frame)?;
+        Ok(())
+    }
+
+    #[test]
+    fn replay_joins_trade_and_backtest_inputs_into_60_label_parquet() {
+        let temp = TempDir::new().unwrap();
+        let rocksdb_dir = temp.path().join("rocksdb");
+        let backtest_root = temp.path().join("backtest");
+        let out_root = temp.path().join("out");
+        setup_rocksdb(&rocksdb_dir).unwrap();
+        setup_backtest(&backtest_root).unwrap();
+        run(&Config {
+            rocksdb_dir,
+            secondary_dir: temp.path().join("secondary"),
+            backtest_root,
+            out_root: out_root.clone(),
+            rics: vec!["CLG24".to_string(), "CLH24".to_string()],
+            start: None,
+            end: None,
+            readahead_bytes: 4096,
+            workers: 1,
+            overwrite: false,
+        })
+        .unwrap();
+
+        let day =
+            cme_tas_replay::drop_special_1min::chicago_trade_date_yyyymmdd(BASE + 60).unwrap();
+        let file = File::open(
+            out_root
+                .join("NYMEX")
+                .join("CL")
+                .join(format!("{day}.parquet")),
+        )
+        .unwrap();
+        let frame = ParquetReader::new(file).finish().unwrap();
+        assert_eq!(frame.width(), 63);
+        let ts = i64_col(&frame, "ts").unwrap();
+        let index = (0..frame.height())
+            .find(|&index| ts.get(index) == Some(BASE + 60))
+            .unwrap();
+        let twap = f64_col(&frame, "twap_chg_5m").unwrap();
+        let vwap = f64_col(&frame, "vwap_chg_5m").unwrap();
+        let midp = f64_col(&frame, "midp_chg_5m").unwrap();
+        for column in [twap, vwap, midp] {
+            assert!((column.get(index).unwrap() - 0.04).abs() < 1e-12);
+        }
     }
 }

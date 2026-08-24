@@ -1,0 +1,8 @@
+# Read-only bounded audit of venue-specific L1 decrement after trades.
+input_path = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/raw_data/normalised/shanghai_evolution_equities_time_and_sales_ric_list_0_tas_2026-07-01_2026-08-14/merged-Data.csv.gz"
+ric = "AAPL.O"
+max_source_rows = 5000000
+quote_qualifier_contains = "*"
+
+# Optional JSON result path. Omit to print the summary to stdout only.
+# output_json = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/usstock_aapl_l1_match.json"
