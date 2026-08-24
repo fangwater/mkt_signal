@@ -12,6 +12,7 @@ use trade_signal::ArbMode;
 pub const SIGNAL_THROTTLE_TTL_US: i64 = 2 * 60 * 60 * 1_000_000;
 pub const INTRA_SIGNAL_THROTTLE_TTL_US: i64 = SIGNAL_THROTTLE_TTL_US;
 pub const GATE_SIGNAL_THROTTLE_TTL_US: i64 = 30 * 60 * 1_000_000;
+pub const GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US: i64 = 5 * 60 * 1_000_000;
 pub const SIGNAL_THROTTLE_ERROR_CODE_BALANCE_INSUFFICIENT: i32 = -2018;
 pub const SIGNAL_THROTTLE_ERROR_CODE_UM_COLLATERAL_LIMIT: i32 = 51169;
 pub const SIGNAL_THROTTLE_ERROR_CODE_MARGIN_INSUFFICIENT: i32 = -2019;
@@ -129,11 +130,15 @@ fn is_account_wide_reduce_only_error_code(exchange: Option<Exchange>, error_code
         (exchange, error_code),
         (
             Some(Exchange::Gate),
-            gate::INITIAL_MARGIN_TOO_LOW
-                | gate::MARGIN_NOT_ENOUGH
-                | gate::POSITION_MARGIN_TOO_LOW
-                | gate::RISK_CHECK_MARKET_FORBIDDEN
+            gate::INITIAL_MARGIN_TOO_LOW | gate::MARGIN_NOT_ENOUGH | gate::POSITION_MARGIN_TOO_LOW
         )
+    )
+}
+
+fn is_gate_market_forbidden_error(exchange: Option<Exchange>, error_code: i32) -> bool {
+    matches!(
+        (exchange, error_code),
+        (Some(Exchange::Gate), gate::RISK_CHECK_MARKET_FORBIDDEN)
     )
 }
 
@@ -142,6 +147,14 @@ fn signal_throttle_ttl_us(exchange: Option<Exchange>) -> i64 {
         GATE_SIGNAL_THROTTLE_TTL_US
     } else {
         SIGNAL_THROTTLE_TTL_US
+    }
+}
+
+fn signal_throttle_ttl_us_for_error(exchange: Option<Exchange>, error_code: i32) -> i64 {
+    if is_gate_market_forbidden_error(exchange, error_code) {
+        GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
+    } else {
+        signal_throttle_ttl_us(exchange)
     }
 }
 
@@ -166,7 +179,7 @@ pub fn register_signal_throttle(
         exchange,
         error_code,
         now_us,
-        signal_throttle_ttl_us(exchange),
+        signal_throttle_ttl_us_for_error(exchange, error_code),
     )
 }
 
@@ -184,7 +197,11 @@ pub fn register_signal_throttle_for_mode(
         exchange,
         error_code,
         now_us,
-        signal_throttle_ttl_us_for_mode(exchange, arb_mode),
+        if is_gate_market_forbidden_error(exchange, error_code) {
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
+        } else {
+            signal_throttle_ttl_us_for_mode(exchange, arb_mode)
+        },
     )
 }
 
@@ -347,36 +364,46 @@ fn register_signal_throttle_at_with_source(
         false
     };
 
-    let key = SignalThrottleKey::new(symbol, dir);
+    let pair_sides = [Side::Buy, Side::Sell];
+    let blocked_sides: &[Side] = if is_gate_market_forbidden_error(exchange, error_code) {
+        &pair_sides
+    } else {
+        std::slice::from_ref(&dir)
+    };
     SIGNAL_THROTTLE_MAP.with(|map| {
         let mut guard = map.borrow_mut();
         cleanup_expired(&mut guard, now_us);
-        guard
-            .entry(key.clone())
-            .and_modify(|entry| {
-                entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
-                entry.last_error_code = error_code;
-                entry.updated_at_us = now_us;
-                if source == SignalThrottleSource::ExchangeError {
-                    entry.source = source;
-                }
-            })
-            .or_insert(SignalThrottleEntry {
-                ban_until_us,
-                last_error_code: error_code,
-                updated_at_us: now_us,
-                source,
-            });
+        for &blocked_side in blocked_sides {
+            let key = SignalThrottleKey::new(symbol, blocked_side);
+            guard
+                .entry(key)
+                .and_modify(|entry| {
+                    entry.ban_until_us = entry.ban_until_us.max(ban_until_us);
+                    entry.last_error_code = error_code;
+                    entry.updated_at_us = now_us;
+                    if source == SignalThrottleSource::ExchangeError {
+                        entry.source = source;
+                    }
+                })
+                .or_insert(SignalThrottleEntry {
+                    ban_until_us,
+                    last_error_code: error_code,
+                    updated_at_us: now_us,
+                    source,
+                });
+        }
     });
 
-    warn!(
-        "SignalThrottle: register block symbol={} dir={} code={} block_for={}s until_us={}",
-        key.symbol,
-        dir.as_str(),
-        error_code,
-        ttl_us / 1_000_000,
-        ban_until_us
-    );
+    for &blocked_side in blocked_sides {
+        warn!(
+            "SignalThrottle: register block symbol={} dir={} code={} block_for={}s until_us={}",
+            symbol.trim().to_ascii_uppercase(),
+            blocked_side.as_str(),
+            error_code,
+            ttl_us / 1_000_000,
+            ban_until_us
+        );
+    }
     if registered_account_block {
         warn!(
             "SignalThrottle: register account-wide reduce-only block code={} block_for={}s until_us={}",
@@ -453,6 +480,17 @@ mod tests {
             GATE_SIGNAL_THROTTLE_TTL_US
         );
         assert_eq!(GATE_SIGNAL_THROTTLE_TTL_US, 30 * 60 * 1_000_000);
+        assert_eq!(
+            signal_throttle_ttl_us_for_error(
+                Some(Exchange::Gate),
+                gate::RISK_CHECK_MARKET_FORBIDDEN,
+            ),
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US
+        );
+        assert_eq!(
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US,
+            5 * 60 * 1_000_000
+        );
         assert_eq!(
             signal_throttle_ttl_us(Some(Exchange::Binance)),
             SIGNAL_THROTTLE_TTL_US
@@ -546,7 +584,7 @@ mod tests {
             Some(Exchange::Gate),
             gate::RISK_CHECK_MARKET_FORBIDDEN
         ));
-        assert!(is_account_wide_reduce_only_error_code(
+        assert!(!is_account_wide_reduce_only_error_code(
             Some(Exchange::Gate),
             gate::RISK_CHECK_MARKET_FORBIDDEN
         ));
@@ -654,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn registers_gate_market_forbidden_as_account_reduce_only_throttle() {
+    fn registers_gate_market_forbidden_as_pair_throttle() {
         let _guard = TEST_LOCK.lock();
         clear_all();
         let now_us = 2_000_000;
@@ -665,25 +703,27 @@ mod tests {
             Some(Exchange::Gate),
             gate::RISK_CHECK_MARKET_FORBIDDEN,
             now_us,
-            GATE_SIGNAL_THROTTLE_TTL_US,
+            GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US,
         ));
 
-        let symbol_hit = check_signal_throttle_at("DRIFTUSDT", Side::Buy, now_us + 1)
-            .expect("symbol-side throttle must be hit");
-        assert_eq!(
-            symbol_hit.last_error_code,
-            gate::RISK_CHECK_MARKET_FORBIDDEN
-        );
-        let account_hit = check_account_signal_throttle_at(now_us + 1)
-            .expect("account reduce-only throttle must be hit");
-        assert_eq!(
-            account_hit.last_error_code,
-            gate::RISK_CHECK_MARKET_FORBIDDEN
-        );
-        assert_eq!(account_hit.remaining_us, GATE_SIGNAL_THROTTLE_TTL_US - 1);
+        for side in [Side::Buy, Side::Sell] {
+            let symbol_hit = check_signal_throttle_at("DRIFTUSDT", side, now_us + 1)
+                .expect("both pair directions must be throttled");
+            assert_eq!(
+                symbol_hit.last_error_code,
+                gate::RISK_CHECK_MARKET_FORBIDDEN
+            );
+            assert_eq!(
+                symbol_hit.remaining_us,
+                GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US - 1
+            );
+        }
+        assert!(check_signal_throttle_at("BTCUSDT", Side::Buy, now_us + 1).is_none());
+        assert!(check_account_signal_throttle_at(now_us + 1).is_none());
 
-        let expires_at_us = now_us + GATE_SIGNAL_THROTTLE_TTL_US;
+        let expires_at_us = now_us + GATE_RISK_CHECK_MARKET_FORBIDDEN_THROTTLE_TTL_US;
         assert!(check_signal_throttle_at("DRIFTUSDT", Side::Buy, expires_at_us).is_none());
+        assert!(check_signal_throttle_at("DRIFTUSDT", Side::Sell, expires_at_us).is_none());
         assert!(check_account_signal_throttle_at(expires_at_us).is_none());
         clear_all();
     }

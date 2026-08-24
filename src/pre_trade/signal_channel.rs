@@ -32,6 +32,7 @@ use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
 use ipc_common::iceoryx_publisher::{SignalPublisher, TradeSignalIpcPayload, SIGNAL_PAYLOAD};
 use log::{debug, info, warn, Level};
+use order_common::trade_error_code::gate;
 use order_common::TradingVenue;
 use rolling_common::arb_open_latency::record_arb_open_latency_with_level;
 use runtime_common::ipc_service_name::build_service_name;
@@ -1040,7 +1041,10 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 return;
             }
             if account_throttle_hit.is_none() && account_open_block_hit.is_none() {
-                if let Some(hit) = symbol_throttle_hit.as_ref() {
+                if let Some(hit) = symbol_throttle_hit
+                    .as_ref()
+                    .filter(|hit| hit.last_error_code != gate::RISK_CHECK_MARKET_FORBIDDEN)
+                {
                     debug!(
                         "ArbOpen: throttled by pre_trade block, symbol={} side={} remain_us={} last_code={} until_us={}, skip strategy construction",
                         symbol,
@@ -1130,6 +1134,33 @@ fn handle_arb_open_signal_view(signal: TradeSignalView<'_>, receive_us: i64) {
                 side,
                 open_ctx.amount_value(),
             );
+            if account_throttle_hit.is_none() && account_open_block_hit.is_none() {
+                if let Some(hit) = symbol_throttle_hit
+                    .as_ref()
+                    .filter(|hit| hit.last_error_code == gate::RISK_CHECK_MARKET_FORBIDDEN)
+                {
+                    if !leverage_guard_reducing {
+                        debug!(
+                            "ArbOpen: Gate market-forbidden pair cooldown, symbol={} side={} open_venue={:?} hedge_venue={:?} qty={:.8} remain_us={} until_us={}, skip strategy construction",
+                            symbol,
+                            side.as_str(),
+                            opening_venue,
+                            hedging_venue,
+                            open_ctx.amount_value(),
+                            hit.remaining_us,
+                            hit.until_us
+                        );
+                        return;
+                    }
+                    debug!(
+                        "ArbOpen: Gate market-forbidden pair cooldown active but signal is reducing, symbol={} side={} remain_us={}",
+                        symbol,
+                        side.as_str(),
+                        hit.remaining_us
+                    );
+                }
+            }
+
             if FrPositionConcentrationGuard::should_block_arb_open(&symbol, leverage_guard_reducing)
             {
                 return;
