@@ -53,6 +53,25 @@ impl RollingRateWindow {
         }
     }
 
+    fn next_available_at_us(&mut self, now_us: i64, limit_per_min: i32, limit_10s: i32) -> i64 {
+        let now_us = self.normalize_now(now_us);
+        self.prune(now_us);
+        let mut retry_at_us = now_us;
+        if limit_10s > 0 && self.orders_10s.len() >= limit_10s as usize {
+            let index = self.orders_10s.len() - limit_10s as usize;
+            if let Some(ts) = self.orders_10s.get(index) {
+                retry_at_us = retry_at_us.max(ts.saturating_add(ORDER_RATE_WINDOW_10S_US));
+            }
+        }
+        if limit_per_min > 0 && self.orders_1m.len() >= limit_per_min as usize {
+            let index = self.orders_1m.len() - limit_per_min as usize;
+            if let Some(ts) = self.orders_1m.get(index) {
+                retry_at_us = retry_at_us.max(ts.saturating_add(ORDER_RATE_WINDOW_1M_US));
+            }
+        }
+        retry_at_us
+    }
+
     fn record(&mut self, now_us: i64) -> OrderRateStats {
         let now_us = self.normalize_now(now_us);
         self.prune(now_us);
@@ -156,6 +175,22 @@ impl OrderRateLimiter {
             stats.count_1m
         );
         stats
+    }
+
+    pub fn next_available_at_us(
+        bucket: OrderRateBucket,
+        limit_per_min: i32,
+        limit_10s: i32,
+        now_us: i64,
+    ) -> i64 {
+        ORDER_RATE_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            Self::bucket_window_mut(&mut state, bucket).next_available_at_us(
+                now_us,
+                limit_per_min,
+                limit_10s,
+            )
+        })
     }
 
     pub fn cleanup_expired(now_us: i64) -> usize {
@@ -295,6 +330,23 @@ mod tests {
             OrderRateLimiter::check_limit(OrderRateBucket::MmHedge, 10, 10, 62_000_000).unwrap();
         assert_eq!(hedge_stats.count_1m, 1);
 
+        OrderRateLimiter::clear();
+    }
+
+    #[test]
+    fn next_available_time_waits_for_the_relevant_window_to_expire() {
+        OrderRateLimiter::clear();
+        OrderRateLimiter::record(OrderRateBucket::Exec, 1, 100);
+        OrderRateLimiter::record(OrderRateBucket::Exec, 2, 200);
+
+        assert_eq!(
+            OrderRateLimiter::next_available_at_us(OrderRateBucket::Exec, 0, 2, 300),
+            100 + ORDER_RATE_WINDOW_10S_US
+        );
+        assert_eq!(
+            OrderRateLimiter::next_available_at_us(OrderRateBucket::Exec, 2, 0, 300),
+            100 + ORDER_RATE_WINDOW_1M_US
+        );
         OrderRateLimiter::clear();
     }
 }

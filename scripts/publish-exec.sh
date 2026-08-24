@@ -142,6 +142,9 @@ check_remote_stopped() {
 set -uo pipefail
 target="$1"
 exchange="$2"
+if [[ -d "$HOME/.local/bin" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 if [[ ! -d "$target" ]]; then
   echo "[ERROR] remote environment does not exist: $target" >&2
   exit 1

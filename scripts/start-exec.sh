@@ -138,6 +138,9 @@ check_only="$4"
 startup_wait_seconds="$5"
 startup_settle_seconds="$6"
 log_lines="$7"
+if [[ -d "$HOME/.local/bin" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 scripts_dir="$target/scripts"
 
 if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then

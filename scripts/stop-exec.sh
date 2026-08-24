@@ -109,6 +109,9 @@ target="$1"
 exchange="$2"
 venue="$3"
 check_only="$4"
+if [[ -d "$HOME/.local/bin" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 scripts_dir="$target/scripts"
 
 if [[ ! -d "$target" || "$(readlink -f -- "$target")" != "$target" ]]; then

@@ -759,6 +759,10 @@ pub struct BatchExecStrategy {
     alive_flag: bool,
 }
 
+fn is_exec_rate_limit_error(error: &str) -> bool {
+    error.starts_with("exec ") && error.contains("下单数") && error.contains("达到上限")
+}
+
 impl BatchExecStrategy {
     pub fn new(
         strategy_id: i32,
@@ -1257,6 +1261,9 @@ impl BatchExecStrategy {
         if !Self::quote_is_fresh(quote.ts, now_ts) {
             return;
         }
+        if now_ts < self.next_batch_at_us {
+            return;
+        }
         let unallocated_qty = self.unallocated_qty_for_target(target_qty);
         let aggregate_base_qty = unallocated_qty.abs();
         let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
@@ -1640,6 +1647,7 @@ impl BatchExecStrategy {
         let now_ts = get_timestamp_us();
         MonitorChannel::instance().refresh_exec_risk_state();
         let mut sent_ids = Vec::new();
+        let mut rate_limited_retry_at_us = None;
         for plan in plans {
             let qty_multiplier = plan.qty_multiplier;
             if plan.order_type.is_limit()
@@ -1700,6 +1708,16 @@ impl BatchExecStrategy {
                     .order_manager()
                     .borrow_mut()
                     .remove(client_order_id);
+                if is_exec_rate_limit_error(&err) {
+                    let params = PreTradeParamsLoader::instance();
+                    rate_limited_retry_at_us = Some(OrderRateLimiter::next_available_at_us(
+                        OrderRateBucket::Exec,
+                        params.exec_order_rate_limit_per_min(),
+                        params.exec_order_rate_limit_10s(),
+                        now_ts,
+                    ));
+                    break;
+                }
                 warn!(
                     "BatchExecStrategy: strategy_id={} send child failed order_id={} err={}",
                     self.strategy_id, client_order_id, err
@@ -1711,6 +1729,16 @@ impl BatchExecStrategy {
                 PendingOrderQueryReason::OrderWatchdog,
             );
             sent_ids.push(client_order_id);
+        }
+
+        if let Some(retry_at_us) = rate_limited_retry_at_us {
+            self.next_batch_at_us = self.next_batch_at_us.max(retry_at_us);
+            warn!(
+                "BatchExecStrategy: strategy_id={} symbol={} deferred after local exec order-rate limit retry_at_us={}",
+                self.strategy_id,
+                self.symbol,
+                self.next_batch_at_us
+            );
         }
 
         let Some(batch) = self.batches.get_mut(&batch_seq) else {
@@ -2522,6 +2550,17 @@ mod tests {
         assert!(residual_should_coalesce(0.1, 100.0, 10.0, 0.2));
         assert!(residual_should_coalesce(0.15, 100.0, 10.0, 0.2));
         assert!(!residual_should_coalesce(0.25, 100.0, 10.0, 0.2));
+    }
+
+    #[test]
+    fn identifies_only_local_exec_rate_limit_errors_for_backoff() {
+        assert!(is_exec_rate_limit_error(
+            "exec 近10秒下单数=200，达到上限 200"
+        ));
+        assert!(is_exec_rate_limit_error(
+            "exec 近60秒下单数=400，达到上限 400"
+        ));
+        assert!(!is_exec_rate_limit_error("Binance rejected position side"));
     }
 
     #[test]
