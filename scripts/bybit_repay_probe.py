@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Bybit auto-repay endpoint 探针。
 
-支持两个端点：
-  - quick-repayment    POST /v5/account/quick-repayment
-                       会跨币种用其他资产折价补差（消耗 USDT 等）
-  - no-convert-repay   POST /v5/account/no-convert-repay  (推荐)
-                       严格只用同币 spot available 抵同币 borrow，不动其他币
+仅支持 no-convert-repay：
+  POST /v5/account/no-convert-repay
+  严格只用同币 spot available 抵同币 borrow，不动其他币。
+
+quick-repayment 会跨币种买入持仓币并破坏策略对冲，禁止从该工具调用。
 
 流程（针对单个 coin）：
   1. GET /v5/account/wallet-balance  → 记录 before {borrowAmount, walletBalance, equity}
@@ -14,8 +14,6 @@
 
 默认 dry-run，加 --execute 才真发 step 2 + 3。
 
-警告：quick-repayment 已确认会跨币种买卖（消耗 USDT 折价补差）。除非确认接受副作用，
-默认应使用 --endpoint no-convert-repay。
 """
 
 from __future__ import annotations
@@ -129,7 +127,6 @@ def diff_snapshot(before: Dict[str, str], after: Dict[str, str]) -> None:
 
 ENDPOINTS = {
     "no-convert-repay": "/v5/account/no-convert-repay",
-    "quick-repayment": "/v5/account/quick-repayment",
 }
 
 
@@ -183,8 +180,7 @@ def main() -> None:
 
     # step 2: call repay
     payload: Dict[str, Any] = {"coin": coin}
-    if args.endpoint == "no-convert-repay":
-        payload["repaymentType"] = args.repayment_type
+    payload["repaymentType"] = args.repayment_type
     body = json.dumps(payload, separators=(",", ":"))
     out = call(api_key, api_secret, "POST", path, body=body)
     print(f"\n[POST {path}]")

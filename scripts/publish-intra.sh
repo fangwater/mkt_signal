@@ -249,8 +249,24 @@ UPLOAD_NAMES=(
 )
 case "$INTRA_EXCHANGE" in
   bybit)
-    LOCAL_RELATIVE+=("scripts/cancel_bybit_pm_orders.py")
-    UPLOAD_NAMES+=("cancel_bybit_pm_orders.py")
+    LOCAL_RELATIVE+=(
+      "scripts/cancel_bybit_pm_orders.py"
+      "scripts/bybit_repay_probe.py"
+      "scripts/lib/bybit_external_order_link.py"
+      "scripts/lib/exchange_signing.py"
+      "scripts/lib/exchange_state.py"
+      "scripts/lib/intra_symbols.py"
+      "intra_scripts/flatten_intra_bybit_futures_exposure.py"
+    )
+    UPLOAD_NAMES+=(
+      "cancel_bybit_pm_orders.py"
+      "bybit_repay_probe.py"
+      "bybit_external_order_link.py"
+      "exchange_signing.py"
+      "exchange_state.py"
+      "intra_symbols.py"
+      "flatten_intra_bybit_futures_exposure.py"
+    )
     ;;
   okex)
     LOCAL_RELATIVE+=("scripts/cancel_okex_pm_orders.py")
@@ -395,6 +411,12 @@ publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
 case "$exchange" in
   bybit)
     publish_file cancel_bybit_pm_orders.py scripts/cancel_bybit_pm_orders.py
+    publish_file bybit_repay_probe.py scripts/bybit_repay_probe.py
+    publish_file bybit_external_order_link.py scripts/lib/bybit_external_order_link.py
+    publish_file exchange_signing.py scripts/lib/exchange_signing.py
+    publish_file exchange_state.py scripts/lib/exchange_state.py
+    publish_file intra_symbols.py scripts/lib/intra_symbols.py
+    publish_file flatten_intra_bybit_futures_exposure.py intra_scripts/flatten_intra_bybit_futures_exposure.py
     ;;
   okex)
     publish_file cancel_okex_pm_orders.py scripts/cancel_okex_pm_orders.py

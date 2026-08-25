@@ -776,8 +776,8 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
             //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan
             //     - Gate   ：UNIFIED 账户，端点 POST /api/v4/unified/loans (type=repay)
-            //     - Bybit  ：UNIFIED 账户，端点 POST /v5/account/quick-repayment（占位实现，
-            //               已知近期返回 "no liability" 但 borrowAmount 不归零，待端点确认）
+            //     - Bybit  ：UNIFIED 账户，仅为 USDT 调用 /v5/account/no-convert-repay；
+            //               非 USDT 持仓币禁止自动还款，避免绕开策略对冲状态。
             let mut auto_repay_service = None;
             {
                 let mut repay_svc = AutoRepayService::new();

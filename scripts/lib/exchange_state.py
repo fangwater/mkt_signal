@@ -6,7 +6,7 @@ The canonical entry shape (BasicExposureEntry) is the Python mirror of the
 Rust struct of the same name:
 
     asset       : uppercase base coin
-    balance     : spot net (= equity, already netted with debt)
+    balance     : spot net (= wallet - borrowed - interest)
     borrowed    : outstanding borrow (gross)
     interest    : accrued interest
     um_position : futures base qty (already converted via contract multiplier)
@@ -73,6 +73,24 @@ def _dec(value: Any, default: str = "0") -> Decimal:
 def _normalize_exchange(value: str) -> str:
     text = (value or "").strip().lower()
     return "okex" if text == "okx" else text
+
+
+def _bybit_spot_balance(coin: Dict[str, Any]) -> Tuple[Decimal, Decimal, Decimal]:
+    """Mirror Rust BasicBalance::net for a Bybit UTA wallet row."""
+    wallet = _dec(coin.get("walletBalance"))
+    raw_spot_borrow = coin.get("spotBorrow")
+    borrowed = _dec(
+        raw_spot_borrow
+        if raw_spot_borrow is not None and str(raw_spot_borrow).strip()
+        else coin.get("borrowAmount")
+    )
+    raw_interest = coin.get("accruedInterest")
+    interest = _dec(
+        raw_interest
+        if raw_interest is not None and str(raw_interest).strip()
+        else coin.get("borrowInterest")
+    )
+    return wallet - borrowed - interest, borrowed, interest
 
 
 def fetch_exchange_state(
@@ -426,9 +444,7 @@ def _fetch_bybit_state(
             asset = str(coin.get("coin") or "").strip().upper()
             if not asset or asset not in in_scope:
                 continue
-            balance = _dec(coin.get("walletBalance"))
-            borrowed = _dec(coin.get("borrowAmount"))
-            interest = _dec(coin.get("accruedInterest"))
+            balance, borrowed, interest = _bybit_spot_balance(coin)
             balances[asset] = (balance, borrowed, interest)
     if verbose:
         print(f"[bybit] balances: {len(balances)} in-scope assets")
