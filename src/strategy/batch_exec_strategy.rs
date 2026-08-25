@@ -298,6 +298,10 @@ fn estimate_batch_progress(
     (remaining_batches, estimated_completion_ts_ms)
 }
 
+fn should_defer_batch_start(now_ts: i64, next_batch_at_us: i64, has_ready_batch: bool) -> bool {
+    now_ts < next_batch_at_us && !(has_ready_batch && next_batch_at_us == i64::MAX)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MakerPriceAnchor {
@@ -1325,14 +1329,16 @@ impl BatchExecStrategy {
         if !Self::quote_is_fresh(quote.ts, now_ts) {
             return;
         }
-        if now_ts < self.next_batch_at_us {
+        let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
+            (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
+        });
+        // Exchange-minimum residuals disable new batch creation with i64::MAX,
+        // but an existing batch may still need a maker requote or taker fallback.
+        if should_defer_batch_start(now_ts, self.next_batch_at_us, ready_batch.is_some()) {
             return;
         }
         let unallocated_qty = self.unallocated_qty_for_target(target_qty);
         let aggregate_base_qty = unallocated_qty.abs();
-        let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
-            (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
-        });
         if aggregate_base_qty <= QTY_EPS {
             if let Some(batch_seq) = ready_batch {
                 self.completion_reason = None;
@@ -2768,6 +2774,14 @@ mod tests {
             estimate_batch_progress(&config(), 10.0, 0, 0, 1_000, 1_000, false),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn ready_batch_bypasses_disabled_new_batch_schedule() {
+        assert!(should_defer_batch_start(10, i64::MAX, false));
+        assert!(!should_defer_batch_start(10, i64::MAX, true));
+        assert!(should_defer_batch_start(10, 20, true));
+        assert!(!should_defer_batch_start(10, 10, false));
     }
 
     #[test]
