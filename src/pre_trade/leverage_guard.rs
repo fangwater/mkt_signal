@@ -946,10 +946,7 @@ fn normalize_online_value_to_internal_symbol(value: &str) -> Option<String> {
 }
 
 fn clean_symbol_text(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect()
+    value.chars().filter(|ch| ch.is_alphanumeric()).collect()
 }
 
 fn arb_open_targets(
@@ -1673,6 +1670,10 @@ mod tests {
             normalize_online_value_to_internal_symbol("HNT-USDT-260628"),
             Some("HNTUSDT".to_string())
         );
+        assert_eq!(
+            normalize_online_value_to_internal_symbol("龙虾USDT"),
+            Some("龙虾USDT".to_string())
+        );
     }
 
     #[test]
@@ -1680,6 +1681,10 @@ mod tests {
         assert_eq!(
             symbol_for_venue("HNTUSDT", TradingVenue::BinanceFutures),
             "HNTUSDT"
+        );
+        assert_eq!(
+            symbol_for_venue("龙虾USDT", TradingVenue::BinanceFutures),
+            "龙虾USDT"
         );
         assert_eq!(
             symbol_for_venue("HNTUSDT", TradingVenue::OkexFutures),
