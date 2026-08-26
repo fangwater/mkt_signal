@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 STRATEGY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-SYMBOL_RE = re.compile(r"^[A-Z0-9]+$")
 ORDER_PARAMETER_FIELDS = (
     "single_order_usdt",
     "orders_per_batch",
@@ -69,7 +68,7 @@ def validate_strategy_name(raw: Any) -> str:
 
 def normalize_symbol(raw: Any) -> str:
     symbol = str(raw or "").strip().upper()
-    if not SYMBOL_RE.fullmatch(symbol):
+    if not symbol or not all(char.isalnum() for char in symbol):
         raise ValueError(f"invalid symbol: {raw}")
     return symbol
 
