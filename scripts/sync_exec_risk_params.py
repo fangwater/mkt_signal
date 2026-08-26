@@ -7,8 +7,8 @@
 写入 Redis Hash:
   `<env>:<venue>:pre_trade_risk_params`
 
-同时打印 per-symbol max_pos_u 覆盖 key（不写入）:
-  `<env>:<venue>:exec:max_pos_u`
+只写入 BatchExec 当前实际使用的挂单数量与下单频率限制。账户级
+`max_pos_u`、`max_leverage` 和截面失衡参数不属于当前 BatchExec 风控。
 
 示例：
   cd ~/binance_exec_trade
@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -88,26 +87,20 @@ def parse_args() -> argparse.Namespace:
 
 # Hash key: pre_trade_risk_params
 RISK_PARAMS = {
-    "max_pos_u": "100000.0",  # 默认单币最大持仓(USDT)，可被 exec:max_pos_u per-symbol 覆盖
-    "max_leverage": "1.75",  # 最大杠杆倍数（>0）
     "max_pending_limit_orders": "10",  # 最大 live exec 限价挂单数（>=0）
     "exec_max_pending_limit_buy_orders": "10",  # Exec 买侧最大限价挂单数（>=0, 0=关闭）
     "exec_max_pending_limit_sell_orders": "10",  # Exec 卖侧最大限价挂单数（>=0, 0=关闭）
     "exec_order_rate_limit_per_min": "400",  # Exec 60s 下单频率上限（0=关闭）
     "exec_order_rate_limit_10s": "200",  # Exec 10s 下单频率上限（0=关闭）
-    "exec_max_position_imbalance_ratio": "0.8",  # 截面持仓失衡比例上限，0=关闭
 }
 
 
 PARAM_COMMENTS: Dict[str, str] = {
-    "max_pos_u": "默认单币最大持仓(USDT)，可被 exec:max_pos_u 覆盖",
-    "max_leverage": "最大杠杆倍数",
     "max_pending_limit_orders": "最大 live exec 限价挂单数",
     "exec_max_pending_limit_buy_orders": "Exec 买侧最大限价挂单数（0=关闭）",
     "exec_max_pending_limit_sell_orders": "Exec 卖侧最大限价挂单数（0=关闭）",
     "exec_order_rate_limit_per_min": "Exec 60s 下单频率上限（0=关闭）",
     "exec_order_rate_limit_10s": "Exec 10s 下单频率上限（0=关闭）",
-    "exec_max_position_imbalance_ratio": "abs(long_u-short_u)/(long_u+short_u)，0=关闭",
 }
 
 
@@ -118,13 +111,12 @@ def build_risk_params_key(env_name: str, exec_venue: str) -> str:
     return f"{env_name}:{exec_venue}:pre_trade_risk_params"
 
 
-def build_exec_max_pos_u_key(env_name: str, exec_venue: str) -> str:
-    return f"{env_name}:{exec_venue}:exec:max_pos_u"
-
-
 def sync_risk_params(rds, env_name: str, exec_venue: str) -> int:
     key = build_risk_params_key(env_name, exec_venue)
-    rds.hset(key, mapping=RISK_PARAMS)
+    with rds.pipeline(transaction=True) as pipe:
+        pipe.delete(key)
+        pipe.hset(key, mapping=RISK_PARAMS)
+        pipe.execute()
     print(f"✅ 已写入 {len(RISK_PARAMS)} 个参数到 HASH '{key}'")
     return len(RISK_PARAMS)
 
@@ -180,32 +172,6 @@ def print_risk_params(rds, env_name: str, exec_venue: str) -> None:
     print_three_line_table(headers, rows)
 
 
-def print_exec_max_pos_u_overrides(rds, env_name: str, exec_venue: str) -> None:
-    key = build_exec_max_pos_u_key(env_name, exec_venue)
-    print("\n📊 Exec per-symbol max_pos_u 覆盖配置:")
-    print("-" * 80)
-    print(f"🔑 Redis String Key: {key}")
-    raw = rds.get(key)
-    if raw is None:
-        print("⚠️  STRING 为空或不存在；当前使用 hash 里的 max_pos_u 作为默认单币限制")
-        return
-
-    text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
-    try:
-        mapping = json.loads(text)
-    except Exception:
-        print(text)
-        return
-    if not isinstance(mapping, dict) or not mapping:
-        print("{}")
-        return
-
-    rows: List[List[str]] = []
-    for symbol in sorted(mapping.keys()):
-        rows.append([str(symbol), f"{float(mapping[symbol]):g}"])
-    print_three_line_table(["Symbol", "max_pos_u"], rows)
-
-
 def main() -> int:
     args = parse_args()
     redis = try_import_redis()
@@ -222,7 +188,6 @@ def main() -> int:
 
     sync_risk_params(rds, args.env_name, args.exec_venue)
     print_risk_params(rds, args.env_name, args.exec_venue)
-    print_exec_max_pos_u_overrides(rds, args.env_name, args.exec_venue)
     print("\n✅ 同步完成！")
     return 0
 
