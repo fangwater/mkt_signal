@@ -317,7 +317,14 @@ async fn query_status(State(state): State<AppState>) -> impl IntoResponse {
 async fn index_page(State(state): State<AppState>) -> impl IntoResponse {
     let path = state.web_dir.join("index.html");
     match std::fs::read_to_string(&path) {
-        Ok(body) => Html(body).into_response(),
+        Ok(body) => {
+            let mut response = Html(body).into_response();
+            response.headers_mut().insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            );
+            response
+        }
         Err(err) => (
             axum::http::StatusCode::NOT_FOUND,
             format!("missing frontend {}: {err}", path.display()),

@@ -238,9 +238,8 @@
         const status = TONES[account.tone] || account.tone;
         const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span></td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
-        const hits = account.hits.slice(0, 4).map((hit) => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
-        const extra = account.hits.length > 4 ? `<div class="hit"><span class="hit__detail">另有 ${account.hits.length - 4} 个风险标的</span></div>` : '';
-        return `${row}<tr class="hit-row"><td colspan="6"><div class="hit-list">${hits}${extra}</div></td></tr>`;
+        const hits = account.hits.map((hit) => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
+        return `${row}<tr class="hit-row"><td colspan="6"><div class="hit-list">${hits}</div></td></tr>`;
       }
       function exchangeBlock(exchange, accounts) {
         const riskN = accounts.reduce((sum, account) => sum + (account.risk_n || 0), 0);
