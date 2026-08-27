@@ -21,3 +21,8 @@
 # Crypto NAV manager (canonical path)
 /nav-api/ http://127.0.0.1:4200/api/
 /nav/ static:$HOME/crypto_nav_manager/frontend/dist/
+
+# BEGIN managed: delist_risk_server
+# delist risk public HTTP
+/delist/ http://127.0.0.1:8787/
+# END managed: delist_risk_server

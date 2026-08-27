@@ -2515,6 +2515,7 @@ dependencies = [
  "tar",
  "tokio",
  "tokio-native-tls",
+ "tokio-postgres",
  "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite 0.20.1",
@@ -3600,6 +3601,8 @@ dependencies = [
  "chrono",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]

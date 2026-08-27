@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_NAME="delist_risk_server"
+BIN_PATH="${ROOT_DIR}/target/release/${BIN_NAME}"
+SSH_HOST="${DELIST_DEPLOY_HOST:-jp-meta-elvpn}"
+LOCAL_TARGET=""
+DO_BUILD=1
+DO_SCRIPTS=1
+APPLY_NGINX=1
+SKIP_START=0
+SKIP_PG=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  deploy_delist_risk_server.sh [--host <ssh>] [--target-dir <path>]
+                               [--scripts-only|--bin-only]
+                               [--no-nginx] [--no-start] [--skip-pg]
+                               [--local]
+
+Defaults:
+  host: jp-meta-elvpn
+  remote directory: $HOME/delist_risk_server
+
+The deploy preserves an existing config/delist_risk_server.env file.
+Postgres DB/role are created with sudo -u postgres when ubuntu cannot createdb.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      SSH_HOST="${2:-}"
+      if [[ -z "$SSH_HOST" ]]; then
+        echo "[ERROR] --host requires a value" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --target-dir)
+      LOCAL_TARGET="${2:-}"
+      if [[ -z "$LOCAL_TARGET" ]]; then
+        echo "[ERROR] --target-dir requires a value" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --scripts-only)
+      DO_BUILD=0
+      DO_SCRIPTS=1
+      shift
+      ;;
+    --bin-only)
+      DO_BUILD=1
+      DO_SCRIPTS=0
+      shift
+      ;;
+    --no-nginx)
+      APPLY_NGINX=0
+      shift
+      ;;
+    --no-start)
+      SKIP_START=1
+      shift
+      ;;
+    --skip-pg)
+      SKIP_PG=1
+      shift
+      ;;
+    --local)
+      SSH_HOST=""
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[ERROR] unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$DO_BUILD" -eq 1 ]]; then
+  echo "[INFO] building ${BIN_NAME} (release)"
+  cargo build --release --bin "$BIN_NAME"
+  if [[ ! -x "$BIN_PATH" ]]; then
+    echo "[ERROR] missing binary: $BIN_PATH" >&2
+    exit 1
+  fi
+fi
+
+install_tree() {
+  local dest="$1"
+  mkdir -p "$dest/scripts" "$dest/config" "$dest/data" "$dest/docs"
+  if [[ "$DO_BUILD" -eq 1 ]]; then
+    local tmp="${dest}/.${BIN_NAME}.new"
+    cp "$BIN_PATH" "$tmp"
+    chmod +x "$tmp"
+    mv -f "$tmp" "$dest/$BIN_NAME"
+  fi
+  if [[ "$DO_SCRIPTS" -eq 1 ]]; then
+    for script in start_delist_risk_server.sh stop_delist_risk_server.sh deploy_delist_risk_server.sh setup_nginx_4191.sh; do
+      if [[ -f "$ROOT_DIR/scripts/$script" ]]; then
+        cp "$ROOT_DIR/scripts/$script" "$dest/scripts/$script"
+        chmod +x "$dest/scripts/$script"
+      fi
+    done
+    if [[ -f "$ROOT_DIR/docs/delist_risk_server.md" ]]; then
+      cp "$ROOT_DIR/docs/delist_risk_server.md" "$dest/docs/delist_risk_server.md"
+    fi
+    if [[ ! -f "$dest/config/delist_risk_server.env" ]]; then
+      cp "$ROOT_DIR/config/delist_risk_server.env.example" "$dest/config/delist_risk_server.env"
+      chmod 600 "$dest/config/delist_risk_server.env"
+      echo "[WARN] created credential config: $dest/config/delist_risk_server.env"
+    else
+      echo "[INFO] preserving existing credential config"
+    fi
+  fi
+}
+
+ensure_pg_local() {
+  local dest="$1"
+  local env_file="$dest/config/delist_risk_server.env"
+  if [[ "$SKIP_PG" -eq 1 ]]; then
+    return 0
+  fi
+  if ! command -v psql >/dev/null 2>&1 && ! sudo -n -u postgres command -v psql >/dev/null 2>&1; then
+    echo "[WARN] psql not found; skip postgres bootstrap" >&2
+    return 0
+  fi
+  local password=""
+  if [[ -f "$env_file" ]]; then
+    password="$(awk -F= '/^DELIST_PG_URL=/{print $2}' "$env_file" | sed -n 's#.*://[^:]*:\([^@]*\)@.*#\1#p' | tail -n1 || true)"
+  fi
+  if [[ -z "$password" ]]; then
+    password="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(18))
+PY
+)"
+  fi
+  sudo -n -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'delist_risk') THEN
+    CREATE ROLE delist_risk LOGIN PASSWORD '${password}';
+  ELSE
+    ALTER ROLE delist_risk WITH LOGIN PASSWORD '${password}';
+  END IF;
+END
+\$\$;
+SELECT 'CREATE DATABASE delist_risk OWNER delist_risk'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'delist_risk')\\gexec
+GRANT ALL PRIVILEGES ON DATABASE delist_risk TO delist_risk;
+SQL
+  if [[ -f "$env_file" ]]; then
+    if grep -q '^DELIST_PG_URL=' "$env_file"; then
+      sed -i "s|^DELIST_PG_URL=.*|DELIST_PG_URL=postgres://delist_risk:${password}@127.0.0.1:5432/delist_risk|" "$env_file"
+    else
+      echo "DELIST_PG_URL=postgres://delist_risk:${password}@127.0.0.1:5432/delist_risk" >> "$env_file"
+    fi
+    chmod 600 "$env_file"
+  fi
+  echo "[INFO] postgres database delist_risk ready"
+}
+
+upsert_nginx_local() {
+  local mapping="${HOME}/nginx_locations.txt"
+  local begin="# BEGIN managed: delist_risk_server"
+  local end="# END managed: delist_risk_server"
+  mkdir -p "$(dirname "$mapping")"
+  if [[ ! -f "$mapping" && -f "${ROOT_DIR}/config/nginx_locations.txt" ]]; then
+    cp "${ROOT_DIR}/config/nginx_locations.txt" "$mapping"
+  fi
+  touch "$mapping"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v begin="$begin" -v end="$end" '
+    BEGIN { in_block = 0; replaced = 0 }
+    $0 == begin { in_block = 1; replaced = 1; next }
+    in_block && $0 == end {
+      in_block = 0
+      print begin
+      print "# delist risk public HTTP"
+      print "/delist/ http://127.0.0.1:8787/"
+      print end
+      next
+    }
+    in_block { next }
+    { print }
+    END {
+      if (!replaced) {
+        print ""
+        print begin
+        print "# delist risk public HTTP"
+        print "/delist/ http://127.0.0.1:8787/"
+        print end
+      }
+    }
+  ' "$mapping" > "$tmp"
+  mv "$tmp" "$mapping"
+  echo "[INFO] nginx mapping updated: $mapping"
+  if [[ "$APPLY_NGINX" -eq 1 && -x "${ROOT_DIR}/scripts/setup_nginx_4191.sh" ]]; then
+    PORT=4191 MAPPING_FILE="$mapping" bash "${ROOT_DIR}/scripts/setup_nginx_4191.sh"
+  elif [[ "$APPLY_NGINX" -eq 1 && -x "$HOME/delist_risk_server/scripts/setup_nginx_4191.sh" ]]; then
+    PORT=4191 MAPPING_FILE="$mapping" bash "$HOME/delist_risk_server/scripts/setup_nginx_4191.sh"
+  fi
+}
+
+if [[ -z "$SSH_HOST" ]]; then
+  TARGET_DIR="${LOCAL_TARGET:-$HOME/delist_risk_server}"
+  echo "[INFO] local deploy -> $TARGET_DIR"
+  install_tree "$TARGET_DIR"
+  ensure_pg_local "$TARGET_DIR"
+  upsert_nginx_local
+  if [[ "$SKIP_START" -eq 0 ]]; then
+    (cd "$TARGET_DIR" && ./scripts/start_delist_risk_server.sh)
+  fi
+  echo "[INFO] delist_risk_server deployed to $TARGET_DIR"
+  exit 0
+fi
+
+SSH=(ssh -o BatchMode=yes)
+SCP=(scp -o BatchMode=yes)
+echo "[INFO] remote deploy host=${SSH_HOST} dir=~/delist_risk_server"
+
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+install_tree "$STAGING"
+
+"${SSH[@]}" "$SSH_HOST" "mkdir -p ~/delist_risk_server/scripts ~/delist_risk_server/config ~/delist_risk_server/data ~/delist_risk_server/docs"
+if [[ "$DO_BUILD" -eq 1 ]]; then
+  "${SCP[@]}" "$STAGING/$BIN_NAME" "$SSH_HOST:~/delist_risk_server/.${BIN_NAME}.new"
+  "${SSH[@]}" "$SSH_HOST" "chmod +x ~/delist_risk_server/.${BIN_NAME}.new && mv -f ~/delist_risk_server/.${BIN_NAME}.new ~/delist_risk_server/${BIN_NAME}"
+fi
+if [[ "$DO_SCRIPTS" -eq 1 ]]; then
+  "${SCP[@]}" "$STAGING/scripts/"*.sh "$SSH_HOST:~/delist_risk_server/scripts/"
+  "${SSH[@]}" "$SSH_HOST" "chmod +x ~/delist_risk_server/scripts/*.sh"
+  if [[ -f "$STAGING/docs/delist_risk_server.md" ]]; then
+    "${SCP[@]}" "$STAGING/docs/delist_risk_server.md" "$SSH_HOST:~/delist_risk_server/docs/delist_risk_server.md"
+  fi
+  if ! "${SSH[@]}" "$SSH_HOST" "test -f ~/delist_risk_server/config/delist_risk_server.env"; then
+    "${SCP[@]}" "$ROOT_DIR/config/delist_risk_server.env.example" "$SSH_HOST:~/delist_risk_server/config/delist_risk_server.env"
+    "${SSH[@]}" "$SSH_HOST" "chmod 600 ~/delist_risk_server/config/delist_risk_server.env"
+    echo "[WARN] created remote credential config"
+  else
+    echo "[INFO] preserving remote credential config"
+  fi
+fi
+
+if [[ "$SKIP_PG" -eq 0 ]]; then
+  "${SSH[@]}" "$SSH_HOST" 'bash -s' <<'REMOTE'
+set -euo pipefail
+ENV_FILE="$HOME/delist_risk_server/config/delist_risk_server.env"
+password=""
+if [[ -f "$ENV_FILE" ]]; then
+  password="$(awk -F= "/^DELIST_PG_URL=/{print \$2}" "$ENV_FILE" | sed -n "s#.*://[^:]*:\\([^@]*\\)@.*#\\1#p" | tail -n1 || true)"
+fi
+if [[ -z "$password" ]]; then
+  password="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(18))
+PY
+)"
+fi
+sudo -n -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'delist_risk') THEN
+    CREATE ROLE delist_risk LOGIN PASSWORD '${password}';
+  ELSE
+    ALTER ROLE delist_risk WITH LOGIN PASSWORD '${password}';
+  END IF;
+END
+\$\$;
+SELECT 'CREATE DATABASE delist_risk OWNER delist_risk'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'delist_risk')\\gexec
+GRANT ALL PRIVILEGES ON DATABASE delist_risk TO delist_risk;
+SQL
+if grep -q '^DELIST_PG_URL=' "$ENV_FILE"; then
+  sed -i "s|^DELIST_PG_URL=.*|DELIST_PG_URL=postgres://delist_risk:${password}@127.0.0.1:5432/delist_risk|" "$ENV_FILE"
+else
+  echo "DELIST_PG_URL=postgres://delist_risk:${password}@127.0.0.1:5432/delist_risk" >> "$ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
+echo "[INFO] postgres database delist_risk ready"
+REMOTE
+fi
+
+if [[ "$APPLY_NGINX" -eq 1 ]]; then
+  "${SSH[@]}" "$SSH_HOST" 'bash -s' <<'REMOTE'
+set -euo pipefail
+mapping="$HOME/nginx_locations.txt"
+begin="# BEGIN managed: delist_risk_server"
+end="# END managed: delist_risk_server"
+touch "$mapping"
+tmp="$(mktemp)"
+awk -v begin="$begin" -v end="$end" '
+  BEGIN { in_block = 0; replaced = 0 }
+  $0 == begin { in_block = 1; replaced = 1; next }
+  in_block && $0 == end {
+    in_block = 0
+    print begin
+    print "# delist risk public HTTP"
+    print "/delist/ http://127.0.0.1:8787/"
+    print end
+    next
+  }
+  in_block { next }
+  { print }
+  END {
+    if (!replaced) {
+      print ""
+      print begin
+      print "# delist risk public HTTP"
+      print "/delist/ http://127.0.0.1:8787/"
+      print end
+    }
+  }
+' "$mapping" > "$tmp"
+mv "$tmp" "$mapping"
+if [[ -x "$HOME/delist_risk_server/scripts/setup_nginx_4191.sh" ]]; then
+  PORT=4191 MAPPING_FILE="$mapping" bash "$HOME/delist_risk_server/scripts/setup_nginx_4191.sh"
+elif [[ -x "$HOME/mkt_signal/scripts/setup_nginx_4191.sh" ]]; then
+  PORT=4191 MAPPING_FILE="$mapping" bash "$HOME/mkt_signal/scripts/setup_nginx_4191.sh"
+else
+  echo "[WARN] setup_nginx_4191.sh not found; mapping written but nginx not reloaded"
+fi
+REMOTE
+fi
+
+if [[ "$SKIP_START" -eq 0 ]]; then
+  "${SSH[@]}" "$SSH_HOST" "cd ~/delist_risk_server && ./scripts/start_delist_risk_server.sh"
+fi
+
+echo "[INFO] delist_risk_server deployed on ${SSH_HOST}:~/delist_risk_server"
+echo "[INFO] public: http://<jp-host>:4191/delist/healthz"
+echo "[INFO] local:  ssh ${SSH_HOST} 'curl -sS http://127.0.0.1:8787/v1/status'"

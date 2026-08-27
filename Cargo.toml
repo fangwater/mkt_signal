@@ -126,6 +126,22 @@ name = "delist_schedule"
 path = "src/bin/delist_schedule.rs"
 
 [[bin]]
+name = "binance_delist_watch"
+path = "src/bin/binance_delist_watch.rs"
+
+[[bin]]
+name = "bitget_delist_watch"
+path = "src/bin/bitget_delist_watch.rs"
+
+[[bin]]
+name = "gate_delist_watch"
+path = "src/bin/gate_delist_watch.rs"
+
+[[bin]]
+name = "delist_risk_server"
+path = "src/bin/delist_risk_server.rs"
+
+[[bin]]
 name = "market_maker"
 path = "src/bin/market_maker.rs"
 
@@ -273,6 +289,7 @@ sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = { version = "0.12.19", features = ["json", "blocking"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
 prettytable = "0.10.0"
 comfy-table = "=7.1.1"
 native-tls = "0.2"
