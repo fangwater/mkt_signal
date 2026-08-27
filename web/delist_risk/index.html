@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>下架风险</title>
+    <style>
+      :root {
+        --ink: #1f2933;
+        --muted: #637083;
+        --quiet: #8a94a3;
+        --line: #dfe4ea;
+        --line-strong: #cbd3dc;
+        --canvas: #f7f8fa;
+        --surface: #ffffff;
+        --surface-hover: #fafbfd;
+        --good: #17714e;
+        --good-soft: #e8f5ee;
+        --warn: #9a6500;
+        --warn-soft: #fff4d9;
+        --danger: #b33a35;
+        --danger-soft: #fff0ef;
+      }
+      * { box-sizing: border-box; }
+      html { background: var(--canvas); }
+      body {
+        min-width: 320px;
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      button { font: inherit; }
+      code, .symbol { font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+      .topbar { height: 58px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, 0.96); }
+      .topbar__inner, .page { width: min(1280px, calc(100% - 48px)); margin: 0 auto; }
+      .topbar__inner { height: 100%; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+      .brand { display: flex; align-items: baseline; gap: 11px; min-width: 0; }
+      .brand__name { color: var(--ink); font-size: 16px; font-weight: 650; line-height: 1; }
+      .brand__context { padding-left: 11px; border-left: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .system-state { display: inline-flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .state-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--quiet); }
+      .state-dot--ok { background: #26845e; box-shadow: 0 0 0 3px #e8f5ee; }
+      .state-dot--risk { background: #c18310; box-shadow: 0 0 0 3px #fff4d9; }
+      .state-dot--error { background: #c44540; box-shadow: 0 0 0 3px #fff0ef; }
+      .refresh { min-height: 30px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--muted); cursor: pointer; }
+      .refresh:hover { border-color: #aeb8c4; color: var(--ink); }
+
+      .page { padding: 30px 0 56px; }
+      .overview { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
+      h1 { margin: 0; color: var(--ink); font-size: 23px; font-weight: 650; line-height: 1.2; }
+      .as-of { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+      .filters { display: flex; align-items: center; gap: 3px; padding: 3px; overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; background: #f1f3f5; }
+      .filters button { min-height: 30px; padding: 0 10px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap; }
+      .filters button:hover { color: var(--ink); }
+      .filters button.is-active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(31, 41, 51, 0.1); }
+
+      .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 24px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, 0.52); }
+      .metric { min-height: 68px; padding: 13px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .metric + .metric { border-left: 1px solid var(--line); }
+      .metric span { color: var(--muted); font-size: 12px; }
+      .metric strong { color: var(--ink); font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+      .metric--risk strong { color: var(--danger); }
+      .metric--error strong { color: var(--warn); }
+
+      .error-state { margin-top: 20px; padding: 13px 15px; border: 1px solid #edc9c6; border-left: 3px solid var(--danger); background: var(--danger-soft); color: #84312d; font-size: 13px; }
+      .error-state strong { display: block; margin-bottom: 2px; }
+      .exchange-list { margin-top: 20px; }
+      .exchange { border-bottom: 1px solid var(--line); background: var(--surface); }
+      .exchange:first-child { border-top: 1px solid var(--line); }
+      .exchange > summary { min-height: 68px; padding: 0 18px; display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(170px, 1fr) auto 18px; align-items: center; gap: 18px; list-style: none; cursor: pointer; }
+      .exchange > summary::-webkit-details-marker { display: none; }
+      .exchange > summary:hover { background: var(--surface-hover); }
+      .exchange__identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+      .exchange__name { font-size: 15px; font-weight: 650; }
+      .exchange__site { color: var(--quiet); font-size: 11px; }
+      .exchange__counts { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .exchange__counts strong { color: var(--ink); font-size: 15px; font-weight: 650; }
+      .exchange__counts--risk strong { color: var(--danger); }
+      .exchange__status { justify-self: end; }
+      .chevron { width: 8px; height: 8px; border-right: 1.5px solid var(--quiet); border-bottom: 1.5px solid var(--quiet); transform: rotate(45deg); transition: transform 140ms ease; }
+      .exchange[open] .chevron { transform: rotate(225deg); }
+      .exchange__body { border-top: 1px solid var(--line); }
+      .account-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .account-table th { padding: 8px 18px; border-bottom: 1px solid var(--line); background: #fafbfd; color: var(--quiet); font-size: 10px; font-weight: 650; letter-spacing: 0; text-align: left; text-transform: uppercase; }
+      .account-table th:last-child, .account-table td:last-child { text-align: right; }
+      .account-table td { padding: 11px 18px; border-bottom: 1px solid #edf0f3; color: var(--muted); font-size: 12px; vertical-align: top; }
+      .account-table tbody tr:last-child td { border-bottom: 0; }
+      .account-name { color: var(--ink); font-size: 13px; font-weight: 600; }
+      .account-slug { display: block; margin-top: 2px; color: var(--quiet); font-size: 10px; }
+      .account-venues { color: var(--quiet); font-size: 11px; }
+      .account-value { color: var(--ink); font-variant-numeric: tabular-nums; }
+      .account-value--risk { color: var(--danger); font-weight: 650; }
+      .hit-row td { padding-top: 0; padding-bottom: 12px; background: #fcfdfd; }
+      .hit-list { display: grid; gap: 5px; }
+      .hit { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 7px 9px; border-left: 2px solid #d67b75; background: var(--danger-soft); }
+      .hit .symbol { flex: 0 0 auto; color: #852d29; font-size: 11px; font-weight: 700; }
+      .hit__detail { min-width: 0; overflow: hidden; color: #795e5c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .empty { padding: 42px 18px; color: var(--muted); text-align: center; }
+      .chip { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: 3px; font-size: 10px; font-weight: 650; line-height: 1; white-space: nowrap; }
+      .chip--ok { color: var(--good); background: var(--good-soft); }
+      .chip--risk { color: var(--danger); background: var(--danger-soft); }
+      .chip--error, .chip--uncovered { color: var(--warn); background: var(--warn-soft); }
+
+      @media (max-width: 760px) {
+        .topbar { height: 54px; }
+        .topbar__inner, .page { width: min(100% - 28px, 1280px); }
+        .brand__context, .refresh { display: none; }
+        .system-state { overflow: hidden; text-overflow: ellipsis; }
+        .page { padding-top: 24px; }
+        .overview { display: block; }
+        h1 { font-size: 21px; }
+        .filters { width: 100%; margin-top: 17px; }
+        .metrics { grid-template-columns: 1fr 1fr; }
+        .metric { min-height: 58px; padding: 10px 12px; }
+        .metric:nth-child(3) { border-top: 1px solid var(--line); border-left: 0; }
+        .metric:nth-child(4) { border-top: 1px solid var(--line); }
+        .exchange > summary { min-height: 62px; padding: 0 12px; grid-template-columns: minmax(120px, 1fr) auto 14px; gap: 10px; }
+        .exchange__counts { display: none; }
+        .account-table thead { display: none; }
+        .account-table, .account-table tbody, .account-table tr, .account-table td { display: block; width: 100%; }
+        .account-table tr { padding: 11px 12px; border-bottom: 1px solid #edf0f3; }
+        .account-table td { display: inline; padding: 0; border: 0; }
+        .account-table td:first-child { display: block; margin-bottom: 5px; }
+        .account-table td:nth-child(2)::before { content: "策略："; color: var(--quiet); }
+        .account-table td:nth-child(3)::before { content: "标的："; color: var(--quiet); }
+        .account-table td:nth-child(4) { float: right; }
+        .account-table td:last-child { text-align: right; }
+        .hit-row { padding-top: 0 !important; }
+        .hit-row td { display: block; padding: 0; background: transparent; }
+        .hit { align-items: flex-start; }
+        .hit__detail { white-space: normal; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar__inner">
+        <div class="brand"><span class="brand__name">Risk Monitor</span><span class="brand__context">Delist coverage</span></div>
+        <div class="system-state" id="system-state"><span class="state-dot"></span><span>正在读取</span></div>
+        <button class="refresh" id="refresh" type="button">刷新</button>
+      </div>
+    </header>
+    <main class="page">
+      <section class="overview" aria-labelledby="page-title">
+        <div><h1 id="page-title">下架风险</h1><p class="as-of" id="as-of">正在同步账户名单与公告</p></div>
+        <div class="filters" id="filters" aria-label="策略类型筛选"></div>
+      </section>
+      <section class="metrics" id="metrics" aria-label="风险摘要"></section>
+      <div id="error"></div>
+      <section class="exchange-list" id="exchange-list" aria-label="交易所风险明细"></section>
+    </main>
+    <script>
+      const FILTERS = [['all', '全部'], ['funding_rate', '资金费'], ['intra_exchange', '所内套利'], ['market_making', '做市'], ['cta', 'CTA']];
+      const EXCHANGES = { binance: 'Binance', gate: 'Gate', bitget: 'Bitget', okex: 'OKX', bybit: 'Bybit' };
+      const KINDS = { funding_rate: '资金费', intra_exchange: '所内套利', market_making: '做市', cta: 'CTA' };
+      const TONES = { ok: '正常', risk: '需处理', error: 'Redis 未连接', uncovered: '风险源待接入' };
+      let filter = 'all';
+      let payload = null;
+
+      function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
+      }
+      function formatTime(ms) {
+        if (!ms) return '更新时间暂不可用';
+        return `更新于 ${new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(ms))}`;
+      }
+      function api(path) {
+        const base = location.pathname.endsWith('/') ? location.pathname : location.pathname.replace(/[^/]+$/, '');
+        return fetch(base + path.replace(/^\//, ''), { cache: 'no-store' }).then((response) => {
+          if (!response.ok) throw new Error(`${path} ${response.status}`);
+          return response.json();
+        });
+      }
+      function setSystem(tone, text) {
+        document.getElementById('system-state').innerHTML = `<span class="state-dot state-dot--${tone}"></span><span>${escapeHtml(text)}</span>`;
+      }
+      function renderFilters() {
+        const root = document.getElementById('filters');
+        root.innerHTML = FILTERS.map(([value, label]) => `<button type="button" class="${filter === value ? 'is-active' : ''}" data-filter="${value}">${label}</button>`).join('');
+        root.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => { filter = button.dataset.filter; render(); }));
+      }
+      function renderMetrics(summary) {
+        const data = summary || {};
+        document.getElementById('metrics').innerHTML = [['已接入', data.accounts || 0, ''], ['需处理', data.risk || 0, 'risk'], ['数据读取失败', data.error || 0, 'error'], ['正常', data.ok || 0, '']]
+          .map(([label, value, tone]) => `<div class="metric ${tone ? `metric--${tone}` : ''}"><span>${label}</span><strong>${value}</strong></div>`).join('');
+      }
+      const VENUES = {
+        'binance-margin': 'Binance Margin', 'binance-futures': 'Binance Futures',
+        'bitget-margin': 'Bitget Margin', 'bitget-futures': 'Bitget Futures',
+        'gate-margin': 'Gate Margin', 'gate-futures': 'Gate Futures',
+      };
+      function remainingTime(utc) {
+        const target = Date.parse(utc || '');
+        if (!Number.isFinite(target)) return null;
+        const milliseconds = target - Date.now();
+        if (milliseconds <= 0) return null;
+        const totalHours = Math.floor(milliseconds / 3_600_000);
+        const days = Math.floor(totalHours / 24);
+        const hours = totalHours % 24;
+        return days ? `${days}天${hours}小时后` : `${Math.max(1, totalHours)}小时后`;
+      }
+      function conclusion(hit) {
+        const byVenue = new Map();
+        const offer = (venue, priority, text) => {
+          const existing = byVenue.get(venue);
+          if (!existing || priority > existing.priority) byVenue.set(venue, { priority, text });
+        };
+        (hit.events || []).forEach((event) => {
+          const venue = VENUES[event.venue] || event.venue || '交易所';
+          if (event.action === 'catalog_removed') {
+            offer(venue, 50, `${venue} 已不在交易列表`);
+            return;
+          }
+          if (event.action === 'delist') {
+            const remaining = remainingTime(event.utc);
+            if (remaining) offer(venue, 40, `${venue} ${remaining}下架`);
+            else if (event.listing === 'delisted') offer(venue, 30, `${venue} 已下架`);
+            else offer(venue, 20, `${venue} 下架时间已过，待确认`);
+            return;
+          }
+          if (event.action === 'disable_loan') {
+            offer(venue, 10, `${venue} 已停止借贷`);
+          } else if (event.action === 'disable_margin') {
+            offer(venue, 10, `${venue} 已停止杠杆`);
+          } else if (event.action === 'monitoring') {
+            offer(venue, 5, `${venue} 已列入观察`);
+          }
+        });
+        return [...byVenue.values()].sort((left, right) => right.priority - left.priority).map((item) => item.text).join('；') || '需人工核查';
+      }
+      function accountRows(account) {
+        const status = TONES[account.tone] || account.tone;
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span></td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span></td></tr>`;
+        if (!account.hits || !account.hits.length) return row;
+        const hits = account.hits.slice(0, 4).map((hit) => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
+        const extra = account.hits.length > 4 ? `<div class="hit"><span class="hit__detail">另有 ${account.hits.length - 4} 个风险标的</span></div>` : '';
+        return `${row}<tr class="hit-row"><td colspan="6"><div class="hit-list">${hits}${extra}</div></td></tr>`;
+      }
+      function exchangeBlock(exchange, accounts) {
+        const riskN = accounts.reduce((sum, account) => sum + (account.risk_n || 0), 0);
+        const errorN = accounts.filter((account) => account.tone === 'error').length;
+        const tone = riskN ? 'risk' : errorN ? 'error' : accounts.some((account) => account.tone === 'uncovered') ? 'uncovered' : 'ok';
+        const label = riskN ? `${riskN} 个风险标的` : errorN ? `${errorN} 个连接异常` : TONES[tone];
+        const source = accounts.some((account) => account.host === 'sg') ? 'SG Redis' : 'JP Redis';
+        return `<details class="exchange" ${riskN || errorN ? 'open' : ''}><summary><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${source}</span></div><div class="exchange__counts ${riskN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span></summary><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:31%">盘子</th><th style="width:13%">策略</th><th style="width:10%">标的</th><th style="width:25%">交易范围</th><th style="width:8%">风险</th><th style="width:13%">状态</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></details>`;
+      }
+      function renderList(accounts) {
+        const root = document.getElementById('exchange-list');
+        if (!accounts.length) { root.innerHTML = '<div class="empty">当前筛选条件下没有盘子</div>'; return; }
+        const groups = new Map();
+        accounts.forEach((account) => { if (!groups.has(account.exchange)) groups.set(account.exchange, []); groups.get(account.exchange).push(account); });
+        const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0), 0);
+        root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
+      }
+      function render() {
+        if (!payload) return;
+        renderFilters();
+        renderMetrics(payload.summary);
+        document.getElementById('as-of').textContent = formatTime(payload.as_of_ms);
+        renderList((payload.accounts || []).filter((account) => filter === 'all' || account.kind === filter));
+      }
+      async function load() {
+        document.getElementById('error').textContent = '';
+        setSystem('risk', '正在同步');
+        try {
+          payload = await api('accounts');
+          const summary = payload.summary || {};
+          const tone = summary.error ? 'error' : summary.risk ? 'risk' : 'ok';
+          const text = summary.error ? `${summary.error} 个 Redis 连接异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
+          setSystem(tone, text);
+          render();
+        } catch (error) {
+          setSystem('error', '加载失败');
+          document.getElementById('error').innerHTML = `<div class="error-state"><strong>账户风险加载失败</strong>${escapeHtml(error.message || '未知错误')}</div>`;
+        }
+      }
+      document.getElementById('refresh').addEventListener('click', load);
+      load();
+      window.setInterval(load, 60_000);
+    </script>
+  </body>
+</html>

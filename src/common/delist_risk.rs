@@ -1,4 +1,4 @@
-//! 下架风险簿：官方快照 + LLM 抽取，按 venue / exchange 全量扁平查询。
+//! 下架风险簿：官方快照 + LLM 抽取，全量按交易所分桶查询。
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, TimeZone, Utc};
@@ -75,10 +75,14 @@ pub struct RiskQueryResponse {
     pub as_of_ms: i64,
     pub abnormal: bool,
     pub count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub venue: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exchange: Option<String>,
+    pub exchanges: BTreeMap<String, ExchangeRisk>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ExchangeRisk {
+    pub exchange: String,
+    pub abnormal: bool,
+    pub count: usize,
     pub items: Vec<RiskEventView>,
 }
 
@@ -96,6 +100,8 @@ pub struct RiskEventView {
     pub title: String,
     pub url: String,
     pub announcement_id: String,
+    #[serde(default)]
+    pub listing: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +233,9 @@ impl RiskBook {
             published_ms: input.published_ms,
             relevant,
         });
+        self.events
+            .retain(|event| !(event.source == "llm_extract" && event.announcement_id == input.id));
+        self.touch();
         if !relevant {
             return;
         }
@@ -287,61 +296,86 @@ impl RiskBook {
                 title: event.title.clone(),
                 url: event.url.clone(),
                 announcement_id: event.announcement_id.clone(),
+                listing: String::new(),
             })
             .collect();
         items.sort_by(|left, right| {
             left.utc
                 .cmp(&right.utc)
-                .then_with(|| left.exchange.cmp(&right.exchange))
                 .then_with(|| left.venue.cmp(&right.venue))
                 .then_with(|| left.action.cmp(&right.action))
                 .then_with(|| left.announcement_id.cmp(&right.announcement_id))
                 .then_with(|| left.assets.cmp(&right.assets))
                 .then_with(|| left.symbols.cmp(&right.symbols))
         });
-        let abnormal = items.iter().any(|item| item.status != "past");
+        let mut exchanges: BTreeMap<String, ExchangeRisk> = BTreeMap::new();
+        for item in items {
+            let key = if item.exchange.is_empty() {
+                venue_exchange(&item.venue).to_string()
+            } else {
+                item.exchange.clone()
+            };
+            let bucket = exchanges.entry(key.clone()).or_insert(ExchangeRisk {
+                exchange: key,
+                ..ExchangeRisk::default()
+            });
+            if item.status != "past" {
+                bucket.abnormal = true;
+            }
+            bucket.items.push(item);
+            bucket.count += 1;
+        }
+        let count = exchanges.values().map(|bucket| bucket.count).sum();
+        let abnormal = exchanges.values().any(|bucket| bucket.abnormal);
         RiskQueryResponse {
-            count: items.len(),
+            count,
             as_of_ms: now_ms,
             ok: true,
             abnormal,
-            venue: q.venue.clone(),
-            exchange: q.exchange.clone(),
-            items,
+            exchanges,
         }
     }
 
-    pub fn venue_summaries(&self, q: &RiskQuery) -> Vec<VenueSummary> {
+    pub fn venue_summaries(&self, q: &RiskQuery) -> BTreeMap<String, Vec<VenueSummary>> {
         let scanned = self.query(q);
         let mut by_venue: BTreeMap<String, VenueSummary> = BTreeMap::new();
-        for item in scanned.items {
-            let entry = by_venue.entry(item.venue.clone()).or_insert(VenueSummary {
-                exchange: if item.exchange.is_empty() {
-                    venue_exchange(&item.venue).to_string()
-                } else {
-                    item.exchange.clone()
-                },
-                venue: item.venue.clone(),
-                abnormal: false,
-                count: 0,
-                next_utc: None,
-            });
-            entry.count += 1;
-            if item.status != "past" {
-                entry.abnormal = true;
-            }
-            if item.status == "upcoming" && !item.utc.is_empty() {
-                if entry
-                    .next_utc
-                    .as_ref()
-                    .map(|existing| item.utc.as_str() < existing.as_str())
-                    .unwrap_or(true)
-                {
-                    entry.next_utc = Some(item.utc);
+        for bucket in scanned.exchanges.values() {
+            for item in &bucket.items {
+                let entry = by_venue.entry(item.venue.clone()).or_insert(VenueSummary {
+                    exchange: if item.exchange.is_empty() {
+                        venue_exchange(&item.venue).to_string()
+                    } else {
+                        item.exchange.clone()
+                    },
+                    venue: item.venue.clone(),
+                    abnormal: false,
+                    count: 0,
+                    next_utc: None,
+                });
+                entry.count += 1;
+                if item.status != "past" {
+                    entry.abnormal = true;
+                }
+                if item.status == "upcoming" && !item.utc.is_empty() {
+                    if entry
+                        .next_utc
+                        .as_ref()
+                        .map(|existing| item.utc.as_str() < existing.as_str())
+                        .unwrap_or(true)
+                    {
+                        entry.next_utc = Some(item.utc.clone());
+                    }
                 }
             }
         }
-        by_venue.into_values().collect()
+        let mut by_exchange: BTreeMap<String, Vec<VenueSummary>> = BTreeMap::new();
+        for summary in by_venue.into_values() {
+            by_exchange
+                .entry(summary.exchange.clone())
+                .or_default()
+                .push(summary);
+        }
+        by_exchange
     }
 }
 
@@ -576,7 +610,7 @@ fn looks_like_pair(token: &str) -> bool {
 }
 
 fn quote_suffix(token: &str) -> Option<&'static str> {
-    ["USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH"]
+    ["USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH", "BNB"]
         .into_iter()
         .find(|quote| token.len() > quote.len() && token.ends_with(quote))
 }
@@ -630,6 +664,53 @@ mod tests {
     }
 
     #[test]
+    fn ingest_llm_replaces_previous_extract_for_same_announcement() {
+        let mut book = RiskBook::default();
+        let input = LlmExtractInput {
+            exchange: "binance".into(),
+            id: "fab1676df7fb464a9e4634c6f777659e".into(),
+            title: "Notice of Removal of Spot Trading Pairs - 2026-08-21".into(),
+            url: "https://example".into(),
+            published_ms: 1,
+            body: String::new(),
+        };
+        book.ingest_llm(
+            &input,
+            true,
+            &[LlmAction {
+                action: "delist".into(),
+                venue: "binance-margin".into(),
+                exchange: "binance".into(),
+                utc: "2026-08-21T03:00:00Z".into(),
+                assets: vec!["SUI".into()],
+                symbols: vec!["HIVEUSDC".into()],
+                note: "old".into(),
+            }],
+        );
+        book.ingest_llm(
+            &input,
+            true,
+            &[LlmAction {
+                action: "delist".into(),
+                venue: "binance-margin".into(),
+                exchange: "binance".into(),
+                utc: "2026-08-21T03:00:00Z".into(),
+                assets: vec![],
+                symbols: vec!["SUIBNB".into(), "HIVEUSDC".into(), "LTCBNB".into()],
+                note: "pair only".into(),
+            }],
+        );
+        let items: Vec<_> = book
+            .events
+            .iter()
+            .filter(|event| event.announcement_id == input.id)
+            .collect();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].assets.is_empty());
+        assert_eq!(items[0].symbols, vec!["SUIBNB", "HIVEUSDC", "LTCBNB"]);
+    }
+
+    #[test]
     fn query_returns_flat_events_across_venues() {
         let mut book = RiskBook::default();
         book.upsert_events(vec![
@@ -648,13 +729,14 @@ mod tests {
             ..RiskQuery::default()
         });
         assert_eq!(margin.count, 2);
-        assert!(margin
+        let binance = margin.exchanges.get("binance").expect("binance bucket");
+        assert!(binance
             .items
             .iter()
             .all(|item| item.exchange == "binance" && item.venue == "binance-margin"));
-        assert_eq!(margin.items[0].action, "disable_margin");
-        assert_eq!(margin.items[0].assets, vec!["ICX"]);
-        assert_eq!(margin.items[1].action, "delist");
+        assert_eq!(binance.items[0].action, "disable_margin");
+        assert_eq!(binance.items[0].assets, vec!["ICX"]);
+        assert_eq!(binance.items[1].action, "delist");
 
         let futures = book.query(&RiskQuery {
             venue: Some("binance-futures".into()),
@@ -662,18 +744,21 @@ mod tests {
             ..RiskQuery::default()
         });
         assert_eq!(futures.count, 1);
-        assert_eq!(futures.items[0].venue, "binance-futures");
-        assert_eq!(futures.items[0].action, "delist");
-        assert_eq!(futures.items[0].utc, "2026-08-26T09:00:00Z");
+        let binance = futures.exchanges.get("binance").expect("binance bucket");
+        assert_eq!(binance.items[0].venue, "binance-futures");
+        assert_eq!(binance.items[0].action, "delist");
+        assert_eq!(binance.items[0].utc, "2026-08-26T09:00:00Z");
 
         let all = book.query(&RiskQuery {
             include_past: true,
             ..RiskQuery::default()
         });
         assert_eq!(all.count, 3);
-        assert_eq!(all.items[0].venue, "binance-margin");
-        assert_eq!(all.items[1].venue, "binance-futures");
-        assert_eq!(all.items[2].venue, "binance-margin");
+        assert_eq!(all.exchanges.len(), 1);
+        let binance = all.exchanges.get("binance").expect("binance bucket");
+        assert_eq!(binance.items[0].venue, "binance-margin");
+        assert_eq!(binance.items[1].venue, "binance-futures");
+        assert_eq!(binance.items[2].venue, "binance-margin");
     }
 
     #[test]
@@ -714,8 +799,9 @@ mod tests {
             ..RiskQuery::default()
         });
         assert_eq!(resp.count, 1);
-        assert_eq!(resp.items[0].exchange, "gate");
-        assert_eq!(resp.items[0].venue, "gate-margin");
-        assert_eq!(resp.items[0].symbols, vec!["BBBUSDT"]);
+        let gate = resp.exchanges.get("gate").expect("gate bucket");
+        assert_eq!(gate.items[0].exchange, "gate");
+        assert_eq!(gate.items[0].venue, "gate-margin");
+        assert_eq!(gate.items[0].symbols, vec!["BBBUSDT"]);
     }
 }

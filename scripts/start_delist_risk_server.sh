@@ -35,6 +35,8 @@ fi
 BIND="${DELIST_BIND:-0.0.0.0:8787}"
 PORT="${BIND##*:}"
 APP_NAME="${PM2_NAME:-delist_risk_server}"
+SG_TUNNEL_NAME="${DELIST_SG_REDIS_TUNNEL_NAME:-delist_sg_redis_tunnel}"
+SG_TUNNEL_PORT="${DELIST_SG_REDIS_TUNNEL_PORT:-16379}"
 BOOK_PATH="${BASE_DIR}/data/delist_risk.json"
 mkdir -p "${BASE_DIR}/data"
 
@@ -70,7 +72,43 @@ ARGS=(
   --announcement-interval-secs "${DELIST_ANNOUNCEMENT_INTERVAL_SECS:-3600}"
   --official-interval-secs "${DELIST_OFFICIAL_INTERVAL_SECS:-10800}"
   --llm-max "${DELIST_LLM_MAX:-0}"
+  --web-dir "${BASE_DIR}/web/delist_risk"
 )
+if [[ -n "${DELIST_FORCE_LLM_IDS:-}" ]]; then
+  ARGS+=(--force-llm-ids "${DELIST_FORCE_LLM_IDS}")
+fi
+if [[ -n "${DELIST_REDIS_URL:-}" ]]; then
+  ARGS+=(--redis "${DELIST_REDIS_URL}")
+fi
+if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
+  if [[ "${DELIST_SG_REDIS_URL}" != "redis://127.0.0.1:${SG_TUNNEL_PORT}/0" ]]; then
+    echo "[ERROR] DELIST_SG_REDIS_URL must use redis://127.0.0.1:${SG_TUNNEL_PORT}/0" >&2
+    echo "[ERROR] keep the SG Redis listener private and use the managed SSH tunnel" >&2
+    exit 1
+  fi
+  SG_SSH_HOST="${DELIST_SG_REDIS_SSH_HOST:-sg}"
+  SSH_BIN="$(command -v ssh || true)"
+  if [[ -z "$SSH_BIN" ]]; then
+    echo "[ERROR] ssh is required for the SG Redis tunnel" >&2
+    exit 1
+  fi
+  npx pm2 delete "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  npx pm2 start "$SSH_BIN" --name "$SG_TUNNEL_NAME" --namespace "$NAMESPACE" --interpreter none -- \
+    -NT \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -L "127.0.0.1:${SG_TUNNEL_PORT}:127.0.0.1:6379" \
+    "$SG_SSH_HOST"
+  sleep 1
+  if ! (echo > "/dev/tcp/127.0.0.1/${SG_TUNNEL_PORT}") >/dev/null 2>&1; then
+    echo "[ERROR] SG Redis SSH tunnel did not listen on 127.0.0.1:${SG_TUNNEL_PORT}" >&2
+    exit 1
+  fi
+  echo "[INFO] SG Redis tunnel ready: 127.0.0.1:${SG_TUNNEL_PORT} -> ${SG_SSH_HOST}:127.0.0.1:6379"
+  ARGS+=(--sg-redis "${DELIST_SG_REDIS_URL}")
+fi
 if [[ "${DELIST_SKIP_LLM:-0}" == "1" ]]; then
   ARGS+=(--skip-llm)
 fi
@@ -117,4 +155,4 @@ echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} 
 echo "[INFO] started: npx pm2 status --namespace ${NAMESPACE} ${APP_NAME}"
 echo "[INFO] logs: npx pm2 logs --namespace ${NAMESPACE} ${APP_NAME}"
 echo "[INFO] health: http://${BIND}/healthz"
-echo "[INFO] status: http://${BIND}/v1/status"
+echo "[INFO] status: http://${BIND}/status"

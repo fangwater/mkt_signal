@@ -2,6 +2,11 @@
 # Install nginx (Debian/Ubuntu) and configure a reverse proxy on port 4191.
 # (Renamed from setup_nginx_4911.sh; now defaults to 4191.)
 # Supports multiple path→upstream mappings for HTTP/WebSocket, and optional static directory hosting.
+#
+# jp-meta 4191 is a shared public front. This script tees the whole server from
+# MAPPING_FILE. That drops hand-maintained routes (crypto CTA /manager/, includes)
+# unless they are also in the mapping. Refuse that overwrite unless
+# FORCE_NGINX_REWRITE=1.
 
 set -euo pipefail
 
@@ -136,6 +141,21 @@ EOF
 EOF
     fi
 }
+
+if [[ -f "${CONF_PATH}" && "${FORCE_NGINX_REWRITE:-0}" != "1" ]]; then
+    if grep -Eq 'location[[:space:]]+(=[[:space:]]+)?/manager(/|[[:space:]]|$)' "${CONF_PATH}"; then
+        mapping_has_manager=0
+        if [[ -f "${MAPPING_FILE}" ]] && grep -Eq '^[[:space:]]*/manager(/|[[:space:]]|$)' "${MAPPING_FILE}"; then
+            mapping_has_manager=1
+        fi
+        if [[ "${mapping_has_manager}" -eq 0 ]]; then
+            echo "[ERROR] refusing to overwrite ${CONF_PATH}: existing /manager/ routes are not in ${MAPPING_FILE}" >&2
+            echo "[ERROR] rewriting 4191 from mapping-only drops crypto CTA manager. Patch the existing conf in place." >&2
+            echo "[ERROR] set FORCE_NGINX_REWRITE=1 only if you intentionally replace the whole site." >&2
+            exit 1
+        fi
+    fi
+fi
 
 cat <<EOF | ${SUDO} tee "${CONF_PATH}" >/dev/null
 server {

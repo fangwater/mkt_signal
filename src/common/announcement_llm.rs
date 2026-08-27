@@ -45,8 +45,13 @@ action:
 - monitoring = watchlist / monitoring tag, not a confirmed delist
 - other = only if none of the above
 Emit at most one action per (venue, action, utc).
-assets = ticker codes only (ICX, SCRT), not full names (ICON).
-symbols = tradable pairs if stated (ICXUSDT); otherwise empty.
+assets vs symbols:
+- symbols = exact tradable pairs named in the text, compact no slash: SUI/BNB → SUIBNB, HIVE/USDC → HIVEUSDC, ICXUSDT → ICXUSDT.
+- Coin/coin and alt-quote pairs (SUI/BNB, LTC/BNB, XXX/USDC, BTC/ETH) are pair-only events. Put them ONLY in symbols. Do not copy the base (SUI) or the quote (BNB) into assets.
+- Removing one pair does not delist the token. "Notice of Removal of Spot Trading Pairs" listing SUI/BNB is not a SUI asset delist; SUIUSDT and other SUI books stay listed unless the text says so.
+- assets = tokens whose listing / loan / margin is ending as a whole (the token itself leaves, or every market of that token stops). Example: "Binance Will Delist ICX, SCRT, STORJ" → assets=["ICX","SCRT","STORJ"], symbols=[].
+- Never treat quote currencies (USDT, USDC, BNB, BTC, ETH, FDUSD, BUSD) as assets just because they appear as the quote of a pair.
+- Tickers only (ICX, SCRT), not full names (ICON).
 Use the exchange hint if the text does not name the venue."#;
 
 #[derive(Debug, Clone)]
@@ -490,8 +495,9 @@ fn split_assets_and_symbols(assets: &[String], symbols: &[String]) -> (Vec<Strin
         // Keep ticker-like tokens (ICX). Drop full names (ICON/Secret).
         let has_lower = raw.chars().any(|c| c.is_ascii_lowercase());
         let value = raw.to_ascii_uppercase();
-        if value.contains('/') || value.contains('-') || looks_like_pair(&value) {
-            push_unique(&mut out_symbols, value);
+        let compact = value.replace(['/', '-', '_'], "");
+        if value.contains('/') || value.contains('-') || looks_like_pair(&compact) {
+            push_unique(&mut out_symbols, compact);
         } else if !has_lower
             && value.chars().all(|c| c.is_ascii_alphanumeric())
             && (2..=10).contains(&value.len())
@@ -503,10 +509,13 @@ fn split_assets_and_symbols(assets: &[String], symbols: &[String]) -> (Vec<Strin
 }
 
 fn looks_like_pair(token: &str) -> bool {
-    token.len() >= 6
-        && ["USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH"]
-            .iter()
-            .any(|quote| token.ends_with(quote) && token.len() > quote.len())
+    quote_suffix(token).is_some()
+}
+
+fn quote_suffix(token: &str) -> Option<&'static str> {
+    ["USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH", "BNB"]
+        .into_iter()
+        .find(|quote| token.len() > quote.len() && token.ends_with(*quote))
 }
 
 fn push_unique(out: &mut Vec<String>, value: String) {
@@ -603,6 +612,21 @@ mod tests {
         );
         assert_eq!(assets, vec!["ICON", "ICX", "SCRT"]);
         assert_eq!(symbols, vec!["ICXUSDT"]);
+    }
+
+    #[test]
+    fn coin_quote_pairs_stay_in_symbols() {
+        let (assets, symbols) = split_assets_and_symbols(
+            &[],
+            &[
+                "SUI/BNB".into(),
+                "LTC/BNB".into(),
+                "HIVE/USDC".into(),
+                "SUIBNB".into(),
+            ],
+        );
+        assert!(assets.is_empty());
+        assert_eq!(symbols, vec!["SUIBNB", "LTCBNB", "HIVEUSDC"]);
     }
 
     #[test]

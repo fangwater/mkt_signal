@@ -6,13 +6,13 @@
 //!
 //! ```text
 //! cargo run --bin delist_risk_server -- --bind 0.0.0.0:8787
-//! curl 'http://127.0.0.1:8787/v1/risk'
-//! curl 'http://127.0.0.1:8787/v1/status'
+//! curl 'http://127.0.0.1:8787/risk'
+//! curl 'http://127.0.0.1:8787/status'
 //! ```
 
 use anyhow::{Context, Result};
 use axum::extract::{Query, State};
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
 use clap::Parser;
@@ -30,12 +30,16 @@ use mkt_signal::common::binance_announcement::{
     CATALOG_DELISTING,
 };
 use mkt_signal::common::bitget_announcement::{fetch_delist_notices, fetch_offtime_snapshot};
+use mkt_signal::common::delist_accounts::{
+    build_account_views, load_universes, summarize, AccountRiskResponse,
+};
 use mkt_signal::common::delist_risk::{
     announcement_from_raw, events_from_bitget_offtime, events_from_delist_schedule,
     events_from_gate_snapshot, events_from_official_snapshot, RiskBook, RiskQuery,
 };
 use mkt_signal::common::delist_schedule::{provider_for_venue, DelistScheduleQuery};
 use mkt_signal::common::delist_store::{DelistStore, StatusBook};
+use mkt_signal::common::exchange_info::{fetch_listing_index, ListingIndex};
 use mkt_signal::common::gate_announcement::{
     fetch_market_snapshot, parse_ws_text, ping_frame, subscribe_frame, ANN_WS_URL,
 };
@@ -91,18 +95,39 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     llm_max: usize,
 
+    /// Re-extract these announcements even if a previous LLM run succeeded.
+    /// Comma-separated `id` or `exchange:id`. Default re-runs the 2026-08-21
+    /// Binance spot-pair notice that previously promoted SUI/BNB to asset SUI.
+    #[arg(long)]
+    force_llm_ids: Option<String>,
+
     /// Postgres URL. Falls back to DELIST_PG_URL.
     #[arg(long)]
     postgres: Option<String>,
+
+    /// Local Redis for jp-hosted books. Falls back to DELIST_REDIS_URL.
+    #[arg(long)]
+    redis: Option<String>,
+
+    /// Optional Redis for sg-hosted books. Falls back to DELIST_SG_REDIS_URL.
+    #[arg(long)]
+    sg_redis: Option<String>,
+
+    #[arg(long, default_value = "web/delist_risk")]
+    web_dir: PathBuf,
 }
 
 #[derive(Clone)]
 struct AppState {
     book: Arc<RwLock<RiskBook>>,
     status: Arc<RwLock<StatusBook>>,
+    listings: Arc<RwLock<ListingIndex>>,
     store: Option<Arc<DelistStore>>,
     book_path: PathBuf,
+    web_dir: PathBuf,
     default_days: i64,
+    jp_redis: String,
+    sg_redis: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,12 +192,33 @@ async fn main() -> Result<()> {
         }
     }
 
+    let jp_redis = args
+        .redis
+        .clone()
+        .or_else(|| std::env::var("DELIST_REDIS_URL").ok())
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| "redis://127.0.0.1:6379/0".to_string());
+    let sg_redis = args
+        .sg_redis
+        .clone()
+        .or_else(|| std::env::var("DELIST_SG_REDIS_URL").ok())
+        .filter(|url| !url.trim().is_empty());
+    if sg_redis.is_some() {
+        info!("sg redis enabled for bybit books");
+    } else {
+        info!("sg redis disabled (no --sg-redis / DELIST_SG_REDIS_URL)");
+    }
+
     let state = AppState {
         book: Arc::new(RwLock::new(book)),
         status: Arc::new(RwLock::new(status)),
+        listings: Arc::new(RwLock::new(ListingIndex::default())),
         store,
         book_path: args.book.clone(),
+        web_dir: args.web_dir.clone(),
         default_days: args.days,
+        jp_redis,
+        sg_redis,
     };
 
     let refresh = state.clone();
@@ -185,6 +231,7 @@ async fn main() -> Result<()> {
         announcement_interval_secs: args.announcement_interval_secs,
         days: args.days,
         llm_max: args.llm_max,
+        force_llm_ids: args.force_llm_ids.clone(),
     };
     tokio::spawn(async move {
         if let Err(err) = run_refresh(refresh, refresh_args).await {
@@ -193,11 +240,14 @@ async fn main() -> Result<()> {
     });
 
     let app = Router::new()
+        .route("/", get(index_page))
+        .route("/index.html", get(index_page))
         .route("/healthz", get(healthz))
-        .route("/v1/risk", get(query_risk))
-        .route("/v1/venues", get(query_venues))
-        .route("/v1/announcements", get(query_announcements))
-        .route("/v1/status", get(query_status))
+        .route("/risk", get(query_risk))
+        .route("/venues", get(query_venues))
+        .route("/announcements", get(query_announcements))
+        .route("/status", get(query_status))
+        .route("/accounts", get(query_accounts))
         .with_state(state);
 
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
@@ -233,7 +283,9 @@ async fn query_risk(
     Query(params): Query<RiskParams>,
 ) -> impl IntoResponse {
     let book = state.book.read().await;
-    Json(book.query(&to_query(&params, state.default_days)))
+    let mut resp = book.query(&to_query(&params, state.default_days));
+    state.listings.read().await.decorate(&mut resp);
+    Json(resp)
 }
 
 async fn query_venues(
@@ -262,6 +314,53 @@ async fn query_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(snap)
 }
 
+async fn index_page(State(state): State<AppState>) -> impl IntoResponse {
+    let path = state.web_dir.join("index.html");
+    match std::fs::read_to_string(&path) {
+        Ok(body) => Html(body).into_response(),
+        Err(err) => (
+            axum::http::StatusCode::NOT_FOUND,
+            format!("missing frontend {}: {err}", path.display()),
+        )
+            .into_response(),
+    }
+}
+
+async fn query_accounts(
+    State(state): State<AppState>,
+    Query(params): Query<RiskParams>,
+) -> impl IntoResponse {
+    let book = state.book.read().await;
+    let mut risk = book.query(&to_query(&params, state.default_days));
+    let listings = state.listings.read().await;
+    listings.decorate(&mut risk);
+    drop(book);
+    let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
+    let accounts = build_account_views(&risk, &listings, &universes);
+    let mut redis = std::collections::BTreeMap::new();
+    redis.insert(
+        "jp".to_string(),
+        accounts
+            .iter()
+            .filter(|account| account.host == "jp")
+            .all(|account| account.redis_ok),
+    );
+    redis.insert(
+        "sg".to_string(),
+        accounts
+            .iter()
+            .filter(|account| account.host == "sg")
+            .all(|account| account.redis_ok),
+    );
+    Json(AccountRiskResponse {
+        ok: true,
+        as_of_ms: risk.as_of_ms,
+        redis,
+        summary: summarize(&accounts),
+        accounts,
+    })
+}
+
 fn to_query(params: &RiskParams, default_days: i64) -> RiskQuery {
     RiskQuery {
         venue: params.venue.clone(),
@@ -280,6 +379,7 @@ struct RefreshArgs {
     announcement_interval_secs: u64,
     days: i64,
     llm_max: usize,
+    force_llm_ids: Option<String>,
 }
 
 async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
@@ -323,12 +423,14 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
         let backfill_llm = llm.clone();
         let backfill_client = llm_client.clone();
         let backfill_budget = llm_budget.clone();
+        let force_llm_ids = force_llm_id_set(&args.force_llm_ids);
         tokio::spawn(async move {
             backfill_pending_llm(
                 &backfill_state,
                 backfill_llm.as_ref(),
                 backfill_client.as_ref(),
                 &backfill_budget,
+                &force_llm_ids,
             )
             .await;
             persist(&backfill_state).await;
@@ -425,6 +527,31 @@ async fn refresh_official(state: &AppState, public: &Client, binance: &Client, d
 
     ingest_binance_official(state, binance).await;
     ingest_schedule_venues(state, days).await;
+    refresh_listings(state, public).await;
+}
+
+async fn refresh_listings(state: &AppState, public: &Client) {
+    let (index, errors) = fetch_listing_index(public).await;
+    *state.listings.write().await = index;
+    if errors.is_empty() {
+        mark_ok(state, "exchange_info", "fetch").await;
+        info!("official exchange_info refreshed");
+        return;
+    }
+    for (source, err) in &errors {
+        warn!("exchange_info {source} failed: {err}");
+    }
+    mark_err(
+        state,
+        "exchange_info",
+        "fetch",
+        &errors
+            .iter()
+            .map(|(source, err)| format!("{source}: {err}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+    .await;
 }
 
 async fn ingest_binance_official(state: &AppState, client: &Client) {
@@ -588,11 +715,29 @@ async fn refresh_announcements(
     }
 }
 
+const DEFAULT_FORCE_LLM_IDS: &str = "fab1676df7fb464a9e4634c6f777659e";
+
+fn force_llm_id_set(raw: &Option<String>) -> std::collections::BTreeSet<String> {
+    raw.as_deref()
+        .unwrap_or(DEFAULT_FORCE_LLM_IDS)
+        .split(',')
+        .map(|item| {
+            item.trim()
+                .rsplit_once(':')
+                .map(|(_, id)| id.trim())
+                .unwrap_or(item.trim())
+                .to_string()
+        })
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
 async fn backfill_pending_llm(
     state: &AppState,
     llm: Option<&LlmConfig>,
     llm_client: Option<&Client>,
     llm_budget: &Mutex<LlmBudget>,
+    force_ids: &std::collections::BTreeSet<String>,
 ) {
     let Some(store) = state.store.as_ref() else {
         return;
@@ -605,6 +750,7 @@ async fn backfill_pending_llm(
         }
     };
     let mut pending = 0usize;
+    let mut forced = 0usize;
     for item in items {
         let already_ok = state
             .status
@@ -612,14 +758,19 @@ async fn backfill_pending_llm(
             .await
             .llm(&item.exchange, &item.id)
             .is_some_and(|row| row.ok);
-        if already_ok {
+        let force = force_ids.contains(&item.id);
+        if already_ok && !force {
             continue;
         }
-        pending += 1;
+        if force {
+            forced += 1;
+        } else {
+            pending += 1;
+        }
         let input = LlmExtractInput::from_raw(&item);
         maybe_extract(state, llm, llm_client, llm_budget, &input).await;
     }
-    info!("llm backfill pending={pending}");
+    info!("llm backfill pending={pending} forced={forced}");
 }
 
 async fn maybe_extract(
