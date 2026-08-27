@@ -33,7 +33,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use trade_signal::MktChannel;
 
 const QTY_EPS: f64 = 1e-12;
-const BBO_MAX_AGE_US: i64 = 2_000_000;
 const POSITION_RECONCILE_SETTLE_US: i64 = 5_000_000;
 const BATCH_EXEC_SIGNAL_KIND: u8 = 0;
 pub const ALLOWED_TARGET_SIGNALS: [i32; 5] = [-2, -1, 0, 1, 2];
@@ -327,8 +326,6 @@ struct BatchState {
     phase: BatchPhase,
     child_order_ids: BTreeSet<i64>,
     remaining_qty_by_level: BTreeMap<u32, f64>,
-    last_quote_ts: i64,
-    require_new_quote: bool,
     expires_at_us: i64,
     from_key: Vec<u8>,
 }
@@ -1326,9 +1323,6 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if !Self::quote_is_fresh(quote.ts, now_ts) {
-            return;
-        }
         let ready_batch = self.batches.iter().find_map(|(batch_seq, batch)| {
             (batch.phase == BatchPhase::ReadyToSubmit).then_some(*batch_seq)
         });
@@ -1508,25 +1502,11 @@ impl BatchExecStrategy {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
-                last_quote_ts: 0,
-                require_new_quote: false,
                 expires_at_us: 0,
                 from_key: target_from_key,
             },
         );
         self.submit_batch(batch_seq, now_ts);
-    }
-
-    fn quote_is_fresh(quote_ts: i64, now_ts: i64) -> bool {
-        if quote_ts <= 0 {
-            return false;
-        }
-        let quote_ts_us = if quote_ts < 10_000_000_000_000 {
-            quote_ts.saturating_mul(1_000)
-        } else {
-            quote_ts
-        };
-        now_ts.saturating_sub(quote_ts_us) <= BBO_MAX_AGE_US
     }
 
     fn load_order_limits(&self, reference_price: f64) -> Result<BatchOrderLimits, String> {
@@ -1637,12 +1617,6 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
-        if !Self::quote_is_fresh(quote.ts, now_ts) {
-            return;
-        }
-        if batch.require_new_quote && quote.ts <= batch.last_quote_ts {
-            return;
-        }
         if self
             .active_target
             .as_ref()
@@ -1683,8 +1657,6 @@ impl BatchExecStrategy {
                 .map(|plan| (plan.level_index, plan.qty_base))
                 .collect();
             batch.use_taker = use_taker;
-            batch.last_quote_ts = quote.ts;
-            batch.require_new_quote = false;
             batch.expires_at_us = if use_taker {
                 0
             } else {
@@ -2058,7 +2030,6 @@ impl BatchExecStrategy {
             let unfilled_qty = (meta.order_base_qty - meta.accounted_fill_base_qty).max(0.0);
             if batch.phase == BatchPhase::Live && unfilled_qty > QTY_EPS {
                 batch.phase = BatchPhase::CancellingForRequote;
-                batch.require_new_quote = true;
                 cancel_siblings_for_requote = !batch.child_order_ids.is_empty();
             }
             if batch.child_order_ids.is_empty() && !has_orphaned_sibling {
@@ -2332,6 +2303,7 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
         code_desc: &str,
         client_order_id: i64,
     ) {
+        let retry_post_only_immediately = response.is_post_only_rejected();
         warn!(
             "BatchExecStrategy: strategy_id={} child open failed order_id={} code={}({})",
             self.strategy_id,
@@ -2340,6 +2312,13 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
             code_desc
         );
         self.finish_child_order(client_order_id);
+        if retry_post_only_immediately {
+            self.next_batch_at_us = get_timestamp_us();
+            info!(
+                "BatchExecStrategy: strategy_id={} symbol={} post-only rejection released for immediate retry order_id={}",
+                self.strategy_id, self.symbol, client_order_id
+            );
+        }
         if let Some(manager) = MonitorChannel::try_order_manager() {
             let _ = manager.borrow_mut().remove(client_order_id);
         }
@@ -2487,6 +2466,8 @@ impl Strategy for BatchExecStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use order_common::{TradeEngineResponseMessage, TradeRequestType};
+    use symbol_utils::Exchange;
 
     fn config() -> BatchExecConfig {
         BatchExecConfig {
@@ -2634,6 +2615,66 @@ mod tests {
     }
 
     #[test]
+    fn post_only_rejection_releases_batch_for_immediate_retry() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::Live,
+                child_order_ids: BTreeSet::from([client_order_id]),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 1_000,
+                from_key: b"cta_alpha".to_vec(),
+            },
+        );
+        strategy.child_orders.insert(
+            client_order_id,
+            ChildOrderMeta {
+                batch_seq: 1,
+                level_index: 0,
+                order_base_qty: 1.0,
+                accounted_fill_base_qty: 0.0,
+                signal_ts: 1,
+                signal_bbo: None,
+                price_offset: 0.0,
+                from_key: b"cta_alpha".to_vec(),
+                cancel_requested: false,
+            },
+        );
+        let response = TradeEngineResponseMessage::new(
+            400,
+            TradeRequestType::BinanceWsNewUMOrder as u32,
+            Exchange::Binance as u32,
+            client_order_id,
+            -5022,
+        );
+
+        let before_retry = get_timestamp_us();
+        strategy.handle_hedge_open_failed(&response, "Post Only rejected", client_order_id);
+        let after_retry = get_timestamp_us();
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 1);
+        assert!(batch.child_order_ids.is_empty());
+        assert!(strategy.child_orders.is_empty());
+        assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+    }
+
+    #[test]
     fn completion_reason_requires_settled_execution() {
         let mut strategy = BatchExecStrategy::new(
             1,
@@ -2671,8 +2712,6 @@ mod tests {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
-                last_quote_ts: 0,
-                require_new_quote: false,
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
             },
@@ -2709,8 +2748,6 @@ mod tests {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
-                last_quote_ts: 10,
-                require_new_quote: true,
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
             },
@@ -2796,8 +2833,6 @@ mod tests {
             phase: BatchPhase::Live,
             child_order_ids: BTreeSet::new(),
             remaining_qty_by_level: BTreeMap::new(),
-            last_quote_ts: 0,
-            require_new_quote: false,
             expires_at_us: now_ts_us + 400_000,
             from_key: Vec::new(),
         };
@@ -2838,8 +2873,6 @@ mod tests {
                 phase: BatchPhase::Live,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level,
-                last_quote_ts: 10,
-                require_new_quote: false,
                 expires_at_us: 100,
                 from_key: b"cta_alpha".to_vec(),
             },
@@ -2887,7 +2920,6 @@ mod tests {
         assert!((batch.remaining_base_qty - 0.4).abs() < QTY_EPS);
         assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
         assert_eq!(batch.maker_requotes, 1);
-        assert!(batch.require_new_quote);
 
         assert!(!strategy.apply_exec_orphan_terminal(&orphan_terminal(101, 0.6)));
         assert!((strategy.virtual_position_qty().unwrap() - 0.6).abs() < QTY_EPS);
@@ -3014,8 +3046,6 @@ mod tests {
                 phase: BatchPhase::ReadyToSubmit,
                 child_order_ids: BTreeSet::new(),
                 remaining_qty_by_level: BTreeMap::new(),
-                last_quote_ts: 0,
-                require_new_quote: false,
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
             },
