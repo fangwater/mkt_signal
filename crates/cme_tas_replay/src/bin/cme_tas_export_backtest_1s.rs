@@ -1,649 +1,1488 @@
-//! Rust session-aware rewrite for exported CME TAS 1-second backtest parquet.
-//!
-//! Reads existing sparse or partially densified day parquet under
-//! `{exchange}/{product}/{YYYYMMDD}.parquet`. Within each declared CME session,
-//! output starts at the first valid causal L1 and then emits every second to
-//! the scheduled close. Maintenance and closed intervals remain absent.
+//! Six-product dense 1s backtest directly from the all-product TAS RocksDB.
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, TimeZone};
+use chrono::{Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::America::Chicago;
 use clap::Parser;
-use crossbeam_channel::unbounded;
-use log::info;
-use polars::prelude::{
-    DataFrame, Float64Chunked, Int64Chunked, NamedFrom, ParquetReader, ParquetWriter, SerReader,
-    Series, StringChunked,
+use cme_tas_replay::backtest_1s::{densify_interval, BacktestRow, Interval, Quote, Trade};
+use cme_tas_replay::product::{encode_all_key, exch_event_time_ns, quote_last_merge, ALL_KEY_LEN};
+use cme_tas_replay::{
+    decode_cme_quote, decode_cme_special, decode_cme_trade, decode_period_status, price_e9_to_f64,
+    PeriodStatus, CF_REPLAY_META, KIND_CME_QUOTE, KIND_CME_SPECIAL, KIND_CME_TRADE,
+    MISSING_EXCH_HMS_NS, MISSING_VOLUME, PERIOD_META_PREFIX,
 };
-use serde::Deserialize;
-use std::collections::BTreeMap;
+use polars::prelude::{DataFrame, NamedFrom, ParquetCompression, ParquetWriter, Series};
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
+use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options, DB};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-const DEFAULT_ROOT: &str = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/backtest_1s";
-const DEFAULT_SESSION_CSV: &str =
-    "/home/u171/fanghaizhou/cme_globex_daily_trading_intervals_utc_2024_to_2026-08-22_audited_v2.csv";
-const DEFAULT_WORKERS: usize = 8;
+const DEFAULT_DB: &str = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb_all_products";
+const DEFAULT_SECONDARY: &str =
+    "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_backtest_1s.secondary";
+const DEFAULT_OUT: &str = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/backtest_1s";
+const DEFAULT_PSQL: &str = "/mnt/nvme-raid0-28t/apps/pgsql16/bin/psql";
+const DEFAULT_OVERRIDES: &str = "config/cme_tas_backtest_session_overrides.json";
+const NS_PER_SEC: u64 = 1_000_000_000;
+const HALF_DAY_NS: u64 = 43_200 * NS_PER_SEC;
 
 #[derive(Parser, Debug)]
 #[command(name = "cme_tas_export_backtest_1s")]
 struct Args {
-    #[arg(long, default_value = DEFAULT_ROOT)]
-    root: PathBuf,
-    #[arg(long, default_value = DEFAULT_SESSION_CSV)]
-    session_csv: PathBuf,
-    #[arg(long, default_value_t = DEFAULT_WORKERS)]
-    workers: usize,
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = DEFAULT_DB)]
+    rocksdb_dir: PathBuf,
+    #[arg(long, default_value = DEFAULT_SECONDARY)]
+    secondary_dir: PathBuf,
+    /// Open a completed RocksDB directly in read-only mode; no writer may exist.
+    #[arg(long)]
+    direct_read_only: bool,
+    #[arg(long, default_value = DEFAULT_OUT)]
+    out_root: PathBuf,
+    #[arg(long)]
+    start: NaiveDate,
+    #[arg(long)]
+    end: NaiveDate,
+    #[arg(long, default_value = "ES,NQ,RTY,YM,GC,CL")]
     products: String,
+    #[arg(long, default_value_t = 4)]
+    workers: usize,
+    #[arg(long)]
+    overwrite: bool,
+    #[arg(long)]
+    audit_only: bool,
+    /// After reviewing audit JSON, filter off-session quotes instead of failing.
+    #[arg(long)]
+    allow_off_session_quotes: bool,
+    #[arg(long, default_value = DEFAULT_PSQL)]
+    psql: PathBuf,
+    #[arg(long, default_value = DEFAULT_OVERRIDES)]
+    session_overrides: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionOverrideFile {
+    events: Vec<SessionOverride>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionOverride {
+    product: String,
+    trad_day: NaiveDate,
+    kind: String,
+    event_ts: i64,
+    ric: Option<String>,
+    reason: String,
+    action: String,
+    source: String,
+}
+
+impl SessionOverrideFile {
+    fn load(path: &Path) -> Result<Self> {
+        let parsed: Self = serde_json::from_slice(
+            &fs::read(path).with_context(|| format!("read {}", path.display()))?,
+        )
+        .with_context(|| format!("parse {}", path.display()))?;
+        for event in &parsed.events {
+            if event.action != "filter" || event.source.trim().is_empty() {
+                bail!(
+                    "invalid session override for {} {}",
+                    event.product,
+                    event.trad_day
+                );
+            }
+        }
+        Ok(parsed)
+    }
+
+    fn reviewed(
+        &self,
+        product: &str,
+        day: NaiveDate,
+        ric: &str,
+        kind: &str,
+        event_ts: i64,
+        reason: &str,
+    ) -> bool {
+        self.events.iter().any(|event| {
+            event.product == product
+                && event.trad_day == day
+                && event.kind == kind
+                && event.event_ts == event_ts
+                && event.reason == reason
+                && event.ric.as_deref().is_none_or(|wanted| wanted == ric)
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProductSpec {
+    product: &'static str,
+    exchange: &'static str,
+    schedule_group: &'static str,
+    month_codes: &'static [u8],
+}
+
+const PRODUCTS: &[ProductSpec] = &[
+    ProductSpec {
+        product: "ES",
+        exchange: "CME",
+        schedule_group: "equity_indices",
+        month_codes: b"HMUZ",
+    },
+    ProductSpec {
+        product: "NQ",
+        exchange: "CME",
+        schedule_group: "equity_indices",
+        month_codes: b"HMUZ",
+    },
+    ProductSpec {
+        product: "RTY",
+        exchange: "CME",
+        schedule_group: "equity_indices",
+        month_codes: b"HMUZ",
+    },
+    ProductSpec {
+        product: "YM",
+        exchange: "CBOT",
+        schedule_group: "equity_indices",
+        month_codes: b"HMUZ",
+    },
+    ProductSpec {
+        product: "GC",
+        exchange: "COMEX",
+        schedule_group: "metals",
+        month_codes: b"FGHJKMNQUVXZ",
+    },
+    ProductSpec {
+        product: "CL",
+        exchange: "NYMEX",
+        schedule_group: "energy",
+        month_codes: b"FGHJKMNQUVXZ",
+    },
+];
+
+fn product_spec(name: &str) -> Result<ProductSpec> {
+    PRODUCTS
+        .iter()
+        .copied()
+        .find(|spec| spec.product == name)
+        .ok_or_else(|| anyhow!("unsupported backtest product {name:?}"))
+}
+
+fn month_number(code: u8) -> Result<u32> {
+    b"FGHJKMNQUVXZ"
+        .iter()
+        .position(|candidate| *candidate == code)
+        .map(|index| index as u32 + 1)
+        .ok_or_else(|| anyhow!("invalid month code {}", char::from(code)))
+}
+
+#[derive(Clone)]
+struct Contract {
+    ric: String,
+    contract_id: String,
+}
+
+fn candidate_contracts(spec: ProductSpec, period_year: i32) -> Result<Vec<Contract>> {
+    let mut out = Vec::new();
+    for year in period_year - 1..=period_year + 5 {
+        for &month_code in spec.month_codes {
+            let month = month_number(month_code)?;
+            let ric = format!(
+                "{}{}{:02}",
+                spec.product,
+                char::from(month_code),
+                year % 100
+            );
+            out.push(Contract {
+                ric,
+                contract_id: format!("{}:{}:{year:04}-{month:02}", spec.exchange, spec.product),
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Copy)]
+struct RawInterval {
+    start: i64,
+    end: i64,
+}
+
 struct SessionCalendar {
-    by_group: BTreeMap<String, Vec<(i64, i64)>>,
+    by_group: BTreeMap<String, Vec<RawInterval>>,
+    known_outages: BTreeMap<String, Vec<RawInterval>>,
+    coverage: BTreeMap<String, (NaiveDate, NaiveDate)>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SessionCsvRow {
-    schedule_group: String,
-    is_trading: String,
-    open_utc: Option<String>,
-    close_utc: Option<String>,
+struct SourcedInterval {
+    interval: RawInterval,
+    exception_name: String,
+}
+
+fn infer_known_outage_gaps(rows: &mut [SourcedInterval]) -> Vec<RawInterval> {
+    rows.sort_by_key(|row| (row.interval.start, row.interval.end));
+    rows.windows(2)
+        .filter_map(|pair| {
+            let left = &pair[0];
+            let right = &pair[1];
+            (left.interval.end < right.interval.start
+                && left.exception_name == right.exception_name
+                && left.exception_name.starts_with("known_outage:"))
+            .then_some(RawInterval {
+                start: left.interval.end,
+                end: right.interval.start,
+            })
+        })
+        .collect()
+}
+
+fn chicago_window(day: NaiveDate) -> Result<(i64, i64)> {
+    let end = Chicago
+        .from_local_datetime(&day.and_hms_opt(17, 0, 0).expect("valid clock"))
+        .single()
+        .ok_or_else(|| anyhow!("ambiguous Chicago 17:00 on {day}"))?;
+    Ok(((end - Duration::days(1)).timestamp(), end.timestamp()))
 }
 
 impl SessionCalendar {
-    fn load(path: &Path) -> Result<Self> {
-        let mut reader = csv::Reader::from_path(path)
-            .with_context(|| format!("open CME session CSV {}", path.display()))?;
-        let mut by_group: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
-        for record in reader.deserialize() {
-            let row: SessionCsvRow =
-                record.with_context(|| format!("parse CME session CSV {}", path.display()))?;
-            if row.is_trading != "1" {
-                continue;
-            }
-            let open = row
-                .open_utc
-                .as_deref()
-                .ok_or_else(|| anyhow!("trading session row has no open_utc"))?;
-            let close = row
-                .close_utc
-                .as_deref()
-                .ok_or_else(|| anyhow!("trading session row has no close_utc"))?;
-            let start = DateTime::parse_from_rfc3339(open)
-                .with_context(|| format!("parse open_utc {open:?}"))?
-                .timestamp();
-            let end = DateTime::parse_from_rfc3339(close)
-                .with_context(|| format!("parse close_utc {close:?}"))?
-                .timestamp();
-            if end <= start {
-                bail!(
-                    "invalid session interval [{start}, {end}) in {}",
-                    path.display()
-                );
-            }
-            by_group
-                .entry(row.schedule_group)
-                .or_default()
-                .push((start, end));
-        }
-        for intervals in by_group.values_mut() {
-            intervals.sort_unstable();
-        }
-        if by_group.is_empty() {
+    fn intervals_for(&self, group: &str, day: NaiveDate) -> Result<Vec<Interval>> {
+        let (coverage_start, coverage_end) = self
+            .coverage
+            .get(group)
+            .ok_or_else(|| anyhow!("calendar has no schedule group {group}"))?;
+        let (window_start, window_end) = chicago_window(day)?;
+        let start_utc = Utc
+            .timestamp_opt(window_start, 0)
+            .single()
+            .expect("unix timestamp")
+            .date_naive();
+        let end_utc = Utc
+            .timestamp_opt(window_end - 1, 0)
+            .single()
+            .expect("unix timestamp")
+            .date_naive();
+        if start_utc < *coverage_start || end_utc > *coverage_end {
             bail!(
-                "CME session CSV {} has no trading intervals",
-                path.display()
+                "calendar_missing group={group} TradDay={day} coverage={coverage_start}..{coverage_end}"
             );
         }
-        Ok(Self { by_group })
-    }
-
-    fn intervals_for(&self, product: &str, trading_day: NaiveDate) -> Result<Vec<(i64, i64)>> {
-        let group = schedule_group(product)?;
-        let end_local = Chicago
-            .from_local_datetime(&trading_day.and_hms_opt(17, 0, 0).expect("valid 17:00"))
-            .single()
-            .ok_or_else(|| anyhow!("ambiguous Chicago 17:00 for {trading_day}"))?;
-        let start_local = end_local - ChronoDuration::days(1);
-        let window_start = start_local.timestamp();
-        let window_end = end_local.timestamp();
-        let clipped = self
+        let mut clipped = self
             .by_group
             .get(group)
-            .ok_or_else(|| anyhow!("CME session CSV has no group {group}"))?
-            .iter()
-            .copied()
-            .filter_map(|(start, end)| {
-                if start < window_end && end > window_start {
-                    Some((start.max(window_start), end.min(window_end)))
-                } else {
-                    None
-                }
+            .into_iter()
+            .flatten()
+            .filter_map(|interval| {
+                (interval.start < window_end && interval.end > window_start).then_some(Interval {
+                    start: interval.start.max(window_start),
+                    end: interval.end.min(window_end),
+                })
             })
             .collect::<Vec<_>>();
-        let mut merged: Vec<(i64, i64)> = Vec::new();
-        for (start, end) in clipped {
-            if let Some((_, previous_end)) = merged.last_mut() {
-                if start <= *previous_end {
-                    *previous_end = (*previous_end).max(end);
+        clipped.sort_by_key(|interval| (interval.start, interval.end));
+        let mut merged: Vec<Interval> = Vec::new();
+        for interval in clipped {
+            if let Some(previous) = merged.last_mut() {
+                if interval.start <= previous.end {
+                    previous.end = previous.end.max(interval.end);
                     continue;
                 }
             }
-            merged.push((start, end));
+            merged.push(interval);
         }
         Ok(merged)
     }
+
+    fn known_outages_for(&self, group: &str, day: NaiveDate) -> Result<Vec<Interval>> {
+        let (window_start, window_end) = chicago_window(day)?;
+        Ok(self
+            .known_outages
+            .get(group)
+            .into_iter()
+            .flatten()
+            .filter_map(|interval| {
+                (interval.start < window_end && interval.end > window_start).then_some(Interval {
+                    start: interval.start.max(window_start),
+                    end: interval.end.min(window_end),
+                })
+            })
+            .collect())
+    }
 }
 
-fn schedule_group(product: &str) -> Result<&'static str> {
-    let group = match product {
-        "C" | "W" | "KW" | "S" | "SM" | "BO" => "grains_oilseeds",
-        "FF" | "TU" | "FV" | "TY" | "TN" | "US" | "U" | "S1R" | "SRA" => "interest_rates",
-        "YM" | "ES" | "NQ" | "RTY" | "MEM" => "equity_indices",
-        "AD" | "BP" | "BR" | "CD" | "JY" | "KRW" | "MP" | "NE" | "NOKA" | "PLZ" | "SEK" | "SF"
-        | "URO" => "fx",
-        "BTC" | "ETH" => "cryptocurrency",
-        "FC" | "LC" | "LH" => "livestock",
-        "CL" | "WTCL" | "HO" | "RB" | "NG" | "JKM" => "energy",
-        "GC" | "SI" | "HG" | "ALI" | "HRC" | "PL" | "PA" => "metals",
-        other => return Err(anyhow!("no CME session group for product {other}")),
-    };
-    Ok(group)
+fn load_calendar(psql: &Path, start: NaiveDate, end: NaiveDate) -> Result<SessionCalendar> {
+    let query_start = start - Duration::days(2);
+    let query_end = end + Duration::days(2);
+    let sql = format!(
+        "SELECT schedule_group, utc_date, CASE WHEN is_trading THEN 1 ELSE 0 END, \
+         COALESCE(extract(epoch FROM open_utc)::bigint::text,''), \
+         COALESCE(extract(epoch FROM close_utc)::bigint::text,''), exception_name \
+         FROM public.cme_globex_daily_trading_intervals \
+         WHERE schedule_group IN ('equity_indices','metals','energy') \
+         AND utc_date BETWEEN DATE '{query_start}' AND DATE '{query_end}' \
+         ORDER BY schedule_group, utc_date, interval_index"
+    );
+    let output = Command::new(psql)
+        .args([
+            "-h",
+            "/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run",
+            "-p",
+            "5433",
+            "-U",
+            "u171",
+            "-d",
+            "market_metadata",
+            "-At",
+            "-F",
+            "\t",
+            "-c",
+            &sql,
+        ])
+        .output()
+        .with_context(|| format!("run calendar psql {}", psql.display()))?;
+    if !output.status.success() {
+        bail!(
+            "calendar psql failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut by_group: BTreeMap<String, Vec<RawInterval>> = BTreeMap::new();
+    let mut sourced_by_group: BTreeMap<String, Vec<SourcedInterval>> = BTreeMap::new();
+    let mut coverage: BTreeMap<String, (NaiveDate, NaiveDate)> = BTreeMap::new();
+    for (line_no, line) in String::from_utf8(output.stdout)?.lines().enumerate() {
+        let cells = line.split('\t').collect::<Vec<_>>();
+        if cells.len() != 6 {
+            bail!("calendar row {} has {} cells", line_no + 1, cells.len());
+        }
+        let group = cells[0].to_string();
+        let utc_date = NaiveDate::parse_from_str(cells[1], "%Y-%m-%d")?;
+        coverage
+            .entry(group.clone())
+            .and_modify(|range| {
+                range.0 = range.0.min(utc_date);
+                range.1 = range.1.max(utc_date);
+            })
+            .or_insert((utc_date, utc_date));
+        if cells[2] != "1" {
+            continue;
+        }
+        let interval = RawInterval {
+            start: cells[3].parse()?,
+            end: cells[4].parse()?,
+        };
+        if interval.end <= interval.start {
+            bail!("calendar interval is not increasing on row {}", line_no + 1);
+        }
+        by_group.entry(group.clone()).or_default().push(interval);
+        sourced_by_group
+            .entry(group)
+            .or_default()
+            .push(SourcedInterval {
+                interval,
+                exception_name: cells[5].to_string(),
+            });
+    }
+    let mut known_outages: BTreeMap<String, Vec<RawInterval>> = BTreeMap::new();
+    for (group, rows) in &mut sourced_by_group {
+        let gaps = infer_known_outage_gaps(rows);
+        if !gaps.is_empty() {
+            known_outages.insert(group.clone(), gaps);
+        }
+    }
+    Ok(SessionCalendar {
+        by_group,
+        known_outages,
+        coverage,
+    })
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Identity {
-    contract_id: String,
-    ric: String,
+fn cf_options() -> Options {
+    let mut options = Options::default();
+    options.set_merge_operator_associative("quote_last", quote_last_merge);
+    options
 }
 
-#[derive(Clone, Debug)]
-struct SparseRow {
-    ts: i64,
-    bid0p: Option<f64>,
-    bid0v: Option<f64>,
-    ask0p: Option<f64>,
-    ask0v: Option<f64>,
-    buy_high: Option<f64>,
-    sell_low: Option<f64>,
-    close: Option<f64>,
-    midp: Option<f64>,
-}
-
-impl SparseRow {
-    fn valid_book(&self) -> bool {
-        matches!(
-            (self.bid0p, self.bid0v, self.ask0p, self.ask0v),
-            (Some(bid), Some(bidv), Some(ask), Some(askv))
-                if bid.is_finite()
-                    && ask.is_finite()
-                    && bidv.is_finite()
-                    && askv.is_finite()
-                    && bid > 0.0
-                    && ask >= bid
-                    && bidv >= 0.0
-                    && askv >= 0.0
+fn open_input_db(args: &Args, products: &[ProductSpec], period_year: i32) -> Result<DB> {
+    let mut names = vec!["default".to_string(), "replay_meta".to_string()];
+    names.extend(
+        products
+            .iter()
+            .map(|spec| format!("p:{period_year}:{}", spec.product)),
+    );
+    let descriptors = names
+        .into_iter()
+        .map(|name| ColumnFamilyDescriptor::new(name, cf_options()))
+        .collect::<Vec<_>>();
+    if args.direct_read_only {
+        return DB::open_cf_descriptors_read_only(
+            &Options::default(),
+            &args.rocksdb_dir,
+            descriptors,
+            false,
         )
+        .with_context(|| {
+            format!(
+                "open completed RocksDB {} read-only",
+                args.rocksdb_dir.display()
+            )
+        });
     }
+    if let Some(parent) = args.secondary_dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    DB::open_cf_descriptors_as_secondary(
+        &Options::default(),
+        &args.rocksdb_dir,
+        &args.secondary_dir,
+        descriptors,
+    )
+    .with_context(|| {
+        format!(
+            "open secondary {} from {}",
+            args.secondary_dir.display(),
+            args.rocksdb_dir.display()
+        )
+    })
+}
 
-    fn has_event(&self) -> bool {
-        self.buy_high.is_some_and(f64::is_finite) || self.sell_low.is_some_and(f64::is_finite)
+fn require_completed_source_period(db: &DB, period_year: i32) -> Result<String> {
+    let cf = db
+        .cf_handle(CF_REPLAY_META)
+        .ok_or_else(|| anyhow!("missing column family {CF_REPLAY_META}"))?;
+    let prefix = format!("{PERIOD_META_PREFIX}{period_year:04}-01-01_");
+    let mut completed = Vec::new();
+    for item in db.iterator_cf(
+        &cf,
+        IteratorMode::From(prefix.as_bytes(), Direction::Forward),
+    ) {
+        let (key, value) = item?;
+        if !key.starts_with(prefix.as_bytes()) {
+            break;
+        }
+        let period = std::str::from_utf8(&key)?
+            .strip_prefix(PERIOD_META_PREFIX)
+            .expect("period prefix checked")
+            .to_string();
+        match decode_period_status(&value)? {
+            PeriodStatus::Done => completed.push(period),
+            PeriodStatus::Writing => {
+                bail!("source period {period} is still marked writing; refuse export")
+            }
+        }
     }
+    match completed.as_slice() {
+        [period] => Ok(period.clone()),
+        [] => bail!("no completed source period starts in {period_year}"),
+        periods => bail!(
+            "multiple completed source periods start in {period_year}: {}",
+            periods.join(",")
+        ),
+    }
+}
+
+fn key_prefix(kind: u8, ric: &str) -> Result<Vec<u8>> {
+    Ok(encode_all_key(kind, ric, 0, 0, 0)?[..17].to_vec())
+}
+
+fn key_ts_ns(key: &[u8]) -> Result<u64> {
+    if key.len() != ALL_KEY_LEN {
+        bail!(
+            "all-product key length is {}, expected {ALL_KEY_LEN}",
+            key.len()
+        );
+    }
+    Ok(u64::from_be_bytes(key[17..25].try_into().unwrap()))
+}
+
+fn seek_key(kind: u8, ric: &str, ts_ns: u64) -> Result<[u8; ALL_KEY_LEN]> {
+    encode_all_key(kind, ric, ts_ns, 0, 0)
+}
+
+fn in_interval(sec: i64, intervals: &[Interval]) -> bool {
+    intervals
+        .iter()
+        .any(|interval| sec >= interval.start && sec < interval.end)
+}
+
+fn at_close(sec: i64, intervals: &[Interval]) -> bool {
+    intervals.iter().any(|interval| sec == interval.end)
+}
+
+fn event_time_ns(date_time_ns: u64, exch_hms_ns: u64) -> Result<(u64, bool)> {
+    if exch_hms_ns == MISSING_EXCH_HMS_NS {
+        return Ok((date_time_ns, true));
+    }
+    Ok((exch_event_time_ns(date_time_ns, exch_hms_ns)?, false))
 }
 
 #[derive(Default)]
-struct CarryState {
-    bid0p: Option<f64>,
-    bid0v: Option<f64>,
-    ask0p: Option<f64>,
-    ask0v: Option<f64>,
-    close: Option<f64>,
-    midp: Option<f64>,
+struct RicEvents {
+    quotes: Vec<Quote>,
+    trades: Vec<Trade>,
+    quote_rows: u64,
+    quote_kept: u64,
+    quote_fallback: u64,
+    quote_source_two_sided: u64,
+    quote_source_one_sided: u64,
+    quote_crossed_after_overlay: u64,
+    trade_rows: u64,
+    trade_kept: u64,
+    trade_fallback: u64,
+    special_rows: u64,
+    special_kept: u64,
+    special_fallback: u64,
+    off_session_quotes: u64,
+    off_session_trades: u64,
+    off_session_specials: u64,
+    reviewed_off_session_trades: u64,
+    reviewed_off_session_specials: u64,
+    invalid_trade_prices: u64,
+    conflict_counts: BTreeMap<String, u64>,
+    samples: Vec<ConflictSample>,
+    off_session_trade_samples: Vec<ConflictSample>,
+    off_session_special_samples: Vec<ConflictSample>,
+    invalid_trade_price_samples: Vec<ConflictSample>,
+    crossed_samples: Vec<CrossedBookSample>,
 }
 
-impl CarryState {
-    fn update(&mut self, row: &SparseRow) {
-        if row.valid_book() {
-            self.bid0p = row.bid0p;
-            self.bid0v = row.bid0v;
-            self.ask0p = row.ask0p;
-            self.ask0v = row.ask0v;
-        }
-        if row.close.is_some_and(|value| value.is_finite()) {
-            self.close = row.close;
-        }
-        if row.midp.is_some_and(|value| value.is_finite()) {
-            self.midp = row.midp;
-        }
-    }
-
-    fn row(&self, ts: i64) -> SparseRow {
-        SparseRow {
-            ts,
-            bid0p: self.bid0p,
-            bid0v: self.bid0v,
-            ask0p: self.ask0p,
-            ask0v: self.ask0v,
-            buy_high: None,
-            sell_low: None,
-            close: self.close,
-            midp: self.midp,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct DenseRow {
-    identity: usize,
+#[derive(Clone, Serialize)]
+struct ConflictSample {
+    ric: String,
+    kind: String,
+    reason: String,
     ts: i64,
-    bid0p: Option<f64>,
-    bid0v: Option<f64>,
-    ask0p: Option<f64>,
-    ask0v: Option<f64>,
-    buy_high: Option<f64>,
-    sell_low: Option<f64>,
-    close: Option<f64>,
-    midp: Option<f64>,
+    source_date_time_ns: Option<u64>,
+    exch_hms_ns: Option<u64>,
+    price: Option<f64>,
+    volume: Option<u32>,
+    aggressor: Option<u8>,
+    reviewed: bool,
 }
 
-impl DenseRow {
-    fn from_sparse(identity: usize, row: SparseRow) -> Self {
-        Self {
-            identity,
-            ts: row.ts,
-            bid0p: row.bid0p,
-            bid0v: row.bid0v,
-            ask0p: row.ask0p,
-            ask0v: row.ask0v,
-            buy_high: row.buy_high,
-            sell_low: row.sell_low,
-            close: row.close,
-            midp: row.midp,
-        }
-    }
+#[derive(Clone, Serialize)]
+struct CrossedBookSample {
+    ric: String,
+    ts: i64,
+    standing_bid: f64,
+    standing_ask: f64,
+    source_bid: Option<f64>,
+    source_ask: Option<f64>,
 }
 
-fn densify_ric(
-    rows: Vec<SparseRow>,
-    identity: usize,
-    intervals: &[(i64, i64)],
-) -> Result<Vec<DenseRow>> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
+fn conflict_reason(
+    day: NaiveDate,
+    sec: i64,
+    intervals: &[Interval],
+    known_outages: &[Interval],
+) -> &'static str {
+    if in_interval(sec, known_outages) {
+        return "known_outage";
     }
-    let mut by_ts = BTreeMap::new();
-    for row in rows {
-        by_ts.insert(row.ts, row);
+    if matches!(day.weekday(), Weekday::Sat | Weekday::Sun) && intervals.is_empty() {
+        return "weekend";
     }
-    let source: Vec<SparseRow> = by_ts.into_values().collect();
-    let mut output = Vec::new();
-    for &(start, end) in intervals {
-        if end <= start {
-            bail!("invalid session interval [{start}, {end})");
-        }
-        let Some(first) = source
-            .iter()
-            .find(|row| row.ts >= start && row.ts < end && row.valid_book())
-        else {
-            continue;
+    if intervals.is_empty() {
+        return "holiday_closed";
+    }
+    let local = Utc
+        .timestamp_opt(sec, 0)
+        .single()
+        .expect("unix timestamp")
+        .with_timezone(&Chicago);
+    if local.hour() == 16 {
+        return "maintenance";
+    }
+    if sec < intervals[0].start {
+        return "before_open";
+    }
+    if sec >= intervals.last().expect("not empty").end {
+        let close_local = Utc
+            .timestamp_opt(intervals.last().unwrap().end, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&Chicago);
+        return if close_local.hour() < 16 {
+            "after_early_close"
+        } else {
+            "after_close"
         };
-        let mut state = CarryState::default();
-        let mut source_pos = source.partition_point(|row| row.ts < first.ts);
-        let mut ts = first.ts;
-        while ts < end {
-            let current = if source_pos < source.len() && source[source_pos].ts == ts {
-                let row = source[source_pos].clone();
-                source_pos += 1;
-                state.update(&row);
-                Some(row)
-            } else {
-                None
-            };
-            let mut row = state.row(ts);
-            if let Some(source_row) = current {
-                row.buy_high = source_row.buy_high.filter(|value| value.is_finite());
-                row.sell_low = source_row.sell_low.filter(|value| value.is_finite());
-            }
-            output.push(DenseRow::from_sparse(identity, row));
-            ts += 1;
-        }
-        if let Some(endpoint) = source.iter().find(|row| row.ts == end && row.has_event()) {
-            let mut endpoint = endpoint.clone();
-            state.update(&endpoint);
-            endpoint.bid0p = state.bid0p;
-            endpoint.bid0v = state.bid0v;
-            endpoint.ask0p = state.ask0p;
-            endpoint.ask0v = state.ask0v;
-            endpoint.close = state.close;
-            endpoint.midp = state.midp;
-            output.push(DenseRow::from_sparse(identity, endpoint));
-        }
     }
-    Ok(output)
+    "between_intervals"
 }
 
-fn already_dense(rows: &[SparseRow], intervals: &[(i64, i64)]) -> bool {
-    let mut by_ts = BTreeMap::new();
-    for row in rows {
-        if by_ts.insert(row.ts, row).is_some() {
-            return false;
-        }
-    }
-    if by_ts.iter().any(|(ts, row)| {
-        !intervals
-            .iter()
-            .any(|(start, end)| (*ts >= *start && *ts < *end) || (*ts == *end && row.has_event()))
-    }) {
-        return false;
-    }
-    for &(start, end) in intervals {
-        let segment = by_ts
-            .range(start..end)
-            .map(|(_, row)| *row)
-            .collect::<Vec<_>>();
-        let Some(first_index) = segment.iter().position(|row| row.valid_book()) else {
-            if !segment.is_empty() {
-                return false;
-            }
-            continue;
-        };
-        let first_ts = segment[first_index].ts;
-        if first_ts >= end || segment.len() != (end - first_ts) as usize {
-            return false;
-        }
-        for (offset, row) in segment.iter().enumerate() {
-            if row.ts != first_ts + offset as i64 || !row.valid_book() {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn str_col<'a>(df: &'a DataFrame, name: &str) -> Result<&'a StringChunked> {
-    df.column(name)
-        .with_context(|| format!("missing {name}"))?
-        .str()
-        .with_context(|| format!("{name} is not String"))
-}
-
-fn i64_col<'a>(df: &'a DataFrame, name: &str) -> Result<&'a Int64Chunked> {
-    df.column(name)
-        .with_context(|| format!("missing {name}"))?
-        .i64()
-        .with_context(|| format!("{name} is not Int64"))
-}
-
-fn f64_col<'a>(df: &'a DataFrame, name: &str) -> Result<&'a Float64Chunked> {
-    df.column(name)
-        .with_context(|| format!("missing {name}"))?
-        .f64()
-        .with_context(|| format!("{name} is not Float64"))
-}
-
-fn required_str<'a>(col: &'a StringChunked, index: usize, name: &str) -> Result<&'a str> {
-    col.get(index)
-        .ok_or_else(|| anyhow!("{name} is null at row {index}"))
-}
-
-fn required_i64(col: &Int64Chunked, index: usize, name: &str) -> Result<i64> {
-    col.get(index)
-        .ok_or_else(|| anyhow!("{name} is null at row {index}"))
-}
-
-fn read_rows(path: &Path) -> Result<BTreeMap<Identity, Vec<SparseRow>>> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let df = ParquetReader::new(file)
-        .finish()
-        .with_context(|| format!("read {}", path.display()))?;
-    let contract_id = str_col(&df, "contract_id")?;
-    let ric = str_col(&df, "ric")?;
-    let ts = i64_col(&df, "ts")?;
-    let bid0p = f64_col(&df, "bid0p")?;
-    let bid0v = f64_col(&df, "bid0v")?;
-    let ask0p = f64_col(&df, "ask0p")?;
-    let ask0v = f64_col(&df, "ask0v")?;
-    let buy_high = f64_col(&df, "buy_high")?;
-    let sell_low = f64_col(&df, "sell_low")?;
-    let close = f64_col(&df, "close")?;
-    let midp = f64_col(&df, "midp")?;
-    let mut rows: BTreeMap<Identity, Vec<SparseRow>> = BTreeMap::new();
-    for index in 0..df.height() {
-        let identity = Identity {
-            contract_id: required_str(contract_id, index, "contract_id")?.to_string(),
-            ric: required_str(ric, index, "ric")?.to_string(),
-        };
-        rows.entry(identity).or_default().push(SparseRow {
-            ts: required_i64(ts, index, "ts")?,
-            bid0p: bid0p.get(index),
-            bid0v: bid0v.get(index),
-            ask0p: ask0p.get(index),
-            ask0v: ask0v.get(index),
-            buy_high: buy_high.get(index),
-            sell_low: sell_low.get(index),
-            close: close.get(index),
-            midp: midp.get(index),
+fn record_conflict(
+    out: &mut RicEvents,
+    ric: &str,
+    kind: &str,
+    day: NaiveDate,
+    sec: i64,
+    intervals: &[Interval],
+    known_outages: &[Interval],
+    source_date_time_ns: Option<u64>,
+    exch_hms_ns: Option<u64>,
+    price: Option<f64>,
+    volume: Option<u32>,
+    aggressor: Option<u8>,
+    reviewed: bool,
+) {
+    let reason = conflict_reason(day, sec, intervals, known_outages);
+    *out.conflict_counts
+        .entry(format!("{kind}:{reason}"))
+        .or_insert(0) += 1;
+    if out
+        .samples
+        .iter()
+        .filter(|sample| sample.kind == kind)
+        .count()
+        < 10
+    {
+        out.samples.push(ConflictSample {
+            ric: ric.to_string(),
+            kind: kind.to_string(),
+            reason: reason.to_string(),
+            ts: sec,
+            source_date_time_ns,
+            exch_hms_ns,
+            price,
+            volume,
+            aggressor,
+            reviewed,
         });
     }
-    Ok(rows)
 }
 
-fn rows_to_dataframe(rows: &[DenseRow], identities: &[Identity]) -> Result<DataFrame> {
-    let mut contract_id: Vec<&str> = Vec::with_capacity(rows.len());
-    let mut ric: Vec<&str> = Vec::with_capacity(rows.len());
-    let mut ts = Vec::with_capacity(rows.len());
-    let mut bid0p = Vec::with_capacity(rows.len());
-    let mut bid0v = Vec::with_capacity(rows.len());
-    let mut ask0p = Vec::with_capacity(rows.len());
-    let mut ask0v = Vec::with_capacity(rows.len());
-    let mut buy_high = Vec::with_capacity(rows.len());
-    let mut sell_low = Vec::with_capacity(rows.len());
-    let mut close = Vec::with_capacity(rows.len());
-    let mut midp = Vec::with_capacity(rows.len());
-    for row in rows {
-        let identity = identities
-            .get(row.identity)
-            .ok_or_else(|| anyhow!("dense identity {} is out of range", row.identity))?;
-        contract_id.push(&identity.contract_id);
-        ric.push(&identity.ric);
-        ts.push(row.ts);
-        bid0p.push(row.bid0p);
-        bid0v.push(row.bid0v);
-        ask0p.push(row.ask0p);
-        ask0v.push(row.ask0v);
-        buy_high.push(row.buy_high);
-        sell_low.push(row.sell_low);
-        close.push(row.close);
-        midp.push(row.midp);
+fn record_invalid_trade_price(
+    out: &mut RicEvents,
+    ric: &str,
+    sec: i64,
+    source_date_time_ns: u64,
+    exch_hms_ns: u64,
+    price: Option<f64>,
+    volume: u32,
+    aggressor: u8,
+) {
+    const KIND: &str = "trade";
+    const REASON: &str = "invalid_trade_price";
+    *out.conflict_counts
+        .entry(format!("{KIND}:{REASON}"))
+        .or_insert(0) += 1;
+    out.invalid_trade_price_samples.push(ConflictSample {
+        ric: ric.to_string(),
+        kind: KIND.to_string(),
+        reason: REASON.to_string(),
+        ts: sec,
+        source_date_time_ns: Some(source_date_time_ns),
+        exch_hms_ns: Some(exch_hms_ns),
+        price,
+        volume: Some(volume),
+        aggressor: Some(aggressor),
+        reviewed: true,
+    });
+}
+
+fn scan_quote(
+    db: &DB,
+    cf: &rocksdb::ColumnFamily,
+    ric: &str,
+    window_start: i64,
+    window_end: i64,
+    day: NaiveDate,
+    intervals: &[Interval],
+    known_outages: &[Interval],
+    out: &mut RicEvents,
+) -> Result<()> {
+    let prefix = key_prefix(KIND_CME_QUOTE, ric)?;
+    let seek = seek_key(KIND_CME_QUOTE, ric, (window_start as u64) * NS_PER_SEC)?;
+    let mut active_interval: Option<usize> = None;
+    let mut standing_bid: Option<(f64, f64)> = None;
+    let mut standing_ask: Option<(f64, f64)> = None;
+    for item in db.iterator_cf(cf, IteratorMode::From(&seek, Direction::Forward)) {
+        let (key, value) = item?;
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let sec = (key_ts_ns(&key)? / NS_PER_SEC) as i64;
+        if sec >= window_end {
+            break;
+        }
+        out.quote_rows += 1;
+        let rec = decode_cme_quote(&value)?;
+        out.quote_fallback += u64::from(rec.exch_hms_ns == MISSING_EXCH_HMS_NS);
+        let bid = price_e9_to_f64(rec.bid).and_then(|price| {
+            (rec.bid_size != MISSING_VOLUME && price > 0.0)
+                .then_some((price, f64::from(rec.bid_size)))
+        });
+        let ask = price_e9_to_f64(rec.ask).and_then(|price| {
+            (rec.ask_size != MISSING_VOLUME && price > 0.0)
+                .then_some((price, f64::from(rec.ask_size)))
+        });
+        out.quote_source_two_sided += u64::from(bid.is_some() && ask.is_some());
+        out.quote_source_one_sided += u64::from(bid.is_some() ^ ask.is_some());
+
+        let interval_index = intervals
+            .iter()
+            .position(|interval| sec >= interval.start && sec < interval.end);
+        if let Some(interval_index) = interval_index {
+            if active_interval != Some(interval_index) {
+                active_interval = Some(interval_index);
+                standing_bid = None;
+                standing_ask = None;
+            }
+            if bid.is_some() {
+                standing_bid = bid;
+            }
+            if ask.is_some() {
+                standing_ask = ask;
+            }
+            let (Some((bid, bid_size)), Some((ask, ask_size))) = (standing_bid, standing_ask)
+            else {
+                continue;
+            };
+            let quote = Quote {
+                sec,
+                bid,
+                bid_size,
+                ask,
+                ask_size,
+            };
+            if !quote.valid() {
+                out.quote_crossed_after_overlay += 1;
+                if out.crossed_samples.len() < 10 {
+                    out.crossed_samples.push(CrossedBookSample {
+                        ric: ric.to_string(),
+                        ts: sec,
+                        standing_bid: bid,
+                        standing_ask: ask,
+                        source_bid: price_e9_to_f64(rec.bid),
+                        source_ask: price_e9_to_f64(rec.ask),
+                    });
+                }
+                continue;
+            }
+            out.quotes.push(quote);
+            out.quote_kept += 1;
+        } else {
+            active_interval = None;
+            standing_bid = None;
+            standing_ask = None;
+            out.off_session_quotes += 1;
+            record_conflict(
+                out,
+                ric,
+                "quote",
+                day,
+                sec,
+                intervals,
+                known_outages,
+                Some(rec.ts_utc_ns),
+                Some(rec.exch_hms_ns),
+                None,
+                None,
+                None,
+                false,
+            );
+        }
     }
-    DataFrame::new(vec![
-        Series::new("contract_id".into(), contract_id),
-        Series::new("ric".into(), ric),
-        Series::new("ts".into(), ts),
-        Series::new("bid0p".into(), bid0p),
-        Series::new("bid0v".into(), bid0v),
-        Series::new("ask0p".into(), ask0p),
-        Series::new("ask0v".into(), ask0v),
-        Series::new("buy_high".into(), buy_high),
-        Series::new("sell_low".into(), sell_low),
-        Series::new("close".into(), close),
-        Series::new("midp".into(), midp),
-    ])
-    .context("build backtest dataframe")
+    Ok(())
+}
+
+fn scan_trades(
+    db: &DB,
+    cf: &rocksdb::ColumnFamily,
+    ric: &str,
+    window_start: i64,
+    window_end: i64,
+    day: NaiveDate,
+    product: &str,
+    intervals: &[Interval],
+    known_outages: &[Interval],
+    overrides: &SessionOverrideFile,
+    out: &mut RicEvents,
+) -> Result<()> {
+    let padded_start = ((window_start as u64) * NS_PER_SEC).saturating_sub(HALF_DAY_NS);
+    let padded_end = (window_end as u64)
+        .saturating_mul(NS_PER_SEC)
+        .saturating_add(HALF_DAY_NS);
+    let prefix = key_prefix(KIND_CME_TRADE, ric)?;
+    let seek = seek_key(KIND_CME_TRADE, ric, padded_start)?;
+    for item in db.iterator_cf(cf, IteratorMode::From(&seek, Direction::Forward)) {
+        let (key, value) = item?;
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key_ts_ns(&key)? > padded_end {
+            break;
+        }
+        let rec = decode_cme_trade(&value)?;
+        let (event_ns, fallback) = event_time_ns(rec.ts_utc_ns, rec.exch_hms_ns)?;
+        let sec = (event_ns / NS_PER_SEC) as i64;
+        if sec < window_start || sec >= window_end {
+            continue;
+        }
+        out.trade_rows += 1;
+        out.trade_fallback += u64::from(fallback);
+        let price = price_e9_to_f64(rec.price);
+        if price.is_none_or(|price| !price.is_finite() || price <= 0.0) {
+            out.invalid_trade_prices += 1;
+            record_invalid_trade_price(
+                out,
+                ric,
+                sec,
+                rec.ts_utc_ns,
+                rec.exch_hms_ns,
+                price,
+                rec.volume,
+                rec.aggressor,
+            );
+            continue;
+        }
+        let price = price.expect("positive finite price checked above");
+        if rec.volume == MISSING_VOLUME || rec.volume == 0 {
+            bail!("printable trade {ric} has invalid volume {}", rec.volume);
+        }
+        if in_interval(sec, intervals) || at_close(sec, intervals) {
+            out.trades.push(Trade {
+                event_ns: i64::try_from(event_ns)?,
+                price,
+                aggressor: rec.aggressor,
+            });
+            out.trade_kept += 1;
+        } else {
+            out.off_session_trades += 1;
+            let reason = conflict_reason(day, sec, intervals, known_outages);
+            let reviewed = reason == "known_outage"
+                || overrides.reviewed(product, day, ric, "trade", sec, reason);
+            out.reviewed_off_session_trades += u64::from(reviewed);
+            out.off_session_trade_samples.push(ConflictSample {
+                ric: ric.to_string(),
+                kind: "trade".to_string(),
+                reason: reason.to_string(),
+                ts: sec,
+                source_date_time_ns: Some(rec.ts_utc_ns),
+                exch_hms_ns: Some(rec.exch_hms_ns),
+                price: Some(price),
+                volume: Some(rec.volume),
+                aggressor: Some(rec.aggressor),
+                reviewed,
+            });
+            record_conflict(
+                out,
+                ric,
+                "trade",
+                day,
+                sec,
+                intervals,
+                known_outages,
+                Some(rec.ts_utc_ns),
+                Some(rec.exch_hms_ns),
+                Some(price),
+                Some(rec.volume),
+                Some(rec.aggressor),
+                reviewed,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn scan_specials(
+    db: &DB,
+    cf: &rocksdb::ColumnFamily,
+    ric: &str,
+    window_start: i64,
+    window_end: i64,
+    day: NaiveDate,
+    product: &str,
+    intervals: &[Interval],
+    known_outages: &[Interval],
+    overrides: &SessionOverrideFile,
+    out: &mut RicEvents,
+) -> Result<()> {
+    let padded_start = ((window_start as u64) * NS_PER_SEC).saturating_sub(HALF_DAY_NS);
+    let padded_end = (window_end as u64)
+        .saturating_mul(NS_PER_SEC)
+        .saturating_add(HALF_DAY_NS);
+    let prefix = key_prefix(KIND_CME_SPECIAL, ric)?;
+    let seek = seek_key(KIND_CME_SPECIAL, ric, padded_start)?;
+    for item in db.iterator_cf(cf, IteratorMode::From(&seek, Direction::Forward)) {
+        let (key, value) = item?;
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key_ts_ns(&key)? > padded_end {
+            break;
+        }
+        let rec = decode_cme_special(&value)?;
+        let (event_ns, fallback) = event_time_ns(rec.ts_utc_ns, rec.exch_hms_ns)?;
+        let sec = (event_ns / NS_PER_SEC) as i64;
+        if sec < window_start || sec >= window_end {
+            continue;
+        }
+        out.special_rows += 1;
+        out.special_fallback += u64::from(fallback);
+        if in_interval(sec, intervals) {
+            out.special_kept += 1;
+        } else {
+            out.off_session_specials += 1;
+            let reason = conflict_reason(day, sec, intervals, known_outages);
+            let reviewed = reason == "known_outage"
+                || overrides.reviewed(product, day, ric, "special", sec, reason);
+            out.reviewed_off_session_specials += u64::from(reviewed);
+            out.off_session_special_samples.push(ConflictSample {
+                ric: ric.to_string(),
+                kind: "special".to_string(),
+                reason: reason.to_string(),
+                ts: sec,
+                source_date_time_ns: Some(rec.ts_utc_ns),
+                exch_hms_ns: Some(rec.exch_hms_ns),
+                price: None,
+                volume: Some(rec.volume),
+                aggressor: None,
+                reviewed,
+            });
+            record_conflict(
+                out,
+                ric,
+                "special",
+                day,
+                sec,
+                intervals,
+                known_outages,
+                Some(rec.ts_utc_ns),
+                Some(rec.exch_hms_ns),
+                None,
+                Some(rec.volume),
+                None,
+                reviewed,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DayAudit {
+    product: String,
+    trad_day: String,
+    intervals: Vec<[i64; 2]>,
+    known_outages: Vec<[i64; 2]>,
+    quote_rows: u64,
+    quote_kept: u64,
+    quote_time_fallback: u64,
+    quote_source_two_sided: u64,
+    quote_source_one_sided: u64,
+    quote_crossed_after_overlay: u64,
+    trade_rows: u64,
+    trade_kept: u64,
+    trade_time_fallback: u64,
+    special_rows: u64,
+    special_kept: u64,
+    special_time_fallback: u64,
+    off_session_quotes: u64,
+    off_session_trades: u64,
+    off_session_specials: u64,
+    reviewed_off_session_trades: u64,
+    reviewed_off_session_specials: u64,
+    invalid_trade_prices: u64,
+    output_rows: usize,
+    excluded_crossed_rics: Vec<String>,
+    conflict_counts: BTreeMap<String, u64>,
+    conflicts: Vec<ConflictSample>,
+    off_session_trade_samples: Vec<ConflictSample>,
+    off_session_special_samples: Vec<ConflictSample>,
+    invalid_trade_price_samples: Vec<ConflictSample>,
+    crossed_book_samples: Vec<CrossedBookSample>,
+}
+
+fn write_json_atomic(path: &Path, value: &DayAudit) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn rows_to_dataframe(rows: &[BacktestRow]) -> Result<DataFrame> {
+    Ok(DataFrame::new(vec![
+        Series::new(
+            "contract_id".into(),
+            rows.iter()
+                .map(|row| row.contract_id.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "ric".into(),
+            rows.iter().map(|row| row.ric.as_str()).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "ts".into(),
+            rows.iter().map(|row| row.ts).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "bid0p".into(),
+            rows.iter().map(|row| row.bid0p).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "bid0v".into(),
+            rows.iter().map(|row| row.bid0v).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "ask0p".into(),
+            rows.iter().map(|row| row.ask0p).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "ask0v".into(),
+            rows.iter().map(|row| row.ask0v).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "buy_high".into(),
+            rows.iter().map(|row| row.buy_high).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "sell_low".into(),
+            rows.iter().map(|row| row.sell_low).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "close".into(),
+            rows.iter().map(|row| row.close).collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "midp".into(),
+            rows.iter().map(|row| row.midp).collect::<Vec<_>>(),
+        ),
+    ])?)
+}
+
+fn write_parquet_atomic(path: &Path, rows: &[BacktestRow]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("parquet.tmp");
+    let mut df = rows_to_dataframe(rows)?;
+    let result = (|| -> Result<()> {
+        ParquetWriter::new(File::create(&tmp)?)
+            .with_compression(ParquetCompression::Zstd(None))
+            .finish(&mut df)
+            .with_context(|| format!("write parquet {} rows={}", path.display(), rows.len()))?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn write_parquet_serialized(
+    parquet_writer: &Mutex<()>,
+    path: &Path,
+    rows: &[BacktestRow],
+) -> Result<()> {
+    let _writer_guard = parquet_writer
+        .lock()
+        .map_err(|_| anyhow!("parquet writer lock is poisoned"))?;
+    let write_result =
+        std::thread::scope(|scope| scope.spawn(|| write_parquet_atomic(path, rows)).join());
+    match write_result {
+        Ok(result) => result,
+        Err(_) => bail!("parquet writer thread panicked for {}", path.display()),
+    }
+}
+
+fn estimated_dense_rows(intervals: &[Interval], quotes: &[Quote], trades: &[Trade]) -> usize {
+    intervals
+        .iter()
+        .map(|interval| {
+            let Some(first_quote) = quotes
+                .iter()
+                .filter(|quote| quote.sec >= interval.start && quote.sec < interval.end)
+                .map(|quote| quote.sec)
+                .min()
+            else {
+                return 0;
+            };
+            let dense = (interval.end - first_quote - 1).max(0) as usize;
+            let closing = usize::from(
+                trades
+                    .iter()
+                    .any(|trade| trade.event_ns.div_euclid(1_000_000_000) == interval.end),
+            );
+            dense + closing
+        })
+        .sum()
 }
 
 #[derive(Clone)]
 struct Job {
-    path: PathBuf,
-    product: String,
-    trading_day: NaiveDate,
+    spec: ProductSpec,
+    day: NaiveDate,
 }
 
-#[derive(Default)]
-struct Stats {
-    files: u64,
-    sparse_rows: u64,
-    dense_rows: u64,
-}
-
-fn rewrite_day(path: &Path, intervals: &[(i64, i64)]) -> Result<(u64, u64)> {
-    let sparse = read_rows(path)?;
-    let sparse_rows = sparse.values().map(Vec::len).sum::<usize>() as u64;
-    if sparse.values().all(|rows| already_dense(rows, intervals)) {
-        return Ok((sparse_rows, sparse_rows));
+fn run_job(
+    db: &DB,
+    calendar: &SessionCalendar,
+    args: &Args,
+    overrides: &SessionOverrideFile,
+    parquet_writer: &Mutex<()>,
+    job: &Job,
+    period_year: i32,
+) -> Result<(usize, bool)> {
+    let output_path = args
+        .out_root
+        .join(job.spec.exchange)
+        .join(job.spec.product)
+        .join(format!("{}.parquet", job.day.format("%Y%m%d")));
+    let publish_parquet = !args.audit_only && (args.overwrite || !output_path.exists());
+    let intervals = calendar.intervals_for(job.spec.schedule_group, job.day)?;
+    let known_outages = calendar.known_outages_for(job.spec.schedule_group, job.day)?;
+    let (window_start, window_end) = chicago_window(job.day)?;
+    let cf_name = format!("p:{period_year}:{}", job.spec.product);
+    let cf = db
+        .cf_handle(&cf_name)
+        .ok_or_else(|| anyhow!("missing column family {cf_name}"))?;
+    let mut all_rows = Vec::new();
+    let mut estimated_rows = 0usize;
+    let mut excluded_crossed_rics = Vec::new();
+    let mut total = RicEvents::default();
+    for contract in candidate_contracts(job.spec, period_year)? {
+        let mut events = RicEvents::default();
+        scan_quote(
+            db,
+            cf,
+            &contract.ric,
+            window_start,
+            window_end,
+            job.day,
+            &intervals,
+            &known_outages,
+            &mut events,
+        )?;
+        scan_trades(
+            db,
+            cf,
+            &contract.ric,
+            window_start,
+            window_end,
+            job.day,
+            job.spec.product,
+            &intervals,
+            &known_outages,
+            overrides,
+            &mut events,
+        )?;
+        scan_specials(
+            db,
+            cf,
+            &contract.ric,
+            window_start,
+            window_end,
+            job.day,
+            job.spec.product,
+            &intervals,
+            &known_outages,
+            overrides,
+            &mut events,
+        )?;
+        if events.quote_crossed_after_overlay > 0 {
+            excluded_crossed_rics.push(contract.ric.clone());
+        }
+        for interval in &intervals {
+            if events.quote_crossed_after_overlay > 0 {
+                continue;
+            } else if !publish_parquet {
+                estimated_rows += estimated_dense_rows(
+                    std::slice::from_ref(interval),
+                    &events.quotes,
+                    &events.trades,
+                );
+            } else {
+                all_rows.extend(densify_interval(
+                    &contract.contract_id,
+                    &contract.ric,
+                    *interval,
+                    &events.quotes,
+                    &events.trades,
+                )?);
+            }
+        }
+        total.quote_rows += events.quote_rows;
+        total.quote_kept += events.quote_kept;
+        total.quote_fallback += events.quote_fallback;
+        total.quote_source_two_sided += events.quote_source_two_sided;
+        total.quote_source_one_sided += events.quote_source_one_sided;
+        total.quote_crossed_after_overlay += events.quote_crossed_after_overlay;
+        total.trade_rows += events.trade_rows;
+        total.trade_kept += events.trade_kept;
+        total.trade_fallback += events.trade_fallback;
+        total.special_rows += events.special_rows;
+        total.special_kept += events.special_kept;
+        total.special_fallback += events.special_fallback;
+        total.off_session_quotes += events.off_session_quotes;
+        total.off_session_trades += events.off_session_trades;
+        total.off_session_specials += events.off_session_specials;
+        total.reviewed_off_session_trades += events.reviewed_off_session_trades;
+        total.reviewed_off_session_specials += events.reviewed_off_session_specials;
+        total.invalid_trade_prices += events.invalid_trade_prices;
+        for (key, count) in events.conflict_counts {
+            *total.conflict_counts.entry(key).or_insert(0) += count;
+        }
+        for sample in events.samples {
+            if total.samples.len() < 20 {
+                total.samples.push(sample);
+            }
+        }
+        total
+            .off_session_trade_samples
+            .extend(events.off_session_trade_samples);
+        total
+            .off_session_special_samples
+            .extend(events.off_session_special_samples);
+        total
+            .invalid_trade_price_samples
+            .extend(events.invalid_trade_price_samples);
+        for sample in events.crossed_samples {
+            if total.crossed_samples.len() < 10 {
+                total.crossed_samples.push(sample);
+            }
+        }
     }
-    let identities = sparse.keys().cloned().collect::<Vec<_>>();
-    let mut dense = Vec::new();
-    for (identity, (_key, rows)) in sparse.into_iter().enumerate() {
-        dense.extend(densify_ric(rows, identity, intervals)?);
-    }
-    dense.sort_by(|left, right| {
+    all_rows.sort_by(|left, right| {
         left.ts
             .cmp(&right.ts)
-            .then(left.identity.cmp(&right.identity))
+            .then(left.contract_id.cmp(&right.contract_id))
     });
-    let mut df = rows_to_dataframe(&dense, &identities)?;
-    let tmp = path.with_extension("parquet.tmp");
-    let file = File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-    ParquetWriter::new(file)
-        .finish(&mut df)
-        .with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))?;
-    Ok((sparse_rows, dense.len() as u64))
-}
-
-fn list_jobs(root: &Path, products: &[String]) -> Result<Vec<Job>> {
-    let mut jobs = Vec::new();
-    for exchange in fs::read_dir(root).with_context(|| format!("read {}", root.display()))? {
-        let exchange = exchange?;
-        if !exchange.file_type()?.is_dir() {
-            continue;
-        }
-        for product in fs::read_dir(exchange.path())? {
-            let product = product?;
-            if !product.file_type()?.is_dir() {
-                continue;
-            }
-            let product_name = product.file_name().to_string_lossy().to_string();
-            if !products.is_empty() && !products.iter().any(|item| item == &product_name) {
-                continue;
-            }
-            for file in fs::read_dir(product.path())? {
-                let file = file?;
-                if !file.file_type()?.is_file()
-                    || file.path().extension().is_none_or(|ext| ext != "parquet")
-                {
-                    continue;
-                }
-                let path = file.path();
-                let stem = path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .ok_or_else(|| anyhow!("invalid parquet filename {}", path.display()))?;
-                let trading_day = NaiveDate::parse_from_str(stem, "%Y%m%d")
-                    .with_context(|| format!("parse trading day in {}", path.display()))?;
-                jobs.push(Job {
-                    path,
-                    product: product_name.clone(),
-                    trading_day,
-                });
-            }
+    for pair in all_rows.windows(2) {
+        if pair[0].contract_id == pair[1].contract_id && pair[0].ts == pair[1].ts {
+            bail!(
+                "duplicate output key {} {} on {}",
+                pair[0].contract_id,
+                pair[0].ts,
+                job.day
+            );
         }
     }
-    jobs.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(jobs)
-}
 
-fn run(args: Args) -> Result<()> {
-    if args.workers == 0 {
-        bail!("workers must be >= 1");
-    }
-    let products = args
-        .products
-        .split(',')
-        .filter_map(|item| {
-            let item = item.trim();
-            (!item.is_empty()).then_some(item.to_string())
-        })
-        .collect::<Vec<_>>();
-    let calendar = Arc::new(SessionCalendar::load(&args.session_csv)?);
-    let jobs = list_jobs(&args.root, &products)?;
-    if jobs.is_empty() {
-        bail!("no parquet files under {}", args.root.display());
-    }
-    let workers = args.workers.min(jobs.len()).max(1);
-    info!(
-        "cme_tas_export_backtest_1s root={} files={} workers={} products={}",
-        args.root.display(),
-        jobs.len(),
-        workers,
-        if products.is_empty() {
-            "all"
+    let audit = DayAudit {
+        product: job.spec.product.to_string(),
+        trad_day: job.day.to_string(),
+        intervals: intervals
+            .iter()
+            .map(|interval| [interval.start, interval.end])
+            .collect(),
+        known_outages: known_outages
+            .iter()
+            .map(|interval| [interval.start, interval.end])
+            .collect(),
+        quote_rows: total.quote_rows,
+        quote_kept: total.quote_kept,
+        quote_time_fallback: total.quote_fallback,
+        quote_source_two_sided: total.quote_source_two_sided,
+        quote_source_one_sided: total.quote_source_one_sided,
+        quote_crossed_after_overlay: total.quote_crossed_after_overlay,
+        trade_rows: total.trade_rows,
+        trade_kept: total.trade_kept,
+        trade_time_fallback: total.trade_fallback,
+        special_rows: total.special_rows,
+        special_kept: total.special_kept,
+        special_time_fallback: total.special_fallback,
+        off_session_quotes: total.off_session_quotes,
+        off_session_trades: total.off_session_trades,
+        off_session_specials: total.off_session_specials,
+        reviewed_off_session_trades: total.reviewed_off_session_trades,
+        reviewed_off_session_specials: total.reviewed_off_session_specials,
+        invalid_trade_prices: total.invalid_trade_prices,
+        output_rows: if !publish_parquet {
+            estimated_rows
         } else {
-            "selected"
+            all_rows.len()
+        },
+        excluded_crossed_rics,
+        conflict_counts: total.conflict_counts,
+        conflicts: total.samples,
+        off_session_trade_samples: total.off_session_trade_samples,
+        off_session_special_samples: total.off_session_special_samples,
+        invalid_trade_price_samples: total.invalid_trade_price_samples,
+        crossed_book_samples: total.crossed_samples,
+    };
+    let audit_path = args
+        .out_root
+        .join("_audit/session_conformance")
+        .join(job.spec.product)
+        .join(format!("{}.json", job.day.format("%Y%m%d")));
+    write_json_atomic(&audit_path, &audit)?;
+
+    let conflict = total.off_session_quotes > 0
+        || total.off_session_trades > 0
+        || total.off_session_specials > 0
+        || total.invalid_trade_prices > 0;
+    if !args.audit_only {
+        if total.off_session_trades > total.reviewed_off_session_trades {
+            bail!(
+                "{} {} has {} unreviewed off-session printable trades; see {}",
+                job.spec.product,
+                job.day,
+                total.off_session_trades - total.reviewed_off_session_trades,
+                audit_path.display()
+            );
         }
-    );
-    let (tx, rx) = unbounded::<Job>();
-    for job in jobs {
-        tx.send(job).context("enqueue backtest parquet job")?;
+        if total.off_session_specials > total.reviewed_off_session_specials {
+            bail!(
+                "{} {} has {} unreviewed off-session Special events; see {}",
+                job.spec.product,
+                job.day,
+                total.off_session_specials - total.reviewed_off_session_specials,
+                audit_path.display()
+            );
+        }
+        if total.off_session_quotes > 0 && !args.allow_off_session_quotes {
+            bail!(
+                "{} {} has {} off-session quotes; review {} before --allow-off-session-quotes",
+                job.spec.product,
+                job.day,
+                total.off_session_quotes,
+                audit_path.display()
+            );
+        }
+        if publish_parquet && !all_rows.is_empty() {
+            write_parquet_serialized(parquet_writer, &output_path, &all_rows)?;
+        }
     }
-    drop(tx);
-    let completed = Arc::new(AtomicU64::new(0));
-    let mut joins = Vec::with_capacity(workers);
-    for worker_id in 0..workers {
-        let rx = rx.clone();
-        let calendar = Arc::clone(&calendar);
-        let completed = Arc::clone(&completed);
-        joins.push(
-            thread::Builder::new()
-                .name(format!("cme-tas-backtest-export-{worker_id}"))
-                .spawn(move || -> Result<Stats> {
-                    let mut stats = Stats::default();
-                    while let Ok(job) = rx.recv() {
-                        let intervals = calendar.intervals_for(&job.product, job.trading_day)?;
-                        let (sparse_rows, dense_rows) = rewrite_day(&job.path, &intervals)?;
-                        stats.files += 1;
-                        stats.sparse_rows += sparse_rows;
-                        stats.dense_rows += dense_rows;
-                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if done % 100 == 0 {
-                            info!(
-                                "backtest parquet files_done={} sparse_rows={} dense_rows={}",
-                                done, stats.sparse_rows, stats.dense_rows
-                            );
-                        }
-                    }
-                    Ok(stats)
-                })
-                .context("spawn backtest parquet worker")?,
+    Ok((
+        if !publish_parquet {
+            estimated_rows
+        } else {
+            all_rows.len()
+        },
+        conflict,
+    ))
+}
+
+fn selected_products(text: &str) -> Result<Vec<ProductSpec>> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for name in text
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let spec = product_spec(name)?;
+        if seen.insert(spec.product) {
+            out.push(spec);
+        }
+    }
+    if out.is_empty() {
+        bail!("at least one product is required");
+    }
+    Ok(out)
+}
+
+fn run(args: &Args) -> Result<()> {
+    if args.start > args.end {
+        bail!("start {} is after end {}", args.start, args.end);
+    }
+    if args.start.year() != args.end.year() {
+        bail!("one export invocation must stay inside one TAS period year");
+    }
+    if args.workers == 0 {
+        bail!("workers must be positive");
+    }
+    let period_year = args.start.year();
+    let products = selected_products(&args.products)?;
+    let calendar = Arc::new(load_calendar(&args.psql, args.start, args.end)?);
+    let overrides = Arc::new(SessionOverrideFile::load(&args.session_overrides)?);
+    let db = Arc::new(open_input_db(args, &products, period_year)?);
+    let source_period = require_completed_source_period(&db, period_year)?;
+    let mut jobs = Vec::new();
+    let mut day = args.start;
+    while day <= args.end {
+        for &spec in &products {
+            jobs.push(Job { spec, day });
+        }
+        day = day.succ_opt().context("date overflow")?;
+    }
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(args.workers.min(jobs.len()).max(1))
+        .thread_name(|id| format!("cme-backtest-1s-{id}"))
+        .build()?;
+    let completed = AtomicUsize::new(0);
+    // Polars parquet construction is serialized; RocksDB scans and dense-row construction are not.
+    let parquet_writer = Mutex::new(());
+    let started = Instant::now();
+    let results = pool.install(|| {
+        jobs.par_iter()
+            .map(|job| {
+                let result = run_job(
+                    &db,
+                    &calendar,
+                    args,
+                    &overrides,
+                    &parquet_writer,
+                    job,
+                    period_year,
+                );
+                if let Err(error) = &result {
+                    eprintln!(
+                        "cme_tas_export_backtest_1s job_failed product={} day={} error={error:#}",
+                        job.spec.product, job.day
+                    );
+                }
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if done % 25 == 0 || done == jobs.len() {
+                    eprintln!(
+                        "cme_tas_export_backtest_1s progress={done}/{} elapsed_s={:.1}",
+                        jobs.len(),
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+                result
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut rows = 0usize;
+    let mut conflict_days = 0usize;
+    let mut failures = Vec::new();
+    for result in results {
+        match result {
+            Ok((job_rows, conflict)) => {
+                rows += job_rows;
+                conflict_days += usize::from(conflict);
+            }
+            Err(error) => failures.push(format!("{error:#}")),
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{} backtest jobs failed; first errors: {}",
+            failures.len(),
+            failures.into_iter().take(5).collect::<Vec<_>>().join(" | ")
         );
     }
-    let mut total = Stats::default();
-    for join in joins {
-        let stats = join
-            .join()
-            .map_err(|_| anyhow!("backtest parquet worker panicked"))??;
-        total.files += stats.files;
-        total.sparse_rows += stats.sparse_rows;
-        total.dense_rows += stats.dense_rows;
-    }
-    info!(
-        "cme_tas_export_backtest_1s complete files={} sparse_rows={} dense_rows={}",
-        total.files, total.sparse_rows, total.dense_rows
+    println!(
+        "cme_tas_export_backtest_1s source_period={} products={} days={} rows={} conflict_days={} audit_only={}",
+        source_period,
+        products.len(),
+        jobs.len(),
+        rows,
+        conflict_days,
+        args.audit_only
     );
     Ok(())
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_secs()
-        .init();
-    if let Err(err) = run(Args::parse()) {
-        eprintln!("{err:#}");
+    if let Err(error) = run(&Args::parse()) {
+        eprintln!("cme_tas_export_backtest_1s failed: {error:#}");
         std::process::exit(1);
     }
 }
@@ -651,74 +1490,62 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn row(ts: i64, bid: Option<f64>, ask: Option<f64>, event: Option<f64>) -> SparseRow {
-        SparseRow {
-            ts,
-            bid0p: bid,
-            bid0v: bid.map(|_| 10.0),
-            ask0p: ask,
-            ask0v: ask.map(|_| 9.0),
-            buy_high: event,
+    #[test]
+    fn only_matching_sourced_outage_boundaries_create_a_reviewed_gap() {
+        let mut rows = vec![
+            SourcedInterval {
+                interval: RawInterval { start: 10, end: 20 },
+                exception_name: "known_outage:cooling".to_string(),
+            },
+            SourcedInterval {
+                interval: RawInterval { start: 30, end: 40 },
+                exception_name: "known_outage:cooling".to_string(),
+            },
+            SourcedInterval {
+                interval: RawInterval { start: 50, end: 60 },
+                exception_name: "holiday:early_close".to_string(),
+            },
+        ];
+        let gaps = infer_known_outage_gaps(&mut rows);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!((gaps[0].start, gaps[0].end), (20, 30));
+    }
+
+    #[test]
+    fn parquet_writes_complete_from_inside_a_rayon_pool() -> Result<()> {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "cme-tas-backtest-parquet-{}-{suffix}",
+            std::process::id()
+        ));
+        let paths = [root.join("first.parquet"), root.join("second.parquet")];
+        let rows = vec![BacktestRow {
+            contract_id: "CME:ES:2024-03".to_string(),
+            ric: "ESH24".to_string(),
+            ts: 1_704_200_000,
+            bid0p: 4_800.0,
+            bid0v: 10.0,
+            ask0p: 4_800.25,
+            ask0v: 12.0,
+            buy_high: None,
             sell_low: None,
-            close: Some(100.0),
-            midp: Some(100.5),
+            close: 4_800.125,
+            midp: 4_800.125,
+        }];
+        let writer = Mutex::new(());
+        let pool = ThreadPoolBuilder::new().num_threads(2).build()?;
+        pool.install(|| {
+            paths
+                .par_iter()
+                .map(|path| write_parquet_serialized(&writer, path, &rows))
+                .collect::<Result<Vec<_>>>()
+        })?;
+        for path in &paths {
+            assert!(fs::metadata(path)?.len() > 0);
         }
-    }
-
-    #[test]
-    fn starts_at_valid_book_and_runs_to_session_close() {
-        let output = densify_ric(
-            vec![
-                row(100, None, None, Some(99.0)),
-                row(102, Some(100.0), Some(101.0), None),
-            ],
-            0,
-            &[(100, 105)],
-        )
-        .unwrap();
-        assert_eq!(
-            output.iter().map(|row| row.ts).collect::<Vec<_>>(),
-            vec![102, 103, 104]
-        );
-        assert!(output.iter().all(|row| row.bid0p == Some(100.0)));
-        assert!(output.iter().skip(1).all(|row| row.buy_high.is_none()));
-    }
-
-    #[test]
-    fn retains_real_event_exactly_at_session_close() {
-        let output = densify_ric(
-            vec![
-                row(100, Some(100.0), Some(101.0), None),
-                row(105, Some(101.0), Some(102.0), Some(102.0)),
-            ],
-            0,
-            &[(100, 105)],
-        )
-        .unwrap();
-        assert_eq!(
-            output.iter().map(|row| row.ts).collect::<Vec<_>>(),
-            vec![100, 101, 102, 103, 104, 105]
-        );
-        assert_eq!(output.last().and_then(|row| row.buy_high), Some(102.0));
-    }
-
-    #[test]
-    fn complete_grid_is_skipped_but_a_missing_second_is_not() {
-        let complete = vec![
-            row(100, Some(100.0), Some(101.0), None),
-            row(101, Some(100.0), Some(101.0), None),
-            row(102, Some(100.0), Some(101.0), None),
-        ];
-        assert!(already_dense(&complete, &[(100, 103)]));
-        let incomplete = vec![complete[0].clone(), complete[2].clone()];
-        assert!(!already_dense(&incomplete, &[(100, 103)]));
-        let duplicate = vec![
-            complete[0].clone(),
-            complete[1].clone(),
-            complete[1].clone(),
-            complete[2].clone(),
-        ];
-        assert!(!already_dense(&duplicate, &[(100, 103)]));
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 }

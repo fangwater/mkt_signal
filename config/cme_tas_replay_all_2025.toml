@@ -1,0 +1,19 @@
+# All-product 2025 TAS replay. Appends after completed 2010/2011/2024 periods.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+shard_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_zstd_shards"
+period = "2025-01-01_2026-01-01"
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb_all_products"
+
+rics = []
+workers = 96
+parse_workers = 80
+parse_chunk_rows = 32768
+
+column_rules = "../preprocess/lseg/tas_column_rules.json"
+max_tradedays = 0
+progress_every = 1000000
+
+log_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all.log"
+unparsed_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_unparsed.log"
+unmatched_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_unmatched.log"
+quote_fallback_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_quote_exch_fallback.log"

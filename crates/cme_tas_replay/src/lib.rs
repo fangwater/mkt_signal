@@ -1,10 +1,11 @@
 //! Slim CME TAS codec: classify a source row and pack printable trades.
 
-pub mod drop_special_1min;
-pub mod hourly_kll;
+pub mod backtest_1s;
 pub mod ll2_1min;
-pub mod sparse_1s;
-pub mod ylabel_1m;
+pub mod ll2_shard;
+pub mod ll2_source;
+pub mod product;
+pub mod shard;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Datelike, NaiveTime, Timelike};
@@ -20,6 +21,21 @@ pub const CME_QUOTE_LEN: usize = 64;
 pub const SYMBOLOGY_CHANGE_LEN: usize = 64;
 pub const CME_PRICE_LIMIT_LEN: usize = 48;
 pub const CME_SETTLEMENT_LEN: usize = 40;
+pub const CME_IMPLIED_VOL_LEN: usize = 64;
+pub const CME_TOT_VOLUME_LEN: usize = 48;
+pub const CME_PRICE_PRINT_LEN: usize = 48;
+pub const CME_IMBALANCE_LEN: usize = 48;
+pub const CME_AUCTION_LEN: usize = 48;
+pub const CME_CORRECTION_LEN: usize = 224;
+/// Current v1 status values use 184 bytes for Qualifiers. Existing v1 values
+/// remain 192 bytes long and are decoded through their value length.
+pub const CME_STATUS_LEN: usize = 224;
+pub const CME_STATUS_LEGACY_LEN: usize = 192;
+pub const REFERENCE_CHANGE_LEN: usize = 96;
+pub const CORRECTION_QUALIFIER_LEN: usize = 152;
+pub const STATUS_QUALIFIER_LEN: usize = 184;
+pub const STATUS_QUALIFIER_LEGACY_LEN: usize = 152;
+pub const REFERENCE_VALUE_LEN: usize = 32;
 pub const RIC_LEN: usize = 16;
 pub const KEY_TS_LEN: usize = 8;
 pub const KEY_PART_LEN: usize = 2;
@@ -33,7 +49,33 @@ pub const KIND_CME_QUOTE: u8 = 3;
 pub const KIND_SYMBOLOGY_CHANGE: u8 = 4;
 pub const KIND_CME_PRICE_LIMIT: u8 = 5;
 pub const KIND_CME_SETTLEMENT: u8 = 6;
+pub const KIND_CME_IMPLIED_VOL: u8 = 7;
+pub const KIND_CME_TOT_VOLUME: u8 = 8;
+pub const KIND_CME_PRICE_PRINT: u8 = 9;
+pub const KIND_CME_IMBALANCE: u8 = 10;
+pub const KIND_CME_AUCTION: u8 = 11;
+pub const KIND_CME_CORRECTION: u8 = 12;
+pub const KIND_CME_STATUS: u8 = 13;
+pub const KIND_REFERENCE_CHANGE: u8 = 14;
+pub const IV_SOURCE_LAST: u8 = 1;
+pub const IV_SOURCE_QUOTE: u8 = 2;
+pub const IV_SOURCE_SETTLE: u8 = 3;
 pub const CHANGE_TYPE_RIC: u8 = 1;
+pub const CHANGE_TYPE_DESCRIPTION: u8 = 2;
+pub const CHANGE_TYPE_EXPIRY_DATE: u8 = 3;
+pub const CHANGE_TYPE_CURRENCY: u8 = 4;
+pub const CHANGE_TYPE_PERMISSION_CODE: u8 = 5;
+pub const CHANGE_TYPE_OPTION_TYPE: u8 = 6;
+pub const CHANGE_TYPE_TEMPLATE: u8 = 7;
+pub const CHANGE_TYPE_EXCHANGE: u8 = 8;
+pub const CHANGE_TYPE_BOND_TYPE: u8 = 9;
+pub const CHANGE_TYPE_RECORD_TYPE: u8 = 10;
+pub const CHANGE_TYPE_RATING: u8 = 11;
+pub const CHANGE_TYPE_RATING_ID: u8 = 12;
+/// `cme_correction` v2 assigns its former four-byte pad to `Acc. Volume`.
+/// Other record kinds still use the common v1 layout.
+pub const CME_CORRECTION_VERSION: u8 = 2;
+pub const MISSING_SEQ: u64 = u64::MAX;
 pub const EXPECTED_COLUMN_COUNT: usize = 294;
 pub const PRICE_SCALE: i128 = 1_000_000_000;
 pub const MISSING_EXCH_HMS_NS: u64 = u64::MAX;
@@ -54,7 +96,16 @@ pub const PERIOD_STATUS_WRITING: &str = "writing";
 pub const PERIOD_STATUS_DONE: &str = "done";
 pub const PRICE_LIMIT_COLUMNS: &[&str] = &["UpLim Price", "LoLim Price"];
 pub const SETTLE_IV_COLUMNS: &[&str] = &["Imp. Vol."];
+pub const IMPLIED_VOL_COLUMNS: &[&str] = &["Imp. Vol.", "Bid Imp. Vol", "Ask Imp. Vol"];
+pub const TOT_VOLUME_COLUMNS: &[&str] = &["Total Volume"];
 pub const IMPLIED_YIELD_COLUMNS: &[&str] = &["Implied Yield"];
+pub const IMBALANCE_COLUMNS: &[&str] = &["Imbalance Quantity", "Imbalance Side"];
+pub const IMBALANCE_SIDE_BID: u8 = 1;
+pub const IMBALANCE_SIDE_ASK: u8 = 2;
+pub const MISSING_VOLUME_U64: u64 = u64::MAX;
+pub const AGGRESSOR_IMPLIED: u8 = 0;
+pub const AGGRESSOR_BUY: u8 = 1;
+pub const AGGRESSOR_SELL: u8 = 2;
 
 /// Watermark for one TAS period directory inside the single live RocksDB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,113 +175,9 @@ pub const FORBIDDEN_FUTURES_GROUPS: &[&str] = &[
 /// CME Group month codes in `<root><month><1-or-2-digit-year>`.
 pub const MONTH_CODES: &[u8] = b"FGHJKMNQUVXZ";
 
-/// Research routing: 51 product roots on CBOT / CME / COMEX / NYMEX.
-/// Same set as the exchange pages and `ric_period_contract_map.csv`.
-/// Longer roots first so `SM` / `US` / `CD` win over `S` / `U` / `C`.
-pub const RESEARCH_PRODUCT_ROOTS: &[&str] = &[
-    "NOKA", "WTCL", "ALI", "BTC", "ETH", "HRC", "JKM", "KRW", "MEM", "PLZ", "RTY", "S1R", "SEK",
-    "SRA", "URO", "AD", "BO", "BP", "BR", "CD", "CL", "ES", "FC", "FF", "FV", "GC", "HG", "HO",
-    "JY", "KW", "LC", "LH", "MP", "NE", "NG", "NQ", "PA", "PL", "RB", "SF", "SI", "SM", "TN", "TU",
-    "TY", "US", "YM", "C", "S", "U", "W",
-];
-
 /// Live `#RIC` stem, dropping a Reuters historical suffix (`ADF26^2` → `ADF26`).
 pub fn ric_live_stem(ric: &str) -> &str {
     ric.split_once('^').map(|(stem, _)| stem).unwrap_or(ric)
-}
-
-fn matches_research_root(stem: &str, root: &str) -> bool {
-    let Some(rest) = stem.strip_prefix(root) else {
-        return false;
-    };
-    let bytes = rest.as_bytes();
-    if bytes.len() < 2 || bytes.len() > 3 {
-        return false;
-    }
-    if !MONTH_CODES.contains(&bytes[0]) {
-        return false;
-    }
-    rest[1..].bytes().all(|b| b.is_ascii_digit())
-}
-
-/// The unique research root for a fixed-expiry RIC, or `None` if unmapped.
-/// Two roots matching the same RIC is a panic: the 51-root set must stay unambiguous.
-pub fn research_root_of(ric: &str) -> Result<Option<&'static str>> {
-    let stem = ric_live_stem(ric);
-    if stem.is_empty() || !stem.is_ascii() {
-        return Ok(None);
-    }
-    let mut found: Option<&'static str> = None;
-    for root in RESEARCH_PRODUCT_ROOTS {
-        if matches_research_root(stem, root) {
-            if let Some(prev) = found {
-                bail!("RIC {ric} matches both research roots {prev} and {root}");
-            }
-            found = Some(*root);
-        }
-    }
-    Ok(found)
-}
-
-pub fn is_research_ric(ric: &str) -> Result<bool> {
-    Ok(research_root_of(ric)?.is_some())
-}
-
-pub fn research_root_exchange(root: &str) -> Option<&'static str> {
-    match root {
-        "C" | "W" | "KW" | "S" | "SM" | "BO" | "FF" | "TU" | "FV" | "TY" | "TN" | "US" | "U"
-        | "YM" => Some("CBOT"),
-        "AD" | "BP" | "BR" | "CD" | "JY" | "KRW" | "MP" | "NE" | "NOKA" | "PLZ" | "SEK" | "SF"
-        | "URO" | "ES" | "NQ" | "RTY" | "MEM" | "BTC" | "ETH" | "FC" | "LC" | "LH" | "S1R"
-        | "SRA" => Some("CME"),
-        "GC" | "SI" | "HG" | "ALI" => Some("COMEX"),
-        "CL" | "WTCL" | "HO" | "RB" | "NG" | "JKM" | "HRC" | "PL" | "PA" => Some("NYMEX"),
-        _ => None,
-    }
-}
-
-/// `(exchange, product_root, contract_id)` for a fixed-expiry research RIC.
-pub fn parse_contract_id(ric: &str, decade_base: i32) -> Result<Option<(String, String, String)>> {
-    let Some(root) = research_root_of(ric)? else {
-        return Ok(None);
-    };
-    let stem = ric_live_stem(ric);
-    let rest = &stem[root.len()..];
-    let month = MONTH_CODES
-        .iter()
-        .position(|&code| rest.as_bytes().first() == Some(&code))
-        .map(|index| (index as u32) + 1)
-        .ok_or_else(|| anyhow!("RIC {ric} missing month code"))?;
-    let year_digits = &rest[1..];
-    let year = if year_digits.len() == 2 {
-        2000 + year_digits
-            .parse::<i32>()
-            .map_err(|_| anyhow!("RIC {ric} year is not digits"))?
-    } else {
-        let mut year = decade_base
-            + year_digits
-                .parse::<i32>()
-                .map_err(|_| anyhow!("RIC {ric} year is not digits"))?;
-        if year < decade_base + 4 {
-            year += 10;
-        }
-        year
-    };
-    let exchange = research_root_exchange(root)
-        .ok_or_else(|| anyhow!("research root {root} has no exchange"))?;
-    Ok(Some((
-        exchange.to_string(),
-        root.to_string(),
-        format!("{exchange}:{root}:{year:04}-{month:02}"),
-    )))
-}
-
-pub fn decade_base_from_utc_ns(ts_utc_ns: u64) -> Result<i32> {
-    let secs = i64::try_from(ts_utc_ns / 1_000_000_000)
-        .map_err(|_| anyhow!("Date-Time ns {ts_utc_ns} out of range"))?;
-    let utc = DateTime::from_timestamp(secs, 0)
-        .ok_or_else(|| anyhow!("Date-Time ns {ts_utc_ns} is not a UTC instant"))?;
-    Ok((utc.year() / 10) * 10)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,10 +193,13 @@ pub enum EventKind {
     SymbologyChange,
     IndexPrint,
     CmePriceLimit,
+    CmeTotVolume,
+    CmePricePrint,
+    CmeImbalance,
     DropEmptyTrade,
     DropEmptyQuote,
     DropVolumeOnlyTrade,
-    DropSpecialNoVolume,
+    SpecialMissingVolume,
     DropSettleIv,
 }
 
@@ -267,10 +217,13 @@ impl EventKind {
             Self::SymbologyChange => "symbology_change",
             Self::CmePriceLimit => "cme_price_limit",
             Self::IndexPrint => "index_print",
+            Self::CmeTotVolume => "cme_tot_volume",
+            Self::CmePricePrint => "cme_price_print",
+            Self::CmeImbalance => "cme_imbalance",
             Self::DropEmptyTrade => "drop_empty_trade",
             Self::DropEmptyQuote => "drop_empty_quote",
             Self::DropVolumeOnlyTrade => "drop_volume_only_trade",
-            Self::DropSpecialNoVolume => "drop_special_no_volume",
+            Self::SpecialMissingVolume => "special_missing_volume",
             Self::DropSettleIv => "drop_settle_iv",
         }
     }
@@ -302,9 +255,18 @@ impl ColumnRules {
                 rules.required_identity
             );
         }
-        let known: BTreeSet<&str> = ["Trade", "Quote", "Mkt. Condition", "Correction"]
-            .into_iter()
-            .collect();
+        let known: BTreeSet<&str> = [
+            "Trade",
+            "Quote",
+            "Auction",
+            "Correction",
+            "Mkt. Condition",
+            "Settlement Price",
+            "Symbology Change",
+            "Reference Change",
+        ]
+        .into_iter()
+        .collect();
         let listed: BTreeSet<&str> = rules.types.iter().map(String::as_str).collect();
         if listed != known {
             bail!("TAS column rules types must be {known:?}, got {listed:?}");
@@ -330,8 +292,20 @@ impl ColumnRules {
         SETTLE_IV_COLUMNS.contains(&name)
     }
 
+    pub fn is_allowed_implied_vol_column(&self, name: &str) -> bool {
+        IMPLIED_VOL_COLUMNS.contains(&name)
+    }
+
+    pub fn is_allowed_tot_volume_column(&self, name: &str) -> bool {
+        TOT_VOLUME_COLUMNS.contains(&name)
+    }
+
     pub fn is_allowed_implied_yield_column(&self, name: &str) -> bool {
         IMPLIED_YIELD_COLUMNS.contains(&name)
+    }
+
+    pub fn is_allowed_imbalance_column(&self, name: &str) -> bool {
+        IMBALANCE_COLUMNS.contains(&name)
     }
 }
 
@@ -398,7 +372,99 @@ pub struct SlimSettlement {
     pub ts_utc_ns: u64,
     pub price: i64,
     /// Source `Date` as YYYYMMDD, or zero when the source cell is empty.
+    /// Price may be `MISSING_PRICE` when this date is present.
     pub source_date_yyyymmdd: u32,
+}
+
+/// Vendor implied volatility on a Trade or Quote. Not a trade, not BBO.
+///
+/// `source` is last (`Imp. Vol.`), quote (`Bid Imp. Vol` / `Ask Imp. Vol`),
+/// or settle (`Settle IV[USER]`). Missing sides use `MISSING_PRICE`.
+#[derive(Debug, Clone)]
+pub struct SlimImpliedVol {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub last_iv: i64,
+    pub bid_iv: i64,
+    pub ask_iv: i64,
+    pub source: u8,
+}
+
+/// Product-level cumulative volume on a TOT RIC (`LCOTOT`). Not a dated contract.
+#[derive(Debug, Clone)]
+pub struct SlimTotVolume {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub volume: u64,
+}
+
+/// Price indication / last print: `Type=Trade` with Price and no Volume.
+/// Not a zero-lot `cme_trade`.
+#[derive(Debug, Clone)]
+pub struct SlimPricePrint {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub price: i64,
+}
+
+/// Exchange-published indicative surplus. Not a BBO and not Type=Auction.
+/// Seen on ETH Quote rows with no bid/ask: `Imbalance Quantity` + `Imbalance Side`.
+#[derive(Debug, Clone)]
+pub struct SlimImbalance {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub quantity: u32,
+    pub side: u8,
+}
+
+/// Official `Type=Auction` message. A missing volume is an auction price
+/// indication, while a present volume is an auction match.
+#[derive(Debug, Clone)]
+pub struct SlimAuction {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub price: i64,
+    pub volume: u32,
+}
+
+/// Official `Type=Correction`. Cancel / correct of a prior print, not a new trade.
+#[derive(Debug, Clone)]
+pub struct SlimCorrection {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub price: i64,
+    pub volume: u32,
+    /// Source `Acc. Volume` for a Correction event, not a newly traded volume.
+    pub acc_volume: u32,
+    pub original_price: i64,
+    pub original_volume: u32,
+    pub original_seq: u64,
+    pub qualifiers: String,
+}
+
+/// Official `Type=Mkt. Condition`. Qualifiers carry the status FIDs.
+#[derive(Debug, Clone)]
+pub struct SlimStatus {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub exch_hms_ns: u64,
+    pub qualifiers: String,
+}
+
+/// Official `Type=Reference Change`. Contract description, not a RIC rename.
+#[derive(Debug, Clone)]
+pub struct SlimReferenceChange {
+    pub ric: String,
+    pub ts_utc_ns: u64,
+    pub change_type: u8,
+    pub old_value: String,
+    pub new_value: String,
 }
 
 pub fn encode_ric(ric: &str) -> Result<[u8; RIC_LEN]> {
@@ -526,6 +592,42 @@ pub fn parse_price_e9(raw: &str) -> Result<i64> {
     i64::try_from(scaled).map_err(|_| anyhow!("price {raw:?} overflowed i64 after * 10^9"))
 }
 
+/// `UpLim Price` / `LoLim Price` only.
+///
+/// Most cages are ordinary decimals (`7379.25`, `0.25`) and use [`parse_price_e9`].
+/// JY / MP sometimes emit a no-decimal integer that is already price × 10^6
+/// (`11317500000` = 11317.5). Multiplying that by 10^9 again overflows i64.
+/// Those cells are converted to the same e9 scale by multiplying the remaining 10^3.
+pub fn parse_limit_price_e9(raw: &str) -> Result<i64> {
+    match parse_price_e9(raw) {
+        Ok(value) => Ok(value),
+        Err(_) if is_pre_scaled_limit_integer(raw) => parse_pre_scaled_limit_e9(raw),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_pre_scaled_limit_integer(raw: &str) -> bool {
+    let digits = raw.strip_prefix('-').unwrap_or(raw);
+    digits.len() >= 10 && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+fn parse_pre_scaled_limit_e9(raw: &str) -> Result<i64> {
+    let (neg, digits) = match raw.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, raw),
+    };
+    let int_val: i128 = digits
+        .parse()
+        .map_err(|err| anyhow!("unhandled price {raw:?}: {err}"))?;
+    let mut scaled = int_val
+        .checked_mul(1_000)
+        .ok_or_else(|| anyhow!("price {raw:?} overflowed i64 after * 10^3"))?;
+    if neg {
+        scaled = -scaled;
+    }
+    i64::try_from(scaled).map_err(|_| anyhow!("price {raw:?} overflowed i64 after * 10^3"))
+}
+
 pub fn parse_volume(raw: &str) -> Result<u32> {
     if raw.is_empty() {
         return Ok(MISSING_VOLUME);
@@ -535,6 +637,26 @@ pub fn parse_volume(raw: &str) -> Result<u32> {
     }
     raw.parse::<u32>()
         .map_err(|err| anyhow!("unhandled volume {raw:?}: {err}"))
+}
+
+pub fn parse_volume_u64(raw: &str) -> Result<u64> {
+    if raw.is_empty() {
+        return Ok(MISSING_VOLUME_U64);
+    }
+    if !raw.chars().all(|c| c.is_ascii_digit()) {
+        bail!("unhandled volume {raw:?}");
+    }
+    raw.parse::<u64>()
+        .map_err(|err| anyhow!("unhandled volume {raw:?}: {err}"))
+}
+
+/// Product-level TOT RIC (`LCOTOT`), not a dated future.
+pub fn is_tot_ric(ric: &str) -> bool {
+    let stem = ric_live_stem(ric);
+    let Some(root) = stem.strip_suffix("TOT") else {
+        return false;
+    };
+    !root.is_empty() && root.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
 pub fn parse_aggressor(qualifiers: &str) -> Result<u8> {
@@ -564,9 +686,9 @@ pub fn parse_aggressor(qualifiers: &str) -> Result<u8> {
         }
     }
     match found.as_deref() {
-        None | Some("") => Ok(0),
-        Some("BID") => Ok(1),
-        Some("ASK") => Ok(2),
+        None | Some("") => Ok(AGGRESSOR_IMPLIED),
+        Some("BID") => Ok(AGGRESSOR_BUY),
+        Some("ASK") => Ok(AGGRESSOR_SELL),
         Some(other) => bail!("unhandled AGGRS_SID1 {other:?}"),
     }
 }
@@ -591,7 +713,7 @@ pub fn classify(
             }
             if qualifiers == SPECIAL_TRADES_USER {
                 if volume.is_empty() {
-                    return Ok(EventKind::DropSpecialNoVolume);
+                    return Ok(EventKind::SpecialMissingVolume);
                 }
                 return Ok(EventKind::CmeSpecial);
             }
@@ -604,7 +726,7 @@ pub fn classify(
             match (!price.is_empty(), !volume.is_empty()) {
                 (true, true) => Ok(EventKind::CmeTrade),
                 (false, false) => Ok(EventKind::DropEmptyTrade),
-                (true, false) => bail!("unhandled trade_price_only for {ric}"),
+                (true, false) => Ok(EventKind::CmePricePrint),
                 (false, true) => Ok(EventKind::DropVolumeOnlyTrade),
             }
         }
@@ -629,8 +751,84 @@ pub fn overlay_price_limit(kind: EventKind, up: &str, lo: &str) -> Result<EventK
     Ok(EventKind::CmePriceLimit)
 }
 
+/// Promote a TOT RIC volume update (`LCOTOT`) off empty / volume-only Trade.
+/// TOT is product-level cumulative volume, not a dated contract and not a print.
+pub fn overlay_tot_volume(
+    kind: EventKind,
+    ric: &str,
+    volume: &str,
+    total_volume: &str,
+) -> Result<EventKind> {
+    if !is_tot_ric(ric) {
+        return Ok(kind);
+    }
+    if volume.is_empty() && total_volume.is_empty() {
+        return Ok(kind);
+    }
+    if kind == EventKind::CmeTrade || kind == EventKind::CmePricePrint {
+        bail!("TOT RIC {ric} unexpectedly has Price");
+    }
+    if kind == EventKind::DropEmptyTrade || kind == EventKind::DropVolumeOnlyTrade {
+        return Ok(EventKind::CmeTotVolume);
+    }
+    Ok(kind)
+}
+
+pub fn tot_volume_from_cells(volume: &str, total_volume: &str) -> Result<u64> {
+    let from_volume = parse_volume_u64(volume)?;
+    let from_total = parse_volume_u64(total_volume)?;
+    match (
+        from_volume != MISSING_VOLUME_U64,
+        from_total != MISSING_VOLUME_U64,
+    ) {
+        (true, false) => Ok(from_volume),
+        (false, true) => Ok(from_total),
+        (true, true) if from_volume == from_total => Ok(from_volume),
+        (true, true) => bail!("TOT Volume {volume:?} disagrees with Total Volume {total_volume:?}"),
+        (false, false) => bail!("TOT row missing Volume and Total Volume"),
+    }
+}
+
+/// Whether a Quote explicitly reports no auction imbalance.
+///
+/// `N` is not an ask-side code: the source pairs it with quantity zero and
+/// `"N "[IMB_SIDE]`. It is a valid no-op rather than a directional imbalance.
+pub fn is_no_imbalance(quantity: &str, side: &str) -> Result<bool> {
+    if side.trim() != "N" {
+        return Ok(false);
+    }
+    if parse_volume(quantity)? != 0 {
+        bail!("Imbalance Side N requires Imbalance Quantity=0, got {quantity:?}");
+    }
+    Ok(true)
+}
+
+/// Promote an empty Quote that carries a directional Imbalance Quantity/Side.
+/// Complete quotes keep their kind; the imbalance is a companion persist.
+pub fn overlay_imbalance(kind: EventKind, quantity: &str, side: &str) -> Result<EventKind> {
+    if quantity.is_empty() && side.is_empty() {
+        return Ok(kind);
+    }
+    if quantity.is_empty() || side.is_empty() {
+        bail!("imbalance missing Imbalance Quantity or Imbalance Side");
+    }
+    match kind {
+        EventKind::CmeQuote | EventKind::CmeImbalance => Ok(kind),
+        EventKind::DropEmptyQuote => Ok(EventKind::CmeImbalance),
+        other => bail!("imbalance unexpectedly on {}", other.as_str()),
+    }
+}
+
+pub fn parse_imbalance_side(raw: &str) -> Result<u8> {
+    match raw.trim() {
+        "B" | "BID" => Ok(IMBALANCE_SIDE_BID),
+        "A" | "ASK" | "S" | "SELL" => Ok(IMBALANCE_SIDE_ASK),
+        other => bail!("unhandled Imbalance Side {other:?}"),
+    }
+}
+
 fn encode_fixed(trade: &SlimTrade, kind: u8) -> Result<[u8; CME_TRADE_LEN]> {
-    if trade.aggressor > 2 {
+    if trade.aggressor > AGGRESSOR_SELL {
         bail!("aggressor {} is not 0/1/2", trade.aggressor);
     }
     let ric = encode_ric(&trade.ric)?;
@@ -668,7 +866,7 @@ pub fn encode_cme_special(trade: &SlimTrade) -> Result<[u8; CME_TRADE_LEN]> {
     if trade.price != MISSING_PRICE {
         bail!("special trade {} unexpectedly has Price", trade.ric);
     }
-    if trade.aggressor != 0 {
+    if trade.aggressor != AGGRESSOR_IMPLIED {
         bail!("special trade {} unexpectedly has aggressor", trade.ric);
     }
     encode_fixed(trade, KIND_CME_SPECIAL)
@@ -691,7 +889,7 @@ fn decode_fixed(buf: &[u8], expected_kind: u8, label: &str) -> Result<SlimTrade>
         bail!("{label} pad is not all zeros");
     }
     let aggressor = buf[72];
-    if aggressor > 2 {
+    if aggressor > AGGRESSOR_SELL {
         bail!("{label} aggressor {aggressor} is not 0/1/2");
     }
     Ok(SlimTrade {
@@ -716,23 +914,49 @@ pub fn decode_cme_special(buf: &[u8]) -> Result<SlimTrade> {
     decode_fixed(buf, KIND_CME_SPECIAL, "cme_special")
 }
 
-fn side_complete(price: i64, size: u32) -> Result<bool> {
-    match (price == MISSING_PRICE, size == MISSING_VOLUME) {
-        (false, false) => Ok(true),
-        (true, true) => Ok(false),
-        (false, true) => bail!("quote side has price but missing size"),
-        (true, false) => bail!("quote side has size but missing price"),
+fn side_complete(price: i64, size: u32) -> bool {
+    price != MISSING_PRICE && size != MISSING_VOLUME
+}
+
+/// Incomplete sides (price without size, or size without price) are missing,
+/// not a parse failure. They do not update that side of the standing BBO.
+pub fn sanitize_quote_sides(quote: &mut SlimQuote) {
+    if !side_complete(quote.bid, quote.bid_size) {
+        quote.bid = MISSING_PRICE;
+        quote.bid_size = MISSING_VOLUME;
+    }
+    if !side_complete(quote.ask, quote.ask_size) {
+        quote.ask = MISSING_PRICE;
+        quote.ask_size = MISSING_VOLUME;
     }
 }
 
-pub fn quote_has_complete_side(quote: &SlimQuote) -> Result<bool> {
-    let bid_ok = side_complete(quote.bid, quote.bid_size)?;
-    let ask_ok = side_complete(quote.ask, quote.ask_size)?;
-    Ok(bid_ok || ask_ok)
+pub fn quote_has_complete_side(quote: &SlimQuote) -> bool {
+    side_complete(quote.bid, quote.bid_size) || side_complete(quote.ask, quote.ask_size)
+}
+
+/// Apply `incoming` onto the standing book. Complete sides overwrite;
+/// incomplete / empty sides keep the standing quote.
+pub fn overlay_quote_bbo(standing: &SlimQuote, incoming: &SlimQuote) -> SlimQuote {
+    let mut out = standing.clone();
+    sanitize_quote_sides(&mut out);
+    out.ts_utc_ns = incoming.ts_utc_ns;
+    out.exch_hms_ns = incoming.exch_hms_ns;
+    if side_complete(incoming.bid, incoming.bid_size) {
+        out.bid = incoming.bid;
+        out.bid_size = incoming.bid_size;
+    }
+    if side_complete(incoming.ask, incoming.ask_size) {
+        out.ask = incoming.ask;
+        out.ask_size = incoming.ask_size;
+    }
+    out
 }
 
 pub fn encode_cme_quote(quote: &SlimQuote) -> Result<[u8; CME_QUOTE_LEN]> {
-    if !quote_has_complete_side(quote)? {
+    let mut quote = quote.clone();
+    sanitize_quote_sides(&mut quote);
+    if !quote_has_complete_side(&quote) {
         bail!("quote {} has neither bid nor ask", quote.ric);
     }
     let ric = encode_ric(&quote.ric)?;
@@ -766,7 +990,7 @@ pub fn decode_cme_quote(buf: &[u8]) -> Result<SlimQuote> {
     if buf[60..64].iter().any(|&b| b != 0) {
         bail!("cme_quote pad is not all zeros");
     }
-    let quote = SlimQuote {
+    let mut quote = SlimQuote {
         ric: decode_ric(&buf[4..20])?,
         ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
         exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
@@ -775,7 +999,8 @@ pub fn decode_cme_quote(buf: &[u8]) -> Result<SlimQuote> {
         ask: i64::from_le_bytes(buf[48..56].try_into().unwrap()),
         ask_size: u32::from_le_bytes(buf[56..60].try_into().unwrap()),
     };
-    if !quote_has_complete_side(&quote)? {
+    sanitize_quote_sides(&mut quote);
+    if !quote_has_complete_side(&quote) {
         bail!("decoded quote {} has neither bid nor ask", quote.ric);
     }
     Ok(quote)
@@ -787,6 +1012,78 @@ pub fn parse_change_type(raw: &str) -> Result<u8> {
         "" => bail!("unhandled empty Change Type"),
         other => bail!("unhandled Change Type {other:?}"),
     }
+}
+
+pub fn parse_reference_change_type(raw: &str) -> Result<u8> {
+    match raw {
+        "Description" => Ok(CHANGE_TYPE_DESCRIPTION),
+        "Expiry Date" => Ok(CHANGE_TYPE_EXPIRY_DATE),
+        "Currency" => Ok(CHANGE_TYPE_CURRENCY),
+        "Permission Code" => Ok(CHANGE_TYPE_PERMISSION_CODE),
+        "Option Type" => Ok(CHANGE_TYPE_OPTION_TYPE),
+        "Template" => Ok(CHANGE_TYPE_TEMPLATE),
+        "Exchange" => Ok(CHANGE_TYPE_EXCHANGE),
+        "Bond Type" => Ok(CHANGE_TYPE_BOND_TYPE),
+        "Record Type" => Ok(CHANGE_TYPE_RECORD_TYPE),
+        "Rating" => Ok(CHANGE_TYPE_RATING),
+        "Rating ID" => Ok(CHANGE_TYPE_RATING_ID),
+        "" => bail!("unhandled empty Change Type"),
+        other => bail!("unhandled Reference Change Type {other:?}"),
+    }
+}
+
+fn reference_change_type_ok(change_type: u8) -> bool {
+    matches!(
+        change_type,
+        CHANGE_TYPE_DESCRIPTION
+            | CHANGE_TYPE_EXPIRY_DATE
+            | CHANGE_TYPE_CURRENCY
+            | CHANGE_TYPE_PERMISSION_CODE
+            | CHANGE_TYPE_OPTION_TYPE
+            | CHANGE_TYPE_TEMPLATE
+            | CHANGE_TYPE_EXCHANGE
+            | CHANGE_TYPE_BOND_TYPE
+            | CHANGE_TYPE_RECORD_TYPE
+            | CHANGE_TYPE_RATING
+            | CHANGE_TYPE_RATING_ID
+    )
+}
+
+pub fn parse_seq_u64(raw: &str) -> Result<u64> {
+    if raw.is_empty() {
+        return Ok(MISSING_SEQ);
+    }
+    if !raw.chars().all(|c| c.is_ascii_digit()) {
+        bail!("unhandled sequence number {raw:?}");
+    }
+    raw.parse::<u64>()
+        .map_err(|err| anyhow!("unhandled sequence number {raw:?}: {err}"))
+}
+
+fn encode_ascii_slot<const N: usize>(raw: &str, label: &str) -> Result<[u8; N]> {
+    if !raw.is_ascii() {
+        bail!("{label} {raw:?} is not ASCII");
+    }
+    if raw.len() > N {
+        bail!("{label} {raw:?} longer than {N} bytes; refuse to truncate");
+    }
+    let mut out = [0u8; N];
+    out[..raw.len()].copy_from_slice(raw.as_bytes());
+    Ok(out)
+}
+
+fn decode_ascii_slot(bytes: &[u8], label: &str) -> Result<String> {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let raw = &bytes[..end];
+    if !raw.iter().all(|b| b.is_ascii() && *b != 0) {
+        bail!("{label} slot is not ASCII");
+    }
+    if bytes[end..].iter().any(|&b| b != 0) {
+        bail!("{label} slot has bytes after NUL");
+    }
+    Ok(std::str::from_utf8(raw)
+        .map_err(|_| anyhow!("{label} slot is not UTF-8"))?
+        .to_string())
 }
 
 pub fn encode_symbology_change(row: &SlimSymbologyChange) -> Result<[u8; SYMBOLOGY_CHANGE_LEN]> {
@@ -926,8 +1223,8 @@ pub fn decode_cme_price_limit(buf: &[u8]) -> Result<SlimPriceLimit> {
 }
 
 pub fn encode_cme_settlement(row: &SlimSettlement) -> Result<[u8; CME_SETTLEMENT_LEN]> {
-    if row.price == MISSING_PRICE {
-        bail!("settlement {} missing Price", row.ric);
+    if row.price == MISSING_PRICE && row.source_date_yyyymmdd == 0 {
+        bail!("settlement {} missing both Price and Date", row.ric);
     }
     let ric = encode_ric(&row.ric)?;
     let mut buf = [0u8; CME_SETTLEMENT_LEN];
@@ -966,10 +1263,528 @@ pub fn decode_cme_settlement(buf: &[u8]) -> Result<SlimSettlement> {
         price: i64::from_le_bytes(buf[28..36].try_into().unwrap()),
         source_date_yyyymmdd: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
     };
-    if row.price == MISSING_PRICE {
-        bail!("decoded settlement {} missing Price", row.ric);
+    if row.price == MISSING_PRICE && row.source_date_yyyymmdd == 0 {
+        bail!("decoded settlement {} missing both Price and Date", row.ric);
     }
     Ok(row)
+}
+
+fn iv_source_ok(source: u8) -> bool {
+    source == IV_SOURCE_LAST || source == IV_SOURCE_QUOTE || source == IV_SOURCE_SETTLE
+}
+
+pub fn implied_vol_source(last: &str, bid: &str, ask: &str, settle: bool) -> Result<u8> {
+    if settle {
+        if !bid.is_empty() || !ask.is_empty() {
+            bail!("settle IV unexpectedly has Bid Imp. Vol or Ask Imp. Vol");
+        }
+        if last.is_empty() {
+            bail!("settle IV missing Imp. Vol.");
+        }
+        return Ok(IV_SOURCE_SETTLE);
+    }
+    if !bid.is_empty() || !ask.is_empty() {
+        return Ok(IV_SOURCE_QUOTE);
+    }
+    if !last.is_empty() {
+        return Ok(IV_SOURCE_LAST);
+    }
+    bail!("implied vol row has no Imp. Vol. / Bid Imp. Vol / Ask Imp. Vol")
+}
+
+pub fn encode_cme_implied_vol(row: &SlimImpliedVol) -> Result<[u8; CME_IMPLIED_VOL_LEN]> {
+    if !iv_source_ok(row.source) {
+        bail!(
+            "implied vol {} has unhandled source {}",
+            row.ric,
+            row.source
+        );
+    }
+    if row.last_iv == MISSING_PRICE && row.bid_iv == MISSING_PRICE && row.ask_iv == MISSING_PRICE {
+        bail!("implied vol {} missing all IV sides", row.ric);
+    }
+    if row.source == IV_SOURCE_SETTLE && row.last_iv == MISSING_PRICE {
+        bail!("settle IV {} missing Imp. Vol.", row.ric);
+    }
+    if row.source == IV_SOURCE_LAST && row.last_iv == MISSING_PRICE {
+        bail!("last IV {} missing Imp. Vol.", row.ric);
+    }
+    if row.source == IV_SOURCE_QUOTE && row.bid_iv == MISSING_PRICE && row.ask_iv == MISSING_PRICE {
+        bail!("quote IV {} missing Bid Imp. Vol and Ask Imp. Vol", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let mut buf = [0u8; CME_IMPLIED_VOL_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_IMPLIED_VOL;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..44].copy_from_slice(&row.last_iv.to_le_bytes());
+    buf[44..52].copy_from_slice(&row.bid_iv.to_le_bytes());
+    buf[52..60].copy_from_slice(&row.ask_iv.to_le_bytes());
+    buf[60] = row.source;
+    Ok(buf)
+}
+
+pub fn decode_cme_implied_vol(buf: &[u8]) -> Result<SlimImpliedVol> {
+    if buf.len() != CME_IMPLIED_VOL_LEN {
+        bail!(
+            "cme_implied_vol must be {CME_IMPLIED_VOL_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_implied_vol magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_implied_vol version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_IMPLIED_VOL {
+        bail!(
+            "cme_implied_vol kind is {}, expected {KIND_CME_IMPLIED_VOL}",
+            buf[3]
+        );
+    }
+    if buf[61..64].iter().any(|&b| b != 0) {
+        bail!("cme_implied_vol pad is not all zeros");
+    }
+    let source = buf[60];
+    if !iv_source_ok(source) {
+        bail!("cme_implied_vol source {source} is not last/quote/settle");
+    }
+    let row = SlimImpliedVol {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        last_iv: i64::from_le_bytes(buf[36..44].try_into().unwrap()),
+        bid_iv: i64::from_le_bytes(buf[44..52].try_into().unwrap()),
+        ask_iv: i64::from_le_bytes(buf[52..60].try_into().unwrap()),
+        source,
+    };
+    if row.last_iv == MISSING_PRICE && row.bid_iv == MISSING_PRICE && row.ask_iv == MISSING_PRICE {
+        bail!("decoded implied vol {} missing all IV sides", row.ric);
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_tot_volume(row: &SlimTotVolume) -> Result<[u8; CME_TOT_VOLUME_LEN]> {
+    if row.volume == MISSING_VOLUME_U64 {
+        bail!("TOT volume {} missing Volume", row.ric);
+    }
+    if !is_tot_ric(&row.ric) {
+        bail!("TOT volume {} is not a TOT RIC", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let mut buf = [0u8; CME_TOT_VOLUME_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_TOT_VOLUME;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..44].copy_from_slice(&row.volume.to_le_bytes());
+    Ok(buf)
+}
+
+pub fn decode_cme_tot_volume(buf: &[u8]) -> Result<SlimTotVolume> {
+    if buf.len() != CME_TOT_VOLUME_LEN {
+        bail!(
+            "cme_tot_volume must be {CME_TOT_VOLUME_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_tot_volume magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_tot_volume version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_TOT_VOLUME {
+        bail!(
+            "cme_tot_volume kind is {}, expected {KIND_CME_TOT_VOLUME}",
+            buf[3]
+        );
+    }
+    if buf[44..48].iter().any(|&b| b != 0) {
+        bail!("cme_tot_volume pad is not all zeros");
+    }
+    let row = SlimTotVolume {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        volume: u64::from_le_bytes(buf[36..44].try_into().unwrap()),
+    };
+    if row.volume == MISSING_VOLUME_U64 {
+        bail!("decoded TOT volume {} missing Volume", row.ric);
+    }
+    if !is_tot_ric(&row.ric) {
+        bail!("decoded TOT volume {} is not a TOT RIC", row.ric);
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_price_print(row: &SlimPricePrint) -> Result<[u8; CME_PRICE_PRINT_LEN]> {
+    if row.price == MISSING_PRICE {
+        bail!("price print {} missing Price", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let mut buf = [0u8; CME_PRICE_PRINT_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_PRICE_PRINT;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..44].copy_from_slice(&row.price.to_le_bytes());
+    Ok(buf)
+}
+
+pub fn decode_cme_price_print(buf: &[u8]) -> Result<SlimPricePrint> {
+    if buf.len() != CME_PRICE_PRINT_LEN {
+        bail!(
+            "cme_price_print must be {CME_PRICE_PRINT_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_price_print magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_price_print version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_PRICE_PRINT {
+        bail!(
+            "cme_price_print kind is {}, expected {KIND_CME_PRICE_PRINT}",
+            buf[3]
+        );
+    }
+    if buf[44..48].iter().any(|&b| b != 0) {
+        bail!("cme_price_print pad is not all zeros");
+    }
+    let row = SlimPricePrint {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        price: i64::from_le_bytes(buf[36..44].try_into().unwrap()),
+    };
+    if row.price == MISSING_PRICE {
+        bail!("decoded price print {} missing Price", row.ric);
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_imbalance(row: &SlimImbalance) -> Result<[u8; CME_IMBALANCE_LEN]> {
+    if row.quantity == MISSING_VOLUME {
+        bail!("imbalance {} missing Imbalance Quantity", row.ric);
+    }
+    if row.side != IMBALANCE_SIDE_BID && row.side != IMBALANCE_SIDE_ASK {
+        bail!("imbalance {} has unhandled side {}", row.ric, row.side);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let mut buf = [0u8; CME_IMBALANCE_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_IMBALANCE;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..40].copy_from_slice(&row.quantity.to_le_bytes());
+    buf[40] = row.side;
+    Ok(buf)
+}
+
+pub fn decode_cme_imbalance(buf: &[u8]) -> Result<SlimImbalance> {
+    if buf.len() != CME_IMBALANCE_LEN {
+        bail!(
+            "cme_imbalance must be {CME_IMBALANCE_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_imbalance magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_imbalance version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_IMBALANCE {
+        bail!(
+            "cme_imbalance kind is {}, expected {KIND_CME_IMBALANCE}",
+            buf[3]
+        );
+    }
+    if buf[41..48].iter().any(|&b| b != 0) {
+        bail!("cme_imbalance pad is not all zeros");
+    }
+    let side = buf[40];
+    if side != IMBALANCE_SIDE_BID && side != IMBALANCE_SIDE_ASK {
+        bail!("cme_imbalance side {side} is not bid/ask");
+    }
+    let row = SlimImbalance {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        quantity: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
+        side,
+    };
+    if row.quantity == MISSING_VOLUME {
+        bail!("decoded imbalance {} missing Imbalance Quantity", row.ric);
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_auction(row: &SlimAuction) -> Result<[u8; CME_AUCTION_LEN]> {
+    if row.price == MISSING_PRICE {
+        bail!("auction {} missing Price", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let mut buf = [0u8; CME_AUCTION_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_AUCTION;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..44].copy_from_slice(&row.price.to_le_bytes());
+    buf[44..48].copy_from_slice(&row.volume.to_le_bytes());
+    Ok(buf)
+}
+
+pub fn decode_cme_auction(buf: &[u8]) -> Result<SlimAuction> {
+    if buf.len() != CME_AUCTION_LEN {
+        bail!(
+            "cme_auction must be {CME_AUCTION_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_auction magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_auction version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_AUCTION {
+        bail!(
+            "cme_auction kind is {}, expected {KIND_CME_AUCTION}",
+            buf[3]
+        );
+    }
+    let row = SlimAuction {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        price: i64::from_le_bytes(buf[36..44].try_into().unwrap()),
+        volume: u32::from_le_bytes(buf[44..48].try_into().unwrap()),
+    };
+    if row.price == MISSING_PRICE {
+        bail!("decoded auction {} missing Price", row.ric);
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_correction(row: &SlimCorrection) -> Result<[u8; CME_CORRECTION_LEN]> {
+    if row.price == MISSING_PRICE
+        && row.volume == MISSING_VOLUME
+        && row.acc_volume == MISSING_VOLUME
+        && row.original_price == MISSING_PRICE
+        && row.original_volume == MISSING_VOLUME
+        && row.original_seq == MISSING_SEQ
+        && row.qualifiers.is_empty()
+    {
+        bail!(
+            "correction {} has no price, volume, original fields, or qualifiers",
+            row.ric
+        );
+    }
+    let ric = encode_ric(&row.ric)?;
+    let qualifiers =
+        encode_ascii_slot::<CORRECTION_QUALIFIER_LEN>(&row.qualifiers, "correction Qualifiers")?;
+    let mut buf = [0u8; CME_CORRECTION_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = CME_CORRECTION_VERSION;
+    buf[3] = KIND_CME_CORRECTION;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..44].copy_from_slice(&row.price.to_le_bytes());
+    buf[44..48].copy_from_slice(&row.volume.to_le_bytes());
+    buf[48..56].copy_from_slice(&row.original_price.to_le_bytes());
+    buf[56..60].copy_from_slice(&row.original_volume.to_le_bytes());
+    buf[60..68].copy_from_slice(&row.original_seq.to_le_bytes());
+    buf[68..220].copy_from_slice(&qualifiers);
+    buf[220..224].copy_from_slice(&row.acc_volume.to_le_bytes());
+    Ok(buf)
+}
+
+pub fn decode_cme_correction(buf: &[u8]) -> Result<SlimCorrection> {
+    if buf.len() != CME_CORRECTION_LEN {
+        bail!(
+            "cme_correction must be {CME_CORRECTION_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("cme_correction magic is {:?}, expected CT", &buf[0..2]);
+    }
+    let version = buf[2];
+    if version != VERSION && version != CME_CORRECTION_VERSION {
+        bail!("cme_correction version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_CORRECTION {
+        bail!(
+            "cme_correction kind is {}, expected {KIND_CME_CORRECTION}",
+            buf[3]
+        );
+    }
+    let acc_volume = match version {
+        VERSION => {
+            if buf[220..224].iter().any(|&b| b != 0) {
+                bail!("cme_correction v1 pad is not all zeros");
+            }
+            MISSING_VOLUME
+        }
+        CME_CORRECTION_VERSION => u32::from_le_bytes(buf[220..224].try_into().unwrap()),
+        _ => unreachable!("version was validated above"),
+    };
+    let row = SlimCorrection {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        price: i64::from_le_bytes(buf[36..44].try_into().unwrap()),
+        volume: u32::from_le_bytes(buf[44..48].try_into().unwrap()),
+        acc_volume,
+        original_price: i64::from_le_bytes(buf[48..56].try_into().unwrap()),
+        original_volume: u32::from_le_bytes(buf[56..60].try_into().unwrap()),
+        original_seq: u64::from_le_bytes(buf[60..68].try_into().unwrap()),
+        qualifiers: decode_ascii_slot(&buf[68..220], "correction Qualifiers")?,
+    };
+    if row.price == MISSING_PRICE
+        && row.volume == MISSING_VOLUME
+        && row.acc_volume == MISSING_VOLUME
+        && row.original_price == MISSING_PRICE
+        && row.original_volume == MISSING_VOLUME
+        && row.original_seq == MISSING_SEQ
+        && row.qualifiers.is_empty()
+    {
+        bail!(
+            "decoded correction {} has no price, volume, original fields, or qualifiers",
+            row.ric
+        );
+    }
+    Ok(row)
+}
+
+pub fn encode_cme_status(row: &SlimStatus) -> Result<[u8; CME_STATUS_LEN]> {
+    if row.qualifiers.is_empty() {
+        bail!("status {} missing Qualifiers", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let qualifiers =
+        encode_ascii_slot::<STATUS_QUALIFIER_LEN>(&row.qualifiers, "status Qualifiers")?;
+    let mut buf = [0u8; CME_STATUS_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_CME_STATUS;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28..36].copy_from_slice(&row.exch_hms_ns.to_le_bytes());
+    buf[36..220].copy_from_slice(&qualifiers);
+    Ok(buf)
+}
+
+pub fn decode_cme_status(buf: &[u8]) -> Result<SlimStatus> {
+    let qualifier_end = match buf.len() {
+        CME_STATUS_LEGACY_LEN => 36 + STATUS_QUALIFIER_LEGACY_LEN,
+        CME_STATUS_LEN => 36 + STATUS_QUALIFIER_LEN,
+        other => {
+            bail!(
+                "cme_status must be {CME_STATUS_LEGACY_LEN} or {CME_STATUS_LEN} bytes, got {other}"
+            )
+        }
+    };
+    if buf[0..2] != MAGIC {
+        bail!("cme_status magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("cme_status version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_CME_STATUS {
+        bail!("cme_status kind is {}, expected {KIND_CME_STATUS}", buf[3]);
+    }
+    if buf[qualifier_end..].iter().any(|&b| b != 0) {
+        bail!("cme_status pad is not all zeros");
+    }
+    let row = SlimStatus {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        exch_hms_ns: u64::from_le_bytes(buf[28..36].try_into().unwrap()),
+        qualifiers: decode_ascii_slot(&buf[36..qualifier_end], "status Qualifiers")?,
+    };
+    if row.qualifiers.is_empty() {
+        bail!("decoded status {} missing Qualifiers", row.ric);
+    }
+    Ok(row)
+}
+
+pub fn encode_reference_change(row: &SlimReferenceChange) -> Result<[u8; REFERENCE_CHANGE_LEN]> {
+    if !reference_change_type_ok(row.change_type) {
+        bail!(
+            "reference change {} has unhandled change_type {}",
+            row.ric,
+            row.change_type
+        );
+    }
+    if row.old_value.is_empty() && row.new_value.is_empty() {
+        bail!("reference change {} has neither Old nor New Value", row.ric);
+    }
+    let ric = encode_ric(&row.ric)?;
+    let old = encode_ascii_slot::<REFERENCE_VALUE_LEN>(&row.old_value, "reference Old Value")?;
+    let new = encode_ascii_slot::<REFERENCE_VALUE_LEN>(&row.new_value, "reference New Value")?;
+    let mut buf = [0u8; REFERENCE_CHANGE_LEN];
+    buf[0..2].copy_from_slice(&MAGIC);
+    buf[2] = VERSION;
+    buf[3] = KIND_REFERENCE_CHANGE;
+    buf[4..20].copy_from_slice(&ric);
+    buf[20..28].copy_from_slice(&row.ts_utc_ns.to_le_bytes());
+    buf[28] = row.change_type;
+    buf[29..61].copy_from_slice(&old);
+    buf[61..93].copy_from_slice(&new);
+    Ok(buf)
+}
+
+pub fn decode_reference_change(buf: &[u8]) -> Result<SlimReferenceChange> {
+    if buf.len() != REFERENCE_CHANGE_LEN {
+        bail!(
+            "reference_change must be {REFERENCE_CHANGE_LEN} bytes, got {}",
+            buf.len()
+        );
+    }
+    if buf[0..2] != MAGIC {
+        bail!("reference_change magic is {:?}, expected CT", &buf[0..2]);
+    }
+    if buf[2] != VERSION {
+        bail!("reference_change version is {}, expected {VERSION}", buf[2]);
+    }
+    if buf[3] != KIND_REFERENCE_CHANGE {
+        bail!(
+            "reference_change kind is {}, expected {KIND_REFERENCE_CHANGE}",
+            buf[3]
+        );
+    }
+    if buf[93..96].iter().any(|&b| b != 0) {
+        bail!("reference_change pad is not all zeros");
+    }
+    let change_type = buf[28];
+    if !reference_change_type_ok(change_type) {
+        bail!("reference_change change_type {change_type} is unhandled");
+    }
+    Ok(SlimReferenceChange {
+        ric: decode_ric(&buf[4..20])?,
+        ts_utc_ns: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+        change_type,
+        old_value: decode_ascii_slot(&buf[29..61], "reference Old Value")?,
+        new_value: decode_ascii_slot(&buf[61..93], "reference New Value")?,
+    })
 }
 
 pub fn ric_prefix(ric: &str) -> Result<[u8; RIC_LEN]> {
@@ -1399,7 +2214,6 @@ pub fn ali_h26_fixture() -> SlimTrade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     #[test]
     fn packs_the_ali_trade() {
@@ -1475,18 +2289,47 @@ mod tests {
             bid_size: MISSING_VOLUME,
             ask: MISSING_PRICE,
             ask_size: MISSING_VOLUME,
-            ..quote
+            ..quote.clone()
         };
-        assert!(!quote_has_complete_side(&empty).unwrap());
+        assert!(!quote_has_complete_side(&empty));
         assert!(encode_cme_quote(&empty).is_err());
         let half = SlimQuote {
             bid: parse_price_e9("0.6671").unwrap(),
             bid_size: MISSING_VOLUME,
             ask: MISSING_PRICE,
             ask_size: MISSING_VOLUME,
-            ..one_sided
+            ..one_sided.clone()
         };
-        assert!(quote_has_complete_side(&half).is_err());
+        assert!(!quote_has_complete_side(&half));
+        assert!(encode_cme_quote(&half).is_err());
+        let ask_zero_no_size = SlimQuote {
+            ask: 0,
+            ask_size: MISSING_VOLUME,
+            ..one_sided.clone()
+        };
+        assert!(quote_has_complete_side(&ask_zero_no_size));
+        let packed = encode_cme_quote(&ask_zero_no_size).unwrap();
+        let back_half = decode_cme_quote(&packed).unwrap();
+        assert_eq!(back_half.bid, one_sided.bid);
+        assert_eq!(back_half.ask, MISSING_PRICE);
+        assert_eq!(back_half.ask_size, MISSING_VOLUME);
+        let overlaid = overlay_quote_bbo(
+            &quote,
+            &SlimQuote {
+                ts_utc_ns: quote.ts_utc_ns + 1,
+                exch_hms_ns: quote.exch_hms_ns,
+                bid: parse_price_e9("0.67").unwrap(),
+                bid_size: 2,
+                ask: 0,
+                ask_size: MISSING_VOLUME,
+                ric: quote.ric.clone(),
+            },
+        );
+        assert_eq!(overlaid.bid, parse_price_e9("0.67").unwrap());
+        assert_eq!(overlaid.bid_size, 2);
+        assert_eq!(overlaid.ask, quote.ask);
+        assert_eq!(overlaid.ask_size, quote.ask_size);
+        assert_eq!(overlaid.ts_utc_ns, quote.ts_utc_ns + 1);
     }
 
     #[test]
@@ -1507,14 +2350,15 @@ mod tests {
         assert_eq!(back.new_value, "ADF26^2");
         assert_eq!(parse_change_type("RIC").unwrap(), CHANGE_TYPE_RIC);
         assert!(parse_change_type("ISIN").is_err());
+        assert!(parse_change_type("Description").is_err());
         assert!(encode_ric("ADF26^2").is_ok());
     }
 
     #[test]
     fn parses_aggressor_from_quoted_fid() {
         let q = r#"v[ACT_TP_1];2[LSTSALCOND];   [LIMIT_IND];"BID  "[AGGRS_SID1]"#;
-        assert_eq!(parse_aggressor(q).unwrap(), 1);
-        assert_eq!(parse_aggressor("").unwrap(), 0);
+        assert_eq!(parse_aggressor(q).unwrap(), AGGRESSOR_BUY);
+        assert_eq!(parse_aggressor("").unwrap(), AGGRESSOR_IMPLIED);
         assert!(parse_aggressor(r#""XYZ "[AGGRS_SID1]"#).is_err());
     }
 
@@ -1530,7 +2374,7 @@ mod tests {
         );
         assert_eq!(
             classify("SQ24", "Trade", "", "", SPECIAL_TRADES_USER).unwrap(),
-            EventKind::DropSpecialNoVolume
+            EventKind::SpecialMissingVolume
         );
         assert_eq!(
             classify("ESH26", "Reference Change", "", "", "").unwrap(),
@@ -1581,7 +2425,24 @@ mod tests {
         );
         assert!(classify("JKMF27", "Trade", "1", "", SETTLE_IV_USER).is_err());
         assert!(classify("X", "UnknownType", "", "", "").is_err());
-        assert!(classify("X", "Trade", "1", "", "").is_err());
+        assert_eq!(
+            classify("LCG1", "Trade", "108.325", "", "").unwrap(),
+            EventKind::CmePricePrint
+        );
+        assert_eq!(
+            overlay_tot_volume(
+                classify("LCOTOT", "Trade", "", "978441", "").unwrap(),
+                "LCOTOT",
+                "978441",
+                ""
+            )
+            .unwrap(),
+            EventKind::CmeTotVolume
+        );
+        assert!(is_tot_ric("LCOTOT"));
+        assert!(is_tot_ric("LCOTOT^1"));
+        assert!(!is_tot_ric("LCOG24"));
+        assert!(!is_tot_ric("TOT"));
     }
 
     #[test]
@@ -1650,11 +2511,477 @@ mod tests {
         assert_eq!(back.ts_utc_ns, row.ts_utc_ns);
         assert_eq!(back.price, 667_300_000);
         assert_eq!(back.source_date_yyyymmdd, 20260101);
+        let date_only = SlimSettlement {
+            ric: "HRCF1".to_string(),
+            ts_utc_ns: parse_date_time_ns("2011-01-20T02:29:02.701847000Z").unwrap(),
+            price: MISSING_PRICE,
+            source_date_yyyymmdd: 20110119,
+        };
+        let date_only_back =
+            decode_cme_settlement(&encode_cme_settlement(&date_only).unwrap()).unwrap();
+        assert_eq!(date_only_back.price, MISSING_PRICE);
+        assert_eq!(date_only_back.source_date_yyyymmdd, 20110119);
         let missing = SlimSettlement {
             price: MISSING_PRICE,
+            source_date_yyyymmdd: 0,
             ..row
         };
         assert!(encode_cme_settlement(&missing).is_err());
+    }
+
+    #[test]
+    fn packs_implied_vol_last_quote_and_settle() {
+        let last = SlimImpliedVol {
+            ric: "NQZ7".to_string(),
+            ts_utc_ns: parse_date_time_ns("2017-12-15T21:00:00.123456789Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("21:00:00.100000000").unwrap(),
+            last_iv: parse_price_e9("0").unwrap(),
+            bid_iv: MISSING_PRICE,
+            ask_iv: MISSING_PRICE,
+            source: IV_SOURCE_LAST,
+        };
+        let last_bytes = encode_cme_implied_vol(&last).unwrap();
+        assert_eq!(last_bytes.len(), CME_IMPLIED_VOL_LEN);
+        assert_eq!(last_bytes[3], KIND_CME_IMPLIED_VOL);
+        assert_eq!(&last_bytes[61..64], &[0; 3]);
+        let last_back = decode_cme_implied_vol(&last_bytes).unwrap();
+        assert_eq!(last_back.ric, "NQZ7");
+        assert_eq!(last_back.last_iv, 0);
+        assert_eq!(last_back.bid_iv, MISSING_PRICE);
+        assert_eq!(last_back.source, IV_SOURCE_LAST);
+
+        let quote = SlimImpliedVol {
+            ric: "FBTPM".to_string(),
+            ts_utc_ns: parse_date_time_ns("2022-03-01T07:00:00.000000001Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("07:00:00.000000000").unwrap(),
+            last_iv: MISSING_PRICE,
+            bid_iv: parse_price_e9("12.5").unwrap(),
+            ask_iv: MISSING_PRICE,
+            source: IV_SOURCE_QUOTE,
+        };
+        let quote_back = decode_cme_implied_vol(&encode_cme_implied_vol(&quote).unwrap()).unwrap();
+        assert_eq!(quote_back.ric, "FBTPM");
+        assert_eq!(quote_back.bid_iv, 12_500_000_000);
+        assert_eq!(quote_back.ask_iv, MISSING_PRICE);
+        assert_eq!(quote_back.source, IV_SOURCE_QUOTE);
+
+        let settle = SlimImpliedVol {
+            ric: "JKMF27".to_string(),
+            ts_utc_ns: parse_date_time_ns("2026-01-01T00:19:01.619500177Z").unwrap(),
+            exch_hms_ns: MISSING_EXCH_HMS_NS,
+            last_iv: parse_price_e9("0").unwrap(),
+            bid_iv: MISSING_PRICE,
+            ask_iv: MISSING_PRICE,
+            source: IV_SOURCE_SETTLE,
+        };
+        let settle_back =
+            decode_cme_implied_vol(&encode_cme_implied_vol(&settle).unwrap()).unwrap();
+        assert_eq!(settle_back.source, IV_SOURCE_SETTLE);
+        assert_eq!(
+            implied_vol_source("0", "", "", true).unwrap(),
+            IV_SOURCE_SETTLE
+        );
+        assert_eq!(
+            implied_vol_source("", "12.5", "", false).unwrap(),
+            IV_SOURCE_QUOTE
+        );
+        assert_eq!(
+            implied_vol_source("0", "", "", false).unwrap(),
+            IV_SOURCE_LAST
+        );
+        assert!(implied_vol_source("", "", "", false).is_err());
+        assert!(encode_cme_implied_vol(&SlimImpliedVol {
+            last_iv: MISSING_PRICE,
+            bid_iv: MISSING_PRICE,
+            ask_iv: MISSING_PRICE,
+            ..last
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn packs_lcotot_volume_and_lcg1_price_print() {
+        let tot = SlimTotVolume {
+            ric: "LCOTOT".to_string(),
+            ts_utc_ns: parse_date_time_ns("2022-01-04T00:00:01.000000000Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("00:00:01.000000000").unwrap(),
+            volume: 978_441,
+        };
+        let tot_bytes = encode_cme_tot_volume(&tot).unwrap();
+        assert_eq!(tot_bytes.len(), CME_TOT_VOLUME_LEN);
+        assert_eq!(tot_bytes[3], KIND_CME_TOT_VOLUME);
+        assert_eq!(&tot_bytes[44..48], &[0; 4]);
+        let tot_back = decode_cme_tot_volume(&tot_bytes).unwrap();
+        assert_eq!(tot_back.ric, "LCOTOT");
+        assert_eq!(tot_back.volume, 978_441);
+        assert_eq!(tot_volume_from_cells("978441", "").unwrap(), 978_441);
+        assert_eq!(tot_volume_from_cells("", "978441").unwrap(), 978_441);
+        assert_eq!(tot_volume_from_cells("978441", "978441").unwrap(), 978_441);
+        assert!(tot_volume_from_cells("1", "2").is_err());
+        assert!(encode_cme_tot_volume(&SlimTotVolume {
+            ric: "LCOG24".to_string(),
+            ..tot
+        })
+        .is_err());
+
+        let print = SlimPricePrint {
+            ric: "LCG1".to_string(),
+            ts_utc_ns: parse_date_time_ns("2011-02-14T18:00:00.000000000Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("18:00:00.000000000").unwrap(),
+            price: parse_price_e9("108.325").unwrap(),
+        };
+        let print_bytes = encode_cme_price_print(&print).unwrap();
+        assert_eq!(print_bytes.len(), CME_PRICE_PRINT_LEN);
+        assert_eq!(print_bytes[3], KIND_CME_PRICE_PRINT);
+        assert_eq!(&print_bytes[44..48], &[0; 4]);
+        let print_back = decode_cme_price_print(&print_bytes).unwrap();
+        assert_eq!(print_back.ric, "LCG1");
+        assert_eq!(print_back.price, 108_325_000_000);
+        assert!(encode_cme_price_print(&SlimPricePrint {
+            price: MISSING_PRICE,
+            ..print
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn packs_eth_indicative_surplus_imbalance() {
+        let empty_quote = classify("ETHG26", "Quote", "", "", "").unwrap();
+        assert_eq!(empty_quote, EventKind::CmeQuote);
+        assert_eq!(
+            overlay_imbalance(EventKind::DropEmptyQuote, "6", "B").unwrap(),
+            EventKind::CmeImbalance
+        );
+        assert_eq!(
+            overlay_imbalance(EventKind::CmeQuote, "6", "B").unwrap(),
+            EventKind::CmeQuote
+        );
+        assert_eq!(
+            overlay_imbalance(EventKind::DropEmptyQuote, "", "").unwrap(),
+            EventKind::DropEmptyQuote
+        );
+        assert!(overlay_imbalance(EventKind::DropEmptyQuote, "6", "").is_err());
+        assert!(overlay_imbalance(EventKind::CmeTrade, "6", "B").is_err());
+        assert!(is_no_imbalance("0", "N").unwrap());
+        assert!(!is_no_imbalance("6", "B").unwrap());
+        assert!(is_no_imbalance("1", "N").is_err());
+        assert_eq!(parse_imbalance_side("B").unwrap(), IMBALANCE_SIDE_BID);
+        assert_eq!(parse_imbalance_side("S").unwrap(), IMBALANCE_SIDE_ASK);
+        assert!(parse_imbalance_side("X").is_err());
+
+        let rec = SlimImbalance {
+            ric: "ETHG26".to_string(),
+            ts_utc_ns: parse_date_time_ns("2026-01-21T14:57:35.224461965Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("14:57:35.140000000").unwrap(),
+            quantity: 6,
+            side: IMBALANCE_SIDE_BID,
+        };
+        let bytes = encode_cme_imbalance(&rec).unwrap();
+        assert_eq!(bytes.len(), CME_IMBALANCE_LEN);
+        assert_eq!(bytes[3], KIND_CME_IMBALANCE);
+        assert_eq!(&bytes[41..48], &[0; 7]);
+        let back = decode_cme_imbalance(&bytes).unwrap();
+        assert_eq!(back.ric, "ETHG26");
+        assert_eq!(back.quantity, 6);
+        assert_eq!(back.side, IMBALANCE_SIDE_BID);
+        assert!(encode_cme_imbalance(&SlimImbalance {
+            quantity: MISSING_VOLUME,
+            ..rec
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn packs_auction_correction_status_and_reference_change() {
+        let auction = SlimAuction {
+            ric: "KRWF6".to_string(),
+            ts_utc_ns: parse_date_time_ns("2026-01-02T00:30:00.173630791Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("00:30:00.088149000").unwrap(),
+            price: parse_price_e9("1439.9").unwrap(),
+            volume: 1,
+        };
+        let auction_bytes = encode_cme_auction(&auction).unwrap();
+        assert_eq!(auction_bytes.len(), CME_AUCTION_LEN);
+        assert_eq!(auction_bytes[3], KIND_CME_AUCTION);
+        let auction_back = decode_cme_auction(&auction_bytes).unwrap();
+        assert_eq!(auction_back.ric, "KRWF6");
+        assert_eq!(auction_back.price, 1_439_900_000_000);
+        assert_eq!(auction_back.volume, 1);
+        let auction_indication = SlimAuction {
+            ric: "FBTPM4".to_string(),
+            ts_utc_ns: parse_date_time_ns("2024-05-21T06:00:00.294856434Z").unwrap(),
+            exch_hms_ns: MISSING_EXCH_HMS_NS,
+            price: parse_price_e9("117.94").unwrap(),
+            volume: MISSING_VOLUME,
+        };
+        let indication_back =
+            decode_cme_auction(&encode_cme_auction(&auction_indication).unwrap()).unwrap();
+        assert_eq!(indication_back.volume, MISSING_VOLUME);
+        assert!(encode_cme_auction(&SlimAuction {
+            price: MISSING_PRICE,
+            ..auction
+        })
+        .is_err());
+
+        let correction = SlimCorrection {
+            ric: "ESH26".to_string(),
+            ts_utc_ns: parse_date_time_ns("2026-01-07T09:22:58.013583911Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("09:20:00.000000000").unwrap(),
+            price: MISSING_PRICE,
+            volume: MISSING_VOLUME,
+            acc_volume: MISSING_VOLUME,
+            original_price: parse_price_e9("6985").unwrap(),
+            original_volume: 7,
+            original_seq: 9960,
+            qualifiers: "2[CAN_COND_N];611[CAN_COND]".to_string(),
+        };
+        let correction_bytes = encode_cme_correction(&correction).unwrap();
+        assert_eq!(correction_bytes.len(), CME_CORRECTION_LEN);
+        assert_eq!(correction_bytes[3], KIND_CME_CORRECTION);
+        assert_eq!(correction_bytes[2], CME_CORRECTION_VERSION);
+        assert_eq!(
+            u32::from_le_bytes(correction_bytes[220..224].try_into().unwrap()),
+            MISSING_VOLUME
+        );
+        let correction_back = decode_cme_correction(&correction_bytes).unwrap();
+        assert_eq!(correction_back.ric, "ESH26");
+        assert_eq!(correction_back.original_price, 6_985_000_000_000);
+        assert_eq!(correction_back.original_volume, 7);
+        assert_eq!(correction_back.original_seq, 9960);
+        assert_eq!(correction_back.acc_volume, MISSING_VOLUME);
+        assert_eq!(correction_back.qualifiers, "2[CAN_COND_N];611[CAN_COND]");
+        let mut correction_v1 = correction_bytes;
+        correction_v1[2] = VERSION;
+        correction_v1[220..224].copy_from_slice(&[0; 4]);
+        assert_eq!(
+            decode_cme_correction(&correction_v1).unwrap().acc_volume,
+            MISSING_VOLUME
+        );
+        let long_qual = SlimCorrection {
+            ric: "HRCF2".to_string(),
+            ts_utc_ns: parse_date_time_ns("2011-03-29T21:19:19.342213000Z").unwrap(),
+            exch_hms_ns: parse_exch_hms_ns("21:19:19.000000000").unwrap(),
+            price: MISSING_PRICE,
+            volume: MISSING_VOLUME,
+            acc_volume: MISSING_VOLUME,
+            original_price: parse_price_e9("750").unwrap(),
+            original_volume: MISSING_VOLUME,
+            original_seq: MISSING_SEQ,
+            qualifiers: "401[IRGCOND];  [OPNRNGTP];BBO[MKT_ST_IND]".to_string(),
+        };
+        assert_eq!(long_qual.qualifiers.len(), 41);
+        let long_back = decode_cme_correction(&encode_cme_correction(&long_qual).unwrap()).unwrap();
+        assert_eq!(
+            long_back.qualifiers,
+            "401[IRGCOND];  [OPNRNGTP];BBO[MKT_ST_IND]"
+        );
+        let index_correction = SlimCorrection {
+            ric: ".FTXIN9".to_string(),
+            ts_utc_ns: parse_date_time_ns("2010-01-04T01:30:00.098655000Z").unwrap(),
+            exch_hms_ns: MISSING_EXCH_HMS_NS,
+            price: parse_price_e9("12024.53").unwrap(),
+            volume: MISSING_VOLUME,
+            acc_volume: MISSING_VOLUME,
+            original_price: MISSING_PRICE,
+            original_volume: MISSING_VOLUME,
+            original_seq: MISSING_SEQ,
+            qualifiers: String::new(),
+        };
+        let index_back =
+            decode_cme_correction(&encode_cme_correction(&index_correction).unwrap()).unwrap();
+        assert_eq!(index_back.price, 12_024_530_000_000);
+        assert!(index_back.qualifiers.is_empty());
+        let acc_only = SlimCorrection {
+            ric: "YAPH1".to_string(),
+            ts_utc_ns: parse_date_time_ns("2010-07-05T05:34:35.895804000Z").unwrap(),
+            exch_hms_ns: MISSING_EXCH_HMS_NS,
+            price: MISSING_PRICE,
+            volume: MISSING_VOLUME,
+            acc_volume: 5,
+            original_price: MISSING_PRICE,
+            original_volume: MISSING_VOLUME,
+            original_seq: MISSING_SEQ,
+            qualifiers: String::new(),
+        };
+        let acc_only_back =
+            decode_cme_correction(&encode_cme_correction(&acc_only).unwrap()).unwrap();
+        assert_eq!(acc_only_back.acc_volume, 5);
+        assert!(encode_cme_correction(&SlimCorrection {
+            price: MISSING_PRICE,
+            volume: MISSING_VOLUME,
+            acc_volume: MISSING_VOLUME,
+            original_price: MISSING_PRICE,
+            original_volume: MISSING_VOLUME,
+            original_seq: MISSING_SEQ,
+            qualifiers: String::new(),
+            ..correction
+        })
+        .is_err());
+
+        let status = SlimStatus {
+            ric: "BOH26".to_string(),
+            ts_utc_ns: parse_date_time_ns("2026-01-02T14:30:00.000000000Z").unwrap(),
+            exch_hms_ns: MISSING_EXCH_HMS_NS,
+            qualifiers: "15[PERIOD_CDE];I[ORD_ENT_ST];15[PERIOD_CD2];15[TRD_TYPE];G  [STAT_IND];0[HALT_REASN];0[SECUR_ST];OQ [PRC_QL_CD];BBO[MKT_ST_IND];\"  \"[HALT_RSN]".to_string(),
+        };
+        assert_eq!(status.qualifiers.len(), 142);
+        let status_bytes = encode_cme_status(&status).unwrap();
+        assert_eq!(status_bytes.len(), CME_STATUS_LEN);
+        assert_eq!(status_bytes[3], KIND_CME_STATUS);
+        assert_eq!(&status_bytes[220..224], &[0; 4]);
+        let status_back = decode_cme_status(&status_bytes).unwrap();
+        assert_eq!(status_back.ric, "BOH26");
+        assert_eq!(status_back.qualifiers, status.qualifiers);
+        let mut legacy_status = [0u8; CME_STATUS_LEGACY_LEN];
+        legacy_status.copy_from_slice(&status_bytes[..CME_STATUS_LEGACY_LEN]);
+        assert_eq!(
+            decode_cme_status(&legacy_status).unwrap().qualifiers,
+            status.qualifiers
+        );
+        let long_status = SlimStatus {
+            qualifiers: "X".repeat(175),
+            ..status.clone()
+        };
+        assert_eq!(
+            decode_cme_status(&encode_cme_status(&long_status).unwrap())
+                .unwrap()
+                .qualifiers,
+            long_status.qualifiers
+        );
+        assert!(encode_cme_status(&SlimStatus {
+            qualifiers: String::new(),
+            ..status
+        })
+        .is_err());
+
+        let rename = SlimReferenceChange {
+            ric: "ESH26".to_string(),
+            ts_utc_ns: parse_date_time_ns("2024-04-10T17:51:51.574327205Z").unwrap(),
+            change_type: CHANGE_TYPE_DESCRIPTION,
+            old_value: "EMINI S&P MAR6".to_string(),
+            new_value: "EMINI S&P MAR26".to_string(),
+        };
+        assert_eq!(
+            parse_reference_change_type("Description").unwrap(),
+            CHANGE_TYPE_DESCRIPTION
+        );
+        assert_eq!(
+            parse_reference_change_type("Expiry Date").unwrap(),
+            CHANGE_TYPE_EXPIRY_DATE
+        );
+        assert_eq!(
+            parse_reference_change_type("Currency").unwrap(),
+            CHANGE_TYPE_CURRENCY
+        );
+        assert_eq!(
+            parse_reference_change_type("Permission Code").unwrap(),
+            CHANGE_TYPE_PERMISSION_CODE
+        );
+        assert_eq!(
+            parse_reference_change_type("Option Type").unwrap(),
+            CHANGE_TYPE_OPTION_TYPE
+        );
+        assert_eq!(
+            parse_reference_change_type("Template").unwrap(),
+            CHANGE_TYPE_TEMPLATE
+        );
+        assert_eq!(
+            parse_reference_change_type("Exchange").unwrap(),
+            CHANGE_TYPE_EXCHANGE
+        );
+        assert_eq!(
+            parse_reference_change_type("Bond Type").unwrap(),
+            CHANGE_TYPE_BOND_TYPE
+        );
+        assert_eq!(
+            parse_reference_change_type("Record Type").unwrap(),
+            CHANGE_TYPE_RECORD_TYPE
+        );
+        assert_eq!(
+            parse_reference_change_type("Rating").unwrap(),
+            CHANGE_TYPE_RATING
+        );
+        assert_eq!(
+            parse_reference_change_type("Rating ID").unwrap(),
+            CHANGE_TYPE_RATING_ID
+        );
+        assert!(parse_reference_change_type("RIC").is_err());
+        let rename_bytes = encode_reference_change(&rename).unwrap();
+        assert_eq!(rename_bytes.len(), REFERENCE_CHANGE_LEN);
+        assert_eq!(rename_bytes[3], KIND_REFERENCE_CHANGE);
+        assert_eq!(rename_bytes[28], CHANGE_TYPE_DESCRIPTION);
+        assert_eq!(&rename_bytes[93..96], &[0; 3]);
+        let rename_back = decode_reference_change(&rename_bytes).unwrap();
+        assert_eq!(rename_back.old_value, "EMINI S&P MAR6");
+        assert_eq!(rename_back.new_value, "EMINI S&P MAR26");
+        let expiry = SlimReferenceChange {
+            ric: "HRCJ1".to_string(),
+            ts_utc_ns: parse_date_time_ns("2011-02-28T10:47:01.126986000Z").unwrap(),
+            change_type: CHANGE_TYPE_EXPIRY_DATE,
+            old_value: "2011-04-25T00:00:00.000000000Z".to_string(),
+            new_value: "2011-04-26T00:00:00.000000000Z".to_string(),
+        };
+        assert_eq!(expiry.old_value.len(), 30);
+        let expiry_back =
+            decode_reference_change(&encode_reference_change(&expiry).unwrap()).unwrap();
+        assert_eq!(expiry_back.change_type, CHANGE_TYPE_EXPIRY_DATE);
+        assert_eq!(expiry_back.old_value, expiry.old_value);
+        assert_eq!(expiry_back.new_value, expiry.new_value);
+        let currency = SlimReferenceChange {
+            ric: "LCJ4".to_string(),
+            ts_utc_ns: parse_date_time_ns("2012-11-01T00:13:33.904707000Z").unwrap(),
+            change_type: CHANGE_TYPE_CURRENCY,
+            old_value: "841".to_string(),
+            new_value: "2009".to_string(),
+        };
+        let currency_back =
+            decode_reference_change(&encode_reference_change(&currency).unwrap()).unwrap();
+        assert_eq!(currency_back.change_type, CHANGE_TYPE_CURRENCY);
+        let permission = SlimReferenceChange {
+            ric: "NQH1".to_string(),
+            ts_utc_ns: parse_date_time_ns("2010-01-01T11:10:01.986036000Z").unwrap(),
+            change_type: CHANGE_TYPE_PERMISSION_CODE,
+            old_value: "5370".to_string(),
+            new_value: "120".to_string(),
+        };
+        let permission_back =
+            decode_reference_change(&encode_reference_change(&permission).unwrap()).unwrap();
+        assert_eq!(permission_back.change_type, CHANGE_TYPE_PERMISSION_CODE);
+        let option_type = SlimReferenceChange {
+            ric: "CCU2".to_string(),
+            ts_utc_ns: parse_date_time_ns("2010-09-30T23:46:22.465445000Z").unwrap(),
+            change_type: CHANGE_TYPE_OPTION_TYPE,
+            old_value: String::new(),
+            new_value: "2".to_string(),
+        };
+        let option_type_back =
+            decode_reference_change(&encode_reference_change(&option_type).unwrap()).unwrap();
+        assert_eq!(option_type_back.change_type, CHANGE_TYPE_OPTION_TYPE);
+        assert!(option_type_back.old_value.is_empty());
+        assert_eq!(option_type_back.new_value, "2");
+        let removal = SlimReferenceChange {
+            ric: "Cc5".to_string(),
+            ts_utc_ns: parse_date_time_ns("2010-03-13T23:11:24.454460000Z").unwrap(),
+            change_type: CHANGE_TYPE_RECORD_TYPE,
+            old_value: "194".to_string(),
+            new_value: String::new(),
+        };
+        let removal_back =
+            decode_reference_change(&encode_reference_change(&removal).unwrap()).unwrap();
+        assert_eq!(removal_back.change_type, CHANGE_TYPE_RECORD_TYPE);
+        assert_eq!(removal_back.old_value, "194");
+        assert!(removal_back.new_value.is_empty());
+        assert!(encode_reference_change(&SlimReferenceChange {
+            old_value: String::new(),
+            new_value: String::new(),
+            ..removal
+        })
+        .is_err());
+        assert!(encode_reference_change(&SlimReferenceChange {
+            change_type: CHANGE_TYPE_RIC,
+            ..rename
+        })
+        .is_err());
     }
 
     #[test]
@@ -1662,6 +2989,30 @@ mod tests {
         assert_eq!(parse_price_e9("2999.75").unwrap(), 2_999_750_000_000);
         assert_eq!(parse_price_e9("0.66825").unwrap(), 668_250_000);
         assert!(parse_price_e9("1.1234567891").is_err());
+    }
+
+    #[test]
+    fn limit_price_keeps_decimal_cages_and_rescues_pre_scaled_integers() {
+        assert_eq!(
+            parse_limit_price_e9("7379.25").unwrap(),
+            parse_price_e9("7379.25").unwrap()
+        );
+        assert_eq!(parse_limit_price_e9("0.25").unwrap(), 250_000_000);
+        assert_eq!(parse_limit_price_e9("").unwrap(), MISSING_PRICE);
+        assert_eq!(
+            parse_limit_price_e9("11317500000").unwrap(),
+            11_317_500_000_000
+        );
+        assert_eq!(
+            parse_limit_price_e9("51930000000").unwrap(),
+            51_930_000_000_000
+        );
+        assert_eq!(
+            parse_limit_price_e9("-11317500000").unwrap(),
+            -11_317_500_000_000
+        );
+        assert!(parse_price_e9("11317500000").is_err());
+        assert!(parse_limit_price_e9("not-a-price").is_err());
     }
 
     #[test]
@@ -1976,10 +3327,11 @@ mod tests {
         assert_eq!(volume_only, EventKind::DropVolumeOnlyTrade);
         assert_ne!(volume_only, EventKind::CmeTrade);
 
-        let special_no_volume = classify("SQ24", "Trade", "", "", SPECIAL_TRADES_USER).unwrap();
-        assert_eq!(special_no_volume, EventKind::DropSpecialNoVolume);
-        assert_ne!(special_no_volume, EventKind::CmeSpecial);
-        assert_ne!(special_no_volume, EventKind::CmeTrade);
+        let special_missing_volume =
+            classify("SQ24", "Trade", "", "", SPECIAL_TRADES_USER).unwrap();
+        assert_eq!(special_missing_volume, EventKind::SpecialMissingVolume);
+        assert_ne!(special_missing_volume, EventKind::CmeSpecial);
+        assert_ne!(special_missing_volume, EventKind::CmeTrade);
 
         let reference_change = classify("ESH26", "Reference Change", "", "", "").unwrap();
         assert_eq!(reference_change, EventKind::ReferenceChange);
@@ -2035,56 +3387,10 @@ mod tests {
         assert_eq!(cage_quote, EventKind::CmeQuote);
         assert!(rules.is_allowed_price_limit_column("LoLim Price"));
         assert!(rules.is_allowed_price_limit_column("UpLim Price"));
-    }
-
-    #[test]
-    fn research_roots_are_the_documented_51() {
-        let mut unique = BTreeSet::new();
-        for root in RESEARCH_PRODUCT_ROOTS {
-            assert!(unique.insert(*root), "duplicate research root {root}");
-        }
-        assert_eq!(RESEARCH_PRODUCT_ROOTS.len(), 51);
-        let expected: BTreeSet<&str> = [
-            "AD", "ALI", "BO", "BP", "BR", "BTC", "C", "CD", "CL", "ES", "ETH", "FC", "FF", "FV",
-            "GC", "HG", "HO", "HRC", "JKM", "JY", "KRW", "KW", "LC", "LH", "MEM", "MP", "NE", "NG",
-            "NOKA", "NQ", "PA", "PL", "PLZ", "RB", "RTY", "S", "S1R", "SEK", "SF", "SI", "SM",
-            "SRA", "TN", "TU", "TY", "U", "URO", "US", "W", "WTCL", "YM",
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(unique, expected);
-    }
-
-    #[test]
-    fn research_root_matches_fixed_expiry_and_rejects_lookalikes() {
-        assert_eq!(research_root_of("ADF26").unwrap(), Some("AD"));
-        assert_eq!(research_root_of("ADF26^2").unwrap(), Some("AD"));
-        assert_eq!(research_root_of("CH24").unwrap(), Some("C"));
-        assert_eq!(research_root_of("CDH24").unwrap(), Some("CD"));
-        assert_eq!(research_root_of("CLG24").unwrap(), Some("CL"));
-        assert_eq!(research_root_of("SMH24").unwrap(), Some("SM"));
-        assert_eq!(research_root_of("SF0").unwrap(), Some("S"));
-        assert_eq!(research_root_of("SFH0").unwrap(), Some("SF"));
-        assert_eq!(research_root_of("USH0").unwrap(), Some("US"));
-        assert_eq!(research_root_of("UM4").unwrap(), Some("U"));
-        assert_eq!(research_root_of("WTCLZ6").unwrap(), Some("WTCL"));
-        assert_eq!(research_root_of("NOKAH0").unwrap(), Some("NOKA"));
-        assert_eq!(research_root_of("S1RK8").unwrap(), Some("S1R"));
-        assert_eq!(research_root_of("ALIH26").unwrap(), Some("ALI"));
-        assert_eq!(research_root_of("YMH24").unwrap(), Some("YM"));
-        assert_eq!(research_root_of("SILH24").unwrap(), None);
-        assert_eq!(research_root_of("NGLNDG1324").unwrap(), None);
-        assert_eq!(research_root_of("LCOG24").unwrap(), None);
-        assert_eq!(research_root_of("VXH24").unwrap(), None);
-        assert_eq!(research_root_of(".NSEI").unwrap(), None);
-        assert!(is_research_ric("ESH24").unwrap());
-        assert!(!is_research_ric("NGLNDG1324").unwrap());
-        let parsed = parse_contract_id("CLG24", 2020).unwrap().unwrap();
-        assert_eq!(parsed.0, "NYMEX");
-        assert_eq!(parsed.1, "CL");
-        assert_eq!(parsed.2, "NYMEX:CL:2024-02");
-        let ad = parse_contract_id("ADF26", 2020).unwrap().unwrap();
-        assert_eq!(ad.2, "CME:AD:2026-01");
+        assert!(rules.is_allowed_imbalance_column("Imbalance Quantity"));
+        assert!(rules.is_allowed_imbalance_column("Imbalance Side"));
+        assert!(!rules.is_allowed_imbalance_column("Paired Quantity"));
+        assert!(rules.is_forbidden_futures_group("auction"));
     }
 
     #[test]

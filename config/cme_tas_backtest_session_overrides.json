@@ -1,0 +1,114 @@
+{
+  "events": [
+    {
+      "product": "GC",
+      "trad_day": "2024-07-01",
+      "kind": "special",
+      "event_ts": 1719869323,
+      "ric": null,
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "2024 full TAS session audit: ten volume-only Special reports at 16:28:43 CT"
+    },
+    {
+      "product": "YM",
+      "trad_day": "2024-07-01",
+      "kind": "special",
+      "event_ts": 1719869329,
+      "ric": null,
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "2024 full TAS session audit: two volume-only Special reports at 16:28:49 CT"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2024-09-20",
+      "kind": "trade",
+      "event_ts": 1726868165,
+      "ric": "GCZ24",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "2024 full TAS session audit: implied trade report at 16:36:05 CT"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2024-09-28",
+      "kind": "trade",
+      "event_ts": 1727536980,
+      "ric": "GCZ24",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "2024 full TAS session audit: implied trade report on Saturday at 10:23:00 CT"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2024-09-28",
+      "kind": "trade",
+      "event_ts": 1727537460,
+      "ric": "GCG25",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "2024 full TAS session audit: implied trade report on Saturday at 10:31:00 CT"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2024-09-29",
+      "kind": "trade",
+      "event_ts": 1727605195,
+      "ric": "GCM25",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "2024 full TAS session audit: implied trade report on Sunday before reopen at 05:19:55 CT"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2025-02-17",
+      "kind": "trade",
+      "event_ts": 1739820626,
+      "ric": "GCJ25",
+      "reason": "after_early_close",
+      "action": "filter",
+      "source": "LSEG normalised source row 2025-02-17T14:49:00.559721946Z: Type=Trade, Price=2897.3, Volume=22, Qualifiers=Block Trade, Exch Time=19:30:26, Date=2025-02-18"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2025-01-20",
+      "kind": "trade",
+      "event_ts": 1737401797,
+      "ric": "CLH25",
+      "reason": "after_early_close",
+      "action": "filter",
+      "source": "LSEG normalised source row 2025-01-20T19:59:02.150102505Z: Type=Trade, Price=76.5, Volume=794, Qualifiers=Block Trade, Exch Time=19:36:37"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2025-01-20",
+      "kind": "trade",
+      "event_ts": 1737401797,
+      "ric": "CLJ25",
+      "reason": "after_early_close",
+      "action": "filter",
+      "source": "LSEG normalised source row 2025-01-20T19:59:02.180676465Z: Type=Trade, Price=75.53, Volume=794, Qualifiers=Block Trade, Exch Time=19:36:37"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2025-05-04",
+      "kind": "trade",
+      "event_ts": 1746389722,
+      "ric": "CLG26",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG normalised source row 2025-05-04T22:28:28.513754455Z: Type=Trade, Price=57.39, Volume=100, Qualifiers=Block Trade, Exch Time=20:15:22"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2025-05-04",
+      "kind": "trade",
+      "event_ts": 1746389728,
+      "ric": "CLK26",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG normalised source row 2025-05-04T22:40:21.630321515Z: Type=Trade, Price=58, Volume=100, Qualifiers=Block Trade, Exch Time=20:15:28"
+    }
+  ]
+}
