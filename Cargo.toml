@@ -101,6 +101,10 @@ name = "exec-pre-trade"
 path = "src/bin/exec_pre_trade.rs"
 
 [[bin]]
+name = "binance_forced_close_repair"
+path = "src/bin/binance_forced_close_repair.rs"
+
+[[bin]]
 name = "fr_signal_dashboard"
 path = "src/bin/fr_signal_dashboard.rs"
 
@@ -174,12 +178,12 @@ name = "cn_features_replay"
 path = "src/bin/futures_fusion_factor_replay.rs"
 
 [[bin]]
-name = "lseg_futures_fusion_factor_replay"
-path = "src/bin/lseg_futures_fusion_factor_replay.rs"
+name = "cn_features_1min_hfq"
+path = "src/bin/cn_features_1min_hfq.rs"
 
 [[bin]]
-name = "lseg_cme_continuous_1min_replay"
-path = "src/bin/lseg_cme_continuous_1min_replay.rs"
+name = "cme_features_1min_hfq"
+path = "src/bin/cme_features_1min_hfq.rs"
 
 [[bin]]
 name = "db_fusion_factor_replay"

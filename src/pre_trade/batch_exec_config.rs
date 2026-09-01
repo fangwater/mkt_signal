@@ -324,6 +324,70 @@ fn assign_residual_to_position_close(
     true
 }
 
+fn reconcile_untradable_position(
+    candidates: &mut [PositionAllocationCandidate],
+    account_position_qty: f64,
+) {
+    if account_position_qty.abs() <= POSITION_ALLOCATION_EPS {
+        for candidate in candidates {
+            candidate.position_qty = 0.0;
+        }
+        return;
+    }
+
+    let direction = account_position_qty.signum();
+    let mut weights = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            candidate.strategy_name != BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME
+                && candidate.position_qty.signum() == direction
+                && candidate.position_qty.abs() > POSITION_ALLOCATION_EPS
+        })
+        .map(|(index, candidate)| (index, candidate.position_qty.abs()))
+        .collect::<Vec<_>>();
+    if weights.is_empty() {
+        weights = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                candidate.strategy_name != BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME
+                    && candidate.target_qty.signum() == direction
+                    && candidate.target_qty.abs() > POSITION_ALLOCATION_EPS
+            })
+            .map(|(index, candidate)| (index, candidate.target_qty.abs()))
+            .collect();
+    }
+
+    for candidate in candidates.iter_mut() {
+        candidate.position_qty = 0.0;
+    }
+    let total_weight = weights.iter().map(|(_, weight)| *weight).sum::<f64>();
+    if total_weight <= POSITION_ALLOCATION_EPS {
+        let fallback_index = candidates
+            .iter()
+            .position(|candidate| {
+                candidate.strategy_name != BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME
+            })
+            .unwrap_or(0);
+        if let Some(candidate) = candidates.get_mut(fallback_index) {
+            candidate.position_qty = account_position_qty;
+        }
+        return;
+    }
+
+    let mut allocated = 0.0;
+    for (offset, (index, weight)) in weights.iter().enumerate() {
+        let qty = if offset + 1 == weights.len() {
+            account_position_qty - allocated
+        } else {
+            account_position_qty * *weight / total_weight
+        };
+        candidates[*index].position_qty = qty;
+        allocated += qty;
+    }
+}
+
 fn select_requested_removals(
     removal_requests: &BTreeSet<String>,
     snapshot_names: &BTreeSet<String>,
@@ -946,6 +1010,12 @@ impl BatchExecConfigReloader {
 
         let mut missing_close_symbols = BTreeSet::new();
         for (symbol, group) in &groups {
+            let symbol_not_tradable = monitor
+                .try_venue_min_qty_table(self.venue)
+                .is_some_and(|table| table.snapshot_loaded() && !table.is_tradable_symbol(symbol));
+            if symbol_not_tradable {
+                continue;
+            }
             if group
                 .iter()
                 .any(|candidate| candidate.strategy_name == BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME)
@@ -996,12 +1066,35 @@ impl BatchExecConfigReloader {
                     candidate.has_virtual_position && !candidate.reconciliation_settled
                 });
             let can_reconcile = group.iter().all(|candidate| candidate.reconciliation_ready);
+            let symbol_not_tradable = monitor
+                .try_venue_min_qty_table(self.venue)
+                .is_some_and(|table| table.snapshot_loaded() && !table.is_tradable_symbol(&symbol));
+            let untradable_allocations_need_reconciliation = symbol_not_tradable
+                && group
+                    .iter()
+                    .any(|candidate| candidate.position_qty.abs() > POSITION_ALLOCATION_EPS);
 
             if needs_initialization {
                 if !can_initialize {
                     continue;
                 }
-            } else if difference.abs() <= POSITION_ALLOCATION_EPS || !can_reconcile {
+            } else if (!untradable_allocations_need_reconciliation
+                && difference.abs() <= POSITION_ALLOCATION_EPS)
+                || !can_reconcile
+            {
+                continue;
+            }
+
+            if symbol_not_tradable {
+                reconcile_untradable_position(&mut group, account_position_qty);
+                info!(
+                    "BatchExec untradable-symbol position reconciliation planned: symbol={} account_position_qty={:.8} previous_allocated_qty={:.8} strategies={}",
+                    symbol,
+                    account_position_qty,
+                    allocated_qty,
+                    group.len()
+                );
+                plans.extend(group);
                 continue;
             }
 
@@ -1497,6 +1590,56 @@ mod tests {
 
         assert!((candidates[0].position_qty - 1.0).abs() < POSITION_ALLOCATION_EPS);
         assert!((candidates[1].position_qty + 1.0).abs() < POSITION_ALLOCATION_EPS);
+    }
+
+    #[test]
+    fn untradable_symbol_clears_offsetting_allocations_when_exchange_position_is_zero() {
+        let mut candidates = vec![
+            allocation_candidate(1, "cta_long", 0.0, 43_407.0, false),
+            allocation_candidate(
+                2,
+                BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+                0.0,
+                -43_407.0,
+                false,
+            ),
+        ];
+
+        reconcile_untradable_position(&mut candidates, 0.0);
+
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.position_qty.abs() < POSITION_ALLOCATION_EPS));
+    }
+
+    #[test]
+    fn untradable_symbol_preserves_remaining_exchange_position_proportionally() {
+        let mut candidates = vec![
+            allocation_candidate(1, "cta_a", 2.0, 2.0, false),
+            allocation_candidate(2, "cta_b", 1.0, 1.0, false),
+            allocation_candidate(3, BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME, 0.0, -1.0, false),
+        ];
+
+        reconcile_untradable_position(&mut candidates, 1.5);
+
+        assert!((candidates[0].position_qty - 1.0).abs() < POSITION_ALLOCATION_EPS);
+        assert!((candidates[1].position_qty - 0.5).abs() < POSITION_ALLOCATION_EPS);
+        assert!(candidates[2].position_qty.abs() < POSITION_ALLOCATION_EPS);
+    }
+
+    #[test]
+    fn untradable_symbol_preserves_nonzero_account_position_with_only_close_strategy() {
+        let mut candidates = vec![allocation_candidate(
+            1,
+            BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
+            0.0,
+            2.0,
+            false,
+        )];
+
+        reconcile_untradable_position(&mut candidates, 1.25);
+
+        assert!((candidates[0].position_qty - 1.25).abs() < POSITION_ALLOCATION_EPS);
     }
 
     #[test]

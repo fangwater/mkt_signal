@@ -39,6 +39,22 @@ path = "src/bin/cme_ll2_replay.rs"
 name = "cme_ll2_shard"
 path = "src/bin/cme_ll2_shard.rs"
 
+[[bin]]
+name = "cme_baseline_1min"
+path = "src/bin/cme_baseline_1min.rs"
+
+[[bin]]
+name = "cme_baseline_hfq_1min"
+path = "src/bin/cme_baseline_hfq_1min.rs"
+
+[[bin]]
+name = "cme_baseline_fill_size_buckets"
+path = "src/bin/cme_baseline_fill_size_buckets.rs"
+
+[[bin]]
+name = "cme_baseline_ylabel_1min"
+path = "src/bin/cme_baseline_ylabel_1min.rs"
+
 [dependencies]
 anyhow = "1.0"
 bytes = { version = "1.0", features = ["serde"] }

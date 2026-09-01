@@ -15,6 +15,7 @@ use mkt_signal::pre_trade::fr_position_concentration_guard::FrPositionConcentrat
 use mkt_signal::pre_trade::gate_fr_risk_limit_guard::GateFrRiskLimitGuard;
 use mkt_signal::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use mkt_signal::pre_trade::leverage_guard::LeverageGuard;
+use mkt_signal::pre_trade::manager_market_rules::ManagerMarketRulesReloader;
 use mkt_signal::pre_trade::monitor_channel::MonitorChannel;
 use mkt_signal::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
@@ -737,6 +738,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     hedge_venue,
                     arb_mode,
                     binance_account_mode,
+                    !exec_pre_trade,
                 )
                 .await
             {
@@ -756,6 +758,17 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             if exec_pre_trade {
                 let mut batch_redis = RedisSettings::default();
                 batch_redis.prefix = Some(prefix.clone());
+                let mut market_rules = ManagerMarketRulesReloader::connect(
+                    batch_redis.clone(),
+                    open_venue,
+                )
+                .await?;
+                if !market_rules.reload().await? {
+                    warn!(
+                        "Manager market-rules cache is not available yet; symbols remain blocked until Manager publishes it"
+                    );
+                }
+                market_rules.spawn(Duration::from_millis(args.config_reload_ms.max(100)));
                 let mut reloader = BatchExecConfigReloader::connect(
                     batch_redis,
                     open_venue,

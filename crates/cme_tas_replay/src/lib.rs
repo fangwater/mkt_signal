@@ -1,11 +1,13 @@
 //! Slim CME TAS codec: classify a source row and pack printable trades.
 
 pub mod backtest_1s;
+pub mod baseline_1min;
 pub mod ll2_1min;
 pub mod ll2_shard;
 pub mod ll2_source;
 pub mod product;
 pub mod shard;
+pub mod ylabel_1min;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Datelike, NaiveTime, Timelike};

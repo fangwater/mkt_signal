@@ -278,6 +278,52 @@ fn apply_symbol_filter(mut symbols: Vec<String>, venue_slug: &str) -> Vec<String
     symbols
 }
 
+async fn get_symbols_for_role(
+    config: &Config,
+    binance_futures_role: BinanceFuturesRole,
+) -> Result<Vec<String>> {
+    if uses_all_binance_futures_symbols(config.venue, binance_futures_role) {
+        Config::get_all_binance_futures_symbols().await
+    } else {
+        config.get_symbols().await
+    }
+}
+
+fn uses_all_binance_futures_symbols(
+    venue: TradingVenue,
+    binance_futures_role: BinanceFuturesRole,
+) -> bool {
+    venue == TradingVenue::BinanceFutures && binance_futures_role == BinanceFuturesRole::BookTicker
+}
+
+async fn wait_for_symbols_for_role(
+    config: &Config,
+    binance_futures_role: BinanceFuturesRole,
+) -> Vec<String> {
+    let mut backoff = Duration::from_secs(2);
+    let cap = Duration::from_secs(30);
+    loop {
+        match get_symbols_for_role(config, binance_futures_role).await {
+            Ok(symbols) if !symbols.is_empty() => return symbols,
+            Ok(_) => log::error!(
+                "spread_pbs[{}] symbol lookup returned empty for role={}; retry in {:?}",
+                config.venue.data_pub_slug(),
+                binance_futures_role.as_str(),
+                backoff,
+            ),
+            Err(err) => log::error!(
+                "spread_pbs[{}] symbol lookup failed for role={}: {:#}; retry in {:?}",
+                config.venue.data_pub_slug(),
+                binance_futures_role.as_str(),
+                err,
+                backoff,
+            ),
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(cap);
+    }
+}
+
 fn build_market_subscribe(
     adapter: &Rc<dyn VenueAdapter>,
     symbols: &[String],
@@ -471,7 +517,10 @@ impl SpreadPbsApp {
 
         // ---- 首次拉 symbol（含 BinanceFutures，无硬编码） ----
         // spread_pbs 不归 pm2 管，启动期 REST 抖动不能直接退出；用退避循环等到拿到非空列表
-        let initial_symbols = apply_symbol_filter(self.config.wait_for_symbols().await, venue_slug);
+        let initial_symbols = apply_symbol_filter(
+            wait_for_symbols_for_role(&self.config, binance_futures_role).await,
+            venue_slug,
+        );
         if initial_symbols.is_empty() {
             bail!(
                 "spread_pbs[{}] no symbols left after {} filter",
@@ -967,6 +1016,7 @@ impl SpreadPbsApp {
                             venue_slug,
                             primary,
                             &self.config,
+                            binance_futures_role,
                             &ctx,
                             &mut current_symbols,
                         ).await;
@@ -979,6 +1029,7 @@ impl SpreadPbsApp {
                             venue_slug,
                             secondary,
                             &self.config,
+                            binance_futures_role,
                             &ctx,
                             &mut current_symbols,
                         ).await;
@@ -1604,13 +1655,14 @@ async fn restart_leg(
     venue_slug: &'static str,
     leg: &mut WsLeg,
     config: &Config,
+    binance_futures_role: BinanceFuturesRole,
     ctx: &LegCtx,
     current_symbols: &mut HashSet<String>,
 ) {
     log::info!("spread_pbs[{}] leg={} restart begin", venue_slug, leg.label);
 
     // 先拉新 symbol；失败/空一律保留旧 leg，不重启。
-    let new_symbols = match config.get_symbols().await {
+    let new_symbols = match get_symbols_for_role(config, binance_futures_role).await {
         Ok(v) if !v.is_empty() => apply_symbol_filter(v, venue_slug),
         Ok(_) => {
             log::error!(
@@ -3119,6 +3171,14 @@ mod tests {
             ),
             (true, false)
         );
+        assert!(uses_all_binance_futures_symbols(
+            TradingVenue::BinanceFutures,
+            BinanceFuturesRole::BookTicker,
+        ));
+        assert!(!uses_all_binance_futures_symbols(
+            TradingVenue::BinanceFutures,
+            BinanceFuturesRole::Market,
+        ));
     }
 
     #[test]

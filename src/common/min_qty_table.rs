@@ -1389,6 +1389,16 @@ impl MinQtyTable {
         }
     }
 
+    pub fn replace_market_snapshot(
+        &mut self,
+        market_type: MarketType,
+        filters: HashMap<String, MinQtyEntry>,
+        contract_multipliers: HashMap<String, f64>,
+    ) {
+        self.filters.insert(market_type, filters);
+        self.contract_multipliers = contract_multipliers;
+    }
+
     async fn refresh_binance(&mut self) -> Result<()> {
         let provider = BinanceProvider::new();
         for market_type in provider.supported_market_types() {

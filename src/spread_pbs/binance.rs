@@ -328,8 +328,11 @@ impl VenueAdapter for BinanceAdapter {
         let slots = self.symbol_slot_by_symbol.borrow();
         Ok(binance_codec::parse_derivatives_json(value)
             .into_iter()
-            .filter(|derivative| {
-                slots.is_empty() || slots.contains_key(derivative_symbol(derivative))
+            .filter(|derivative| match derivative {
+                binance_codec::Derivative::Liquidation { symbol, .. } => {
+                    slots.is_empty() || slots.contains_key(symbol)
+                }
+                _ => true,
             })
             .map(derivative_to_bytes)
             .collect())
@@ -358,10 +361,10 @@ impl VenueAdapter for BinanceAdapter {
         let mut encoded = Vec::new();
         let parsed = binance_codec::parse_derivatives_raw_borrowed(raw, |derivative| {
             handled = true;
-            let symbol = raw_derivative_symbol(&derivative);
-            let slot_index = symbol_slot(symbol);
-            if !active_is_empty && slot_index.is_none() {
-                return Some(());
+            if let binance_codec::RawDerivative::Liquidation { symbol, .. } = &derivative {
+                if !active_is_empty && symbol_slot(symbol).is_none() {
+                    return Some(());
+                }
             }
             encoded.extend(raw_derivative_to_bytes(derivative));
             Some(())
@@ -551,15 +554,6 @@ fn book_to_incremental(book: binance_codec::Book) -> IncrementalFrame {
     }
 }
 
-fn derivative_symbol(derivative: &binance_codec::Derivative) -> &str {
-    match derivative {
-        binance_codec::Derivative::MarkPrice { symbol, .. }
-        | binance_codec::Derivative::IndexPrice { symbol, .. }
-        | binance_codec::Derivative::FundingRate { symbol, .. }
-        | binance_codec::Derivative::Liquidation { symbol, .. } => symbol.as_str(),
-    }
-}
-
 fn derivative_to_bytes(derivative: binance_codec::Derivative) -> Bytes {
     match derivative {
         binance_codec::Derivative::MarkPrice {
@@ -586,13 +580,6 @@ fn derivative_to_bytes(derivative: binance_codec::Derivative) -> Bytes {
             price,
             timestamp_us,
         } => LiquidationMsg::create(symbol, side, amount, price, timestamp_us).to_bytes(),
-    }
-}
-
-fn raw_derivative_symbol<'a>(derivative: &'a binance_codec::RawDerivative<'a>) -> &'a str {
-    match derivative {
-        binance_codec::RawDerivative::MarkPrice { symbol, .. }
-        | binance_codec::RawDerivative::Liquidation { symbol, .. } => symbol,
     }
 }
 
@@ -916,7 +903,14 @@ mod tests {
             {"e":"markPriceUpdate","E":1700000000001,"s":"BTCUSDT","p":"25.0","i":"24.9","r":"0.0001","T":1700003600000},
             {"e":"markPriceUpdate","E":1700000000001,"s":"ETHUSDT","p":"26.0","i":"25.9","r":"0.0002","T":1700003600000}
         ]}"#;
-        assert_eq!(a.parse_derivatives_frame(&v(mark_arr)).unwrap().len(), 3);
+        assert_eq!(a.parse_derivatives_frame(&v(mark_arr)).unwrap().len(), 6);
+        let raw_bytes = a
+            .parse_derivatives_raw(mark_arr.as_bytes(), &mut |symbol| {
+                a.symbol_slot_index(symbol)
+            })
+            .unwrap();
+        assert_eq!(raw_bytes.len(), 6);
+        assert_eq!(MarkPriceMsg::get_symbol(&raw_bytes[3]), "ETHUSDT");
 
         let liquidation = r#"{"data":{"e":"forceOrder","E":1700000000001,
             "o":{"s":"BTCUSDT","S":"SELL","z":"10","ap":"25.2","T":1700000000000}}}"#;

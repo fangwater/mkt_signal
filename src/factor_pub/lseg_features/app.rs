@@ -604,6 +604,18 @@ impl LsegReplayState {
         Ok(())
     }
 
+    /// Advance the trade-derived state without inventing a book snapshot.
+    ///
+    /// This is used by the HFQ minute factor replay.  It deliberately leaves
+    /// `latest_depth` empty, so every formula that requires native depth
+    /// evaluates to `NaN` through `factor_values`.
+    pub fn push_trade_only(&mut self, ts_ms: i64, values: &[f64; TRADE_FLOW_FEATURE_DIM]) {
+        self.state.push_native_bar(ts_ms, values);
+        self.state.push_missing_depth_metrics();
+        self.update_native_rolling(values);
+        self.latest_depth = None;
+    }
+
     fn update_native_rolling(&mut self, values: &[f64; TRADE_FLOW_FEATURE_DIM]) {
         let close = values[FIELD_CLOSE];
         let volume = values[FIELD_VOLUME];

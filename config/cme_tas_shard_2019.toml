@@ -1,0 +1,10 @@
+# Shard the 2019 TAS period as one of three concurrent yearly jobs.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+output_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_zstd_shards"
+periods = ["2019-01-01_2020-01-01"]
+
+# Three yearly jobs run together, for 12 sharding workers in total.
+workers = 4
+rows_per_shard = 25000000
+zstd_level = 1
+progress_every = 10000000

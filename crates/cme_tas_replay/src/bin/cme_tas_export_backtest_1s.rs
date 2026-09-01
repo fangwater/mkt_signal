@@ -197,12 +197,12 @@ fn candidate_contracts(spec: ProductSpec, period_year: i32) -> Result<Vec<Contra
     for year in period_year - 1..=period_year + 5 {
         for &month_code in spec.month_codes {
             let month = month_number(month_code)?;
-            let ric = format!(
-                "{}{}{:02}",
-                spec.product,
-                char::from(month_code),
-                year % 100
-            );
+            let year_suffix = if year < 2024 {
+                (year % 10).to_string()
+            } else {
+                format!("{:02}", year % 100)
+            };
+            let ric = format!("{}{}{}", spec.product, char::from(month_code), year_suffix);
             out.push(Contract {
                 ric,
                 contract_id: format!("{}:{}:{year:04}-{month:02}", spec.exchange, spec.product),
@@ -1491,6 +1491,25 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn candidate_rics_follow_the_lseg_2024_year_suffix_cutover() -> Result<()> {
+        let rics_2023 = candidate_contracts(product_spec("RTY")?, 2023)?
+            .into_iter()
+            .map(|contract| contract.ric)
+            .collect::<BTreeSet<_>>();
+        assert!(rics_2023.contains("RTYH3"));
+        assert!(rics_2023.contains("RTYH24"));
+        assert!(!rics_2023.contains("RTYH23"));
+
+        let rics_2024 = candidate_contracts(product_spec("RTY")?, 2024)?
+            .into_iter()
+            .map(|contract| contract.ric)
+            .collect::<BTreeSet<_>>();
+        assert!(rics_2024.contains("RTYH3"));
+        assert!(rics_2024.contains("RTYH24"));
+        Ok(())
+    }
 
     #[test]
     fn only_matching_sourced_outage_boundaries_create_a_reviewed_gap() {

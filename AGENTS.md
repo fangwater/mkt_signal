@@ -107,6 +107,32 @@ The following is a historical snapshot verified on 2026-08-10 UTC. It proves tha
 
 Never copy passwords, API keys, or values from the remote `env.sh` into this file, chat, commits, or command output.
 
+## Exec Delisting And Forced Close
+
+Manager is the sole owner of venue order-rule refresh for Exec and publishes one
+complete current cache every 60 seconds. `exec-pre-trade` hot-reloads that cache
+and must not independently poll the venue for the same rules. Only venue-active
+symbol statuses are tradable. Once a complete loaded snapshot omits a symbol or
+marks it inactive, no strategy may create a new order for that symbol.
+
+Do not discard exchange-owned futures fills because their client order ID is not
+numeric. Recognize only documented forced-close identities such as liquidation,
+ADL, delisting settlement, and contract delivery. Persist each factual fill as
+both unmatched exchange evidence and a `uniform_orders` fill with an
+`exchange_forced_close:<reason>` attribution prefix plus exchange order/trade
+identifiers. Do not assign it to a CTA strategy without factual strategy
+identity. Reconcile BatchExec's position ledger to the
+exchange account position for an untradable symbol; never create an offsetting
+`SYSTEM_POSITION_CLOSE` loop that cannot be submitted. Liquidation penalties and
+other balance adjustments are account-ledger events and must not be invented as
+fill fees.
+
+Keep one current internal Manager/Exec cache and IPC contract. Never add parallel
+`v1`/`v2` formats, version-suffixed Redis keys, versioned internal API paths,
+duplicate versioned types, compatibility branches, or a schema-version field.
+Venue-owned external paths such as Binance `/fapi/v1/...` retain the names the
+venue requires and are not internal contract versions.
+
 ## Crypto Market SID Map And Storage Layers
 
 `tardis_agg_1s_daily/tardis_1s_{SYMBOL}_sids_1_6_{YYYYMMDD}.h5` is a local synthesis export, not exchange official data and not a Tardis official product. The official inputs are Tardis raw `trades` and `incremental_book_L2` (and optionally `quotes`). Do not call these HDF files official.

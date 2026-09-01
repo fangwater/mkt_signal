@@ -407,6 +407,7 @@ enum BatchExecCompletionReason {
     TargetReached,
     TargetTolerance,
     ExchangeMinimum,
+    SymbolNotTradable,
 }
 
 impl BatchExecCompletionReason {
@@ -415,6 +416,7 @@ impl BatchExecCompletionReason {
             Self::TargetReached => "target_reached",
             Self::TargetTolerance => "target_tolerance",
             Self::ExchangeMinimum => "exchange_minimum",
+            Self::SymbolNotTradable => "symbol_not_tradable",
         }
     }
 }
@@ -1320,6 +1322,31 @@ impl BatchExecStrategy {
         else {
             return;
         };
+        if let Some(false) = self.symbol_is_tradable() {
+            let batch_ids = self.batches.keys().copied().collect::<Vec<_>>();
+            for batch_seq in batch_ids {
+                self.begin_cancel_batch(batch_seq, BatchPhase::CancellingForTarget);
+            }
+            if self.batches.is_empty() {
+                if self.completion_reason != Some(BatchExecCompletionReason::SymbolNotTradable) {
+                    warn!(
+                        "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} execution blocked because Manager market rules mark the symbol not tradable",
+                        self.strategy_id, self.strategy_name, self.symbol
+                    );
+                }
+                self.completion_reason = Some(BatchExecCompletionReason::SymbolNotTradable);
+                self.next_batch_at_us = i64::MAX;
+            }
+            return;
+        }
+        if self.completion_reason == Some(BatchExecCompletionReason::SymbolNotTradable) {
+            info!(
+                "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} resumed after Manager market rules marked the symbol tradable",
+                self.strategy_id, self.strategy_name, self.symbol
+            );
+            self.completion_reason = None;
+            self.next_batch_at_us = now_ts;
+        }
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
@@ -1513,6 +1540,9 @@ impl BatchExecStrategy {
         let table = MonitorChannel::instance()
             .try_venue_min_qty_table(self.exec_venue)
             .ok_or_else(|| format!("missing min qty table venue={:?}", self.exec_venue))?;
+        if table.snapshot_loaded() && !table.is_tradable_symbol(&self.symbol) {
+            return Err(format!("symbol is not tradable symbol={}", self.symbol));
+        }
         let symbol_key = min_qty_symbol_key(self.exec_venue, &self.symbol);
         let price_tick = table
             .price_tick(&symbol_key)
@@ -1538,6 +1568,13 @@ impl BatchExecStrategy {
             qty_multiplier,
             inverse_contract_size,
         })
+    }
+
+    fn symbol_is_tradable(&self) -> Option<bool> {
+        let table = MonitorChannel::instance().try_venue_min_qty_table(self.exec_venue)?;
+        table
+            .snapshot_loaded()
+            .then(|| table.is_tradable_symbol(&self.symbol))
     }
 
     fn build_child_orders(

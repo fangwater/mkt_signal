@@ -109,6 +109,86 @@
       "reason": "weekend",
       "action": "filter",
       "source": "LSEG normalised source row 2025-05-04T22:40:21.630321515Z: Type=Trade, Price=58, Volume=100, Qualifiers=Block Trade, Exch Time=20:15:28"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2023-05-20",
+      "kind": "trade",
+      "event_ts": 1684552090,
+      "ric": "CLZ3",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG normalised source row 2023-05-19T15:17:24.750391078Z: Type=Trade, Price=71.8, Volume=28, Qualifiers=Block Trade, Exch Time=03:08:10"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2022-10-05",
+      "kind": "trade",
+      "event_ts": 1665004006,
+      "ric": "GCG3",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG normalised source row 2022-10-05T21:06:46.366946802Z: Type=Trade, Price=1731, Volume=75, Qualifiers=Block Trade, Exch Time=21:06:46, Date=2022-10-04"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2022-10-05",
+      "kind": "trade",
+      "event_ts": 1665004143,
+      "ric": "GCG3",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG normalised source row 2022-10-05T21:09:03.890948172Z: Type=Trade, Price=1731, Volume=25, Qualifiers=Block Trade, Exch Time=21:09:03, Date=2022-10-04"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2022-01-08",
+      "kind": "trade",
+      "event_ts": 1641631920,
+      "ric": "CLG2",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG normalised source row 2022-01-07T21:05:21.310745486Z: Type=Trade, Price=79, Volume=60, Qualifiers=Block Trade, Exch Time=08:52:00"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2022-03-29",
+      "kind": "trade",
+      "event_ts": 1648590181,
+      "ric": "CLQ2",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG normalised source row 2022-03-29T21:43:04.574938054Z: Type=Trade, Price=95.5, Volume=25, Qualifiers=Block Trade, Exch Time=21:43:01"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2021-03-08",
+      "kind": "trade",
+      "event_ts": 1615244081,
+      "ric": "GCJ1",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG normalised source row 2021-03-08T22:54:42.053457738Z: Type=Trade, Price=1677, Volume=43, Qualifiers=Block Trade, Exch Time=22:54:41"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2020-03-07",
+      "kind": "trade",
+      "event_ts": 1583570100,
+      "ric": "GCJ0",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG normalised source row 2020-03-06T20:40:50.907494805Z: Type=Trade, Price=1677.3, Volume=300, Qualifiers=Block Trade, Exch Time=08:35:00"
+    },
+    {
+      "product": "GC",
+      "trad_day": "2020-03-16",
+      "kind": "trade",
+      "event_ts": 1584395247,
+      "ric": "GCJ0",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG normalised source row 2020-03-16T21:47:28.074982791Z: Type=Trade, Price=1500, Volume=154, Qualifiers=Block Trade, Exch Time=21:47:27"
     }
   ]
 }

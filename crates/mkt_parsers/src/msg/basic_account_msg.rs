@@ -575,6 +575,8 @@ pub struct BinanceBasicOrderMsg {
     /// 1..=6: OrderStatus
     pub order_status: u8,
     pub is_maker: u8,
+    /// 0=ordinary, 1=liquidation, 2=adl, 3=settlement, 4=delivery
+    pub external_order_kind: u8,
     pub price: f64,
     pub quantity: f64,
     pub last_executed_quantity: f64,
@@ -591,6 +593,21 @@ impl BinanceBasicOrderMsg {
     pub const VENUE_MARGIN: u8 = 1;
     pub const VENUE_UM: u8 = 2;
     pub const VENUE_CM: u8 = 3;
+    pub const EXTERNAL_NONE: u8 = 0;
+    pub const EXTERNAL_LIQUIDATION: u8 = 1;
+    pub const EXTERNAL_ADL: u8 = 2;
+    pub const EXTERNAL_SETTLEMENT: u8 = 3;
+    pub const EXTERNAL_DELIVERY: u8 = 4;
+
+    pub fn external_order_label(&self) -> Option<&'static str> {
+        match self.external_order_kind {
+            Self::EXTERNAL_LIQUIDATION => Some("liquidation"),
+            Self::EXTERNAL_ADL => Some("adl"),
+            Self::EXTERNAL_SETTLEMENT => Some("settlement"),
+            Self::EXTERNAL_DELIVERY => Some("delivery"),
+            _ => None,
+        }
+    }
 
     #[allow(clippy::too_many_arguments)]
     pub fn create(
@@ -633,6 +650,7 @@ impl BinanceBasicOrderMsg {
             execution_type,
             order_status,
             is_maker: if is_maker { 1 } else { 0 },
+            external_order_kind: 0,
             price,
             quantity,
             last_executed_quantity,
@@ -654,7 +672,7 @@ impl BinanceBasicOrderMsg {
             + 4
             + self.symbol_length as usize
             + 8 * 3
-            + 6
+            + 7
             + 8 * 8
             + 4
             + self.commission_asset_length as usize;
@@ -678,6 +696,7 @@ impl BinanceBasicOrderMsg {
         buf.put_u8(self.execution_type);
         buf.put_u8(self.order_status);
         buf.put_u8(self.is_maker);
+        buf.put_u8(self.external_order_kind);
 
         buf.put_f64_le(self.price);
         buf.put_f64_le(self.quantity);
@@ -696,8 +715,8 @@ impl BinanceBasicOrderMsg {
 
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         // u32 msg_type + u8 venue + i64 + i64 + u32 symbol_len + (symbol bytes) + 3*i64
-        // + 6*u8 + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
-        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 6 + 8 * 8 + 4;
+        // + 7*u8 + 8*f64 + u32 comm_asset_len + (comm_asset bytes)
+        const MIN_FIXED_SIZE: usize = 4 + 1 + 8 + 8 + 4 + 8 * 3 + 7 + 8 * 8 + 4;
         if data.len() < MIN_FIXED_SIZE {
             anyhow::bail!("BinanceBasicOrderMsg too short: {}", data.len());
         }
@@ -718,7 +737,7 @@ impl BinanceBasicOrderMsg {
         }
         let symbol = String::from_utf8(cursor.copy_to_bytes(symbol_length as usize).to_vec())?;
 
-        if cursor.remaining() < 8 * 3 + 6 + 8 * 8 + 4 {
+        if cursor.remaining() < 8 * 3 + 7 + 8 * 8 + 4 {
             anyhow::bail!("BinanceBasicOrderMsg truncated after symbol");
         }
 
@@ -732,6 +751,7 @@ impl BinanceBasicOrderMsg {
         let execution_type = cursor.get_u8();
         let order_status = cursor.get_u8();
         let is_maker = cursor.get_u8();
+        let external_order_kind = cursor.get_u8();
 
         let price = cursor.get_f64_le();
         let quantity = cursor.get_f64_le();
@@ -768,6 +788,7 @@ impl BinanceBasicOrderMsg {
             execution_type,
             order_status,
             is_maker,
+            external_order_kind,
             price,
             quantity,
             last_executed_quantity,

@@ -173,17 +173,21 @@ pub struct LsegFusionInput {
 
 impl LsegFusionInput {
     pub fn validate(&self) -> Result<()> {
-        if self.symbol.is_empty()
-            || !self
-                .symbol
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
-        {
-            bail!("invalid futures symbol: {}", self.symbol);
-        }
+        validate_lseg_symbol(&self.symbol)?;
         self.depth.validate_levels()?;
         Ok(())
     }
+}
+
+fn validate_lseg_symbol(symbol: &str) -> Result<()> {
+    if symbol.is_empty()
+        || !symbol
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
+    {
+        bail!("invalid futures symbol: {symbol}");
+    }
+    Ok(())
 }
 
 const LSEG_FACTOR_PREFIX: &str = "lseg_features_";
@@ -330,6 +334,63 @@ impl LsegFeatureState {
     }
 }
 
+/// Stateful LSEG factor evaluator for minute bars that have trade fields but
+/// no trustworthy native book.  It never synthesizes depth: depth-dependent
+/// factors remain unavailable and are returned as `None` for callers to write
+/// as IEEE `NaN`.
+#[derive(Default)]
+pub struct LsegTradeOnlyFeatureState {
+    symbol: Option<String>,
+    last_ts_ms: Option<i64>,
+    has_input: bool,
+    formula_state: LsegReplayState,
+}
+
+impl LsegTradeOnlyFeatureState {
+    pub fn push(
+        &mut self,
+        ts_ms: i64,
+        symbol: &str,
+        trade: LsegTradeBar,
+        segment_break: bool,
+    ) -> Result<()> {
+        validate_lseg_symbol(symbol)?;
+        if let Some(current) = self.symbol.as_deref() {
+            if current != symbol {
+                bail!("futures state symbol mismatch: state={current} input={symbol}");
+            }
+        } else {
+            self.symbol = Some(symbol.to_string());
+        }
+        if let Some(previous) = self.last_ts_ms {
+            if ts_ms <= previous {
+                bail!(
+                    "futures timestamps must be strictly increasing: previous={previous} current={ts_ms}"
+                );
+            }
+        }
+        if segment_break {
+            self.formula_state = LsegReplayState::default();
+        }
+        self.formula_state.push_trade_only(ts_ms, &trade.values);
+        self.last_ts_ms = Some(ts_ms);
+        self.has_input = true;
+        Ok(())
+    }
+
+    pub fn factor_values(&mut self, plan: &LsegFactorPlan) -> Result<Vec<Option<f64>>> {
+        if !self.has_input {
+            bail!("cannot compute futures factors before an input row is pushed");
+        }
+        Ok(self
+            .formula_state
+            .factor_values(&plan.formula_plan)
+            .into_iter()
+            .map(|value| value.is_finite().then_some(value))
+            .collect())
+    }
+}
+
 fn lseg_formula_values(input: &LsegFusionInput) -> [f64; LSEG_TRADE_FIELD_COUNT] {
     input.trade.values
 }
@@ -458,5 +519,25 @@ mod tests {
         state.push(special_only).unwrap();
         assert_eq!(state.history_len(), 1);
         assert_eq!(state.factor_values(&plan).unwrap().len(), 632);
+    }
+
+    #[test]
+    fn trade_only_state_keeps_depth_factors_unavailable() {
+        let depth_plan =
+            LsegFactorPlan::from_factor_names(vec!["lseg_features_factor_013".to_string()])
+                .unwrap();
+        let trade_plan =
+            LsegFactorPlan::from_factor_names(vec!["lseg_features_baseline_159".to_string()])
+                .unwrap();
+        let mut state = LsegTradeOnlyFeatureState::default();
+        state
+            .push(1_000, "CME:ES", input(1_000, false).trade, false)
+            .unwrap();
+        assert_eq!(state.factor_values(&depth_plan).unwrap()[0], None);
+        state
+            .push(61_000, "CME:ES", input(61_000, false).trade, false)
+            .unwrap();
+        assert_eq!(state.factor_values(&depth_plan).unwrap()[0], None);
+        assert!(state.factor_values(&trade_plan).unwrap()[0].is_some());
     }
 }

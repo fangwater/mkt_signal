@@ -35,8 +35,8 @@ use log::{error, info, LevelFilter, Log, Metadata, Record};
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use rocksdb::{
-    BoundColumnFamily, ColumnFamilyDescriptor, DBWithThreadMode, MultiThreaded, Options,
-    WriteBatch, WriteOptions,
+    BlockBasedOptions, BoundColumnFamily, Cache, ColumnFamilyDescriptor, DBWithThreadMode,
+    MultiThreaded, Options, WriteBatch, WriteOptions,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -68,6 +68,9 @@ struct Args {
     /// Delete one failed period's product column families before a full restart.
     #[arg(long)]
     reset_writing_period: bool,
+    /// Recover the DB once and flush every column family so old WALs can retire.
+    #[arg(long)]
+    flush_all_column_families: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -839,6 +842,17 @@ fn product_cf_options() -> Options {
     opts
 }
 
+fn maintenance_cf_options(block_cache: &Cache) -> Options {
+    let mut opts = product_cf_options();
+    let mut table_options = BlockBasedOptions::default();
+    table_options.set_block_cache(block_cache);
+    table_options.set_cache_index_and_filter_blocks(true);
+    table_options.set_pin_l0_filter_and_index_blocks_in_cache(false);
+    table_options.set_pin_top_level_index_and_filter(false);
+    opts.set_block_based_table_factory(&table_options);
+    opts
+}
+
 fn open_rocksdb(path: &Path) -> Result<AllDb> {
     refuse_legacy_rocksdb(path)?;
     if path.exists() && !path.is_dir() {
@@ -890,6 +904,97 @@ fn open_rocksdb(path: &Path) -> Result<AllDb> {
         .collect();
     AllDb::open_cf_descriptors(&db_opts, path, descriptors)
         .with_context(|| format!("open rocksdb {}", path.display()))
+}
+
+fn open_rocksdb_for_maintenance(path: &Path) -> Result<AllDb> {
+    refuse_legacy_rocksdb(path)?;
+    if !path.is_dir() {
+        bail!("maintenance RocksDB {} is not a directory", path.display());
+    }
+    let names = AllDb::list_cf(&Options::default(), path)
+        .with_context(|| format!("list maintenance column families {}", path.display()))?;
+    for name in &names {
+        if name != "default" && name != CF_REPLAY_META && !is_product_cf_name(name) {
+            bail!(
+                "RocksDB {} has unsupported column family {name:?}",
+                path.display()
+            );
+        }
+    }
+
+    let mut db_opts = Options::default();
+    db_opts.set_max_open_files(512);
+    db_opts.set_max_file_opening_threads(8);
+    db_opts.set_skip_stats_update_on_db_open(true);
+    db_opts.increase_parallelism(32);
+    db_opts.set_max_background_jobs(32);
+    db_opts.set_db_write_buffer_size(8 * 1024 * 1024 * 1024);
+    let block_cache = Cache::new_lru_cache(1024 * 1024 * 1024);
+    let descriptors = names
+        .into_iter()
+        .map(|name| ColumnFamilyDescriptor::new(name, maintenance_cf_options(&block_cache)))
+        .collect::<Vec<_>>();
+    AllDb::open_cf_descriptors(&db_opts, path, descriptors)
+        .with_context(|| format!("open maintenance RocksDB {}", path.display()))
+}
+
+fn flush_all_column_families(db: &AllDb, workers: usize) -> Result<usize> {
+    let mut names = AllDb::list_cf(&Options::default(), db.path())
+        .with_context(|| format!("list column families before flush {}", db.path().display()))?;
+    names.sort();
+    let completed = AtomicU64::new(0);
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(workers.max(1).min(names.len().max(1)))
+        .thread_name(|id| format!("cme-tas-cf-flush-{id}"))
+        .build()
+        .context("build all-column-family flush pool")?;
+    pool.install(|| {
+        names.par_iter().try_for_each(|name| -> Result<()> {
+            let cf = db
+                .cf_handle(name)
+                .ok_or_else(|| anyhow!("column family {name:?} disappeared before flush"))?;
+            db.flush_cf(&cf)
+                .with_context(|| format!("flush column family {name}"))?;
+            let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 100 == 0 || count as usize == names.len() {
+                info!("flushed column families {count}/{}", names.len());
+                eprintln!("flushed column families {count}/{}", names.len());
+            }
+            Ok(())
+        })
+    })?;
+    db.flush_wal(true).context("sync WAL after all-CF flush")?;
+    Ok(names.len())
+}
+
+fn maintenance_flush_all_column_families(config: &ReplayConfig) -> Result<()> {
+    let started = Instant::now();
+    eprintln!(
+        "recovering maintenance RocksDB {} before all-CF flush",
+        config.rocksdb_dir.display()
+    );
+    let db = open_rocksdb_for_maintenance(&config.rocksdb_dir)?;
+    let meta = replay_meta_cf(&db)?;
+    let mut done = 0_u64;
+    for item in db.iterator_cf(&meta, rocksdb::IteratorMode::Start) {
+        let (key, value) = item.context("scan replay watermarks before all-CF flush")?;
+        if !key.starts_with(b"period:") {
+            continue;
+        }
+        match decode_period_status(&value)? {
+            PeriodStatus::Done => done += 1,
+            PeriodStatus::Writing => bail!(
+                "refuse all-CF flush while replay watermark {:?} is writing",
+                String::from_utf8_lossy(&key)
+            ),
+        }
+    }
+    let flushed = flush_all_column_families(&db, 16)?;
+    eprintln!(
+        "all-CF flush complete column_families={flushed} done_periods={done} elapsed_s={:.1}",
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
 }
 
 fn replay_meta_cf<'a>(db: &'a AllDb) -> Result<std::sync::Arc<BoundColumnFamily<'a>>> {
@@ -2610,7 +2715,8 @@ fn reset_writing_period(config: &ReplayConfig) -> Result<()> {
     options.set_sync(true);
     db.write_opt(batch, &options)
         .with_context(|| format!("delete failed replay watermark {period}"))?;
-    db.flush().context("flush failed replay period reset")?;
+    db.flush_cf(&meta)
+        .context("flush replay metadata after period reset")?;
     info!(
         "cme_tas_replay_all reset period={} dropped_product_cfs={} rocksdb={}",
         period,
@@ -2828,7 +2934,7 @@ fn repair_unparsed(config: &ReplayConfig) -> Result<()> {
         return Err(err);
     }
 
-    db.flush().context("flush repaired RocksDB records")?;
+    flush_all_column_families(&db, 16).context("flush repaired RocksDB records")?;
     if census.repaired_rows != expected_rows {
         bail!(
             "repair visited {} rows, expected {expected_rows}",
@@ -3014,11 +3120,16 @@ fn replay(config: &ReplayConfig) -> Result<()> {
         return Err(err);
     }
 
-    db.flush().context("flush rocksdb")?;
+    flush_all_column_families(&db, 16).context("flush all replay column families")?;
     if !capped {
         for period in &periods {
             finish_period(&db, period)?;
         }
+        let meta = replay_meta_cf(&db)?;
+        db.flush_cf(&meta)
+            .context("flush completed replay watermarks")?;
+        db.flush_wal(true)
+            .context("sync WAL after completed replay watermarks")?;
     }
     drop(db);
 
@@ -3170,13 +3281,21 @@ fn main() {
         "cme_tas_replay_all quote Exch Time fallback contracts to {}",
         config.quote_fallback_path.display()
     );
-    let result = match (args.repair_unparsed, args.reset_writing_period) {
-        (true, true) => Err(anyhow!(
-            "--repair-unparsed and --reset-writing-period are mutually exclusive"
-        )),
-        (true, false) => repair_unparsed(&config),
-        (false, true) => reset_writing_period(&config),
-        (false, false) => replay(&config),
+    let selected_modes = usize::from(args.repair_unparsed)
+        + usize::from(args.reset_writing_period)
+        + usize::from(args.flush_all_column_families);
+    let result = if selected_modes > 1 {
+        Err(anyhow!(
+            "--repair-unparsed, --reset-writing-period, and --flush-all-column-families are mutually exclusive"
+        ))
+    } else if args.repair_unparsed {
+        repair_unparsed(&config)
+    } else if args.reset_writing_period {
+        reset_writing_period(&config)
+    } else if args.flush_all_column_families {
+        maintenance_flush_all_column_families(&config)
+    } else {
+        replay(&config)
     };
     if let Err(err) = result {
         error!("cme_tas_replay_all failed: {err:?}");
@@ -3575,6 +3694,40 @@ mod tests {
         assert!(text.contains("ric=HSIF1 product=HSI rows=12"), "{text}");
         assert!(text.contains("ric=HSIEAS product=HSIEAS rows=3"), "{text}");
         assert!(text.contains("unique_rics=2 total_rows=15"), "{text}");
+    }
+
+    #[test]
+    fn all_cf_flush_drains_non_default_memtables() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("all-cf-flush.rocksdb");
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let product_cf = "p:2026:YM";
+        let db = AllDb::open_cf_descriptors(
+            &options,
+            &db_path,
+            [
+                ColumnFamilyDescriptor::new("default", Options::default()),
+                ColumnFamilyDescriptor::new(product_cf, Options::default()),
+            ],
+        )
+        .unwrap();
+        let cf = db.cf_handle(product_cf).unwrap();
+        db.put_cf(&cf, b"trade", b"payload").unwrap();
+        assert_eq!(
+            db.property_int_value_cf(&cf, rocksdb::properties::NUM_ENTRIES_ACTIVE_MEM_TABLE)
+                .unwrap(),
+            Some(1)
+        );
+
+        assert_eq!(flush_all_column_families(&db, 2).unwrap(), 2);
+        assert_eq!(
+            db.property_int_value_cf(&cf, rocksdb::properties::NUM_ENTRIES_ACTIVE_MEM_TABLE)
+                .unwrap(),
+            Some(0)
+        );
+        assert_eq!(db.get_cf(&cf, b"trade").unwrap().unwrap(), b"payload");
     }
 
     #[test]

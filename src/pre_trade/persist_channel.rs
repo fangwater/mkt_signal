@@ -196,19 +196,24 @@ impl PersistChannel {
 
     /// 发布统一订单记录（二进制格式）
     pub fn publish_uniform_order(&self, record: &UnifiedOrderRecord) {
+        if let Err(err) = self.try_publish_uniform_order(record) {
+            warn!(
+                "failed to publish uniform order update client_order_id={} symbol_len={} from_key_len={}: {err}",
+                record.client_order_id, record.symbol_len, record.from_key_len
+            );
+        }
+    }
+
+    /// 发布统一订单记录，并将通道或发布错误返回给调用方。
+    pub fn try_publish_uniform_order(&self, record: &UnifiedOrderRecord) -> Result<(), String> {
         let Some(publisher) = &self.uniform_order_record_pub else {
-            return;
+            return Err("uniform order publisher is unavailable".to_string());
         };
 
         let payload = serialize_uniform_order(record);
-        if let Err(err) = publisher.publish(payload.as_ref()) {
-            warn!(
-                "failed to publish uniform order update client_order_id={} symbol_len={} from_key_len={}: {err:#}",
-                record.client_order_id,
-                record.symbol_len,
-                record.from_key_len
-            );
-        }
+        publisher
+            .publish(payload.as_ref())
+            .map_err(|err| format!("{err:#}"))
     }
 
     /// 检查交易更新记录发布器是否可用
@@ -219,6 +224,11 @@ impl PersistChannel {
     /// 检查订单更新记录发布器是否可用
     pub fn is_order_update_publisher_available(&self) -> bool {
         self.order_update_record_pub.is_some()
+    }
+
+    /// 检查统一订单记录发布器是否可用。
+    pub fn is_uniform_order_publisher_available(&self) -> bool {
+        self.uniform_order_record_pub.is_some()
     }
 }
 

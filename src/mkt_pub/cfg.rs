@@ -298,6 +298,27 @@ impl Config {
         Ok(symbols)
     }
 
+    pub async fn get_all_binance_futures_symbols() -> Result<Vec<String>> {
+        Self::with_retry("get_all_binance_futures_symbols", || async {
+            let info = Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;
+            let mut symbols = Self::filter_binance_usdt_trading_futures_symbols(
+                &info.symbols,
+                BINANCE_CONTRACT_PERPETUAL,
+            );
+            let tradifi_symbols = Self::filter_binance_usdt_trading_futures_symbols(
+                &info.symbols,
+                BINANCE_CONTRACT_TRADIFI_PERPETUAL,
+            );
+            Self::extend_unique_symbols(&mut symbols, tradifi_symbols);
+            info!(
+                "Binance futures all-market USDT-denominated symbol count {}",
+                symbols.len()
+            );
+            Ok(symbols)
+        })
+        .await
+    }
+
     async fn get_futures_symbols_related_to_binance_spot() -> Result<Vec<String>> {
         let futures_info =
             Self::fetch_binance_exchange_info(BINANCE_FUTURES_EXCHANGE_INFO_URL).await?;

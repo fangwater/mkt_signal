@@ -93,6 +93,10 @@ fn parse_products(value: &str) -> Result<Vec<String>> {
 }
 
 fn open_input_db(args: &Args, products: &[String]) -> Result<DB> {
+    let mut db_options = Options::default();
+    db_options.set_max_open_files(512);
+    db_options.set_max_file_opening_threads(8);
+    db_options.set_skip_stats_update_on_db_open(true);
     let mut names = vec!["default".to_string(), "replay_meta".to_string()];
     for year in args.start.year()..=args.end.year() {
         let year = u16::try_from(year).context("year does not fit u16")?;
@@ -108,7 +112,7 @@ fn open_input_db(args: &Args, products: &[String]) -> Result<DB> {
         .collect::<Vec<_>>();
     if args.direct_read_only {
         return DB::open_cf_descriptors_read_only(
-            &Options::default(),
+            &db_options,
             &args.rocksdb_dir,
             descriptors,
             false,
@@ -120,7 +124,7 @@ fn open_input_db(args: &Args, products: &[String]) -> Result<DB> {
             .with_context(|| format!("create secondary parent {}", parent.display()))?;
     }
     DB::open_cf_descriptors_as_secondary(
-        &Options::default(),
+        &db_options,
         &args.rocksdb_dir,
         &args.secondary_dir,
         descriptors,
@@ -134,12 +138,14 @@ fn open_input_db(args: &Args, products: &[String]) -> Result<DB> {
     })
 }
 
-fn source_date(value: u32) -> Result<NaiveDate> {
+fn source_date(value: u32) -> Result<Option<NaiveDate>> {
     if value == 0 {
-        bail!("settlement source Date is missing");
+        return Ok(None);
     }
-    NaiveDate::parse_from_str(&format!("{value:08}"), "%Y%m%d")
-        .with_context(|| format!("parse settlement source Date {value}"))
+    Ok(Some(
+        NaiveDate::parse_from_str(&format!("{value:08}"), "%Y%m%d")
+            .with_context(|| format!("parse settlement source Date {value}"))?,
+    ))
 }
 
 fn key_part_seq(key: &[u8]) -> Result<(u16, u32)> {
@@ -189,6 +195,7 @@ fn run(args: &Args) -> Result<()> {
         .with_context(|| format!("create settlement output {}", partial.display()))?;
     let mut writer = csv::Writer::from_writer(file);
     let mut rows = 0u64;
+    let mut missing_source_date = 0u64;
 
     for year in args.start.year()..=args.end.year() {
         let year_u16 = u16::try_from(year).context("year does not fit u16")?;
@@ -213,7 +220,10 @@ fn run(args: &Args) -> Result<()> {
                 if record.price == MISSING_PRICE && !args.include_missing_price {
                     continue;
                 }
-                let day = source_date(record.source_date_yyyymmdd)?;
+                let Some(day) = source_date(record.source_date_yyyymmdd)? else {
+                    missing_source_date += 1;
+                    continue;
+                };
                 if day < args.start || day > args.end {
                     continue;
                 }
@@ -258,10 +268,11 @@ fn run(args: &Args) -> Result<()> {
         )
     })?;
     println!(
-        "cme_tas_export_settlements products={products:?} start={} end={} rows={} output={}",
+        "cme_tas_export_settlements products={products:?} start={} end={} rows={} missing_source_date={} output={}",
         args.start,
         args.end,
         rows,
+        missing_source_date,
         args.output.display()
     );
     Ok(())
@@ -292,8 +303,9 @@ mod tests {
     fn settlement_source_date_and_key_order_round_trip() {
         assert_eq!(
             source_date(20240328).unwrap(),
-            NaiveDate::from_ymd_opt(2024, 3, 28).unwrap()
+            NaiveDate::from_ymd_opt(2024, 3, 28)
         );
+        assert_eq!(source_date(0).unwrap(), None);
         let key = encode_all_key(KIND_CME_SETTLEMENT, "ESH24", 1, 7, 9).unwrap();
         assert_eq!(key_part_seq(&key).unwrap(), (7, 9));
     }

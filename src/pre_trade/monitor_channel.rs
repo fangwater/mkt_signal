@@ -32,6 +32,7 @@ use mkt_parsers::msg::basic_account_msg::{
 use mkt_parsers::msg::bitget_account_msg::BitgetBasicOrderMsg;
 use mkt_parsers::msg::bybit_account_msg::BybitBasicOrderMsg;
 use order_common::{ExecutionType, OrderStatus, TradingVenue};
+use persist_common::UnifiedOrderRecord;
 use runtime_common::exchange::Exchange;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::{
@@ -736,7 +737,11 @@ impl BasicAccountListener {
                     }
                     Exchange::Binance => {
                         if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
-                            dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                            if msg.external_order_label().is_some() {
+                                dispatch_binance_external_order_update(&msg);
+                            } else {
+                                dispatch_order_update_generic(&self.strategy_mgr, &msg);
+                            }
                         }
                     }
                     Exchange::Gate => {
@@ -2747,6 +2752,7 @@ impl MonitorChannel {
         hedge_venue: TradingVenue,
         arb_mode: ArbMode,
         binance_account_mode: Option<BinanceAccountMode>,
+        refresh_order_rules_from_venue: bool,
     ) -> Result<()> {
         // 仅支持当前已接入 pre_trade 的交易所
         for v in [open_venue, hedge_venue] {
@@ -2797,11 +2803,13 @@ impl MonitorChannel {
             }
         } else if is_futures_venue(open_venue) {
             let mut min_qty_table = MinQtyTable::new(open_exchange);
-            if let Err(err) = min_qty_table.refresh().await {
-                warn!(
-                    "failed to refresh min_qty_table for {:?}: {err:#}",
-                    open_exchange
-                );
+            if refresh_order_rules_from_venue {
+                if let Err(err) = min_qty_table.refresh().await {
+                    warn!(
+                        "failed to refresh min_qty_table for {:?}: {err:#}",
+                        open_exchange
+                    );
+                }
             }
             LegMgr::Futures {
                 exchange: open_exchange,
@@ -2819,11 +2827,13 @@ impl MonitorChannel {
             }
         } else if is_futures_venue(hedge_venue) {
             let mut min_qty_table = MinQtyTable::new(hedge_exchange);
-            if let Err(err) = min_qty_table.refresh().await {
-                warn!(
-                    "failed to refresh min_qty_table for {:?}: {err:#}",
-                    hedge_exchange
-                );
+            if refresh_order_rules_from_venue {
+                if let Err(err) = min_qty_table.refresh().await {
+                    warn!(
+                        "failed to refresh min_qty_table for {:?}: {err:#}",
+                        hedge_exchange
+                    );
+                }
             }
             LegMgr::Futures {
                 exchange: hedge_exchange,
@@ -2844,8 +2854,10 @@ impl MonitorChannel {
                 continue;
             }
             let mut table = VenueMinQtyTable::new(venue);
-            if let Err(err) = table.refresh().await {
-                warn!("failed to refresh filters for venue {:?}: {err:#}", venue);
+            if refresh_order_rules_from_venue {
+                if let Err(err) = table.refresh().await {
+                    warn!("failed to refresh filters for venue {:?}: {err:#}", venue);
+                }
             }
             venue_min_qty_tables.insert(venue, Rc::new(table));
         }
@@ -2918,6 +2930,71 @@ impl MonitorChannel {
         });
 
         Ok(())
+    }
+
+    pub fn replace_manager_order_rules(
+        venue: TradingVenue,
+        market_type: signal_common::min_qty_table::MarketType,
+        filters: HashMap<String, signal_common::min_qty_table::MinQtyEntry>,
+        contract_multipliers: HashMap<String, f64>,
+        tradable_symbols: std::collections::HashSet<String>,
+    ) -> Result<(), String> {
+        let legacy_market_type = match market_type {
+            signal_common::min_qty_table::MarketType::Spot => {
+                crate::common::min_qty_table::MarketType::Spot
+            }
+            signal_common::min_qty_table::MarketType::Futures => {
+                crate::common::min_qty_table::MarketType::Futures
+            }
+            signal_common::min_qty_table::MarketType::CoinFutures => {
+                crate::common::min_qty_table::MarketType::Futures
+            }
+            signal_common::min_qty_table::MarketType::Margin => {
+                crate::common::min_qty_table::MarketType::Margin
+            }
+        };
+        let legacy_filters = filters
+            .iter()
+            .map(|(symbol, entry)| {
+                (
+                    symbol.clone(),
+                    crate::common::min_qty_table::MinQtyEntry {
+                        symbol: entry.symbol.clone(),
+                        base_asset: entry.base_asset.clone(),
+                        quote_asset: entry.quote_asset.clone(),
+                        min_qty: entry.min_qty,
+                        step_size: entry.step_size,
+                        price_tick: entry.price_tick,
+                        min_notional: entry.min_notional,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        Self::with_inner_mut(|inner| {
+            let table = inner
+                .venue_min_qty_tables
+                .get_mut(&venue)
+                .ok_or_else(|| format!("missing venue order-rules table: {venue:?}"))?;
+            Rc::get_mut(table)
+                .ok_or_else(|| format!("venue order-rules table is shared: {venue:?}"))?
+                .replace_snapshot(
+                    filters.clone(),
+                    contract_multipliers.clone(),
+                    tradable_symbols,
+                );
+
+            for leg in [&inner.open_leg, &inner.hedge_leg] {
+                let LegMgr::Futures { min_qty_table, .. } = leg else {
+                    continue;
+                };
+                min_qty_table.borrow_mut().replace_market_snapshot(
+                    legacy_market_type,
+                    legacy_filters.clone(),
+                    contract_multipliers.clone(),
+                );
+            }
+            Ok(())
+        })
     }
 
     /// 将订单数量（按 venue 语义）转换为 base qty（标的数量）
@@ -4979,6 +5056,102 @@ fn dispatch_order_update_generic<T>(
     }
 }
 
+fn dispatch_binance_external_order_update(update: &BinanceBasicOrderMsg) {
+    use order_common::{OrderUpdate, TradeUpdate};
+
+    let Some(reason) = update.external_order_label() else {
+        return;
+    };
+    let execution_type = OrderUpdate::execution_type(update);
+    let venue = OrderUpdate::trading_venue(update);
+    let price = if update.last_executed_price.is_finite() && update.last_executed_price > 0.0 {
+        update.last_executed_price
+    } else {
+        update.average_price
+    };
+
+    if let Some(record) = build_binance_external_uniform_order(update) {
+        MonitorChannel::instance().bump_trade_update_seq();
+        PersistChannel::with(|channel| {
+            channel.publish_trade_update_unmatched(update);
+            channel.publish_uniform_order(&record);
+        });
+        warn!(
+            "Binance exchange forced-close fill persisted: reason={} venue={:?} symbol={} order_id={} trade_id={} side={} price={:.8} qty={:.8}",
+            reason,
+            venue,
+            update.symbol,
+            update.order_id,
+            update.trade_id,
+            TradeUpdate::side(update).as_str(),
+            price,
+            update.last_executed_quantity
+        );
+    } else {
+        PersistChannel::with(|channel| channel.publish_order_update_unmatched(update));
+        debug!(
+            "Binance exchange forced-close non-fill persisted as unmatched order: reason={} venue={:?} symbol={} order_id={} x={:?} X={:?}",
+            reason,
+            venue,
+            update.symbol,
+            update.order_id,
+            execution_type,
+            OrderUpdate::status(update)
+        );
+    }
+}
+
+fn build_binance_external_uniform_order(
+    update: &BinanceBasicOrderMsg,
+) -> Option<UnifiedOrderRecord> {
+    use order_common::OrderUpdate;
+
+    let reason = update.external_order_label()?;
+    let price = if update.last_executed_price.is_finite() && update.last_executed_price > 0.0 {
+        update.last_executed_price
+    } else {
+        update.average_price
+    };
+    if OrderUpdate::execution_type(update) != ExecutionType::Trade
+        || !update.last_executed_quantity.is_finite()
+        || update.last_executed_quantity <= 0.0
+        || !price.is_finite()
+        || price <= 0.0
+    {
+        return None;
+    }
+
+    let event_ts = OrderUpdate::event_time(update);
+    let mut record = UnifiedOrderRecord {
+        symbol_len: 0,
+        symbol: update.symbol.as_bytes().to_vec(),
+        create_ts: event_ts,
+        update_ts: event_ts,
+        signal_ts: 0,
+        submit_ts: 0,
+        local_ts: get_timestamp_us(),
+        mkt_ts: 0,
+        client_order_id: update.client_order_id,
+        venue: OrderUpdate::trading_venue(update) as u8,
+        ttype: update.order_type,
+        side: update.side,
+        price,
+        price_offset: 0.0,
+        amount_init: update.quantity,
+        amount_update: update.last_executed_quantity,
+        status: update.order_status,
+        from_key_len: 0,
+        from_key: format!(
+            "exchange_forced_close:{reason}:order={}:trade={}",
+            update.order_id, update.trade_id
+        )
+        .into_bytes(),
+        signal_bbo: None,
+    };
+    record.refresh_lengths();
+    Some(record)
+}
+
 fn dispatch_order_update_to_strategy<T>(
     strategy_mgr: &Rc<RefCell<crate::strategy::StrategyManager>>,
     strategy_id: i32,
@@ -5199,6 +5372,48 @@ mod tests {
     }
 
     #[test]
+    fn external_settlement_builds_nav_uniform_fill() {
+        let mut update = BinanceBasicOrderMsg::create(
+            BinanceBasicOrderMsg::VENUE_UM,
+            1_787_734_851_000,
+            1_787_734_850_999,
+            "STORJUSDT".to_string(),
+            998_877,
+            -998_877,
+            556_677,
+            Side::Sell.to_u8(),
+            order_common::OrderType::Market.to_u8(),
+            order_common::TimeInForce::IOC.to_u8(),
+            ExecutionType::Trade.to_u8(),
+            OrderStatus::Filled.to_u8(),
+            false,
+            0.0,
+            43_407.86712966,
+            43_407.86712966,
+            43_407.86712966,
+            0.1832,
+            0.1832,
+            0.0,
+            -123.45,
+            "USDT".to_string(),
+        );
+        update.external_order_kind = BinanceBasicOrderMsg::EXTERNAL_SETTLEMENT;
+
+        let record = build_binance_external_uniform_order(&update).expect("uniform fill");
+
+        assert_eq!(record.symbol, b"STORJUSDT");
+        assert_eq!(record.side, Side::Sell.to_u8());
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(
+            record.from_key,
+            b"exchange_forced_close:settlement:order=998877:trade=556677"
+        );
+        assert!((record.price - 0.1832).abs() < 1e-12);
+        assert!((record.amount_update - 43_407.86712966).abs() < 1e-9);
+        assert!(record.length_fields_consistent());
+    }
+
+    #[test]
     fn normalized_update_allocates_exchange_symbol_format() {
         let update = GateBasicOrderMsg::create(
             GateBasicOrderMsg::VENUE_SPOT,
@@ -5374,6 +5589,40 @@ mod tests {
         assert!((base_qty - 0.1).abs() < 1e-12);
         let overhedge_factor = 1.0 / base_qty;
         assert!((overhedge_factor - 10.0).abs() < 1e-12);
+
+        let replacement = HashMap::from([(
+            "FILUSDT".to_string(),
+            VenueMinQtyEntry {
+                symbol: "FILUSDT".to_string(),
+                base_asset: "FIL".to_string(),
+                quote_asset: "USDT".to_string(),
+                min_qty: 1.0,
+                step_size: 1.0,
+                price_tick: Some(0.001),
+                min_notional: None,
+            },
+        )]);
+        MonitorChannel::replace_manager_order_rules(
+            TradingVenue::OkexFutures,
+            signal_common::min_qty_table::MarketType::Futures,
+            replacement,
+            HashMap::from([("FILUSDT".to_string(), 0.2)]),
+            std::collections::HashSet::from(["FILUSDT".to_string()]),
+        )
+        .unwrap();
+
+        let venue_table = MonitorChannel::instance()
+            .try_venue_min_qty_table(TradingVenue::OkexFutures)
+            .unwrap();
+        assert_eq!(venue_table.price_tick("FILUSDT"), Some(0.001));
+        assert_eq!(venue_table.contract_multiplier_opt("FILUSDT"), Some(0.2));
+        let legacy_multiplier = MonitorChannel::with_inner(|inner| match &inner.open_leg {
+            LegMgr::Futures { min_qty_table, .. } => {
+                min_qty_table.borrow().contract_multiplier("FILUSDT")
+            }
+            LegMgr::Margin { .. } => unreachable!(),
+        });
+        assert_eq!(legacy_multiplier, 0.2);
     }
 
     #[test]

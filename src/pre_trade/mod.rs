@@ -22,6 +22,7 @@ pub mod kalman_filter;
 pub mod lazy_taker_action;
 pub mod leverage_guard;
 pub mod log_throttle;
+pub mod manager_market_rules;
 pub mod monitor_channel;
 pub mod net_position;
 pub mod notification_client;

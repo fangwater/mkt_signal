@@ -1,3 +1,6 @@
+[build]
+target-dir = "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal"
+
 [env]
 # Load ONNX Runtime on first use from the repository-local third_party binary.
 # Tests that do not run inference can start without a process-level shared-library dependency.

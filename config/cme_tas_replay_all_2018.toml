@@ -1,0 +1,19 @@
+# Append the complete 2018 TAS period to the standard all-product database.
+data_root = "/mnt/hdd-raid5-72t/liang_torch/lseg_data/future/normalised"
+shard_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_zstd_shards"
+period = "2018-01-01_2019-01-01"
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_rocksdb_all_products"
+
+rics = []
+workers = 12
+parse_workers = 12
+parse_chunk_rows = 32768
+
+column_rules = "../preprocess/lseg/tas_column_rules.json"
+max_tradedays = 0
+progress_every = 1000000
+
+log_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all.log"
+unparsed_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_unparsed.log"
+unmatched_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_unmatched.log"
+quote_fallback_path = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_quote_exch_fallback.log"

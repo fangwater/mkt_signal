@@ -180,9 +180,17 @@ impl BinanceBasicAccountEventParser {
 
         let symbol = lazy_string(&o, "s");
         let client_order_id_raw = lazy_string_opt(&o, "c");
+        let external_order_kind = client_order_id_raw
+            .as_deref()
+            .and_then(binance_external_order_kind)
+            .unwrap_or(BinanceBasicOrderMsg::EXTERNAL_NONE);
         let client_order_id = client_order_id_raw
             .as_deref()
             .and_then(parse_i64_str)
+            .or_else(|| {
+                (external_order_kind != BinanceBasicOrderMsg::EXTERNAL_NONE)
+                    .then(|| synthetic_external_client_order_id(order_id, trade_id, event_time))
+            })
             .unwrap_or(0);
 
         if client_order_id == 0 {
@@ -210,11 +218,17 @@ impl BinanceBasicAccountEventParser {
         let tif_str = lazy_string(&o, "f");
         let execution_type_str = lazy_string(&o, "x");
         let status_str = lazy_string(&o, "X");
-        let exe_code = order_codes::execution_type_to_u8(&execution_type_str);
+        let exe_code = if external_order_kind != BinanceBasicOrderMsg::EXTERNAL_NONE
+            && last_executed_quantity > 0.0
+        {
+            order_codes::execution_type_to_u8("TRADE")
+        } else {
+            order_codes::execution_type_to_u8(&execution_type_str)
+        };
         let status_code = order_codes::order_status_to_u8(&status_str);
         let commission_asset = lazy_string(&o, "N");
 
-        let msg = BinanceBasicOrderMsg::create(
+        let mut msg = BinanceBasicOrderMsg::create(
             Self::futures_venue(account_scope),
             event_time,
             transaction_time,
@@ -238,6 +252,7 @@ impl BinanceBasicAccountEventParser {
             realized_profit,
             commission_asset,
         );
+        msg.external_order_kind = external_order_kind;
 
         debug!(
             "parser: orderTradeUpdate parsed sym={} c_raw={:?} cli_id_i64={} x={} X={} qty={} last_qty={} last_px={}",
@@ -540,6 +555,29 @@ fn parse_i64_str(s: &str) -> Option<i64> {
     s.parse::<i64>().ok()
 }
 
+fn binance_external_order_kind(client_order_id: &str) -> Option<u8> {
+    let value = client_order_id.to_ascii_lowercase();
+    if value.starts_with("settlement_autoclose-") {
+        Some(BinanceBasicOrderMsg::EXTERNAL_SETTLEMENT)
+    } else if value.starts_with("delivery_autoclose-") {
+        Some(BinanceBasicOrderMsg::EXTERNAL_DELIVERY)
+    } else if value == "adl_autoclose" || value.starts_with("adl_autoclose-") {
+        Some(BinanceBasicOrderMsg::EXTERNAL_ADL)
+    } else if value.starts_with("autoclose-") {
+        Some(BinanceBasicOrderMsg::EXTERNAL_LIQUIDATION)
+    } else {
+        None
+    }
+}
+
+fn synthetic_external_client_order_id(order_id: i64, trade_id: i64, event_time: i64) -> i64 {
+    let source = [order_id, trade_id, event_time]
+        .into_iter()
+        .find(|value| *value > 0)
+        .unwrap_or(1);
+    -source
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,6 +684,55 @@ mod tests {
         assert!((msg.commission - 0.01).abs() < 1e-12);
         assert!((msg.realized_pnl - 1.25).abs() < 1e-12);
         assert_eq!(msg.commission_asset, "USDT");
+        assert_eq!(msg.external_order_kind, BinanceBasicOrderMsg::EXTERNAL_NONE);
+    }
+
+    #[test]
+    fn settlement_autoclose_is_emitted_as_external_trade() {
+        let parser = BinanceBasicAccountEventParser::new(true, BasicAccountScope::BinanceStdUm);
+        let sink = TestAccountEventSink::new();
+        let json = Bytes::from(
+            r#"{
+                "e":"ORDER_TRADE_UPDATE",
+                "E":1787734851000,
+                "T":1787734850999,
+                "o":{
+                    "s":"STORJUSDT",
+                    "c":"settlement_autoclose-1787734851782",
+                    "S":"SELL",
+                    "o":"MARKET",
+                    "f":"IOC",
+                    "x":"CALCULATED",
+                    "X":"FILLED",
+                    "i":998877,
+                    "t":556677,
+                    "m":false,
+                    "p":"0",
+                    "q":"43407.86712966",
+                    "ap":"0.1832",
+                    "l":"43407.86712966",
+                    "z":"43407.86712966",
+                    "L":"0.1832",
+                    "n":"0",
+                    "rp":"-123.45",
+                    "N":"USDT"
+                }
+            }"#,
+        );
+
+        assert_eq!(parser.parse(json, &sink), 1);
+        let wrapped = sink.recv().expect("settlement order event");
+        let (_, scope, payload) =
+            split_basic_account_event(&wrapped).expect("wrapped settlement order");
+        assert_eq!(scope, BasicAccountScope::BinanceStdUm);
+        let msg = BinanceBasicOrderMsg::from_bytes(payload).expect("settlement payload");
+        assert_eq!(msg.external_order_label(), Some("settlement"));
+        assert_eq!(msg.client_order_id, -998877);
+        assert_eq!(
+            msg.execution_type,
+            order_codes::execution_type_to_u8("TRADE")
+        );
+        assert!((msg.last_executed_quantity - 43_407.86712966).abs() < 1e-9);
     }
 
     #[test]
