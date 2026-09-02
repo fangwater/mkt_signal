@@ -228,6 +228,7 @@ fn replay_product(
     let continuous_id = spec.continuous_id();
     let mut state = LsegTradeOnlyFeatureState::default();
     let mut previous_ts = None;
+    let mut pending_factors = None;
     let mut files = 0u64;
     let mut rows = 0u64;
     for day_file in days {
@@ -244,6 +245,7 @@ fn replay_product(
             &continuous_id,
             &mut state,
             &mut previous_ts,
+            &mut pending_factors,
             plan,
         )?;
         if output.is_empty() {
@@ -381,6 +383,7 @@ fn process_day(
     continuous_id: &str,
     state: &mut LsegTradeOnlyFeatureState,
     previous_ts: &mut Option<i64>,
+    pending_factors: &mut Option<Vec<f64>>,
     plan: &LsegFactorPlan,
 ) -> Result<Vec<OutputRow>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
@@ -446,6 +449,7 @@ fn process_day(
         for (field_index, column) in trade_columns.iter().enumerate() {
             trade[field_index] = column.get(row_index).unwrap_or(f64::NAN);
         }
+        let factors = take_shifted_factors(pending_factors, segment_break, plan.len());
         state
             .push(
                 row_ts * 1_000,
@@ -454,11 +458,13 @@ fn process_day(
                 segment_break,
             )
             .with_context(|| format!("advance factor state {continuous_id} ts={row_ts}"))?;
-        let factors = state
-            .factor_values(plan)?
-            .into_iter()
-            .map(|value| value.unwrap_or(f64::NAN))
-            .collect();
+        *pending_factors = Some(
+            state
+                .factor_values(plan)?
+                .into_iter()
+                .map(|value| value.unwrap_or(f64::NAN))
+                .collect(),
+        );
         *previous_ts = Some(row_ts);
         output.push(OutputRow {
             ts: row_ts,
@@ -467,6 +473,19 @@ fn process_day(
         });
     }
     Ok(output)
+}
+
+fn take_shifted_factors(
+    pending_factors: &mut Option<Vec<f64>>,
+    segment_break: bool,
+    factor_count: usize,
+) -> Vec<f64> {
+    if segment_break {
+        *pending_factors = None;
+    }
+    pending_factors
+        .take()
+        .unwrap_or_else(|| vec![f64::NAN; factor_count])
 }
 
 fn write_day(
@@ -565,4 +584,25 @@ fn f64_column<'a>(dataframe: &'a DataFrame, name: &str) -> Result<&'a Float64Chu
         .with_context(|| format!("missing {name}"))?
         .f64()
         .with_context(|| format!("{name} must be Float64"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_shifted_factors;
+
+    #[test]
+    fn shift_one_emits_the_previous_factor_vector_and_resets_at_segment_break() {
+        let mut pending = None;
+        assert!(take_shifted_factors(&mut pending, false, 2)
+            .into_iter()
+            .all(f64::is_nan));
+
+        pending = Some(vec![1.0, 2.0]);
+        assert_eq!(take_shifted_factors(&mut pending, false, 2), vec![1.0, 2.0]);
+
+        pending = Some(vec![3.0, 4.0]);
+        assert!(take_shifted_factors(&mut pending, true, 2)
+            .into_iter()
+            .all(f64::is_nan));
+    }
 }

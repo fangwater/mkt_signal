@@ -211,6 +211,10 @@ fn replay_product(
     let mut state = FuturesFusionState::default();
     let mut by_day: BTreeMap<NaiveDate, Vec<(i64, Vec<Option<f64>>)>> = BTreeMap::new();
     let mut prev_ts: Option<i64> = None;
+    let mut prev_trading_day: Option<u32> = None;
+    // The output row at t deliberately carries factors evaluated through t-1.
+    // Keeping the evaluated vector also preserves stateful-factor semantics.
+    let mut pending_values: Option<Vec<Option<f64>>> = None;
     for mut row in series {
         if let Some(prev) = prev_ts {
             if is_session_break(prev, row.ts) {
@@ -220,6 +224,10 @@ fn replay_product(
         prev_ts = Some(row.ts);
         let ts = row.ts;
         let trading_day = row.trading_day;
+        let segment_break = row.quality_flags & QUALITY_SEGMENT_BREAK != 0
+            || prev_trading_day.is_some_and(|previous| previous != trading_day);
+        prev_trading_day = Some(trading_day);
+        let values = take_shifted_values(&mut pending_values, segment_break, factor_names.len());
         state.push(FuturesFusionInput {
             ts_ms: ts * 1000,
             symbol: product.to_string(),
@@ -230,7 +238,7 @@ fn replay_product(
             volume_multiple: 1.0,
             volume_multiple_verified: true,
         })?;
-        let values = state.factor_values(plan)?;
+        pending_values = Some(state.factor_values(plan)?);
         let day = trad_day_from_ts(ts);
         if day < start || day > end {
             continue;
@@ -256,6 +264,19 @@ fn replay_product(
     }
     eprintln!("{exchange} {product} files={files} rows={rows_out} skipped_no_book={skipped}");
     Ok((files, rows_out, skipped))
+}
+
+fn take_shifted_values(
+    pending_values: &mut Option<Vec<Option<f64>>>,
+    segment_break: bool,
+    factor_count: usize,
+) -> Vec<Option<f64>> {
+    if segment_break {
+        *pending_values = None;
+    }
+    pending_values
+        .take()
+        .unwrap_or_else(|| vec![None; factor_count])
 }
 
 fn read_day(path: &Path, product: &str) -> Result<(Vec<InputRow>, u64)> {
@@ -450,4 +471,27 @@ fn is_tea_break(prev: i64, next: i64) -> bool {
 
 fn is_session_break(prev: i64, next: i64) -> bool {
     next - prev >= SESSION_BREAK_SEC || is_tea_break(prev, next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_shifted_values;
+
+    #[test]
+    fn shift_one_emits_the_previous_factor_vector_and_resets_at_segment_break() {
+        let mut pending = None;
+        assert_eq!(
+            take_shifted_values(&mut pending, false, 2),
+            vec![None, None]
+        );
+
+        pending = Some(vec![Some(1.0), Some(2.0)]);
+        assert_eq!(
+            take_shifted_values(&mut pending, false, 2),
+            vec![Some(1.0), Some(2.0)]
+        );
+
+        pending = Some(vec![Some(3.0), Some(4.0)]);
+        assert_eq!(take_shifted_values(&mut pending, true, 2), vec![None, None]);
+    }
 }
