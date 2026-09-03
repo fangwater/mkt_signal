@@ -5,7 +5,7 @@ use log::debug;
 use crate::common::min_qty_table::MinQtyTable;
 use crate::pre_trade::{
     basic_balance_manager::BasicBalanceManager, basic_um_manager::BasicUmManager,
-    price_table::PriceEntry, symbol_mapper::SymbolMapper,
+    price_table::PriceEntry, symbol_mapper::SymbolMapper, symbol_util::is_exposure_exempt_asset,
 };
 use runtime_common::exchange::Exchange;
 
@@ -17,7 +17,7 @@ pub struct BasicExposureEntry {
     pub borrowed: f64,    // 借币数量
     pub interest: f64,    // 累计利息
     pub um_position: f64, // UM 持仓（标的资产数量，已考虑合约乘数）
-    pub exposure: f64,    // 净敞口 = balance + um_position
+    pub exposure: f64,    // 方向性净敞口；稳定抵押资产固定为 0
 }
 
 /// 敞口管理器（简化版），负责汇总 balance 与 UM 持仓的资产敞口
@@ -90,7 +90,11 @@ impl BasicExposureManager {
         let mut exposures: Vec<BasicExposureEntry> = entries
             .into_values()
             .map(|mut entry| {
-                entry.exposure = entry.balance + entry.um_position;
+                entry.exposure = if is_exposure_exempt_asset(&entry.asset) {
+                    0.0
+                } else {
+                    entry.balance + entry.um_position
+                };
                 entry
             })
             .collect();
@@ -106,7 +110,11 @@ impl BasicExposureManager {
     ) -> Self {
         let symbol_mapper = crate::pre_trade::symbol_mapper::create_symbol_mapper(exchange);
         let exposures = Self::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs);
-        let total_exposure = exposures.iter().map(|e| e.exposure.abs()).sum();
+        let total_exposure = exposures
+            .iter()
+            .filter(|entry| !is_exposure_exempt_asset(&entry.asset))
+            .map(|entry| entry.exposure.abs())
+            .sum();
 
         debug!(
             "BasicExposureManager 初始化: 资产数={}, 总敞口(数量)={:.6}",
@@ -163,7 +171,12 @@ impl BasicExposureManager {
         }
 
         self.exposures = new_exposures;
-        self.total_exposure = self.exposures.iter().map(|e| e.exposure.abs()).sum();
+        self.total_exposure = self
+            .exposures
+            .iter()
+            .filter(|entry| !is_exposure_exempt_asset(&entry.asset))
+            .map(|entry| entry.exposure.abs())
+            .sum();
 
         changed
     }
@@ -336,6 +349,63 @@ mod tests {
         assert!((exposure_mgr.total_equity() - 680.0).abs() < 1e-12);
         assert!((exposure_mgr.total_borrowed_usd() - 300.0).abs() < 1e-12);
         assert!((exposure_mgr.total_interest_usd() - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stable_collateral_is_valued_with_liabilities_but_excluded_from_exposure() {
+        let mut balance_mgr = BasicBalanceManager::new(Exchange::Binance);
+        balance_mgr.apply_balance(&BasicBalanceMsg::create(1, "USDC".to_string(), 100.0));
+        balance_mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            1,
+            "USDC".to_string(),
+            30.0,
+            2.0,
+        ));
+        balance_mgr.apply_balance(&BasicBalanceMsg::create(1, "BFUSD".to_string(), 500.0));
+
+        let mut exposure_mgr =
+            BasicExposureManager::new_from_sources(Exchange::Binance, &[&balance_mgr], &[]);
+        assert_eq!(exposure_mgr.total_exposure(), 0.0);
+        assert_eq!(
+            exposure_mgr
+                .exposure_for_asset("USDC")
+                .expect("USDC accounting entry")
+                .exposure,
+            0.0
+        );
+        assert_eq!(
+            exposure_mgr
+                .exposure_for_asset("BFUSD")
+                .expect("BFUSD accounting entry")
+                .exposure,
+            0.0
+        );
+
+        let price_map = HashMap::from([
+            (
+                "USDCUSDT".to_string(),
+                PriceEntry {
+                    symbol: "USDCUSDT".to_string(),
+                    mark_price: 1.0,
+                    index_price: 1.0,
+                    update_time: 1,
+                },
+            ),
+            (
+                "BFUSDUSDT".to_string(),
+                PriceEntry {
+                    symbol: "BFUSDUSDT".to_string(),
+                    mark_price: 1.0,
+                    index_price: 1.0,
+                    update_time: 1,
+                },
+            ),
+        ]);
+        exposure_mgr.revalue_with_prices(&price_map);
+
+        assert!((exposure_mgr.total_equity() - 568.0).abs() < 1e-12);
+        assert!((exposure_mgr.total_borrowed_usd() - 30.0).abs() < 1e-12);
+        assert!((exposure_mgr.total_interest_usd() - 2.0).abs() < 1e-12);
     }
 
     fn install_fake_exposure_sources(

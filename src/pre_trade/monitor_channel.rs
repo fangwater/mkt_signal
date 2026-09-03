@@ -19,7 +19,7 @@ use crate::pre_trade::order_manager::Side;
 use crate::pre_trade::price_table::PriceTable;
 use crate::pre_trade::rebalance_usdt::RebalanceUsdtService;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
-use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::symbol_util::{extract_base_asset, is_exposure_exempt_asset};
 use crate::pre_trade::usdt_balance_manager::{UsdtBalanceManager, UsdtBalanceSnapshot};
 use crate::pre_trade::PersistChannel;
 use account_common::pm_ipc::{PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, PM_SUBSCRIBER_MAX_BUFFER_SIZE};
@@ -156,6 +156,7 @@ fn scope_matches_venue(
 fn exchange_scoped_total_equity_scope(
     open_venue: TradingVenue,
     hedge_venue: TradingVenue,
+    binance_account_mode: Option<BinanceAccountMode>,
 ) -> Option<BasicAccountScope> {
     let open_exchange = exchange_from_venue(open_venue);
     let hedge_exchange = exchange_from_venue(hedge_venue);
@@ -164,6 +165,11 @@ fn exchange_scoped_total_equity_scope(
     }
 
     match open_exchange {
+        Exchange::Binance if binance_account_mode == Some(BinanceAccountMode::Unified) => {
+            let open_scope = scope_for_venue(open_venue, binance_account_mode);
+            let hedge_scope = scope_for_venue(hedge_venue, binance_account_mode);
+            (open_scope == hedge_scope).then_some(open_scope)
+        }
         Exchange::Okex => Some(BasicAccountScope::OkexUnified),
         Exchange::Bybit => Some(BasicAccountScope::BybitUnified),
         Exchange::Bitget => Some(BasicAccountScope::BitgetUnified),
@@ -1152,7 +1158,7 @@ fn missing_position_mark_assets(
     let mut missing = exposures
         .iter()
         .filter_map(|(asset, (open_qty, hedge_qty))| {
-            if asset.eq_ignore_ascii_case("USDT")
+            if is_exposure_exempt_asset(asset)
                 || open_qty.abs() + hedge_qty.abs() <= POSITION_MARK_QTY_EPSILON
             {
                 return None;
@@ -1177,7 +1183,7 @@ fn top_two_gross_position_symbols(positions_by_asset: &HashMap<String, f64>) -> 
             continue;
         }
         let asset = asset.trim().to_ascii_uppercase();
-        if asset.is_empty() || asset == "USDT" {
+        if asset.is_empty() || is_exposure_exempt_asset(&asset) {
             continue;
         }
         let symbol = if asset.ends_with("USDT") {
@@ -1522,7 +1528,7 @@ impl MonitorChannel {
 
     fn queue_arb_margin_net_risk_check(asset: &str, e_ts: i64) -> bool {
         let asset = asset.trim().to_uppercase();
-        if asset.is_empty() || asset == "USDT" {
+        if asset.is_empty() || is_exposure_exempt_asset(&asset) {
             return false;
         }
         PENDING_RISK_CHECKS.with(|pending| {
@@ -1684,7 +1690,7 @@ impl MonitorChannel {
             .exposures
             .into_iter()
             .filter_map(|(asset, (open_qty, hedge_qty))| {
-                if asset.eq_ignore_ascii_case("USDT") {
+                if is_exposure_exempt_asset(&asset) {
                     return None;
                 }
                 let net_qty = open_qty + hedge_qty;
@@ -2307,7 +2313,7 @@ impl MonitorChannel {
 
     fn handle_arb_open_margin_net_risk_after_update(&self, asset: &str, e_ts: i64) {
         let asset_upper = asset.trim().to_uppercase();
-        if asset_upper.is_empty() || asset_upper == "USDT" {
+        if asset_upper.is_empty() || is_exposure_exempt_asset(&asset_upper) {
             return;
         }
         if self.open_venue() == self.hedge_venue() {
@@ -2476,7 +2482,7 @@ impl MonitorChannel {
             )
         })?;
         let base_asset_upper = base_asset.to_uppercase();
-        if base_asset_upper == "USDT" {
+        if is_exposure_exempt_asset(&base_asset_upper) {
             return Ok(None);
         }
         if venue != inner.open_venue && venue != inner.hedge_venue {
@@ -2496,7 +2502,7 @@ impl MonitorChannel {
         let mut current_asset_usdt = 0.0;
 
         for (asset, (open_qty, hedge_qty)) in &state.exposures {
-            if asset == "USDT" {
+            if is_exposure_exempt_asset(asset) {
                 continue;
             }
             let mark = state.mark_usdt_by_asset.get(asset).copied().unwrap_or(0.0);
@@ -3169,7 +3175,7 @@ impl MonitorChannel {
             leg_idx: usize,
         ) {
             let mut add_exposure = |asset: String, qty: f64| {
-                if qty.abs() <= 1e-12 {
+                if qty.abs() <= 1e-12 || is_exposure_exempt_asset(&asset) {
                     return;
                 }
                 let entry = exposures
@@ -3368,7 +3374,11 @@ impl MonitorChannel {
     fn account_risk_equity_override_for_inner(
         inner: &MonitorChannelInner,
     ) -> Option<(BasicAccountScope, f64)> {
-        let scope = exchange_scoped_total_equity_scope(inner.open_venue, inner.hedge_venue)?;
+        let scope = exchange_scoped_total_equity_scope(
+            inner.open_venue,
+            inner.hedge_venue,
+            inner.binance_account_mode,
+        )?;
         let risk = inner.latest_account_risk.get(&scope)?;
         (risk.actual_equity_usd.is_finite() && risk.actual_equity_usd.abs() > f64::EPSILON)
             .then_some((scope, risk.actual_equity_usd))
@@ -3400,7 +3410,7 @@ impl MonitorChannel {
         price_mapper: &dyn crate::pre_trade::symbol_mapper::SymbolMapper,
         price_table: &PriceTable,
     ) -> bool {
-        if asset.eq_ignore_ascii_case("USDT") || active_assets.contains(asset) {
+        if is_exposure_exempt_asset(asset) || active_assets.contains(asset) {
             return true;
         }
         let mark = Self::mark_price_for_asset(price_mapper, price_table, asset);
@@ -3527,7 +3537,7 @@ impl MonitorChannel {
         let mut abs_total_exposure_usdt = 0.0;
         let mut position_usdt_by_asset = HashMap::new();
         for (asset, (open_qty, hedge_qty)) in exposures {
-            if asset == "USDT" {
+            if is_exposure_exempt_asset(asset) {
                 continue;
             }
             let mark = Self::mark_price_for_asset(&*price_mapper, price_table, asset);
@@ -4101,11 +4111,8 @@ impl MonitorChannel {
             return None;
         }
         Self::with_basic_state_cached(|state| {
-            if base_asset.eq_ignore_ascii_case("USDT") {
-                state
-                    .exposures
-                    .get(base_asset.as_ref())
-                    .map(|(open_qty, hedge_qty)| (open_qty + hedge_qty).abs())
+            if is_exposure_exempt_asset(base_asset.as_ref()) {
+                Some(0.0)
             } else {
                 state
                     .exposure_usdt_by_asset
@@ -4230,16 +4237,15 @@ impl MonitorChannel {
         max_pos_u: f64,
         state: &BasicState,
     ) -> Result<(), String> {
+        if is_exposure_exempt_asset(base_asset) {
+            return Ok(());
+        }
         let net_exposure = state
             .exposures
             .get(base_asset_upper)
             .map(|(open, hedge)| open + hedge)
             .unwrap_or(0.0);
-        let exposure_usdt = if base_asset.eq_ignore_ascii_case("USDT") {
-            Some(net_exposure)
-        } else {
-            state.exposure_usdt_by_asset.get(base_asset_upper).copied()
-        };
+        let exposure_usdt = state.exposure_usdt_by_asset.get(base_asset_upper).copied();
 
         let Some(exposure_usdt) = exposure_usdt else {
             let ratio = net_exposure.abs() / max_pos_u;
@@ -4320,22 +4326,27 @@ impl MonitorChannel {
                 symbol
             )
         })?;
-        let mark = if base_asset.eq_ignore_ascii_case("USDT") {
-            1.0
-        } else {
-            let price = state
-                .mark_usdt_by_asset
-                .get(base_asset.as_ref())
-                .copied()
-                .unwrap_or(0.0);
-            if price <= 0.0 {
-                return Err(format!(
-                    "symbol={} 缺少 USDT 标记价格，无法校验 ArbHedge 敞口",
-                    symbol
-                ));
-            }
-            price
-        };
+        if is_exposure_exempt_asset(base_asset.as_ref()) {
+            return Ok(ArbHedgeExposureProjection {
+                symbol_current_exposure_usdt: 0.0,
+                symbol_next_exposure_usdt: 0.0,
+                symbol_limit_usdt: f64::INFINITY,
+                total_current_exposure_usdt: state.abs_total_exposure_usdt,
+                total_next_exposure_usdt: state.abs_total_exposure_usdt,
+                total_limit_usdt: f64::INFINITY,
+            });
+        }
+        let mark = state
+            .mark_usdt_by_asset
+            .get(base_asset.as_ref())
+            .copied()
+            .unwrap_or(0.0);
+        if mark <= 0.0 {
+            return Err(format!(
+                "symbol={} 缺少 USDT 标记价格，无法校验 ArbHedge 敞口",
+                symbol
+            ));
+        }
         let (open_qty, hedge_qty) = state
             .exposures
             .get(base_asset.as_ref())
@@ -5248,6 +5259,34 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
+    fn binance_total_equity_override_requires_unified_shared_scope() {
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                Some(BinanceAccountMode::Unified),
+            ),
+            Some(BasicAccountScope::BinanceUnified)
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceFutures,
+                Some(BinanceAccountMode::Standard),
+            ),
+            None
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceMargin,
+                TradingVenue::BinanceCoinFutures,
+                Some(BinanceAccountMode::Unified),
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn top_two_gross_positions_are_ranked_by_usdt_value() {
         let positions = HashMap::from([
             ("BTC".to_string(), 100.0),
@@ -5269,6 +5308,8 @@ mod tests {
             ("SOL".to_string(), 0.0),
             ("XRP".to_string(), 1e-6),
             ("USDT".to_string(), 1_000_000.0),
+            ("USDC".to_string(), 900_000.0),
+            ("BFUSD".to_string(), 800_000.0),
             ("DOGE".to_string(), 50.0),
         ]);
 
@@ -5296,6 +5337,8 @@ mod tests {
     fn missing_position_marks_ignore_cash_and_dust() {
         let exposures = HashMap::from([
             ("USDT".to_string(), (10_000.0, 0.0)),
+            ("USDC".to_string(), (20_000.0, 0.0)),
+            ("BFUSD".to_string(), (50_000.0, 0.0)),
             ("DUST".to_string(), (0.0000004, 0.0000004)),
             ("BTC".to_string(), (0.1, -0.1)),
             ("ETH".to_string(), (10.0, -10.0)),
@@ -6139,6 +6182,12 @@ mod tests {
         open_bal
             .borrow_mut()
             .apply_balance(&BasicBalanceMsg::create(0, "FIL".to_string(), 1.0));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "USDC".to_string(), 20_000.0));
+        open_bal
+            .borrow_mut()
+            .apply_balance(&BasicBalanceMsg::create(0, "BFUSD".to_string(), 50_000.0));
 
         let open_leg = LegMgr::Margin { bal: open_bal };
         let hedge_leg = LegMgr::Futures {
@@ -6168,7 +6217,12 @@ mod tests {
             )))),
             close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
             trade_update_seq: 0,
-            latest_account_risk: HashMap::new(),
+            latest_account_risk: HashMap::from([(
+                BasicAccountScope::BinanceUnified,
+                BasicAccountRiskMsg::create(
+                    0, 69_000.0, 70_000.0, 1_000.0, 2_000.0, 70.0, 0.0, 0.0,
+                ),
+            )]),
             latest_binance_std_um_wallet: None,
             arb_startup_net_gate: ArbStartupNetGate::new(false),
         };
@@ -6176,10 +6230,19 @@ mod tests {
         let state = MonitorChannel::compute_basic_state(&inner);
         assert!(!state.exposures.contains_key("DOGE"));
         assert!(state.exposures.contains_key("FIL"));
+        assert!(!state.exposures.contains_key("USDC"));
+        assert!(!state.exposures.contains_key("BFUSD"));
         assert!(!state
             .margin_balances_by_scope
             .values()
             .any(|balances| balances.contains_key("DOGE")));
+        let collateral_balances = state
+            .margin_balances_by_scope
+            .get(&BasicAccountScope::BinanceUnified)
+            .expect("Binance PM collateral balances");
+        assert_eq!(collateral_balances.get("USDC"), Some(&20_000.0));
+        assert_eq!(collateral_balances.get("BFUSD"), Some(&50_000.0));
+        assert!((state.total_equity_usdt - 70_000.0).abs() < 1e-12);
         assert!((state.total_position_usdt - 100.0).abs() < 1e-12);
     }
 

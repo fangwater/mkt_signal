@@ -35,6 +35,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
+use crate::pre_trade::symbol_util::is_exposure_exempt_asset;
 use mkt_parsers::symbol_match::normalize_symbol_for_whitelist;
 use order_common::TradingVenue;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
@@ -120,8 +121,8 @@ impl UnimmrCloseSymbolList {
     /// 但两腿各自有仓）也计入，因为算法平仓需要把两腿都收回。
     ///
     /// asset → symbol 用 `"{ASSET}USDT"` 拼装后再归一化（与 whitelist 口径一致），
-    /// 假设所有 arb pair 都是 USDT 计价（仓内现状如此）。USDT 自身会被跳过
-    /// （计价货币，不是被平的标的）。
+    /// 假设所有 arb pair 都是 USDT 计价（仓内现状如此）。USDT/USDC/BFUSD
+    /// 会被跳过（稳定结算币或抵押品，不是被平的标的）。
     ///
     /// 返回归一化后的 symbol 列表（如 `BTCUSDT`），与 Redis 表内项可直接比对。
     pub fn effective_close_symbols_from_monitor(&self, mon: &MonitorChannel) -> Vec<String> {
@@ -129,7 +130,7 @@ impl UnimmrCloseSymbolList {
         let positioned: HashSet<String> = exposures
             .iter()
             .filter(|(asset, &(open_qty, hedge_qty))| {
-                !asset.eq_ignore_ascii_case("USDT")
+                !is_exposure_exempt_asset(asset)
                     && (open_qty.abs() > POSITION_EPSILON || hedge_qty.abs() > POSITION_EPSILON)
             })
             .map(|(asset, _)| {

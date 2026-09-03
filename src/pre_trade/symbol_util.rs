@@ -1,3 +1,14 @@
+/// Assets treated as non-directional cash/collateral by strategy exposure risk.
+///
+/// Their balances and liabilities remain in account/equity accounting; this helper only
+/// controls position exposure, concentration, and automatic close-symbol selection.
+pub fn is_exposure_exempt_asset(asset: &str) -> bool {
+    let asset = asset.trim();
+    asset.eq_ignore_ascii_case("USDT")
+        || asset.eq_ignore_ascii_case("USDC")
+        || asset.eq_ignore_ascii_case("BFUSD")
+}
+
 /// 从 symbol / inst_id 中提取基础资产（如 BTCUSDT -> BTC，BTC-USDT-SWAP -> BTC）
 pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
     let upper = symbol_like.to_uppercase();
@@ -44,7 +55,17 @@ pub fn extract_base_asset(symbol_like: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_base_asset;
+    use super::{extract_base_asset, is_exposure_exempt_asset};
+
+    #[test]
+    fn exposure_exempt_assets_are_stable_collateral_assets() {
+        for asset in ["USDT", "usdc", " BFUSD "] {
+            assert!(is_exposure_exempt_asset(asset), "asset={asset}");
+        }
+        for asset in ["BUSD", "FDUSD", "BTC", "FUSD"] {
+            assert!(!is_exposure_exempt_asset(asset), "asset={asset}");
+        }
+    }
 
     #[test]
     fn extract_base_asset_handles_okx_symbols() {

@@ -1,5 +1,6 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
+use crate::pre_trade::symbol_util::is_exposure_exempt_asset;
 use anyhow::Result;
 use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
 use log::{info, warn};
@@ -135,7 +136,7 @@ impl ExecResampleChannel {
             let mut short_notional_usdt = 0.0;
             for (asset, (open_qty, hedge_qty)) in exposures {
                 let qty = open_qty + hedge_qty;
-                if qty == 0.0 || asset.eq_ignore_ascii_case("USDT") {
+                if qty == 0.0 || is_exposure_exempt_asset(&asset) {
                     continue;
                 }
                 let symbol = price_mapper.asset_to_price_symbol(&asset);

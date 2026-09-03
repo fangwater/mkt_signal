@@ -14,6 +14,7 @@ use crate::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
 };
 use crate::pre_trade::params_load::PreTradeParamsLoader;
+use crate::pre_trade::symbol_util::is_exposure_exempt_asset;
 use crate::pre_trade::unimmr_open_lock::UnimmrOpenLock;
 
 const POSITION_EPSILON_USDT: f64 = 1e-6;
@@ -686,7 +687,7 @@ fn normalized_set<'a>(values: impl IntoIterator<Item = &'a str>) -> BTreeSet<Str
 
 fn asset_to_symbol(asset: &str) -> Option<String> {
     let asset = asset.trim().to_ascii_uppercase();
-    if asset.is_empty() || asset == "USDT" {
+    if asset.is_empty() || is_exposure_exempt_asset(&asset) {
         return None;
     }
     if asset.ends_with("USDT") {
@@ -959,5 +960,7 @@ mod tests {
         assert_eq!(asset_to_symbol("btc"), Some("BTCUSDT".to_string()));
         assert_eq!(asset_to_symbol("BTC-USDT"), Some("BTCUSDT".to_string()));
         assert_eq!(asset_to_symbol("USDT"), None);
+        assert_eq!(asset_to_symbol("USDC"), None);
+        assert_eq!(asset_to_symbol("BFUSD"), None);
     }
 }

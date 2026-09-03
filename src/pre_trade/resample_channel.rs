@@ -8,7 +8,7 @@ use crate::pre_trade::params_load::PreTradeParamsLoader;
 use crate::pre_trade::price_table::PriceEntry;
 use crate::pre_trade::signal_channel::take_signal_counts;
 use crate::pre_trade::symbol_mapper::create_symbol_mapper;
-use crate::pre_trade::symbol_util::extract_base_asset;
+use crate::pre_trade::symbol_util::{extract_base_asset, is_exposure_exempt_asset};
 use crate::pre_trade::taker_decision_model::PreTradeTakerDecisionModel;
 use anyhow::Result;
 use ipc_common::iceoryx_publisher::{ResamplePublisher, RESAMPLE_PAYLOAD};
@@ -138,7 +138,7 @@ fn sum_position_usd(
     let price_mapper = create_symbol_mapper(mark_price_exchange);
     BasicExposureManager::compute_exposures_for_exchange(exchange, balance_mgrs, um_mgrs)
         .into_iter()
-        .filter(|entry| !entry.asset.eq_ignore_ascii_case("USDT"))
+        .filter(|entry| !is_exposure_exempt_asset(&entry.asset))
         .filter_map(|entry| {
             let symbol = price_mapper.asset_to_price_symbol(&entry.asset);
             let mark = price_snapshot
@@ -523,7 +523,9 @@ impl ResampleChannel {
         let mut rows = Vec::new();
         for (asset, &(open_qty, hedge_qty)) in &exposures {
             let asset_upper = asset.to_ascii_uppercase();
-            if open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12 {
+            if is_exposure_exempt_asset(&asset_upper)
+                || (open_qty.abs() <= 1e-12 && hedge_qty.abs() <= 1e-12)
+            {
                 continue;
             }
             let net_qty = open_qty + hedge_qty;
@@ -651,7 +653,7 @@ impl ResampleChannel {
                 .map(|(asset, &(open_qty, hedge_qty))| (asset.to_uppercase(), open_qty, hedge_qty))
                 .collect();
             for asset in arb_hedge_snapshot_by_asset.keys() {
-                if asset == "USDT" {
+                if is_exposure_exempt_asset(asset) {
                     continue;
                 }
                 exposure_items.push((asset.clone(), 0.0, 0.0));
@@ -660,7 +662,7 @@ impl ResampleChannel {
             exposure_items.dedup_by(|a, b| a.0 == b.0);
 
             for (asset_upper, open_qty, hedge_qty) in exposure_items {
-                if asset_upper == "USDT" {
+                if is_exposure_exempt_asset(&asset_upper) {
                     continue;
                 }
                 let (
