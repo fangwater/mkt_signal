@@ -49,7 +49,9 @@ use trade_engine::binance_fix::{spawn_binance_spot_fix_er_listener, BinanceSpotF
 use trade_engine::query_parsers::binance_pm_account_risk::parse_binance_pm_account_risk;
 use trade_engine::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use trade_engine::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
-use trade_engine::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use trade_engine::query_parsers::binance_um_account_snapshot::{
+    parse_binance_um_account_snapshot, parse_binance_um_account_snapshot_std,
+};
 use trade_engine::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use url::form_urlencoded;
 use uuid::Uuid;
@@ -327,7 +329,7 @@ async fn bootstrap_standard_snapshots(
             api_secret,
         )
         .await?;
-        if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
+        if let Some(msgs) = parse_binance_um_account_snapshot_std(&um_account_body) {
             for payload in msgs {
                 if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceStdUm, payload)
                 {

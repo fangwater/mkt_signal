@@ -165,7 +165,7 @@ fn exchange_scoped_total_equity_scope(
     }
 
     match open_exchange {
-        Exchange::Binance if binance_account_mode == Some(BinanceAccountMode::Unified) => {
+        Exchange::Binance => {
             let open_scope = scope_for_venue(open_venue, binance_account_mode);
             let hedge_scope = scope_for_venue(hedge_venue, binance_account_mode);
             (open_scope == hedge_scope).then_some(open_scope)
@@ -1128,7 +1128,7 @@ struct BasicState {
     usdt_equity_by_scope: HashMap<BasicAccountScope, f64>,
     // account scope -> futures UPL that should be included in eq.
     um_unrealized_equity_by_scope: HashMap<BasicAccountScope, f64>,
-    // AccountRisk actual equity overrides local mark-to-market eq for same-exchange unified paths.
+    // AccountRisk actual equity overrides local mark-to-market eq for one shared account scope.
     account_risk_equity_override: Option<(BasicAccountScope, f64)>,
     // asset -> net exposure valued in USDT at cache-refresh time.
     exposure_usdt_by_asset: HashMap<String, f64>,
@@ -3341,8 +3341,8 @@ impl MonitorChannel {
             }
         }
 
-        // 同交易所 unified intra 场景优先使用交易所账户级总权益，避免本地估值遗漏
-        // unified 账户中的合约、期权或折算细节。跨交易所组合仍保留各 scope 的本地路径。
+        // 同一账户 scope 优先使用交易所账户级总权益，避免本地估值遗漏
+        // 多资产抵押、合约、期权或折算细节。跨 scope 组合仍保留各 scope 的本地路径。
         let account_risk_equity_override = Self::account_risk_equity_override_for_inner(inner);
 
         let price_update = Self::compute_basic_state_price_update_from_parts(
@@ -5259,7 +5259,7 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
-    fn binance_total_equity_override_requires_unified_shared_scope() {
+    fn binance_total_equity_override_requires_shared_account_scope() {
         assert_eq!(
             exchange_scoped_total_equity_scope(
                 TradingVenue::BinanceMargin,
@@ -5278,12 +5278,66 @@ mod tests {
         );
         assert_eq!(
             exchange_scoped_total_equity_scope(
+                TradingVenue::BinanceFutures,
+                TradingVenue::BinanceFutures,
+                Some(BinanceAccountMode::Standard),
+            ),
+            Some(BasicAccountScope::BinanceStdUm)
+        );
+        assert_eq!(
+            exchange_scoped_total_equity_scope(
                 TradingVenue::BinanceMargin,
                 TradingVenue::BinanceCoinFutures,
                 Some(BinanceAccountMode::Unified),
             ),
             None
         );
+    }
+
+    #[test]
+    fn binance_standard_exec_uses_exchange_valued_multi_asset_equity() {
+        let open_leg = LegMgr::Futures {
+            exchange: Exchange::Binance,
+            um: Rc::new(RefCell::new(BasicUmManager::new(Exchange::Binance))),
+            min_qty_table: Rc::new(RefCell::new(MinQtyTable::new(Exchange::Binance))),
+        };
+        let hedge_leg = open_leg.clone();
+
+        let mut usdt_mgr = UsdtBalanceManager::new(Exchange::Binance);
+        usdt_mgr.apply_balance(&BasicBalanceMsg::create(0, "USDT".to_string(), 10_000.0));
+        let usdt_mgrs = HashMap::from([(
+            BasicAccountScope::BinanceStdUm,
+            Rc::new(RefCell::new(usdt_mgr)),
+        )]);
+        let inner = MonitorChannelInner {
+            open_venue: TradingVenue::BinanceFutures,
+            hedge_venue: TradingVenue::BinanceFutures,
+            arb_mode: ArbMode::CrossArb,
+            binance_account_mode: Some(BinanceAccountMode::Standard),
+            open_leg,
+            hedge_leg,
+            usdt_mgrs,
+            price_table: Rc::new(RefCell::new(PriceTable::new())),
+            venue_min_qty_tables: HashMap::new(),
+            strategy_mgr: Rc::new(RefCell::new(StrategyManager::new())),
+            orphan_strategy_mgr: Rc::new(RefCell::new(OrphanStrategyManager::new())),
+            order_manager: Rc::new(RefCell::new(OrderManager::new(Some(
+                BinanceAccountMode::Standard,
+            )))),
+            close_inventory: Rc::new(RefCell::new(CloseInventoryLedger::new())),
+            trade_update_seq: 0,
+            latest_account_risk: HashMap::from([(
+                BasicAccountScope::BinanceStdUm,
+                BasicAccountRiskMsg::create(
+                    0, 98_765.43, 98_765.43, 2_500.0, 12_000.0, 39.506172, 0.0, 0.0,
+                ),
+            )]),
+            latest_binance_std_um_wallet: None,
+            arb_startup_net_gate: ArbStartupNetGate::new(false),
+        };
+
+        let state = MonitorChannel::compute_basic_state(&inner);
+        assert!((state.total_equity_usdt - 98_765.43).abs() < 1e-9);
     }
 
     #[test]

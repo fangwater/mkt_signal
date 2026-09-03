@@ -15,7 +15,9 @@ use crate::okex_query_rate_limiter::OkexQueryRateLimiter;
 use crate::query_parsers::binance_margin_order::parse_binance_margin_order_query_json;
 use crate::query_parsers::binance_pm_balance_snapshot::parse_binance_pm_balance_snapshot;
 use crate::query_parsers::binance_spot_account_snapshot_std::parse_binance_spot_account_snapshot_std;
-use crate::query_parsers::binance_um_account_snapshot::parse_binance_um_account_snapshot;
+use crate::query_parsers::binance_um_account_snapshot::{
+    parse_binance_um_account_snapshot, parse_binance_um_account_snapshot_std,
+};
 use crate::query_parsers::binance_um_balance_snapshot_std::parse_binance_um_balance_snapshot_std;
 use crate::query_parsers::binance_um_order::parse_binance_um_order_query_json;
 use crate::query_parsers::bitget_account_balance_snapshot::parse_bitget_account_balance_snapshot;
@@ -64,6 +66,7 @@ use ipc_common::iceoryx_publisher::{
     QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD, QUERY_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
 use log::{debug, info, warn};
+use mkt_parsers::msg::basic_account_msg::{get_basic_event_type, BasicAccountEventType};
 use rolling_common::health_snapshot::{
     HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_MARKET_FUTURES, HEALTH_MARKET_SPOT,
     HEALTH_SNAPSHOT_PAYLOAD_LEN, HEALTH_STATE_DISCONNECTED, HEALTH_STATE_DRAINING,
@@ -3085,8 +3088,19 @@ impl TradeEngine {
                                         | crate::query_request::QueryRequestType::BinanceCmAccountSnapshotStd
                                             if outcome.status == 200 =>
                                         {
-                                            if let Some(msgs) = parse_binance_um_account_snapshot(&outcome.body) {
-                                                if msgs.is_empty() {
+                                            let parsed = if msg.req_type
+                                                == crate::query_request::QueryRequestType::BinanceUmAccountSnapshotStd
+                                            {
+                                                parse_binance_um_account_snapshot_std(&outcome.body)
+                                            } else {
+                                                parse_binance_um_account_snapshot(&outcome.body)
+                                            };
+                                            if let Some(msgs) = parsed {
+                                                let has_position = msgs.iter().any(|payload| {
+                                                    get_basic_event_type(payload)
+                                                        == BasicAccountEventType::PositionUpdate
+                                                });
+                                                if !has_position {
                                                     let _ = query_resp_sink.send(QueryExecOutcome {
                                                         req_type: msg.req_type,
                                                         client_query_id: msg.client_query_id,
@@ -3096,18 +3110,17 @@ impl TradeEngine {
                                                         ip_used_weight_1m: outcome.ip_used_weight_1m,
                                                         query_count_1m: outcome.order_count_1m,
                                                     });
-                                                } else {
-                                                    for payload in msgs {
-                                                        let _ = query_resp_sink.send(QueryExecOutcome {
-                                                            req_type: msg.req_type,
-                                                            client_query_id: msg.client_query_id,
-                                                            status: outcome.status,
-                                                            body: payload,
-                                                            exchange: exchange_copy,
-                                                            ip_used_weight_1m: outcome.ip_used_weight_1m,
-                                                            query_count_1m: outcome.order_count_1m,
-                                                        });
-                                                    }
+                                                }
+                                                for payload in msgs {
+                                                    let _ = query_resp_sink.send(QueryExecOutcome {
+                                                        req_type: msg.req_type,
+                                                        client_query_id: msg.client_query_id,
+                                                        status: outcome.status,
+                                                        body: payload,
+                                                        exchange: exchange_copy,
+                                                        ip_used_weight_1m: outcome.ip_used_weight_1m,
+                                                        query_count_1m: outcome.order_count_1m,
+                                                    });
                                                 }
                                                 let _ = query_resp_sink.send(QueryExecOutcome {
                                                     req_type: msg.req_type,

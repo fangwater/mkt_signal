@@ -93,7 +93,7 @@ FILES=(
   start_fr_persist_manager.sh stop_fr_persist_manager.sh
   process_match_lib.sh okx_swap_open_orders.py
   binance_cancel_all_std_um_ws_orders.py binance_cancel_all_std_cm_orders.py binance_cancel_all_unified_open_orders.py
-  binance_local_ip.py sell_margin_spot.py
+  binance_local_ip.py binance_bfusd.py sell_margin_spot.py
   sync_exec_risk_params.py print_exec_risk_params.py
   sync_exec_max_pos_u.py print_exec_max_pos_u.py
 )
