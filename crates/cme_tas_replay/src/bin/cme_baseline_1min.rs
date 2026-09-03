@@ -427,7 +427,44 @@ fn segments_from_book_minutes(mut minutes: Vec<i64>) -> Result<Vec<(i64, i64)>> 
     Ok(output)
 }
 
-fn read_contracts(path: &Path, expected_product: &str) -> Result<Vec<RicGrid>> {
+fn delivery_month(contract_id: &str) -> Result<(i32, u32)> {
+    let mut parts = contract_id.split(':');
+    let _exchange = parts.next();
+    let _product = parts.next();
+    let delivery = parts
+        .next()
+        .filter(|_| parts.next().is_none())
+        .with_context(|| format!("invalid contract_id {contract_id:?}"))?;
+    let (year, month) = delivery
+        .split_once('-')
+        .with_context(|| format!("invalid delivery month in {contract_id:?}"))?;
+    let year = year.parse::<i32>()?;
+    let month = month.parse::<u32>()?;
+    if !(1..=12).contains(&month) {
+        bail!("invalid delivery month in {contract_id:?}");
+    }
+    Ok((year, month))
+}
+
+fn resolve_ambiguous_ric(ric: &str, day: NaiveDate, contracts: BTreeSet<String>) -> Result<String> {
+    if contracts.len() == 1 {
+        return Ok(contracts.into_iter().next().unwrap());
+    }
+    let mut candidates = Vec::new();
+    for contract in contracts {
+        let delivery = delivery_month(&contract)?;
+        if delivery >= (day.year(), day.month()) {
+            candidates.push((delivery, contract));
+        }
+    }
+    candidates
+        .into_iter()
+        .min_by_key(|(delivery, _)| *delivery)
+        .map(|(_, contract)| contract)
+        .with_context(|| format!("RIC {ric} has no unexpired contract mapping on {day}"))
+}
+
+fn read_contracts(path: &Path, expected_product: &str, day: NaiveDate) -> Result<Vec<RicGrid>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let df = ParquetReader::new(file)
         .set_low_memory(true)
@@ -435,7 +472,7 @@ fn read_contracts(path: &Path, expected_product: &str) -> Result<Vec<RicGrid>> {
         .with_context(|| format!("read {}", path.display()))?;
     let contracts = df.column("contract_id")?.str()?;
     let rics = df.column("ric")?.str()?;
-    let mut grouped: BTreeMap<String, String> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for index in 0..df.height() {
         let contract = contracts
             .get(index)
@@ -449,21 +486,21 @@ fn read_contracts(path: &Path, expected_product: &str) -> Result<Vec<RicGrid>> {
                 path.display()
             );
         }
-        let entry = grouped
+        grouped
             .entry(ric.to_string())
-            .or_insert_with(|| contract.to_string());
-        if entry != contract {
-            bail!("RIC {ric} maps to both {entry} and {contract}");
-        }
+            .or_default()
+            .insert(contract.to_string());
     }
-    Ok(grouped
+    grouped
         .into_iter()
-        .map(|(ric, contract_id)| RicGrid {
-            contract_id,
-            ric,
-            segments: Vec::new(),
+        .map(|(ric, contracts)| {
+            Ok(RicGrid {
+                contract_id: resolve_ambiguous_ric(&ric, day, contracts)?,
+                ric,
+                segments: Vec::new(),
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>>>()
 }
 
 fn chicago_window_minutes(day: NaiveDate) -> Result<(i64, i64)> {
@@ -656,7 +693,7 @@ fn process_job(
     parquet_lock: &Mutex<()>,
 ) -> Result<DayAudit> {
     let started = Instant::now();
-    let mut grids = read_contracts(&job.input, &job.product)?;
+    let mut grids = read_contracts(&job.input, &job.product, job.day)?;
     let (window_start, window_end) = chicago_window_minutes(job.day)?;
     let multiplier = *multipliers
         .get(&job.product)
@@ -753,7 +790,7 @@ fn process_trade_only_job(
     parquet_lock: &Mutex<()>,
 ) -> Result<DayAudit> {
     let started = Instant::now();
-    let mut grids = read_contracts(&job.input, &job.product)?;
+    let mut grids = read_contracts(&job.input, &job.product, job.day)?;
     let spec = product_spec(&job.product)?;
     let segments = calendar.minute_segments_for(spec.schedule_group, job.day)?;
     let mut audit = DayAudit {
@@ -1098,7 +1135,7 @@ fn require_done(db: &DB, period: &str, label: &str) -> Result<()> {
 
 fn period_for_year(year: i32) -> Result<String> {
     match year {
-        2020..=2025 => Ok(format!("{year:04}-01-01_{:04}-01-01", year + 1)),
+        2017..=2025 => Ok(format!("{year:04}-01-01_{:04}-01-01", year + 1)),
         2026 => Ok("2026-01-01_2026-06-01".to_string()),
         _ => bail!("unsupported baseline year {year}"),
     }
@@ -1249,6 +1286,30 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn period_mapping_includes_historical_tas_replays() {
+        assert_eq!(period_for_year(2017).unwrap(), "2017-01-01_2018-01-01");
+        assert_eq!(period_for_year(2019).unwrap(), "2019-01-01_2020-01-01");
+        assert!(period_for_year(2016).is_err());
+    }
+
+    #[test]
+    fn ambiguous_short_year_ric_uses_the_nearest_unexpired_contract() {
+        let contracts = BTreeSet::from([
+            "NYMEX:CL:2013-12".to_string(),
+            "NYMEX:CL:2023-12".to_string(),
+        ]);
+        assert_eq!(
+            resolve_ambiguous_ric(
+                "CLZ3",
+                NaiveDate::from_ymd_opt(2018, 1, 2).unwrap(),
+                contracts,
+            )
+            .unwrap(),
+            "NYMEX:CL:2023-12"
+        );
+    }
 
     #[test]
     fn ll2_delivery_policy_keeps_gc_ym_only_in_2026() {

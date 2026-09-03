@@ -189,6 +189,76 @@
       "reason": "maintenance",
       "action": "filter",
       "source": "LSEG normalised source row 2020-03-16T21:47:28.074982791Z: Type=Trade, Price=1500, Volume=154, Qualifiers=Block Trade, Exch Time=21:47:27"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2017-07-22",
+      "kind": "trade",
+      "event_ts": 1500703059,
+      "ric": "CLZ8",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000000-shard-000292.csv.zst row 2017-07-21T18:05:43.426075144Z: Type=Trade, Price=48, Volume=62, Qualifiers=611[IRGCOND];BBO[MKT_ST_IND], Exch Time=05:57:39"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2017-07-22",
+      "kind": "trade",
+      "event_ts": 1500703033,
+      "ric": "CLZ8",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000000-shard-000292.csv.zst row 2017-07-21T18:05:44.946049267Z: Type=Trade, Price=48, Volume=62, Qualifiers=611[IRGCOND];BBO[MKT_ST_IND], Exch Time=05:57:13"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2017-10-05",
+      "kind": "trade",
+      "event_ts": 1507237203,
+      "ric": "CLZ8",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000000-shard-000294.csv.zst row 2017-10-05T21:00:03.823216247Z: Type=Trade, Price=50.74, Volume=190, Qualifiers=611[IRGCOND];BBO[MKT_ST_IND], Exch Time=21:00:03"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2017-11-07",
+      "kind": "trade",
+      "event_ts": 1510092473,
+      "ric": "CLH8",
+      "reason": "maintenance",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000000-shard-000173.csv.zst row 2017-11-07T23:02:41.117602154Z: Type=Trade, Price=57.34, Volume=54, Qualifiers=611[IRGCOND];BBO[MKT_ST_IND], Exch Time=22:07:53"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2017-11-24",
+      "kind": "trade",
+      "event_ts": 1511549220,
+      "ric": "CLF8",
+      "reason": "after_early_close",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000000-shard-000148.csv.zst row 2017-11-24T18:48:26.794693851Z: Type=Trade, Price=58.95, Volume=309, Qualifiers=611[IRGCOND];BBO[MKT_ST_IND], Exch Time=18:47:00"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2017-11-24",
+      "kind": "trade",
+      "event_ts": 1511549340,
+      "ric": "CLF8",
+      "reason": "after_early_close",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000000-shard-000148.csv.zst row 2017-11-24T18:49:23.560075321Z: Type=Trade, Price=58.95, Volume=135, Qualifiers=611[IRGCOND];BBO[MKT_ST_IND], Exch Time=18:49:00"
+    },
+    {
+      "product": "CL",
+      "trad_day": "2018-11-11",
+      "kind": "trade",
+      "event_ts": 1541967780,
+      "ric": "CLZ8",
+      "reason": "weekend",
+      "action": "filter",
+      "source": "LSEG TAS shard merged-Data-part-000001-shard-000163.csv.zst row 2018-11-11T23:11:30.061176010Z: Type=Trade, Price=60.2, Volume=450, Qualifiers=BBO[MKT_ST_IND];Block Trade[USER], Exch Time=20:23:00"
     }
   ]
 }

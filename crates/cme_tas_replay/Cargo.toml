@@ -55,6 +55,14 @@ path = "src/bin/cme_baseline_fill_size_buckets.rs"
 name = "cme_baseline_ylabel_1min"
 path = "src/bin/cme_baseline_ylabel_1min.rs"
 
+[[bin]]
+name = "cme_patch_twap_1min"
+path = "src/bin/cme_patch_twap_1min.rs"
+
+[[bin]]
+name = "cme_patch_size_1min"
+path = "src/bin/cme_patch_size_1min.rs"
+
 [dependencies]
 anyhow = "1.0"
 bytes = { version = "1.0", features = ["serde"] }

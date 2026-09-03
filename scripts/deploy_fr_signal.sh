@@ -164,6 +164,7 @@ SCRIPTS_TO_SYNC=(
   "flatten_bitget_pm.py"
   "cancel_bitget_pm_orders.py"
   "set_online_futures_leverage.py"
+  "binance_bfusd.py"
   "sync_funding_rate_thresholds.py"
   "print_funding_rate_thresholds.py"
   "sync_fr_strategy_params.py"

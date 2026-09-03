@@ -245,21 +245,23 @@ fn quoted_vwap(amount: f64, volume: f64, multiplier: f64) -> Option<f64> {
     }
 }
 
-fn exact_twap(trades: &[BaselineTrade], minute: i64) -> Option<f64> {
-    if trades.is_empty() {
-        return None;
-    }
+fn exact_twap(trades: &[BaselineTrade], minute: i64, prior_price: Option<f64>) -> Option<f64> {
+    let start_ns = u64::try_from(minute).ok()?.checked_mul(1_000_000_000)?;
     let end_ns = u64::try_from(minute + 60)
         .ok()?
         .checked_mul(1_000_000_000)?;
+    let mut previous_ns = start_ns;
+    let mut previous_price = valid_price(prior_price);
     let mut weighted = 0.0;
-    for (index, trade) in trades.iter().enumerate() {
-        let next_ns = trades
-            .get(index + 1)
-            .map(|next| next.event_ns)
-            .unwrap_or(end_ns);
-        weighted += trade.price * next_ns.saturating_sub(trade.event_ns) as f64;
+    for trade in trades {
+        if let Some(price) = previous_price {
+            weighted += price * trade.event_ns.saturating_sub(previous_ns) as f64;
+        }
+        previous_ns = trade.event_ns;
+        previous_price = Some(trade.price);
     }
+    let previous_price = previous_price?;
+    weighted += previous_price * end_ns.saturating_sub(previous_ns) as f64;
     Some(weighted / 60_000_000_000.0)
 }
 
@@ -375,6 +377,8 @@ fn build_minutes_inner(
             bail!("invalid minute segment [{start}, {end}]");
         }
         let mut state = FillState::default();
+        let mut prior_twap = None;
+        let mut prior_implied_twap = None;
         let mut minute = start;
         while minute <= end {
             let book = if let Some(books) = books {
@@ -461,6 +465,14 @@ fn build_minutes_inner(
             if implied_volume > 0.0 {
                 state.implied_vwap = implied_vwap;
             }
+            let twap = exact_twap(&minute_trades, minute, prior_twap);
+            let implied_twap = exact_twap(&implied, minute, prior_implied_twap);
+            if let Some(price) = minute_trades.last().map(|trade| trade.price) {
+                prior_twap = Some(price);
+            }
+            if let Some(price) = implied.last().map(|trade| trade.price) {
+                prior_implied_twap = Some(price);
+            }
             let directed = buy_amount + sell_amount;
             let (special_count, special_volume) =
                 special_by_minute.get(&minute).copied().unwrap_or_default();
@@ -485,7 +497,7 @@ fn build_minutes_inner(
                 vwap,
                 buy_vwap,
                 sell_vwap,
-                twap: exact_twap(&minute_trades, minute),
+                twap,
                 mid_price: book.mid(),
                 net_buy_amount: buy_amount - sell_amount,
                 net_buy_volume: buy_volume - sell_volume,
@@ -512,7 +524,7 @@ fn build_minutes_inner(
                 implied_volume,
                 implied_amount,
                 implied_vwap,
-                implied_twap: exact_twap(&implied, minute),
+                implied_twap,
                 book,
             });
             minute += 60;
@@ -570,7 +582,7 @@ mod tests {
         assert_eq!(rows[1].special_volume, 7.0);
         assert_eq!(rows[1].close, Some(102.0));
         assert_eq!(rows[1].vwap, Some(101.2));
-        assert_eq!(rows[1].twap, None);
+        assert_eq!(rows[1].twap, Some(102.0));
         assert_eq!(rows[1].book.bid_prices[0], Some(99.0));
         assert_eq!(rows[2].mid_price, Some(105.0));
     }
@@ -615,6 +627,41 @@ mod tests {
         assert_eq!(rows[0].book.bid_prices[0], None);
         assert_eq!(rows[1].close, Some(100.0));
         assert_eq!(rows[1].mid_price, None);
+    }
+
+    #[test]
+    fn twap_carries_within_a_segment_but_not_across_a_break() {
+        let rows = build_trade_only_minutes(
+            "CME:ES:2024-03",
+            "ESH24",
+            &[(0, 120), (300, 300)],
+            &[
+                trade(59, 100.0, 1.0, AGGRESSOR_BUY),
+                trade(65, 100.0, 1.0, AGGRESSOR_BUY),
+                BaselineTrade {
+                    event_ns: 80_500_000_000,
+                    source_order: b"80.5".to_vec(),
+                    price: 101.0,
+                    volume: 1.0,
+                    aggressor: AGGRESSOR_BUY,
+                },
+                trade(110, 98.0, 1.0, AGGRESSOR_BUY),
+                BaselineTrade {
+                    event_ns: 110_000_000_000,
+                    source_order: b"later".to_vec(),
+                    price: 99.0,
+                    volume: 1.0,
+                    aggressor: AGGRESSOR_BUY,
+                },
+                trade(305, 104.0, 1.0, AGGRESSOR_BUY),
+            ],
+            &[],
+            50.0,
+        )
+        .unwrap();
+        assert!((rows[1].twap.unwrap() - 100.325).abs() < 1e-12);
+        assert_eq!(rows[2].twap, Some(99.0));
+        assert!((rows[3].twap.unwrap() - 104.0 * 55.0 / 60.0).abs() < 1e-12);
     }
 
     #[test]

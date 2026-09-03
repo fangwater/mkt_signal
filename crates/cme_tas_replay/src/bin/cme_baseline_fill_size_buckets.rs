@@ -400,7 +400,7 @@ fn open_db(primary: &Path, secondary: &Path, direct: bool) -> Result<DB> {
 
 fn period_for_year(year: i32) -> Result<String> {
     match year {
-        2020..=2025 => Ok(format!("{year:04}-01-01_{:04}-01-01", year + 1)),
+        2017..=2025 => Ok(format!("{year:04}-01-01_{:04}-01-01", year + 1)),
         2026 => Ok("2026-01-01_2026-06-01".to_string()),
         _ => bail!("unsupported baseline year {year}"),
     }
@@ -946,6 +946,13 @@ mod tests {
     use super::*;
     use cme_tas_replay::{encode_cme_trade, SlimTrade, MISSING_PRICE, PRICE_SCALE};
     use tempfile::tempdir;
+
+    #[test]
+    fn period_mapping_includes_historical_tas_replays() {
+        assert_eq!(period_for_year(2017).unwrap(), "2017-01-01_2018-01-01");
+        assert_eq!(period_for_year(2019).unwrap(), "2019-01-01_2020-01-01");
+        assert!(period_for_year(2016).is_err());
+    }
 
     fn fixture_trade(ric: &str, second: u64, price: f64, volume: u32, aggressor: u8) -> SlimTrade {
         SlimTrade {
