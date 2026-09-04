@@ -1,12 +1,13 @@
 //! Fill the 12 order-size columns in CME baseline_data_1min.
 //!
-//! Thresholds are exact linear P50/P90 per product and Chicago TradDay month.
-//! Only printable `cme_trade` records are sampled. Implied prints participate
-//! in the total size buckets but not directional buy/sell buckets; Special
-//! records are deliberately never read from RocksDB by this program.
+//! Each Chicago TradDay month uses exact linear P50/P90 thresholds from the
+//! previous natural month for the same product. Only printable `cme_trade`
+//! records are sampled. Implied prints participate in the total size buckets
+//! but not directional buy/sell buckets; Special records are deliberately
+//! never read from RocksDB by this program.
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 use clap::Parser;
 use cme_tas_replay::baseline_1min::{SizeBuckets, SizeThresholds};
 use cme_tas_replay::product::{encode_all_key, exch_event_time_ns, product_cf_name, ALL_KEY_LEN};
@@ -147,6 +148,7 @@ struct MonthJob {
     year: i32,
     month: u32,
     days: Vec<DayJob>,
+    publish: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -157,17 +159,25 @@ struct TradeRef {
     aggressor: u8,
 }
 
+struct MonthScan {
+    row_counts: Vec<usize>,
+    trades: Vec<TradeRef>,
+    special_records: u64,
+}
+
 #[derive(Serialize)]
 struct MonthAudit {
     product: String,
     exchange: String,
     chicago_trading_month: String,
+    threshold_source_month: Option<String>,
     threshold_method: &'static str,
     threshold_sample: &'static str,
+    threshold_sample_trades: u64,
     implied_policy: &'static str,
     special_policy: &'static str,
-    p50: f64,
-    p90: f64,
+    p50: Option<f64>,
+    p90: Option<f64>,
     files: u64,
     rows: u64,
     printable_trades: u64,
@@ -187,6 +197,9 @@ fn product_spec(product: &str) -> Result<ProductSpec> {
 fn validate_args(args: &Args) -> Result<Vec<ProductSpec>> {
     if args.start >= args.end || args.workers == 0 {
         bail!("invalid date range or worker count");
+    }
+    if args.start.day() != 1 || args.end.day() != 1 {
+        bail!("--start and --end must be first-of-month boundaries");
     }
     if args.input_root == args.output_root {
         bail!("input and output roots must differ; write and validate staging first");
@@ -209,6 +222,10 @@ fn validate_args(args: &Args) -> Result<Vec<ProductSpec>> {
 }
 
 fn list_month_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<MonthJob>> {
+    let warmup_start = args
+        .start
+        .checked_sub_months(Months::new(1))
+        .context("cannot compute previous threshold month")?;
     let mut grouped: BTreeMap<(String, String, i32, u32), Vec<DayJob>> = BTreeMap::new();
     for spec in products {
         let input_dir = args.input_root.join(spec.exchange).join(spec.product);
@@ -227,7 +244,7 @@ fn list_month_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<MonthJob
             let Ok(day) = NaiveDate::parse_from_str(stem, "%Y%m%d") else {
                 continue;
             };
-            if day < args.start || day >= args.end {
+            if day < warmup_start || day >= args.end {
                 continue;
             }
             let output = args
@@ -256,6 +273,7 @@ fn list_month_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<MonthJob
                 year,
                 month,
                 days,
+                publish: true,
             }
         })
         .collect::<Vec<_>>();
@@ -265,24 +283,53 @@ fn list_month_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<MonthJob
             .then(left.month.cmp(&right.month))
             .then(left.product.cmp(&right.product))
     });
+    let mut target_keys = jobs
+        .iter()
+        .filter(|job| job.days[0].day >= args.start)
+        .map(|job| (job.product.clone(), job.year, job.month))
+        .collect::<Vec<_>>();
     if let Some(limit) = args.max_months {
-        jobs.truncate(limit);
+        target_keys.truncate(limit);
     }
-    if jobs.is_empty() {
+    if target_keys.is_empty() {
         bail!("no baseline months selected");
     }
+    let target_keys = target_keys.into_iter().collect::<BTreeSet<_>>();
+    let warmup_keys = target_keys
+        .iter()
+        .map(|(product, year, month)| {
+            let day = NaiveDate::from_ymd_opt(*year, *month, 1)
+                .expect("valid grouped month")
+                .checked_sub_months(Months::new(1))
+                .expect("previous grouped month");
+            (product.clone(), day.year(), day.month())
+        })
+        .collect::<BTreeSet<_>>();
+    jobs.retain(|job| {
+        let key = (job.product.clone(), job.year, job.month);
+        target_keys.contains(&key) || warmup_keys.contains(&key)
+    });
+    for job in &mut jobs {
+        let key = (job.product.clone(), job.year, job.month);
+        job.publish = target_keys.contains(&key);
+    }
     if args.resume {
-        jobs.retain(|job| {
+        for job in &mut jobs {
+            if !job.publish {
+                continue;
+            }
             let audit = args
                 .output_root
                 .join("_audit")
                 .join("size_buckets")
                 .join(&job.product)
                 .join(format!("{:04}{:02}.json", job.year, job.month));
-            !audit.exists()
-        });
+            if audit.exists() {
+                job.publish = false;
+            }
+        }
     } else if !args.overwrite {
-        for job in &jobs {
+        for job in jobs.iter().filter(|job| job.publish) {
             if let Some(path) = job
                 .days
                 .iter()
@@ -295,7 +342,7 @@ fn list_month_jobs(args: &Args, products: &[ProductSpec]) -> Result<Vec<MonthJob
             }
         }
     }
-    if jobs.is_empty() {
+    if !jobs.iter().any(|job| job.publish) {
         bail!("no baseline months selected after resume filtering");
     }
     Ok(jobs)
@@ -627,7 +674,12 @@ fn percentile_in_place(records: &mut [TradeRef], percentile: f64) -> Result<f64>
     Ok(lower_value * (1.0 - weight) + upper_value * weight)
 }
 
-fn validate_size_columns(df: &DataFrame, buckets: &[SizeBuckets], path: &Path) -> Result<u64> {
+fn validate_size_columns(
+    df: &DataFrame,
+    buckets: &[SizeBuckets],
+    path: &Path,
+    thresholds_available: bool,
+) -> Result<u64> {
     if df.height() != buckets.len() {
         bail!(
             "row count changed for {}: {} != {}",
@@ -661,11 +713,18 @@ fn validate_size_columns(df: &DataFrame, buckets: &[SizeBuckets], path: &Path) -
         let amount = value_at(df, "amount", row, path)?;
         let directed =
             value_at(df, "buy_amount", row, path)? + value_at(df, "sell_amount", row, path)?;
-        if !close_enough(bucket.total(), amount)
-            || !close_enough(bucket.directional_total(), directed)
-        {
+        if thresholds_available {
+            if !close_enough(bucket.total(), amount)
+                || !close_enough(bucket.directional_total(), directed)
+            {
+                bail!(
+                    "size-bucket invariant failed row {row} in {}",
+                    path.display()
+                );
+            }
+        } else if bucket.total() != 0.0 || bucket.directional_total() != 0.0 {
             bail!(
-                "size-bucket invariant failed row {row} in {}",
+                "size buckets must be zero without a prior-month threshold at row {row} in {}",
                 path.display()
             );
         }
@@ -674,7 +733,12 @@ fn validate_size_columns(df: &DataFrame, buckets: &[SizeBuckets], path: &Path) -
     Ok(traded_minutes)
 }
 
-fn replace_size_columns(df: &mut DataFrame, buckets: &[SizeBuckets], path: &Path) -> Result<u64> {
+fn replace_size_columns(
+    df: &mut DataFrame,
+    buckets: &[SizeBuckets],
+    path: &Path,
+    thresholds_available: bool,
+) -> Result<u64> {
     if df.height() != buckets.len() {
         bail!(
             "row count changed for {}: {} != {}",
@@ -722,7 +786,7 @@ fn replace_size_columns(df: &mut DataFrame, buckets: &[SizeBuckets], path: &Path
     for (name, values) in columns {
         df.replace(name, Series::new(name.into(), values))?;
     }
-    validate_size_columns(df, buckets, path)
+    validate_size_columns(df, buckets, path, thresholds_available)
 }
 
 fn write_parquet_atomic(path: &Path, mut df: DataFrame) -> Result<()> {
@@ -772,13 +836,7 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     result
 }
 
-fn process_month(
-    db: &DB,
-    job: &MonthJob,
-    multiplier: f64,
-    output_root: &Path,
-    parquet_lock: &Mutex<()>,
-) -> Result<MonthAudit> {
+fn scan_month(db: &DB, job: &MonthJob, multiplier: f64) -> Result<MonthScan> {
     let cf_name = product_cf_name(job.year as u16, &job.product)?;
     let cf = db
         .cf_handle(&cf_name)
@@ -800,20 +858,72 @@ fn process_month(
             job.month
         );
     }
-    let p50 = percentile_in_place(&mut trades, 0.5)?;
-    let p90 = percentile_in_place(&mut trades, 0.9)?;
-    let thresholds = SizeThresholds::new(p50, p90)?;
-    let mut buckets = row_counts
+    Ok(MonthScan {
+        row_counts,
+        trades,
+        special_records,
+    })
+}
+
+fn previous_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    }
+}
+
+fn process_month(
+    db: &DB,
+    job: &MonthJob,
+    multiplier: f64,
+    threshold_source: Option<(i32, u32, &mut Vec<TradeRef>)>,
+    output_root: &Path,
+    parquet_lock: &Mutex<()>,
+) -> Result<(MonthAudit, Vec<TradeRef>)> {
+    let scan = scan_month(db, job, multiplier)?;
+    let expected_source = previous_month(job.year, job.month);
+    let (threshold_source_month, threshold_sample_trades, p50, p90, thresholds) =
+        if let Some((source_year, source_month, trades)) = threshold_source {
+            if (source_year, source_month) != expected_source {
+                bail!(
+                    "{} {:04}-{:02} threshold source is {:04}-{:02}, expected {:04}-{:02}",
+                    job.product,
+                    job.year,
+                    job.month,
+                    source_year,
+                    source_month,
+                    expected_source.0,
+                    expected_source.1
+                );
+            }
+            let sample_count = trades.len() as u64;
+            let p50 = percentile_in_place(trades, 0.5)?;
+            let p90 = percentile_in_place(trades, 0.9)?;
+            (
+                Some(format!("{source_year:04}-{source_month:02}")),
+                sample_count,
+                Some(p50),
+                Some(p90),
+                Some(SizeThresholds::new(p50, p90)?),
+            )
+        } else {
+            (None, 0, None, None, None)
+        };
+    let mut buckets = scan
+        .row_counts
         .iter()
         .map(|&rows| vec![SizeBuckets::default(); rows])
         .collect::<Vec<_>>();
     let mut implied_trades = 0u64;
-    for trade in &trades {
-        buckets[trade.day_index as usize][trade.row_index as usize].add(
-            trade.amount,
-            trade.aggressor,
-            thresholds,
-        )?;
+    for trade in &scan.trades {
+        if let Some(thresholds) = thresholds {
+            buckets[trade.day_index as usize][trade.row_index as usize].add(
+                trade.amount,
+                trade.aggressor,
+                thresholds,
+            )?;
+        }
         implied_trades += u64::from(trade.aggressor == AGGRESSOR_IMPLIED);
     }
 
@@ -826,27 +936,30 @@ fn process_month(
                 bail!("missing size column {name} in {}", day.input.display());
             }
         }
-        traded_minutes += replace_size_columns(&mut df, day_buckets, &day.input)?;
+        traded_minutes +=
+            replace_size_columns(&mut df, day_buckets, &day.input, thresholds.is_some())?;
         rows += df.height() as u64;
         write_parquet_serialized(parquet_lock, &day.output, df)?;
         let persisted = read_parquet(&day.output)?;
-        validate_size_columns(&persisted, day_buckets, &day.output)?;
+        validate_size_columns(&persisted, day_buckets, &day.output, thresholds.is_some())?;
     }
     let audit = MonthAudit {
         product: job.product.clone(),
         exchange: job.exchange.clone(),
         chicago_trading_month: format!("{:04}-{:02}", job.year, job.month),
-        threshold_method: "linear P50/P90 (NumPy default)",
-        threshold_sample: "printable cme_trade notional only",
+        threshold_source_month,
+        threshold_method: "previous natural month linear P50/P90 (NumPy default)",
+        threshold_sample: "previous Chicago TradDay month printable cme_trade notional only",
+        threshold_sample_trades,
         implied_policy: "included in total bucket; excluded from buy/sell sides",
         special_policy: "excluded",
         p50,
         p90,
         files: job.days.len() as u64,
         rows,
-        printable_trades: trades.len() as u64,
+        printable_trades: scan.trades.len() as u64,
         implied_trades,
-        special_records_excluded: special_records,
+        special_records_excluded: scan.special_records,
         traded_minutes,
     };
     let audit_path = output_root
@@ -856,19 +969,71 @@ fn process_month(
         .join(format!("{:04}{:02}.json", job.year, job.month));
     write_json_atomic(&audit_path, &audit)?;
     eprintln!(
-        "size_month_done product={} month={:04}-{:02} files={} rows={} trades={} implied={} specials_excluded={} p50={} p90={}",
+        "size_month_done product={} month={:04}-{:02} threshold_source={} files={} rows={} trades={} implied={} specials_excluded={} p50={} p90={}",
         job.product,
         job.year,
         job.month,
+        audit.threshold_source_month.as_deref().unwrap_or("none"),
         audit.files,
         audit.rows,
         audit.printable_trades,
         audit.implied_trades,
         audit.special_records_excluded,
-        audit.p50,
-        audit.p90
+        audit
+            .p50
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        audit
+            .p90
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string())
     );
-    Ok(audit)
+    Ok((audit, scan.trades))
+}
+
+fn process_product(
+    db: &DB,
+    jobs: &[MonthJob],
+    multiplier: f64,
+    output_root: &Path,
+    parquet_lock: &Mutex<()>,
+) -> Result<Vec<MonthAudit>> {
+    let mut previous: Option<(i32, u32, Vec<TradeRef>)> = None;
+    let mut audits = Vec::new();
+    for job in jobs {
+        if !job.publish {
+            let scan = scan_month(db, job, multiplier)?;
+            previous = Some((job.year, job.month, scan.trades));
+            continue;
+        }
+        if let Some((source_year, source_month, _)) = &previous {
+            let expected = previous_month(job.year, job.month);
+            if (*source_year, *source_month) != expected {
+                bail!(
+                    "{} {:04}-{:02} is missing previous natural month {:04}-{:02}",
+                    job.product,
+                    job.year,
+                    job.month,
+                    expected.0,
+                    expected.1
+                );
+            }
+        }
+        let threshold_source = previous
+            .as_mut()
+            .map(|(year, month, trades)| (*year, *month, trades));
+        let (audit, current_trades) = process_month(
+            db,
+            job,
+            multiplier,
+            threshold_source,
+            output_root,
+            parquet_lock,
+        )?;
+        audits.push(audit);
+        previous = Some((job.year, job.month, current_trades));
+    }
+    Ok(audits)
 }
 
 fn run() -> Result<()> {
@@ -888,24 +1053,34 @@ fn run() -> Result<()> {
     }
     eprintln!(
         "size_fill_start months={} files={} workers={} input={} output={}",
-        jobs.len(),
-        jobs.iter().map(|job| job.days.len()).sum::<usize>(),
+        jobs.iter().filter(|job| job.publish).count(),
+        jobs.iter()
+            .filter(|job| job.publish)
+            .map(|job| job.days.len())
+            .sum::<usize>(),
         args.workers,
         args.input_root.display(),
         args.output_root.display()
     );
+    let mut grouped = BTreeMap::<String, Vec<MonthJob>>::new();
+    for job in jobs {
+        grouped.entry(job.product.clone()).or_default().push(job);
+    }
+    let product_jobs = grouped.into_values().collect::<Vec<_>>();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(args.workers)
         .stack_size(16 * 1024 * 1024)
         .build()?;
     let parquet_lock = Arc::new(Mutex::new(()));
     let results = pool.install(|| {
-        jobs.par_iter()
-            .map(|job| {
+        product_jobs
+            .par_iter()
+            .map(|jobs| {
+                let job = jobs.first().context("empty product job list")?;
                 let multiplier = *multipliers
                     .get(&job.product)
                     .with_context(|| format!("missing multiplier for {}", job.product))?;
-                process_month(&db, job, multiplier, &args.output_root, &parquet_lock)
+                process_product(&db, jobs, multiplier, &args.output_root, &parquet_lock)
             })
             .collect::<Vec<_>>()
     });
@@ -915,16 +1090,21 @@ fn run() -> Result<()> {
     let mut implied = 0u64;
     let mut specials = 0u64;
     for result in results {
-        let audit = result?;
-        files += audit.files;
-        rows += audit.rows;
-        trades += audit.printable_trades;
-        implied += audit.implied_trades;
-        specials += audit.special_records_excluded;
+        for audit in result? {
+            files += audit.files;
+            rows += audit.rows;
+            trades += audit.printable_trades;
+            implied += audit.implied_trades;
+            specials += audit.special_records_excluded;
+        }
     }
     eprintln!(
         "size_fill_complete months={} files={} rows={} trades={} implied={} specials_excluded={}",
-        jobs.len(),
+        product_jobs
+            .iter()
+            .flat_map(|jobs| jobs.iter())
+            .filter(|job| job.publish)
+            .count(),
         files,
         rows,
         trades,
@@ -952,6 +1132,12 @@ mod tests {
         assert_eq!(period_for_year(2017).unwrap(), "2017-01-01_2018-01-01");
         assert_eq!(period_for_year(2019).unwrap(), "2019-01-01_2020-01-01");
         assert!(period_for_year(2016).is_err());
+    }
+
+    #[test]
+    fn previous_month_crosses_year_boundary() {
+        assert_eq!(previous_month(2024, 1), (2023, 12));
+        assert_eq!(previous_month(2024, 7), (2024, 6));
     }
 
     fn fixture_trade(ric: &str, second: u64, price: f64, volume: u32, aggressor: u8) -> SlimTrade {
@@ -1021,6 +1207,43 @@ mod tests {
     }
 
     #[test]
+    fn month_jobs_include_previous_month_as_read_only_warmup() -> Result<()> {
+        let temp = tempdir()?;
+        let input_root = temp.path().join("input");
+        let output_root = temp.path().join("output");
+        let product_dir = input_root.join("CME/ES");
+        fs::create_dir_all(&product_dir)?;
+        for day in ["20231229", "20240102", "20240201"] {
+            File::create(product_dir.join(format!("{day}.parquet")))?;
+        }
+        let args = Args {
+            tas_rocksdb: PathBuf::from(DEFAULT_TAS_DB),
+            tas_secondary: PathBuf::from(DEFAULT_SECONDARY),
+            input_root,
+            output_root,
+            start: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            end: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+            products: vec!["ES".to_string()],
+            workers: 1,
+            overwrite: false,
+            resume: false,
+            direct_read_only: true,
+            max_months: None,
+            psql: PathBuf::from(DEFAULT_PSQL),
+            pg_socket: PathBuf::from(DEFAULT_PG_SOCKET),
+        };
+        let jobs = list_month_jobs(&args, &[product_spec("ES")?])?;
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            jobs.iter()
+                .map(|job| (job.year, job.month, job.publish))
+                .collect::<Vec<_>>(),
+            vec![(2023, 12, false), (2024, 1, true), (2024, 2, true)]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn overlay_includes_implied_and_excludes_special_end_to_end() -> Result<()> {
         let temp = tempdir()?;
         let db_path = temp.path().join("tas");
@@ -1065,21 +1288,97 @@ mod tests {
                 input,
                 output: output.clone(),
             }],
+            publish: true,
         };
-        let audit = process_month(&db, &job, 1.0, &output_root, &Mutex::new(()))?;
+        let mut previous_trades = [5.0, 15.0, 25.0]
+            .map(|amount| TradeRef {
+                day_index: 0,
+                row_index: 0,
+                amount,
+                aggressor: AGGRESSOR_BUY,
+            })
+            .to_vec();
+        let (audit, _) = process_month(
+            &db,
+            &job,
+            1.0,
+            Some((2023, 12, &mut previous_trades)),
+            &output_root,
+            &Mutex::new(()),
+        )?;
         assert_eq!(audit.printable_trades, 3);
         assert_eq!(audit.implied_trades, 1);
         assert_eq!(audit.special_records_excluded, 1);
-        assert_eq!(audit.p50, 30.0);
-        assert_eq!(audit.p90, 70.0);
+        assert_eq!(audit.threshold_source_month.as_deref(), Some("2023-12"));
+        assert_eq!(audit.threshold_sample_trades, 3);
+        assert_eq!(audit.p50, Some(15.0));
+        assert_eq!(audit.p90, Some(23.0));
         let result = read_parquet(&output)?;
         assert_eq!(value_at(&result, "small_order", 0, &output)?, 10.0);
-        assert_eq!(value_at(&result, "medium_order", 0, &output)?, 30.0);
-        assert_eq!(value_at(&result, "large_order", 0, &output)?, 80.0);
+        assert_eq!(value_at(&result, "medium_order", 0, &output)?, 0.0);
+        assert_eq!(value_at(&result, "large_order", 0, &output)?, 110.0);
         assert_eq!(value_at(&result, "small_buy", 0, &output)?, 10.0);
         assert_eq!(value_at(&result, "medium_buy", 0, &output)?, 0.0);
         assert_eq!(value_at(&result, "medium_sell", 0, &output)?, 0.0);
         assert_eq!(value_at(&result, "large_sell", 0, &output)?, 80.0);
+        Ok(())
+    }
+
+    #[test]
+    fn first_month_without_warmup_writes_zero_size_columns() -> Result<()> {
+        let temp = tempdir()?;
+        let db_path = temp.path().join("tas");
+        let input = temp.path().join("input.parquet");
+        let output_root = temp.path().join("output");
+        let output = output_root.join("CME/ES/20170103.parquet");
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let cf_name = product_cf_name(2017, "ES")?;
+        let db = DB::open_cf_descriptors(
+            &options,
+            &db_path,
+            vec![
+                ColumnFamilyDescriptor::new("default", Options::default()),
+                ColumnFamilyDescriptor::new(&cf_name, Options::default()),
+            ],
+        )?;
+        let cf = db.cf_handle(&cf_name).context("fixture CF")?;
+        for (seq, trade) in [
+            fixture_trade("ESH24", 10, 1.0, 10, AGGRESSOR_BUY),
+            fixture_trade("ESH24", 20, 1.0, 30, AGGRESSOR_IMPLIED),
+            fixture_trade("ESH24", 30, 1.0, 80, AGGRESSOR_SELL),
+        ]
+        .iter()
+        .enumerate()
+        {
+            db.put_cf(
+                &cf,
+                encode_all_key(KIND_CME_TRADE, "ESH24", trade.ts_utc_ns, 0, seq as u32)?,
+                encode_cme_trade(trade)?,
+            )?;
+        }
+        write_parquet_atomic(&input, fixture_frame()?)?;
+        let job = MonthJob {
+            product: "ES".to_string(),
+            exchange: "CME".to_string(),
+            year: 2017,
+            month: 1,
+            days: vec![DayJob {
+                day: NaiveDate::from_ymd_opt(2017, 1, 3).unwrap(),
+                input,
+                output: output.clone(),
+            }],
+            publish: true,
+        };
+        let (audit, _) = process_month(&db, &job, 1.0, None, &output_root, &Mutex::new(()))?;
+        assert_eq!(audit.threshold_source_month, None);
+        assert_eq!(audit.p50, None);
+        assert_eq!(audit.p90, None);
+        let result = read_parquet(&output)?;
+        for &name in SIZE_COLUMNS {
+            assert_eq!(value_at(&result, name, 0, &output)?, 0.0);
+        }
         Ok(())
     }
 }
