@@ -11,6 +11,7 @@ pub mod binance_basic_impl;
 pub mod bitget_basic_impl;
 pub mod bybit_basic_impl;
 pub mod gate_basic_impl;
+pub mod hyperliquid_basic_impl;
 pub mod okex_basic_impl;
 pub mod order_update;
 pub mod query_engine_response;
@@ -26,8 +27,13 @@ pub use query_engine_response::{QueryEngineResponse, QueryEngineResponseMessage}
 pub use query_order_updates::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
 pub use trade_engine_response::{
     TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END, HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_LEN,
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET,
 };
-pub use trade_request_type::TradeRequestType;
+pub use trade_request_type::{
+    hyperliquid_client_order_id_from_cloid, hyperliquid_cloid_from_client_order_id,
+    TradeRequestType,
+};
 pub use trade_update::TradeUpdate;
 pub use trade_update_lite::TradeUpdateLite;
 
@@ -113,6 +119,26 @@ impl TimeInForce {
             TimeInForce::FOK => 2,
             TimeInForce::GTX => 3,
         }
+    }
+}
+
+/// Return the exact TIF used by this system for supported Hyperliquid orders.
+/// Hyperliquid represents both intents as limit actions: post-only limits use
+/// `Alo`, while client-side protected market orders use `Ioc`.
+pub fn hyperliquid_time_in_force(
+    venue: TradingVenue,
+    order_type: OrderType,
+) -> Option<TimeInForce> {
+    if !matches!(
+        venue,
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+    ) {
+        return None;
+    }
+    match order_type {
+        OrderType::Limit => Some(TimeInForce::GTX),
+        OrderType::Market => Some(TimeInForce::IOC),
+        _ => None,
     }
 }
 
@@ -1487,6 +1513,31 @@ impl Order {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hyperliquid_tif_is_exact_for_supported_order_intents() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                hyperliquid_time_in_force(venue, OrderType::Limit),
+                Some(TimeInForce::GTX)
+            );
+            assert_eq!(
+                hyperliquid_time_in_force(venue, OrderType::Market),
+                Some(TimeInForce::IOC)
+            );
+        }
+        assert_eq!(
+            hyperliquid_time_in_force(TradingVenue::BinanceFutures, OrderType::Limit),
+            None
+        );
+        assert_eq!(
+            hyperliquid_time_in_force(TradingVenue::HyperliquidFutures, OrderType::StopLoss),
+            None
+        );
+    }
 
     fn insert_test_order(manager: &mut OrderManager, client_order_id: i64) {
         manager.create_order(

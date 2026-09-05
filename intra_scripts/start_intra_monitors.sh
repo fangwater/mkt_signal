@@ -86,7 +86,7 @@ fi
 bin_for_exchange() {
   local ex="$1"
   case "$ex" in
-    okex|binance|gate|bybit|bitget) ;;
+    okex|binance|gate|bybit|bitget|hyperliquid) ;;
     *) return 1 ;;
   esac
   local candidates=(

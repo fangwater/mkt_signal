@@ -41,8 +41,21 @@ impl UsdtBalanceManager {
         self.state
     }
 
+    /// Discard the previous complete snapshot before applying a replacement.
+    pub fn clear(&mut self) {
+        self.state = UsdtBalanceSnapshot::default();
+    }
+
+    pub fn settlement_asset(&self) -> &'static str {
+        if self.exchange == Exchange::Hyperliquid {
+            "USDC"
+        } else {
+            "USDT"
+        }
+    }
+
     pub fn apply_balance(&mut self, msg: &BasicBalanceMsg) {
-        if !msg.symbol.eq_ignore_ascii_case("USDT") {
+        if !msg.symbol.eq_ignore_ascii_case(self.settlement_asset()) {
             return;
         }
         if msg.timestamp < self.state.wallet_timestamp {
@@ -54,7 +67,7 @@ impl UsdtBalanceManager {
     }
 
     pub fn apply_borrow_interest(&mut self, msg: &BasicBorrowInterestMsg) {
-        if !msg.symbol.eq_ignore_ascii_case("USDT") {
+        if !msg.symbol.eq_ignore_ascii_case(self.settlement_asset()) {
             return;
         }
         if msg.timestamp < self.state.liability_timestamp {
@@ -158,5 +171,32 @@ mod tests {
                 exchange
             );
         }
+    }
+
+    #[test]
+    fn hyperliquid_tracks_usdc_and_ignores_usdt() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Hyperliquid);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "USDT".to_string(), 999.0));
+        assert_eq!(mgr.net_usdt_position(), 0.0);
+
+        mgr.apply_balance(&BasicBalanceMsg::create(2, "USDC".to_string(), 100.0));
+        mgr.apply_borrow_interest(&BasicBorrowInterestMsg::create(
+            2,
+            "USDC".to_string(),
+            30.0,
+            2.0,
+        ));
+        assert_eq!(mgr.settlement_asset(), "USDC");
+        assert!((mgr.net_usdt_position() - 68.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn clear_removes_the_previous_settlement_balance_snapshot() {
+        let mut mgr = UsdtBalanceManager::new(Exchange::Hyperliquid);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "USDC".to_string(), 100.0));
+        assert_eq!(mgr.net_usdt_position(), 100.0);
+        mgr.clear();
+        assert_eq!(mgr.net_usdt_position(), 0.0);
+        assert_eq!(mgr.snapshot().last_timestamp, 0);
     }
 }

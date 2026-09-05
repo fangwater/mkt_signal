@@ -127,6 +127,8 @@ fn venue_from_slug(raw: &str) -> Option<TradingVenue> {
         "bitget-coin-futures" => Some(TradingVenue::BitgetCoinFutures),
         "gate-margin" => Some(TradingVenue::GateMargin),
         "gate-futures" => Some(TradingVenue::GateFutures),
+        "hyperliquid-margin" => Some(TradingVenue::HyperliquidMargin),
+        "hyperliquid-futures" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -149,6 +151,7 @@ fn futures_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "bybit" => Some(TradingVenue::BybitFutures),
         "bitget" => Some(TradingVenue::BitgetFutures),
         "gate" => Some(TradingVenue::GateFutures),
+        "hyperliquid" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -160,6 +163,7 @@ fn margin_venue_for_exchange(exchange: &str) -> Option<TradingVenue> {
         "bybit" => Some(TradingVenue::BybitMargin),
         "bitget" => Some(TradingVenue::BitgetMargin),
         "gate" => Some(TradingVenue::GateMargin),
+        "hyperliquid" => Some(TradingVenue::HyperliquidMargin),
         _ => None,
     }
 }
@@ -866,6 +870,21 @@ mod tests {
         let (open, hedge) = infer_intra_venues_from_key_suffix("binance").unwrap();
         assert_eq!(open, TradingVenue::BinanceMargin);
         assert_eq!(hedge, TradingVenue::BinanceFutures);
+    }
+
+    #[test]
+    fn hyperliquid_intra_suffix_and_slugs_resolve() {
+        let (open, hedge) = infer_intra_venues_from_key_suffix("hyperliquid").unwrap();
+        assert_eq!(open, TradingVenue::HyperliquidMargin);
+        assert_eq!(hedge, TradingVenue::HyperliquidFutures);
+        assert_eq!(
+            super::venue_from_slug("hyperliquid_margin"),
+            Some(TradingVenue::HyperliquidMargin)
+        );
+        assert_eq!(
+            super::venue_from_slug("hyperliquid-futures"),
+            Some(TradingVenue::HyperliquidFutures)
+        );
     }
 
     #[test]

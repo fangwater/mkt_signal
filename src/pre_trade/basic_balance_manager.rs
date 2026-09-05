@@ -43,11 +43,20 @@ impl BasicBalanceManager {
         self.exchange
     }
 
+    fn settlement_asset(&self) -> &'static str {
+        if self.exchange == Exchange::Hyperliquid {
+            "USDC"
+        } else {
+            "USDT"
+        }
+    }
+
     /// 应用 balance 消息：覆盖当前钱包余额，更新时间戳。
     pub fn apply_balance(&mut self, msg: &BasicBalanceMsg) {
         let symbol = msg.symbol.to_ascii_uppercase();
-        // USDT 单独维护（按 exchange 维度），不进入 BasicBalanceManager。
-        if symbol == "USDT" {
+        // The settlement asset is maintained by UsdtBalanceManager and must
+        // not also enter the per-asset balance map.
+        if symbol == self.settlement_asset() {
             return;
         }
         let entry = self
@@ -76,8 +85,7 @@ impl BasicBalanceManager {
     pub fn apply_borrow_interest(&mut self, msg: &BasicBorrowInterestMsg) {
         // 与 balance 更新保持一致：内部统一用大写 key，避免大小写不一致导致 borrowed/interest 丢失。
         let symbol = msg.symbol.to_ascii_uppercase();
-        // USDT 单独维护（按 exchange 维度），不进入 BasicBalanceManager。
-        if symbol == "USDT" {
+        if symbol == self.settlement_asset() {
             return;
         }
         let entry = self
@@ -124,6 +132,11 @@ impl BasicBalanceManager {
         self.balances.len()
     }
 
+    /// Discard the previous complete snapshot before applying a replacement.
+    pub fn clear(&mut self) {
+        self.balances.clear();
+    }
+
     /// 返回当前全部余额的快照副本。
     pub fn snapshot(&self) -> Vec<BasicBalance> {
         self.balances_iter().cloned().collect()
@@ -161,6 +174,25 @@ mod tests {
         ));
 
         assert!((mgr.balance_position_of("BTC") - 68.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hyperliquid_keeps_usdc_out_of_asset_balances() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Hyperliquid);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "USDC".to_string(), 100.0));
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "HYPE".to_string(), 2.0));
+        assert!(mgr.get("USDC").is_none());
+        assert_eq!(mgr.balance_position_of("HYPE"), 2.0);
+    }
+
+    #[test]
+    fn clear_removes_balances_from_the_previous_snapshot() {
+        let mut mgr = BasicBalanceManager::new(Exchange::Hyperliquid);
+        mgr.apply_balance(&BasicBalanceMsg::create(1, "HYPE".to_string(), 2.0));
+        assert_eq!(mgr.len(), 1);
+        mgr.clear();
+        assert_eq!(mgr.len(), 0);
+        assert_eq!(mgr.balance_position_of("HYPE"), 0.0);
     }
 
     #[test]

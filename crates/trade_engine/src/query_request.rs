@@ -1,8 +1,31 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use log::debug;
+use mkt_parsers::msg::hyperliquid_account_msg::HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
 use std::convert::TryFrom;
 
 pub const SNAPSHOT_COMPLETE_MARKER: &[u8] = b"SNAPSHOT_COMPLETE";
+pub const SNAPSHOT_BEGIN_MARKER: &[u8] = b"SNAPSHOT_BEGIN";
+
+pub fn snapshot_begin_body(account_scope: u32) -> Bytes {
+    let mut body = BytesMut::with_capacity(SNAPSHOT_BEGIN_MARKER.len() + 4);
+    body.put_slice(SNAPSHOT_BEGIN_MARKER);
+    body.put_u32_le(account_scope);
+    body.freeze()
+}
+
+pub fn snapshot_begin_scope(body: &[u8]) -> Option<u32> {
+    let scope_start = SNAPSHOT_BEGIN_MARKER.len();
+    let scope_end = scope_start.checked_add(4)?;
+    if body.len() < scope_end || !body.starts_with(SNAPSHOT_BEGIN_MARKER) {
+        return None;
+    }
+    if body[scope_end..].iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    Some(u32::from_le_bytes(
+        body[scope_start..scope_end].try_into().ok()?,
+    ))
+}
 
 pub fn is_snapshot_complete_body(body: &[u8]) -> bool {
     body.starts_with(SNAPSHOT_COMPLETE_MARKER)
@@ -54,6 +77,11 @@ pub enum QueryRequestType {
     BitgetUsdtMaxTransferable = 9206,
     BitgetCoinFuturesQuery = 9207,
     BitgetCoinPositionsSnapshot = 9208,
+    HyperliquidMarginQuery = 9301,
+    HyperliquidUMQuery = 9302,
+    HyperliquidClearinghouseSnapshot = 9401,
+    HyperliquidSpotStateSnapshot = 9402,
+    HyperliquidUserAbstraction = 9403,
 }
 
 #[repr(C, align(8))]
@@ -116,6 +144,11 @@ impl TryFrom<u32> for QueryRequestType {
             9206 => Ok(QueryRequestType::BitgetUsdtMaxTransferable),
             9207 => Ok(QueryRequestType::BitgetCoinFuturesQuery),
             9208 => Ok(QueryRequestType::BitgetCoinPositionsSnapshot),
+            9301 => Ok(QueryRequestType::HyperliquidMarginQuery),
+            9302 => Ok(QueryRequestType::HyperliquidUMQuery),
+            9401 => Ok(QueryRequestType::HyperliquidClearinghouseSnapshot),
+            9402 => Ok(QueryRequestType::HyperliquidSpotStateSnapshot),
+            9403 => Ok(QueryRequestType::HyperliquidUserAbstraction),
             _ => Err(()),
         }
     }
@@ -187,6 +220,39 @@ impl GenericQueryRequest {
     }
 }
 
+/// Account-bound payload for every Hyperliquid info request crossing IPC.
+/// The body remains request-specific JSON (or empty for account snapshots).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidQueryParams {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub body: Bytes,
+}
+
+impl HyperliquidQueryParams {
+    pub fn create(account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN], body: Bytes) -> Self {
+        Self { account_hash, body }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let mut buf =
+            BytesMut::with_capacity(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + self.body.len());
+        buf.put_slice(&self.account_hash);
+        buf.put_slice(&self.body);
+        buf.freeze()
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        if raw.len() < HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN {
+            return None;
+        }
+        let (account_hash, body) = raw.split_at(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN);
+        Some(Self {
+            account_hash: account_hash.try_into().ok()?,
+            body: Bytes::copy_from_slice(body),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +264,42 @@ mod tests {
         assert!(is_snapshot_complete_body(&body));
         body[63] = 1;
         assert!(!is_snapshot_complete_body(&body));
+    }
+
+    #[test]
+    fn hyperliquid_query_params_roundtrip_account_identity_and_body() {
+        let params = HyperliquidQueryParams::create(
+            [9; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+            Bytes::from_static(b"{\"oid\":123}"),
+        );
+        let decoded = HyperliquidQueryParams::from_bytes(&params.to_bytes()).unwrap();
+        assert_eq!(decoded, params);
+        assert!(HyperliquidQueryParams::from_bytes(&[0; 31]).is_none());
+    }
+
+    #[test]
+    fn snapshot_begin_marker_retains_scope_through_ipc_zero_padding() {
+        let mut body = snapshot_begin_body(17).to_vec();
+        body.resize(64, 0);
+        assert_eq!(snapshot_begin_scope(&body), Some(17));
+        body[63] = 1;
+        assert_eq!(snapshot_begin_scope(&body), None);
+    }
+
+    #[test]
+    fn hyperliquid_query_types_round_trip_through_ipc_header() {
+        for req_type in [
+            QueryRequestType::HyperliquidMarginQuery,
+            QueryRequestType::HyperliquidUMQuery,
+            QueryRequestType::HyperliquidClearinghouseSnapshot,
+            QueryRequestType::HyperliquidSpotStateSnapshot,
+            QueryRequestType::HyperliquidUserAbstraction,
+        ] {
+            let request = GenericQueryRequest::create(req_type, 123, 456, Bytes::new());
+            let parsed = QueryRequestMsg::parse(&request.to_bytes()).expect("parse query request");
+            assert_eq!(parsed.req_type, req_type);
+            assert_eq!(parsed.create_time, 123);
+            assert_eq!(parsed.client_query_id, 456);
+        }
     }
 }

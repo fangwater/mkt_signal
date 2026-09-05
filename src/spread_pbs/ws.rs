@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -26,7 +27,7 @@ use tokio_tungstenite_v030::tungstenite::{
 use tokio_tungstenite_v030::{client_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
-use crate::spread_pbs::adapter::KeepaliveSpec;
+use crate::spread_pbs::adapter::{KeepaliveSpec, SubscriptionAckPolicy};
 use runtime_common::okex_notice::parse_okex_notice;
 use runtime_common::socket_tuning::{tune_tcp_stream, TcpSocketTuning, DEFAULT_WS_BUSY_POLL_US};
 use runtime_common::time_util::get_timestamp_us;
@@ -36,6 +37,7 @@ type WsSink = SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
 
 const RECONNECT_BACKOFF_SECS: u64 = 3;
+const SUBSCRIPTION_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 进程内共享的 rustls `ClientConfig`(aws-lc provider + 系统根证书)。
 /// 只在首次连接时构建;交易所证书链都是公共 CA,系统根证书与原 native-tls 行为一致。
@@ -66,7 +68,7 @@ pub(crate) fn shared_rustls_config() -> Result<Arc<ClientConfig>> {
 
 /// 帧处理回调：`(recv_us, payload_bytes)`。`recv_us` 是 `read.next()` 命中那一刻
 /// 立即抓的本地微秒时间戳，下游可用作"纯网络延迟"统计的端点。
-pub type FrameHandler = Rc<dyn Fn(i64, &[u8])>;
+pub type FrameHandler = Rc<dyn Fn(i64, &[u8]) -> Result<()>>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RollingRestartSpec {
@@ -91,15 +93,113 @@ pub struct WsLoopParams {
 enum SessionEnd {
     Shutdown,
     Disconnected,
+    SubscriptionRejected,
+    HandlerRejected,
     BusinessIdle,
     RollingRestart,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SubscriptionKey {
+    channel: String,
+    coin: String,
+}
+
+impl SubscriptionKey {
+    fn from_subscription(value: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            channel: value.get("type")?.as_str()?.to_string(),
+            coin: value.get("coin")?.as_str()?.to_string(),
+        })
+    }
+}
+
+impl std::fmt::Display for SubscriptionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.channel, self.coin)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingSubscriptionAcks {
+    pending: BTreeMap<SubscriptionKey, usize>,
+    count: usize,
+}
+
+impl PendingSubscriptionAcks {
+    fn from_requests(requests: &[serde_json::Value]) -> std::result::Result<Self, String> {
+        let mut pending = BTreeMap::new();
+        let mut count = 0usize;
+        for (index, request) in requests.iter().enumerate() {
+            if request.get("method").and_then(serde_json::Value::as_str) != Some("subscribe") {
+                return Err(format!(
+                    "request index={index} missing method=subscribe: {request}"
+                ));
+            }
+            let subscription = request
+                .get("subscription")
+                .ok_or_else(|| format!("request index={index} missing subscription: {request}"))?;
+            let key = SubscriptionKey::from_subscription(subscription).ok_or_else(|| {
+                format!("request index={index} missing subscription type/coin: {request}")
+            })?;
+            *pending.entry(key).or_insert(0) += 1;
+            count += 1;
+        }
+        Ok(Self { pending, count })
+    }
+
+    fn acknowledge(&mut self, key: &SubscriptionKey) -> bool {
+        let Some(remaining) = self.pending.get_mut(key) else {
+            return false;
+        };
+        *remaining -= 1;
+        self.count -= 1;
+        if *remaining == 0 {
+            self.pending.remove(key);
+        }
+        true
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    fn summary(&self) -> String {
+        self.pending
+            .iter()
+            .map(|(key, count)| {
+                if *count == 1 {
+                    key.to_string()
+                } else {
+                    format!("{key}x{count}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum SubscriptionControlFrame {
+    NotControl,
+    Acknowledged(SubscriptionKey),
+    Rejected(String),
 }
 
 /// 一条 ws 的连接 + 自动重连主循环。每个业务帧同步调 `handler`。
 pub async fn run_public_ws(
     params: WsLoopParams,
     handler: FrameHandler,
+    shutdown_rx: watch::Receiver<bool>,
+) {
+    run_public_ws_with_ack_policy(params, handler, shutdown_rx, SubscriptionAckPolicy::None).await;
+}
+
+pub async fn run_public_ws_with_ack_policy(
+    params: WsLoopParams,
+    handler: FrameHandler,
     mut shutdown_rx: watch::Receiver<bool>,
+    subscription_ack_policy: SubscriptionAckPolicy,
 ) {
     let WsLoopParams {
         label,
@@ -113,6 +213,22 @@ pub async fn run_public_ws(
         business_idle_timeout,
         rolling_restart,
     } = params;
+    let expected_subscription_acks = match subscription_ack_policy {
+        SubscriptionAckPolicy::None => None,
+        SubscriptionAckPolicy::HyperliquidTypeAndCoin => {
+            match PendingSubscriptionAcks::from_requests(&subscribe_msgs) {
+                Ok(expected) => Some(expected),
+                Err(err) => {
+                    log::error!(
+                        "spread_pbs ws[{}] invalid acknowledged subscription set: {}",
+                        label,
+                        err
+                    );
+                    return;
+                }
+            }
+        }
+    };
     let mut rolling_deadline = rolling_restart.map(|spec| Instant::now() + spec.first_after);
 
     loop {
@@ -147,6 +263,7 @@ pub async fn run_public_ws(
                     parse_okex_notices,
                     business_idle_timeout,
                     rolling_deadline,
+                    expected_subscription_acks.clone(),
                 )
                 .await;
                 if end == SessionEnd::Shutdown || *shutdown_rx.borrow() {
@@ -348,6 +465,7 @@ async fn run_session(
     parse_okex_notices: bool,
     business_idle_timeout: Option<Duration>,
     rolling_deadline: Option<Instant>,
+    mut pending_subscription_acks: Option<PendingSubscriptionAcks>,
 ) -> SessionEnd {
     let interval = keepalive
         .map(|k| k.interval)
@@ -357,6 +475,10 @@ async fn run_session(
     // 第一次 tick 立刻就触发，跳过它以免连上来就发心跳干扰订阅。
     keepalive_ticker.tick().await;
     let mut business_idle_deadline = business_idle_timeout.map(|timeout| Instant::now() + timeout);
+    let mut subscription_ack_deadline = pending_subscription_acks
+        .as_ref()
+        .filter(|pending| !pending.is_empty())
+        .map(|_| Instant::now() + SUBSCRIPTION_ACK_TIMEOUT);
 
     loop {
         tokio::select! {
@@ -366,6 +488,25 @@ async fn run_session(
                     let _ = sink.close().await;
                     return SessionEnd::Shutdown;
                 }
+            }
+            _ = async {
+                match subscription_ack_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let summary = pending_subscription_acks
+                    .as_ref()
+                    .map(PendingSubscriptionAcks::summary)
+                    .unwrap_or_default();
+                log::error!(
+                    "spread_pbs ws[{}] subscription ack timeout after {}ms missing={}",
+                    label,
+                    SUBSCRIPTION_ACK_TIMEOUT.as_millis(),
+                    summary,
+                );
+                let _ = sink.close().await;
+                return SessionEnd::SubscriptionRejected;
             }
             _ = async {
                 match business_idle_deadline {
@@ -422,17 +563,69 @@ async fn run_session(
                                 continue;
                             }
                         }
+                        match parse_subscription_control_frame(
+                            &text,
+                            pending_subscription_acks.is_some(),
+                        ) {
+                            SubscriptionControlFrame::NotControl => {}
+                            SubscriptionControlFrame::Acknowledged(key) => {
+                                let acknowledged = pending_subscription_acks
+                                    .as_mut()
+                                    .map(|pending| pending.acknowledge(&key))
+                                    .unwrap_or(false);
+                                if !acknowledged {
+                                    log::warn!(
+                                        "spread_pbs ws[{}] unexpected or duplicate subscription ack key={}",
+                                        label,
+                                        key,
+                                    );
+                                } else if pending_subscription_acks
+                                    .as_ref()
+                                    .is_some_and(PendingSubscriptionAcks::is_empty)
+                                {
+                                    subscription_ack_deadline = None;
+                                    log::info!(
+                                        "spread_pbs ws[{}] all subscription acks received",
+                                        label,
+                                    );
+                                }
+                                continue;
+                            }
+                            SubscriptionControlFrame::Rejected(reason) => {
+                                log::error!(
+                                    "spread_pbs ws[{}] subscription rejected: {}",
+                                    label,
+                                    reason,
+                                );
+                                let _ = sink.close().await;
+                                return SessionEnd::SubscriptionRejected;
+                            }
+                        }
                         if is_keepalive_response(&text) {
                             continue;
                         }
                         business_idle_deadline =
                             business_idle_timeout.map(|timeout| Instant::now() + timeout);
-                        handler(recv_us, text.as_bytes());
+                        if let Err(err) = handler(recv_us, text.as_bytes()) {
+                            log::error!(
+                                "spread_pbs ws[{}] frame handler rejected payload: {err:#}; reconnecting",
+                                label
+                            );
+                            let _ = sink.close().await;
+                            return SessionEnd::HandlerRejected;
+                        }
                     }
                     Some(Ok(Message::Binary(bin))) => {
                         business_idle_deadline =
                             business_idle_timeout.map(|timeout| Instant::now() + timeout);
-                        handler(recv_us, bin.as_ref());
+                        if let Err(err) = handler(recv_us, bin.as_ref()) {
+                            log::error!(
+                                "spread_pbs ws[{}] binary frame handler rejected payload: {err:#}; reconnecting",
+                                label
+                            );
+                            let _ = sink.close().await;
+                            return SessionEnd::HandlerRejected;
+                        }
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = sink.send(Message::Pong(payload)).await;
@@ -454,6 +647,69 @@ async fn run_session(
                 }
             }
         }
+    }
+}
+
+fn parse_subscription_control_frame(text: &str, enabled: bool) -> SubscriptionControlFrame {
+    if !enabled {
+        return SubscriptionControlFrame::NotControl;
+    }
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') {
+        return SubscriptionControlFrame::NotControl;
+    }
+    let head = &trimmed[..trimmed.len().min(256)];
+    if !head.contains("subscriptionResponse")
+        && !(head.contains("\"channel\"") && head.contains("\"error\""))
+    {
+        return SubscriptionControlFrame::NotControl;
+    }
+
+    let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) => value,
+        Err(err) => {
+            return SubscriptionControlFrame::Rejected(format!(
+                "malformed subscription control frame: {err}"
+            ));
+        }
+    };
+    match value.get("channel").and_then(serde_json::Value::as_str) {
+        Some("error") => {
+            let reason = value
+                .get("data")
+                .map(|data| {
+                    data.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| data.to_string())
+                })
+                .unwrap_or_else(|| "missing error data".to_string());
+            SubscriptionControlFrame::Rejected(reason)
+        }
+        Some("subscriptionResponse") => {
+            let data = match value.get("data") {
+                Some(data) => data,
+                None => {
+                    return SubscriptionControlFrame::Rejected(
+                        "subscriptionResponse missing data".to_string(),
+                    );
+                }
+            };
+            if data.get("method").and_then(serde_json::Value::as_str) != Some("subscribe") {
+                return SubscriptionControlFrame::Rejected(
+                    "subscriptionResponse missing method=subscribe".to_string(),
+                );
+            }
+            let key = data
+                .get("subscription")
+                .and_then(SubscriptionKey::from_subscription);
+            match key {
+                Some(key) => SubscriptionControlFrame::Acknowledged(key),
+                None => SubscriptionControlFrame::Rejected(
+                    "subscriptionResponse missing subscription type/coin".to_string(),
+                ),
+            }
+        }
+        _ => SubscriptionControlFrame::NotControl,
     }
 }
 
@@ -491,7 +747,10 @@ fn is_keepalive_response(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_keepalive_response;
+    use super::{
+        is_keepalive_response, parse_subscription_control_frame, PendingSubscriptionAcks,
+        SubscriptionControlFrame, SubscriptionKey,
+    };
 
     #[test]
     fn keepalive_filter_does_not_drop_binance_market_data() {
@@ -512,5 +771,77 @@ mod tests {
         assert!(is_keepalive_response(
             r#"{"event":"subscribe","result":{"channel":"futures.book_ticker"}}"#
         ));
+    }
+
+    #[test]
+    fn hyperliquid_acks_match_type_and_coin_not_exact_json() {
+        let requests = vec![
+            serde_json::json!({
+                "method": "subscribe",
+                "subscription": {"type": "l2Book", "coin": "HYPE"}
+            }),
+            serde_json::json!({
+                "method": "subscribe",
+                "subscription": {"type": "trades", "coin": "HYPE"}
+            }),
+        ];
+        let mut pending = PendingSubscriptionAcks::from_requests(&requests).unwrap();
+
+        let l2_ack = r#"{"channel":"subscriptionResponse","data":{"method":"subscribe","subscription":{"type":"l2Book","coin":"HYPE","nSigFigs":null,"mantissa":null,"fast":false}}}"#;
+        let SubscriptionControlFrame::Acknowledged(l2_key) =
+            parse_subscription_control_frame(l2_ack, true)
+        else {
+            panic!("expected l2 subscription ack");
+        };
+        assert!(pending.acknowledge(&l2_key));
+        assert_eq!(pending.summary(), "trades:HYPE");
+
+        let trades_ack = r#"{"channel":"subscriptionResponse","data":{"method":"subscribe","subscription":{"coin":"HYPE","type":"trades"}}}"#;
+        let SubscriptionControlFrame::Acknowledged(trades_key) =
+            parse_subscription_control_frame(trades_ack, true)
+        else {
+            panic!("expected trades subscription ack");
+        };
+        assert!(pending.acknowledge(&trades_key));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn hyperliquid_channel_error_rejects_session_even_with_pending_market_data() {
+        let error =
+            r#"{"channel":"error","data":"Error parsing JSON into valid websocket request"}"#;
+        assert_eq!(
+            parse_subscription_control_frame(error, true),
+            SubscriptionControlFrame::Rejected(
+                "Error parsing JSON into valid websocket request".to_string()
+            )
+        );
+
+        let book = r#"{"channel":"l2Book","data":{"coin":"HYPE","time":1,"levels":[[],[]]}}"#;
+        assert_eq!(
+            parse_subscription_control_frame(book, true),
+            SubscriptionControlFrame::NotControl
+        );
+    }
+
+    #[test]
+    fn hyperliquid_ack_tracker_preserves_duplicate_request_counts() {
+        let request = serde_json::json!({
+            "method": "subscribe",
+            "subscription": {"type": "bbo", "coin": "@107"}
+        });
+        let mut pending =
+            PendingSubscriptionAcks::from_requests(&[request.clone(), request]).unwrap();
+        let key = SubscriptionKey {
+            channel: "bbo".to_string(),
+            coin: "@107".to_string(),
+        };
+
+        assert_eq!(pending.summary(), "bbo:@107x2");
+        assert!(pending.acknowledge(&key));
+        assert_eq!(pending.summary(), "bbo:@107");
+        assert!(pending.acknowledge(&key));
+        assert!(pending.is_empty());
+        assert!(!pending.acknowledge(&key));
     }
 }

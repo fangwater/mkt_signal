@@ -15,6 +15,7 @@ pub enum MktMsgType {
     LiquidationOrder = 1013,
     FundingRate = 1014,
     AskBidSpread = 1015, // 买卖价差（最优买卖价）
+    OpenInterest = 1016,
     FactorValue = 2001,
     PairMmResample = 3001,
     TradeFlowFeature = 3002,
@@ -864,6 +865,7 @@ pub fn get_msg_type(data: &[u8]) -> MktMsgType {
         1013 => MktMsgType::LiquidationOrder,
         1014 => MktMsgType::FundingRate,
         1015 => MktMsgType::AskBidSpread,
+        1016 => MktMsgType::OpenInterest,
         2001 => MktMsgType::FactorValue,
         3001 => MktMsgType::PairMmResample,
         3002 => MktMsgType::TradeFlowFeature,

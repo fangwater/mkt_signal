@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 account_common = { path = "../account_common" }
+account_monitor_common = { path = "../account_monitor_common" }
 anyhow.workspace = true
 async-trait = "0.1"
 base64 = "0.21"
@@ -14,6 +15,7 @@ futures = "0.3"
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
+k256 = { version = "0.13", features = ["ecdsa"] }
 iceoryx2 = "0.8.1"
 log = "0.4"
 order_common = { path = "../order_common" }
@@ -22,6 +24,8 @@ runtime_common = { path = "../runtime_common" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = "0.10"
+sha3 = "0.10"
+rmp-serde = "1.3"
 sonic-rs = "0.5.1"
 symbol_utils = { path = "../symbol_utils" }
 tokio = { version = "1.0", features = ["full"] }

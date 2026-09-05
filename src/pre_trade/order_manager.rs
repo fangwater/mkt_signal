@@ -1,3 +1,4 @@
+use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::runtime_flags::suppress_pre_submit_hot_path_logs;
 use bytes::Bytes;
 use log::{info, warn};
@@ -8,6 +9,7 @@ pub use order_common::{
 };
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
+use std::sync::OnceLock;
 pub use symbol_utils::symbol_util::gate_currency_pair_from_symbol;
 use symbol_utils::symbol_util::{
     binance_coin_futures_symbol, bitget_coin_futures_symbol, extract_assets_from_internal_symbol,
@@ -22,8 +24,13 @@ use trade_engine::okex::{
 };
 use trade_engine::trade_request::{
     BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams, BitgetNewOrderParams,
-    GateCancelOrderParams, GateNewOrderParams, PreparedTradeRequest,
+    GateCancelOrderParams, GateNewOrderParams, HyperliquidCancelOrderParams,
+    HyperliquidNewOrderParams, PreparedTradeRequest,
 };
+use trade_signal::MktChannel;
+
+const HYPERLIQUID_DEFAULT_MARKET_SLIPPAGE_BPS: f64 = 500.0;
+const HYPERLIQUID_DEFAULT_BBO_MAX_AGE_MS: i64 = 2_000;
 fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
     if let Some(qv) = QuantizedValue::from_decimal(value) {
         return Some(qv);
@@ -50,6 +57,134 @@ fn quantize_order_decimal(value: f64) -> Option<QuantizedValue> {
 
 fn qv_from_order_cache(qv: OrderQuantizedValue) -> QuantizedValue {
     QuantizedValue::from_parts(qv.tick_i64, qv.tick_exp, qv.count)
+}
+
+fn hyperliquid_env_f64(
+    name: &'static str,
+    default: f64,
+    min: f64,
+    max: f64,
+) -> Result<f64, String> {
+    let Some(raw) = std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(default);
+    };
+    let parsed = raw
+        .parse::<f64>()
+        .map_err(|err| format!("invalid {name}={raw:?}: {err}"))?;
+    if !parsed.is_finite() || parsed < min || parsed > max {
+        return Err(format!(
+            "invalid {name}={parsed}; expected a finite value in [{min}, {max}]"
+        ));
+    }
+    Ok(parsed)
+}
+
+fn hyperliquid_market_slippage_bps() -> Result<f64, String> {
+    static VALUE: OnceLock<Result<f64, String>> = OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            hyperliquid_env_f64(
+                "HYPERLIQUID_MARKET_SLIPPAGE_BPS",
+                HYPERLIQUID_DEFAULT_MARKET_SLIPPAGE_BPS,
+                0.0,
+                5_000.0,
+            )
+        })
+        .clone()
+}
+
+fn hyperliquid_bbo_max_age_us() -> Result<i64, String> {
+    static VALUE: OnceLock<Result<i64, String>> = OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            let millis = hyperliquid_env_f64(
+                "HYPERLIQUID_MARKET_BBO_MAX_AGE_MS",
+                HYPERLIQUID_DEFAULT_BBO_MAX_AGE_MS as f64,
+                1.0,
+                60_000.0,
+            )?;
+            Ok((millis * 1_000.0).round() as i64)
+        })
+        .clone()
+}
+
+fn hyperliquid_market_protection_price(
+    reference_price: f64,
+    side: Side,
+    slippage_bps: f64,
+) -> Result<f64, String> {
+    if !reference_price.is_finite() || reference_price <= 0.0 {
+        return Err(format!(
+            "invalid Hyperliquid BBO reference price {reference_price}"
+        ));
+    }
+    let fraction = slippage_bps / 10_000.0;
+    let price = match side {
+        Side::Buy => reference_price * (1.0 + fraction),
+        Side::Sell => reference_price * (1.0 - fraction),
+    };
+    if !price.is_finite() || price <= 0.0 {
+        return Err(format!(
+            "invalid Hyperliquid IOC protection price {price} from reference={reference_price} slippage_bps={slippage_bps}"
+        ));
+    }
+    Ok(price)
+}
+
+fn hyperliquid_price_qv(
+    order: &Order,
+    resolved: ResolvedOrderQuantities,
+) -> Result<QuantizedValue, String> {
+    if order.order_type.is_limit() {
+        return resolved.require_price_qv(order, "Hyperliquid");
+    }
+    if order.order_type != OrderType::Market {
+        return Err(format!(
+            "unsupported Hyperliquid order type: {:?}",
+            order.order_type
+        ));
+    }
+    if !MktChannel::is_initialized() {
+        return Err(format!(
+            "Hyperliquid market order requires initialized BBO cache: venue={:?} symbol={} client_order_id={}",
+            order.venue, order.symbol, order.client_order_id
+        ));
+    }
+    let quote = MktChannel::instance()
+        .get_quote(&order.symbol, order.venue)
+        .ok_or_else(|| {
+            format!(
+                "Hyperliquid market order has no valid BBO: venue={:?} symbol={} client_order_id={}",
+                order.venue, order.symbol, order.client_order_id
+            )
+        })?;
+    let now_us = get_timestamp_us();
+    let max_age_us = hyperliquid_bbo_max_age_us()?;
+    if quote.ts <= 0 || now_us.saturating_sub(quote.ts) > max_age_us {
+        return Err(format!(
+            "Hyperliquid market order BBO is stale: venue={:?} symbol={} quote_ts={} now_us={} max_age_us={}",
+            order.venue, order.symbol, quote.ts, now_us, max_age_us
+        ));
+    }
+    let reference_price = match order.side {
+        Side::Buy => quote.ask,
+        Side::Sell => quote.bid,
+    };
+    let price = hyperliquid_market_protection_price(
+        reference_price,
+        order.side,
+        hyperliquid_market_slippage_bps()?,
+    )?;
+    quantize_order_decimal(price).ok_or_else(|| {
+        format!(
+            "failed to quantize Hyperliquid IOC protection price: price={price:.12} venue={:?} symbol={} client_order_id={}",
+            order.venue, order.symbol, order.client_order_id
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +237,15 @@ impl ResolvedOrderQuantities {
         } else {
             Ok(QuantizedValue::zero())
         }
+    }
+
+    fn require_price_qv(self, order: &Order, venue_name: &str) -> Result<QuantizedValue, String> {
+        self.price_qv.ok_or_else(|| {
+            format!(
+                "failed to quantize {venue_name} protection price: price={:.12} order_type={:?} symbol={} client_order_id={}",
+                order.price, order.order_type, order.symbol, order.client_order_id
+            )
+        })
     }
 }
 
@@ -326,6 +470,25 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
                     client_order_id,
                 )
                 .ok_or_else(|| "failed to build binance cm cancel params".to_string())
+            }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                let req_type = match venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                HyperliquidCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    symbol,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid unmatched cancel params".to_string())
             }
             _ => Err(format!(
                 "unmatched cancel fallback not supported for venue {:?}",
@@ -650,6 +813,25 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget cancel params".to_string())
             }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                let req_type = match self.venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidCancelUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                HyperliquidCancelOrderParams::request_bytes_from_parts(
+                    req_type,
+                    now,
+                    self.client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    &self.symbol,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid cancel params".to_string())
+            }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
     }
@@ -945,6 +1127,38 @@ impl PreTradeOrderRequestExt for Order {
                 )
                 .ok_or_else(|| "failed to build bitget coin futures order params".to_string())
             }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported Hyperliquid order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let req_type = match self.venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                let quantity_qv = resolved.require_quantity_qv(self, "Hyperliquid")?;
+                let price_qv = hyperliquid_price_qv(self, resolved)?;
+                HyperliquidNewOrderParams::request_bytes_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    self.client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid order params".to_string())
+            }
             //之后在这支持别的类型下单，根据资产类型决定下单的request，统一序列化为bytes
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
@@ -1237,6 +1451,38 @@ impl PreTradeOrderRequestExt for Order {
                 }
                 .ok_or_else(|| "failed to build bybit new order request".to_string())
             }
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => {
+                if !matches!(self.order_type, OrderType::Limit | OrderType::Market) {
+                    return Err(format!(
+                        "unsupported Hyperliquid order type: {:?}",
+                        self.order_type
+                    ));
+                }
+                let req_type = match self.venue {
+                    TradingVenue::HyperliquidMargin => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewMarginOrder
+                    }
+                    TradingVenue::HyperliquidFutures => {
+                        trade_engine::trade_request::TradeRequestType::HyperliquidNewUMOrder
+                    }
+                    _ => unreachable!(),
+                };
+                let quantity_qv = resolved.require_quantity_qv(self, "Hyperliquid")?;
+                let price_qv = hyperliquid_price_qv(self, resolved)?;
+                HyperliquidNewOrderParams::prepared_request_from_parts(
+                    req_type,
+                    get_timestamp_us(),
+                    self.client_order_id,
+                    hyperliquid_account_hash_from_env()?,
+                    &self.symbol,
+                    self.side,
+                    self.order_type,
+                    quantity_qv,
+                    price_qv,
+                    self.reduce_only,
+                )
+                .ok_or_else(|| "failed to build Hyperliquid order params".to_string())
+            }
             _ => Err(format!(
                 "prepared order request unsupported for venue {:?}",
                 self.venue
@@ -1249,10 +1495,11 @@ impl PreTradeOrderRequestExt for Order {
 mod tests {
     use super::{
         binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
-        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
-        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
-        TradeUpdateSkipReason,
+        hyperliquid_market_protection_price, BybitNewOrderRequest, Order, OrderExecutionStatus,
+        OrderManager, OrderQuantizedValue, OrderStatus, OrderType, PreTradeOrderManagerRequestExt,
+        PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
     };
+    use mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash;
     use order_common::{BinanceAccountMode, TradingVenue};
     use serde_json::Value;
     use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
@@ -1300,6 +1547,41 @@ mod tests {
     #[test]
     fn binance_pm_margin_open_uses_margin_buy() {
         assert!(binance_margin_should_use_margin_buy(false, false));
+    }
+
+    #[test]
+    fn hyperliquid_market_protection_is_side_aware() {
+        assert_eq!(
+            hyperliquid_market_protection_price(100.0, Side::Buy, 500.0).unwrap(),
+            105.0
+        );
+        assert_eq!(
+            hyperliquid_market_protection_price(100.0, Side::Sell, 500.0).unwrap(),
+            95.0
+        );
+        assert!(hyperliquid_market_protection_price(0.0, Side::Buy, 500.0).is_err());
+    }
+
+    #[test]
+    fn hyperliquid_unmatched_cancel_uses_cloid_params() {
+        let account = "0x1111111111111111111111111111111111111111";
+        std::env::set_var("HYPERLIQUID_ACCOUNT_ADDRESS", account);
+        std::env::set_var("HYPERLIQUID_TESTNET", "0");
+        let manager = OrderManager::new(None);
+        let bytes = manager
+            .build_unmatched_cancel_bytes(TradingVenue::HyperliquidFutures, "BTCUSDT", 7_654_321)
+            .unwrap();
+        let request = TradeRequestMsg::parse(bytes.as_ref()).unwrap();
+        assert_eq!(request.req_type, TradeRequestType::HyperliquidCancelUMOrder);
+        let params =
+            trade_engine::trade_request::HyperliquidCancelOrderParams::from_bytes(&request.params)
+                .unwrap();
+        assert_eq!(
+            params.account_hash,
+            hyperliquid_account_identity_hash(account, false).unwrap()
+        );
+        assert_eq!(params.symbol, "BTCUSDT");
+        assert_eq!(request.client_order_id, 7_654_321);
     }
 
     #[test]

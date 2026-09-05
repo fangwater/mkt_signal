@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 NAMESPACE = "intra"
 
 
@@ -190,15 +190,33 @@ def print_symbol_list(rds, key: str, title: str) -> None:
         print(f"  原始值: {text}")
 
 
-def normalize_symbol(symbol: str) -> str:
-    return (symbol or "").strip().upper()
+def normalize_symbol(symbol: str, exchange: Optional[str] = None) -> str:
+    normalized = (symbol or "").strip().upper()
+    if normalize_exchange(exchange or "") == "hyperliquid":
+        normalized = re.sub(r"[^A-Z0-9]", "", normalized)
+        if normalized.endswith("USDT"):
+            normalized = f"{normalized[:-4]}USDC"
+        if normalized and not normalized.endswith("USDC"):
+            raise ValueError(
+                f"Hyperliquid intra symbol must use the USDC quote: {symbol!r}"
+            )
+    return normalized
 
 
-def validate_symbol_partition() -> bool:
-    dump_set = {normalize_symbol(s) for s in DUMP_SYMBOLS if normalize_symbol(s)}
-    fwd_set = {normalize_symbol(s) for s in FWD_SYMBOLS if normalize_symbol(s)}
-    bwd_set = {normalize_symbol(s) for s in BWD_SYMBOLS if normalize_symbol(s)}
-    vol_gate_set = {normalize_symbol(s) for s in VOL_GATE_SYMBOLS if normalize_symbol(s)}
+def symbols_for_exchange(symbols: List[str], exchange: str) -> List[str]:
+    normalized_symbols: List[str] = []
+    for symbol in symbols:
+        normalized = normalize_symbol(symbol, exchange)
+        if normalized:
+            normalized_symbols.append(normalized)
+    return normalized_symbols
+
+
+def validate_symbol_partition(exchange: Optional[str] = None) -> bool:
+    dump_set = set(symbols_for_exchange(DUMP_SYMBOLS, exchange or ""))
+    fwd_set = set(symbols_for_exchange(FWD_SYMBOLS, exchange or ""))
+    bwd_set = set(symbols_for_exchange(BWD_SYMBOLS, exchange or ""))
+    vol_gate_set = set(symbols_for_exchange(VOL_GATE_SYMBOLS, exchange or ""))
 
     conflicts = sorted(dump_set & (fwd_set | bwd_set))
     if conflicts:
@@ -225,42 +243,46 @@ def sync_symbol_lists(rds, exchange: str, env_name: str, open_venue: str, hedge_
     bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange)
     vol_key = symbol_list_key(env_name, "vol_gate_symbols", exchange)
 
-    rds.set(dump_key, json.dumps(DUMP_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(DUMP_SYMBOLS)} 个交易对到 '{dump_key}'（平仓列表）")
+    dump_symbols = symbols_for_exchange(DUMP_SYMBOLS, exchange)
+    fwd_symbols = symbols_for_exchange(FWD_SYMBOLS, exchange)
+    bwd_symbols = symbols_for_exchange(BWD_SYMBOLS, exchange)
+    vol_gate_symbols = symbols_for_exchange(VOL_GATE_SYMBOLS, exchange)
 
-    rds.set(fwd_key, json.dumps(FWD_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(FWD_SYMBOLS)} 个交易对到 '{fwd_key}'（正套）")
+    rds.set(dump_key, json.dumps(dump_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(dump_symbols)} 个交易对到 '{dump_key}'（平仓列表）")
 
-    rds.set(bwd_key, json.dumps(BWD_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(BWD_SYMBOLS)} 个交易对到 '{bwd_key}'（反套）")
+    rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
 
-    rds.set(vol_key, json.dumps(VOL_GATE_SYMBOLS, ensure_ascii=False))
-    print(f"✅ 已写入 {len(VOL_GATE_SYMBOLS)} 个交易对到 '{vol_key}'（Vol Gate）")
+    rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
+
+    rds.set(vol_key, json.dumps(vol_gate_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(vol_gate_symbols)} 个交易对到 '{vol_key}'（Vol Gate）")
 
     return (
-        len(DUMP_SYMBOLS)
-        + len(FWD_SYMBOLS)
-        + len(BWD_SYMBOLS)
-        + len(VOL_GATE_SYMBOLS)
+        len(dump_symbols)
+        + len(fwd_symbols)
+        + len(bwd_symbols)
+        + len(vol_gate_symbols)
     )
 
 
 def main() -> int:
     args = parse_args()
-    if not validate_symbol_partition():
-        return 2
-
-    redis = try_import_redis()
-    if redis is None:
-        print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
-        return 2
-
     exchange = resolve_exchange(args)
     if not exchange or exchange not in SUPPORTED_EXCHANGES:
         print(
             "❌ 需要 --exchange / --open-venue / --env-name，或在目录名包含 '<exchange>-intra-...' 以自动推断",
             file=sys.stderr,
         )
+        return 2
+    if not validate_symbol_partition(exchange):
+        return 2
+
+    redis = try_import_redis()
+    if redis is None:
+        print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
     open_venue, hedge_venue = resolve_venues(args, exchange)
     env_name = resolve_env_name(args)

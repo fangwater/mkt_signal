@@ -37,6 +37,7 @@ echo "[INFO] building Intra release binaries"
     --bin bybit_account_monitor \
     --bin okex_account_monitor \
     --bin binance_account_monitor \
+    --bin hyperliquid_account_monitor \
     --bin pre_trade \
     --bin trade_engine
   cargo build --release --target-dir "$TARGET_DIR" \
@@ -55,6 +56,7 @@ required_binaries=(
   "$RELEASE_DIR/bybit_account_monitor"
   "$RELEASE_DIR/okex_account_monitor"
   "$RELEASE_DIR/binance_account_monitor"
+  "$RELEASE_DIR/hyperliquid_account_monitor"
   "$RELEASE_DIR/pre_trade"
   "$RELEASE_DIR/trade_engine"
   "$RELEASE_DIR/trade_signal"

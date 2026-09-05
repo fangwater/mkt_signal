@@ -8,6 +8,7 @@ use crate::engine::{
     take_internal_open_terminate, InternalOpenTerminateMap, InternalOpenTerminateSummary,
 };
 use crate::gate_ws;
+use crate::hyperliquid_ws::{self, HyperliquidTradingClient};
 use crate::ltp_ws::{self, LtpCredentials};
 use crate::okex;
 use crate::okex::{OkexCancelOrderParams, OkexNewOrderParams, OkexWsOrderResponse};
@@ -17,7 +18,13 @@ use crate::query_parsers::compact_order::ORDER_QUERY_NOT_FOUND_MARKER;
 use crate::query_parsers::gate_order_status::{
     parse_gate_futures_order_status_json, parse_gate_spot_order_status_json,
 };
-use crate::query_request::{QueryRequestMsg, QueryRequestType};
+use crate::query_parsers::hyperliquid_order_status::{
+    parse_hyperliquid_order_status_value, HyperliquidOrderQueryResult,
+};
+use crate::query_request::{
+    snapshot_begin_body, HyperliquidQueryParams, QueryRequestMsg, QueryRequestType,
+    SNAPSHOT_COMPLETE_MARKER,
+};
 use crate::query_response_handle::QueryExecOutcome;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::tcp_loss_health::{TcpLossHealth, TcpLossHealthConfig};
@@ -38,6 +45,9 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, info, warn};
 use native_tls::TlsConnector;
+use order_common::trade_error_code::hyperliquid::{
+    ACTION_AMBIGUOUS as HYPERLIQUID_ACTION_AMBIGUOUS, ACTION_REJECTED as HYPERLIQUID_LOCAL_REJECTED,
+};
 use rolling_common::health_snapshot::{
     HealthSnapshotMsg, HEALTH_FLAG_CONNECTED, HEALTH_FLAG_LAST_ROUTE_PROTECTED,
     HEALTH_FLAG_RECONNECTING, HEALTH_FLAG_RECONNECT_PENDING, HEALTH_FLAG_ROUTE_PAUSED,
@@ -57,7 +67,8 @@ use serde_json::value::RawValue;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use tokio::net::{lookup_host, TcpSocket, TcpStream};
 use tokio::sync::Notify;
@@ -230,6 +241,26 @@ fn format_ws_error(err: &WsError) -> String {
 }
 
 const DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS: u32 = 30_000;
+const DEFAULT_HYPERLIQUID_POST_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_HYPERLIQUID_NEW_ORDER_QUEUE_TTL_US: i64 = 2_000_000;
+
+fn hyperliquid_new_order_expired_at(
+    req_type: TradeRequestType,
+    create_time_us: i64,
+    now_us: i64,
+    max_age_us: i64,
+) -> bool {
+    if !matches!(
+        req_type,
+        TradeRequestType::HyperliquidNewMarginOrder | TradeRequestType::HyperliquidNewUMOrder
+    ) {
+        return false;
+    }
+    create_time_us <= 0
+        || max_age_us <= 0
+        || now_us < create_time_us
+        || now_us.saturating_sub(create_time_us) >= max_age_us
+}
 
 pub(crate) fn trade_engine_tcp_tuning() -> TcpSocketTuning {
     TcpSocketTuning {
@@ -579,12 +610,23 @@ struct TradeInflightMeta {
     req_type: TradeRequestType,
     client_order_id: i64,
     ws_open_update_enabled: bool,
+    sent_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct HyperliquidActionTail {
+    order_id: i64,
+    order_status_u8: u8,
+    order_update_time: i64,
+    executed_qty: f64,
+    response_price: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct QueryInflightMeta {
     req_type: QueryRequestType,
     client_query_id: i64,
+    sent_at: Instant,
 }
 
 #[derive(Debug, Deserialize)]
@@ -616,6 +658,8 @@ pub struct TradeWsClient {
     connect_timeout_ms: u64,
     ping_interval_ms: u64,
     max_inflight: usize,
+    hyperliquid_post_timeout: Duration,
+    hyperliquid_new_order_queue_ttl_us: i64,
     login_payload: Option<String>,
     binance_creds: Option<ApiKey>,
     binance_ws_signer: Option<BinanceWsSigner>,
@@ -625,6 +669,7 @@ pub struct TradeWsClient {
     bybit_creds: Option<BybitCredentials>,
     okex_creds: Option<OkexCredentials>,
     gate_creds: Option<GateCredentials>,
+    hyperliquid_client: Option<Arc<HyperliquidTradingClient>>,
     ltp_creds: Option<LtpCredentials>,
     okex_http_client: Option<reqwest::Client>,
     okex_inst_id_code_cache: FastHashMap<String, i64>,
@@ -822,6 +867,8 @@ impl TradeWsClient {
             connect_timeout_ms,
             ping_interval_ms,
             max_inflight,
+            hyperliquid_post_timeout: Duration::from_millis(DEFAULT_HYPERLIQUID_POST_TIMEOUT_MS),
+            hyperliquid_new_order_queue_ttl_us: DEFAULT_HYPERLIQUID_NEW_ORDER_QUEUE_TTL_US,
             login_payload,
             binance_creds,
             binance_ws_signer,
@@ -831,6 +878,7 @@ impl TradeWsClient {
             bybit_creds,
             okex_creds,
             gate_creds,
+            hyperliquid_client: None,
             ltp_creds,
             okex_http_client: (exchange == Exchange::Okex).then(reqwest::Client::new),
             okex_inst_id_code_cache: fast_hash_map(),
@@ -873,6 +921,16 @@ impl TradeWsClient {
             self.planned_reconnect_period_ms = Some(period_ms);
             self.planned_reconnect_offset_ms = offset_ms % period_ms;
         }
+        self
+    }
+
+    pub(crate) fn with_hyperliquid_client(mut self, client: Arc<HyperliquidTradingClient>) -> Self {
+        self.hyperliquid_client = Some(client);
+        self
+    }
+
+    pub(crate) fn with_hyperliquid_post_timeout(mut self, timeout: Duration) -> Self {
+        self.hyperliquid_post_timeout = timeout.max(Duration::from_millis(1));
         self
     }
 
@@ -1117,6 +1175,26 @@ impl TradeWsClient {
     fn queue_disconnected_command(&mut self, cmd: WsCommand, context: &str) {
         match cmd {
             WsCommand::Send(msg) => {
+                if self.exchange == Exchange::Hyperliquid && msg.req_type.is_new_order() {
+                    let reason = format!(
+                        "Hyperliquid new order reached a disconnected endpoint {context}; refusing delayed replay"
+                    );
+                    warn!(
+                        "trade ws client id={} rejecting disconnected Hyperliquid new order client_order_id={}: {}",
+                        self.id, msg.client_order_id, reason
+                    );
+                    self.notify_rejected(&msg, &reason);
+                    return;
+                }
+                if self.exchange == Exchange::Hyperliquid && self.hyperliquid_post_limit_reached() {
+                    let reason = self.hyperliquid_post_limit_reason();
+                    warn!(
+                        "trade ws client id={} rejecting disconnected Hyperliquid order {}: {}",
+                        self.id, msg.client_order_id, reason
+                    );
+                    self.notify_rejected(&msg, &reason);
+                    return;
+                }
                 debug!(
                     "trade ws client id={} queued order {} client_order_id={}",
                     self.id, context, msg.client_order_id
@@ -1124,6 +1202,16 @@ impl TradeWsClient {
                 self.pending.push_back(msg);
             }
             WsCommand::SendQuery(msg) => {
+                if self.exchange == Exchange::Hyperliquid && self.hyperliquid_post_limit_reached() {
+                    warn!(
+                        "trade ws client id={} rejecting disconnected Hyperliquid query {}: {}",
+                        self.id,
+                        msg.client_query_id,
+                        self.hyperliquid_post_limit_reason()
+                    );
+                    self.notify_query_rejected(&msg);
+                    return;
+                }
                 debug!(
                     "trade ws client id={} queued query {} client_query_id={}",
                     self.id, context, msg.client_query_id
@@ -1332,6 +1420,8 @@ impl TradeWsClient {
                                     format_error_chain(&err)
                                 );
                             }
+                            self.fail_hyperliquid_trades_after_disconnect();
+                            self.fail_hyperliquid_queries_after_disconnect();
                             self.reset_binance_session_logon();
                             self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
@@ -1409,6 +1499,12 @@ impl TradeWsClient {
         let mut tcp_health_interval = time::interval(Duration::from_millis(tcp_health_sample_ms));
         tcp_health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         tcp_health_interval.tick().await;
+        let hyperliquid_post_timeout_poll = self
+            .hyperliquid_post_timeout
+            .min(Duration::from_millis(1_000));
+        let mut hyperliquid_post_timeout_interval = time::interval(hyperliquid_post_timeout_poll);
+        hyperliquid_post_timeout_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        hyperliquid_post_timeout_interval.tick().await;
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
@@ -1421,6 +1517,9 @@ impl TradeWsClient {
                     self.shutdown = true;
                     let _ = ws.close(None).await;
                     return Ok(());
+                }
+                _ = hyperliquid_post_timeout_interval.tick(), if self.exchange == Exchange::Hyperliquid => {
+                    self.expire_hyperliquid_posts(Instant::now());
                 }
                 cmd = self.next_command() => {
                     self.handle_command_connected(cmd, ws).await?;
@@ -1648,12 +1747,25 @@ impl TradeWsClient {
         if self.try_internal_terminate_order(&msg, "ws_handle_send") {
             return Ok(());
         }
-        if self.pending.len() >= self.max_inflight {
-            let reason = format!(
-                "ws inflight limit exceeded (limit={}, pending={})",
-                self.max_inflight,
-                self.pending.len()
-            );
+        if self.reject_expired_hyperliquid_new_order(&msg, "ws_handle_send") {
+            return Ok(());
+        }
+        let limit_reached = if self.exchange == Exchange::Hyperliquid {
+            self.hyperliquid_post_limit_reached()
+        } else {
+            Self::at_inflight_limit(self.pending.len(), self.inflight.len(), self.max_inflight)
+        };
+        if limit_reached {
+            let reason = if self.exchange == Exchange::Hyperliquid {
+                self.hyperliquid_post_limit_reason()
+            } else {
+                format!(
+                    "ws inflight limit exceeded (limit={}, pending={}, inflight={})",
+                    self.max_inflight,
+                    self.pending.len(),
+                    self.inflight.len()
+                )
+            };
             warn!(
                 "trade ws client id={} rejecting order {}: {}",
                 self.id, msg.client_order_id, reason
@@ -1673,12 +1785,26 @@ impl TradeWsClient {
         if self.query_resp_sink.is_none() {
             return Ok(());
         }
-        if self.pending_query.len() >= self.max_inflight {
-            let reason = format!(
-                "ws query inflight limit exceeded (limit={}, pending={})",
+        let limit_reached = if self.exchange == Exchange::Hyperliquid {
+            self.hyperliquid_post_limit_reached()
+        } else {
+            Self::at_inflight_limit(
+                self.pending_query.len(),
+                self.query_inflight.len(),
                 self.max_inflight,
-                self.pending_query.len()
-            );
+            )
+        };
+        if limit_reached {
+            let reason = if self.exchange == Exchange::Hyperliquid {
+                self.hyperliquid_post_limit_reason()
+            } else {
+                format!(
+                    "ws query inflight limit exceeded (limit={}, pending={}, inflight={})",
+                    self.max_inflight,
+                    self.pending_query.len(),
+                    self.query_inflight.len()
+                )
+            };
             warn!(
                 "trade ws client id={} rejecting query {}: {}",
                 self.id, msg.client_query_id, reason
@@ -1701,12 +1827,17 @@ impl TradeWsClient {
             if self.try_internal_terminate_order(&msg, "ws_flush_pending") {
                 continue;
             }
+            if self.reject_expired_hyperliquid_new_order(&msg, "ws_flush_pending") {
+                continue;
+            }
             if let Err(err) = self.send_one(ws, &msg).await {
                 warn!(
                     "trade ws client id={} send failed for order {}: {}",
                     self.id, msg.client_order_id, err
                 );
-                self.pending.push_front(msg);
+                if Self::requeue_after_send_failure(self.exchange) {
+                    self.pending.push_front(msg);
+                }
                 return Err(err);
             }
         }
@@ -1716,7 +1847,9 @@ impl TradeWsClient {
                     "trade ws client id={} send failed for query {}: {}",
                     self.id, msg.client_query_id, err
                 );
-                self.pending_query.push_front(msg);
+                if Self::requeue_after_send_failure(self.exchange) {
+                    self.pending_query.push_front(msg);
+                }
                 return Err(err);
             }
         }
@@ -1752,13 +1885,67 @@ impl TradeWsClient {
         true
     }
 
+    fn reject_expired_hyperliquid_new_order(
+        &self,
+        msg: &TradeRequestMsg,
+        stage: &'static str,
+    ) -> bool {
+        if self.exchange != Exchange::Hyperliquid
+            || !hyperliquid_new_order_expired_at(
+                msg.req_type,
+                msg.create_time,
+                get_timestamp_us(),
+                self.hyperliquid_new_order_queue_ttl_us,
+            )
+        {
+            return false;
+        }
+        let reason = format!(
+            "Hyperliquid new order expired before send at {stage}: create_time_us={} max_queue_age_us={}",
+            msg.create_time, self.hyperliquid_new_order_queue_ttl_us
+        );
+        warn!(
+            "trade ws client id={} rejecting stale Hyperliquid new order client_order_id={}: {}",
+            self.id, msg.client_order_id, reason
+        );
+        self.notify_rejected(msg, &reason);
+        true
+    }
+
     async fn send_one(
         &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
         msg: &TradeRequestMsg,
     ) -> Result<()> {
         let transport_id = self.next_transport_id();
-        let payload = self.build_payload(msg, transport_id).await?;
+        let payload = match self.build_payload(msg, transport_id).await {
+            Ok(payload) => payload,
+            Err(error) if self.exchange == Exchange::Hyperliquid => {
+                let body = json!({
+                    "transport": "ws",
+                    "exchange": "hyperliquid",
+                    "code": HYPERLIQUID_LOCAL_REJECTED,
+                    "msg": error.to_string(),
+                    "endpointId": self.id,
+                    "localIp": self.local_ip.to_string(),
+                })
+                .to_string();
+                let _ = self.resp_sink.send(TradeExecOutcome {
+                    req_type: msg.req_type,
+                    client_order_id: msg.client_order_id,
+                    status: 400,
+                    body,
+                    exchange: self.exchange,
+                    order_id: 0,
+                    order_status_u8: 0,
+                    order_update_time: 0,
+                    executed_qty: 0.0,
+                    response_price: 0.0,
+                });
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if self.exchange == Exchange::Gate {
             debug!(
                 "trade ws client id={} exchange={} sending order client_order_id={} transport_id={} payload_bytes={}",
@@ -1791,8 +1978,13 @@ impl TradeWsClient {
             );
         }
         let ws_send_start_time_us = get_timestamp_us();
-        ws.send(Message::Text(payload)).await?;
-        self.track_inflight(msg, transport_id, ws_send_start_time_us);
+        if self.exchange == Exchange::Hyperliquid {
+            self.track_inflight(msg, transport_id, ws_send_start_time_us);
+            ws.send(Message::Text(payload)).await?;
+        } else {
+            ws.send(Message::Text(payload)).await?;
+            self.track_inflight(msg, transport_id, ws_send_start_time_us);
+        }
         Ok(())
     }
 
@@ -1802,7 +1994,18 @@ impl TradeWsClient {
         msg: &QueryRequestMsg,
     ) -> Result<()> {
         let transport_id = self.next_transport_id();
-        let payload = self.build_query_payload(msg, transport_id)?;
+        let payload = match self.build_query_payload(msg, transport_id) {
+            Ok(payload) => payload,
+            Err(err) if self.exchange == Exchange::Hyperliquid => {
+                warn!(
+                    "trade ws client id={} rejected malformed Hyperliquid query req_type={:?} client_query_id={} err={err:#}",
+                    self.id, msg.req_type, msg.client_query_id
+                );
+                self.notify_query_rejected(msg);
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
         if self.exchange == Exchange::Gate {
             info!(
                 "trade ws client id={} exchange={} sending query client_query_id={} transport_id={} payload: {}",
@@ -1820,8 +2023,13 @@ impl TradeWsClient {
                 payload.len()
             );
         }
-        ws.send(Message::Text(payload)).await?;
-        self.track_inflight_query(msg, transport_id);
+        if self.exchange == Exchange::Hyperliquid {
+            self.track_inflight_query(msg, transport_id);
+            ws.send(Message::Text(payload)).await?;
+        } else {
+            ws.send(Message::Text(payload)).await?;
+            self.track_inflight_query(msg, transport_id);
+        }
         Ok(())
     }
 
@@ -1855,6 +2063,11 @@ impl TradeWsClient {
             Exchange::Okex => self.build_okex_payload(msg, transport_id).await,
             Exchange::Gate => self.build_gate_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_payload(msg, transport_id),
+            Exchange::Hyperliquid => self
+                .hyperliquid_client
+                .as_ref()
+                .context("missing Hyperliquid trading client")?
+                .build_payload(msg, transport_id),
             _ => {
                 let params_b64 = BASE64_STANDARD.encode(&msg.params);
                 let payload = json!({
@@ -1887,6 +2100,11 @@ impl TradeWsClient {
         match self.exchange {
             Exchange::Gate => gate_ws::build_query_payload(msg, transport_id),
             Exchange::Binance => self.build_binance_query_payload(msg, transport_id),
+            Exchange::Hyperliquid => self
+                .hyperliquid_client
+                .as_ref()
+                .context("missing Hyperliquid trading client")?
+                .build_info_payload(msg, transport_id),
             _ => Err(anyhow!(
                 "unsupported query ws payload for exchange {:?}",
                 self.exchange
@@ -2169,6 +2387,7 @@ impl TradeWsClient {
                 req_type: msg.req_type,
                 client_order_id: msg.client_order_id,
                 ws_open_update_enabled: flags.ws_open_update_enabled,
+                sent_at: Instant::now(),
             },
         );
     }
@@ -2288,8 +2507,41 @@ impl TradeWsClient {
             QueryInflightMeta {
                 req_type: msg.req_type,
                 client_query_id: msg.client_query_id,
+                sent_at: Instant::now(),
             },
         );
+    }
+
+    fn take_query_inflight_by_transport_id(
+        query_inflight: &mut FastHashMap<i64, QueryInflightMeta>,
+        transport_id: i64,
+    ) -> Option<QueryInflightMeta> {
+        (transport_id > 0)
+            .then(|| query_inflight.remove(&transport_id))
+            .flatten()
+    }
+
+    fn drain_query_inflight(
+        query_inflight: &mut FastHashMap<i64, QueryInflightMeta>,
+    ) -> Vec<QueryInflightMeta> {
+        query_inflight.drain().map(|(_, meta)| meta).collect()
+    }
+
+    fn take_expired_query_inflight(
+        query_inflight: &mut FastHashMap<i64, QueryInflightMeta>,
+        now: Instant,
+        timeout: Duration,
+    ) -> Vec<QueryInflightMeta> {
+        let expired_ids: Vec<_> = query_inflight
+            .iter()
+            .filter_map(|(transport_id, meta)| {
+                (now.saturating_duration_since(meta.sent_at) >= timeout).then_some(*transport_id)
+            })
+            .collect();
+        expired_ids
+            .into_iter()
+            .filter_map(|transport_id| query_inflight.remove(&transport_id))
+            .collect()
     }
 
     fn resolve_gate_query_identity(
@@ -2314,6 +2566,135 @@ impl TradeWsClient {
             return None;
         }
         self.inflight.remove(&transport_id)
+    }
+
+    fn at_inflight_limit(pending_len: usize, inflight_len: usize, max_inflight: usize) -> bool {
+        pending_len.saturating_add(inflight_len) >= max_inflight
+    }
+
+    fn hyperliquid_post_count(
+        pending_actions: usize,
+        inflight_actions: usize,
+        pending_queries: usize,
+        inflight_queries: usize,
+    ) -> usize {
+        pending_actions
+            .saturating_add(inflight_actions)
+            .saturating_add(pending_queries)
+            .saturating_add(inflight_queries)
+    }
+
+    fn at_hyperliquid_post_limit(
+        pending_actions: usize,
+        inflight_actions: usize,
+        pending_queries: usize,
+        inflight_queries: usize,
+        max_inflight: usize,
+    ) -> bool {
+        Self::hyperliquid_post_count(
+            pending_actions,
+            inflight_actions,
+            pending_queries,
+            inflight_queries,
+        ) >= max_inflight
+    }
+
+    fn hyperliquid_post_limit_reached(&self) -> bool {
+        Self::at_hyperliquid_post_limit(
+            self.pending.len(),
+            self.inflight.len(),
+            self.pending_query.len(),
+            self.query_inflight.len(),
+            self.max_inflight,
+        )
+    }
+
+    fn hyperliquid_post_limit_reason(&self) -> String {
+        format!(
+            "Hyperliquid combined WS post limit exceeded (per_connection_limit={}, pending_actions={}, inflight_actions={}, pending_queries={}, inflight_queries={})",
+            self.max_inflight,
+            self.pending.len(),
+            self.inflight.len(),
+            self.pending_query.len(),
+            self.query_inflight.len()
+        )
+    }
+
+    fn requeue_after_send_failure(exchange: Exchange) -> bool {
+        exchange != Exchange::Hyperliquid
+    }
+
+    fn drain_trade_inflight(
+        inflight: &mut FastHashMap<i64, TradeInflightMeta>,
+    ) -> Vec<TradeInflightMeta> {
+        inflight.drain().map(|(_, meta)| meta).collect()
+    }
+
+    fn take_expired_trade_inflight(
+        inflight: &mut FastHashMap<i64, TradeInflightMeta>,
+        now: Instant,
+        timeout: Duration,
+    ) -> Vec<TradeInflightMeta> {
+        let expired_ids: Vec<_> = inflight
+            .iter()
+            .filter_map(|(transport_id, meta)| {
+                (now.saturating_duration_since(meta.sent_at) >= timeout).then_some(*transport_id)
+            })
+            .collect();
+        expired_ids
+            .into_iter()
+            .filter_map(|transport_id| inflight.remove(&transport_id))
+            .collect()
+    }
+
+    fn hyperliquid_action_tail(
+        req_type: TradeRequestType,
+        resp: &hyperliquid_ws::HyperliquidActionOutcome,
+    ) -> Result<HyperliquidActionTail> {
+        if !(200..300).contains(&(resp.status as u32)) {
+            return Ok(HyperliquidActionTail::default());
+        }
+        if req_type.is_new_order() && resp.order_id <= 0 {
+            return Err(anyhow!(
+                "successful Hyperliquid new-order acknowledgement lacks a positive oid"
+            ));
+        }
+        Ok(HyperliquidActionTail {
+            order_id: resp.order_id,
+            ..HyperliquidActionTail::default()
+        })
+    }
+
+    fn hyperliquid_ambiguous_outcome(
+        exchange: Exchange,
+        endpoint_id: usize,
+        local_ip: IpAddr,
+        meta: &TradeInflightMeta,
+        reason: &str,
+    ) -> TradeExecOutcome {
+        let body = json!({
+            "transport": "ws",
+            "exchange": "hyperliquid",
+            "state": "ambiguous",
+            "requiresQuery": true,
+            "code": HYPERLIQUID_ACTION_AMBIGUOUS,
+            "msg": reason,
+            "endpointId": endpoint_id,
+            "localIp": local_ip.to_string(),
+        })
+        .to_string();
+        TradeExecOutcome {
+            req_type: meta.req_type,
+            client_order_id: meta.client_order_id,
+            status: 503,
+            body,
+            exchange,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
+            response_price: 0.0,
+        }
     }
 
     fn take_trade_inflight_by_client_order_id(
@@ -2386,6 +2767,94 @@ impl TradeWsClient {
         self.publish_query_error(msg.req_type, msg.client_query_id);
     }
 
+    fn publish_hyperliquid_ambiguous(&self, meta: &TradeInflightMeta, reason: &str) {
+        let _ = self.resp_sink.send(Self::hyperliquid_ambiguous_outcome(
+            self.exchange,
+            self.id,
+            self.local_ip,
+            meta,
+            reason,
+        ));
+    }
+
+    fn expire_hyperliquid_posts(&mut self, now: Instant) {
+        if self.exchange != Exchange::Hyperliquid {
+            return;
+        }
+
+        let expired_actions = Self::take_expired_trade_inflight(
+            &mut self.inflight,
+            now,
+            self.hyperliquid_post_timeout,
+        );
+        if !expired_actions.is_empty() {
+            warn!(
+                "trade ws client id={} marking {} Hyperliquid actions ambiguous after post response timeout {:?}; actions will not be replayed",
+                self.id,
+                expired_actions.len(),
+                self.hyperliquid_post_timeout
+            );
+            for meta in expired_actions {
+                self.publish_hyperliquid_ambiguous(
+                    &meta,
+                    "Hyperliquid WS action response timed out; orderStatus query required",
+                );
+            }
+        }
+
+        let expired_queries = Self::take_expired_query_inflight(
+            &mut self.query_inflight,
+            now,
+            self.hyperliquid_post_timeout,
+        );
+        if !expired_queries.is_empty() {
+            warn!(
+                "trade ws client id={} failing {} Hyperliquid queries after post response timeout {:?}",
+                self.id,
+                expired_queries.len(),
+                self.hyperliquid_post_timeout
+            );
+            for meta in expired_queries {
+                self.publish_query_error(meta.req_type, meta.client_query_id);
+            }
+        }
+
+        self.update_health_queue_depths();
+    }
+
+    fn fail_hyperliquid_trades_after_disconnect(&mut self) {
+        if self.exchange != Exchange::Hyperliquid || self.inflight.is_empty() {
+            return;
+        }
+        let failed = Self::drain_trade_inflight(&mut self.inflight);
+        warn!(
+            "trade ws client id={} marking {} Hyperliquid actions ambiguous after disconnect; actions will not be replayed",
+            self.id,
+            failed.len()
+        );
+        for meta in failed {
+            self.publish_hyperliquid_ambiguous(
+                &meta,
+                "Hyperliquid WS disconnected after action send; orderStatus query required",
+            );
+        }
+    }
+
+    fn fail_hyperliquid_queries_after_disconnect(&mut self) {
+        if self.exchange != Exchange::Hyperliquid || self.query_inflight.is_empty() {
+            return;
+        }
+        let failed = Self::drain_query_inflight(&mut self.query_inflight);
+        warn!(
+            "trade ws client id={} failing {} Hyperliquid queries after disconnect",
+            self.id,
+            failed.len()
+        );
+        for meta in failed {
+            self.publish_query_error(meta.req_type, meta.client_query_id);
+        }
+    }
+
     async fn handle_incoming(
         &mut self,
         ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -2433,6 +2902,48 @@ impl TradeWsClient {
                 return;
             }
             if self.handle_ltp_payload(payload) {
+                return;
+            }
+        }
+
+        if self.exchange == Exchange::Hyperliquid {
+            if hyperliquid_ws::is_pong(payload) {
+                debug!("trade ws client id={} Hyperliquid received pong", self.id);
+                return;
+            }
+            if let Some(transport_id) = hyperliquid_ws::post_response_id(payload) {
+                if let Some(meta) = Self::take_query_inflight_by_transport_id(
+                    &mut self.query_inflight,
+                    transport_id,
+                ) {
+                    let Some(resp) = hyperliquid_ws::parse_info_response(payload) else {
+                        warn!(
+                            "trade ws client id={} Hyperliquid malformed info response req_type={:?} client_query_id={} transport_id={}",
+                            self.id, meta.req_type, meta.client_query_id, transport_id
+                        );
+                        self.publish_query_error(meta.req_type, meta.client_query_id);
+                        return;
+                    };
+                    self.publish_hyperliquid_query_response(meta, &resp);
+                    return;
+                }
+                let Some(meta) = self.take_trade_inflight_by_transport_id(transport_id) else {
+                    self.warn_uncorrelated_trade_payload(payload);
+                    return;
+                };
+                let Some(resp) = hyperliquid_ws::parse_action_response(payload, meta.req_type)
+                else {
+                    warn!(
+                        "trade ws client id={} Hyperliquid malformed correlated action response req_type={:?} client_order_id={} transport_id={}",
+                        self.id, meta.req_type, meta.client_order_id, transport_id
+                    );
+                    self.publish_hyperliquid_ambiguous(
+                        &meta,
+                        "malformed correlated Hyperliquid action response; orderStatus query required",
+                    );
+                    return;
+                };
+                self.publish_hyperliquid_ws_response(meta.client_order_id, meta.req_type, &resp);
                 return;
             }
         }
@@ -3115,7 +3626,8 @@ impl TradeWsClient {
             return true;
         }
 
-        if let Some(meta) = self.query_inflight.remove(&id) {
+        if let Some(meta) = Self::take_query_inflight_by_transport_id(&mut self.query_inflight, id)
+        {
             self.publish_binance_query_response(meta.req_type, meta.client_query_id, &resp);
             return true;
         }
@@ -3614,6 +4126,53 @@ impl TradeWsClient {
         });
     }
 
+    fn publish_hyperliquid_ws_response(
+        &self,
+        client_order_id: i64,
+        req_type: TradeRequestType,
+        resp: &hyperliquid_ws::HyperliquidActionOutcome,
+    ) {
+        let tail = match Self::hyperliquid_action_tail(req_type, resp) {
+            Ok(tail) => tail,
+            Err(err) => {
+                let meta = TradeInflightMeta {
+                    req_type,
+                    client_order_id,
+                    ws_open_update_enabled: false,
+                    sent_at: Instant::now(),
+                };
+                warn!(
+                    "trade ws client id={} Hyperliquid invalid successful action response req_type={:?} client_order_id={} transport_id={} err={err:#}",
+                    self.id, req_type, client_order_id, resp.transport_id
+                );
+                self.publish_hyperliquid_ambiguous(&meta, &err.to_string());
+                return;
+            }
+        };
+        let body = json!({
+            "transport": "ws",
+            "exchange": "hyperliquid",
+            "state": if (200..300).contains(&(resp.status as u32)) { "acknowledged" } else { "rejected" },
+            "code": resp.code,
+            "msg": resp.message,
+            "endpointId": self.id,
+            "localIp": self.local_ip.to_string(),
+        })
+        .to_string();
+        let _ = self.resp_sink.send(TradeExecOutcome {
+            req_type,
+            client_order_id,
+            status: resp.status,
+            body,
+            exchange: self.exchange,
+            order_id: tail.order_id,
+            order_status_u8: tail.order_status_u8,
+            order_update_time: tail.order_update_time,
+            executed_qty: tail.executed_qty,
+            response_price: tail.response_price,
+        });
+    }
+
     fn publish_query_response(
         &self,
         req_type: QueryRequestType,
@@ -3623,6 +4182,18 @@ impl TradeWsClient {
     ) {
         let Some(tx) = &self.query_resp_sink else {
             return;
+        };
+        let body = if self.exchange == Exchange::Hyperliquid {
+            let Some(client) = self.hyperliquid_client.as_ref() else {
+                warn!(
+                    "trade ws client id={} cannot publish Hyperliquid query response without account identity",
+                    self.id
+                );
+                return;
+            };
+            HyperliquidQueryParams::create(client.account_hash(), body).to_bytes()
+        } else {
+            body
         };
         let _ = tx.send(QueryExecOutcome {
             req_type,
@@ -3637,6 +4208,130 @@ impl TradeWsClient {
 
     fn publish_query_error(&self, req_type: QueryRequestType, client_query_id: i64) {
         self.publish_query_response(req_type, client_query_id, 400, Bytes::from_static(b"E"));
+    }
+
+    fn publish_hyperliquid_query_response(
+        &self,
+        meta: QueryInflightMeta,
+        resp: &hyperliquid_ws::HyperliquidInfoOutcome,
+    ) {
+        if !(200..300).contains(&(resp.status as u32)) {
+            warn!(
+                "trade ws client id={} Hyperliquid info error req_type={:?} client_query_id={} transport_id={} detail={}",
+                self.id,
+                meta.req_type,
+                meta.client_query_id,
+                resp.transport_id,
+                resp.message
+            );
+            self.publish_query_error(meta.req_type, meta.client_query_id);
+            return;
+        }
+        let Some(payload) = resp.payload.as_ref() else {
+            self.publish_query_error(meta.req_type, meta.client_query_id);
+            return;
+        };
+
+        match meta.req_type {
+            QueryRequestType::HyperliquidMarginQuery | QueryRequestType::HyperliquidUMQuery => {
+                match parse_hyperliquid_order_status_value(payload) {
+                    Ok(HyperliquidOrderQueryResult::Order(order)) => self.publish_query_response(
+                        meta.req_type,
+                        meta.client_query_id,
+                        resp.status,
+                        order.to_bytes(),
+                    ),
+                    Ok(HyperliquidOrderQueryResult::NotFound) => self.publish_query_response(
+                        meta.req_type,
+                        meta.client_query_id,
+                        resp.status,
+                        Bytes::from_static(ORDER_QUERY_NOT_FOUND_MARKER),
+                    ),
+                    Err(err) => {
+                        warn!(
+                            "trade ws client id={} Hyperliquid orderStatus parse failed client_query_id={} err={err:#}",
+                            self.id, meta.client_query_id
+                        );
+                        self.publish_query_error(meta.req_type, meta.client_query_id);
+                    }
+                }
+            }
+            QueryRequestType::HyperliquidClearinghouseSnapshot
+            | QueryRequestType::HyperliquidSpotStateSnapshot => {
+                let result = self
+                    .hyperliquid_client
+                    .as_ref()
+                    .context("missing Hyperliquid trading client")
+                    .and_then(|client| {
+                        let scope = client.snapshot_scope(meta.req_type)?;
+                        let complete = client.query_snapshot_is_complete(meta.req_type);
+                        let messages = client.process_snapshot(
+                            meta.req_type,
+                            payload,
+                            chrono::Utc::now().timestamp_millis(),
+                        )?;
+                        Ok((scope, messages, complete))
+                    });
+                match result {
+                    Ok((scope, messages, complete)) => {
+                        if complete {
+                            self.publish_query_response(
+                                meta.req_type,
+                                meta.client_query_id,
+                                resp.status,
+                                snapshot_begin_body(scope),
+                            );
+                        }
+                        for body in messages {
+                            self.publish_query_response(
+                                meta.req_type,
+                                meta.client_query_id,
+                                resp.status,
+                                body,
+                            );
+                        }
+                        if complete {
+                            self.publish_query_response(
+                                meta.req_type,
+                                meta.client_query_id,
+                                resp.status,
+                                Bytes::from_static(SNAPSHOT_COMPLETE_MARKER),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "trade ws client id={} Hyperliquid account snapshot parse failed req_type={:?} client_query_id={} err={err:#}",
+                            self.id, meta.req_type, meta.client_query_id
+                        );
+                        self.publish_query_error(meta.req_type, meta.client_query_id);
+                    }
+                }
+            }
+            QueryRequestType::HyperliquidUserAbstraction => {
+                let result = self
+                    .hyperliquid_client
+                    .as_ref()
+                    .context("missing Hyperliquid trading client")
+                    .and_then(|client| client.validate_account_mode_response(payload));
+                match result {
+                    Ok(mode) => self.publish_query_response(
+                        meta.req_type,
+                        meta.client_query_id,
+                        resp.status,
+                        Bytes::copy_from_slice(mode.as_str().as_bytes()),
+                    ),
+                    Err(err) => {
+                        warn!(
+                            "trade ws client id={} Hyperliquid account mode validation failed client_query_id={} err={err:#}",
+                            self.id, meta.client_query_id
+                        );
+                        self.publish_query_error(meta.req_type, meta.client_query_id);
+                    }
+                }
+            }
+            _ => self.publish_query_error(meta.req_type, meta.client_query_id),
+        }
     }
 
     fn publish_okex_ws_response(
@@ -3811,6 +4506,9 @@ impl TradeWsClient {
                 .to_string(),
             ))
             .await?;
+        } else if self.exchange == Exchange::Hyperliquid {
+            ws.send(Message::Text(r#"{"method":"ping"}"#.to_string()))
+                .await?;
         } else {
             ws.send(Message::Ping(Vec::new())).await?;
         }
@@ -3821,23 +4519,73 @@ impl TradeWsClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_ed25519_api_key_from_env, is_bitget_pong_response, parse_bitget_control_event,
-        QueryInflightMeta, TradeWsClient, WsEndpointState, WsReconnectGroup,
+        binance_ed25519_api_key_from_env, hyperliquid_new_order_expired_at,
+        is_bitget_pong_response, parse_bitget_control_event, HyperliquidActionTail,
+        QueryInflightMeta, TradeInflightMeta, TradeWsClient, WsEndpointState, WsReconnectGroup,
+        DEFAULT_HYPERLIQUID_NEW_ORDER_QUEUE_TTL_US,
     };
     use crate::binance_ws::BINANCE_ED25519_API_KEY_ENV;
+    use crate::hyperliquid_ws::HyperliquidActionOutcome;
     use crate::query_request::QueryRequestType;
     use crate::trade_request::{
         BinanceNewOrderParams, BitgetNewOrderParams, GateNewOrderParams, TradeRequestMsg,
         TradeRequestType,
     };
+    use order_common::trade_error_code::hyperliquid::ACTION_AMBIGUOUS;
     use order_common::{OrderType, Side};
+    use runtime_common::exchange::Exchange;
     use runtime_common::fast_hash::fast_hash_map;
+    use serde_json::Value;
     use signal_common::tick_math::QuantizedValue;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn hyperliquid_new_orders_expire_at_the_local_queue_deadline() {
+        let created = 1_000_000;
+        let ttl = DEFAULT_HYPERLIQUID_NEW_ORDER_QUEUE_TTL_US;
+        assert!(!hyperliquid_new_order_expired_at(
+            TradeRequestType::HyperliquidNewUMOrder,
+            created,
+            created + ttl - 1,
+            ttl,
+        ));
+        assert!(hyperliquid_new_order_expired_at(
+            TradeRequestType::HyperliquidNewUMOrder,
+            created,
+            created + ttl,
+            ttl,
+        ));
+        assert!(hyperliquid_new_order_expired_at(
+            TradeRequestType::HyperliquidNewMarginOrder,
+            0,
+            created,
+            ttl,
+        ));
+        assert!(hyperliquid_new_order_expired_at(
+            TradeRequestType::HyperliquidNewMarginOrder,
+            created + 1,
+            created,
+            ttl,
+        ));
+        assert!(!hyperliquid_new_order_expired_at(
+            TradeRequestType::HyperliquidCancelUMOrder,
+            0,
+            created,
+            ttl,
+        ));
+        assert!(!hyperliquid_new_order_expired_at(
+            TradeRequestType::BinanceWsNewUMOrder,
+            0,
+            created,
+            ttl,
+        ));
     }
 
     #[test]
@@ -3885,6 +4633,7 @@ mod tests {
             QueryInflightMeta {
                 req_type: QueryRequestType::GateUnifiedOrderQuery,
                 client_query_id: 7956522848229523457,
+                sent_at: Instant::now(),
             },
         );
 
@@ -3911,6 +4660,252 @@ mod tests {
 
         assert_eq!(req_type, QueryRequestType::GateFuturesOrderQuery);
         assert_eq!(client_query_id, 281474976710779);
+    }
+
+    #[test]
+    fn hyperliquid_out_of_order_transport_ids_restore_business_query_ids() {
+        let mut query_inflight = fast_hash_map();
+        query_inflight.insert(
+            101,
+            QueryInflightMeta {
+                req_type: QueryRequestType::HyperliquidSpotStateSnapshot,
+                client_query_id: 1_001,
+                sent_at: Instant::now(),
+            },
+        );
+        query_inflight.insert(
+            202,
+            QueryInflightMeta {
+                req_type: QueryRequestType::HyperliquidUMQuery,
+                client_query_id: 2_002,
+                sent_at: Instant::now(),
+            },
+        );
+
+        let second =
+            TradeWsClient::take_query_inflight_by_transport_id(&mut query_inflight, 202).unwrap();
+        let first =
+            TradeWsClient::take_query_inflight_by_transport_id(&mut query_inflight, 101).unwrap();
+        assert_eq!(second.client_query_id, 2_002);
+        assert_eq!(second.req_type, QueryRequestType::HyperliquidUMQuery);
+        assert_eq!(first.client_query_id, 1_001);
+        assert_eq!(
+            first.req_type,
+            QueryRequestType::HyperliquidSpotStateSnapshot
+        );
+        assert!(query_inflight.is_empty());
+    }
+
+    #[test]
+    fn hyperliquid_disconnect_drains_all_outstanding_queries() {
+        let mut query_inflight = fast_hash_map();
+        query_inflight.insert(
+            101,
+            QueryInflightMeta {
+                req_type: QueryRequestType::HyperliquidSpotStateSnapshot,
+                client_query_id: 1_001,
+                sent_at: Instant::now(),
+            },
+        );
+        query_inflight.insert(
+            202,
+            QueryInflightMeta {
+                req_type: QueryRequestType::HyperliquidUMQuery,
+                client_query_id: 2_002,
+                sent_at: Instant::now(),
+            },
+        );
+
+        let mut failed = TradeWsClient::drain_query_inflight(&mut query_inflight);
+        failed.sort_unstable_by_key(|meta| meta.client_query_id);
+        assert!(query_inflight.is_empty());
+        assert_eq!(failed.len(), 2);
+        assert_eq!(failed[0].client_query_id, 1_001);
+        assert_eq!(failed[1].client_query_id, 2_002);
+    }
+
+    #[test]
+    fn ws_capacity_counts_pending_and_inflight() {
+        assert!(!TradeWsClient::at_inflight_limit(2, 2, 5));
+        assert!(TradeWsClient::at_inflight_limit(2, 3, 5));
+        assert!(TradeWsClient::at_inflight_limit(usize::MAX, 1, 5));
+    }
+
+    #[test]
+    fn hyperliquid_capacity_combines_action_and_info_posts() {
+        assert!(!TradeWsClient::at_hyperliquid_post_limit(
+            20, 30, 15, 24, 90
+        ));
+        assert!(TradeWsClient::at_hyperliquid_post_limit(20, 30, 15, 25, 90));
+        assert_eq!(
+            TradeWsClient::hyperliquid_post_count(usize::MAX, 1, 1, 1),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn hyperliquid_timeout_removes_only_expired_posts() {
+        let now = Instant::now();
+        let expired_at = now.checked_sub(Duration::from_secs(11)).unwrap();
+        let active_at = now.checked_sub(Duration::from_secs(9)).unwrap();
+        let timeout = Duration::from_secs(10);
+
+        let mut actions = fast_hash_map();
+        actions.insert(
+            101,
+            TradeInflightMeta {
+                req_type: TradeRequestType::HyperliquidNewUMOrder,
+                client_order_id: 1_001,
+                ws_open_update_enabled: false,
+                sent_at: expired_at,
+            },
+        );
+        actions.insert(
+            102,
+            TradeInflightMeta {
+                req_type: TradeRequestType::HyperliquidCancelMarginOrder,
+                client_order_id: 1_002,
+                ws_open_update_enabled: false,
+                sent_at: active_at,
+            },
+        );
+        let expired_actions =
+            TradeWsClient::take_expired_trade_inflight(&mut actions, now, timeout);
+        assert_eq!(expired_actions.len(), 1);
+        assert_eq!(expired_actions[0].client_order_id, 1_001);
+        assert!(!actions.contains_key(&101));
+        assert!(actions.contains_key(&102));
+
+        let mut queries = fast_hash_map();
+        queries.insert(
+            201,
+            QueryInflightMeta {
+                req_type: QueryRequestType::HyperliquidUMQuery,
+                client_query_id: 2_001,
+                sent_at: expired_at,
+            },
+        );
+        queries.insert(
+            202,
+            QueryInflightMeta {
+                req_type: QueryRequestType::HyperliquidMarginQuery,
+                client_query_id: 2_002,
+                sent_at: active_at,
+            },
+        );
+        let expired_queries =
+            TradeWsClient::take_expired_query_inflight(&mut queries, now, timeout);
+        assert_eq!(expired_queries.len(), 1);
+        assert_eq!(expired_queries[0].client_query_id, 2_001);
+        assert!(!queries.contains_key(&201));
+        assert!(queries.contains_key(&202));
+    }
+
+    #[test]
+    fn hyperliquid_send_failure_is_never_requeued() {
+        assert!(!TradeWsClient::requeue_after_send_failure(
+            Exchange::Hyperliquid
+        ));
+        assert!(TradeWsClient::requeue_after_send_failure(Exchange::Binance));
+    }
+
+    #[test]
+    fn hyperliquid_action_success_is_ack_only_and_requires_new_order_oid() {
+        let filled = HyperliquidActionOutcome {
+            transport_id: 7,
+            status: 206,
+            code: 0,
+            message: String::new(),
+            order_id: 123,
+            order_status_u8: 3,
+            executed_qty: 1.25,
+            response_price: 100.5,
+        };
+        assert_eq!(
+            TradeWsClient::hyperliquid_action_tail(
+                TradeRequestType::HyperliquidNewUMOrder,
+                &filled
+            )
+            .unwrap(),
+            HyperliquidActionTail {
+                order_id: 123,
+                ..HyperliquidActionTail::default()
+            }
+        );
+
+        let cancel = HyperliquidActionOutcome {
+            transport_id: 8,
+            status: 206,
+            code: 0,
+            message: String::new(),
+            order_id: 0,
+            order_status_u8: 4,
+            executed_qty: 0.0,
+            response_price: 0.0,
+        };
+        assert_eq!(
+            TradeWsClient::hyperliquid_action_tail(
+                TradeRequestType::HyperliquidCancelUMOrder,
+                &cancel
+            )
+            .unwrap(),
+            HyperliquidActionTail::default()
+        );
+
+        let missing_oid = HyperliquidActionOutcome {
+            order_id: 0,
+            ..filled
+        };
+        assert!(TradeWsClient::hyperliquid_action_tail(
+            TradeRequestType::HyperliquidNewMarginOrder,
+            &missing_oid
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn hyperliquid_disconnect_drains_inflight_to_query_required_outcomes() {
+        let mut inflight = fast_hash_map();
+        inflight.insert(
+            7,
+            TradeInflightMeta {
+                req_type: TradeRequestType::HyperliquidNewUMOrder,
+                client_order_id: 7001,
+                ws_open_update_enabled: false,
+                sent_at: Instant::now(),
+            },
+        );
+        inflight.insert(
+            8,
+            TradeInflightMeta {
+                req_type: TradeRequestType::HyperliquidCancelMarginOrder,
+                client_order_id: 8001,
+                ws_open_update_enabled: false,
+                sent_at: Instant::now(),
+            },
+        );
+
+        let drained = TradeWsClient::drain_trade_inflight(&mut inflight);
+        assert!(inflight.is_empty());
+        assert_eq!(drained.len(), 2);
+        for meta in drained {
+            let outcome = TradeWsClient::hyperliquid_ambiguous_outcome(
+                Exchange::Hyperliquid,
+                3,
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                &meta,
+                "connection lost",
+            );
+            assert_eq!(outcome.status, 503);
+            assert_eq!(outcome.order_id, 0);
+            assert_eq!(outcome.order_status_u8, 0);
+            assert_eq!(outcome.executed_qty, 0.0);
+            assert_eq!(outcome.response_price, 0.0);
+            let body: Value = serde_json::from_str(&outcome.body).unwrap();
+            assert_eq!(body["state"], "ambiguous");
+            assert_eq!(body["requiresQuery"], true);
+            assert_eq!(body["code"], ACTION_AMBIGUOUS);
+        }
     }
 
     #[test]

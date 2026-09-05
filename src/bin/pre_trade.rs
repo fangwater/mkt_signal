@@ -1,6 +1,7 @@
 use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
+use account_monitor_common::hyperliquid_account::discover_account_mode;
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
@@ -213,6 +214,7 @@ fn futures_venue(ex: &str) -> Option<TradingVenue> {
         "gate" => Some(TradingVenue::GateFutures),
         "bybit" => Some(TradingVenue::BybitFutures),
         "bitget" => Some(TradingVenue::BitgetFutures),
+        "hyperliquid" => Some(TradingVenue::HyperliquidFutures),
         _ => None,
     }
 }
@@ -224,6 +226,7 @@ fn margin_venue(ex: &str) -> Option<TradingVenue> {
         "gate" => Some(TradingVenue::GateMargin),
         "bybit" => Some(TradingVenue::BybitMargin),
         "bitget" => Some(TradingVenue::BitgetMargin),
+        "hyperliquid" => Some(TradingVenue::HyperliquidMargin),
         _ => None,
     }
 }
@@ -552,6 +555,24 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     } else {
         None
     };
+    let need_hyperliquid = open_venue.trade_engine_exchange() == "hyperliquid"
+        || hedge_venue.trade_engine_exchange() == "hyperliquid";
+    let hyperliquid_account_mode = if need_hyperliquid {
+        let endpoints = signal_common::hyperliquid::HyperliquidEndpoints::from_env()?;
+        let user = std::env::var("HYPERLIQUID_ACCOUNT_ADDRESS")
+            .context("Hyperliquid pre_trade requires the target account address")?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("build Hyperliquid read-only account discovery client")?;
+        Some(
+            discover_account_mode(&client, &endpoints.info_url, &user)
+                .await
+                .context("discover Hyperliquid exchange account rules")?,
+        )
+    } else {
+        None
+    };
     let bybit_in_play = open_venue.trade_engine_exchange() == "bybit"
         || hedge_venue.trade_engine_exchange() == "bybit";
     let bybit_rest_local_ip = if bybit_in_play {
@@ -577,6 +598,9 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     if need_binance {
         required_env.push("BINANCE_ACCOUNT_MODE");
     }
+    if need_hyperliquid {
+        required_env.push("HYPERLIQUID_ACCOUNT_ADDRESS");
+    }
     if open_venue.trade_engine_exchange() == "okex" || hedge_venue.trade_engine_exchange() == "okex"
     {
         required_env.extend(["OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"]);
@@ -586,6 +610,12 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     if let Some(mode) = binance_account_mode {
         info!("BINANCE_ACCOUNT_MODE={}", mode.as_str());
+    }
+    if let Some(mode) = hyperliquid_account_mode {
+        info!(
+            "Hyperliquid account rules detected from exchange: {}",
+            mode.as_str()
+        );
     }
     if exec_pre_trade {
         cancel_all_exec_orders_on_startup(open_venue, binance_account_mode).await?;
@@ -738,6 +768,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     hedge_venue,
                     arb_mode,
                     binance_account_mode,
+                    hyperliquid_account_mode,
                     !exec_pre_trade,
                 )
                 .await
@@ -750,6 +781,19 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                 info!(
                     "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
                     open_venue.data_pub_slug()
+                );
+            } else if matches!(
+                open_venue,
+                TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+            ) || matches!(
+                hedge_venue,
+                TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+            ) {
+                trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
+                info!(
+                    "Hyperliquid IOC protection BBO subscribers initialized: open={} hedge={}",
+                    open_venue.data_pub_slug(),
+                    hedge_venue.data_pub_slug()
                 );
             }
             UnimmrOpenLock::initialize(dir_prefix.clone(), arb_mode, binance_account_mode)?;

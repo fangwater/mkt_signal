@@ -314,12 +314,18 @@ pub fn spawn_account_risk_listener(exchange: Exchange) {
                 .create::<ipc::Service>()?;
             let service_name_obj = ServiceName::new(&service_name)?;
             let service_builder = || {
-                node.service_builder(&service_name_obj)
+                let builder = node
+                    .service_builder(&service_name_obj)
                     .publish_subscribe::<[u8; PM_MAX_BYTES]>()
                     .max_publishers(1)
                     .max_subscribers(PM_MAX_SUBSCRIBERS)
                     .history_size(PM_HISTORY_SIZE)
-                    .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
+                    .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE);
+                if exchange == Exchange::Hyperliquid {
+                    builder.enable_safe_overflow(false)
+                } else {
+                    builder
+                }
             };
             // trade_signal 是被动观察方，不强依赖 account_monitor 先起：用 open_or_create
             // 避免阻塞启动流。

@@ -38,14 +38,31 @@ fn is_publisher_capacity_err(err_text: &str) -> bool {
     err_text.contains("ExceedsMaxSupportedPublishers")
 }
 
+fn is_overflow_policy_err(err_text: &str) -> bool {
+    err_text.contains("IncompatibleOverflowBehavior")
+}
+
 impl PmForwarder {
     /// 创建 PM 转发器
     /// - `exchange` 交易所名（用于拼接服务名）
     pub fn new(exchange: &str) -> Result<Self> {
+        Self::new_with_safe_overflow(exchange, None)
+    }
+
+    /// Creates a PM forwarder whose subscriber queue cannot silently overwrite
+    /// older samples. A slow subscriber applies backpressure to the publisher.
+    pub fn new_non_overflowing(exchange: &str) -> Result<Self> {
+        Self::new_with_safe_overflow(exchange, Some(false))
+    }
+
+    fn new_with_safe_overflow(
+        exchange: &str,
+        required_safe_overflow: Option<bool>,
+    ) -> Result<Self> {
         info!("开始创建 PM forwarder，exchange: {}", exchange);
         info!(
-            "PM forwarder 历史缓存固定为 {} 条，最大订阅者固定为 {}（不再读取配置）",
-            PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS
+            "PM forwarder 历史缓存固定为 {} 条，最大订阅者固定为 {}，required_safe_overflow={:?}（不再读取配置）",
+            PM_HISTORY_SIZE, PM_MAX_SUBSCRIBERS, required_safe_overflow
         );
 
         // 构造 service 名称（会检查 IPC_NAMESPACE 环境变量，未设置会 panic）
@@ -71,12 +88,17 @@ impl PmForwarder {
 
         let service_name_obj = ServiceName::new(&service_name)?;
         let service_builder = || {
-            node.service_builder(&service_name_obj)
+            let builder = node
+                .service_builder(&service_name_obj)
                 .publish_subscribe::<[u8; PM_MAX_BYTES]>()
                 .max_publishers(1)
                 .max_subscribers(PM_MAX_SUBSCRIBERS)
                 .history_size(PM_HISTORY_SIZE)
-                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE)
+                .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE);
+            match required_safe_overflow {
+                Some(value) => builder.enable_safe_overflow(value),
+                None => builder,
+            }
         };
 
         let service = match service_builder().open() {
@@ -130,6 +152,19 @@ impl PmForwarder {
                                 }
                             }
                         } else {
+                            if required_safe_overflow.is_some()
+                                && (is_overflow_policy_err(&open_text)
+                                    || is_overflow_policy_err(&create_text))
+                            {
+                                return Err(anyhow!(
+                                    "PM IceOryx service safe-overflow 配置不兼容: service='{}', required_safe_overflow={:?}; \
+请停止仍持有该 service 的旧 producer/consumer，待 service 生命周期结束后再重启。open_err={:?}, create_err={:?}",
+                                    service_name,
+                                    required_safe_overflow,
+                                    open_err,
+                                    create_err
+                                ));
+                            }
                             return Err(anyhow!(
                                 "创建/打开 IceOryx service 失败: service='{}', open_err={:?}, create_err={:?}",
                                 service_name,
@@ -142,7 +177,10 @@ impl PmForwarder {
             }
         };
 
-        let publisher = match service.publisher_builder().create() {
+        let publisher_builder = service
+            .publisher_builder()
+            .unable_to_deliver_strategy(UnableToDeliverStrategy::Block);
+        let publisher = match publisher_builder.create() {
             Ok(publisher) => publisher,
             Err(err) => {
                 let err_text = format!("{:?}", err);
@@ -156,14 +194,18 @@ impl PmForwarder {
                         "dead-node cleanup 完成: cleanups={}, failed_cleanups={}",
                         cleanup.cleanups, cleanup.failed_cleanups
                     );
-                    service.publisher_builder().create().map_err(|retry_err| {
-                        anyhow!(
-                            "创建 PM publisher 失败: service='{}', err={:?}, retry_err={:?}",
-                            service_name,
-                            err,
-                            retry_err
-                        )
-                    })?
+                    service
+                        .publisher_builder()
+                        .unable_to_deliver_strategy(UnableToDeliverStrategy::Block)
+                        .create()
+                        .map_err(|retry_err| {
+                            anyhow!(
+                                "创建 PM publisher 失败: service='{}', err={:?}, retry_err={:?}",
+                                service_name,
+                                err,
+                                retry_err
+                            )
+                        })?
                 } else {
                     return Err(err.into());
                 }
@@ -231,5 +273,20 @@ impl PmForwarder {
         self.sent = 0;
         self.dropped = 0;
         self.max_seen = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_overflow_policy_err;
+
+    #[test]
+    fn identifies_incompatible_safe_overflow_service() {
+        assert!(is_overflow_policy_err(
+            "PublishSubscribeOpenError::IncompatibleOverflowBehavior"
+        ));
+        assert!(!is_overflow_policy_err(
+            "PublishSubscribeOpenError::DoesNotExist"
+        ));
     }
 }

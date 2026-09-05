@@ -35,7 +35,7 @@ use crate::strategy::uniform_order_helper::{
     publish_uniform_trade_order_from_order_update, signal_bbo_from_legs, UniformPublishCtx,
 };
 use log::{debug, error, info, warn};
-use order_common::trade_error_code::gate;
+use order_common::trade_error_code::{gate, hyperliquid};
 use order_common::OrderUpdate;
 use order_common::TradeEngineResponse;
 use order_common::TradeUpdate;
@@ -251,8 +251,8 @@ pub struct ArbHedgeStrategy {
     last_insufficient_margin_action_ts: i64,
     binance_position_limit_block_until_us: i64,
     binance_position_limit_block_side: Option<Side>,
-    bybit_oi_limit_block_until_us: i64,
-    bybit_oi_limit_block_side: Option<Side>,
+    hedge_open_failure_block_until_us: i64,
+    hedge_open_failure_block_side: Option<Side>,
     bitget_position_tier_limit_block_until_us: i64,
     bitget_position_tier_limit_block_side: Option<Side>,
 }
@@ -278,6 +278,22 @@ struct ArbHedgeOrderMeta {
 }
 
 impl ArbHedgeStrategy {
+    fn hyperliquid_reduce_only_hedge(&self, side: Side, base_qty: f64) -> bool {
+        if self.hedge_venue != TradingVenue::HyperliquidFutures {
+            return false;
+        }
+        let position = MonitorChannel::instance().get_position_qty(&self.symbol, self.hedge_venue);
+        Self::quantity_reduces_hyperliquid_position(position, side, base_qty)
+    }
+
+    fn quantity_reduces_hyperliquid_position(position: f64, side: Side, base_qty: f64) -> bool {
+        position.is_finite()
+            && base_qty.is_finite()
+            && base_qty > 0.0
+            && base_qty <= position.abs()
+            && ((position > 0.0 && side == Side::Sell) || (position < 0.0 && side == Side::Buy))
+    }
+
     fn bitget_margin_lock_reduce_only_hedge(
         &self,
         venue: TradingVenue,
@@ -474,8 +490,8 @@ impl ArbHedgeStrategy {
             last_insufficient_margin_action_ts: 0,
             binance_position_limit_block_until_us: 0,
             binance_position_limit_block_side: None,
-            bybit_oi_limit_block_until_us: 0,
-            bybit_oi_limit_block_side: None,
+            hedge_open_failure_block_until_us: 0,
+            hedge_open_failure_block_side: None,
             bitget_position_tier_limit_block_until_us: 0,
             bitget_position_tier_limit_block_side: None,
         }
@@ -1035,15 +1051,17 @@ impl ArbHedgeStrategy {
             );
             return false;
         }
-        if self.is_bybit_oi_limit_blocked(hedge_side, now_ts) {
-            self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
+        if self.is_hedge_open_failure_blocked(hedge_side, now_ts)
+            && !self.hyperliquid_reduce_only_hedge(hedge_side, due_hedge_qty.abs())
+        {
+            self.next_query_ts_us = self.hedge_open_failure_block_until_us;
             warn!(
-                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because Bybit OI/position-limit block is active hedge_side={} until_us={}",
+                "ArbHedgeStrategy: strategy_id={} symbol={} skip {} direct hedge because venue open-failure block is active hedge_side={} until_us={}",
                 self.strategy_id,
                 self.symbol,
                 source,
                 hedge_side.as_str(),
-                self.bybit_oi_limit_block_until_us
+                self.hedge_open_failure_block_until_us
             );
             return false;
         }
@@ -1733,14 +1751,18 @@ impl ArbHedgeStrategy {
             );
             return;
         }
-        if self.is_bybit_oi_limit_blocked(side, now_ts) {
-            self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
+        if self.is_hedge_open_failure_blocked(side, now_ts)
+            && !(venue == self.hedge_venue
+                && symbol == self.symbol
+                && self.hyperliquid_reduce_only_hedge(side, qty))
+        {
+            self.next_query_ts_us = self.hedge_open_failure_block_until_us;
             warn!(
-                "ArbHedgeStrategy: strategy_id={} ArbHedge blocked by Bybit OI/position-limit throttle symbol={} side={} until_us={} request_seq={}",
+                "ArbHedgeStrategy: strategy_id={} ArbHedge blocked by venue open-failure throttle symbol={} side={} until_us={} request_seq={}",
                 self.strategy_id,
                 symbol,
                 side.as_str(),
-                self.bybit_oi_limit_block_until_us,
+                self.hedge_open_failure_block_until_us,
                 ctx.request_seq
             );
             return;
@@ -1885,6 +1907,9 @@ impl ArbHedgeStrategy {
         }
 
         let reduce_only = force_taker_taker
+            || (venue == self.hedge_venue
+                && symbol == self.symbol
+                && self.hyperliquid_reduce_only_hedge(side, order_base_qty))
             || self.bitget_margin_lock_reduce_only_hedge(venue, side, order_base_qty);
         let client_order_id = self.next_order_id();
         let qty_multiplier = (order_base_qty / qty).max(1e-12);
@@ -2587,6 +2612,21 @@ impl ArbHedgeStrategy {
                 "bitget_insufficient_margin_account_open_block",
             );
             "bitget_unified_insufficient_margin"
+        } else if matches!(
+            self.hedge_venue,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+        ) && error_code == hyperliquid::INSUFFICIENT_MARGIN
+        {
+            // The shared signal throttle was registered from the rejected hedge.
+            // A healthy maintenance ratio is not proof of new-order borrow capacity.
+            self.cancel_all_arb_open_orders(now_ts, "hyperliquid_insufficient_margin");
+            "hyperliquid_insufficient_margin"
+        } else if matches!(
+            self.hedge_venue,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+        ) && error_code == hyperliquid::INSUFFICIENT_SPOT_BALANCE
+        {
+            "hyperliquid_spot_balance_direction_throttle"
         } else {
             warn!(
                 "ArbHedgeStrategy: strategy_id={} symbol={} INSUFFICIENT_MARGIN emergency has no account block for open_venue={:?} hedge_venue={:?}",
@@ -2688,10 +2728,14 @@ impl ArbHedgeStrategy {
             && now_ts < self.binance_position_limit_block_until_us
     }
 
-    fn is_bybit_oi_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
-        self.hedge_venue == TradingVenue::BybitFutures
-            && self.bybit_oi_limit_block_side == Some(hedge_side)
-            && now_ts < self.bybit_oi_limit_block_until_us
+    fn is_hedge_open_failure_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
+        matches!(
+            self.hedge_venue,
+            TradingVenue::BybitFutures
+                | TradingVenue::HyperliquidMargin
+                | TradingVenue::HyperliquidFutures
+        ) && self.hedge_open_failure_block_side == Some(hedge_side)
+            && now_ts < self.hedge_open_failure_block_until_us
     }
 
     fn is_bitget_position_tier_limit_blocked(&self, hedge_side: Side, now_ts: i64) -> bool {
@@ -2761,7 +2805,7 @@ impl ArbHedgeStrategy {
         hedge_side: Option<Side>,
         error_code: i32,
     ) {
-        self.register_bybit_hedge_open_failure_throttle(
+        self.register_hedge_open_failure_throttle(
             now_ts,
             hedge_side,
             error_code,
@@ -2776,7 +2820,7 @@ impl ArbHedgeStrategy {
         hedge_side: Option<Side>,
         error_code: i32,
     ) {
-        self.register_bybit_hedge_open_failure_throttle(
+        self.register_hedge_open_failure_throttle(
             now_ts,
             hedge_side,
             error_code,
@@ -2785,7 +2829,7 @@ impl ArbHedgeStrategy {
         );
     }
 
-    fn register_bybit_hedge_open_failure_throttle(
+    fn register_hedge_open_failure_throttle(
         &mut self,
         now_ts: i64,
         hedge_side: Option<Side>,
@@ -2804,15 +2848,15 @@ impl ArbHedgeStrategy {
             Side::Buy => Side::Sell,
             Side::Sell => Side::Buy,
         };
-        self.bybit_oi_limit_block_side = Some(hedge_side);
-        self.bybit_oi_limit_block_until_us =
+        self.hedge_open_failure_block_side = Some(hedge_side);
+        self.hedge_open_failure_block_until_us =
             now_ts.saturating_add(SIGNAL_THROTTLE_TTL_US.max(ARB_HEDGE_QUERY_INTERVAL_US));
-        self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
+        self.next_query_ts_us = self.hedge_open_failure_block_until_us;
 
         let open_registered = register_signal_throttle_for_mode(
             &self.symbol,
             open_side,
-            Some(Exchange::Bybit),
+            Exchange::from_str(self.hedge_venue.trade_engine_exchange()),
             error_code,
             MonitorChannel::instance().arb_mode(),
         );
@@ -2833,7 +2877,7 @@ impl ArbHedgeStrategy {
             open_side,
             error_code,
             open_registered,
-            self.bybit_oi_limit_block_until_us,
+            self.hedge_open_failure_block_until_us,
             ids.len()
         );
     }
@@ -2983,6 +3027,21 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                 Self::is_gate_market_forbidden_reduce_only_failure(response, order)
             });
         let is_insufficient_margin = response.is_insufficient_margin();
+        let is_hyperliquid_open_limit = !order_snapshot
+            .as_ref()
+            .is_some_and(|order| order.reduce_only)
+            && (response.is_hyperliquid_position_limit_exceeded()
+                || (response.exchange_enum() == Some(Exchange::Hyperliquid)
+                    && is_insufficient_margin));
+        if is_hyperliquid_open_limit {
+            self.register_hedge_open_failure_throttle(
+                now_ts,
+                order_snapshot.as_ref().map(|order| order.side),
+                response.error_code(),
+                "Hyperliquid capacity/position-limit",
+                "hyperliquid_open_failure",
+            );
+        }
         let is_binance_position_limit = response.is_binance_max_leverage_ratio();
         let is_bybit_open_interest_position_limit =
             response.is_bybit_open_interest_position_limit();
@@ -3059,14 +3118,20 @@ impl HedgeOrderReconcileCommon for ArbHedgeStrategy {
                         response.error_code(),
                     );
                 }
-                self.next_query_ts_us =
-                    now_ts.saturating_add(ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US);
+                self.next_query_ts_us = if is_hyperliquid_open_limit {
+                    self.hedge_open_failure_block_until_us
+                } else {
+                    now_ts.saturating_add(ARB_HEDGE_INSUFFICIENT_MARGIN_COOLDOWN_US)
+                };
             } else if is_binance_position_limit {
                 self.next_query_ts_us = self
                     .next_query_ts_us
                     .max(self.binance_position_limit_block_until_us);
-            } else if is_bybit_open_interest_position_limit || is_bybit_collateral_not_enabled {
-                self.next_query_ts_us = self.bybit_oi_limit_block_until_us;
+            } else if is_bybit_open_interest_position_limit
+                || is_bybit_collateral_not_enabled
+                || is_hyperliquid_open_limit
+            {
+                self.next_query_ts_us = self.hedge_open_failure_block_until_us;
             } else if is_bybit_internal_system_error {
                 self.next_query_ts_us =
                     now_ts.saturating_add(BYBIT_INTERNAL_SYSTEM_OPEN_BLOCK_TTL_US);
@@ -3193,7 +3258,16 @@ impl Strategy for ArbHedgeStrategy {
             && now_ts < self.next_query_ts_us
             && self.due_force_close_open_id(now_ts).is_none()
         {
-            return;
+            let due = self.pending_hedge_queue.due_qty(now_ts);
+            let side = if due > 0.0 { Side::Sell } else { Side::Buy };
+            // Only bypass this venue's capacity backoff, never a query timeout
+            // or another exchange's retry schedule.
+            let reducing_hyperliquid = self.next_query_ts_us
+                == self.hedge_open_failure_block_until_us
+                && self.hyperliquid_reduce_only_hedge(side, due.abs());
+            if !reducing_hyperliquid {
+                return;
+            }
         }
         self.try_send_due_hedge_query(now_ts, "period_clock", true);
     }
@@ -3465,6 +3539,42 @@ mod tests {
             TradingVenue::BybitFutures,
         );
         assert!(!non_binance.is_binance_position_limit_blocked(Side::Sell, 99));
+    }
+
+    #[test]
+    fn hyperliquid_and_bybit_share_directional_hedge_backoff() {
+        for venue in [
+            TradingVenue::BybitFutures,
+            TradingVenue::HyperliquidFutures,
+            TradingVenue::HyperliquidMargin,
+        ] {
+            let mut strategy =
+                ArbHedgeStrategy::new(1, "BTCUSDC", TradingVenue::HyperliquidMargin, venue);
+            strategy.hedge_open_failure_block_side = Some(Side::Sell);
+            strategy.hedge_open_failure_block_until_us = 100;
+            assert!(strategy.is_hedge_open_failure_blocked(Side::Sell, 99));
+            assert!(!strategy.is_hedge_open_failure_blocked(Side::Buy, 99));
+            assert!(!strategy.is_hedge_open_failure_blocked(Side::Sell, 100));
+        }
+    }
+
+    #[test]
+    fn hyperliquid_reduce_only_bypass_requires_factual_non_flipping_quantity() {
+        for (position, side, qty, expected) in [
+            (2.0, Side::Sell, 1.0, true),
+            (-2.0, Side::Buy, 2.0, true),
+            (2.0, Side::Buy, 1.0, false),
+            (2.0, Side::Sell, 3.0, false),
+            (0.0, Side::Sell, 1.0, false),
+            (2.0, Side::Sell, 0.0, false),
+            (f64::NAN, Side::Sell, 1.0, false),
+            (2.0, Side::Sell, f64::INFINITY, false),
+        ] {
+            assert_eq!(
+                ArbHedgeStrategy::quantity_reduces_hyperliquid_position(position, side, qty),
+                expected
+            );
+        }
     }
 
     #[test]

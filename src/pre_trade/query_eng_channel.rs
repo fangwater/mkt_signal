@@ -9,9 +9,12 @@ use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use crate::pre_trade::account_open_block::handle_account_open_block_query_response;
+use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::order_manager::OrderExecutionStatus;
-use crate::pre_trade::response_reconcile::apply_query_response_as_updates;
+use crate::pre_trade::response_reconcile::{
+    apply_query_response_as_updates, is_hyperliquid_order_query,
+};
 use crate::pre_trade::PersistChannel;
 use crate::strategy::order_query_parser::parse_compact_order_query_resp;
 use crate::strategy::{OrphanStrategyManager, StrategyManager};
@@ -19,8 +22,9 @@ use ipc_common::iceoryx_publisher::{
     QUERY_REQ_PAYLOAD, QUERY_RESP_PAYLOAD, QUERY_SUBSCRIBER_MAX_BUFFER_SIZE,
 };
 use mkt_parsers::msg::basic_account_msg::{
-    get_basic_event_type, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
-    BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg, BasicUmUnrealizedMsg,
+    get_basic_event_type, split_basic_account_event, BasicAccountEventType, BasicAccountRiskMsg,
+    BasicAccountScope, BasicBalanceMsg, BasicBorrowInterestMsg, BasicPositionMsg,
+    BasicUmUnrealizedMsg,
 };
 use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate};
@@ -29,7 +33,9 @@ use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
-use trade_engine::query_request::{is_snapshot_complete_body, QueryRequestType};
+use trade_engine::query_request::{
+    is_snapshot_complete_body, snapshot_begin_scope, HyperliquidQueryParams, QueryRequestType,
+};
 
 thread_local! {
     static QUERY_ENG_HUB: OnceCell<QueryEngHub> = const { OnceCell::new() };
@@ -42,6 +48,34 @@ fn query_request_create_time_us(bytes: &Bytes) -> Option<i64> {
         return None;
     }
     Some(i64::from_le_bytes(bytes[8..16].try_into().ok()?))
+}
+
+fn unwrap_hyperliquid_query_response(
+    resp: QueryEngineResponseMessage,
+    expected_hash: [u8; 32],
+) -> Result<QueryEngineResponseMessage> {
+    let bound = HyperliquidQueryParams::from_bytes(resp.body_bytes())
+        .ok_or_else(|| anyhow!("Hyperliquid query response is missing account identity"))?;
+    if bound.account_hash != expected_hash {
+        return Err(anyhow!(
+            "Hyperliquid query response account/network identity mismatch"
+        ));
+    }
+    Ok(QueryEngineResponseMessage::new(
+        resp.req_type(),
+        resp.client_query_id(),
+        bound.body,
+    ))
+}
+
+fn is_hyperliquid_account_state_snapshot(req_type: Option<QueryRequestType>) -> bool {
+    matches!(
+        req_type,
+        Some(
+            QueryRequestType::HyperliquidClearinghouseSnapshot
+                | QueryRequestType::HyperliquidSpotStateSnapshot
+        )
+    )
 }
 
 fn snapshot_initializes_exec_venue(
@@ -82,7 +116,56 @@ fn snapshot_initializes_exec_venue(
         TradingVenue::BitgetCoinFutures => {
             req_type == QueryRequestType::BitgetCoinPositionsSnapshot
         }
+        TradingVenue::HyperliquidMargin => {
+            req_type == QueryRequestType::HyperliquidSpotStateSnapshot
+        }
+        // `clearinghouseState` covers only the default perp DEX. The complete
+        // all-DEX snapshot is owned exclusively by the private account stream.
+        TradingVenue::HyperliquidFutures => false,
         _ => false,
+    }
+}
+
+fn hyperliquid_scope_matches_venue(scope: BasicAccountScope, venue: TradingVenue) -> bool {
+    match venue {
+        TradingVenue::HyperliquidMargin => matches!(
+            scope,
+            BasicAccountScope::HyperliquidStdSpot
+                | BasicAccountScope::HyperliquidUnified
+                | BasicAccountScope::HyperliquidPortfolioMargin
+        ),
+        TradingVenue::HyperliquidFutures => matches!(
+            scope,
+            BasicAccountScope::HyperliquidStdPerp
+                | BasicAccountScope::HyperliquidUnified
+                | BasicAccountScope::HyperliquidPortfolioMargin
+        ),
+        _ => false,
+    }
+}
+
+#[derive(Debug, Default)]
+struct HyperliquidSnapshotReadiness {
+    spot_complete: bool,
+}
+
+impl HyperliquidSnapshotReadiness {
+    fn record_complete(&mut self, req_type: QueryRequestType) {
+        if req_type == QueryRequestType::HyperliquidSpotStateSnapshot {
+            self.spot_complete = true;
+        }
+    }
+
+    fn initializes_venue(&self, scope: BasicAccountScope, venue: TradingVenue) -> bool {
+        match scope {
+            BasicAccountScope::HyperliquidStdSpot => {
+                venue == TradingVenue::HyperliquidMargin && self.spot_complete
+            }
+            // The Info clearinghouse query only covers the default DEX. Only
+            // the complete private stream can initialize perpetual or shared
+            // collateral account state, even if a query emits COMPLETE.
+            _ => false,
+        }
     }
 }
 
@@ -317,6 +400,9 @@ struct QueryEngChannel {
     query_req_publisher: Publisher<ipc::Service, [u8; QUERY_REQ_PAYLOAD], ()>,
     _resp_node: Node<ipc::Service>,
     resp_subscriber: Subscriber<ipc::Service, [u8; QUERY_RESP_PAYLOAD], ()>,
+    active_hyperliquid_snapshots: FastHashMap<(u32, i64), BasicAccountScope>,
+    hyperliquid_snapshot_readiness: HyperliquidSnapshotReadiness,
+    hyperliquid_account_hash: Option<[u8; 32]>,
 }
 
 impl QueryEngChannel {
@@ -345,6 +431,11 @@ impl QueryEngChannel {
 
         let exchange_enum = Exchange::from_str(exchange)
             .ok_or_else(|| anyhow!("QueryEngHub: unsupported exchange '{}'", exchange))?;
+        let hyperliquid_account_hash = if exchange_enum == Exchange::Hyperliquid {
+            Some(hyperliquid_account_hash_from_env().map_err(anyhow::Error::msg)?)
+        } else {
+            None
+        };
         let (resp_node, resp_subscriber) =
             Self::create_query_resp_subscriber(exchange, &query_resp_service)?;
 
@@ -354,6 +445,9 @@ impl QueryEngChannel {
             query_req_publisher,
             _resp_node: resp_node,
             resp_subscriber,
+            active_hyperliquid_snapshots: fast_hash_map(),
+            hyperliquid_snapshot_readiness: HyperliquidSnapshotReadiness::default(),
+            hyperliquid_account_hash,
         })
     }
 
@@ -422,7 +516,28 @@ impl QueryEngChannel {
                     let payload = sample.payload();
                     match QueryEngineResponseMessage::from_payload(payload) {
                         Ok(resp) => {
+                            let resp = if let Some(expected_hash) = self.hyperliquid_account_hash {
+                                match unwrap_hyperliquid_query_response(resp, expected_hash) {
+                                    Ok(resp) => resp,
+                                    Err(err) => {
+                                        warn!("ignore unbound Hyperliquid query response: {err:#}");
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                resp
+                            };
                             let req_type = QueryRequestType::try_from(resp.req_type()).ok();
+                            if self.exchange_enum == Exchange::Hyperliquid
+                                && is_hyperliquid_account_state_snapshot(req_type)
+                            {
+                                warn!(
+                                    "ignore Hyperliquid account snapshot query response; authenticated private stream is the sole balance/position writer: req_type={:?} client_query_id={}",
+                                    req_type,
+                                    resp.client_query_id()
+                                );
+                                continue;
+                            }
                             let body = resp.body_bytes().as_ref();
                             let actual_len = body
                                 .iter()
@@ -484,10 +599,11 @@ impl QueryEngChannel {
                                     | 9102
                                     | 9203
                                     | 9204
+                                    | 9401
+                                    | 9402
                             ) {
-                                let body = resp.body_bytes().as_ref();
-                                let body_is_empty = body.iter().all(|b| *b == 0);
-                                let event_type = get_basic_event_type(body);
+                                let response_body = resp.body_bytes().as_ref();
+                                let body_is_empty = response_body.iter().all(|b| *b == 0);
 
                                 // Apply into MonitorChannel managers (same semantics as account_pubs basic stream).
                                 let mc = MonitorChannel::instance();
@@ -501,7 +617,163 @@ impl QueryEngChannel {
                                         .unwrap_or(exchange_enum);
                                 let binance_is_standard =
                                     mc.order_manager().borrow().binance_is_standard();
-                                if is_snapshot_complete_body(body) {
+                                let hyperliquid_snapshot_req = req_type.filter(|request_type| {
+                                    matches!(
+                                        request_type,
+                                        QueryRequestType::HyperliquidClearinghouseSnapshot
+                                            | QueryRequestType::HyperliquidSpotStateSnapshot
+                                    )
+                                });
+                                if let (Some(request_type), Some(scope_u32)) = (
+                                    hyperliquid_snapshot_req,
+                                    snapshot_begin_scope(response_body),
+                                ) {
+                                    let account_scope = BasicAccountScope::from_u32(scope_u32);
+                                    let valid_scope = match request_type {
+                                        QueryRequestType::HyperliquidSpotStateSnapshot => matches!(
+                                            account_scope,
+                                            BasicAccountScope::HyperliquidStdSpot
+                                                | BasicAccountScope::HyperliquidUnified
+                                                | BasicAccountScope::HyperliquidPortfolioMargin
+                                        ),
+                                        QueryRequestType::HyperliquidClearinghouseSnapshot => {
+                                            // Never clear all-DEX state using a default-DEX query.
+                                            false
+                                        }
+                                        _ => false,
+                                    };
+                                    if !valid_scope {
+                                        warn!(
+                                            "Hyperliquid snapshot BEGIN has invalid scope req_type={request_type:?} scope={}",
+                                            account_scope.as_str()
+                                        );
+                                        continue;
+                                    }
+                                    let request_type_u32 = request_type as u32;
+                                    self.active_hyperliquid_snapshots.retain(
+                                        |(active_type, _), _| *active_type != request_type_u32,
+                                    );
+                                    self.active_hyperliquid_snapshots.insert(
+                                        (request_type_u32, resp.client_query_id()),
+                                        account_scope,
+                                    );
+
+                                    let mut cleared = false;
+                                    match request_type {
+                                        QueryRequestType::HyperliquidSpotStateSnapshot => {
+                                            if open_exchange == exchange_enum
+                                                && hyperliquid_scope_matches_venue(
+                                                    account_scope,
+                                                    open_venue,
+                                                )
+                                            {
+                                                if let Some(balance) = mc.open_balance_mgr() {
+                                                    balance.borrow_mut().clear();
+                                                    cleared = true;
+                                                }
+                                            }
+                                            if hedge_exchange == exchange_enum
+                                                && hedge_venue != open_venue
+                                                && hyperliquid_scope_matches_venue(
+                                                    account_scope,
+                                                    hedge_venue,
+                                                )
+                                            {
+                                                if let Some(balance) = mc.hedge_balance_mgr() {
+                                                    balance.borrow_mut().clear();
+                                                    cleared = true;
+                                                }
+                                            }
+                                            if let Some(settlement) = mc.usdt_mgr(account_scope) {
+                                                settlement.borrow_mut().clear();
+                                                cleared = true;
+                                            }
+                                        }
+                                        QueryRequestType::HyperliquidClearinghouseSnapshot => {
+                                            if open_exchange == exchange_enum
+                                                && hyperliquid_scope_matches_venue(
+                                                    account_scope,
+                                                    open_venue,
+                                                )
+                                            {
+                                                if let Some((um, _)) = mc.open_um_mgr() {
+                                                    um.borrow_mut().clear();
+                                                    cleared = true;
+                                                }
+                                            }
+                                            if hedge_exchange == exchange_enum
+                                                && hedge_venue != open_venue
+                                                && hyperliquid_scope_matches_venue(
+                                                    account_scope,
+                                                    hedge_venue,
+                                                )
+                                            {
+                                                if let Some((um, _)) = mc.hedge_um_mgr() {
+                                                    um.borrow_mut().clear();
+                                                    cleared = true;
+                                                }
+                                            }
+                                            if account_scope
+                                                == BasicAccountScope::HyperliquidStdPerp
+                                            {
+                                                if let Some(settlement) = mc.usdt_mgr(account_scope)
+                                                {
+                                                    settlement.borrow_mut().clear();
+                                                    cleared = true;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    if cleared {
+                                        MonitorChannel::mark_basic_state_dirty();
+                                    }
+                                    continue;
+                                }
+                                if is_snapshot_complete_body(response_body) {
+                                    if let Some(request_type) = hyperliquid_snapshot_req {
+                                        let key = (request_type as u32, resp.client_query_id());
+                                        let Some(account_scope) =
+                                            self.active_hyperliquid_snapshots.remove(&key)
+                                        else {
+                                            warn!(
+                                                "Hyperliquid snapshot COMPLETE without matching BEGIN req_type={request_type:?} client_query_id={}",
+                                                resp.client_query_id()
+                                            );
+                                            continue;
+                                        };
+                                        self.hyperliquid_snapshot_readiness
+                                            .record_complete(request_type);
+                                        if self
+                                            .hyperliquid_snapshot_readiness
+                                            .initializes_venue(account_scope, open_venue)
+                                        {
+                                            mc.mark_arb_startup_net_seen_for_venue(
+                                                open_venue,
+                                                "query_snapshot_complete",
+                                            );
+                                        }
+                                        if hedge_venue != open_venue
+                                            && self
+                                                .hyperliquid_snapshot_readiness
+                                                .initializes_venue(account_scope, hedge_venue)
+                                        {
+                                            mc.mark_arb_startup_net_seen_for_venue(
+                                                hedge_venue,
+                                                "query_snapshot_complete",
+                                            );
+                                        }
+                                        if open_venue == hedge_venue
+                                            && self
+                                                .hyperliquid_snapshot_readiness
+                                                .initializes_venue(account_scope, open_venue)
+                                        {
+                                            mc.mark_exec_position_snapshot_ready(
+                                                "query_snapshot_complete",
+                                            );
+                                        }
+                                        continue;
+                                    }
                                     if open_venue == hedge_venue
                                         && req_type.is_some_and(|req_type| {
                                             snapshot_initializes_exec_venue(
@@ -517,6 +789,33 @@ impl QueryEngChannel {
                                     }
                                     continue;
                                 }
+                                if hyperliquid_snapshot_req.is_some()
+                                    && actual_len == 1
+                                    && response_body[0] == b'E'
+                                {
+                                    let request_type = hyperliquid_snapshot_req.unwrap();
+                                    self.active_hyperliquid_snapshots
+                                        .remove(&(request_type as u32, resp.client_query_id()));
+                                    continue;
+                                }
+                                if let Some(request_type) = hyperliquid_snapshot_req {
+                                    let key = (request_type as u32, resp.client_query_id());
+                                    if !self.active_hyperliquid_snapshots.contains_key(&key) {
+                                        warn!(
+                                            "ignore Hyperliquid partial snapshot row without a complete BEGIN/COMPLETE transaction req_type={request_type:?} client_query_id={}",
+                                            resp.client_query_id()
+                                        );
+                                        continue;
+                                    }
+                                }
+                                let wrapped = split_basic_account_event(response_body)
+                                    .filter(|(_, scope, _)| *scope != BasicAccountScope::Unknown);
+                                let event_type = wrapped
+                                    .map(|(event_type, _, _)| event_type)
+                                    .unwrap_or_else(|| get_basic_event_type(response_body));
+                                let body = wrapped
+                                    .map(|(_, _, payload)| payload)
+                                    .unwrap_or(response_body);
                                 if matches!(
                                     req_type,
                                     Some(
@@ -529,6 +828,7 @@ impl QueryEngChannel {
                                             | QueryRequestType::BybitPositionsSnapshot
                                             | QueryRequestType::BitgetPositionsSnapshot
                                             | QueryRequestType::BitgetCoinPositionsSnapshot
+                                            | QueryRequestType::HyperliquidClearinghouseSnapshot
                                     )
                                 ) && body_is_empty
                                 {
@@ -592,7 +892,7 @@ impl QueryEngChannel {
                                     }
                                     continue;
                                 }
-                                let account_scope = match req_type {
+                                let inferred_account_scope = match req_type {
                                     Some(QueryRequestType::BinanceWsMarginQuery) => {
                                         BasicAccountScope::BinanceStdSpot
                                     }
@@ -650,6 +950,9 @@ impl QueryEngChannel {
                                         _ => BasicAccountScope::Unknown,
                                     },
                                 };
+                                let account_scope = wrapped
+                                    .map(|(_, scope, _)| scope)
+                                    .unwrap_or(inferred_account_scope);
                                 let scope_matches_venue =
                                     |scope: BasicAccountScope, venue: TradingVenue| match venue {
                                         TradingVenue::BinanceMargin => {
@@ -689,6 +992,18 @@ impl QueryEngChannel {
                                         TradingVenue::BybitMargin | TradingVenue::BybitFutures => {
                                             scope == BasicAccountScope::BybitUnified
                                         }
+                                        TradingVenue::HyperliquidMargin => matches!(
+                                            scope,
+                                            BasicAccountScope::HyperliquidStdSpot
+                                                | BasicAccountScope::HyperliquidUnified
+                                                | BasicAccountScope::HyperliquidPortfolioMargin
+                                        ),
+                                        TradingVenue::HyperliquidFutures => matches!(
+                                            scope,
+                                            BasicAccountScope::HyperliquidStdPerp
+                                                | BasicAccountScope::HyperliquidUnified
+                                                | BasicAccountScope::HyperliquidPortfolioMargin
+                                        ),
                                         _ => false,
                                     };
 
@@ -696,7 +1011,10 @@ impl QueryEngChannel {
                                     BasicAccountEventType::BalanceUpdate => {
                                         if let Ok(m) = BasicBalanceMsg::from_bytes(body) {
                                             let mut applied = false;
-                                            if m.symbol.eq_ignore_ascii_case("USDT") {
+                                            if m.symbol.eq_ignore_ascii_case("USDT")
+                                                || (exchange_enum == Exchange::Hyperliquid
+                                                    && m.symbol.eq_ignore_ascii_case("USDC"))
+                                            {
                                                 if let Some(usdt) = mc.usdt_mgr(account_scope) {
                                                     usdt.borrow_mut().apply_balance(&m);
                                                     applied = true;
@@ -709,6 +1027,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
                                                     | TradingVenue::BybitMargin
+                                                    | TradingVenue::HyperliquidMargin
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
@@ -728,6 +1047,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::GateMargin
                                                     | TradingVenue::BitgetMargin
                                                     | TradingVenue::BybitMargin
+                                                    | TradingVenue::HyperliquidMargin
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
@@ -809,6 +1129,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::BitgetFutures
                                                     | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
+                                                    | TradingVenue::HyperliquidFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
@@ -830,6 +1151,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::BitgetFutures
                                                     | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
+                                                    | TradingVenue::HyperliquidFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
@@ -859,6 +1181,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::BitgetFutures
                                                     | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
+                                                    | TradingVenue::HyperliquidFutures
                                             ) && exchange_enum == open_exchange
                                                 && scope_matches_venue(account_scope, open_venue)
                                             {
@@ -876,6 +1199,7 @@ impl QueryEngChannel {
                                                     | TradingVenue::BitgetFutures
                                                     | TradingVenue::BitgetCoinFutures
                                                     | TradingVenue::BybitFutures
+                                                    | TradingVenue::HyperliquidFutures
                                             ) && exchange_enum == hedge_exchange
                                                 && scope_matches_venue(account_scope, hedge_venue)
                                             {
@@ -932,6 +1256,8 @@ impl QueryEngChannel {
                                         | QueryRequestType::BitgetCoinFuturesQuery
                                         | QueryRequestType::GateUnifiedOrderQuery
                                         | QueryRequestType::GateFuturesOrderQuery
+                                        | QueryRequestType::HyperliquidMarginQuery
+                                        | QueryRequestType::HyperliquidUMQuery
                                 ) {
                                     let client_order_id = resp.client_query_id();
                                     let strategy_id = (client_order_id >> 32) as i32;
@@ -991,17 +1317,67 @@ impl QueryEngChannel {
 mod tests {
     use super::{
         dispatch_query_response_to_orphan_manager, dispatch_query_response_to_strategy_manager,
-        snapshot_initializes_exec_venue,
+        is_hyperliquid_account_state_snapshot, snapshot_initializes_exec_venue,
+        unwrap_hyperliquid_query_response, HyperliquidSnapshotReadiness,
     };
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
     use bytes::Bytes;
-    use order_common::QueryEngineResponseMessage;
+    use mkt_parsers::msg::basic_account_msg::BasicAccountScope;
     use order_common::{OrderUpdate, TradeUpdate};
+    use order_common::{QueryEngineResponse, QueryEngineResponseMessage};
     use signal_common::trade_signal::TradeSignal;
     use std::any::Any;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use trade_engine::query_request::QueryRequestType;
+    use trade_engine::query_request::{HyperliquidQueryParams, QueryRequestType};
+
+    #[test]
+    fn hyperliquid_query_responses_require_the_current_account_identity() {
+        let expected = [4; 32];
+        let body = Bytes::from_static(b"SNAPSHOT_BEGIN");
+        let wrapped = HyperliquidQueryParams::create(expected, body.clone()).to_bytes();
+        let response = QueryEngineResponseMessage::new(
+            QueryRequestType::HyperliquidSpotStateSnapshot as u32,
+            77,
+            wrapped,
+        );
+        let response = unwrap_hyperliquid_query_response(response, expected).unwrap();
+        assert_eq!(
+            response.req_type(),
+            QueryRequestType::HyperliquidSpotStateSnapshot as u32
+        );
+        assert_eq!(response.client_query_id(), 77);
+        assert_eq!(response.body_bytes(), &body);
+
+        let wrong = QueryEngineResponseMessage::new(
+            QueryRequestType::HyperliquidSpotStateSnapshot as u32,
+            78,
+            HyperliquidQueryParams::create([5; 32], Bytes::new()).to_bytes(),
+        );
+        assert!(unwrap_hyperliquid_query_response(wrong, expected).is_err());
+        let unbound = QueryEngineResponseMessage::new(
+            QueryRequestType::HyperliquidSpotStateSnapshot as u32,
+            79,
+            Bytes::from_static(b"old response"),
+        );
+        assert!(unwrap_hyperliquid_query_response(unbound, expected).is_err());
+    }
+
+    #[test]
+    fn hyperliquid_private_stream_owns_account_state_snapshots() {
+        assert!(is_hyperliquid_account_state_snapshot(Some(
+            QueryRequestType::HyperliquidSpotStateSnapshot
+        )));
+        assert!(is_hyperliquid_account_state_snapshot(Some(
+            QueryRequestType::HyperliquidClearinghouseSnapshot
+        )));
+        assert!(!is_hyperliquid_account_state_snapshot(Some(
+            QueryRequestType::HyperliquidUserAbstraction
+        )));
+        assert!(!is_hyperliquid_account_state_snapshot(Some(
+            QueryRequestType::HyperliquidUMQuery
+        )));
+    }
 
     #[test]
     fn exec_position_snapshot_mapping_matches_venue_and_account_mode() {
@@ -1049,6 +1425,49 @@ mod tests {
             QueryRequestType::OkexAccountBalanceSnapshot,
             order_common::TradingVenue::OkexFutures,
             false,
+        ));
+        assert!(snapshot_initializes_exec_venue(
+            QueryRequestType::HyperliquidSpotStateSnapshot,
+            order_common::TradingVenue::HyperliquidMargin,
+            false,
+        ));
+        assert!(!snapshot_initializes_exec_venue(
+            QueryRequestType::HyperliquidClearinghouseSnapshot,
+            order_common::TradingVenue::HyperliquidFutures,
+            false,
+        ));
+    }
+
+    #[test]
+    fn hyperliquid_query_readiness_never_initializes_shared_or_perpetual_state() {
+        let mut readiness = HyperliquidSnapshotReadiness::default();
+        readiness.record_complete(QueryRequestType::HyperliquidSpotStateSnapshot);
+        assert!(readiness.initializes_venue(
+            BasicAccountScope::HyperliquidStdSpot,
+            order_common::TradingVenue::HyperliquidMargin,
+        ));
+        assert!(!readiness.initializes_venue(
+            BasicAccountScope::HyperliquidUnified,
+            order_common::TradingVenue::HyperliquidFutures,
+        ));
+
+        readiness.record_complete(QueryRequestType::HyperliquidClearinghouseSnapshot);
+        for scope in [
+            BasicAccountScope::HyperliquidUnified,
+            BasicAccountScope::HyperliquidPortfolioMargin,
+        ] {
+            assert!(
+                !readiness.initializes_venue(scope, order_common::TradingVenue::HyperliquidMargin,)
+            );
+            assert!(!readiness
+                .initializes_venue(scope, order_common::TradingVenue::HyperliquidFutures,));
+        }
+
+        let mut standard_perp = HyperliquidSnapshotReadiness::default();
+        standard_perp.record_complete(QueryRequestType::HyperliquidClearinghouseSnapshot);
+        assert!(!standard_perp.initializes_venue(
+            BasicAccountScope::HyperliquidStdPerp,
+            order_common::TradingVenue::HyperliquidFutures,
         ));
     }
 
@@ -1225,6 +1644,12 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
         );
         return;
     };
+    let hyperliquid_nonfactual_fill = is_hyperliquid_order_query(resp.req_type());
+    let executed_qty = if hyperliquid_nonfactual_fill {
+        order.cumulative_filled_quantity
+    } else {
+        parsed.executed_qty
+    };
 
     let event_time_us = parsed.update_time_ms.saturating_mul(1_000);
     let order_id = if parsed.order_id > 0 {
@@ -1235,7 +1660,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
     let tif = TimeInForce::from_u8(parsed.time_in_force_u8).unwrap_or(TimeInForce::GTC);
 
     PersistChannel::with(|ch| {
-        if parsed.executed_qty > order.cumulative_filled_quantity + 1e-12 {
+        if executed_qty > order.cumulative_filled_quantity + 1e-12 {
             let order_status = if parsed.status_u8 == OrderExecutionStatus::Filled.to_u8() {
                 Some(OrderStatus::Filled)
             } else {
@@ -1245,7 +1670,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 &order,
                 order_id,
                 event_time_us,
-                parsed.executed_qty,
+                executed_qty,
                 Some(parsed.response_price),
                 order_status,
                 tif,
@@ -1261,7 +1686,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 event_time_us,
                 OrderStatus::New,
                 ExecutionType::New,
-                parsed.executed_qty,
+                executed_qty,
                 tif,
             );
             ch.publish_order_update_unmatched(&update);
@@ -1272,18 +1697,19 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 event_time_us,
                 OrderStatus::Canceled,
                 ExecutionType::Canceled,
-                parsed.executed_qty,
+                executed_qty,
                 tif,
             );
             ch.publish_order_update_unmatched(&update);
-        } else if status_u8 == OrderExecutionStatus::Filled.to_u8() {
+        } else if status_u8 == OrderExecutionStatus::Filled.to_u8() && !hyperliquid_nonfactual_fill
+        {
             let update = OrderQueryOrderUpdate::new(
                 &order,
                 order_id,
                 event_time_us,
                 OrderStatus::Filled,
                 ExecutionType::Trade,
-                parsed.executed_qty,
+                executed_qty,
                 tif,
             );
             ch.publish_order_update_unmatched(&update);
@@ -1294,7 +1720,7 @@ fn persist_unmatched_query_response(strategy_id: i32, resp: &QueryEngineResponse
                 event_time_us,
                 OrderStatus::Expired,
                 ExecutionType::Rejected,
-                parsed.executed_qty,
+                executed_qty,
                 tif,
             );
             ch.publish_order_update_unmatched(&update);

@@ -2,6 +2,7 @@
 
 mod bbo_spread;
 pub mod exporter;
+mod hyperliquid_account_fact;
 mod iceoryx;
 mod order_queue_position;
 mod order_update;
@@ -22,6 +23,7 @@ use anyhow::Result;
 use log::info;
 
 use bbo_spread::BboSpreadRuntime;
+use hyperliquid_account_fact::HyperliquidAccountFactPersistor;
 use order_queue_position::OrderQueuePositionPersistor;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use polling::PollStats;
@@ -42,6 +44,7 @@ const ROCKSDB_MAX_WRITE_BUFFER_NUMBER: i32 = 2;
 pub fn required_column_families() -> Vec<&'static str> {
     let mut cf_names: Vec<&'static str> = Vec::new();
     cf_names.extend_from_slice(trade_update::required_column_families());
+    cf_names.extend_from_slice(hyperliquid_account_fact::required_column_families());
     cf_names.extend_from_slice(order_update::required_column_families());
     cf_names.extend_from_slice(order_queue_position::required_column_families());
     cf_names.extend_from_slice(uniform_order_persist::required_column_families());
@@ -115,6 +118,10 @@ impl PersistManager {
         let trade_update_unmatched =
             TradeUpdateUnmatchedPersistor::new(store.clone(), sync_enabled)?;
 
+        info!("starting Hyperliquid account fact persistor");
+        let hyperliquid_account_fact =
+            HyperliquidAccountFactPersistor::new(store.clone(), sync_enabled)?;
+
         info!("starting order update persistor");
         let order_update = OrderUpdatePersistor::new(store.clone(), sync_enabled)?;
 
@@ -141,6 +148,7 @@ impl PersistManager {
             run_persistors(
                 trade_update,
                 trade_update_unmatched,
+                hyperliquid_account_fact,
                 order_update,
                 order_update_unmatched,
                 order_queue_position,
@@ -161,6 +169,7 @@ impl PersistManager {
 async fn run_persistors(
     trade_update: TradeUpdatePersistor,
     trade_update_unmatched: TradeUpdateUnmatchedPersistor,
+    mut hyperliquid_account_fact: HyperliquidAccountFactPersistor,
     order_update: OrderUpdatePersistor,
     order_update_unmatched: OrderUpdateUnmatchedPersistor,
     order_queue_position: OrderQueuePositionPersistor,
@@ -177,6 +186,7 @@ async fn run_persistors(
         let mut stats = PollStats::default();
         stats.merge(trade_update.poll_available());
         stats.merge(trade_update_unmatched.poll_available());
+        stats.merge(hyperliquid_account_fact.poll_available());
         stats.merge(order_update.poll_available());
         stats.merge(order_update_unmatched.poll_available());
         stats.merge(order_queue_position.poll_available());

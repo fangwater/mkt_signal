@@ -1,6 +1,6 @@
 use crate::strategy::order_query_parser::parse_compact_order_query_resp as parse_compact_order_query_resp_common;
 pub use order_common::CUMULATIVE_FILL_ROLLBACK_EPS;
-use order_common::{Order, OrderExecutionStatus};
+use order_common::{Order, OrderExecutionStatus, TradeEngineResponse, TradeRequestKind};
 use order_common::{TimeInForce, TradingVenue};
 use signal_common::tick_math::QuantizedValue;
 use trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
@@ -59,6 +59,20 @@ impl PendingOrderQueryReason {
     }
 }
 
+pub fn hyperliquid_ambiguous_query_reason(
+    response: &dyn TradeEngineResponse,
+    cancel_reason: PendingOrderQueryReason,
+) -> Option<PendingOrderQueryReason> {
+    if !response.is_hyperliquid_action_ambiguous() {
+        return None;
+    }
+    match response.request_kind() {
+        TradeRequestKind::Open => Some(PendingOrderQueryReason::OrderWatchdog),
+        TradeRequestKind::Cancel => Some(cancel_reason),
+        TradeRequestKind::Other => None,
+    }
+}
+
 pub fn qv_decimal_or_fallback(value: f64) -> String {
     QuantizedValue::from_decimal(value)
         .map(|qv| qv.decimal_string())
@@ -87,10 +101,12 @@ pub fn parse_strategy_compact_order_query_resp(
 #[cfg(test)]
 mod tests {
     use super::{
-        monotonic_cumulative_fill, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
+        hyperliquid_ambiguous_query_reason, monotonic_cumulative_fill,
+        order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, PendingOrderQueryReason,
         BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US, ORDER_QUERY_WATCHDOG_DELAY_US,
     };
-    use order_common::TradingVenue;
+    use order_common::trade_error_code::hyperliquid::ACTION_AMBIGUOUS;
+    use order_common::{TradeEngineResponseMessage, TradeRequestType, TradingVenue};
 
     #[test]
     fn monotonic_cumulative_fill_keeps_local_value_on_rollback() {
@@ -124,6 +140,33 @@ mod tests {
         assert_eq!(
             order_query_watchdog_delay_us_for_venue(TradingVenue::GateFutures, false),
             ORDER_QUERY_WATCHDOG_DELAY_US
+        );
+    }
+
+    #[test]
+    fn hyperliquid_ambiguous_actions_route_to_order_status_reconciliation() {
+        let open = TradeEngineResponseMessage::new(
+            503,
+            TradeRequestType::HyperliquidNewUMOrder as u32,
+            symbol_utils::Exchange::Hyperliquid as u32,
+            7,
+            ACTION_AMBIGUOUS,
+        );
+        assert_eq!(
+            hyperliquid_ambiguous_query_reason(&open, PendingOrderQueryReason::CancelWatchdog),
+            Some(PendingOrderQueryReason::OrderWatchdog)
+        );
+
+        let cancel = TradeEngineResponseMessage::new(
+            503,
+            TradeRequestType::HyperliquidCancelUMOrder as u32,
+            symbol_utils::Exchange::Hyperliquid as u32,
+            7,
+            ACTION_AMBIGUOUS,
+        );
+        assert_eq!(
+            hyperliquid_ambiguous_query_reason(&cancel, PendingOrderQueryReason::CancelFailed),
+            Some(PendingOrderQueryReason::CancelFailed)
         );
     }
 }

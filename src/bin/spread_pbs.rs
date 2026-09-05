@@ -110,7 +110,7 @@ fn parse_venue_selection(raw: &str) -> std::result::Result<SpreadVenueSelection,
     if let Some(exchange) = normalized.strip_suffix("-both") {
         return both_selection_for_exchange(exchange).ok_or_else(|| {
             format!(
-                "unsupported spread_pbs both venue '{raw}', expected one of binance-both/okex-both/bybit-both/bitget-both/gate-both"
+                "unsupported spread_pbs both venue '{raw}', expected one of binance-both/okex-both/bybit-both/bitget-both/gate-both/hyperliquid-both"
             )
         });
     }
@@ -179,6 +179,11 @@ fn both_selection_for_exchange(exchange: &str) -> Option<SpreadVenueSelection> {
             TradingVenue::BitgetFutures,
         ),
         "gate" => ("gate", TradingVenue::GateMargin, TradingVenue::GateFutures),
+        "hyperliquid" => (
+            "hyperliquid",
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ),
         _ => return None,
     };
     Some(SpreadVenueSelection::Both {
@@ -389,6 +394,20 @@ mod tests {
             }
         ));
         assert_eq!(selection.label(), "binance-both");
+    }
+
+    #[test]
+    fn parses_hyperliquid_both() {
+        let selection = parse_venue_selection("hyperliquid-both").unwrap();
+        assert!(matches!(
+            selection,
+            SpreadVenueSelection::Both {
+                exchange: "hyperliquid",
+                margin: TradingVenue::HyperliquidMargin,
+                futures: TradingVenue::HyperliquidFutures
+            }
+        ));
+        assert_eq!(selection.label(), "hyperliquid-both");
     }
 
     #[test]

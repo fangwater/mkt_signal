@@ -51,7 +51,7 @@ fn log_credential_preview(label: &str, value: &str) {
 #[derive(Parser, Debug)]
 #[command(name = "trade_engine", about = "Unified trade execution engine")]
 struct Args {
-    /// Target exchange (binance, okex, bybit, bitget, gate)
+    /// Target exchange (binance, okex, bybit, bitget, gate, hyperliquid)
     #[arg(long, value_enum)]
     exchange: TradeEngineTarget,
 
@@ -67,6 +67,7 @@ enum TradeEngineTarget {
     Bybit,
     Bitget,
     Gate,
+    Hyperliquid,
 }
 
 impl TradeEngineTarget {
@@ -77,6 +78,7 @@ impl TradeEngineTarget {
             TradeEngineTarget::Bybit => "bybit",
             TradeEngineTarget::Bitget => "bitget",
             TradeEngineTarget::Gate => "gate",
+            TradeEngineTarget::Hyperliquid => "hyperliquid",
         }
     }
 }
@@ -419,6 +421,11 @@ async fn main() -> Result<()> {
     } else if exchange_name == "okex" {
         info!("OKEx mode: API credentials will be loaded from OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE environment variables");
         vec![] // OKEx 不需要在这里配置
+    } else if exchange_name == "hyperliquid" {
+        info!(
+            "Hyperliquid mode: signer is loaded from HYPERLIQUID_PRIVATE_KEY; optional HYPERLIQUID_VAULT_ADDRESS, HYPERLIQUID_TESTNET, HYPERLIQUID_WS_URL, HYPERLIQUID_INFO_URL"
+        );
+        vec![]
     } else {
         // Binance 等其他交易所需要从环境变量读取
         let env_prefix = exchange_name.to_ascii_uppercase();

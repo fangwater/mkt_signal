@@ -89,13 +89,13 @@ pub struct PreTradeExposureResampleEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreTradeAccountRiskView {
     pub ts_ms: i64,
-    pub adj_equity_usd: f64,
-    pub actual_equity_usd: f64,
-    pub maintenance_margin_usd: f64,
-    pub initial_margin_usd: f64,
+    pub adj_equity_usd: Option<f64>,
+    pub actual_equity_usd: Option<f64>,
+    pub maintenance_margin_usd: Option<f64>,
+    pub initial_margin_usd: Option<f64>,
     pub margin_ratio: f64,
-    pub borrowed_usd: f64,
-    pub notional_usd: f64,
+    pub borrowed_usd: Option<f64>,
+    pub notional_usd: Option<f64>,
     pub state: String,
 }
 

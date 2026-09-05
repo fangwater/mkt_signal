@@ -9,7 +9,23 @@ margin_ratio = 1.0 表示强平边界
 margin_ratio 越大越安全
 ```
 
-金额字段统一为 USD 等值 `f64`。这里只记录 5 个交易所都能稳定对齐的公共风险字段。
+金额字段统一为 USD 等值 `f64`。没有可靠来源的金额在固定宽度 IPC 中使用
+`NaN`，在 JSON 视图中使用 `null`；不得把未知金额当作事实零值。
+下面先记录现有 5 个 CEX 的公共风险字段，Hyperliquid 的差异见后文。
+
+## Hyperliquid
+
+Portfolio Margin 的 `margin_ratio` 来自 `spotState.portfolioMarginRatio`，
+转换为 `min(0.95 / ratio, 1e12)`；原始比率为零时使用 `1e12`。
+`borrowed_usd` 在借贷用户状态和储备估值均有效时，使用各 token 的
+`borrow.value * oraclePx` 求和，包含当前应计利息。无法可靠对齐的 USD
+权益、初始保证金、维持保证金和名义持仓金额保持未知，不从风险比率反推。
+
+统一借贷余额另用 `BasicBorrowInterestMsg` 发送本金及当前应计利息。
+PM spot 的净余额加上同批发布的借贷金额，构成统一 gross wallet，确保公共
+`wallet - borrowed - interest` 仍等于交易所净余额。借贷数据独立保留 HTTP
+接收时间，60 秒过期后账户快照不可继续维持交易就绪。
+完整来源及查询恢复边界见 [Hyperliquid](hyperliquid.md)。
 
 ## 字段映射
 

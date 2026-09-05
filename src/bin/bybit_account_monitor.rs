@@ -701,6 +701,9 @@ impl AccountEventDeduper {
                 .ok()
                 .map(|msg| self.key_trade_lite(&msg)),
             BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,
+            BasicAccountEventType::HyperliquidFill
+            | BasicAccountEventType::HyperliquidSnapshotComplete
+            | BasicAccountEventType::HyperliquidFactReplayControl => return true,
             BasicAccountEventType::Error => return true,
         };
 

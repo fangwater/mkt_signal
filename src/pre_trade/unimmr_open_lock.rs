@@ -350,6 +350,10 @@ fn scope_label(scope: BasicAccountScope) -> &'static str {
         BasicAccountScope::BinanceStdSpot => "Binance现货账户",
         BasicAccountScope::BinanceStdUm => "Binance合约账户",
         BasicAccountScope::BinanceStdCm => "Binance币本位合约账户",
+        BasicAccountScope::HyperliquidStdSpot => "Hyperliquid现货账户",
+        BasicAccountScope::HyperliquidStdPerp => "Hyperliquid永续账户",
+        BasicAccountScope::HyperliquidUnified => "Hyperliquid统一账户",
+        BasicAccountScope::HyperliquidPortfolioMargin => "Hyperliquid组合保证金账户",
     }
 }
 
@@ -396,6 +400,23 @@ mod tests {
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(2.1));
         assert!(UnimmrOpenLock::is_locked());
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BybitUnified, &risk_msg(2.3));
+        assert!(!UnimmrOpenLock::is_locked());
+    }
+
+    #[test]
+    fn hyperliquid_portfolio_ratio_uses_existing_open_lock_and_recovery_hysteresis() {
+        initialize_test(
+            Some("hyperliquid-intra".to_string()),
+            ArbMode::IntraArb,
+            None,
+        )
+        .unwrap();
+        let scope = BasicAccountScope::HyperliquidPortfolioMargin;
+        UnimmrOpenLock::apply_account_risk(scope, &risk_msg(0.95 / 0.5));
+        assert!(UnimmrOpenLock::is_locked());
+        UnimmrOpenLock::apply_account_risk(scope, &risk_msg(2.1));
+        assert!(UnimmrOpenLock::is_locked());
+        UnimmrOpenLock::apply_account_risk(scope, &risk_msg(0.95 / 0.4));
         assert!(!UnimmrOpenLock::is_locked());
     }
 

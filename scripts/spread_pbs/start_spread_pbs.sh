@@ -15,6 +15,9 @@ Behavior:
   - 必须在 venue 部署目录下执行（如 ~/spread_pbs/okex-futures 或 ~/spread_pbs/gate-both）。
   - 由当前目录名推断 venue，并查表得到默认 CPU 核（0-9）。
   - 若 env.sh 设置 SPREAD_PBS_CORE，则优先使用该覆盖值。
+  - hyperliquid-margin / hyperliquid-futures / hyperliquid-both 没有默认 CPU 核；
+    必须在当前部署目录的 env.sh 中显式设置 SPREAD_PBS_CORE=<core>。
+    Hyperliquid 使用单进程，stream 策略由 spread_pbs 内部决定。
   - binance-futures 可通过 SPREAD_PBS_BINANCE_FUTURES_ROLE=split|market|bookticker 选择进程角色。
     角色只选择数据流；所有角色复用统一的双路 WS 和错峰重连机制。
   - <exchange>-both 会在一个 spread_pbs 进程内同时启动 margin/futures 两套 publisher。
@@ -175,6 +178,17 @@ elif [[ "$venue" == "bybit-both" ]]; then
     exit 1
   fi
   CORE="$SPREAD_PBS_BYBIT_MARKET_CORE"
+elif [[ "$venue" == hyperliquid-* ]]; then
+  if [[ -z "${SPREAD_PBS_CORE:-}" ]]; then
+    echo "[ERROR] ${venue} 不提供默认 core；必须显式设置 SPREAD_PBS_CORE。" >&2
+    echo "[HINT] 在 ${BASE_DIR}/env.sh 中添加: export SPREAD_PBS_CORE=<core>" >&2
+    exit 1
+  fi
+  if [[ ! "$SPREAD_PBS_CORE" =~ ^[0-9]+$ ]]; then
+    echo "[ERROR] SPREAD_PBS_CORE 必须为单个整数 (got: $SPREAD_PBS_CORE)" >&2
+    exit 1
+  fi
+  CORE="$SPREAD_PBS_CORE"
 elif [[ -n "${SPREAD_PBS_CORE:-}" ]]; then
   if [[ ! "$SPREAD_PBS_CORE" =~ ^[0-9]+$ ]]; then
     echo "[ERROR] SPREAD_PBS_CORE 必须为单个整数 (got: $SPREAD_PBS_CORE)" >&2

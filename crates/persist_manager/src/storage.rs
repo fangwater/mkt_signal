@@ -324,6 +324,20 @@ impl RocksDbStore {
     }
 
     pub fn put(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        self.put_with_sync(cf_name, key, value, false)
+    }
+
+    pub fn put_sync(&self, cf_name: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        self.put_with_sync(cf_name, key, value, true)
+    }
+
+    fn put_with_sync(
+        &self,
+        cf_name: &str,
+        key: &[u8],
+        value: &[u8],
+        force_sync: bool,
+    ) -> Result<()> {
         if self.read_only {
             return Err(anyhow!("rocksdb store is read-only"));
         }
@@ -332,13 +346,25 @@ impl RocksDbStore {
             .cf_handle(cf_name)
             .ok_or_else(|| anyhow!("column family {} not found", cf_name))?;
         let mut write_opts = WriteOptions::default();
-        write_opts.set_sync(self.sync_writes);
+        write_opts.set_sync(self.sync_writes || force_sync);
         self.db
             .put_cf_opt(cf, key, value, &write_opts)
             .with_context(|| format!("failed to write to column family {}", cf_name))
     }
 
     pub fn put_many(&self, writes: &[(String, Vec<u8>, Vec<u8>)]) -> Result<()> {
+        self.put_many_with_sync(writes, false)
+    }
+
+    pub fn put_many_sync(&self, writes: &[(String, Vec<u8>, Vec<u8>)]) -> Result<()> {
+        self.put_many_with_sync(writes, true)
+    }
+
+    fn put_many_with_sync(
+        &self,
+        writes: &[(String, Vec<u8>, Vec<u8>)],
+        force_sync: bool,
+    ) -> Result<()> {
         if self.read_only {
             return Err(anyhow!("rocksdb store is read-only"));
         }
@@ -354,7 +380,7 @@ impl RocksDbStore {
             batch.put_cf(cf, key, value);
         }
         let mut write_opts = WriteOptions::default();
-        write_opts.set_sync(self.sync_writes);
+        write_opts.set_sync(self.sync_writes || force_sync);
         self.db
             .write_opt(batch, &write_opts)
             .with_context(|| "failed to write rocksdb batch")

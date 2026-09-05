@@ -1,16 +1,62 @@
 use iceoryx2::port::publisher::Publisher;
 use iceoryx2::service::ipc;
 use log::{debug, warn};
-use order_common::trade_error_code::{bitget, bybit, gate};
-use order_common::TradeRequestType;
+use mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash;
+use order_common::trade_error_code::{bitget, bybit, gate, hyperliquid};
+use order_common::{
+    TradeRequestType, HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END,
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET,
+};
 use runtime_common::exchange::Exchange;
 use serde_json::Value;
+use signal_common::hyperliquid::HyperliquidEndpoints;
 use tokio::sync::mpsc;
 
 const MAX_TRADE_RESP_ERROR_DETAIL_CHARS: usize = 512;
 const BINANCE_NEW_ORDER_REJECTED: i32 = -2010;
 const BINANCE_BALANCE_INSUFFICIENT: i32 = -2018;
 const BINANCE_POST_ONLY_REJECTED: i32 = -5022;
+
+fn hyperliquid_trade_response_account_hash() -> anyhow::Result<[u8; 32]> {
+    let account_address = std::env::var("HYPERLIQUID_ACCOUNT_ADDRESS")
+        .map_err(|_| anyhow::anyhow!("HYPERLIQUID_ACCOUNT_ADDRESS is required"))?;
+    let endpoints = HyperliquidEndpoints::from_env()?;
+    hyperliquid_account_identity_hash(&account_address, endpoints.testnet)
+}
+
+fn encode_trade_response(
+    out: &TradeExecOutcome,
+    error_code: i32,
+    hyperliquid_account_hash: Option<[u8; 32]>,
+) -> std::result::Result<[u8; 64], &'static str> {
+    let req_type = out.req_type as u32;
+    let exchange = out.exchange as u32;
+    let mut buf = [0u8; 64];
+    buf[0..4].copy_from_slice(&req_type.to_le_bytes());
+    buf[4..12].copy_from_slice(&out.client_order_id.to_le_bytes());
+    buf[12..16].copy_from_slice(&exchange.to_le_bytes());
+    buf[16..18].copy_from_slice(&out.status.to_le_bytes());
+    buf[18..22].copy_from_slice(&error_code.to_le_bytes());
+    let tail = 22;
+    buf[tail..tail + 8].copy_from_slice(&out.order_id.to_le_bytes());
+    buf[tail + 8] = out.order_status_u8;
+
+    if out.exchange == Exchange::Hyperliquid {
+        if out.order_update_time != 0 || out.executed_qty != 0.0 || out.response_price != 0.0 {
+            return Err("Hyperliquid action response unexpectedly contains fill lifecycle fields");
+        }
+        let account_hash = hyperliquid_account_hash
+            .ok_or("Hyperliquid action response is missing its account identity hash")?;
+        buf[HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET
+            ..HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END]
+            .copy_from_slice(&account_hash);
+    } else {
+        buf[tail + 9..tail + 17].copy_from_slice(&out.order_update_time.to_le_bytes());
+        buf[tail + 17..tail + 25].copy_from_slice(&out.executed_qty.to_le_bytes());
+        buf[tail + 25..tail + 33].copy_from_slice(&out.response_price.to_le_bytes());
+    }
+    Ok(buf)
+}
 
 // REST 请求执行后的输出（内部使用）
 #[derive(Debug, Clone)]
@@ -248,6 +294,8 @@ fn is_cancel_request(req_type: TradeRequestType) -> bool {
             | TradeRequestType::BitgetCancelUMOrder
             | TradeRequestType::BitgetCancelSpotOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder
     )
 }
 
@@ -273,6 +321,7 @@ fn is_cancel_not_cancellable(exchange: Exchange, error_code: i32) -> bool {
             error_code,
             22001 | 25204 | 43001 | 43004 | 45031 | 45055 | 45057
         ),
+        Exchange::Hyperliquid => error_code == hyperliquid::ORDER_NOT_FOUND,
         _ => false,
     }
 }
@@ -288,6 +337,7 @@ fn is_post_only_rejected(exchange: Exchange, error_code: i32) -> bool {
         Exchange::Gate => error_code == gate::ORDER_POC,
         Exchange::Bybit => matches!(error_code, 170217 | 170218),
         Exchange::Bitget => false,
+        Exchange::Hyperliquid => error_code == hyperliquid::POST_ONLY_REJECTED,
         _ => false,
     }
 }
@@ -499,6 +549,60 @@ mod tests {
             BINANCE_POST_ONLY_REJECTED
         ));
     }
+
+    #[test]
+    fn hyperliquid_trade_response_preserves_oid_and_binds_full_account_hash() {
+        let mut out = sample_outcome(
+            TradeRequestType::HyperliquidNewUMOrder,
+            Exchange::Hyperliquid,
+        );
+        out.order_id = 987_654;
+        out.order_status_u8 = 1;
+        let account_hash = [0xabu8; 32];
+
+        let payload = encode_trade_response(&out, 0, Some(account_hash)).unwrap();
+
+        assert_eq!(
+            i64::from_le_bytes(payload[22..30].try_into().unwrap()),
+            987_654
+        );
+        assert_eq!(payload[30], 1);
+        assert_eq!(
+            &payload[HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET
+                ..HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END],
+            &account_hash
+        );
+        assert_eq!(payload[63], 0);
+    }
+
+    #[test]
+    fn hyperliquid_trade_response_requires_hash_and_empty_fill_tail() {
+        let mut out = sample_outcome(
+            TradeRequestType::HyperliquidCancelUMOrder,
+            Exchange::Hyperliquid,
+        );
+        assert!(encode_trade_response(&out, 0, None).is_err());
+
+        out.executed_qty = 1.0;
+        assert!(encode_trade_response(&out, 0, Some([1; 32])).is_err());
+    }
+
+    #[test]
+    fn non_hyperliquid_trade_response_keeps_lifecycle_tail() {
+        let mut out = sample_outcome(TradeRequestType::BinanceWsNewUMOrder, Exchange::Binance);
+        out.order_update_time = 123;
+        out.executed_qty = 2.5;
+        out.response_price = 101.25;
+
+        let payload = encode_trade_response(&out, 0, None).unwrap();
+
+        assert_eq!(i64::from_le_bytes(payload[31..39].try_into().unwrap()), 123);
+        assert_eq!(f64::from_le_bytes(payload[39..47].try_into().unwrap()), 2.5);
+        assert_eq!(
+            f64::from_le_bytes(payload[47..55].try_into().unwrap()),
+            101.25
+        );
+    }
 }
 
 pub fn publish_trade_response(
@@ -552,22 +656,28 @@ pub fn publish_trade_response(
         }
     }
 
+    let hyperliquid_account_hash = if out.exchange == Exchange::Hyperliquid {
+        match hyperliquid_trade_response_account_hash() {
+            Ok(hash) => Some(hash),
+            Err(err) => {
+                warn!("drop Hyperliquid trade response without account/network identity: {err:#}");
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let buf = match encode_trade_response(&out, error_code, hyperliquid_account_hash) {
+        Ok(buf) => buf,
+        Err(err) => {
+            warn!(
+                "drop invalid trade response ex={:?} type={:?} cli_ord_id={}: {}",
+                out.exchange, out.req_type, out.client_order_id, err
+            );
+            return;
+        }
+    };
     let req_type = out.req_type as u32;
-    let exchange = out.exchange as u32;
-    let mut buf = [0u8; 64];
-    buf[0..4].copy_from_slice(&req_type.to_le_bytes());
-    buf[4..12].copy_from_slice(&out.client_order_id.to_le_bytes());
-    buf[12..16].copy_from_slice(&exchange.to_le_bytes());
-    buf[16..18].copy_from_slice(&out.status.to_le_bytes());
-    buf[18..22].copy_from_slice(&error_code.to_le_bytes());
-    let h = 22;
-    if buf.len() >= h + 33 {
-        buf[h..h + 8].copy_from_slice(&out.order_id.to_le_bytes());
-        buf[h + 8] = out.order_status_u8;
-        buf[h + 9..h + 17].copy_from_slice(&out.order_update_time.to_le_bytes());
-        buf[h + 17..h + 25].copy_from_slice(&out.executed_qty.to_le_bytes());
-        buf[h + 25..h + 33].copy_from_slice(&out.response_price.to_le_bytes());
-    }
     debug!(
         "publish trade resp header: type={}, status={}, code={}",
         req_type, out.status, error_code

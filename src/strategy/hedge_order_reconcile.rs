@@ -3,7 +3,8 @@ use crate::pre_trade::QueryEngHub;
 use crate::strategy::manager::Strategy;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{
-    order_query_watchdog_delay_us, PendingOrderQueryReason, ORDER_QUERY_WATCHDOG_DELAY_US,
+    hyperliquid_ambiguous_query_reason, order_query_watchdog_delay_us, PendingOrderQueryReason,
+    ORDER_QUERY_WATCHDOG_DELAY_US,
 };
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
 use log::{debug, warn};
@@ -126,6 +127,28 @@ pub trait HedgeOrderReconcileCommon: Strategy {
         let code_desc = exchange
             .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
             .unwrap_or("unknown");
+
+        if let Some(reason) =
+            hyperliquid_ambiguous_query_reason(response, PendingOrderQueryReason::CancelFailed)
+        {
+            warn!(
+                "{}: strategy_id={} Hyperliquid action ambiguous: req_type={} client_order_id={} query_reason={:?} {}",
+                self.hedge_reconcile_strategy_name(),
+                self.hedge_reconcile_strategy_id(),
+                response.req_type(),
+                client_order_id,
+                reason,
+                self.hedge_order_trace_snapshot(client_order_id)
+            );
+            self.clear_order_query_state(client_order_id);
+            if !self.send_order_query(client_order_id, reason) {
+                self.handoff_hedge_order_after_query_failure(
+                    client_order_id,
+                    reason.query_send_failed_trigger(),
+                );
+            }
+            return;
+        }
 
         match response.request_kind() {
             TradeRequestKind::Open => {

@@ -3,6 +3,7 @@ pub mod bbo;
 pub mod cancel_signal;
 pub mod common;
 pub mod hedge_signal;
+pub mod hyperliquid;
 pub mod lazy_taker_action;
 pub mod min_qty_table;
 pub mod mm_signal;

@@ -4,7 +4,9 @@ use log::{info, warn};
 use order_common::OrderUpdate;
 use order_common::TradeEngineResponse;
 use order_common::TradeRequestType;
-use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{
+    hyperliquid_time_in_force, ExecutionType, OrderStatus, TimeInForce, TradingVenue,
+};
 use order_common::{Order, OrderExecutionStatus, OrderType, Side};
 use runtime_common::time_util::get_timestamp_us;
 
@@ -46,7 +48,11 @@ impl WsOrderUpdate {
                 | TradeRequestType::BitgetCancelMarginOrder
                 | TradeRequestType::BitgetCancelUMOrder
                 | TradeRequestType::BitgetCancelSpotOrder
-                | TradeRequestType::BitgetCancelCoinFuturesOrder)
+                | TradeRequestType::BitgetCancelCoinFuturesOrder
+                | TradeRequestType::HyperliquidNewMarginOrder
+                | TradeRequestType::HyperliquidNewUMOrder
+                | TradeRequestType::HyperliquidCancelMarginOrder
+                | TradeRequestType::HyperliquidCancelUMOrder)
         )
     }
 
@@ -83,6 +89,9 @@ impl WsOrderUpdate {
     }
 
     pub fn infer_time_in_force(venue: TradingVenue, order_type: OrderType) -> TimeInForce {
+        if let Some(time_in_force) = hyperliquid_time_in_force(venue, order_type) {
+            return time_in_force;
+        }
         if !order_type.is_limit() {
             return TimeInForce::GTC;
         }
@@ -332,5 +341,22 @@ mod tests {
         assert!(WsOrderUpdate::supports_trade_response_req_type(
             TradeRequestType::BinanceWsCancelMarginOrder as u32
         ));
+    }
+
+    #[test]
+    fn hyperliquid_time_in_force_matches_submitted_order_intent() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                WsOrderUpdate::infer_time_in_force(venue, OrderType::Limit),
+                TimeInForce::GTX
+            );
+            assert_eq!(
+                WsOrderUpdate::infer_time_in_force(venue, OrderType::Market),
+                TimeInForce::IOC
+            );
+        }
     }
 }

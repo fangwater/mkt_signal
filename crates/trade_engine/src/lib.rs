@@ -14,6 +14,7 @@ pub mod exec_backend;
 pub mod gate_precheck;
 pub mod gate_query;
 pub mod gate_ws;
+pub mod hyperliquid_ws;
 pub mod internal_terminate;
 pub mod ltp_rest;
 pub mod ltp_ws;

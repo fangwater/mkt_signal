@@ -5,7 +5,9 @@ use log::{debug, info};
 use reqwest::Client;
 use serde::Deserialize;
 
+use crate::hyperliquid::HyperliquidEndpoints;
 use runtime_common::exchange::Exchange;
+use runtime_common::symbol_util::HyperliquidSpotBaseResolver;
 
 // ============================================================================
 // Core Data Structures
@@ -1481,6 +1483,360 @@ fn precision_field_to_step(value: Option<&str>) -> Option<f64> {
 }
 
 // ============================================================================
+// Hyperliquid Provider
+// ============================================================================
+
+const HYPERLIQUID_QUOTE: &str = "USDC";
+const HYPERLIQUID_PERP_MAX_DECIMALS: u32 = 6;
+const HYPERLIQUID_SPOT_MAX_DECIMALS: u32 = 8;
+
+pub struct HyperliquidProvider;
+
+impl HyperliquidProvider {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub async fn fetch_filters(
+        &self,
+        client: &Client,
+        market_type: MarketType,
+    ) -> Result<HashMap<String, MinQtyEntry>> {
+        match market_type {
+            MarketType::Futures => {
+                let body = fetch_hyperliquid_metadata(client, "meta").await?;
+                self.parse_perp_response(&body)
+            }
+            MarketType::Spot | MarketType::Margin => {
+                let body = fetch_hyperliquid_metadata(client, "spotMeta").await?;
+                self.parse_spot_response(&body)
+            }
+            MarketType::CoinFutures => Err(anyhow!(
+                "Hyperliquid does not support coin-margined futures metadata"
+            )),
+        }
+    }
+
+    fn parse_perp_response(&self, body: &str) -> Result<HashMap<String, MinQtyEntry>> {
+        let metadata: HyperliquidPerpMeta =
+            serde_json::from_str(body).context("failed to parse Hyperliquid perp metadata")?;
+        let mut entries = HashMap::with_capacity(metadata.universe.len());
+        for asset in metadata.universe {
+            if asset.is_delisted {
+                continue;
+            }
+            let base = normalized_hyperliquid_asset(&asset.name, true)?;
+            let symbol = format!("{base}{HYPERLIQUID_QUOTE}");
+            let size_step = decimal_step(asset.sz_decimals, "perp szDecimals", &asset.name)?;
+            let price_quantum = hyperliquid_price_quantum(
+                HYPERLIQUID_PERP_MAX_DECIMALS,
+                asset.sz_decimals,
+                &asset.name,
+            )?;
+            insert_hyperliquid_entry(
+                &mut entries,
+                MinQtyEntry {
+                    symbol,
+                    base_asset: base,
+                    quote_asset: HYPERLIQUID_QUOTE.to_string(),
+                    min_qty: size_step,
+                    step_size: size_step,
+                    // Hyperliquid also enforces five significant figures. This
+                    // is the finest valid price quantum, used only as a stable
+                    // local book/queue-position index.
+                    price_tick: Some(price_quantum),
+                    min_notional: Some(10.0),
+                },
+            )?;
+        }
+        Ok(entries)
+    }
+
+    fn parse_spot_response(&self, body: &str) -> Result<HashMap<String, MinQtyEntry>> {
+        let metadata: HyperliquidSpotMeta =
+            serde_json::from_str(body).context("failed to parse Hyperliquid spot metadata")?;
+        let mut tokens = HashMap::with_capacity(metadata.tokens.len());
+        for token in metadata.tokens {
+            if tokens.insert(token.index, token).is_some() {
+                return Err(anyhow!("duplicate Hyperliquid spot token index"));
+            }
+        }
+        let base_resolver =
+            HyperliquidSpotBaseResolver::new(tokens.values().map(|token| token.name.as_str()));
+
+        let mut entries = HashMap::with_capacity(metadata.universe.len());
+        for market in metadata.universe {
+            let base_token = tokens.get(&market.tokens[0]).ok_or_else(|| {
+                anyhow!(
+                    "Hyperliquid spot market {} references missing base token index {}",
+                    market.name,
+                    market.tokens[0]
+                )
+            })?;
+            let quote_token = tokens.get(&market.tokens[1]).ok_or_else(|| {
+                anyhow!(
+                    "Hyperliquid spot market {} references missing quote token index {}",
+                    market.name,
+                    market.tokens[1]
+                )
+            })?;
+            if !quote_token.name.eq_ignore_ascii_case(HYPERLIQUID_QUOTE) {
+                continue;
+            }
+
+            let raw_base = normalized_hyperliquid_asset(&base_token.name, false)?;
+            let base = base_resolver.canonical_base(&raw_base);
+            let symbol = format!("{base}{HYPERLIQUID_QUOTE}");
+            let size_step = decimal_step(base_token.sz_decimals, "spot szDecimals", &market.name)?;
+            let price_quantum = hyperliquid_price_quantum(
+                HYPERLIQUID_SPOT_MAX_DECIMALS,
+                base_token.sz_decimals,
+                &market.name,
+            )?;
+            insert_hyperliquid_entry(
+                &mut entries,
+                MinQtyEntry {
+                    symbol,
+                    base_asset: base,
+                    quote_asset: HYPERLIQUID_QUOTE.to_string(),
+                    min_qty: size_step,
+                    step_size: size_step,
+                    price_tick: Some(price_quantum),
+                    min_notional: Some(10.0),
+                },
+            )?;
+        }
+        Ok(entries)
+    }
+}
+
+impl Default for HyperliquidProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExchangeInfoProvider for HyperliquidProvider {
+    fn exchange(&self) -> Exchange {
+        Exchange::Hyperliquid
+    }
+
+    fn supported_market_types(&self) -> Vec<MarketType> {
+        vec![MarketType::Spot, MarketType::Futures, MarketType::Margin]
+    }
+
+    fn margin_reuses_spot(&self) -> bool {
+        true
+    }
+}
+
+async fn fetch_hyperliquid_metadata(client: &Client, info_type: &str) -> Result<String> {
+    let endpoints = HyperliquidEndpoints::from_env()?;
+    let response = client
+        .post(&endpoints.info_url)
+        .json(&serde_json::json!({"type": info_type}))
+        .send()
+        .await
+        .with_context(|| format!("request Hyperliquid {info_type} metadata"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .with_context(|| format!("read Hyperliquid {info_type} metadata response"))?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "Hyperliquid {} metadata request failed: {} - {}",
+            info_type,
+            status,
+            body
+        ));
+    }
+    if body.trim().is_empty() {
+        return Err(anyhow!(
+            "Hyperliquid {} metadata returned an empty body",
+            info_type
+        ));
+    }
+    Ok(body)
+}
+
+fn normalized_hyperliquid_asset(raw: &str, allow_colon: bool) -> Result<String> {
+    if raw.trim() != raw || raw.is_empty() {
+        return Err(anyhow!("invalid Hyperliquid asset name {:?}", raw));
+    }
+    let normalized = raw.to_ascii_uppercase();
+    if !normalized
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || (allow_colon && byte == b':'))
+    {
+        return Err(anyhow!("invalid Hyperliquid asset name {:?}", raw));
+    }
+    Ok(normalized)
+}
+
+fn decimal_step(decimals: u32, field: &str, symbol: &str) -> Result<f64> {
+    let decimals = i32::try_from(decimals)
+        .with_context(|| format!("Hyperliquid {field} is too large for {symbol}"))?;
+    Ok(10_f64.powi(-decimals))
+}
+
+fn hyperliquid_price_quantum(max_decimals: u32, sz_decimals: u32, symbol: &str) -> Result<f64> {
+    let price_decimals = max_decimals.checked_sub(sz_decimals).ok_or_else(|| {
+        anyhow!(
+            "Hyperliquid szDecimals={} exceeds max decimals={} for {}",
+            sz_decimals,
+            max_decimals,
+            symbol
+        )
+    })?;
+    decimal_step(price_decimals, "price decimals", symbol)
+}
+
+fn insert_hyperliquid_entry(
+    entries: &mut HashMap<String, MinQtyEntry>,
+    entry: MinQtyEntry,
+) -> Result<()> {
+    if entries.insert(entry.symbol.clone(), entry).is_some() {
+        return Err(anyhow!("duplicate Hyperliquid internal symbol"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct HyperliquidPerpMeta {
+    universe: Vec<HyperliquidPerpAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HyperliquidPerpAsset {
+    name: String,
+    sz_decimals: u32,
+    #[serde(default)]
+    is_delisted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct HyperliquidSpotMeta {
+    tokens: Vec<HyperliquidSpotToken>,
+    universe: Vec<HyperliquidSpotMarket>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HyperliquidSpotToken {
+    name: String,
+    index: u32,
+    sz_decimals: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct HyperliquidSpotMarket {
+    name: String,
+    tokens: [u32; 2],
+}
+
+#[cfg(test)]
+mod hyperliquid_provider_tests {
+    use super::*;
+
+    #[test]
+    fn perp_metadata_builds_size_step_and_price_quantum() {
+        let body = serde_json::json!({
+            "universe": [
+                {"name": "HYPE", "szDecimals": 2},
+                {"name": "OLD", "szDecimals": 3, "isDelisted": true}
+            ]
+        })
+        .to_string();
+        let entries = HyperliquidProvider::new()
+            .parse_perp_response(&body)
+            .unwrap();
+
+        let hype = entries.get("HYPEUSDC").unwrap();
+        assert!((hype.min_qty - 0.01).abs() < 1e-12);
+        assert!((hype.step_size - 0.01).abs() < 1e-12);
+        assert!((hype.price_tick.unwrap() - 0.0001).abs() < 1e-12);
+        assert_eq!(hype.min_notional, Some(10.0));
+        assert!(!entries.contains_key("OLDUSDC"));
+    }
+
+    #[test]
+    fn spot_metadata_uses_explicit_sparse_token_indices() {
+        let body = serde_json::json!({
+            "tokens": [
+                {"name": "USDC", "index": 0, "szDecimals": 8},
+                {"name": "HYPE", "index": 150, "szDecimals": 2},
+                {"name": "USDH", "index": 359, "szDecimals": 8}
+            ],
+            "universe": [
+                {"name": "@107", "index": 107, "tokens": [150, 0]},
+                {"name": "@207", "index": 207, "tokens": [150, 359]}
+            ]
+        })
+        .to_string();
+        let entries = HyperliquidProvider::new()
+            .parse_spot_response(&body)
+            .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        let hype = entries.get("HYPEUSDC").unwrap();
+        assert!((hype.min_qty - 0.01).abs() < 1e-12);
+        assert!((hype.price_tick.unwrap() - 0.000001).abs() < 1e-12);
+        assert_eq!(hype.min_notional, Some(10.0));
+        assert_eq!(hype.base_asset, "HYPE");
+        assert_eq!(hype.quote_asset, "USDC");
+    }
+
+    #[test]
+    fn spot_metadata_uses_explicit_unit_aliases_without_collapsing_conflicts() {
+        let body = serde_json::json!({
+            "tokens": [
+                {"name": "USDC", "index": 0, "szDecimals": 8},
+                {"name": "UBTC", "index": 197, "szDecimals": 5},
+                {"name": "UETH", "index": 221, "szDecimals": 4},
+                {"name": "USOL", "index": 254, "szDecimals": 2},
+                {"name": "UPUMP", "index": 299, "szDecimals": 1}
+            ],
+            "universe": [
+                {"name": "@142", "index": 142, "tokens": [197, 0]},
+                {"name": "@166", "index": 166, "tokens": [221, 0]},
+                {"name": "@199", "index": 199, "tokens": [254, 0]},
+                {"name": "@244", "index": 244, "tokens": [299, 0]}
+            ]
+        })
+        .to_string();
+        let entries = HyperliquidProvider::new()
+            .parse_spot_response(&body)
+            .unwrap();
+
+        assert!(entries.contains_key("BTCUSDC"));
+        assert!(entries.contains_key("ETHUSDC"));
+        assert!(entries.contains_key("SOLUSDC"));
+        assert!(entries.contains_key("UPUMPUSDC"));
+        assert!(!entries.contains_key("UBTCUSDC"));
+
+        let collision = serde_json::json!({
+            "tokens": [
+                {"name": "USDC", "index": 0, "szDecimals": 8},
+                {"name": "BTC", "index": 1, "szDecimals": 5},
+                {"name": "UBTC", "index": 197, "szDecimals": 5}
+            ],
+            "universe": [
+                {"name": "@1", "index": 1, "tokens": [1, 0]},
+                {"name": "@142", "index": 142, "tokens": [197, 0]}
+            ]
+        })
+        .to_string();
+        let entries = HyperliquidProvider::new()
+            .parse_spot_response(&collision)
+            .unwrap();
+        assert!(entries.contains_key("BTCUSDC"));
+        assert!(entries.contains_key("UBTCUSDC"));
+    }
+}
+
+// ============================================================================
 // MinQtyTable - Single Exchange Instance
 // ============================================================================
 
@@ -1517,9 +1873,8 @@ impl MinQtyTable {
             Exchange::Bitget => self.refresh_bitget().await,
             Exchange::Okex => self.refresh_okex().await,
             Exchange::Bybit => self.refresh_bybit().await,
-            Exchange::Hyperliquid | Exchange::Aster => {
-                Err(anyhow!("exchange {} not supported yet", self.exchange))
-            }
+            Exchange::Hyperliquid => self.refresh_hyperliquid().await,
+            Exchange::Aster => Err(anyhow!("exchange {} not supported yet", self.exchange)),
         }
     }
 
@@ -1636,6 +1991,27 @@ impl MinQtyTable {
             if !multipliers.is_empty() {
                 self.contract_multipliers.extend(multipliers);
             }
+        }
+        Ok(())
+    }
+
+    async fn refresh_hyperliquid(&mut self) -> Result<()> {
+        let provider = HyperliquidProvider::new();
+        for market_type in provider.supported_market_types() {
+            if market_type == MarketType::Margin {
+                if let Some(spot_data) = self.filters.get(&MarketType::Spot).cloned() {
+                    self.filters.insert(MarketType::Margin, spot_data);
+                    continue;
+                }
+            }
+            let data = provider.fetch_filters(&self.client, market_type).await?;
+            info!(
+                "刷新交易对过滤器: exchange={} market_type={:?} count={}",
+                self.exchange,
+                market_type,
+                data.len()
+            );
+            self.filters.insert(market_type, data);
         }
         Ok(())
     }

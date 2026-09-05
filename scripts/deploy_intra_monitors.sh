@@ -71,6 +71,7 @@ case "$EXCHANGE" in
   gate)    BIN_NAME="gate_account_monitor"    ;;
   bybit)   BIN_NAME="bybit_account_monitor"   ;;
   bitget)  BIN_NAME="bitget_account_monitor"  ;;
+  hyperliquid) BIN_NAME="hyperliquid_account_monitor" ;;
   *)
     echo "[ERROR] 未支持的 exchange: $EXCHANGE"; exit 1 ;;
 esac

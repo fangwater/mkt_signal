@@ -9,6 +9,7 @@ use iceoryx2::service::ipc;
 use indexmap::IndexSet;
 use log::{debug, info, warn};
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -36,9 +37,207 @@ const MAX_QUERY_ACCEPTS_PER_POLL: usize = 8;
 const MAX_QUERY_REQUESTS_PER_POLL: usize = 64;
 const STATS_INTERVAL_SECS: u64 = 60;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HyperliquidSnapshotKey {
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+}
+
+#[derive(Debug)]
+struct HyperliquidSnapshotChunk {
+    is_last: bool,
+    bids: Vec<(f64, f64)>,
+    asks: Vec<(f64, f64)>,
+}
+
+fn hyperliquid_levels_equal(left: &[(f64, f64)], right: &[(f64, f64)]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.0.to_bits() == right.0.to_bits() && left.1.to_bits() == right.1.to_bits()
+        })
+}
+
+impl HyperliquidSnapshotChunk {
+    fn exactly_matches(&self, other: &Self) -> bool {
+        self.is_last == other.is_last
+            && hyperliquid_levels_equal(&self.bids, &other.bids)
+            && hyperliquid_levels_equal(&self.asks, &other.asks)
+    }
+}
+
+#[derive(Debug)]
+struct PendingHyperliquidSnapshot {
+    key: HyperliquidSnapshotKey,
+    chunks: BTreeMap<u8, HyperliquidSnapshotChunk>,
+    last_chunk_index: Option<u8>,
+}
+
+impl PendingHyperliquidSnapshot {
+    fn new(key: HyperliquidSnapshotKey) -> Self {
+        Self {
+            key,
+            chunks: BTreeMap::new(),
+            last_chunk_index: None,
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        let Some(last_chunk_index) = self.last_chunk_index else {
+            return false;
+        };
+        self.chunks.len() == usize::from(last_chunk_index) + 1
+            && (0..=last_chunk_index).all(|index| self.chunks.contains_key(&index))
+    }
+
+    fn into_complete(self) -> CompleteHyperliquidSnapshot {
+        let total_bids = self.chunks.values().map(|chunk| chunk.bids.len()).sum();
+        let total_asks = self.chunks.values().map(|chunk| chunk.asks.len()).sum();
+        let mut bids = Vec::with_capacity(total_bids);
+        let mut asks = Vec::with_capacity(total_asks);
+        for (_, chunk) in self.chunks {
+            bids.extend(chunk.bids);
+            asks.extend(chunk.asks);
+        }
+        CompleteHyperliquidSnapshot {
+            key: self.key,
+            bids,
+            asks,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CompleteHyperliquidSnapshot {
+    key: HyperliquidSnapshotKey,
+    bids: Vec<(f64, f64)>,
+    asks: Vec<(f64, f64)>,
+}
+
+impl CompleteHyperliquidSnapshot {
+    fn exactly_matches(&self, other: &Self) -> bool {
+        self.key == other.key
+            && hyperliquid_levels_equal(&self.bids, &other.bids)
+            && hyperliquid_levels_equal(&self.asks, &other.asks)
+    }
+}
+
+#[derive(Debug, Default)]
+struct HyperliquidSnapshotAssembler {
+    pending: Option<PendingHyperliquidSnapshot>,
+    last_applied: Option<CompleteHyperliquidSnapshot>,
+    rejected_update_id: Option<i64>,
+}
+
+impl HyperliquidSnapshotAssembler {
+    fn reject_generation(&mut self, final_update_id: i64) {
+        self.pending = None;
+        self.rejected_update_id = Some(final_update_id);
+    }
+
+    fn add_chunk(
+        &mut self,
+        key: HyperliquidSnapshotKey,
+        chunk_index: u8,
+        is_last: bool,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> Option<CompleteHyperliquidSnapshot> {
+        if self.last_applied.as_ref().is_some_and(|last_applied| {
+            key.final_update_id < last_applied.key.final_update_id
+                || (key.final_update_id == last_applied.key.final_update_id
+                    && key != last_applied.key)
+        }) || self
+            .rejected_update_id
+            .is_some_and(|rejected| key.final_update_id <= rejected)
+        {
+            return None;
+        }
+
+        match self.pending.as_ref() {
+            Some(pending) if pending.key == key => {}
+            Some(pending) if key.final_update_id > pending.key.final_update_id => {
+                self.pending = Some(PendingHyperliquidSnapshot::new(key));
+                self.rejected_update_id = None;
+            }
+            Some(pending) if key.final_update_id == pending.key.final_update_id => {
+                self.reject_generation(key.final_update_id);
+                return None;
+            }
+            Some(_) => return None,
+            None => {
+                self.pending = Some(PendingHyperliquidSnapshot::new(key));
+                self.rejected_update_id = None;
+            }
+        }
+
+        let incoming = HyperliquidSnapshotChunk {
+            is_last,
+            bids,
+            asks,
+        };
+        let invalid_generation = {
+            let pending = self.pending.as_mut().expect("pending snapshot initialized");
+            if let Some(existing) = pending.chunks.get(&chunk_index) {
+                !existing.exactly_matches(&incoming)
+            } else {
+                let invalid_layout = if is_last {
+                    match pending.last_chunk_index {
+                        Some(existing) if existing != chunk_index => true,
+                        _ => pending.chunks.keys().any(|index| *index > chunk_index),
+                    }
+                } else {
+                    pending
+                        .last_chunk_index
+                        .is_some_and(|last_chunk_index| chunk_index >= last_chunk_index)
+                };
+                if !invalid_layout {
+                    if is_last {
+                        pending.last_chunk_index = Some(chunk_index);
+                    }
+                    pending.chunks.insert(chunk_index, incoming);
+                }
+                invalid_layout
+            }
+        };
+        if invalid_generation {
+            self.reject_generation(key.final_update_id);
+            return None;
+        }
+
+        let pending = self.pending.as_mut().expect("pending snapshot initialized");
+        if !pending.is_complete() {
+            return None;
+        }
+
+        let complete = self
+            .pending
+            .take()
+            .expect("complete pending snapshot must exist")
+            .into_complete();
+        if self
+            .last_applied
+            .as_ref()
+            .is_some_and(|last_applied| last_applied.exactly_matches(&complete))
+        {
+            return None;
+        }
+        self.last_applied = Some(complete.clone());
+        Some(complete)
+    }
+}
+
+fn uses_full_snapshot_replacement(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+    )
+}
+
 /// 每个 symbol 的状态
 struct SymbolState {
     orderbook: OrderBook,
+    hyperliquid_snapshots: HyperliquidSnapshotAssembler,
     last_push_time: Instant,
     query_snapshot_dirty: bool,
     /// 有序去重集合：保存最近处理过的 (update_id, chunk_index)
@@ -51,10 +250,44 @@ impl SymbolState {
     fn new() -> Self {
         Self {
             orderbook: OrderBook::new(),
+            hyperliquid_snapshots: HyperliquidSnapshotAssembler::default(),
             last_push_time: Instant::now(),
             query_snapshot_dirty: true,
             dedup_msg_keys: IndexSet::with_capacity(DEDUP_WINDOW_SIZE),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_hyperliquid_snapshot_chunk(
+        &mut self,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        chunk_index: u8,
+        is_last: bool,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> bool {
+        let key = HyperliquidSnapshotKey {
+            first_update_id,
+            final_update_id,
+            timestamp,
+        };
+        let Some(snapshot) =
+            self.hyperliquid_snapshots
+                .add_chunk(key, chunk_index, is_last, bids, asks)
+        else {
+            return false;
+        };
+
+        self.orderbook.replace_snapshot(
+            &snapshot.bids,
+            &snapshot.asks,
+            snapshot.key.final_update_id,
+            snapshot.key.timestamp,
+        );
+        self.query_snapshot_dirty = true;
+        true
     }
 
     /// 检查 (update_id, chunk_index) 是否重复
@@ -330,7 +563,7 @@ impl DepthPubApp {
 
         // 解析 update_id 和 timestamp
         let mut offset = 8 + symbol_len;
-        let _first_update_id = i64::from_le_bytes([
+        let first_update_id = i64::from_le_bytes([
             data[offset],
             data[offset + 1],
             data[offset + 2],
@@ -458,33 +691,54 @@ impl DepthPubApp {
             .entry(symbol.clone())
             .or_insert_with(SymbolState::new);
 
-        // 滑动窗口去重：检查 (update_id, chunk_index) 是否已处理过
-        if state.is_duplicate(final_update_id, chunk_index) {
-            debug!(
-                "Duplicate msg (update_id={}, chunk_index={}) for {}, skipping",
-                final_update_id, chunk_index, symbol
+        let should_push = if is_snapshot && uses_full_snapshot_replacement(self.venue) {
+            let committed = state.apply_hyperliquid_snapshot_chunk(
+                first_update_id,
+                final_update_id,
+                timestamp,
+                chunk_index,
+                is_last,
+                bids,
+                asks,
             );
-            return;
-        }
-
-        if is_snapshot {
-            state
-                .orderbook
-                .apply_snapshot(&bids, &asks, final_update_id, timestamp);
-            debug!(
-                "Snapshot applied for {}: {} bids, {} asks",
-                symbol, bids_count, asks_count
-            );
+            if committed {
+                debug!(
+                    "Complete Hyperliquid snapshot replaced for {}: update_id={} timestamp={}",
+                    symbol, final_update_id, timestamp
+                );
+                self.update_count += 1;
+            }
+            committed
         } else {
-            state
-                .orderbook
-                .apply_update(&bids, &asks, final_update_id, timestamp);
-        }
-        state.query_snapshot_dirty = true;
+            // 滑动窗口去重：检查 (update_id, chunk_index) 是否已处理过
+            if state.is_duplicate(final_update_id, chunk_index) {
+                debug!(
+                    "Duplicate msg (update_id={}, chunk_index={}) for {}, skipping",
+                    final_update_id, chunk_index, symbol
+                );
+                return;
+            }
 
-        self.update_count += 1;
+            if is_snapshot {
+                state
+                    .orderbook
+                    .apply_snapshot(&bids, &asks, final_update_id, timestamp);
+                debug!(
+                    "Snapshot applied for {}: {} bids, {} asks",
+                    symbol, bids_count, asks_count
+                );
+            } else {
+                state
+                    .orderbook
+                    .apply_update(&bids, &asks, final_update_id, timestamp);
+            }
+            state.query_snapshot_dirty = true;
 
-        if is_last {
+            self.update_count += 1;
+            is_last
+        };
+
+        if should_push {
             // 立即推送 (change-driven)
             self.push_depth(&symbol);
         }
@@ -542,6 +796,7 @@ impl DepthPubApp {
     fn push_depth(&mut self, symbol: &str) {
         let price_tick = self.lookup_price_tick(symbol);
         let amount_scale = self.depth_amount_scale(symbol);
+        let publishes_full_snapshots = uses_full_snapshot_replacement(self.venue);
         let mut snapshot_to_publish = None;
         let mut depth25_msg = None;
         let mut attempted_channels = 0u8;
@@ -554,23 +809,32 @@ impl DepthPubApp {
             };
 
             if !state.orderbook.is_valid() {
-                let pruned_levels = state.orderbook.prune_crossed_by_best_update_id();
-                if pruned_levels > 0 && state.orderbook.is_valid() {
+                let missing_side =
+                    state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty();
+                if publishes_full_snapshots && missing_side {
                     debug!(
+                        "Publishing one-sided/empty full snapshot: venue={} symbol={}",
+                        self.venue_slug, symbol
+                    );
+                } else {
+                    let pruned_levels = state.orderbook.prune_crossed_by_best_update_id();
+                    if pruned_levels > 0 && state.orderbook.is_valid() {
+                        debug!(
                         "Crossed-book pruned before publish: venue={} symbol={} strategy=best_level_update_id pruned_levels={}",
                         self.venue_slug, symbol, pruned_levels
                     );
-                } else {
-                    self.publish_fail_invalid_count =
-                        self.publish_fail_invalid_count.saturating_add(1);
-                    if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
-                        self.publish_fail_missing_side_count =
-                            self.publish_fail_missing_side_count.saturating_add(1);
                     } else {
-                        self.publish_fail_crossed_book_count =
-                            self.publish_fail_crossed_book_count.saturating_add(1);
+                        self.publish_fail_invalid_count =
+                            self.publish_fail_invalid_count.saturating_add(1);
+                        if state.orderbook.bids.is_empty() || state.orderbook.asks.is_empty() {
+                            self.publish_fail_missing_side_count =
+                                self.publish_fail_missing_side_count.saturating_add(1);
+                        } else {
+                            self.publish_fail_crossed_book_count =
+                                self.publish_fail_crossed_book_count.saturating_add(1);
+                        }
+                        should_return_early = true;
                     }
-                    should_return_early = true;
                 }
             }
 
@@ -717,4 +981,256 @@ fn scaled_depth_levels(
     scale_depth_amounts(&mut bids, amount_scale);
     scale_depth_amounts(&mut asks, amount_scale);
     (bids, asks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hyperliquid_chunks_commit_only_after_contiguous_out_of_order_snapshot() {
+        let mut state = SymbolState::new();
+        state
+            .orderbook
+            .apply_update(&[(90.0, 9.0)], &[(110.0, 11.0)], 900, 900_000);
+
+        assert!(!state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            1,
+            true,
+            vec![(99.0, 2.0)],
+            vec![(102.0, 4.0)],
+        ));
+        assert!(!state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            1,
+            true,
+            vec![(99.0, 2.0)],
+            vec![(102.0, 4.0)],
+        ));
+        assert_eq!(
+            state.orderbook.get_depth(5),
+            (vec![(90.0, 9.0)], vec![(110.0, 11.0)])
+        );
+
+        assert!(state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            0,
+            false,
+            vec![(100.0, 1.0)],
+            vec![(101.0, 3.0)],
+        ));
+        assert_eq!(
+            state.orderbook.get_depth(5),
+            (
+                vec![(100.0, 1.0), (99.0, 2.0)],
+                vec![(101.0, 3.0), (102.0, 4.0)]
+            )
+        );
+        assert_eq!(state.orderbook.amount_at_price(90.0), None);
+        assert_eq!(state.orderbook.amount_at_price(110.0), None);
+    }
+
+    #[test]
+    fn empty_hyperliquid_snapshot_clears_the_book() {
+        let mut state = SymbolState::new();
+        state
+            .orderbook
+            .apply_update(&[(100.0, 1.0)], &[(101.0, 1.0)], 1, 1_000);
+
+        assert!(state.apply_hyperliquid_snapshot_chunk(
+            2,
+            2,
+            2_000,
+            0,
+            true,
+            Vec::new(),
+            Vec::new(),
+        ));
+        assert_eq!(state.orderbook.get_depth(5), (Vec::new(), Vec::new()));
+        assert_eq!(state.orderbook.last_update_id, 2);
+        assert_eq!(state.orderbook.timestamp, 2_000);
+    }
+
+    #[test]
+    fn distinct_hyperliquid_snapshots_with_same_metadata_replace_the_book() {
+        let mut state = SymbolState::new();
+        assert!(state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            0,
+            true,
+            vec![(100.0, 1.0)],
+            vec![(101.0, 1.0)],
+        ));
+
+        state.query_snapshot_dirty = false;
+        assert!(state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            0,
+            true,
+            vec![(99.0, 2.0)],
+            vec![(102.0, 3.0)],
+        ));
+
+        assert_eq!(
+            state.orderbook.get_depth(5),
+            (vec![(99.0, 2.0)], vec![(102.0, 3.0)])
+        );
+        assert_eq!(state.orderbook.amount_at_price(100.0), None);
+        assert_eq!(state.orderbook.amount_at_price(101.0), None);
+        assert!(state.query_snapshot_dirty);
+    }
+
+    #[test]
+    fn exact_duplicate_hyperliquid_snapshot_is_not_a_change() {
+        let mut state = SymbolState::new();
+        assert!(state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            0,
+            true,
+            vec![(100.0, 1.0)],
+            vec![(101.0, 1.0)],
+        ));
+
+        state.query_snapshot_dirty = false;
+        assert!(!state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            0,
+            true,
+            vec![(100.0, 1.0)],
+            vec![(101.0, 1.0)],
+        ));
+
+        assert_eq!(
+            state.orderbook.get_depth(5),
+            (vec![(100.0, 1.0)], vec![(101.0, 1.0)])
+        );
+        assert!(!state.query_snapshot_dirty);
+    }
+
+    #[test]
+    fn newer_hyperliquid_snapshot_discards_older_pending_chunks() {
+        let mut state = SymbolState::new();
+        assert!(!state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            0,
+            false,
+            vec![(98.0, 1.0)],
+            vec![],
+        ));
+
+        assert!(!state.apply_hyperliquid_snapshot_chunk(
+            2_000,
+            2_000,
+            2_000_000,
+            1,
+            true,
+            vec![(99.0, 2.0)],
+            vec![(102.0, 2.0)],
+        ));
+        assert!(!state.apply_hyperliquid_snapshot_chunk(
+            1_000,
+            1_000,
+            1_000_000,
+            1,
+            true,
+            vec![(97.0, 3.0)],
+            vec![(103.0, 3.0)],
+        ));
+        assert!(state.apply_hyperliquid_snapshot_chunk(
+            2_000,
+            2_000,
+            2_000_000,
+            0,
+            false,
+            vec![(100.0, 1.0)],
+            vec![(101.0, 1.0)],
+        ));
+
+        assert_eq!(
+            state.orderbook.get_depth(5),
+            (
+                vec![(100.0, 1.0), (99.0, 2.0)],
+                vec![(101.0, 1.0), (102.0, 2.0)]
+            )
+        );
+        assert_eq!(state.orderbook.amount_at_price(98.0), None);
+        assert_eq!(state.orderbook.amount_at_price(97.0), None);
+    }
+
+    #[test]
+    fn conflicting_hyperliquid_chunk_rejects_generation_until_newer_sequence() {
+        let mut assembler = HyperliquidSnapshotAssembler::default();
+        let key = HyperliquidSnapshotKey {
+            first_update_id: 1_000,
+            final_update_id: 1_000,
+            timestamp: 1_000_000,
+        };
+        assert!(assembler
+            .add_chunk(key, 0, false, vec![(100.0, 1.0)], vec![])
+            .is_none());
+        assert!(assembler
+            .add_chunk(key, 0, false, vec![(100.0, 2.0)], vec![])
+            .is_none());
+        assert!(assembler
+            .add_chunk(key, 1, true, vec![(99.0, 1.0)], vec![(101.0, 1.0)])
+            .is_none());
+
+        let newer = HyperliquidSnapshotKey {
+            first_update_id: 1_001,
+            final_update_id: 1_001,
+            timestamp: 1_001_000,
+        };
+        let complete = assembler
+            .add_chunk(newer, 0, true, vec![(100.0, 3.0)], vec![(101.0, 4.0)])
+            .expect("strictly newer snapshot should recover rejected generation");
+        assert_eq!(complete.bids, vec![(100.0, 3.0)]);
+        assert_eq!(complete.asks, vec![(101.0, 4.0)]);
+    }
+
+    #[test]
+    fn applied_hyperliquid_sequence_rejects_equal_or_older_metadata_variants() {
+        let mut assembler = HyperliquidSnapshotAssembler::default();
+        let key = HyperliquidSnapshotKey {
+            first_update_id: 1_000,
+            final_update_id: 1_000,
+            timestamp: 1_000_000,
+        };
+        assert!(assembler
+            .add_chunk(key, 0, true, vec![(100.0, 1.0)], vec![(101.0, 1.0)])
+            .is_some());
+
+        for stale in [
+            HyperliquidSnapshotKey {
+                first_update_id: 999,
+                final_update_id: 999,
+                timestamp: 999_000,
+            },
+            HyperliquidSnapshotKey {
+                first_update_id: 1_001,
+                final_update_id: 1_000,
+                timestamp: 1_001_000,
+            },
+        ] {
+            assert!(assembler
+                .add_chunk(stale, 0, true, vec![(98.0, 1.0)], vec![(102.0, 1.0)])
+                .is_none());
+        }
+    }
 }

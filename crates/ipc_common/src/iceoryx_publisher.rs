@@ -629,3 +629,5 @@ pub type ResamplePublisher = GenericPublisher<RESAMPLE_PAYLOAD>;
 pub type TradeUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;
 pub type OrderUpdatePublisher = GenericPublisher<SIGNAL_PAYLOAD>;
 pub type UniformOrderPublisher = GenericPublisher<SIGNAL_PAYLOAD>;
+pub type HyperliquidAccountFactPublisher =
+    GenericPublisher<{ persist_common::HYPERLIQUID_ACCOUNT_FACT_MAX_BYTES }>;

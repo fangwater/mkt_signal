@@ -8,7 +8,7 @@ use runtime_common::fast_hash::{
 };
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
+use std::collections::{hash_map::Entry, BTreeMap};
 use std::time::{Duration, Instant};
 
 use depth_pub_common::query_msg::{price_to_tick_index, TLEN_QUERY_AMOUNT_EMPTY};
@@ -64,6 +64,191 @@ impl SymbolScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HyperliquidSnapshotGeneration {
+    first_update_id: i64,
+    final_update_id: i64,
+    timestamp: i64,
+}
+
+#[derive(Debug)]
+struct HyperliquidSnapshotChunk {
+    is_last: bool,
+    bids: Vec<(f64, f64)>,
+    asks: Vec<(f64, f64)>,
+}
+
+impl HyperliquidSnapshotChunk {
+    fn matches(&self, other: &Self) -> bool {
+        self.is_last == other.is_last && self.bids == other.bids && self.asks == other.asks
+    }
+}
+
+#[derive(Debug)]
+struct PendingHyperliquidSnapshot {
+    generation: HyperliquidSnapshotGeneration,
+    chunks: BTreeMap<u8, HyperliquidSnapshotChunk>,
+    last_chunk_index: Option<u8>,
+}
+
+impl PendingHyperliquidSnapshot {
+    fn new(generation: HyperliquidSnapshotGeneration) -> Self {
+        Self {
+            generation,
+            chunks: BTreeMap::new(),
+            last_chunk_index: None,
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        let Some(last_chunk_index) = self.last_chunk_index else {
+            return false;
+        };
+        self.chunks.len() == usize::from(last_chunk_index) + 1
+            && (0..=last_chunk_index).all(|index| self.chunks.contains_key(&index))
+    }
+
+    fn into_complete(self) -> CompleteHyperliquidSnapshot {
+        let total_bids = self.chunks.values().map(|chunk| chunk.bids.len()).sum();
+        let total_asks = self.chunks.values().map(|chunk| chunk.asks.len()).sum();
+        let mut bids = Vec::with_capacity(total_bids);
+        let mut asks = Vec::with_capacity(total_asks);
+        for (_, chunk) in self.chunks {
+            bids.extend(chunk.bids);
+            asks.extend(chunk.asks);
+        }
+        CompleteHyperliquidSnapshot {
+            final_update_id: self.generation.final_update_id,
+            bids,
+            asks,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CompleteHyperliquidSnapshot {
+    final_update_id: i64,
+    bids: Vec<(f64, f64)>,
+    asks: Vec<(f64, f64)>,
+}
+
+#[derive(Debug)]
+enum HyperliquidSnapshotAssembly {
+    Pending,
+    Complete(CompleteHyperliquidSnapshot),
+    Conflict,
+}
+
+#[derive(Debug, Default)]
+struct HyperliquidSnapshotAssembler {
+    pending: Option<PendingHyperliquidSnapshot>,
+    last_applied_final_update_id: Option<i64>,
+    rejected_through_final_update_id: Option<i64>,
+}
+
+impl HyperliquidSnapshotAssembler {
+    #[allow(clippy::too_many_arguments)]
+    fn add_chunk(
+        &mut self,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        chunk_index: u8,
+        is_last: bool,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) -> HyperliquidSnapshotAssembly {
+        if self
+            .last_applied_final_update_id
+            .is_some_and(|last_applied| final_update_id <= last_applied)
+            || self
+                .rejected_through_final_update_id
+                .is_some_and(|rejected_through| final_update_id <= rejected_through)
+        {
+            return HyperliquidSnapshotAssembly::Pending;
+        }
+
+        let generation = HyperliquidSnapshotGeneration {
+            first_update_id,
+            final_update_id,
+            timestamp,
+        };
+        match self.pending.as_ref() {
+            Some(pending) if final_update_id < pending.generation.final_update_id => {
+                return HyperliquidSnapshotAssembly::Pending;
+            }
+            Some(pending) if final_update_id > pending.generation.final_update_id => {
+                self.pending = Some(PendingHyperliquidSnapshot::new(generation));
+            }
+            Some(pending) if pending.generation != generation => {
+                return self.reject_generation(final_update_id);
+            }
+            Some(_) => {}
+            None => self.pending = Some(PendingHyperliquidSnapshot::new(generation)),
+        }
+
+        let incoming = HyperliquidSnapshotChunk {
+            is_last,
+            bids,
+            asks,
+        };
+        let pending = self
+            .pending
+            .as_ref()
+            .expect("Hyperliquid pending snapshot initialized");
+        if let Some(existing) = pending.chunks.get(&chunk_index) {
+            return if existing.matches(&incoming) {
+                HyperliquidSnapshotAssembly::Pending
+            } else {
+                self.reject_generation(final_update_id)
+            };
+        }
+
+        let invalid_layout = if is_last {
+            pending
+                .last_chunk_index
+                .is_some_and(|existing| existing != chunk_index)
+                || pending.chunks.keys().any(|index| *index > chunk_index)
+        } else {
+            pending
+                .last_chunk_index
+                .is_some_and(|last_chunk_index| chunk_index >= last_chunk_index)
+        };
+        if invalid_layout {
+            return self.reject_generation(final_update_id);
+        }
+
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("Hyperliquid pending snapshot initialized");
+        if is_last {
+            pending.last_chunk_index = Some(chunk_index);
+        }
+        pending.chunks.insert(chunk_index, incoming);
+        if !pending.is_complete() {
+            return HyperliquidSnapshotAssembly::Pending;
+        }
+
+        let complete = self
+            .pending
+            .take()
+            .expect("complete Hyperliquid snapshot must exist")
+            .into_complete();
+        self.last_applied_final_update_id = Some(complete.final_update_id);
+        HyperliquidSnapshotAssembly::Complete(complete)
+    }
+
+    fn reject_generation(&mut self, final_update_id: i64) -> HyperliquidSnapshotAssembly {
+        self.pending = None;
+        self.rejected_through_final_update_id = Some(
+            self.rejected_through_final_update_id
+                .map_or(final_update_id, |current| current.max(final_update_id)),
+        );
+        HyperliquidSnapshotAssembly::Conflict
+    }
+}
+
 #[derive(Debug, Default)]
 struct SymbolTlenCache {
     price_tick: Option<f64>,
@@ -71,6 +256,7 @@ struct SymbolTlenCache {
     bids: FastHashMap<i64, LevelEntry>,
     asks: FastHashMap<i64, LevelEntry>,
     bbo: BboEntry,
+    hyperliquid_snapshots: HyperliquidSnapshotAssembler,
 }
 
 #[derive(Debug)]
@@ -166,6 +352,7 @@ impl LocalTlenStore {
                     bids: fast_hash_map(),
                     asks: fast_hash_map(),
                     bbo: BboEntry::default(),
+                    hyperliquid_snapshots: HyperliquidSnapshotAssembler::default(),
                 },
             );
         }
@@ -252,6 +439,136 @@ impl LocalTlenStore {
                     );
                 }
             }
+        }
+        self.inc_updates = self.inc_updates.saturating_add(1);
+    }
+
+    fn apply_incremental_message(&mut self, update: IncrementalUpdate<'_>) {
+        let IncrementalUpdate {
+            symbol,
+            first_update_id,
+            final_update_id,
+            timestamp,
+            is_snapshot,
+            is_last,
+            chunk_index,
+            bids,
+            asks,
+        } = update;
+        let symbol = normalize_symbol_key_cow(symbol);
+        if is_snapshot
+            && matches!(
+                self.venue,
+                TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+            )
+        {
+            self.apply_hyperliquid_snapshot_chunk(
+                symbol.as_ref(),
+                first_update_id,
+                final_update_id,
+                timestamp,
+                chunk_index,
+                is_last,
+                bids,
+                asks,
+            );
+        } else {
+            self.apply_incremental(symbol.as_ref(), final_update_id, &bids, &asks);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_hyperliquid_snapshot_chunk(
+        &mut self,
+        symbol: &str,
+        first_update_id: i64,
+        final_update_id: i64,
+        timestamp: i64,
+        chunk_index: u8,
+        is_last: bool,
+        bids: Vec<(f64, f64)>,
+        asks: Vec<(f64, f64)>,
+    ) {
+        if !self.is_online(symbol) {
+            return;
+        }
+
+        let assembly = {
+            let cache = self.symbol_cache_mut(symbol);
+            if cache.price_tick.is_none() {
+                return;
+            }
+            cache.hyperliquid_snapshots.add_chunk(
+                first_update_id,
+                final_update_id,
+                timestamp,
+                chunk_index,
+                is_last,
+                bids,
+                asks,
+            )
+        };
+
+        match assembly {
+            HyperliquidSnapshotAssembly::Pending => {}
+            HyperliquidSnapshotAssembly::Conflict => warn!(
+                "local_tlen[{}] rejected conflicting Hyperliquid snapshot symbol={} update_id={}",
+                self.venue.data_pub_slug(),
+                symbol,
+                final_update_id,
+            ),
+            HyperliquidSnapshotAssembly::Complete(snapshot) => {
+                self.replace_hyperliquid_snapshot(symbol, snapshot);
+            }
+        }
+    }
+
+    fn replace_hyperliquid_snapshot(
+        &mut self,
+        symbol: &str,
+        snapshot: CompleteHyperliquidSnapshot,
+    ) {
+        let (bid_changes, ask_changes) = {
+            let cache = self.symbol_cache_mut(symbol);
+            let price_tick = cache
+                .price_tick
+                .expect("Hyperliquid snapshot assembly requires a price tick");
+            let new_bids = build_snapshot_side(
+                &snapshot.bids,
+                price_tick,
+                cache.amount_scale,
+                snapshot.final_update_id,
+            );
+            let new_asks = build_snapshot_side(
+                &snapshot.asks,
+                price_tick,
+                cache.amount_scale,
+                snapshot.final_update_id,
+            );
+            let bid_changes = snapshot_level_changes(&cache.bids, &new_bids);
+            let ask_changes = snapshot_level_changes(&cache.asks, &new_asks);
+            cache.bids = new_bids;
+            cache.asks = new_asks;
+            (bid_changes, ask_changes)
+        };
+
+        for (tick_index, old_qty, new_qty) in bid_changes {
+            super::queue_position::apply_level_update(
+                symbol,
+                BookSide::Bid,
+                tick_index,
+                old_qty,
+                new_qty,
+            );
+        }
+        for (tick_index, old_qty, new_qty) in ask_changes {
+            super::queue_position::apply_level_update(
+                symbol,
+                BookSide::Ask,
+                tick_index,
+                old_qty,
+                new_qty,
+            );
         }
         self.inc_updates = self.inc_updates.saturating_add(1);
     }
@@ -562,15 +879,9 @@ fn process_incremental_payload(payload: &[u8]) {
     let Some(update) = parse_incremental_payload(payload) else {
         return;
     };
-    let symbol = normalize_symbol_key_cow(update.symbol);
     LOCAL_TLEN.with(|state| {
         if let LocalTlenRuntime::Local(store) = &mut *state.borrow_mut() {
-            store.apply_incremental(
-                symbol.as_ref(),
-                update.final_update_id,
-                &update.bids,
-                &update.asks,
-            );
+            store.apply_incremental_message(update);
         }
     });
 }
@@ -587,7 +898,12 @@ fn local_tlen_housekeeping() {
 
 struct IncrementalUpdate<'a> {
     symbol: &'a str,
+    first_update_id: i64,
     final_update_id: i64,
+    timestamp: i64,
+    is_snapshot: bool,
+    is_last: bool,
+    chunk_index: u8,
     bids: Vec<(f64, f64)>,
     asks: Vec<(f64, f64)>,
 }
@@ -602,9 +918,12 @@ fn parse_incremental_payload(payload: &[u8]) -> Option<IncrementalUpdate<'_>> {
         return None;
     }
 
-    let _first_update_id = read_i64(payload, &mut offset)?;
+    let first_update_id = read_i64(payload, &mut offset)?;
     let final_update_id = read_i64(payload, &mut offset)?;
-    let _timestamp = read_i64(payload, &mut offset)?;
+    let timestamp = read_i64(payload, &mut offset)?;
+    let is_snapshot = *payload.get(offset)? != 0;
+    let is_last = *payload.get(offset.checked_add(1)?)? != 0;
+    let chunk_index = *payload.get(offset.checked_add(2)?)?;
     offset = offset.checked_add(8)?;
 
     let bids_count = read_u32(payload, &mut offset)? as usize;
@@ -629,7 +948,12 @@ fn parse_incremental_payload(payload: &[u8]) -> Option<IncrementalUpdate<'_>> {
 
     Some(IncrementalUpdate {
         symbol,
+        first_update_id,
         final_update_id,
+        timestamp,
+        is_snapshot,
+        is_last,
+        chunk_index,
         bids,
         asks,
     })
@@ -664,6 +988,59 @@ fn read_f64(payload: &[u8], offset: &mut usize) -> Option<f64> {
     let value = f64::from_le_bytes(payload.get(*offset..end)?.try_into().ok()?);
     *offset = end;
     Some(value)
+}
+
+fn build_snapshot_side(
+    levels: &[(f64, f64)],
+    price_tick: f64,
+    amount_scale: f64,
+    update_id: i64,
+) -> FastHashMap<i64, LevelEntry> {
+    let mut out = fast_hash_map();
+    for &(price, amount) in levels {
+        let Some(tick_index) = price_to_tick_index(price, price_tick) else {
+            continue;
+        };
+        let amount = amount * amount_scale;
+        if amount.is_finite() && amount > 0.0 {
+            out.insert(tick_index, LevelEntry { amount, update_id });
+        }
+    }
+    out
+}
+
+fn snapshot_level_changes(
+    old: &FastHashMap<i64, LevelEntry>,
+    new: &FastHashMap<i64, LevelEntry>,
+) -> Vec<(i64, f64, f64)> {
+    let mut changes = Vec::with_capacity(old.len() + new.len());
+    for (&tick_index, old_entry) in old {
+        let old_qty = positive_level_amount(old_entry.amount);
+        let new_qty = new
+            .get(&tick_index)
+            .map_or(0.0, |entry| positive_level_amount(entry.amount));
+        if old_qty != new_qty {
+            changes.push((tick_index, old_qty, new_qty));
+        }
+    }
+    for (&tick_index, new_entry) in new {
+        if old.contains_key(&tick_index) {
+            continue;
+        }
+        let new_qty = positive_level_amount(new_entry.amount);
+        if new_qty > 0.0 {
+            changes.push((tick_index, 0.0, new_qty));
+        }
+    }
+    changes
+}
+
+fn positive_level_amount(amount: f64) -> f64 {
+    if amount.is_finite() && amount > 0.0 {
+        amount
+    } else {
+        0.0
+    }
 }
 
 fn apply_level_update(
@@ -826,6 +1203,7 @@ fn amount_scale_for_symbol(table: &VenueMinQtyTable, venue: TradingVenue, symbol
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mkt_parsers::msg::mkt_msg::{IncMsg, Level};
     use std::sync::{Mutex, OnceLock};
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -848,6 +1226,20 @@ mod tests {
             query_bbo_hit_count: 0,
             last_stats_log: Instant::now(),
         }
+    }
+
+    fn test_store_with_symbol(venue: TradingVenue, symbol: &str) -> LocalTlenStore {
+        let mut store = test_store(venue);
+        store.symbol_scope = SymbolScope::All;
+        store.symbols.insert(
+            symbol.to_string(),
+            SymbolTlenCache {
+                price_tick: Some(1.0),
+                amount_scale: 1.0,
+                ..SymbolTlenCache::default()
+            },
+        );
+        store
     }
 
     #[test]
@@ -963,6 +1355,202 @@ mod tests {
     }
 
     #[test]
+    fn parses_incremental_snapshot_chunk_fields() {
+        let mut msg = IncMsg::create("HYPEUSDC".to_string(), 10, 11, 12_000, true, 1, 1);
+        msg.set_is_last(false);
+        msg.set_chunk_index(3);
+        msg.set_bid_level(0, Level::from_values(100.0, 2.0));
+        msg.set_ask_level(0, Level::from_values(101.0, 3.0));
+
+        let bytes = msg.to_bytes();
+        let parsed = parse_incremental_payload(&bytes).expect("incremental payload");
+        assert_eq!(parsed.symbol, "HYPEUSDC");
+        assert_eq!(parsed.first_update_id, 10);
+        assert_eq!(parsed.final_update_id, 11);
+        assert_eq!(parsed.timestamp, 12_000);
+        assert!(parsed.is_snapshot);
+        assert!(!parsed.is_last);
+        assert_eq!(parsed.chunk_index, 3);
+        assert_eq!(parsed.bids, vec![(100.0, 2.0)]);
+        assert_eq!(parsed.asks, vec![(101.0, 3.0)]);
+    }
+
+    #[test]
+    fn hyperliquid_snapshot_replaces_local_book_only_after_all_chunks() {
+        let mut store = test_store_with_symbol(TradingVenue::HyperliquidMargin, "HYPEUSDC");
+        store.apply_incremental("HYPEUSDC", 900, &[(90.0, 9.0)], &[(110.0, 11.0)]);
+
+        let terminal_chunk = || IncrementalUpdate {
+            symbol: "HYPEUSDC",
+            first_update_id: 1_000,
+            final_update_id: 1_000,
+            timestamp: 1_000_000,
+            is_snapshot: true,
+            is_last: true,
+            chunk_index: 1,
+            bids: vec![(99.0, 2.0)],
+            asks: vec![(102.0, 4.0)],
+        };
+        store.apply_incremental_message(terminal_chunk());
+        store.apply_incremental_message(terminal_chunk());
+        let cache = store.symbols.get("HYPEUSDC").unwrap();
+        assert_eq!(query_level_amount(&cache.bids, 90), Some(9.0));
+        assert_eq!(store.inc_updates, 1);
+
+        store.apply_incremental_message(IncrementalUpdate {
+            symbol: "HYPEUSDC",
+            first_update_id: 1_000,
+            final_update_id: 1_000,
+            timestamp: 1_000_000,
+            is_snapshot: true,
+            is_last: false,
+            chunk_index: 0,
+            bids: vec![(100.0, 1.0)],
+            asks: vec![(101.0, 3.0)],
+        });
+        let cache = store.symbols.get("HYPEUSDC").unwrap();
+        assert_eq!(query_level_amount(&cache.bids, 90), None);
+        assert_eq!(query_level_amount(&cache.asks, 110), None);
+        assert_eq!(query_level_amount(&cache.bids, 100), Some(1.0));
+        assert_eq!(query_level_amount(&cache.bids, 99), Some(2.0));
+        assert_eq!(query_level_amount(&cache.asks, 101), Some(3.0));
+        assert_eq!(query_level_amount(&cache.asks, 102), Some(4.0));
+        assert_eq!(store.inc_updates, 2);
+
+        store.apply_incremental_message(IncrementalUpdate {
+            symbol: "HYPEUSDC",
+            first_update_id: 1_001,
+            final_update_id: 1_001,
+            timestamp: 1_001_000,
+            is_snapshot: true,
+            is_last: true,
+            chunk_index: 0,
+            bids: Vec::new(),
+            asks: Vec::new(),
+        });
+        let cache = store.symbols.get("HYPEUSDC").unwrap();
+        assert!(cache.bids.is_empty());
+        assert!(cache.asks.is_empty());
+        assert_eq!(store.inc_updates, 3);
+    }
+
+    #[test]
+    fn hyperliquid_snapshot_conflict_is_rejected_until_newer_sequence() {
+        let mut assembler = HyperliquidSnapshotAssembler::default();
+        assert!(matches!(
+            assembler.add_chunk(10, 10, 10_000, 0, false, vec![(100.0, 1.0)], vec![]),
+            HyperliquidSnapshotAssembly::Pending
+        ));
+        assert!(matches!(
+            assembler.add_chunk(10, 10, 10_000, 0, false, vec![(100.0, 2.0)], vec![]),
+            HyperliquidSnapshotAssembly::Conflict
+        ));
+        assert!(matches!(
+            assembler.add_chunk(10, 10, 10_000, 0, true, vec![(100.0, 1.0)], vec![]),
+            HyperliquidSnapshotAssembly::Pending
+        ));
+        assert!(matches!(
+            assembler.add_chunk(
+                11,
+                11,
+                11_000,
+                0,
+                true,
+                vec![(100.0, 2.0)],
+                vec![(101.0, 2.0)]
+            ),
+            HyperliquidSnapshotAssembly::Complete(_)
+        ));
+        assert!(matches!(
+            assembler.add_chunk(11, 11, 11_000, 0, true, vec![], vec![]),
+            HyperliquidSnapshotAssembly::Pending
+        ));
+        assert!(matches!(
+            assembler.add_chunk(10, 10, 10_000, 0, true, vec![], vec![]),
+            HyperliquidSnapshotAssembly::Pending
+        ));
+    }
+
+    #[test]
+    fn non_hyperliquid_snapshot_chunks_keep_delta_semantics() {
+        let mut store = test_store_with_symbol(TradingVenue::BinanceFutures, "BTCUSDT");
+        store.apply_incremental("BTCUSDT", 10, &[(90.0, 1.0)], &[]);
+
+        store.apply_incremental_message(IncrementalUpdate {
+            symbol: "BTCUSDT",
+            first_update_id: 20,
+            final_update_id: 20,
+            timestamp: 20_000,
+            is_snapshot: true,
+            is_last: false,
+            chunk_index: 1,
+            bids: vec![(100.0, 2.0)],
+            asks: vec![(101.0, 3.0)],
+        });
+
+        let cache = store.symbols.get("BTCUSDT").unwrap();
+        assert_eq!(query_level_amount(&cache.bids, 90), Some(1.0));
+        assert_eq!(query_level_amount(&cache.bids, 100), Some(2.0));
+        assert_eq!(query_level_amount(&cache.asks, 101), Some(3.0));
+        assert_eq!(store.inc_updates, 2);
+    }
+
+    #[test]
+    fn snapshot_level_changes_include_removals_additions_and_quantity_changes() {
+        let mut old = fast_hash_map();
+        old.insert(
+            99,
+            LevelEntry {
+                amount: 1.0,
+                update_id: 10,
+            },
+        );
+        old.insert(
+            100,
+            LevelEntry {
+                amount: 2.0,
+                update_id: 10,
+            },
+        );
+        old.insert(
+            101,
+            LevelEntry {
+                amount: 3.0,
+                update_id: 10,
+            },
+        );
+        let mut new = fast_hash_map();
+        new.insert(
+            100,
+            LevelEntry {
+                amount: 2.0,
+                update_id: 20,
+            },
+        );
+        new.insert(
+            101,
+            LevelEntry {
+                amount: 4.0,
+                update_id: 20,
+            },
+        );
+        new.insert(
+            102,
+            LevelEntry {
+                amount: 5.0,
+                update_id: 20,
+            },
+        );
+
+        let mut changes = snapshot_level_changes(&old, &new);
+        changes.sort_by_key(|change| change.0);
+        assert_eq!(
+            changes,
+            vec![(99, 1.0, 0.0), (101, 3.0, 4.0), (102, 0.0, 5.0)]
+        );
+    }
+
+    #[test]
     fn cancel_query_skips_when_local_cache_missing() {
         LOCAL_TLEN.with(|state| {
             *state.borrow_mut() = LocalTlenRuntime::Local(test_store(TradingVenue::BinanceMargin));
@@ -1014,6 +1602,7 @@ mod tests {
                     bids,
                     asks: fast_hash_map(),
                     bbo: BboEntry::default(),
+                    hyperliquid_snapshots: HyperliquidSnapshotAssembler::default(),
                 },
             );
             *state.borrow_mut() = LocalTlenRuntime::Local(store);

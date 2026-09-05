@@ -1812,6 +1812,9 @@ fn log_parsed_event(msg: &Bytes) {
                 );
             }
         }
+        BasicAccountEventType::HyperliquidFill
+        | BasicAccountEventType::HyperliquidSnapshotComplete
+        | BasicAccountEventType::HyperliquidFactReplayControl => {}
         BasicAccountEventType::Error => {}
     }
 }
@@ -1872,6 +1875,9 @@ impl AccountEventDeduper {
             BasicAccountEventType::OrderUpdate => BinanceBasicOrderMsg::from_bytes(&payload)
                 .ok()
                 .map(|m| self.key_binance_basic_order(&m)),
+            BasicAccountEventType::HyperliquidFill
+            | BasicAccountEventType::HyperliquidSnapshotComplete
+            | BasicAccountEventType::HyperliquidFactReplayControl => return true,
             BasicAccountEventType::Error => return true,
         };
 

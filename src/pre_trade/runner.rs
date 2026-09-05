@@ -2,6 +2,7 @@ use crate::pre_trade::account_open_block::drive_account_open_block_capacity_poll
 use crate::pre_trade::auto_collection_service::AutoCollectionService;
 use crate::pre_trade::auto_repay_service::AutoRepayService;
 use crate::pre_trade::fr_position_concentration_guard::FrPositionConcentrationGuard;
+use crate::pre_trade::hyperliquid_account_hash_from_env;
 use crate::pre_trade::intra_bwd_symbol_list::IntraBwdSymbolList;
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::open_order_rate_limiter::OrderRateLimiter;
@@ -28,7 +29,7 @@ use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use trade_engine::query_request::{GenericQueryRequest, QueryRequestType};
+use trade_engine::query_request::{GenericQueryRequest, HyperliquidQueryParams, QueryRequestType};
 
 const PARAM_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const SNAPSHOT_QUERY_INTERVAL: Duration = Duration::from_secs(60);
@@ -36,6 +37,10 @@ const EXPOSURE_TABLE_PRINT_INTERVAL: Duration = Duration::from_secs(10);
 const NON_FAST_POLL_IDLE_SLEEP: Duration = Duration::from_millis(1);
 const ORDER_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const ORDER_POSITION_DRAIN_LIMIT: usize = 64;
+const HYPERLIQUID_PERIODIC_QUERIES: [(QueryRequestType, &str); 1] = [(
+    QueryRequestType::HyperliquidUserAbstraction,
+    "hyperliquid account abstraction mode",
+)];
 
 #[derive(Clone, Copy, Debug)]
 struct FastPollDispatchBudgets {
@@ -269,8 +274,11 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
         || matches!(hedge_venue, TradingVenue::BitgetFutures);
     let need_bitget_coin = matches!(open_venue, TradingVenue::BitgetCoinFutures)
         || matches!(hedge_venue, TradingVenue::BitgetCoinFutures);
+    let need_hyperliquid = open_venue.trade_engine_exchange() == "hyperliquid"
+        || hedge_venue.trade_engine_exchange() == "hyperliquid";
 
-    if !need_binance && !need_okex && !need_gate && !need_bybit && !need_bitget {
+    if !need_binance && !need_okex && !need_gate && !need_bybit && !need_bitget && !need_hyperliquid
+    {
         return false;
     }
 
@@ -415,6 +423,21 @@ pub fn publish_snapshot_queries(config: &SnapshotQueryConfig) -> bool {
                 Bytes::from_static(b"category=COIN-FUTURES"),
                 "bitget UTA COIN-FUTURES positions snapshot",
             );
+        }
+    }
+    if need_hyperliquid {
+        match hyperliquid_account_hash_from_env() {
+            Ok(account_hash) => {
+                let params =
+                    || HyperliquidQueryParams::create(account_hash, Bytes::new()).to_bytes();
+                // Account balances and positions have one writer: the authenticated private
+                // account stream. The periodic query only verifies that account abstraction
+                // mode has not drifted underneath the trading client.
+                for (request_type, description) in HYPERLIQUID_PERIODIC_QUERIES {
+                    publish("hyperliquid", request_type, params(), description);
+                }
+            }
+            Err(err) => warn!("skip Hyperliquid snapshot queries: {err}"),
         }
     }
     published
@@ -1132,7 +1155,7 @@ impl PreTrade {
 mod tests {
     use super::{
         drive_orphan_manager_period_clock_rc, drive_strategy_manager_period_clock_rc,
-        reactor_idle_spin_iters, SnapshotQueryConfig,
+        reactor_idle_spin_iters, SnapshotQueryConfig, HYPERLIQUID_PERIODIC_QUERIES,
     };
     use crate::strategy::orphan_order_strategy::OrphanOrderStrategy;
     use crate::strategy::{OrphanStrategyManager, Strategy, StrategyManager};
@@ -1143,6 +1166,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::{Mutex, OnceLock};
+    use trade_engine::query_request::QueryRequestType;
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1172,6 +1196,17 @@ mod tests {
             Some(BinanceAccountMode::Standard),
         );
         assert!(intra.include_binance_spot_snapshot);
+    }
+
+    #[test]
+    fn hyperliquid_periodic_query_only_validates_account_mode() {
+        assert_eq!(
+            HYPERLIQUID_PERIODIC_QUERIES
+                .iter()
+                .map(|(request_type, _)| *request_type)
+                .collect::<Vec<_>>(),
+            vec![QueryRequestType::HyperliquidUserAbstraction]
+        );
     }
 
     struct ReentrantTickStrategy {

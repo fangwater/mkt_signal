@@ -1,18 +1,25 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use iceoryx2::port::subscriber::Subscriber;
+use iceoryx2::prelude::*;
+use iceoryx2::service::ipc;
 use log::warn;
 use std::cell::OnceCell;
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use ipc_common::iceoryx_publisher::{
-    OrderUpdatePublisher, TradeUpdatePublisher, UniformOrderPublisher,
+    HyperliquidAccountFactPublisher, OrderUpdatePublisher, TradeUpdatePublisher,
+    UniformOrderPublisher,
 };
 use order_common::TradingVenue;
 use order_common::{OrderUpdate, TradeUpdate};
 use persist_common::{
-    SignalBbo, UnifiedOrderRecord, ORDER_UPDATE_RECORD_CHANNEL,
-    ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL, TRADE_UPDATE_RECORD_CHANNEL,
-    TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL, UNIFORM_ORDER_RECORD_CHANNEL,
+    HyperliquidAccountFactAck, SignalBbo, UnifiedOrderRecord, HYPERLIQUID_ACCOUNT_FACT_ACK_CHANNEL,
+    HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES, HYPERLIQUID_ACCOUNT_FACT_RECORD_CHANNEL,
+    ORDER_UPDATE_RECORD_CHANNEL, ORDER_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    TRADE_UPDATE_RECORD_CHANNEL, TRADE_UPDATE_UNMATCHED_RECORD_CHANNEL,
+    UNIFORM_ORDER_RECORD_CHANNEL,
 };
+use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 
@@ -27,6 +34,7 @@ thread_local! {
 /// - Order Update: `persist_manager::OrderUpdatePersistor` -> RocksDB (`order_update_record`)
 /// - Unmatched Trade Update: `persist_manager::TradeUpdateUnmatchedPersistor` -> RocksDB (`trade_updates_unmatched`)
 /// - Unmatched Order Update: `persist_manager::OrderUpdateUnmatchedPersistor` -> RocksDB (`order_updates_unmatched`)
+/// - Hyperliquid Account Fact: `persist_manager::HyperliquidAccountFactPersistor` -> RocksDB (`hyperliquid_account_facts`)
 ///
 /// 采用直接发布模式（无中间队列），优先保证低延迟
 ///
@@ -39,6 +47,9 @@ pub struct PersistChannel {
     trade_update_unmatched_pub: Option<TradeUpdatePublisher>,
     order_update_unmatched_pub: Option<OrderUpdatePublisher>,
     uniform_order_record_pub: Option<UniformOrderPublisher>,
+    hyperliquid_account_fact_record_pub: Option<HyperliquidAccountFactPublisher>,
+    hyperliquid_account_fact_ack_sub:
+        Option<Subscriber<ipc::Service, [u8; HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES], ()>>,
 }
 
 impl PersistChannel {
@@ -103,12 +114,26 @@ impl PersistChannel {
                 .map_err(|e| warn!("PersistChannel uniform_order_record_pub failed: {e:#}"))
                 .ok();
 
+        let hyperliquid_account_fact_record_pub = HyperliquidAccountFactPublisher::new_with_prefix(
+            "persist_pubs",
+            HYPERLIQUID_ACCOUNT_FACT_RECORD_CHANNEL,
+        )
+        .map_err(|e| warn!("PersistChannel hyperliquid account fact publisher failed: {e:#}"))
+        .ok();
+        let hyperliquid_account_fact_ack_sub = create_hyperliquid_account_fact_ack_subscriber()
+            .map_err(|e| {
+                warn!("PersistChannel hyperliquid account fact ACK subscriber failed: {e:#}")
+            })
+            .ok();
+
         Self {
             trade_update_record_pub,
             order_update_record_pub,
             trade_update_unmatched_pub,
             order_update_unmatched_pub,
             uniform_order_record_pub,
+            hyperliquid_account_fact_record_pub,
+            hyperliquid_account_fact_ack_sub,
         }
     }
 
@@ -216,6 +241,32 @@ impl PersistChannel {
             .map_err(|err| format!("{err:#}"))
     }
 
+    /// Send one retained Hyperliquid fact persistence request. The caller must
+    /// keep retrying the same bytes until `receive_hyperliquid_account_fact_ack`
+    /// returns a matching durable ACK.
+    pub fn try_publish_hyperliquid_account_fact(&self, payload: &[u8]) -> Result<(), String> {
+        let publisher = self
+            .hyperliquid_account_fact_record_pub
+            .as_ref()
+            .ok_or_else(|| "Hyperliquid account fact publisher is unavailable".to_string())?;
+        publisher.publish(payload).map_err(|err| format!("{err:#}"))
+    }
+
+    pub fn receive_hyperliquid_account_fact_ack(
+        &self,
+    ) -> Result<Option<HyperliquidAccountFactAck>, String> {
+        let subscriber = self
+            .hyperliquid_account_fact_ack_sub
+            .as_ref()
+            .ok_or_else(|| "Hyperliquid account fact ACK subscriber is unavailable".to_string())?;
+        let Some(sample) = subscriber.receive().map_err(|err| err.to_string())? else {
+            return Ok(None);
+        };
+        HyperliquidAccountFactAck::from_ipc_payload(sample.payload())
+            .map(Some)
+            .map_err(str::to_string)
+    }
+
     /// 检查交易更新记录发布器是否可用
     pub fn is_trade_update_publisher_available(&self) -> bool {
         self.trade_update_record_pub.is_some()
@@ -230,6 +281,25 @@ impl PersistChannel {
     pub fn is_uniform_order_publisher_available(&self) -> bool {
         self.uniform_order_record_pub.is_some()
     }
+}
+
+fn create_hyperliquid_account_fact_ack_subscriber(
+) -> anyhow::Result<Subscriber<ipc::Service, [u8; HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES], ()>> {
+    let node = NodeBuilder::new()
+        .name(&NodeName::new("pre_trade_hyperliquid_fact_ack")?)
+        .create::<ipc::Service>()?;
+    let service_name = build_service_name(&format!(
+        "persist_acks/{HYPERLIQUID_ACCOUNT_FACT_ACK_CHANNEL}"
+    ));
+    let service = node
+        .service_builder(&ServiceName::new(&service_name)?)
+        .publish_subscribe::<[u8; HYPERLIQUID_ACCOUNT_FACT_ACK_MAX_BYTES]>()
+        .max_publishers(1)
+        .max_subscribers(32)
+        .history_size(128)
+        .subscriber_max_buffer_size(256)
+        .open_or_create()?;
+    Ok(service.subscriber_builder().create()?)
 }
 
 // 不实现 Default trait，鼓励使用 PersistChannel::global() 单例模式

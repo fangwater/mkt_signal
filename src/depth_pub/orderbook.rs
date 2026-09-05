@@ -217,6 +217,29 @@ impl OrderBook {
         self.apply_update(bids, asks, update_id, timestamp);
     }
 
+    /// Replace the entire order book with one complete venue snapshot.
+    ///
+    /// This is intentionally separate from `apply_snapshot`, whose merge
+    /// semantics are required by venues that publish partial snapshots.
+    pub fn replace_snapshot(
+        &mut self,
+        bids: &[(f64, f64)],
+        asks: &[(f64, f64)],
+        update_id: i64,
+        timestamp: i64,
+    ) {
+        let mut replacement = Self::new();
+        for &(price, amount) in bids {
+            replacement.bids.update(price, amount, update_id);
+        }
+        for &(price, amount) in asks {
+            replacement.asks.update(price, amount, update_id);
+        }
+        replacement.last_update_id = update_id;
+        replacement.timestamp = timestamp;
+        *self = replacement;
+    }
+
     /// 获取最优 N 档
     pub fn get_depth(&self, n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
         let bids = self.bids.top_n(n, true);
@@ -390,6 +413,40 @@ mod tests {
         assert_eq!(top_asks.len(), 2);
         assert_eq!(top_bids[0].0, 100.0); // 最高买价
         assert_eq!(top_asks[0].0, 101.0); // 最低卖价
+    }
+
+    #[test]
+    fn replace_snapshot_clears_levels_missing_from_new_snapshot() {
+        let mut ob = OrderBook::new();
+        ob.apply_update(
+            &[(100.0, 1.0), (99.0, 2.0)],
+            &[(101.0, 1.5), (102.0, 2.5)],
+            10,
+            1_000,
+        );
+
+        ob.replace_snapshot(&[(98.0, 3.0)], &[(103.0, 4.0)], 20, 2_000);
+
+        assert_eq!(ob.get_depth(5), (vec![(98.0, 3.0)], vec![(103.0, 4.0)]));
+        assert_eq!(ob.amount_at_price(100.0), None);
+        assert_eq!(ob.amount_at_price(101.0), None);
+        assert_eq!(ob.last_update_id, 20);
+        assert_eq!(ob.timestamp, 2_000);
+    }
+
+    #[test]
+    fn apply_snapshot_keeps_existing_merge_semantics() {
+        let mut ob = OrderBook::new();
+        ob.apply_snapshot(&[(100.0, 1.0)], &[(101.0, 1.0)], 10, 1_000);
+        ob.apply_snapshot(&[(99.0, 2.0)], &[(102.0, 2.0)], 20, 2_000);
+
+        assert_eq!(
+            ob.get_depth(5),
+            (
+                vec![(100.0, 1.0), (99.0, 2.0)],
+                vec![(101.0, 1.0), (102.0, 2.0)]
+            )
+        );
     }
 
     #[test]

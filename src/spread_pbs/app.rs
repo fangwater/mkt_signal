@@ -1,7 +1,9 @@
 use anyhow::{bail, Context, Result};
-use runtime_common::fast_hash::{fast_hash_map_with_capacity, FastHashMap};
+use runtime_common::fast_hash::{
+    fast_hash_map_with_capacity, fast_hash_set_with_capacity, FastHashMap, FastHashSet,
+};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::rc::Rc;
 use tokio::sync::watch;
@@ -13,8 +15,8 @@ use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 
 use crate::spread_pbs::adapter::{
-    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, RawIncremental, RawIncrementalView,
-    TradeFrame, VenueAdapter,
+    create_adapter, BboDedupPolicy, BboFrame, IncrementalDedupPolicy, IncrementalFrame,
+    KeepaliveSpec, RawIncremental, RawIncrementalView, TradeDedupPolicy, TradeFrame, VenueAdapter,
 };
 use crate::spread_pbs::binance::{
     binance_futures_mm_ws_enabled, binance_futures_standard_ws_url,
@@ -31,15 +33,23 @@ use crate::spread_pbs::publisher::{
     PayloadLevel, SpreadDerivativesPublisher, SpreadIncrementalPublisher, SpreadPbsPublishRoots,
     SpreadPublisher, SpreadTradePublisher,
 };
-use crate::spread_pbs::ws::{run_public_ws, FrameHandler, RollingRestartSpec, WsLoopParams};
+use crate::spread_pbs::ws::{
+    run_public_ws, run_public_ws_with_ack_policy, FrameHandler, RollingRestartSpec, WsLoopParams,
+};
+
+mod hyperliquid_shards;
 
 const DEDUP_RESET_INTERVAL_US: i64 = 5 * 60 * 1_000_000;
+const BBO_IDENTITY_DEDUP_PER_SYMBOL: usize = 1_024;
+const TRADE_IDENTITY_DEDUP_PER_SYMBOL: usize = 1_024;
+const INCREMENTAL_IDENTITY_DEDUP_PER_SYMBOL: usize = 128;
 const DERIVATIVES_DEDUP_WINDOW_US: i64 = 30_000_000;
 const DERIVATIVES_DEDUP_PRUNE_EVERY: usize = 4_096;
 const WS_BUSINESS_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 const INCREMENTAL_HEALTH_STARTUP_GRACE: Duration = Duration::from_secs(30);
 const INCREMENTAL_CRITICAL_STALE: Duration = Duration::from_secs(15);
 const INCREMENTAL_STALE_LOG_INTERVAL: Duration = Duration::from_secs(30);
+const HYPERLIQUID_STALE_RESTART_COOLDOWN: Duration = Duration::from_secs(15);
 const HEALTH_WALL_CLOCK_JUMP_THRESHOLD: Duration = Duration::from_secs(1);
 const INCREMENTAL_CRITICAL_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const COIN_INCREMENTAL_CRITICAL_SYMBOLS: [&str; 2] = ["BTCUSD_PERP", "ETHUSD_PERP"];
@@ -136,11 +146,34 @@ fn is_bybit_venue(venue: TradingVenue) -> bool {
     )
 }
 
+fn is_hyperliquid_venue(venue: TradingVenue) -> bool {
+    matches!(
+        venue,
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+    )
+}
+
+fn critical_incremental_symbols_for_venue(
+    venue: TradingVenue,
+    current_symbols: &HashSet<String>,
+    static_symbols: &[String],
+) -> Vec<String> {
+    if !is_hyperliquid_venue(venue) {
+        return static_symbols.to_vec();
+    }
+    let mut symbols = current_symbols.iter().cloned().collect::<Vec<_>>();
+    symbols.sort_unstable();
+    symbols
+}
+
 fn role_stream_policy(
     venue: TradingVenue,
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
 ) -> (bool, bool) {
+    if is_hyperliquid_venue(venue) {
+        return (true, true);
+    }
     let market_only = (venue == TradingVenue::BinanceFutures
         && binance_futures_role == BinanceFuturesRole::Market)
         || (is_bybit_venue(venue) && bybit_role == BybitRole::Market);
@@ -168,6 +201,7 @@ fn direct_trade_replacement_enabled(venue: TradingVenue) -> bool {
         || is_bitget_venue(venue)
         || is_bybit_venue(venue)
         || is_binance_venue(venue)
+        || is_hyperliquid_venue(venue)
         || matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures)
 }
 
@@ -176,6 +210,7 @@ fn direct_incremental_replacement_enabled(venue: TradingVenue) -> bool {
         || is_bitget_venue(venue)
         || is_bybit_venue(venue)
         || is_binance_venue(venue)
+        || is_hyperliquid_venue(venue)
         || matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures)
 }
 
@@ -189,6 +224,7 @@ fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
             | TradingVenue::BitgetCoinFutures
             | TradingVenue::GateFutures
             | TradingVenue::BybitFutures
+            | TradingVenue::HyperliquidFutures
     )
 }
 
@@ -282,7 +318,9 @@ async fn get_symbols_for_role(
     config: &Config,
     binance_futures_role: BinanceFuturesRole,
 ) -> Result<Vec<String>> {
-    if uses_all_binance_futures_symbols(config.venue, binance_futures_role) {
+    if is_hyperliquid_venue(config.venue) {
+        crate::spread_pbs::hyperliquid::refresh_symbols(config.venue).await
+    } else if uses_all_binance_futures_symbols(config.venue, binance_futures_role) {
         Config::get_all_binance_futures_symbols().await
     } else {
         config.get_symbols().await
@@ -378,6 +416,8 @@ struct LegCtx {
     state: Rc<RefCell<SharedState>>,
     url: String,
     parse_okex_notices: bool,
+    hyperliquid_subscription_budget:
+        Option<crate::spread_pbs::hyperliquid::HyperliquidSubscriptionBudget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -461,13 +501,10 @@ impl SpreadPbsApp {
     ///
     /// 必须在 `LocalSet` 上下文里 await（`main` 用 `LocalSet::run_until`）。
     pub async fn run_with_shutdown(self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
+        // Capture this before metadata and IPC initialization so Hyperliquid's
+        // subscription backfill can cover all trades that occur during startup.
+        let app_started_at_us = get_timestamp_us().div_euclid(1_000) * 1_000;
         let venue = self.config.venue;
-        let critical_incremental_symbols: &'static [&'static str] =
-            if venue == TradingVenue::BinanceCoinFutures {
-                &COIN_INCREMENTAL_CRITICAL_SYMBOLS
-            } else {
-                &INCREMENTAL_CRITICAL_SYMBOLS
-            };
         let venue_slug: &'static str = venue.data_pub_slug();
         let binance_spot_transport = if venue == TradingVenue::BinanceMargin {
             BinanceSpotTransport::from_env()?
@@ -489,7 +526,7 @@ impl SpreadPbsApp {
         let adapter = match create_adapter(venue).await? {
             Some(a) => Rc::<dyn VenueAdapter>::from(a),
             None => bail!(
-                "spread_pbs 当前不支持 venue {:?}（仅 OKex/Binance/Bybit/Gate/Bitget × spot+futures）",
+                "spread_pbs 当前不支持 venue {:?}（仅 OKex/Binance/Bybit/Gate/Bitget/Hyperliquid × spot+futures）",
                 venue
             ),
         };
@@ -528,6 +565,19 @@ impl SpreadPbsApp {
                 ENV_SYMBOLS
             );
         }
+        let static_critical_incremental_symbols: Vec<String> = if is_hyperliquid_venue(venue) {
+            Vec::new()
+        } else if venue == TradingVenue::BinanceCoinFutures {
+            COIN_INCREMENTAL_CRITICAL_SYMBOLS
+                .iter()
+                .map(|symbol| (*symbol).to_string())
+                .collect()
+        } else {
+            INCREMENTAL_CRITICAL_SYMBOLS
+                .iter()
+                .map(|symbol| (*symbol).to_string())
+                .collect()
+        };
         adapter.seed_symbols(&initial_symbols);
         let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
         let enable_trade = env_enabled_or(ENV_ENABLE_TRADE, self.config.data_types.enable_trade);
@@ -541,7 +591,6 @@ impl SpreadPbsApp {
         );
         let is_binance_futures_market_role = venue == TradingVenue::BinanceFutures
             && binance_futures_role == BinanceFuturesRole::Market;
-        let is_bybit_market_role = is_bybit_venue(venue) && bybit_role == BybitRole::Market;
         let (bbo_enabled, replacement_enabled) =
             role_stream_policy(venue, binance_futures_role, bybit_role);
         let direct_trade_enabled =
@@ -592,6 +641,29 @@ impl SpreadPbsApp {
                 initial_symbols.len()
             );
         }
+        let hyperliquid_shards = if is_hyperliquid_venue(venue) {
+            hyperliquid_shards::sources_from_env()?
+        } else {
+            None
+        };
+        let hyperliquid_subscription_budget = if is_hyperliquid_venue(venue)
+            && hyperliquid_shards.is_none()
+        {
+            let budget = crate::spread_pbs::hyperliquid::HyperliquidSubscriptionBudget::reserve(
+                initial_subs.len(),
+                &primary_local_ip,
+                &secondary_local_ip,
+            )?;
+            log::info!(
+                "spread_pbs[{}] Hyperliquid subscription budget checked for this process; \
+                 distinct local IPs must have distinct public egress, and other collectors/private \
+                 streams sharing those egress IPs also consume the venue limit",
+                venue_slug
+            );
+            Some(budget)
+        } else {
+            None
+        };
         log::info!(
             "spread_pbs[{}] initial symbols={} subscribe_batches={}",
             venue_slug,
@@ -683,6 +755,10 @@ impl SpreadPbsApp {
         };
         let state: Rc<RefCell<SharedState>> = Rc::new(RefCell::new(SharedState {
             symbol_state: SymbolSeqState::with_symbols(&initial_symbols),
+            bbo_dedup_policy: adapter.bbo_dedup_policy(),
+            trade_publish_not_before_us: (adapter.trade_dedup_policy()
+                == TradeDedupPolicy::RecentIdentity)
+                .then_some(app_started_at_us),
             published: 0,
             trades_published: 0,
             incremental_published: 0,
@@ -692,6 +768,9 @@ impl SpreadPbsApp {
             derivatives_dropped_duplicate: 0,
             derivatives_recent: fast_hash_map_with_capacity(2048),
             derivatives_since_prune: 0,
+            recent_bbo_identities: Vec::with_capacity(initial_symbols.len()),
+            recent_trade_identities: Vec::with_capacity(initial_symbols.len()),
+            recent_incremental_identities: Vec::with_capacity(initial_symbols.len()),
             selected_whitelist: 0,
             selected_normal: 0,
             selected_other: 0,
@@ -750,8 +829,20 @@ impl SpreadPbsApp {
             state: state.clone(),
             url: adapter.ws_url(),
             parse_okex_notices: is_okex_venue(venue),
+            hyperliquid_subscription_budget,
         };
         let primary_url = ctx.url.clone();
+        if let Some(sources) = hyperliquid_shards {
+            return hyperliquid_shards::run(
+                ctx,
+                &self.config,
+                initial_subs,
+                initial_symbols,
+                sources,
+                shutdown_rx,
+            )
+            .await;
+        }
         let secondary_url = if binance_futures_mm_ws_race_enabled(venue) {
             binance_futures_standard_ws_url().to_string()
         } else {
@@ -812,7 +903,7 @@ impl SpreadPbsApp {
         // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
         let mut primary = if is_binance_futures_market_role {
             None
-        } else if is_bybit_market_role {
+        } else if !bbo_enabled {
             Some(spawn_replacement_leg_on_main_ws(
                 "primary",
                 primary_local_ip,
@@ -836,7 +927,7 @@ impl SpreadPbsApp {
         };
         let mut secondary = if is_binance_futures_market_role {
             None
-        } else if is_bybit_market_role {
+        } else if !bbo_enabled {
             Some(spawn_replacement_leg_on_main_ws(
                 "secondary",
                 secondary_local_ip,
@@ -881,6 +972,8 @@ impl SpreadPbsApp {
         let mut reported_stale_incremental_symbols = Vec::<String>::new();
         let mut next_incremental_stale_log_at = health_started_at;
         let mut incremental_stale_started_at = None::<Instant>;
+        let mut next_incremental_recovery_restart_at = health_started_at;
+        let mut restart_primary_for_stale = true;
         let mut last_health_sample_at = health_started_at;
         let mut last_health_wall_us = get_timestamp_us();
         loop {
@@ -957,11 +1050,21 @@ impl SpreadPbsApp {
                         }
                         last_health_sample_at = now;
                         last_health_wall_us = wall_now_us;
+                        let critical_incremental_symbols_storage =
+                            critical_incremental_symbols_for_venue(
+                                venue,
+                                &current_symbols,
+                                &static_critical_incremental_symbols,
+                            );
+                        let critical_incremental_symbols = critical_incremental_symbols_storage
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>();
                         let stale = state
                             .borrow()
                             .symbol_state
                             .stale_incremental_symbols(
-                                critical_incremental_symbols,
+                                &critical_incremental_symbols,
                                 now,
                                 INCREMENTAL_CRITICAL_STALE,
                             );
@@ -972,7 +1075,7 @@ impl SpreadPbsApp {
                                     .map(|started_at| now.duration_since(started_at).as_millis())
                                     .unwrap_or(0);
                                 let s = state.borrow();
-                                let symbol_ages = s.symbol_state.critical_stream_age_summary(critical_incremental_symbols, now);
+                                let symbol_ages = s.symbol_state.critical_stream_age_summary(&critical_incremental_symbols, now);
                                 log::warn!(
                                     "spread_pbs[{}] critical incremental input recovered symbols={} threshold_ms={} stale_duration_ms={} symbol_ages={} incremental_published={} trades_published={}",
                                     venue_slug,
@@ -986,12 +1089,14 @@ impl SpreadPbsApp {
                             }
                             reported_stale_incremental_symbols.clear();
                             next_incremental_stale_log_at = now;
+                            next_incremental_recovery_restart_at = now;
+                            restart_primary_for_stale = true;
                         } else {
                             incremental_stale_started_at.get_or_insert(now);
                             let stale_changed = stale != reported_stale_incremental_symbols;
                             if stale_changed || now >= next_incremental_stale_log_at {
                                 let s = state.borrow();
-                                let symbol_ages = s.symbol_state.critical_stream_age_summary(critical_incremental_symbols, now);
+                                let symbol_ages = s.symbol_state.critical_stream_age_summary(&critical_incremental_symbols, now);
                                 log::error!(
                                     "spread_pbs[{}] critical incremental input stale symbols={} threshold_ms={} symbol_ages={} incremental_published={} trades_published={} incremental_dropped_by_seq={} trades_dropped_by_seq={}; keeping process alive while websocket legs reconnect",
                                     venue_slug,
@@ -1007,6 +1112,52 @@ impl SpreadPbsApp {
                                     now + INCREMENTAL_STALE_LOG_INTERVAL;
                             }
                             reported_stale_incremental_symbols = stale;
+                            if is_hyperliquid_venue(venue)
+                                && now >= next_incremental_recovery_restart_at
+                            {
+                                let restarted_label = if restart_primary_for_stale {
+                                    if let Some(primary) = primary.as_mut() {
+                                        log::warn!(
+                                            "spread_pbs[{}] restarting primary websocket leg to recover stale Hyperliquid incremental input",
+                                            venue_slug,
+                                        );
+                                        restart_leg(
+                                            venue_slug,
+                                            primary,
+                                            &self.config,
+                                            binance_futures_role,
+                                            &ctx,
+                                            &mut current_symbols,
+                                        ).await;
+                                        next_primary_restart = Instant::now() + restart_duration;
+                                        Some("primary")
+                                    } else {
+                                        None
+                                    }
+                                } else if let Some(secondary) = secondary.as_mut() {
+                                    log::warn!(
+                                        "spread_pbs[{}] restarting secondary websocket leg to recover stale Hyperliquid incremental input",
+                                        venue_slug,
+                                    );
+                                    restart_leg(
+                                        venue_slug,
+                                        secondary,
+                                        &self.config,
+                                        binance_futures_role,
+                                        &ctx,
+                                        &mut current_symbols,
+                                    ).await;
+                                    next_secondary_restart = Instant::now() + restart_duration;
+                                    Some("secondary")
+                                } else {
+                                    None
+                                };
+                                if restarted_label.is_some() {
+                                    restart_primary_for_stale = !restart_primary_for_stale;
+                                }
+                                next_incremental_recovery_restart_at =
+                                    Instant::now() + HYPERLIQUID_STALE_RESTART_COOLDOWN;
+                            }
                         }
                     }
                 }
@@ -1187,7 +1338,7 @@ fn spawn_leg(
         ctx.state.clone(),
         source,
     );
-    let handle = tokio::task::spawn_local(run_public_ws(
+    let handle = tokio::task::spawn_local(run_public_ws_with_ack_policy(
         WsLoopParams {
             label: label.clone(),
             url: url.clone(),
@@ -1202,6 +1353,7 @@ fn spawn_leg(
         },
         handler,
         rx,
+        ctx.adapter.subscription_ack_policy(),
     ));
     WsLeg {
         label,
@@ -1324,6 +1476,7 @@ fn make_fix_md_handler(
                         &mut state.borrow_mut(),
                         trade_publisher,
                         slot_index,
+                        adapter.trade_dedup_policy(),
                         symbol,
                         seq_id,
                         trade_id,
@@ -1351,6 +1504,7 @@ fn make_fix_md_handler(
                         &mut state.borrow_mut(),
                         incremental_publisher,
                         slot_index,
+                        adapter.incremental_dedup_policy(),
                         symbol,
                         timestamp_us,
                         seq_id,
@@ -1369,6 +1523,7 @@ fn make_fix_md_handler(
         if let Err(err) = result {
             log::warn!("spread_pbs fix-md[{}] decode failed: {err:#}", label);
         }
+        Ok(())
     })
 }
 
@@ -1390,7 +1545,7 @@ fn spawn_replacement_leg_on_main_ws(
         ctx.incremental_max_levels,
         ctx.state.clone(),
     );
-    let handle = tokio::task::spawn_local(run_public_ws(
+    let handle = tokio::task::spawn_local(run_public_ws_with_ack_policy(
         WsLoopParams {
             label: label.clone(),
             url: url.clone(),
@@ -1405,6 +1560,7 @@ fn spawn_replacement_leg_on_main_ws(
         },
         handler,
         rx,
+        ctx.adapter.subscription_ack_policy(),
     ));
     WsLeg {
         label,
@@ -1597,7 +1753,7 @@ fn spawn_direct_replacement_leg(
         incremental_max_levels,
         state,
     );
-    let handle = tokio::task::spawn_local(run_public_ws(
+    let handle = tokio::task::spawn_local(run_public_ws_with_ack_policy(
         WsLoopParams {
             label: label.clone(),
             url: url.clone(),
@@ -1612,6 +1768,7 @@ fn spawn_direct_replacement_leg(
         },
         handler,
         rx,
+        adapter.subscription_ack_policy(),
     ));
     WsLeg {
         label,
@@ -1631,14 +1788,14 @@ fn make_okex_derivatives_handler(
     Rc::new(move |_recv_us: i64, raw: &[u8]| {
         let value = match serde_json::from_slice::<serde_json::Value>(raw) {
             Ok(value) => value,
-            Err(_) => return,
+            Err(_) => return Ok(()),
         };
         let bytes = {
             let symbols = active_symbols.borrow();
             parse_okex_derivatives_frame(&value, &symbols)
         };
         if bytes.is_empty() {
-            return;
+            return Ok(());
         }
         let mut s = state.borrow_mut();
         for msg in bytes {
@@ -1648,6 +1805,7 @@ fn make_okex_derivatives_handler(
             }
             s.derivatives_published += 1;
         }
+        Ok(())
     })
 }
 
@@ -1710,9 +1868,26 @@ async fn restart_leg(
     }
     let new_subs_len = new_subs.len();
 
+    if let Some(budget) = ctx.hyperliquid_subscription_budget.as_ref() {
+        if let Err(err) = budget.grow(new_subs_len) {
+            log::error!(
+                "spread_pbs[{}] leg={} symbol refresh rejected; retaining existing subscriptions: {err:#}",
+                venue_slug,
+                leg.label,
+            );
+            return;
+        }
+    }
+
     let new_set: HashSet<String> = new_symbols.iter().cloned().collect();
     let added = new_set.difference(current_symbols).count();
     let removed = current_symbols.difference(&new_set).count();
+    if matches!(
+        config.venue,
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+    ) {
+        ctx.adapter.seed_symbols(&new_symbols);
+    }
     if added > 0 {
         let mut s = ctx.state.borrow_mut();
         s.symbol_state.ensure_symbols(&new_symbols);
@@ -2009,8 +2184,162 @@ struct SymbolSlot {
     prev_ts_us: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct BboIdentity {
+    timestamp_us: i64,
+    bid_price_bits: u64,
+    bid_amount_bits: u64,
+    ask_price_bits: u64,
+    ask_amount_bits: u64,
+}
+
+impl BboIdentity {
+    fn new(
+        timestamp_us: i64,
+        bid_price: f64,
+        bid_amount: f64,
+        ask_price: f64,
+        ask_amount: f64,
+    ) -> Self {
+        Self {
+            timestamp_us,
+            bid_price_bits: bid_price.to_bits(),
+            bid_amount_bits: bid_amount.to_bits(),
+            ask_price_bits: ask_price.to_bits(),
+            ask_amount_bits: ask_amount.to_bits(),
+        }
+    }
+}
+
+struct RecentBboIdentities {
+    identities: FastHashSet<BboIdentity>,
+    order: VecDeque<BboIdentity>,
+}
+
+impl RecentBboIdentities {
+    fn new() -> Self {
+        Self {
+            identities: fast_hash_set_with_capacity(BBO_IDENTITY_DEDUP_PER_SYMBOL),
+            order: VecDeque::with_capacity(BBO_IDENTITY_DEDUP_PER_SYMBOL),
+        }
+    }
+
+    fn contains(&self, identity: &BboIdentity) -> bool {
+        self.identities.contains(identity)
+    }
+
+    fn insert(&mut self, identity: BboIdentity) {
+        if !self.identities.insert(identity) {
+            return;
+        }
+        self.order.push_back(identity);
+        if self.order.len() > BBO_IDENTITY_DEDUP_PER_SYMBOL {
+            if let Some(expired) = self.order.pop_front() {
+                self.identities.remove(&expired);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct TradeIdentity {
+    timestamp_us: i64,
+    trade_id: i64,
+}
+
+struct RecentTradeIdentities {
+    identities: FastHashSet<TradeIdentity>,
+    order: VecDeque<TradeIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct IncrementalLevelIdentity {
+    price_bits: u64,
+    amount_bits: u64,
+}
+
+#[derive(Debug, Eq, Hash, PartialEq)]
+struct IncrementalSnapshotIdentity {
+    timestamp_us: i64,
+    bids: Vec<IncrementalLevelIdentity>,
+    asks: Vec<IncrementalLevelIdentity>,
+}
+
+impl IncrementalSnapshotIdentity {
+    fn from_levels<L: PayloadLevel>(timestamp_us: i64, bids: &[L], asks: &[L]) -> Self {
+        let convert = |level: &L| IncrementalLevelIdentity {
+            price_bits: level.price().to_bits(),
+            amount_bits: level.amount().to_bits(),
+        };
+        Self {
+            timestamp_us,
+            bids: bids.iter().map(convert).collect(),
+            asks: asks.iter().map(convert).collect(),
+        }
+    }
+}
+
+struct RecentIncrementalIdentities {
+    identities: FastHashSet<Rc<IncrementalSnapshotIdentity>>,
+    order: VecDeque<Rc<IncrementalSnapshotIdentity>>,
+}
+
+impl RecentIncrementalIdentities {
+    fn new() -> Self {
+        Self {
+            identities: fast_hash_set_with_capacity(INCREMENTAL_IDENTITY_DEDUP_PER_SYMBOL),
+            order: VecDeque::with_capacity(INCREMENTAL_IDENTITY_DEDUP_PER_SYMBOL),
+        }
+    }
+
+    fn contains(&self, identity: &Rc<IncrementalSnapshotIdentity>) -> bool {
+        self.identities.contains(identity)
+    }
+
+    fn insert(&mut self, identity: Rc<IncrementalSnapshotIdentity>) {
+        if !self.identities.insert(Rc::clone(&identity)) {
+            return;
+        }
+        self.order.push_back(identity);
+        if self.order.len() > INCREMENTAL_IDENTITY_DEDUP_PER_SYMBOL {
+            if let Some(expired) = self.order.pop_front() {
+                self.identities.remove(&expired);
+            }
+        }
+    }
+}
+
+impl RecentTradeIdentities {
+    fn new() -> Self {
+        Self {
+            identities: fast_hash_set_with_capacity(TRADE_IDENTITY_DEDUP_PER_SYMBOL),
+            order: VecDeque::with_capacity(TRADE_IDENTITY_DEDUP_PER_SYMBOL),
+        }
+    }
+
+    fn contains(&self, identity: &TradeIdentity) -> bool {
+        self.identities.contains(identity)
+    }
+
+    fn insert(&mut self, identity: TradeIdentity) {
+        if !self.identities.insert(identity) {
+            return;
+        }
+        self.order.push_back(identity);
+        if self.order.len() > TRADE_IDENTITY_DEDUP_PER_SYMBOL {
+            if let Some(expired) = self.order.pop_front() {
+                self.identities.remove(&expired);
+            }
+        }
+    }
+}
+
 struct SharedState {
     symbol_state: SymbolSeqState,
+    bbo_dedup_policy: BboDedupPolicy,
+    // Hyperliquid replays recent public trades in the first subscription batch
+    // without an isSnapshot marker. Keep only trades at/after this process run.
+    trade_publish_not_before_us: Option<i64>,
     published: u64,
     trades_published: u64,
     incremental_published: u64,
@@ -2020,6 +2349,9 @@ struct SharedState {
     derivatives_dropped_duplicate: u64,
     derivatives_recent: FastHashMap<Vec<u8>, i64>,
     derivatives_since_prune: usize,
+    recent_bbo_identities: Vec<RecentBboIdentities>,
+    recent_trade_identities: Vec<RecentTradeIdentities>,
+    recent_incremental_identities: Vec<RecentIncrementalIdentities>,
     selected_whitelist: u64,
     selected_normal: u64,
     selected_other: u64,
@@ -2029,6 +2361,63 @@ struct SharedState {
 }
 
 impl SharedState {
+    fn contains_recent_bbo(&self, symbol_slot: usize, identity: &BboIdentity) -> bool {
+        self.recent_bbo_identities
+            .get(symbol_slot)
+            .is_some_and(|recent| recent.contains(identity))
+    }
+
+    fn record_recent_bbo(&mut self, symbol_slot: usize, identity: BboIdentity) {
+        while self.recent_bbo_identities.len() <= symbol_slot {
+            self.recent_bbo_identities.push(RecentBboIdentities::new());
+        }
+        self.recent_bbo_identities[symbol_slot].insert(identity);
+    }
+
+    fn contains_recent_trade(&self, symbol_slot: usize, timestamp_us: i64, trade_id: i64) -> bool {
+        self.recent_trade_identities
+            .get(symbol_slot)
+            .is_some_and(|recent| {
+                recent.contains(&TradeIdentity {
+                    timestamp_us,
+                    trade_id,
+                })
+            })
+    }
+
+    fn record_recent_trade(&mut self, symbol_slot: usize, timestamp_us: i64, trade_id: i64) {
+        while self.recent_trade_identities.len() <= symbol_slot {
+            self.recent_trade_identities
+                .push(RecentTradeIdentities::new());
+        }
+        self.recent_trade_identities[symbol_slot].insert(TradeIdentity {
+            timestamp_us,
+            trade_id,
+        });
+    }
+
+    fn contains_recent_incremental(
+        &self,
+        symbol_slot: usize,
+        identity: &Rc<IncrementalSnapshotIdentity>,
+    ) -> bool {
+        self.recent_incremental_identities
+            .get(symbol_slot)
+            .is_some_and(|recent| recent.contains(identity))
+    }
+
+    fn record_recent_incremental(
+        &mut self,
+        symbol_slot: usize,
+        identity: Rc<IncrementalSnapshotIdentity>,
+    ) {
+        while self.recent_incremental_identities.len() <= symbol_slot {
+            self.recent_incremental_identities
+                .push(RecentIncrementalIdentities::new());
+        }
+        self.recent_incremental_identities[symbol_slot].insert(identity);
+    }
+
     fn record_selected_source(&mut self, source: MarketSource) {
         match source {
             MarketSource::Whitelist => self.selected_whitelist += 1,
@@ -2080,38 +2469,43 @@ fn parse_replacement_batch(
     include_incremental: bool,
     include_derivatives: bool,
     emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
-) -> ReplacementBatch {
+) -> Result<ReplacementBatch> {
     if looks_like_json(raw) {
         if include_bbo {
             match adapter.parse_bbo_raw(raw, emit_bbo) {
-                Ok(true) => return ReplacementBatch::default(),
+                Ok(true) => return Ok(ReplacementBatch::default()),
                 Ok(false) => {}
                 Err(e) => {
-                    log::error!(
-                        "spread_pbs[{}] adapter.parse_bbo_raw failed: {:#}",
-                        label,
-                        e
-                    );
+                    handle_adapter_parse_error(label, adapter, "parse_bbo_raw", e, None)?;
                 }
             }
         }
         if adapter.skip_json_fallback_after_raw_miss() {
-            return ReplacementBatch::default();
+            return Ok(ReplacementBatch::default());
         }
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) {
-            return parse_json_replacement_batch(
-                label,
-                adapter,
-                &value,
-                include_bbo,
-                include_trade,
-                include_incremental,
-                include_derivatives,
-                emit_bbo,
-            );
+        match serde_json::from_slice::<serde_json::Value>(raw) {
+            Ok(value) => {
+                return parse_json_replacement_batch(
+                    label,
+                    adapter,
+                    &value,
+                    include_bbo,
+                    include_trade,
+                    include_incremental,
+                    include_derivatives,
+                    emit_bbo,
+                );
+            }
+            Err(err) if adapter.reconnect_on_parse_error() => {
+                adapter.on_fatal_parse_error();
+                return Err(err).with_context(|| {
+                    format!("spread_pbs[{label}] malformed JSON market-data frame")
+                });
+            }
+            Err(_) => {}
         }
     }
-    parse_binary_replacement_batch(
+    Ok(parse_binary_replacement_batch(
         label,
         adapter,
         raw,
@@ -2120,7 +2514,38 @@ fn parse_replacement_batch(
         include_incremental,
         include_derivatives,
         emit_bbo,
-    )
+    ))
+}
+
+fn handle_adapter_parse_error(
+    label: &str,
+    adapter: &dyn VenueAdapter,
+    operation: &str,
+    error: anyhow::Error,
+    payload: Option<&serde_json::Value>,
+) -> Result<()> {
+    if let Some(payload) = payload {
+        log::error!(
+            "spread_pbs[{}] adapter.{} failed: {:#} payload={}",
+            label,
+            operation,
+            error,
+            payload
+        );
+    } else {
+        log::error!(
+            "spread_pbs[{}] adapter.{} failed: {:#}",
+            label,
+            operation,
+            error
+        );
+    }
+    if adapter.reconnect_on_parse_error() {
+        adapter.on_fatal_parse_error();
+        return Err(error)
+            .with_context(|| format!("spread_pbs[{label}] fatal adapter.{operation} failure"));
+    }
+    Ok(())
 }
 
 fn looks_like_json(raw: &[u8]) -> bool {
@@ -2143,17 +2568,12 @@ fn parse_json_replacement_batch(
     include_incremental: bool,
     include_derivatives: bool,
     emit_bbo: &mut dyn FnMut(BboFrame) -> Result<()>,
-) -> ReplacementBatch {
+) -> Result<ReplacementBatch> {
     if include_bbo {
         match adapter.parse_frame(value, emit_bbo) {
             Ok(()) => {}
             Err(e) => {
-                log::error!(
-                    "spread_pbs[{}] adapter.parse_frame failed: {:#} payload={}",
-                    label,
-                    e,
-                    value
-                );
+                handle_adapter_parse_error(label, adapter, "parse_frame", e, Some(value))?;
             }
         }
     }
@@ -2161,12 +2581,7 @@ fn parse_json_replacement_batch(
         match adapter.parse_trade_frame(value) {
             Ok(v) => v,
             Err(e) => {
-                log::error!(
-                    "spread_pbs[{}] adapter.parse_trade_frame failed: {:#} payload={}",
-                    label,
-                    e,
-                    value
-                );
+                handle_adapter_parse_error(label, adapter, "parse_trade_frame", e, Some(value))?;
                 Vec::new()
             }
         }
@@ -2177,12 +2592,13 @@ fn parse_json_replacement_batch(
         match adapter.parse_incremental_frame(value) {
             Ok(v) => v,
             Err(e) => {
-                log::error!(
-                    "spread_pbs[{}] adapter.parse_incremental_frame failed: {:#} payload={}",
+                handle_adapter_parse_error(
                     label,
+                    adapter,
+                    "parse_incremental_frame",
                     e,
-                    value
-                );
+                    Some(value),
+                )?;
                 Vec::new()
             }
         }
@@ -2193,12 +2609,13 @@ fn parse_json_replacement_batch(
         match adapter.parse_derivatives_frame(value) {
             Ok(v) => v,
             Err(e) => {
-                log::error!(
-                    "spread_pbs[{}] adapter.parse_derivatives_frame failed: {:#} payload={}",
+                handle_adapter_parse_error(
                     label,
+                    adapter,
+                    "parse_derivatives_frame",
                     e,
-                    value
-                );
+                    Some(value),
+                )?;
                 Vec::new()
             }
         }
@@ -2206,11 +2623,11 @@ fn parse_json_replacement_batch(
         Vec::new()
     };
 
-    ReplacementBatch {
+    Ok(ReplacementBatch {
         trades,
         incrementals,
         derivatives,
-    }
+    })
 }
 
 fn parse_binary_replacement_batch(
@@ -2307,10 +2724,10 @@ fn make_replacement_handler(
             incremental_max_levels,
             &state,
         ) {
-            return;
+            return Ok(());
         }
         if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
-            return;
+            return Ok(());
         }
 
         let mut emit_noop = |_frame: BboFrame| Ok(());
@@ -2323,21 +2740,31 @@ fn make_replacement_handler(
             incremental_publisher.is_some(),
             derivatives_publisher.is_some(),
             &mut emit_noop,
-        );
+        )?;
         if batch.is_empty() {
-            return;
+            return Ok(());
         }
         let mut s = state.borrow_mut();
         if let Some(trade_publisher) = trade_publisher.as_ref() {
             for trade in batch.trades {
-                process_trade_frame(&mut s, trade_publisher, trade);
+                let slot_index = adapter.symbol_slot_index(&trade.symbol);
+                process_trade_frame(
+                    &mut s,
+                    trade_publisher,
+                    slot_index,
+                    adapter.trade_dedup_policy(),
+                    trade,
+                );
             }
         }
         if let Some(incremental_publisher) = incremental_publisher.as_ref() {
             for incremental in batch.incrementals {
+                let slot_index = adapter.symbol_slot_index(incremental_frame_symbol(&incremental));
                 process_incremental_frame(
                     &mut s,
                     incremental_publisher,
+                    slot_index,
+                    adapter.incremental_dedup_policy(),
                     incremental,
                     incremental_max_levels,
                 );
@@ -2348,6 +2775,7 @@ fn make_replacement_handler(
                 process_derivatives_bytes(&mut s, derivatives_publisher, &bytes);
             }
         }
+        Ok(())
     })
 }
 
@@ -2381,6 +2809,7 @@ fn process_raw_replacement_frame(
                         &mut s,
                         publisher,
                         slot_index,
+                        adapter.incremental_dedup_policy(),
                         book.symbol,
                         book.timestamp_us,
                         book.seq_id,
@@ -2401,6 +2830,7 @@ fn process_raw_replacement_frame(
                         &mut s,
                         publisher,
                         slot_index,
+                        adapter.incremental_dedup_policy(),
                         book,
                         incremental_max_levels,
                     );
@@ -2418,6 +2848,7 @@ fn process_raw_replacement_frame(
                 &mut s,
                 publisher,
                 slot_index,
+                adapter.trade_dedup_policy(),
                 trade.symbol,
                 trade.seq_id,
                 trade.trade_id,
@@ -2467,7 +2898,7 @@ fn make_handler(
                 bbo.ask_amount,
                 source,
             );
-            return;
+            return Ok(());
         }
         if process_raw_replacement_frame(
             adapter.as_ref(),
@@ -2478,10 +2909,10 @@ fn make_handler(
             incremental_max_levels,
             &state,
         ) {
-            return;
+            return Ok(());
         }
         if should_drop_json_after_raw_miss(adapter.as_ref(), raw) {
-            return;
+            return Ok(());
         }
 
         let mut accepted_us = 0;
@@ -2504,21 +2935,31 @@ fn make_handler(
             incremental_publisher.is_some(),
             derivatives_publisher.is_some(),
             &mut emit_bbo,
-        );
+        )?;
         drop(emit_bbo);
         if bbo_count == 0 && batch.is_empty() {
-            return;
+            return Ok(());
         }
         if let Some(trade_publisher) = trade_publisher.as_ref() {
             for trade in batch.trades {
-                process_trade_frame(&mut s, trade_publisher, trade);
+                let slot_index = adapter.symbol_slot_index(&trade.symbol);
+                process_trade_frame(
+                    &mut s,
+                    trade_publisher,
+                    slot_index,
+                    adapter.trade_dedup_policy(),
+                    trade,
+                );
             }
         }
         if let Some(incremental_publisher) = incremental_publisher.as_ref() {
             for incremental in batch.incrementals {
+                let slot_index = adapter.symbol_slot_index(incremental_frame_symbol(&incremental));
                 process_incremental_frame(
                     &mut s,
                     incremental_publisher,
+                    slot_index,
+                    adapter.incremental_dedup_policy(),
                     incremental,
                     incremental_max_levels,
                 );
@@ -2529,18 +2970,22 @@ fn make_handler(
                 process_derivatives_bytes(&mut s, derivatives_publisher, &bytes);
             }
         }
+        Ok(())
     })
 }
 
 fn process_trade_frame(
     state: &mut SharedState,
     publisher: &Rc<SpreadTradePublisher>,
+    slot_index: Option<usize>,
+    dedup_policy: TradeDedupPolicy,
     f: TradeFrame,
 ) {
     process_trade_fields(
         state,
         publisher,
-        None,
+        slot_index,
+        dedup_policy,
         &f.symbol,
         f.seq_id,
         f.trade_id,
@@ -2551,11 +2996,31 @@ fn process_trade_frame(
     );
 }
 
+fn should_drop_trade(
+    state: &mut SharedState,
+    slot: &SymbolSlot,
+    seq_id: i64,
+    trade_id: i64,
+    timestamp_us: i64,
+    policy: TradeDedupPolicy,
+) -> bool {
+    match policy {
+        TradeDedupPolicy::MonotonicSequence => seq_id <= slot.prev,
+        TradeDedupPolicy::RecentIdentity => {
+            state
+                .trade_publish_not_before_us
+                .is_some_and(|cutoff_us| timestamp_us < cutoff_us)
+                || state.contains_recent_trade(slot.idx, timestamp_us, trade_id)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_trade_fields(
     state: &mut SharedState,
     publisher: &Rc<SpreadTradePublisher>,
     slot_index: Option<usize>,
+    dedup_policy: TradeDedupPolicy,
     symbol: &str,
     seq_id: i64,
     trade_id: i64,
@@ -2567,24 +3032,49 @@ fn process_trade_fields(
     let slot = slot_index
         .map(|idx| state.symbol_state.trade_slot_by_index(idx))
         .unwrap_or_else(|| state.symbol_state.trade_slot(symbol));
-    if seq_id <= slot.prev {
+    if should_drop_trade(state, &slot, seq_id, trade_id, timestamp_us, dedup_policy) {
         state.trades_dropped_by_seq += 1;
         return;
     }
-    state.symbol_state.set_trade_slot(slot, seq_id);
-
     let publish_result =
         publisher.publish_trade(symbol, trade_id, timestamp_us, side, price, amount);
     if let Err(e) = publish_result {
         log::warn!("spread_pbs trade publish failed: {:#}", e);
         return;
     }
+    if dedup_policy == TradeDedupPolicy::RecentIdentity {
+        state.record_recent_trade(slot.idx, timestamp_us, trade_id);
+    }
+    state.symbol_state.set_trade_slot(slot, seq_id);
     state.trades_published += 1;
+}
+
+fn should_drop_incremental(
+    slot: &SymbolSlot,
+    seq_id: i64,
+    is_snapshot: bool,
+    policy: IncrementalDedupPolicy,
+) -> bool {
+    match policy {
+        IncrementalDedupPolicy::SnapshotCanReset => !is_snapshot && seq_id <= slot.prev,
+        IncrementalDedupPolicy::MonotonicIncludingSnapshots => seq_id <= slot.prev,
+        IncrementalDedupPolicy::RecentSnapshotIdentity => seq_id < slot.prev,
+    }
+}
+
+fn incremental_frame_symbol(frame: &IncrementalFrame) -> &str {
+    match frame {
+        IncrementalFrame::Book { symbol, .. } | IncrementalFrame::SequenceOnly { symbol, .. } => {
+            symbol
+        }
+    }
 }
 
 fn process_incremental_frame(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
+    slot_index: Option<usize>,
+    dedup_policy: IncrementalDedupPolicy,
     frame: IncrementalFrame,
     max_levels: Option<usize>,
 ) {
@@ -2629,8 +3119,10 @@ fn process_incremental_frame(
             seq_id,
             prev_seq_id,
         } => {
-            let slot = state.symbol_state.incremental_slot(&symbol);
-            if seq_id <= slot.prev {
+            let slot = slot_index
+                .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
+                .unwrap_or_else(|| state.symbol_state.incremental_slot(&symbol));
+            if should_drop_incremental(&slot, seq_id, false, dedup_policy) {
                 state.incremental_dropped_by_seq += 1;
                 let _ = timestamp;
                 return;
@@ -2645,7 +3137,8 @@ fn process_incremental_frame(
     process_incremental_fields(
         state,
         publisher,
-        None,
+        slot_index,
+        dedup_policy,
         &symbol,
         timestamp,
         seq_id,
@@ -2665,6 +3158,7 @@ fn process_incremental_fields<L: PayloadLevel>(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
     slot_index: Option<usize>,
+    dedup_policy: IncrementalDedupPolicy,
     symbol: &str,
     timestamp: i64,
     seq_id: i64,
@@ -2680,7 +3174,17 @@ fn process_incremental_fields<L: PayloadLevel>(
     let slot = slot_index
         .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
         .unwrap_or_else(|| state.symbol_state.incremental_slot(symbol));
-    if !is_snapshot && seq_id <= slot.prev {
+    let recent_identity =
+        (dedup_policy == IncrementalDedupPolicy::RecentSnapshotIdentity).then(|| {
+            Rc::new(IncrementalSnapshotIdentity::from_levels(
+                timestamp, bids, asks,
+            ))
+        });
+    if should_drop_incremental(&slot, seq_id, is_snapshot, dedup_policy)
+        || recent_identity
+            .as_ref()
+            .is_some_and(|identity| state.contains_recent_incremental(slot.idx, identity))
+    {
         state.incremental_dropped_by_seq += 1;
         return;
     }
@@ -2745,6 +3249,9 @@ fn process_incremental_fields<L: PayloadLevel>(
             }
         }
     }
+    if let Some(identity) = recent_identity {
+        state.record_recent_incremental(slot.idx, identity);
+    }
     state.symbol_state.set_incremental_slot(slot, seq_id);
 }
 
@@ -2752,13 +3259,33 @@ fn process_incremental_view(
     state: &mut SharedState,
     publisher: &Rc<SpreadIncrementalPublisher>,
     slot_index: Option<usize>,
+    dedup_policy: IncrementalDedupPolicy,
     book: RawIncrementalView<'_>,
     max_levels: Option<usize>,
 ) {
     let slot = slot_index
         .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
         .unwrap_or_else(|| state.symbol_state.incremental_slot(book.symbol));
-    if !book.is_snapshot && book.seq_id <= slot.prev {
+    let recent_identity = if dedup_policy == IncrementalDedupPolicy::RecentSnapshotIdentity {
+        let Some(bids) = mkt_parsers::raw_json_levels_iter(book.bids_raw) else {
+            return;
+        };
+        let Some(asks) = mkt_parsers::raw_json_levels_iter(book.asks_raw) else {
+            return;
+        };
+        Some(Rc::new(IncrementalSnapshotIdentity::from_levels(
+            book.timestamp_us,
+            &bids.collect::<Vec<_>>(),
+            &asks.collect::<Vec<_>>(),
+        )))
+    } else {
+        None
+    };
+    if should_drop_incremental(&slot, book.seq_id, book.is_snapshot, dedup_policy)
+        || recent_identity
+            .as_ref()
+            .is_some_and(|identity| state.contains_recent_incremental(slot.idx, identity))
+    {
         state.incremental_dropped_by_seq += 1;
         return;
     }
@@ -2826,6 +3353,9 @@ fn process_incremental_view(
                 return;
             }
         }
+    }
+    if let Some(identity) = recent_identity {
+        state.record_recent_incremental(slot.idx, identity);
     }
     state.symbol_state.set_incremental_slot(slot, book.seq_id);
 }
@@ -3046,7 +3576,8 @@ fn process_bbo_fields(
     let slot = slot_index
         .map(|idx| state.symbol_state.bbo_slot_by_index(idx))
         .unwrap_or_else(|| state.symbol_state.bbo_slot(symbol));
-    if should_drop_bbo_fields(&slot, ts_us, seq_id, reset_seq) {
+    let identity = BboIdentity::new(ts_us, bid_price, bid_amount, ask_price, ask_amount);
+    if should_drop_bbo(state, &slot, &identity, ts_us, seq_id, reset_seq) {
         state.dropped_by_seq += 1;
         return;
     }
@@ -3059,13 +3590,19 @@ fn process_bbo_fields(
         log::warn!("spread_pbs publish failed: {:#}", e);
         return;
     }
+    if state.bbo_dedup_policy == BboDedupPolicy::RecentIdentity {
+        state.record_recent_bbo(slot.idx, identity);
+    }
     state.published += 1;
 }
 
 fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64) {
     if accepted_us.saturating_sub(state.last_dedup_reset_us) >= DEDUP_RESET_INTERVAL_US {
-        let cleared = state.symbol_state.clear_bbo();
         state.last_dedup_reset_us = accepted_us;
+        if state.bbo_dedup_policy == BboDedupPolicy::RecentIdentity {
+            return;
+        }
+        let cleared = state.symbol_state.clear_bbo();
         log::warn!(
             "spread_pbs dedup high-water reset by interval cleared_symbols={} interval_us={}",
             cleared,
@@ -3077,6 +3614,23 @@ fn reset_dedup_high_water_if_needed(state: &mut SharedState, accepted_us: i64) {
 #[cfg(test)]
 fn should_drop_bbo_frame(slot: &SymbolSlot, f: &BboFrame) -> bool {
     should_drop_bbo_fields(slot, f.ts_us, f.seq_id, f.reset_seq)
+}
+
+fn should_drop_bbo(
+    state: &SharedState,
+    slot: &SymbolSlot,
+    identity: &BboIdentity,
+    ts_us: i64,
+    seq_id: i64,
+    reset_seq: bool,
+) -> bool {
+    match state.bbo_dedup_policy {
+        BboDedupPolicy::MonotonicSequence => should_drop_bbo_fields(slot, ts_us, seq_id, reset_seq),
+        BboDedupPolicy::RecentIdentity => {
+            (slot.prev != i64::MIN && ts_us > 0 && slot.prev_ts_us > 0 && ts_us < slot.prev_ts_us)
+                || state.contains_recent_bbo(slot.idx, identity)
+        }
+    }
 }
 
 fn should_drop_bbo_fields(slot: &SymbolSlot, ts_us: i64, seq_id: i64, reset_seq: bool) -> bool {
@@ -3114,6 +3668,8 @@ mod tests {
     fn test_state(now_us: i64) -> SharedState {
         SharedState {
             symbol_state: SymbolSeqState::with_symbols(&[]),
+            bbo_dedup_policy: BboDedupPolicy::MonotonicSequence,
+            trade_publish_not_before_us: None,
             published: 0,
             trades_published: 0,
             incremental_published: 0,
@@ -3123,6 +3679,9 @@ mod tests {
             derivatives_dropped_duplicate: 0,
             derivatives_recent: fast_hash_map_with_capacity(16),
             derivatives_since_prune: 0,
+            recent_bbo_identities: Vec::new(),
+            recent_trade_identities: Vec::new(),
+            recent_incremental_identities: Vec::new(),
             selected_whitelist: 0,
             selected_normal: 0,
             selected_other: 0,
@@ -3179,6 +3738,297 @@ mod tests {
             TradingVenue::BinanceFutures,
             BinanceFuturesRole::Market,
         ));
+    }
+
+    #[test]
+    fn hyperliquid_uses_bbo_trade_incremental_and_perp_derivatives() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                role_stream_policy(venue, BinanceFuturesRole::Full, BybitRole::Full),
+                (true, true)
+            );
+            assert!(direct_trade_replacement_enabled(venue));
+            assert!(direct_incremental_replacement_enabled(venue));
+        }
+        assert!(!direct_derivatives_replacement_enabled(
+            TradingVenue::HyperliquidMargin
+        ));
+        assert!(direct_derivatives_replacement_enabled(
+            TradingVenue::HyperliquidFutures
+        ));
+    }
+
+    #[test]
+    fn hyperliquid_bbo_identity_accepts_same_millisecond_changes_and_deduplicates_exact_frames() {
+        let mut state = test_state(0);
+        state.bbo_dedup_policy = BboDedupPolicy::RecentIdentity;
+        let timestamp_us = 1_700_000_000_123_000;
+        let seq_id = 1_700_000_000_123;
+        let first = BboIdentity::new(timestamp_us, 39.0, 10.0, 39.1, 8.0);
+        let first_slot = state.symbol_state.bbo_slot("HYPEUSDC");
+        assert!(!should_drop_bbo(
+            &state,
+            &first_slot,
+            &first,
+            timestamp_us,
+            seq_id,
+            false,
+        ));
+        state.record_recent_bbo(first_slot.idx, first);
+        state
+            .symbol_state
+            .set_bbo_slot(first_slot, seq_id, timestamp_us);
+
+        let changed = BboIdentity::new(timestamp_us, 39.0, 9.0, 39.1, 8.0);
+        let changed_slot = state.symbol_state.bbo_slot("HYPEUSDC");
+        assert!(!should_drop_bbo(
+            &state,
+            &changed_slot,
+            &changed,
+            timestamp_us,
+            seq_id,
+            false,
+        ));
+        assert!(should_drop_bbo(
+            &state,
+            &changed_slot,
+            &first,
+            timestamp_us,
+            seq_id,
+            false,
+        ));
+        state.record_recent_bbo(changed_slot.idx, changed);
+
+        let clear = BboIdentity::new(timestamp_us, 0.0, 0.0, 0.0, 0.0);
+        assert!(!should_drop_bbo(
+            &state,
+            &changed_slot,
+            &clear,
+            timestamp_us,
+            seq_id,
+            false,
+        ));
+        state.record_recent_bbo(changed_slot.idx, clear);
+        assert!(should_drop_bbo(
+            &state,
+            &changed_slot,
+            &clear,
+            timestamp_us,
+            seq_id,
+            false,
+        ));
+
+        let older = BboIdentity::new(timestamp_us - 1_000, 40.0, 1.0, 40.1, 1.0);
+        assert!(should_drop_bbo(
+            &state,
+            &changed_slot,
+            &older,
+            timestamp_us - 1_000,
+            seq_id - 1,
+            false,
+        ));
+    }
+
+    #[test]
+    fn recent_bbo_identity_cache_is_bounded_per_symbol() {
+        let mut recent = RecentBboIdentities::new();
+        for offset in 0..=BBO_IDENTITY_DEDUP_PER_SYMBOL {
+            recent.insert(BboIdentity::new(1_000_000, offset as f64, 1.0, 2.0, 1.0));
+        }
+
+        assert_eq!(recent.identities.len(), BBO_IDENTITY_DEDUP_PER_SYMBOL);
+        assert_eq!(recent.order.len(), BBO_IDENTITY_DEDUP_PER_SYMBOL);
+        assert!(!recent.contains(&BboIdentity::new(1_000_000, 0.0, 1.0, 2.0, 1.0)));
+    }
+
+    #[test]
+    fn recent_bbo_policy_keeps_timestamp_high_water_across_sequence_reset_interval() {
+        let mut state = test_state(1_000_000);
+        state.bbo_dedup_policy = BboDedupPolicy::RecentIdentity;
+        let slot = state.symbol_state.bbo_slot("HYPEUSDC");
+        state.symbol_state.set_bbo_slot(slot, 1_000, 1_000_000);
+        let identity = BboIdentity::new(1_000_000, 39.0, 1.0, 39.1, 1.0);
+        state.record_recent_bbo(slot.idx, identity);
+
+        reset_dedup_high_water_if_needed(&mut state, 1_000_000 + DEDUP_RESET_INTERVAL_US);
+
+        assert_eq!(state.symbol_state.bbo_prev("HYPEUSDC"), 1_000);
+        assert!(state.contains_recent_bbo(slot.idx, &identity));
+    }
+
+    #[test]
+    fn recent_trade_identity_accepts_non_monotonic_tids_and_drops_exact_duplicates() {
+        let mut state = test_state(0);
+        let first_slot = state.symbol_state.trade_slot("HYPEUSDC");
+        assert!(!should_drop_trade(
+            &mut state,
+            &first_slot,
+            900,
+            900,
+            1_000_000,
+            TradeDedupPolicy::RecentIdentity,
+        ));
+        state.record_recent_trade(first_slot.idx, 1_000_000, 900);
+        state.symbol_state.set_trade_slot(first_slot, 900);
+
+        let next_slot = state.symbol_state.trade_slot("HYPEUSDC");
+        assert!(!should_drop_trade(
+            &mut state,
+            &next_slot,
+            100,
+            100,
+            1_000_000,
+            TradeDedupPolicy::RecentIdentity,
+        ));
+        assert!(should_drop_trade(
+            &mut state,
+            &next_slot,
+            900,
+            900,
+            1_000_000,
+            TradeDedupPolicy::RecentIdentity,
+        ));
+        assert!(!should_drop_trade(
+            &mut state,
+            &next_slot,
+            900,
+            900,
+            1_001_000,
+            TradeDedupPolicy::RecentIdentity,
+        ));
+
+        assert!(should_drop_trade(
+            &mut state,
+            &next_slot,
+            100,
+            100,
+            1_000_000,
+            TradeDedupPolicy::MonotonicSequence,
+        ));
+    }
+
+    #[test]
+    fn recent_trade_identity_drops_hyperliquid_subscription_backfill() {
+        let mut state = test_state(0);
+        state.trade_publish_not_before_us = Some(2_000_000);
+        let slot = state.symbol_state.trade_slot("HYPEUSDC");
+
+        assert!(should_drop_trade(
+            &mut state,
+            &slot,
+            10,
+            10,
+            1_999_000,
+            TradeDedupPolicy::RecentIdentity,
+        ));
+        assert!(!should_drop_trade(
+            &mut state,
+            &slot,
+            11,
+            11,
+            2_000_000,
+            TradeDedupPolicy::RecentIdentity,
+        ));
+        assert!(!should_drop_trade(
+            &mut state,
+            &slot,
+            1,
+            1,
+            1,
+            TradeDedupPolicy::MonotonicSequence,
+        ));
+    }
+
+    #[test]
+    fn hyperliquid_snapshot_time_is_part_of_incremental_dedup() {
+        let slot = SymbolSlot {
+            idx: 0,
+            prev: 1_000,
+            prev_ts_us: 0,
+        };
+        assert!(!should_drop_incremental(
+            &slot,
+            999,
+            true,
+            IncrementalDedupPolicy::SnapshotCanReset,
+        ));
+        assert!(should_drop_incremental(
+            &slot,
+            999,
+            true,
+            IncrementalDedupPolicy::MonotonicIncludingSnapshots,
+        ));
+        assert!(should_drop_incremental(
+            &slot,
+            1_000,
+            true,
+            IncrementalDedupPolicy::MonotonicIncludingSnapshots,
+        ));
+        assert!(!should_drop_incremental(
+            &slot,
+            1_001,
+            true,
+            IncrementalDedupPolicy::MonotonicIncludingSnapshots,
+        ));
+        assert!(should_drop_incremental(
+            &slot,
+            999,
+            true,
+            IncrementalDedupPolicy::RecentSnapshotIdentity,
+        ));
+        assert!(!should_drop_incremental(
+            &slot,
+            1_000,
+            true,
+            IncrementalDedupPolicy::RecentSnapshotIdentity,
+        ));
+    }
+
+    #[test]
+    fn hyperliquid_incremental_identity_accepts_same_millisecond_book_changes() {
+        let mut state = test_state(1_000_000);
+        let slot = state.symbol_state.incremental_slot("BTCUSDC");
+        let bids = [mkt_parsers::msg::mkt_msg::Level {
+            price: 60_000.0,
+            amount: 1.0,
+        }];
+        let asks = [mkt_parsers::msg::mkt_msg::Level {
+            price: 60_001.0,
+            amount: 2.0,
+        }];
+        let first = Rc::new(IncrementalSnapshotIdentity::from_levels(
+            1_700_000_000_123_000,
+            &bids,
+            &asks,
+        ));
+        state.record_recent_incremental(slot.idx, Rc::clone(&first));
+        state
+            .symbol_state
+            .set_incremental_slot(slot, 1_700_000_000_123);
+
+        let same_slot = state.symbol_state.incremental_slot("BTCUSDC");
+        assert!(state.contains_recent_incremental(same_slot.idx, &first));
+        assert!(!should_drop_incremental(
+            &same_slot,
+            1_700_000_000_123,
+            true,
+            IncrementalDedupPolicy::RecentSnapshotIdentity,
+        ));
+
+        let changed_asks = [mkt_parsers::msg::mkt_msg::Level {
+            price: 60_002.0,
+            amount: 2.0,
+        }];
+        let changed = Rc::new(IncrementalSnapshotIdentity::from_levels(
+            1_700_000_000_123_000,
+            &bids,
+            &changed_asks,
+        ));
+        assert!(!state.contains_recent_incremental(same_slot.idx, &changed));
+        assert_ne!(first, changed);
     }
 
     #[test]
@@ -3239,6 +4089,31 @@ mod tests {
                 INCREMENTAL_CRITICAL_STALE,
             ),
             symbols
+        );
+    }
+
+    #[test]
+    fn hyperliquid_incremental_health_covers_all_current_symbols() {
+        let current_symbols = ["HYPEUSDC", "ETHUSDC", "BTCUSDC"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        let critical = critical_incremental_symbols_for_venue(
+            TradingVenue::HyperliquidFutures,
+            &current_symbols,
+            &[],
+        );
+        assert_eq!(critical, ["BTCUSDC", "ETHUSDC", "HYPEUSDC"]);
+
+        let mut state = SymbolSeqState::with_symbols(&critical);
+        let seen_at = Instant::now();
+        let hype = state.incremental_slot("HYPEUSDC");
+        state.set_incremental_slot_at(hype, 1, seen_at);
+        let critical_refs = critical.iter().map(String::as_str).collect::<Vec<_>>();
+
+        assert_eq!(
+            state.stale_incremental_symbols(&critical_refs, seen_at, INCREMENTAL_CRITICAL_STALE,),
+            ["BTCUSDC", "ETHUSDC"],
         );
     }
 
@@ -3370,7 +4245,8 @@ mod tests {
             false,
             false,
             &mut emit_bbo,
-        );
+        )
+        .unwrap();
         assert_eq!(fallback_batch.trades.len(), 1);
 
         let raw_only_batch = parse_replacement_batch(
@@ -3384,7 +4260,8 @@ mod tests {
             false,
             false,
             &mut emit_bbo,
-        );
+        )
+        .unwrap();
         assert!(raw_only_batch.is_empty());
 
         let raw_only = JsonTradeAdapter {
@@ -3395,6 +4272,68 @@ mod tests {
             &raw_only,
             &[64, 0, 1, 0, 1, 0, 3, 0]
         ));
+    }
+
+    #[test]
+    fn fatal_adapter_parse_error_is_returned_to_the_ws_handler() {
+        struct FatalAdapter {
+            invalidated: std::cell::Cell<bool>,
+        }
+
+        impl VenueAdapter for FatalAdapter {
+            fn name(&self) -> &'static str {
+                "fatal-test"
+            }
+
+            fn ws_url(&self) -> String {
+                "wss://example.invalid/ws".to_string()
+            }
+
+            fn build_subscribe(&self, _symbols: &[String]) -> Vec<serde_json::Value> {
+                Vec::new()
+            }
+
+            fn reconnect_on_parse_error(&self) -> bool {
+                true
+            }
+
+            fn on_fatal_parse_error(&self) {
+                self.invalidated.set(true);
+            }
+
+            fn parse_frame(
+                &self,
+                _value: &serde_json::Value,
+                _emit: &mut dyn FnMut(BboFrame) -> Result<()>,
+            ) -> Result<()> {
+                Ok(())
+            }
+
+            fn parse_trade_frame(&self, _value: &serde_json::Value) -> Result<Vec<TradeFrame>> {
+                bail!("malformed subscribed trade frame")
+            }
+
+            fn keepalive(&self) -> Option<KeepaliveSpec> {
+                None
+            }
+        }
+
+        let adapter = FatalAdapter {
+            invalidated: std::cell::Cell::new(false),
+        };
+        let mut emit_bbo = |_frame: BboFrame| Ok(());
+        let result = parse_replacement_batch(
+            "fatal",
+            &adapter,
+            br#"{"channel":"trades","data":[{}]}"#,
+            false,
+            true,
+            false,
+            false,
+            &mut emit_bbo,
+        );
+        assert!(result.is_err());
+        assert!(adapter.invalidated.get());
     }
 
     #[test]

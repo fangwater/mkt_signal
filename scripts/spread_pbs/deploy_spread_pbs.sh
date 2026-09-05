@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_NAME="spread_pbs"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 
-# 每个 CEX 的 margin/futures 为默认单边 venue；inverse venue 必须显式部署。
+# 每个 exchange 的 margin/futures 为默认单边 venue；inverse venue 必须显式部署。
 # HK el-cc-okx-srv01 的 OKEX venue 会写入 SPREAD_PBS_CORE 覆盖到 12/14。
 KNOWN_VENUES=(
   "binance-margin"
@@ -22,6 +22,9 @@ KNOWN_VENUES=(
   "gate-margin"
   "gate-futures"
   "gate-both"
+  "hyperliquid-margin"
+  "hyperliquid-futures"
+  "hyperliquid-both"
   "okex-margin"
   "okex-futures"
   "okex-both"
@@ -31,9 +34,10 @@ ALL_BOTH_VENUES=(
   "bitget-both"
   "bybit-both"
   "gate-both"
+  "hyperliquid-both"
   "okex-both"
 )
-KNOWN_EXCHANGES=("binance" "bitget" "bybit" "gate" "okex")
+KNOWN_EXCHANGES=("binance" "bitget" "bybit" "gate" "hyperliquid" "okex")
 
 is_known_exchange() {
   local v="${1,,}"
@@ -49,6 +53,7 @@ both_venue_for_exchange() {
     bitget)  echo "bitget-both"  ;;
     bybit)   echo "bybit-both"   ;;
     gate)    echo "gate-both"    ;;
+    hyperliquid) echo "hyperliquid-both" ;;
     okex)    echo "okex-both"    ;;
     *) echo ""; return 1 ;;
   esac
@@ -141,6 +146,9 @@ Notes:
       gate-margin=6     gate-futures=7
       okex-margin=8     okex-futures=9
     <exchange>-both 默认复用该 exchange 的 margin core；env.sh 可用 SPREAD_PBS_CORE 覆盖。
+  - hyperliquid-margin / hyperliquid-futures / hyperliquid-both 不预设 CPU 核；
+    启动前必须在对应部署目录的 env.sh 中显式设置 SPREAD_PBS_CORE=<core>。
+    hyperliquid-both 使用单进程，trade/incremental stream 策略由 spread_pbs 内部决定。
   - HK el-cc-okx-srv01 上，OKEX venue 会在 env.sh 写入覆盖：
       okex-margin SPREAD_PBS_CORE=12
       okex-futures SPREAD_PBS_CORE=14

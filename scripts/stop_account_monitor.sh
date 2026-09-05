@@ -70,6 +70,7 @@ else
       bybit) echo "bb" ;;
       bitget) echo "bg" ;;
       gate) echo "gt" ;;
+      hyperliquid) echo "hl" ;;
       *)
         echo "${1,,}" | sed -E 's/[^a-z0-9]+//g' | cut -c1-2
         ;;

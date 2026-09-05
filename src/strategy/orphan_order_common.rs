@@ -11,11 +11,16 @@ use log::{info, warn};
 use order_common::OrderQueryOrderUpdate;
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
-use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{
+    hyperliquid_time_in_force, ExecutionType, OrderStatus, TimeInForce, TradingVenue,
+};
 use order_common::{Order, OrderExecutionStatus};
 use runtime_common::fast_hash::{fast_hash_map, fast_hash_set, FastHashMap, FastHashSet};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
+use signal_common::hyperliquid::{
+    HYPERLIQUID_ACTION_COMMIT_CLOCK_MARGIN_MS, MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS,
+};
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
 pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
@@ -112,12 +117,30 @@ impl OrphanQueryState {
         self.first_not_found_at_us = 0;
     }
 
-    fn has_confirmed_not_found(&self, required_confirmations: u8, now_us: i64) -> bool {
+    fn has_confirmed_not_found(
+        &self,
+        required_confirmations: u8,
+        now_us: i64,
+        terminal_not_before_us: i64,
+    ) -> bool {
         self.query_count >= required_confirmations
             && self.consecutive_not_found >= required_confirmations
             && self.first_not_found_at_us > 0
             && now_us.saturating_sub(self.first_not_found_at_us) >= EXEC_COMMIT_NOT_FOUND_GRACE_US
+            && now_us >= terminal_not_before_us
     }
+}
+
+fn hyperliquid_not_found_terminal_barrier_us(
+    create_time_us: i64,
+    expires_after_ms: u64,
+) -> Option<i64> {
+    if create_time_us <= 0 {
+        return None;
+    }
+    let protected_ms = expires_after_ms.checked_add(HYPERLIQUID_ACTION_COMMIT_CLOCK_MARGIN_MS)?;
+    let protected_us = i64::try_from(protected_ms.checked_mul(1_000)?).ok()?;
+    create_time_us.checked_add(protected_us)
 }
 
 pub struct OrphanOrderTracker {
@@ -287,10 +310,12 @@ impl OrphanOrderTracker {
                 order.exchange_order_id,
                 order.symbol.clone(),
                 order.venue,
+                order.timestamp.create_t,
                 commit_query_policy_for(order.venue, mgr.binance_is_standard()),
             )
         };
-        let (status, cumulative_fill, exchange_order_id, symbol, venue, policy) = snapshot;
+        let (status, cumulative_fill, exchange_order_id, symbol, venue, create_time_us, policy) =
+            snapshot;
         if status != OrderExecutionStatus::Commit
             || cumulative_fill > FILL_EPS
             || exchange_order_id.is_some_and(|id| id > 0)
@@ -299,17 +324,43 @@ impl OrphanOrderTracker {
             return;
         }
 
+        let terminal_not_before_us = if matches!(
+            venue,
+            TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
+        ) {
+            // This process may restart with a different env value than the trade_engine that
+            // signed the ambiguous action. Use the maximum accepted TTL, not the current env.
+            let Some(barrier_us) = hyperliquid_not_found_terminal_barrier_us(
+                create_time_us,
+                MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS,
+            ) else {
+                warn!(
+                    "{}: strategy_id={} refusing to terminalize Hyperliquid Exec orphan without a valid create-time expiry barrier client_order_id={} create_time_us={} max_expires_after_ms={}",
+                    strategy_role,
+                    strategy_id,
+                    client_order_id,
+                    create_time_us,
+                    MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS
+                );
+                return;
+            };
+            barrier_us
+        } else {
+            i64::MIN
+        };
+
         let now_us = get_timestamp_us();
         let Some(state) = self.query_states.get_mut(&client_order_id) else {
             return;
         };
         state.record_not_found(now_us);
-        let confirmed = state.has_confirmed_not_found(policy.max_attempts, now_us);
+        let confirmed =
+            state.has_confirmed_not_found(policy.max_attempts, now_us, terminal_not_before_us);
         let count = state.consecutive_not_found;
         let elapsed_us = now_us.saturating_sub(state.first_not_found_at_us);
         if !confirmed {
             info!(
-                "{}: strategy_id={} Exec orphan not-found evidence client_order_id={} symbol={} venue={:?} queries={} confirmations={}/{} elapsed_ms={} grace_ms={}",
+                "{}: strategy_id={} Exec orphan not-found evidence client_order_id={} symbol={} venue={:?} queries={} confirmations={}/{} elapsed_ms={} grace_ms={} terminal_barrier_remaining_ms={}",
                 strategy_role,
                 strategy_id,
                 client_order_id,
@@ -320,6 +371,7 @@ impl OrphanOrderTracker {
                 policy.max_attempts,
                 elapsed_us / 1_000,
                 EXEC_COMMIT_NOT_FOUND_GRACE_US / 1_000,
+                terminal_not_before_us.saturating_sub(now_us).max(0) / 1_000,
             );
             return;
         }
@@ -1172,6 +1224,9 @@ enum CommitQueryAction {
 }
 
 pub(crate) fn infer_query_time_in_force(order: &Order) -> TimeInForce {
+    if let Some(time_in_force) = hyperliquid_time_in_force(order.venue, order.order_type) {
+        return time_in_force;
+    }
     if !order.order_type.is_limit() {
         return TimeInForce::GTC;
     }
@@ -1269,15 +1324,52 @@ fn normalize_epoch_to_us(ts: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        commit_query_policy_for, format_orphan_query_table, orphan_initial_query_ticks_for,
-        CommitQueryAction, OrphanOrderOwner, OrphanOrderTracker, OrphanQueryState,
-        BINANCE_PM_COMMIT_QUERY_BASE_TICKS, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
+        commit_query_policy_for, format_orphan_query_table,
+        hyperliquid_not_found_terminal_barrier_us, infer_query_time_in_force,
+        orphan_initial_query_ticks_for, CommitQueryAction, OrphanOrderOwner, OrphanOrderTracker,
+        OrphanQueryState, BINANCE_PM_COMMIT_QUERY_BASE_TICKS, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
         BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS, COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
         EXEC_COMMIT_NOT_FOUND_GRACE_US,
     };
     use crate::strategy::manager::{OrphanSourceKind, OrphanStrategyRole};
     use crate::strategy::uniform_order_helper::UniformPublishCtx;
-    use order_common::TradingVenue;
+    use order_common::{Order, OrderType, Side, TimeInForce, TradingVenue};
+    use signal_common::hyperliquid::{
+        HYPERLIQUID_ACTION_COMMIT_CLOCK_MARGIN_MS, MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS,
+    };
+
+    fn hyperliquid_test_order(venue: TradingVenue, order_type: OrderType) -> Order {
+        Order::new(
+            venue,
+            42,
+            order_type,
+            "BTCUSDC".to_string(),
+            Side::Buy,
+            1.0,
+            100.0,
+            false,
+            1.0,
+            None,
+            false,
+        )
+    }
+
+    #[test]
+    fn hyperliquid_orphan_tif_matches_original_order_intent() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                infer_query_time_in_force(&hyperliquid_test_order(venue, OrderType::Limit)),
+                TimeInForce::GTX
+            );
+            assert_eq!(
+                infer_query_time_in_force(&hyperliquid_test_order(venue, OrderType::Market)),
+                TimeInForce::IOC
+            );
+        }
+    }
 
     #[test]
     fn orphan_query_table_uses_three_lines() {
@@ -1400,23 +1492,70 @@ mod tests {
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
             first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+            i64::MIN,
         ));
 
         state.record_not_found(first_not_found_at_us + 2_000_000);
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
             first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+            i64::MIN,
         ));
 
         state.query_count = COMMIT_QUERY_MAX_ATTEMPTS;
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
             first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US - 1,
+            i64::MIN,
         ));
         assert!(state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
             first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+            i64::MIN,
         ));
+    }
+
+    #[test]
+    fn hyperliquid_not_found_waits_past_signed_expiry_and_commit_margin() {
+        let create_time_us = 1_000_000;
+        let terminal_not_before_us = hyperliquid_not_found_terminal_barrier_us(
+            create_time_us,
+            MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS,
+        )
+        .unwrap();
+        assert_eq!(
+            terminal_not_before_us,
+            create_time_us
+                + (MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS
+                    + HYPERLIQUID_ACTION_COMMIT_CLOCK_MARGIN_MS) as i64
+                    * 1_000
+        );
+
+        let mut state = OrphanQueryState {
+            query_count: COMMIT_QUERY_MAX_ATTEMPTS,
+            ticks_until_next_query: 0,
+            consecutive_not_found: 0,
+            first_not_found_at_us: 0,
+        };
+        state.record_not_found(create_time_us + 1_000_000);
+        state.record_not_found(create_time_us + 2_000_000);
+        state.record_not_found(create_time_us + 3_000_000);
+
+        assert!(!state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            terminal_not_before_us - 1,
+            terminal_not_before_us,
+        ));
+        assert!(state.has_confirmed_not_found(
+            COMMIT_QUERY_MAX_ATTEMPTS,
+            terminal_not_before_us,
+            terminal_not_before_us,
+        ));
+        assert!(hyperliquid_not_found_terminal_barrier_us(
+            0,
+            MAX_HYPERLIQUID_ACTION_EXPIRES_AFTER_MS
+        )
+        .is_none());
     }
 
     #[test]
@@ -1435,6 +1574,7 @@ mod tests {
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
             1_000_000 + EXEC_COMMIT_NOT_FOUND_GRACE_US,
+            i64::MIN,
         ));
     }
 

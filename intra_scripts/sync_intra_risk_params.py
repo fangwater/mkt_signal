@@ -35,7 +35,7 @@ def try_import_redis():
         return None
 
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 
 
 def normalize_exchange(ex: str) -> str:

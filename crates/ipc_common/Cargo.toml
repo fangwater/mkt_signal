@@ -8,5 +8,6 @@ anyhow.workspace = true
 bytes = { version = "1.0", features = ["serde"] }
 iceoryx2 = "0.8.1"
 log = "0.4"
+persist_common = { path = "../persist_common" }
 runtime_common = { path = "../runtime_common" }
 signal_common = { path = "../signal_common" }

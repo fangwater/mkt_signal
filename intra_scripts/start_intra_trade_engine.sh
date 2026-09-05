@@ -78,7 +78,7 @@ if [[ "$EXCHANGE" == "okx" ]]; then
 fi
 
 case "$EXCHANGE" in
-  binance|okex|bybit|bitget|gate) ;;
+  binance|okex|bybit|bitget|gate|hyperliquid) ;;
   *)
     echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
     exit 1

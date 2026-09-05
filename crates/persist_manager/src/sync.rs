@@ -15,6 +15,7 @@ use tonic::{Request, Response, Status};
 
 use crate::runtime_common::get_timestamp_us;
 
+use super::hyperliquid_account_fact::CF_HYPERLIQUID_ACCOUNT_FACT;
 use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::CF_ORDER_UPDATE_UNMATCHED;
 use super::storage::RocksDbStore;
@@ -120,6 +121,24 @@ pub fn is_order_export_sync_cf(cf_name: &str) -> bool {
         .any(|candidate| *candidate == cf_name)
 }
 
+/// Column families carried by the generic persist replication stream. Keep
+/// this broader than the parquet-facing order-export schema.
+pub fn persist_sync_column_families() -> &'static [&'static str] {
+    &[
+        CF_ORDER_UPDATE_UNMATCHED,
+        CF_TRADE_UPDATE_UNMATCHED,
+        CF_ORDER_QUEUE_POSITION,
+        CF_UNIFORM_ORDER,
+        CF_HYPERLIQUID_ACCOUNT_FACT,
+    ]
+}
+
+pub fn is_persist_sync_cf(cf_name: &str) -> bool {
+    persist_sync_column_families()
+        .iter()
+        .any(|candidate| *candidate == cf_name)
+}
+
 pub fn required_center_column_families(base_cfs: &[&'static str]) -> Vec<&'static str> {
     let mut names = Vec::with_capacity(base_cfs.len() + 3);
     names.extend_from_slice(base_cfs);
@@ -133,7 +152,7 @@ fn required_multi_center_column_families(sources: &[MultiCollectorSource]) -> Ve
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
     for source in sources {
-        for base_cf in order_export_sync_column_families() {
+        for base_cf in persist_sync_column_families() {
             names.push(center_source_cf_name(&source.id, base_cf));
         }
     }
@@ -150,8 +169,35 @@ pub fn persist_with_outbox(
     write_ts_us: i64,
     sync_enabled: bool,
 ) -> Result<()> {
-    if !sync_enabled || !is_order_export_sync_cf(cf_name) {
-        return store.put(cf_name, key, value);
+    persist_with_outbox_write_mode(store, cf_name, key, value, write_ts_us, sync_enabled, false)
+}
+
+pub fn persist_with_outbox_sync(
+    store: &RocksDbStore,
+    cf_name: &str,
+    key: &[u8],
+    value: &[u8],
+    write_ts_us: i64,
+    sync_enabled: bool,
+) -> Result<()> {
+    persist_with_outbox_write_mode(store, cf_name, key, value, write_ts_us, sync_enabled, true)
+}
+
+fn persist_with_outbox_write_mode(
+    store: &RocksDbStore,
+    cf_name: &str,
+    key: &[u8],
+    value: &[u8],
+    write_ts_us: i64,
+    sync_enabled: bool,
+    force_sync: bool,
+) -> Result<()> {
+    if !sync_enabled || !is_persist_sync_cf(cf_name) {
+        return if force_sync {
+            store.put_sync(cf_name, key, value)
+        } else {
+            store.put(cf_name, key, value)
+        };
     }
 
     let seq = next_outbox_seq(store)?;
@@ -165,7 +211,7 @@ pub fn persist_with_outbox(
     };
     let outbox_key = seq_key(seq);
     let next_seq_value = (seq.saturating_add(1)).to_be_bytes().to_vec();
-    store.put_many(&[
+    let writes = [
         (cf_name.to_string(), key.to_vec(), value.to_vec()),
         (
             CF_SYNC_OUTBOX.to_string(),
@@ -177,7 +223,12 @@ pub fn persist_with_outbox(
             META_NEXT_SEQ_KEY.to_vec(),
             next_seq_value,
         ),
-    ])
+    ];
+    if force_sync {
+        store.put_many_sync(&writes)
+    } else {
+        store.put_many(&writes)
+    }
 }
 
 pub async fn serve_sync_source(
@@ -383,6 +434,9 @@ fn spawn_repair_scheduler(
 fn build_repair_jobs(sources: &[MultiCollectorSource]) -> Vec<(MultiCollectorSource, String)> {
     let mut jobs = Vec::new();
     for source in sources {
+        // The legacy repair API scans decimal time-prefixed order keys. Stable
+        // Hyperliquid fact hashes are replicated by the ordered outbox but are
+        // intentionally not presented as order-export repair data.
         for cf_name in order_export_sync_column_families() {
             jobs.push((source.clone(), (*cf_name).to_string()));
         }
@@ -1734,7 +1788,7 @@ fn apply_record_batch(store: &RocksDbStore, source_id: &str, batch: &RecordBatch
 }
 
 fn validate_record(record: &SyncRecord) -> Result<()> {
-    if !is_order_export_sync_cf(record.cf_name.as_str()) {
+    if !is_persist_sync_cf(record.cf_name.as_str()) {
         return Err(anyhow!("unexpected sync cf: {}", record.cf_name));
     }
     let actual = crc32(&record.value);
@@ -2164,9 +2218,12 @@ fn hex_key(key: &[u8]) -> String {
 mod tests {
     use super::{
         center_source_cf_name, decode_outbox_record, encode_outbox_record,
-        open_center_store_for_config, order_export_sync_column_families, MultiCollectorConfig,
-        MultiCollectorSource, SyncOutboxRecord,
+        open_center_store_for_config, order_export_sync_column_families,
+        persist_sync_column_families, persist_with_outbox_sync, MultiCollectorConfig,
+        MultiCollectorSource, SyncOutboxRecord, CF_SYNC_META, CF_SYNC_OUTBOX, META_NEXT_SEQ_KEY,
     };
+    use crate::hyperliquid_account_fact::CF_HYPERLIQUID_ACCOUNT_FACT;
+    use crate::storage::RocksDbStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -2225,11 +2282,67 @@ mod tests {
 
         let store = open_center_store_for_config(path.to_str().unwrap(), false, &config).unwrap();
         for source in &config.sources {
-            for base_cf in order_export_sync_column_families() {
+            for base_cf in persist_sync_column_families() {
                 let cf_name = center_source_cf_name(&source.id, base_cf);
                 store.put(&cf_name, b"key", b"value").unwrap();
             }
         }
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn hyperliquid_fact_is_synced_without_entering_order_export_schema() {
+        assert!(persist_sync_column_families().contains(&CF_HYPERLIQUID_ACCOUNT_FACT));
+        assert!(!order_export_sync_column_families().contains(&CF_HYPERLIQUID_ACCOUNT_FACT));
+    }
+
+    #[test]
+    fn hyperliquid_fact_and_outbox_are_written_in_one_durable_operation() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "persist_manager_hyperliquid_fact_sync_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        let store = RocksDbStore::open(
+            path.to_str().unwrap(),
+            &[CF_HYPERLIQUID_ACCOUNT_FACT, CF_SYNC_OUTBOX, CF_SYNC_META],
+            false,
+        )
+        .unwrap();
+
+        persist_with_outbox_sync(
+            &store,
+            CF_HYPERLIQUID_ACCOUNT_FACT,
+            b"stable-key",
+            b"exact-fact-value",
+            123,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .get(CF_HYPERLIQUID_ACCOUNT_FACT, b"stable-key")
+                .unwrap()
+                .unwrap(),
+            b"exact-fact-value"
+        );
+        let outbox = store
+            .get(CF_SYNC_OUTBOX, &1_u64.to_be_bytes())
+            .unwrap()
+            .unwrap();
+        let outbox = decode_outbox_record(&outbox).unwrap();
+        assert_eq!(outbox.cf_name, CF_HYPERLIQUID_ACCOUNT_FACT);
+        assert_eq!(outbox.key, b"stable-key");
+        assert_eq!(outbox.value, b"exact-fact-value");
+        assert_eq!(
+            store.get(CF_SYNC_META, META_NEXT_SEQ_KEY).unwrap().unwrap(),
+            2_u64.to_be_bytes()
+        );
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }

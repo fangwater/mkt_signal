@@ -32,6 +32,7 @@ use mkt_signal::rolling_metrics::service::{
     ensure_series_capacity, init_log_prefix, log_prefix, new_series_map, spawn_compute_thread,
     ComputeResult, SeriesMap, SymbolSeries,
 };
+use mkt_signal::spread_pbs::hyperliquid::refresh_paired_symbols as refresh_hyperliquid_paired_symbols;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::time_util::get_timestamp_us;
 
@@ -79,6 +80,21 @@ struct BinanceSymbolInfo {
     quote_asset: String,
     #[serde(default)]
     contract_type: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SymbolRefreshSource {
+    BinanceFutures,
+    HyperliquidPaired,
+}
+
+impl SymbolRefreshSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::BinanceFutures => "binance-futures",
+            Self::HyperliquidPaired => "hyperliquid-paired-usdc",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -363,15 +379,14 @@ async fn main() -> Result<()> {
     spawn_writer_thread(redis_url.clone(), rx);
     spawn_ringbuffer_monitor(Arc::clone(&series_map), Duration::from_secs(300));
 
-    if hedge_topic.eq_ignore_ascii_case("binance-futures") {
+    if let Some(refresh_source) = symbol_refresh_source(&open_topic, &hedge_topic) {
         let series_map_task = Arc::clone(&series_map);
         let capacity_task = Arc::clone(&series_capacity);
-        let swap_task = hedge_topic.clone();
         let prefix_task = prefix.clone();
         let interval = Duration::from_secs(symbol_refresh_secs.max(60));
         tokio::spawn(async move {
             symbol_refresh_loop(
-                swap_task,
+                refresh_source,
                 prefix_task,
                 interval,
                 series_map_task,
@@ -1173,17 +1188,29 @@ struct SymbolSyncStats {
     removed: usize,
 }
 
+fn symbol_refresh_source(open_topic: &str, hedge_topic: &str) -> Option<SymbolRefreshSource> {
+    if hedge_topic.eq_ignore_ascii_case("binance-futures") {
+        return Some(SymbolRefreshSource::BinanceFutures);
+    }
+
+    let is_hyperliquid_intra = (open_topic.eq_ignore_ascii_case("hyperliquid-margin")
+        && hedge_topic.eq_ignore_ascii_case("hyperliquid-futures"))
+        || (open_topic.eq_ignore_ascii_case("hyperliquid-futures")
+            && hedge_topic.eq_ignore_ascii_case("hyperliquid-margin"));
+    is_hyperliquid_intra.then_some(SymbolRefreshSource::HyperliquidPaired)
+}
+
 async fn symbol_refresh_loop(
-    swap_topic: String,
+    source: SymbolRefreshSource,
     prefix: String,
     interval: Duration,
     series_map: Arc<SeriesMap>,
     series_capacity: Arc<AtomicUsize>,
 ) {
     debug!(
-        "{}: symbol refresh loop started (swap_topic={}, interval={}s)",
+        "{}: symbol refresh loop started (source={}, interval={}s)",
         log_prefix(),
-        swap_topic,
+        source.label(),
         interval.as_secs()
     );
 
@@ -1195,7 +1222,7 @@ async fn symbol_refresh_loop(
             first = false;
         }
 
-        match fetch_binance_futures_symbols().await {
+        match fetch_online_symbols(source).await {
             Ok(mut symbols) => {
                 symbols.sort();
                 symbols.dedup();
@@ -1211,11 +1238,19 @@ async fn symbol_refresh_loop(
             }
             Err(err) => {
                 warn!(
-                    "{}: refresh binance-futures symbols failed: {err:?}",
-                    log_prefix()
+                    "{}: refresh {} symbols failed: {err:?}",
+                    log_prefix(),
+                    source.label()
                 );
             }
         }
+    }
+}
+
+async fn fetch_online_symbols(source: SymbolRefreshSource) -> Result<Vec<String>> {
+    match source {
+        SymbolRefreshSource::BinanceFutures => fetch_binance_futures_symbols().await,
+        SymbolRefreshSource::HyperliquidPaired => refresh_hyperliquid_paired_symbols().await,
     }
 }
 
@@ -1649,7 +1684,11 @@ fn setup_signal_handlers(token: &CancellationToken) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_premium_rate, compute_spread_fr};
+    use super::{
+        apply_symbol_snapshot, compute_premium_rate, compute_spread_fr, get_or_insert_series,
+        symbol_refresh_source, SymbolRefreshSource,
+    };
+    use mkt_signal::rolling_metrics::service::new_series_map;
 
     #[test]
     fn premium_rate_uses_mark_minus_index_over_index() {
@@ -1674,5 +1713,38 @@ mod tests {
     fn spread_fr_requires_both_sides() {
         assert_eq!(compute_spread_fr(Some(0.001), None), None);
         assert_eq!(compute_spread_fr(None, Some(0.001)), None);
+    }
+
+    #[test]
+    fn selects_venue_native_symbol_refresh_source() {
+        assert_eq!(
+            symbol_refresh_source("binance-margin", "binance-futures"),
+            Some(SymbolRefreshSource::BinanceFutures)
+        );
+        assert_eq!(
+            symbol_refresh_source("hyperliquid-margin", "hyperliquid-futures"),
+            Some(SymbolRefreshSource::HyperliquidPaired)
+        );
+        assert_eq!(
+            symbol_refresh_source("hyperliquid-margin", "binance-futures"),
+            Some(SymbolRefreshSource::BinanceFutures)
+        );
+        assert_eq!(symbol_refresh_source("okex-margin", "okex-futures"), None);
+    }
+
+    #[test]
+    fn hyperliquid_snapshot_retains_native_usdc_series() {
+        let prefix = "hyperliquid-margin_hyperliquid-futures";
+        let series = new_series_map();
+        let usdc_key = format!("{prefix}::HYPEUSDC");
+        let usdt_key = format!("{prefix}::HYPEUSDT");
+        get_or_insert_series(&series, &usdc_key, 16);
+        get_or_insert_series(&series, &usdt_key, 16);
+
+        let stats = apply_symbol_snapshot(prefix, &["HYPEUSDC".to_string()], 16, &series);
+
+        assert!(series.contains_key(&usdc_key));
+        assert!(!series.contains_key(&usdt_key));
+        assert_eq!(stats.removed, 1);
     }
 }

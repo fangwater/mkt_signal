@@ -69,6 +69,7 @@ fn is_futures(venue: TradingVenue) -> bool {
             | TradingVenue::BitgetFutures
             | TradingVenue::BitgetCoinFutures
             | TradingVenue::GateFutures
+            | TradingVenue::HyperliquidFutures
     )
 }
 
@@ -1287,6 +1288,38 @@ mod tests {
 
         assert_eq!(dirty_symbols.len(), 1);
         assert_eq!(dirty_symbols.get("BTCUSDT"), Some(&110));
+    }
+
+    #[test]
+    fn zero_bbo_replaces_previous_tradable_quote() {
+        let venue = TradingVenue::HyperliquidFutures;
+        let quotes = Rc::new(RefCell::new(HashMap::from([(venue, HashMap::new())])));
+        let mut dirty_symbols = HashMap::new();
+        let mut total_msgs = 0;
+        let mut unique_symbols = HashSet::new();
+        let mut last_symbol = String::new();
+
+        for msg in [
+            AskBidSpreadMsg::create("BTCUSDC".to_string(), 100, 99.0, 2.0, 101.0, 3.0),
+            AskBidSpreadMsg::create("BTCUSDC".to_string(), 110, 0.0, 0.0, 0.0, 0.0),
+        ] {
+            process_askbid_payload(
+                &msg.to_bytes(),
+                venue,
+                &quotes,
+                &mut dirty_symbols,
+                &mut total_msgs,
+                &mut unique_symbols,
+                &mut last_symbol,
+            );
+        }
+
+        let quotes = quotes.borrow();
+        let quote = quotes[&venue].get("BTCUSDC").unwrap();
+        assert!(!quote.is_valid());
+        assert_eq!((quote.bid, quote.bid_qty), (0.0, 0.0));
+        assert_eq!((quote.ask, quote.ask_qty), (0.0, 0.0));
+        assert_eq!(quote.ts, 110);
     }
 
     #[test]

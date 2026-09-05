@@ -52,7 +52,11 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetCancelUMOrder
             | TradeRequestType::BitgetCancelSpotOrder
             | TradeRequestType::BitgetNewCoinFuturesOrder
-            | TradeRequestType::BitgetCancelCoinFuturesOrder => true,
+            | TradeRequestType::BitgetCancelCoinFuturesOrder
+            | TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => true,
         }
     }
 
@@ -115,6 +119,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -172,6 +182,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }
@@ -231,6 +247,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -289,6 +311,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
             }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -346,6 +374,12 @@ impl TradeTypeMapping {
             | TradeRequestType::BitgetNewCoinFuturesOrder
             | TradeRequestType::BitgetCancelCoinFuturesOrder => {
                 unreachable!("Bitget requests run via websocket; REST mapping not used")
+            }
+            TradeRequestType::HyperliquidNewMarginOrder
+            | TradeRequestType::HyperliquidNewUMOrder
+            | TradeRequestType::HyperliquidCancelMarginOrder
+            | TradeRequestType::HyperliquidCancelUMOrder => {
+                unreachable!("Hyperliquid requests run via websocket; REST mapping not used")
             }
         }
     }

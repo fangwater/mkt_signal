@@ -16,7 +16,8 @@ pub struct BboFrame {
     /// 全链路下游（Quote.ts / TradingLeg.ts / OrderTimeStamp.mkt_t）统一 µs。
     /// 部分 venue 没有事件时间时（例如 Binance 现货 bookTicker 缺 `E/T`）填 0。
     pub ts_us: i64,
-    /// 单 symbol 内严格单调递增的序号（双路去重用）。
+    /// 单 symbol 内的交易所顺序键。多数 venue 严格单调递增；没有原生
+    /// BBO sequence 的 venue 通过 `bbo_dedup_policy()` 选择内容身份去重。
     /// 各 venue 字段各异：
     /// - OKex bbo-tbt:    `data[].seqId`
     /// - Binance depth5/bookTicker: `u`
@@ -32,6 +33,16 @@ pub struct BboFrame {
     pub bid_amount: f64,
     pub ask_price: f64,
     pub ask_amount: f64,
+}
+
+/// Cross-leg BBO de-duplication semantics for a venue feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BboDedupPolicy {
+    /// `BboFrame.seq_id` is strictly increasing within one symbol.
+    MonotonicSequence,
+    /// The venue has no monotonic sequence. De-duplicate the complete quote
+    /// identity `(symbol, timestamp, bid px/sz, ask px/sz)` within a bounded window.
+    RecentIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,6 +69,36 @@ pub struct TradeFrame {
     pub side: char,
     pub price: f64,
     pub amount: f64,
+}
+
+/// Cross-leg trade de-duplication semantics for a venue feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeDedupPolicy {
+    /// `TradeFrame.seq_id` is strictly increasing within one symbol.
+    MonotonicSequence,
+    /// The venue has no monotonic sequence. De-duplicate the documented identity
+    /// `(symbol, timestamp, trade_id)` within a bounded reconnect window.
+    RecentIdentity,
+}
+
+/// Cross-leg order-book de-duplication semantics for snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncrementalDedupPolicy {
+    /// A snapshot may reset the sequence baseline (the existing CEX behavior).
+    SnapshotCanReset,
+    /// Snapshot ordering keys are monotonic and duplicate/older snapshots are dropped.
+    MonotonicIncludingSnapshots,
+    /// The venue has timestamped full books but no strict sequence. Reject
+    /// older timestamps and de-duplicate the exact `(timestamp, bids, asks)`
+    /// identity while accepting different books from the same millisecond.
+    RecentSnapshotIdentity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscriptionAckPolicy {
+    None,
+    /// Hyperliquid acknowledges each public subscription by echoing its type and coin.
+    HyperliquidTypeAndCoin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -147,7 +188,7 @@ impl KeepaliveSpec {
 /// `parse_frame` 接收 `app.rs` 已经 `serde_json` 解析过的 `&Value`，
 /// 避免双路竞速场景下同一帧被重复 `from_str`。BBO 走 emit callback，
 /// 避免热路径为单条 frame 构造 `Vec<BboFrame>`。
-/// 双路去重统一基于 `BboFrame.seq_id` 在 `process_frame` 内完成。
+/// 双路去重按 adapter 的 `bbo_dedup_policy()` 在 `process_frame` 内完成。
 pub trait VenueAdapter {
     fn name(&self) -> &'static str;
     fn ws_url(&self) -> String;
@@ -164,6 +205,28 @@ pub trait VenueAdapter {
     fn build_derivatives_subscribe(&self, _symbols: &[String]) -> Vec<Value> {
         Vec::new()
     }
+    fn bbo_dedup_policy(&self) -> BboDedupPolicy {
+        BboDedupPolicy::MonotonicSequence
+    }
+    fn trade_dedup_policy(&self) -> TradeDedupPolicy {
+        TradeDedupPolicy::MonotonicSequence
+    }
+    fn incremental_dedup_policy(&self) -> IncrementalDedupPolicy {
+        IncrementalDedupPolicy::SnapshotCanReset
+    }
+    fn subscription_ack_policy(&self) -> SubscriptionAckPolicy {
+        SubscriptionAckPolicy::None
+    }
+    /// Whether a decoded-frame error invalidates the current WebSocket session.
+    ///
+    /// Most legacy adapters retain their historical log-and-drop behavior.
+    /// Adapters with an authoritative subscription catalog can opt into a
+    /// reconnect so malformed or catalog-drifted frames are never silent.
+    fn reconnect_on_parse_error(&self) -> bool {
+        false
+    }
+    /// Called before reconnecting after a fatal parse error.
+    fn on_fatal_parse_error(&self) {}
     /// Optional symbol-table hook for adapters that keep per-symbol hot-path state.
     fn seed_symbols(&self, _symbols: &[String]) {}
     fn symbol_slot_index(&self, _symbol: &str) -> Option<usize> {
@@ -298,8 +361,7 @@ pub trait VenueAdapter {
 
 /// 按 venue 创建对应 adapter；非支持的 venue 返回 Ok(None)。
 ///
-/// 当前支持：OKex / Binance / Bybit / Gate / Bitget（spot+futures 各 2 个）。
-/// Hyperliquid / Aster 为 DEX，spread_pbs 不接入。
+/// 当前支持：OKex / Binance / Bybit / Gate / Bitget / Hyperliquid。
 ///
 /// OKex 必须 await：SBE 端订阅要先 REST 拉 instIdCode 映射；其他 venue 同步构造。
 pub async fn create_adapter(
@@ -327,6 +389,9 @@ pub async fn create_adapter(
         | TradingVenue::BitgetCoinFutures => {
             Box::new(crate::spread_pbs::bitget::BitgetAdapter::new(venue))
         }
+        TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures => Box::new(
+            crate::spread_pbs::hyperliquid::HyperliquidAdapter::new(venue)?,
+        ),
         _ => return Ok(None),
     };
     Ok(Some(adapter))

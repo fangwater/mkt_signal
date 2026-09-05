@@ -16,13 +16,19 @@ use crate::pre_trade::signal_latency::record_signal_submit_latency;
 use crate::pre_trade::PersistChannel;
 use crate::strategy::StrategyManager;
 use order_common::TradeRequestType;
-use order_common::{ExecutionType, OrderStatus, TimeInForce, TradingVenue};
+use order_common::{
+    hyperliquid_time_in_force, ExecutionType, OrderStatus, TimeInForce, TradingVenue,
+};
 use order_common::{OrderQueryOrderUpdate, OrderQueryTradeUpdate, OrderSubmitSignalMeta};
-use order_common::{TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind};
+use order_common::{
+    TradeEngineResponse, TradeEngineResponseMessage, TradeRequestKind,
+    HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END, HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET,
+};
 use rolling_common::arb_open_latency::record_arb_open_latency;
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::SignalType;
+use symbol_utils::Exchange;
 use trade_engine::internal_terminate::{InternalOpenTerminateMsg, ORDER_TERMINATE_PAYLOAD_LEN};
 use trade_engine::trade_request::{
     PreparedTradeRequest, TradeRequestIpcPayload, TRADE_REQ_PAYLOAD,
@@ -38,6 +44,24 @@ const TRADE_RESP_TAIL_LEN: usize = 33;
 const TRADE_ENG_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 const TRADE_REQ_PUBLISH_SLOW_WARN_US: i64 = 50_000;
 const OPEN_ORDER_SLOW_TRACE_US: i64 = 100;
+
+fn hyperliquid_trade_response_matches_account(
+    payload: &[u8],
+    expected_account_hash: &[u8; 32],
+) -> bool {
+    let exchange_matches = payload
+        .get(12..16)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_le_bytes)
+        == Some(Exchange::Hyperliquid as u32);
+    exchange_matches
+        && payload
+            .get(
+                HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET
+                    ..HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END,
+            )
+            .is_some_and(|actual| actual == expected_account_hash)
+}
 
 fn trade_request_create_time_us(bytes: &Bytes) -> Option<i64> {
     if bytes.len() < 16 {
@@ -647,6 +671,7 @@ impl TradeEngChannels {
 
 struct TradeEngChannel {
     exchange: String,
+    hyperliquid_account_hash: Option<[u8; 32]>,
     order_req_publisher: Publisher<ipc::Service, TradeRequestIpcPayload, ()>,
     order_control_publisher: Option<Publisher<ipc::Service, [u8; ORDER_TERMINATE_PAYLOAD_LEN], ()>>,
     _resp_node: Node<ipc::Service>,
@@ -694,11 +719,21 @@ impl TradeEngChannel {
             None
         };
 
+        let hyperliquid_account_hash = if exchange == "hyperliquid" {
+            Some(
+                crate::pre_trade::hyperliquid_account_hash_from_env()
+                    .map_err(|err| anyhow!("Hyperliquid trade response identity: {err}"))?,
+            )
+        } else {
+            None
+        };
+
         let (resp_node, resp_subscriber) =
             Self::create_trade_resp_subscriber(exchange, &order_resp_service)?;
 
         Ok(Self {
             exchange: exchange.to_string(),
+            hyperliquid_account_hash,
             order_req_publisher,
             order_control_publisher,
             _resp_node: resp_node,
@@ -821,6 +856,17 @@ impl TradeEngChannel {
                         continue;
                     }
 
+                    if self
+                        .hyperliquid_account_hash
+                        .as_ref()
+                        .is_some_and(|expected| {
+                            !hyperliquid_trade_response_matches_account(payload, expected)
+                        })
+                    {
+                        warn!("drop Hyperliquid trade response for another account or network");
+                        continue;
+                    }
+
                     let req_type =
                         u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                     let client_order_id = i64::from_le_bytes([
@@ -855,36 +901,38 @@ impl TradeEngChannel {
                             payload[29],
                         ]);
                         order_status_u8 = payload[30];
-                        order_update_time = i64::from_le_bytes([
-                            payload[31],
-                            payload[32],
-                            payload[33],
-                            payload[34],
-                            payload[35],
-                            payload[36],
-                            payload[37],
-                            payload[38],
-                        ]);
-                        executed_qty = f64::from_le_bytes([
-                            payload[39],
-                            payload[40],
-                            payload[41],
-                            payload[42],
-                            payload[43],
-                            payload[44],
-                            payload[45],
-                            payload[46],
-                        ]);
-                        response_price = f64::from_le_bytes([
-                            payload[47],
-                            payload[48],
-                            payload[49],
-                            payload[50],
-                            payload[51],
-                            payload[52],
-                            payload[53],
-                            payload[54],
-                        ]);
+                        if self.hyperliquid_account_hash.is_none() {
+                            order_update_time = i64::from_le_bytes([
+                                payload[31],
+                                payload[32],
+                                payload[33],
+                                payload[34],
+                                payload[35],
+                                payload[36],
+                                payload[37],
+                                payload[38],
+                            ]);
+                            executed_qty = f64::from_le_bytes([
+                                payload[39],
+                                payload[40],
+                                payload[41],
+                                payload[42],
+                                payload[43],
+                                payload[44],
+                                payload[45],
+                                payload[46],
+                            ]);
+                            response_price = f64::from_le_bytes([
+                                payload[47],
+                                payload[48],
+                                payload[49],
+                                payload[50],
+                                payload[51],
+                                payload[52],
+                                payload[53],
+                                payload[54],
+                            ]);
+                        }
                     }
                     let response = TradeEngineResponseMessage::new_with_tail(
                         status,
@@ -1117,6 +1165,9 @@ fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage
 }
 
 fn infer_time_in_force(venue: TradingVenue, order_type: OrderType) -> TimeInForce {
+    if let Some(time_in_force) = hyperliquid_time_in_force(venue, order_type) {
+        return time_in_force;
+    }
     if !order_type.is_limit() {
         return TimeInForce::GTC;
     }
@@ -1139,5 +1190,62 @@ fn execution_type_from_status(status: OrderStatus) -> ExecutionType {
         OrderStatus::PartiallyFilled | OrderStatus::Filled => ExecutionType::Trade,
         OrderStatus::Canceled => ExecutionType::Canceled,
         OrderStatus::Expired | OrderStatus::ExpiredInMatch => ExecutionType::Expired,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hyperliquid_trade_response_accepts_only_exact_account_and_network_hash() {
+        let expected = [0x42; 32];
+        let mut payload = [0u8; TRADE_RESP_PAYLOAD];
+        payload[12..16].copy_from_slice(&(Exchange::Hyperliquid as u32).to_le_bytes());
+        payload[HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_OFFSET
+            ..HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END]
+            .copy_from_slice(&expected);
+
+        assert!(hyperliquid_trade_response_matches_account(
+            &payload, &expected
+        ));
+
+        payload[12..16].copy_from_slice(&(Exchange::Binance as u32).to_le_bytes());
+        assert!(!hyperliquid_trade_response_matches_account(
+            &payload, &expected
+        ));
+        payload[12..16].copy_from_slice(&(Exchange::Hyperliquid as u32).to_le_bytes());
+
+        let mut other_network_or_account = expected;
+        other_network_or_account[0] ^= 1;
+        assert!(!hyperliquid_trade_response_matches_account(
+            &payload,
+            &other_network_or_account
+        ));
+        assert!(!hyperliquid_trade_response_matches_account(
+            &[0u8; TRADE_RESP_PAYLOAD],
+            &expected
+        ));
+        assert!(!hyperliquid_trade_response_matches_account(
+            &payload[..HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END - 1],
+            &expected
+        ));
+    }
+
+    #[test]
+    fn hyperliquid_unmatched_tif_matches_original_order_intent() {
+        for venue in [
+            TradingVenue::HyperliquidMargin,
+            TradingVenue::HyperliquidFutures,
+        ] {
+            assert_eq!(
+                infer_time_in_force(venue, OrderType::Limit),
+                TimeInForce::GTX
+            );
+            assert_eq!(
+                infer_time_in_force(venue, OrderType::Market),
+                TimeInForce::IOC
+            );
+        }
     }
 }

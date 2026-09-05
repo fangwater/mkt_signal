@@ -1,5 +1,6 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::convert::TryFrom;
 
 /// Trading venue across exchange and market type.
@@ -210,6 +211,8 @@ impl TradingVenue {
                 | TradingVenue::BitgetCoinFutures
                 | TradingVenue::GateMargin
                 | TradingVenue::GateFutures
+                | TradingVenue::HyperliquidMargin
+                | TradingVenue::HyperliquidFutures
         )
     }
 }
@@ -374,6 +377,54 @@ pub fn min_qty_symbol_key(venue: TradingVenue, symbol: &str) -> String {
     }
 }
 
+/// Resolves the small, explicit set of Hyperliquid spot token aliases used by
+/// HyperCore/UI to the corresponding perpetual base name.
+///
+/// This intentionally does not remove a leading `U` in general: names such as
+/// `UPUMP`, `UMON`, `UNIT`, and `USDE` are distinct assets. If Hyperliquid lists
+/// both the alias target and its wrapped name, the wrapped name is retained to
+/// avoid collapsing two spot assets into one internal symbol.
+#[derive(Debug, Clone)]
+pub struct HyperliquidSpotBaseResolver {
+    raw_bases: HashSet<String>,
+}
+
+impl HyperliquidSpotBaseResolver {
+    pub fn new<I, S>(raw_bases: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            raw_bases: raw_bases
+                .into_iter()
+                .map(|base| base.as_ref().trim().to_ascii_uppercase())
+                .collect(),
+        }
+    }
+
+    pub fn canonical_base(&self, raw_base: &str) -> String {
+        let normalized = raw_base.trim().to_ascii_uppercase();
+        let Some(target) = hyperliquid_spot_alias_target(&normalized) else {
+            return normalized;
+        };
+        if self.raw_bases.contains(target) {
+            normalized
+        } else {
+            target.to_string()
+        }
+    }
+}
+
+fn hyperliquid_spot_alias_target(raw_base: &str) -> Option<&'static str> {
+    match raw_base {
+        "UBTC" => Some("BTC"),
+        "UETH" => Some("ETH"),
+        "USOL" => Some("SOL"),
+        _ => None,
+    }
+}
+
 fn split_internal_symbol_assets(symbol_upper: &str) -> (&str, &str) {
     const QUOTE_ASSETS: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BIDR", "TRY", "USD"];
 
@@ -478,6 +529,24 @@ mod tests {
             min_qty_symbol_key(TradingVenue::BitgetCoinFutures, "BTCUSDCM"),
             "BTCUSD_CM"
         );
+    }
+
+    #[test]
+    fn hyperliquid_spot_aliases_are_explicit_and_collision_safe() {
+        let resolver = HyperliquidSpotBaseResolver::new([
+            "UBTC", "UETH", "USOL", "UPUMP", "UMON", "UNIT", "USDE",
+        ]);
+        assert_eq!(resolver.canonical_base("UBTC"), "BTC");
+        assert_eq!(resolver.canonical_base("ueth"), "ETH");
+        assert_eq!(resolver.canonical_base("USOL"), "SOL");
+        assert_eq!(resolver.canonical_base("UPUMP"), "UPUMP");
+        assert_eq!(resolver.canonical_base("UMON"), "UMON");
+        assert_eq!(resolver.canonical_base("UNIT"), "UNIT");
+        assert_eq!(resolver.canonical_base("USDE"), "USDE");
+
+        let collision = HyperliquidSpotBaseResolver::new(["BTC", "UBTC"]);
+        assert_eq!(collision.canonical_base("BTC"), "BTC");
+        assert_eq!(collision.canonical_base("UBTC"), "UBTC");
     }
 
     #[test]

@@ -348,7 +348,7 @@ mod tests {
     use order_common::TradingVenue;
 
     #[test]
-    fn trading_venue_supports_pre_trade_stack_for_binance_okx_bybit_bitget_gate_only() {
+    fn trading_venue_supports_pre_trade_stack_for_enabled_venues() {
         for venue in [
             TradingVenue::BinanceMargin,
             TradingVenue::BinanceFutures,
@@ -361,20 +361,12 @@ mod tests {
             TradingVenue::BitgetCoinFutures,
             TradingVenue::GateMargin,
             TradingVenue::GateFutures,
-        ] {
-            assert!(
-                venue.supports_pre_trade_stack(),
-                "{venue:?} should be supported"
-            );
-        }
-
-        for venue in [
             TradingVenue::HyperliquidMargin,
             TradingVenue::HyperliquidFutures,
         ] {
             assert!(
-                !venue.supports_pre_trade_stack(),
-                "{venue:?} should remain unsupported"
+                venue.supports_pre_trade_stack(),
+                "{venue:?} should be supported"
             );
         }
     }

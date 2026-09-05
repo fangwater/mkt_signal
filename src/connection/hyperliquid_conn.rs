@@ -9,16 +9,50 @@ use serde_json::json;
 use tokio::time::{self, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
+const CONNECTION_GENERATION_PREFIX: &[u8] = b"\0mkt_signal:hyperliquid:connection_generation\0";
+
 pub struct HyperliquidConnection {
     base_connection: MktConnection,
+    connection_generation: Option<u64>,
 }
 
 impl HyperliquidConnection {
     pub fn new(connection: MktConnection) -> Self {
         Self {
             base_connection: connection,
+            connection_generation: None,
         }
     }
+
+    /// Inject an internal generation marker into the same broadcast queue after
+    /// each successful connection and before any frames from it are forwarded.
+    /// Keeping the marker and payloads in one queue preserves their ordering for
+    /// consumers that need to reset session-local protocol state.
+    pub fn with_connection_generation_notifications(mut self) -> Self {
+        self.connection_generation = Some(0);
+        self
+    }
+}
+
+fn next_connection_generation(current: &mut u64) -> u64 {
+    let next = current.checked_add(1).unwrap_or(1);
+    *current = next;
+    next
+}
+
+fn connection_generation_notification(generation: u64) -> Bytes {
+    let mut notification = Vec::with_capacity(CONNECTION_GENERATION_PREFIX.len() + 8);
+    notification.extend_from_slice(CONNECTION_GENERATION_PREFIX);
+    notification.extend_from_slice(&generation.to_be_bytes());
+    Bytes::from(notification)
+}
+
+pub fn parse_connection_generation_notification(payload: &[u8]) -> Option<u64> {
+    let generation: [u8; 8] = payload
+        .strip_prefix(CONNECTION_GENERATION_PREFIX)?
+        .try_into()
+        .ok()?;
+    Some(u64::from_be_bytes(generation)).filter(|generation| *generation > 0)
 }
 
 fn is_pong_message(value: &serde_json::Value) -> bool {
@@ -149,6 +183,21 @@ impl MktConnectionHandler for HyperliquidConnection {
                         connection.connected_at
                     );
                     self.base_connection.connection = Some(connection);
+                    if let Some(current) = self.connection_generation.as_mut() {
+                        let generation = next_connection_generation(current);
+                        if let Err(error) = self
+                            .base_connection
+                            .tx
+                            .send(connection_generation_notification(generation))
+                        {
+                            warn!(
+                                "Hyperliquid connection generation {} notification failed: {}",
+                                generation, error
+                            );
+                        } else {
+                            debug!("Hyperliquid connection generation {} ready", generation);
+                        }
+                    }
                     self.run_connection().await?;
 
                     if *self.base_connection.shutdown_rx.borrow() {
@@ -163,5 +212,31 @@ impl MktConnectionHandler for HyperliquidConnection {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        connection_generation_notification, next_connection_generation,
+        parse_connection_generation_notification,
+    };
+
+    #[test]
+    fn optional_connection_generation_notification_is_monotonic_and_parseable() {
+        let mut current = 0;
+        let first = next_connection_generation(&mut current);
+        assert_eq!(first, 1);
+        assert_eq!(
+            parse_connection_generation_notification(&connection_generation_notification(first)),
+            Some(1)
+        );
+        let second = next_connection_generation(&mut current);
+        assert_eq!(second, 2);
+        assert_eq!(
+            parse_connection_generation_notification(&connection_generation_notification(second)),
+            Some(2)
+        );
+        assert_eq!(parse_connection_generation_notification(b"{}"), None);
     }
 }

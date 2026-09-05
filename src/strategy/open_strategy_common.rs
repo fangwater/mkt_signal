@@ -17,8 +17,8 @@ use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyR
 use crate::strategy::order_query_builder::build_order_query_request;
 pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_reconcile::{
-    order_query_watchdog_delay_us, order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback,
-    ORDER_QUERY_WATCHDOG_DELAY_US,
+    hyperliquid_ambiguous_query_reason, order_query_watchdog_delay_us,
+    order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US,
 };
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -2014,6 +2014,27 @@ pub trait OpenStrategyCommon {
         let code_desc = exchange
             .and_then(|ex| describe_trade_error_code(ex, response.error_code()))
             .unwrap_or("unknown");
+
+        if let Some(reason) =
+            hyperliquid_ambiguous_query_reason(response, PendingOrderQueryReason::CancelWatchdog)
+        {
+            warn!(
+                "{}: strategy_id={} Hyperliquid action ambiguous: req_type={} client_order_id={} query_reason={:?}",
+                self.strategy_name(),
+                self.strategy_id(),
+                response.req_type(),
+                client_order_id,
+                reason
+            );
+            self.clear_query_watchdogs(client_order_id);
+            if !self.send_order_query(client_order_id, reason) {
+                self.handoff_open_order_after_query_failure(
+                    client_order_id,
+                    reason.query_send_failed_trigger(),
+                );
+            }
+            return;
+        }
 
         match response.request_kind() {
             TradeRequestKind::Open => {

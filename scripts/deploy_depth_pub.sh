@@ -9,13 +9,14 @@ BIN_NAME="depth_pub"
 BIN_PATH="$ROOT_DIR/target/release/$BIN_NAME"
 DEPLOY_ROOT_NAME="depth_pub"
 
-KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate")
+KNOWN_EXCHANGES=("okex" "binance" "bybit" "bitget" "gate" "hyperliquid")
 KNOWN_VENUES=(
   "okex-futures" "okex-margin" "okex-both"
   "binance-futures" "binance-coin-futures" "binance-margin" "binance-both"
   "bybit-futures" "bybit-margin" "bybit-both"
   "bitget-futures" "bitget-coin-futures" "bitget-margin" "bitget-both"
   "gate-futures" "gate-margin" "gate-both"
+  "hyperliquid-futures" "hyperliquid-margin" "hyperliquid-both"
 )
 # 与 deploy_mm_{binance,gate,bitget}.sh 对齐：这三所走远端，其余本地。
 REMOTE_EXCHANGES=("binance" "gate" "bitget")
@@ -38,6 +39,7 @@ default_venues_for_exchange() {
     bybit) echo "bybit-both" ;;
     bitget) echo "bitget-both" ;;
     gate) echo "gate-both" ;;
+    hyperliquid) echo "hyperliquid-both" ;;
     *)
       echo ""
       return 1
@@ -128,7 +130,7 @@ Options:
 Defaults:
   本地落点 -> \$HOME/depth_pub/<venue>/
   远端落点 (binance/gate/bitget) -> \${FR_DEPLOY_HOST}:\${FR_REMOTE_HOME}/depth_pub/<venue>/
-  本地落点 (okex/bybit) 保持本机部署。
+  本地落点 (okex/bybit/hyperliquid) 保持本机部署。
 
 Examples:
   bash scripts/deploy_depth_pub.sh --exchange binance          # 远端
@@ -144,6 +146,7 @@ Notes:
       bybit   -> bybit-both
       bitget  -> bitget-both
       gate    -> gate-both
+      hyperliquid -> hyperliquid-both
   - <exchange>-both 部署目录由 start_depth_pub.sh 展开为 margin+futures。
   - 远端模式下 cargo build 仍在本机完成，再 rsync 到远端。
   - --bin-only / --runtime-only 互斥；远端模式下分别走 fr_remote_sync_binaries

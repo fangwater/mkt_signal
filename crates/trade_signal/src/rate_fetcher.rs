@@ -286,6 +286,12 @@ pub const GATE_CONFIG: ExchangeConfig = ExchangeConfig {
     fetch_days: DEFAULT_FETCH_DAYS,
 };
 
+pub const HYPERLIQUID_CONFIG: ExchangeConfig = ExchangeConfig {
+    venue: TradingVenue::HyperliquidFutures,
+    period: FundingRatePeriod::Hours1,
+    fetch_days: DEFAULT_FETCH_DAYS,
+};
+
 // 默认测试 symbols
 const BINANCE_TEST_SYMBOLS: &[&str] = &["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"];
 const BINANCE_COIN_TEST_SYMBOLS: &[&str] = &["BTCUSD_PERP", "ETHUSD_PERP"];
@@ -561,7 +567,7 @@ impl RateFetcher {
                 Self::with_inner_mut(|inner| {
                     inner
                         .venue_states
-                        .entry(TradingVenue::HyperliquidFutures)
+                        .entry(HYPERLIQUID_CONFIG.venue)
                         .or_default();
                 });
                 info!("RateFetcher: Hyperliquid initialized (fetch task not enabled)");
@@ -2865,7 +2871,13 @@ impl RateFetcher {
                 .get(&venue)
                 .and_then(|m| m.get(&key))
                 .copied()
-                .unwrap_or(FundingRatePeriod::Hours8)
+                .unwrap_or_else(|| {
+                    if venue == TradingVenue::HyperliquidFutures {
+                        HYPERLIQUID_CONFIG.period
+                    } else {
+                        FundingRatePeriod::Hours8
+                    }
+                })
         })
     }
 

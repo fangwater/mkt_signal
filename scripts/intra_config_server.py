@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S = 300
@@ -47,6 +47,7 @@ EXCHANGE_DEFAULTS = {
     "bybit": ("bybit-margin", "bybit-futures"),
     "bitget": ("bitget-margin", "bitget-futures"),
     "gate": ("gate-margin", "gate-futures"),
+    "hyperliquid": ("hyperliquid-margin", "hyperliquid-futures"),
 }
 
 STRATEGY_BOOL_PARAM_KEYS = [

@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use log::{debug, info, warn};
-use order_common::trade_error_code::{bitget, bybit, gate};
+use order_common::trade_error_code::{bitget, bybit, gate, hyperliquid};
 use runtime_common::exchange::Exchange;
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::time_util::get_timestamp_us;
@@ -121,6 +121,9 @@ pub fn is_throttle_error_code(exchange: Option<Exchange>, error_code: i32) -> bo
         | gate::AUTO_BORROW_TOO_MUCH
         | gate::INITIAL_MARGIN_TOO_LOW
         | gate::RISK_CHECK_MARKET_FORBIDDEN => matches!(exchange, Some(Exchange::Gate)),
+        hyperliquid::INSUFFICIENT_MARGIN
+        | hyperliquid::INSUFFICIENT_SPOT_BALANCE
+        | hyperliquid::POSITION_LIMIT_EXCEEDED => matches!(exchange, Some(Exchange::Hyperliquid)),
         _ => false,
     }
 }
@@ -131,6 +134,9 @@ fn is_account_wide_reduce_only_error_code(exchange: Option<Exchange>, error_code
         (
             Some(Exchange::Gate),
             gate::INITIAL_MARGIN_TOO_LOW | gate::MARGIN_NOT_ENOUGH | gate::POSITION_MARGIN_TOO_LOW
+        ) | (
+            Some(Exchange::Hyperliquid),
+            hyperliquid::INSUFFICIENT_MARGIN
         )
     )
 }
@@ -689,6 +695,50 @@ mod tests {
             check_account_signal_throttle_at(now_us + 1).expect("account throttle must be hit");
         assert_eq!(account_hit.last_error_code, gate::INITIAL_MARGIN_TOO_LOW);
         assert!(check_account_signal_throttle_at(now_us + ttl_us).is_none());
+    }
+
+    #[test]
+    fn hyperliquid_throttles_keep_margin_and_symbol_capacity_scopes_distinct() {
+        let _guard = TEST_LOCK.lock();
+        for code in [
+            hyperliquid::INSUFFICIENT_MARGIN,
+            hyperliquid::INSUFFICIENT_SPOT_BALANCE,
+            hyperliquid::POSITION_LIMIT_EXCEEDED,
+        ] {
+            clear_all();
+            assert!(!is_throttle_error_code(Some(Exchange::Okex), code));
+            assert!(register_signal_throttle_at(
+                "hypeusdc",
+                Side::Buy,
+                Some(Exchange::Hyperliquid),
+                code,
+                1_000,
+                50,
+            ));
+            assert!(check_signal_throttle_at("HYPEUSDC", Side::Buy, 1_001).is_some());
+            assert!(check_signal_throttle_at("HYPEUSDC", Side::Sell, 1_001).is_none());
+            assert!(check_signal_throttle_at("BTCUSDC", Side::Buy, 1_001).is_none());
+            assert_eq!(
+                check_account_signal_throttle_at(1_001).is_some(),
+                code == hyperliquid::INSUFFICIENT_MARGIN
+            );
+            assert!(check_signal_throttle_at("HYPEUSDC", Side::Buy, 1_050).is_none());
+            assert!(check_account_signal_throttle_at(1_050).is_none());
+        }
+        for code in [
+            hyperliquid::POST_ONLY_REJECTED,
+            hyperliquid::PRICE_LIMIT_REJECTED,
+            hyperliquid::NO_LIQUIDITY,
+            hyperliquid::ACTION_AMBIGUOUS,
+            hyperliquid::ACTION_REJECTED,
+        ] {
+            assert!(!is_throttle_error_code(Some(Exchange::Hyperliquid), code));
+        }
+        assert_eq!(
+            signal_throttle_ttl_us(Some(Exchange::Hyperliquid)),
+            SIGNAL_THROTTLE_TTL_US
+        );
+        clear_all();
     }
 
     #[test]

@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate"]
+SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 
 
 def try_import_redis():

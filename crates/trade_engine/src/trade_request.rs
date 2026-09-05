@@ -1,6 +1,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use iceoryx2::prelude::ZeroCopySend;
 use log::debug;
+use mkt_parsers::msg::hyperliquid_account_msg::HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
 use order_common::{OrderType, Side};
 use signal_common::tick_math::QuantizedValue;
 use std::fmt::Write as _;
@@ -2328,13 +2329,212 @@ impl BitgetUmCancelOrderRequest {
     }
 }
 
+/// Compact IPC params for Hyperliquid spot/perpetual orders. Asset IDs are
+/// deliberately resolved by trade_engine from current exchange metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidNewOrderParams {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub symbol: String,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HyperliquidNewOrderParamsRef<'a> {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub symbol: &'a str,
+    pub side: Side,
+    pub order_type: OrderType,
+    pub quantity_qv: QuantizedValue,
+    pub price_qv: QuantizedValue,
+    pub reduce_only: bool,
+}
+
+impl HyperliquidNewOrderParams {
+    const FIXED_LEN: usize = HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 1 + 1 + 20 + 20 + 1 + 2;
+
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        let mut buf = BytesMut::with_capacity(Self::FIXED_LEN + self.symbol.len());
+        buf.put_slice(&self.account_hash);
+        buf.put_u8(self.side.to_u8());
+        buf.put_u8(self.order_type.to_u8());
+        write_qv(&mut buf, self.quantity_qv);
+        write_qv(&mut buf, self.price_qv);
+        buf.put_u8(self.reduce_only as u8);
+        write_string(&mut buf, &self.symbol)?;
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let params = HyperliquidNewOrderParamsRef::from_bytes(raw)?;
+        Some(Self {
+            account_hash: params.account_hash,
+            symbol: params.symbol.to_string(),
+            side: params.side,
+            order_type: params.order_type,
+            quantity_qv: params.quantity_qv,
+            price_qv: params.price_qv,
+            reduce_only: params.reduce_only,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepared_request_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+    ) -> Option<PreparedTradeRequest> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        let params_len = Self::FIXED_LEN + symbol.len();
+        PreparedTradeRequest::with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            params_len,
+            |out| {
+                let mut offset = 0usize;
+                let hash_end = offset.checked_add(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN)?;
+                out.get_mut(offset..hash_end)?
+                    .copy_from_slice(&account_hash);
+                offset = hash_end;
+                write_u8_at(out, &mut offset, side.to_u8())?;
+                write_u8_at(out, &mut offset, order_type.to_u8())?;
+                write_qv_at(out, &mut offset, quantity_qv)?;
+                write_qv_at(out, &mut offset, price_qv)?;
+                write_u8_at(out, &mut offset, reduce_only as u8)?;
+                write_string_at(out, &mut offset, symbol)?;
+                (offset == params_len).then_some(())
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+    ) -> Option<Bytes> {
+        Self::prepared_request_from_parts(
+            req_type,
+            create_time,
+            client_order_id,
+            account_hash,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+        )
+        .map(|request| request.to_bytes())
+    }
+}
+
+impl<'a> HyperliquidNewOrderParamsRef<'a> {
+    pub fn from_bytes(raw: &'a [u8]) -> Option<Self> {
+        let mut offset = 0usize;
+        let hash_end = offset.checked_add(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN)?;
+        let account_hash = raw.get(offset..hash_end)?.try_into().ok()?;
+        offset = hash_end;
+        let side = Side::from_u8(*raw.get(offset)?)?;
+        offset += 1;
+        let order_type = OrderType::from_u8(*raw.get(offset)?)?;
+        offset += 1;
+        let quantity_qv = read_qv(raw, &mut offset)?;
+        let price_qv = read_qv(raw, &mut offset)?;
+        let reduce_only = *raw.get(offset)? != 0;
+        offset += 1;
+        let symbol = read_str(raw, &mut offset)?;
+        if offset != raw.len() {
+            return None;
+        }
+        Some(Self {
+            account_hash,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidCancelOrderParams {
+    pub account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+    pub symbol: String,
+}
+
+impl HyperliquidCancelOrderParams {
+    pub fn to_bytes(&self) -> Option<Bytes> {
+        let mut buf =
+            BytesMut::with_capacity(HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 2 + self.symbol.len());
+        buf.put_slice(&self.account_hash);
+        write_string(&mut buf, &self.symbol)?;
+        Some(buf.freeze())
+    }
+
+    pub fn from_bytes(raw: &[u8]) -> Option<Self> {
+        let mut offset = HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN;
+        let account_hash = raw.get(..offset)?.try_into().ok()?;
+        let symbol = read_str(raw, &mut offset)?.to_string();
+        (offset == raw.len()).then_some(Self {
+            account_hash,
+            symbol,
+        })
+    }
+
+    pub fn request_bytes_from_parts(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        account_hash: [u8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN],
+        symbol: &str,
+    ) -> Option<Bytes> {
+        if symbol.len() > u16::MAX as usize {
+            return None;
+        }
+        trade_request_bytes_with_params(
+            req_type,
+            create_time,
+            client_order_id,
+            HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN + 2 + symbol.len(),
+            |buf| {
+                buf.put_slice(&account_hash);
+                write_string(buf, symbol)
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams,
         BitgetNewOrderParams, GateCancelOrderParams, GateFuturesCancelOrderRequest,
-        GateFuturesNewOrderRequest, GateNewOrderParams, PreparedTradeRequest,
-        TradeRequestIpcPayload, TradeRequestMsg, TradeRequestType, TRADE_REQ_PAYLOAD,
+        GateFuturesNewOrderRequest, GateNewOrderParams, HyperliquidCancelOrderParams,
+        HyperliquidNewOrderParams, PreparedTradeRequest, TradeRequestIpcPayload, TradeRequestMsg,
+        TradeRequestType, HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN, TRADE_REQ_PAYLOAD,
     };
     use bytes::Bytes;
     use order_common::{OrderType, Side};
@@ -2607,5 +2807,49 @@ mod tests {
             .expect("gate cancel typed params should decode");
         assert_eq!(decoded.symbol, "SOL_USDT");
         assert_eq!(decoded.order_id, "t-45");
+    }
+
+    #[test]
+    fn hyperliquid_new_order_prepared_request_roundtrips() {
+        let account_hash = [7; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let request = HyperliquidNewOrderParams::prepared_request_from_parts(
+            TradeRequestType::HyperliquidNewUMOrder,
+            11,
+            45,
+            account_hash,
+            "HYPEUSDC",
+            Side::Sell,
+            OrderType::Limit,
+            QuantizedValue::from_parts(1, -3, 1250),
+            QuantizedValue::from_parts(1, -3, 39100),
+            true,
+        )
+        .expect("Hyperliquid prepared request");
+        let msg = TradeRequestMsg::parse(&request.to_bytes()).expect("trade request");
+        let decoded = HyperliquidNewOrderParams::from_bytes(&msg.params).expect("order params");
+        assert_eq!(msg.req_type, TradeRequestType::HyperliquidNewUMOrder);
+        assert_eq!(decoded.account_hash, account_hash);
+        assert_eq!(decoded.symbol, "HYPEUSDC");
+        assert_eq!(decoded.side, Side::Sell);
+        assert_eq!(decoded.quantity_qv.decimal_string(), "1.250");
+        assert_eq!(decoded.price_qv.decimal_string(), "39.100");
+        assert!(decoded.reduce_only);
+    }
+
+    #[test]
+    fn hyperliquid_cancel_request_roundtrips() {
+        let account_hash = [8; HYPERLIQUID_ACCOUNT_IDENTITY_HASH_LEN];
+        let raw = HyperliquidCancelOrderParams::request_bytes_from_parts(
+            TradeRequestType::HyperliquidCancelMarginOrder,
+            12,
+            46,
+            account_hash,
+            "HYPEUSDC",
+        )
+        .expect("Hyperliquid cancel request");
+        let msg = TradeRequestMsg::parse(&raw).expect("trade request");
+        let decoded = HyperliquidCancelOrderParams::from_bytes(&msg.params).expect("cancel params");
+        assert_eq!(decoded.account_hash, account_hash);
+        assert_eq!(decoded.symbol, "HYPEUSDC");
     }
 }

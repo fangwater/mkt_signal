@@ -23,6 +23,26 @@ pub enum BasicAccountEventType {
     AccountRisk = 4007,
     /// Binance standard UM wallet snapshot from USD-M Futures WS API `v2/account.balance`
     BinanceStdUmWalletSnapshot = 4008,
+    /// Hyperliquid fill retaining venue order/trade identity for attribution or unmatched audit.
+    HyperliquidFill = 4009,
+    /// Hyperliquid atomic spot/perpetual snapshot lifecycle control.
+    HyperliquidSnapshotComplete = 4010,
+    /// Hyperliquid order/fill fact replay lifecycle control.
+    HyperliquidFactReplayControl = 4011,
+    /// Hyperliquid perpetual funding payment retaining venue-native fields.
+    HyperliquidFunding = 4012,
+    /// Hyperliquid non-funding account ledger update retaining the complete delta.
+    HyperliquidLedger = 4013,
+    /// One venue-native row from a Hyperliquid spot account-state snapshot.
+    HyperliquidSpotBalance = 4014,
+    /// One venue-native Hyperliquid perpetual DEX account-state summary row.
+    HyperliquidPerpDexState = 4015,
+    /// Hyperliquid TWAP parent id associated with one venue-native slice fill.
+    HyperliquidTwapSliceFill = 4016,
+    /// One venue-native Hyperliquid TWAP lifecycle history row.
+    HyperliquidTwapHistory = 4017,
+    /// Native Hyperliquid account evidence that must not synthesize fills or balances.
+    HyperliquidNativeEvent = 4018,
     /// 错误
     Error = 4999,
 }
@@ -79,6 +99,10 @@ pub enum BasicAccountScope {
     BitgetUnified = 12,
     BybitUnified = 13,
     BitgetUnifiedCoinFutures = 14,
+    HyperliquidStdSpot = 15,
+    HyperliquidStdPerp = 16,
+    HyperliquidUnified = 17,
+    HyperliquidPortfolioMargin = 18,
 }
 
 /// 轻量成交更新消息。
@@ -250,6 +274,10 @@ impl BasicAccountScope {
             12 => Self::BitgetUnified,
             13 => Self::BybitUnified,
             14 => Self::BitgetUnifiedCoinFutures,
+            15 => Self::HyperliquidStdSpot,
+            16 => Self::HyperliquidStdPerp,
+            17 => Self::HyperliquidUnified,
+            18 => Self::HyperliquidPortfolioMargin,
             _ => Self::Unknown,
         }
     }
@@ -267,6 +295,10 @@ impl BasicAccountScope {
             Self::BitgetUnified => "bitget_unified",
             Self::BybitUnified => "bybit_unified",
             Self::BitgetUnifiedCoinFutures => "bitget_unified_coin_futures",
+            Self::HyperliquidStdSpot => "hyperliquid_std_spot",
+            Self::HyperliquidStdPerp => "hyperliquid_std_perp",
+            Self::HyperliquidUnified => "hyperliquid_unified",
+            Self::HyperliquidPortfolioMargin => "hyperliquid_portfolio_margin",
         }
     }
 }
@@ -1488,6 +1520,21 @@ pub struct BasicAccountRiskMsg {
 }
 
 impl BasicAccountRiskMsg {
+    /// Unavailable financial amounts are NaN on the fixed-width IPC wire, not
+    /// factual zeroes. JSON views must expose these amounts as null.
+    pub fn ratio_only(timestamp: i64, margin_ratio: f64) -> Self {
+        Self::create(
+            timestamp,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
+            margin_ratio,
+            f64::NAN,
+            f64::NAN,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         timestamp: i64,
@@ -1560,7 +1607,10 @@ impl AccountRiskLevelProvider for BasicAccountRiskMsg {
             | BasicAccountScope::OkexUnified
             | BasicAccountScope::GateUnified
             | BasicAccountScope::BitgetUnified
-            | BasicAccountScope::BybitUnified => {
+            | BasicAccountScope::BybitUnified
+            | BasicAccountScope::HyperliquidStdPerp
+            | BasicAccountScope::HyperliquidUnified
+            | BasicAccountScope::HyperliquidPortfolioMargin => {
                 account_risk_level_from_margin_ratio(self.margin_ratio)
             }
             _ => None,
@@ -1661,6 +1711,16 @@ pub fn get_basic_event_type(data: &[u8]) -> BasicAccountEventType {
         4006 => BasicAccountEventType::TradeUpdateLite,
         4007 => BasicAccountEventType::AccountRisk,
         4008 => BasicAccountEventType::BinanceStdUmWalletSnapshot,
+        4009 => BasicAccountEventType::HyperliquidFill,
+        4010 => BasicAccountEventType::HyperliquidSnapshotComplete,
+        4011 => BasicAccountEventType::HyperliquidFactReplayControl,
+        4012 => BasicAccountEventType::HyperliquidFunding,
+        4013 => BasicAccountEventType::HyperliquidLedger,
+        4014 => BasicAccountEventType::HyperliquidSpotBalance,
+        4015 => BasicAccountEventType::HyperliquidPerpDexState,
+        4016 => BasicAccountEventType::HyperliquidTwapSliceFill,
+        4017 => BasicAccountEventType::HyperliquidTwapHistory,
+        4018 => BasicAccountEventType::HyperliquidNativeEvent,
         _ => BasicAccountEventType::Error,
     }
 }

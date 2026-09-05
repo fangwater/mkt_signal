@@ -70,6 +70,17 @@ impl QueryTypeMapping {
         )
     }
 
+    pub fn is_hyperliquid_ws(request_type: QueryRequestType) -> bool {
+        matches!(
+            request_type,
+            QueryRequestType::HyperliquidMarginQuery
+                | QueryRequestType::HyperliquidUMQuery
+                | QueryRequestType::HyperliquidClearinghouseSnapshot
+                | QueryRequestType::HyperliquidSpotStateSnapshot
+                | QueryRequestType::HyperliquidUserAbstraction
+        )
+    }
+
     pub fn get_endpoint(request_type: QueryRequestType) -> &'static str {
         match request_type {
             QueryRequestType::BinanceMarginQuery => "/papi/v1/margin/order",
@@ -115,6 +126,13 @@ impl QueryTypeMapping {
             QueryRequestType::BitgetCoinPositionsSnapshot => "/api/v3/position/current-position",
             QueryRequestType::BitgetUsdtAvailableSnapshot => "/api/v3/account/assets",
             QueryRequestType::BitgetUsdtMaxTransferable => "/api/v3/account/max-transferable",
+            QueryRequestType::HyperliquidMarginQuery
+            | QueryRequestType::HyperliquidUMQuery
+            | QueryRequestType::HyperliquidClearinghouseSnapshot
+            | QueryRequestType::HyperliquidSpotStateSnapshot
+            | QueryRequestType::HyperliquidUserAbstraction => {
+                unreachable!("Hyperliquid info queries run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -161,6 +179,13 @@ impl QueryTypeMapping {
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
             }
+            QueryRequestType::HyperliquidMarginQuery
+            | QueryRequestType::HyperliquidUMQuery
+            | QueryRequestType::HyperliquidClearinghouseSnapshot
+            | QueryRequestType::HyperliquidSpotStateSnapshot
+            | QueryRequestType::HyperliquidUserAbstraction => {
+                unreachable!("Hyperliquid info queries run via websocket; REST mapping not used")
+            }
         }
     }
 
@@ -205,6 +230,13 @@ impl QueryTypeMapping {
             | QueryRequestType::BitgetCoinPositionsSnapshot => 1,
             QueryRequestType::GateUnifiedOrderQuery | QueryRequestType::GateFuturesOrderQuery => {
                 unreachable!("Gate order queries run via websocket; REST mapping not used")
+            }
+            QueryRequestType::HyperliquidMarginQuery
+            | QueryRequestType::HyperliquidUMQuery
+            | QueryRequestType::HyperliquidClearinghouseSnapshot
+            | QueryRequestType::HyperliquidSpotStateSnapshot
+            | QueryRequestType::HyperliquidUserAbstraction => {
+                unreachable!("Hyperliquid info queries run via websocket; REST mapping not used")
             }
         }
     }
@@ -283,5 +315,21 @@ mod tests {
             QueryTypeMapping::get_endpoint(QueryRequestType::BinancePmCmAccountSnapshot),
             "/papi/v1/cm/account"
         );
+    }
+
+    #[test]
+    fn hyperliquid_info_queries_are_websocket_routed() {
+        for req_type in [
+            QueryRequestType::HyperliquidMarginQuery,
+            QueryRequestType::HyperliquidUMQuery,
+            QueryRequestType::HyperliquidClearinghouseSnapshot,
+            QueryRequestType::HyperliquidSpotStateSnapshot,
+            QueryRequestType::HyperliquidUserAbstraction,
+        ] {
+            assert!(QueryTypeMapping::is_hyperliquid_ws(req_type));
+        }
+        assert!(!QueryTypeMapping::is_hyperliquid_ws(
+            QueryRequestType::BinanceUMQuery
+        ));
     }
 }

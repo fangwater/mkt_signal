@@ -4,7 +4,7 @@
 //! - 双路 ws（primary/secondary）按 per-venue seq 字段去重
 //! - IceOryx 服务名 `spread_pbs/<venue>/ask_bid_spread`，与 dat_pbs 完全独立
 //!
-//! 已支持的 venue（OKex/Binance/Bybit/Gate/Bitget × spot+futures = 10 个）。
+//! 已支持的 venue：OKex/Binance/Bybit/Gate/Bitget/Hyperliquid。
 
 pub mod adapter;
 pub mod app;
@@ -14,6 +14,7 @@ pub mod bitget;
 pub mod bybit;
 pub mod gate;
 pub mod gate_sbe;
+pub mod hyperliquid;
 pub mod latency;
 pub mod okex;
 pub mod okex_derivatives;
@@ -22,6 +23,7 @@ pub mod ws;
 pub mod zmq_forward;
 
 pub use adapter::{
-    create_adapter, BboFrame, IncrementalFrame, KeepaliveSpec, TradeFrame, VenueAdapter,
+    create_adapter, BboFrame, IncrementalDedupPolicy, IncrementalFrame, KeepaliveSpec,
+    TradeDedupPolicy, TradeFrame, VenueAdapter,
 };
 pub use app::{BinanceFuturesRole, BybitRole, SpreadPbsApp};

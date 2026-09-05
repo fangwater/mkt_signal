@@ -47,8 +47,8 @@ use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
     BinanceCancelOrderParams, BinanceNewOrderParams, BinanceNewOrderParamsRef,
-    BitgetNewOrderParams, GateNewOrderParams, TradeRequestIpcPayload, TradeRequestMsg,
-    TradeRequestType,
+    BitgetNewOrderParams, GateNewOrderParams, HyperliquidNewOrderParams, TradeRequestIpcPayload,
+    TradeRequestMsg, TradeRequestType,
 };
 use crate::trade_response_handle::TradeExecOutcome;
 use crate::trade_type_mapping::TradeTypeMapping;
@@ -80,6 +80,7 @@ use runtime_common::time_util::get_timestamp_us;
 use serde_json::Value;
 use std::net::IpAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc as StdRc};
 use tokio_util::sync::CancellationToken;
@@ -96,6 +97,9 @@ const INTERNAL_OPEN_TERMINATE_SUMMARY_MAX_GROUPS: usize = 32;
 const DEFAULT_TCP_HEALTH_LOG_INTERVAL_MS: u64 = 60_000;
 const BINANCE_BASIC_WS_CONNECTIONS: usize = 4;
 const BINANCE_BASIC_WS_RECONNECT_PERIOD_MS: u64 = 300_000;
+const DEFAULT_HYPERLIQUID_WS_MAX_INFLIGHT_POSTS: usize = 90;
+const HYPERLIQUID_WS_MAX_INFLIGHT_POSTS: usize = 100;
+const DEFAULT_HYPERLIQUID_WS_POST_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct TcpHealthSummary {
@@ -1081,6 +1085,19 @@ fn decode_internal_open_terminate_order_meta(
                 qty: params.quantity_qv.get_val(),
             })
         }
+        TradeRequestType::HyperliquidNewUMOrder | TradeRequestType::HyperliquidNewMarginOrder => {
+            let params = HyperliquidNewOrderParams::from_bytes(&msg.params)?;
+            Some(InternalOpenTerminateOrderMeta {
+                symbol: params.symbol,
+                dir: params.side.as_str(),
+                venue: if msg.req_type == TradeRequestType::HyperliquidNewUMOrder {
+                    "hyperliquid_perp"
+                } else {
+                    "hyperliquid_spot"
+                },
+                qty: params.quantity_qv.get_val(),
+            })
+        }
         _ => None,
     }
 }
@@ -1251,9 +1268,10 @@ impl TradeEngine {
                 | Exchange::Bybit
                 | Exchange::Bitget
                 | Exchange::Gate
+                | Exchange::Hyperliquid
         ) {
             return Err(anyhow!(
-                "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate",
+                "unsupported exchange '{}'. Allowed: binance, okex, bybit, bitget, gate, hyperliquid",
                 exchange
             ));
         }
@@ -1654,6 +1672,85 @@ impl TradeEngine {
                     client.run().await;
                 });
                 worker_handles.push(("ltp_ws_client", handle));
+                endpoints.push(WsEndpointHandle::new(cmd_queue, state));
+            }
+            Some(endpoints)
+        } else if exchange == Exchange::Hyperliquid {
+            let mut local_ips = self.local_ips.clone();
+            if local_ips.is_empty() {
+                warn!("Hyperliquid ws local_ips empty; using default binding 0.0.0.0");
+                local_ips.push("0.0.0.0".parse()?);
+            }
+            if local_ips.len() > 10 {
+                return Err(anyhow!(
+                    "Hyperliquid allows at most 10 websocket connections per IP; configured endpoints={}",
+                    local_ips.len()
+                ));
+            }
+            let max_inflight = env_usize_or(
+                "HYPERLIQUID_WS_MAX_INFLIGHT_POSTS",
+                DEFAULT_HYPERLIQUID_WS_MAX_INFLIGHT_POSTS,
+            );
+            if max_inflight > HYPERLIQUID_WS_MAX_INFLIGHT_POSTS {
+                return Err(anyhow!(
+                    "HYPERLIQUID_WS_MAX_INFLIGHT_POSTS={} exceeds Hyperliquid's absolute inflight post limit {}; connections sharing one public egress IP must also stay within that aggregate limit",
+                    max_inflight,
+                    HYPERLIQUID_WS_MAX_INFLIGHT_POSTS
+                ));
+            }
+            let post_timeout_ms = env_u64_or(
+                "HYPERLIQUID_WS_POST_TIMEOUT_MS",
+                DEFAULT_HYPERLIQUID_WS_POST_TIMEOUT_MS,
+            );
+            let trading_client = Arc::new(
+                crate::hyperliquid_ws::HyperliquidTradingClient::from_env(
+                    local_ips.first().copied(),
+                )
+                .await?,
+            );
+            let ws_url = trading_client.ws_url().to_string();
+            let mut endpoints = Vec::with_capacity(local_ips.len());
+            for (idx, ip) in local_ips.into_iter().enumerate() {
+                let cmd_queue = WsCommandQueue::new();
+                let state = StdRc::new(RefCell::new(Default::default()));
+                let client = TradeWsClient::new(
+                    idx,
+                    exchange,
+                    exchange,
+                    false,
+                    ip,
+                    ws_url.clone(),
+                    WsConstants::CONNECT_TIMEOUT_MS,
+                    30_000,
+                    max_inflight,
+                    None,
+                    None,
+                    None,
+                    Some(query_resp_sink.clone()),
+                    cmd_queue.clone(),
+                    trade_resp_sink.clone(),
+                    internal_open_terminates.clone(),
+                    internal_open_terminate_summary.clone(),
+                    shutdown.clone(),
+                    state.clone(),
+                    false,
+                    health_registry.clone(),
+                )
+                .with_hyperliquid_client(trading_client.clone())
+                .with_hyperliquid_post_timeout(Duration::from_millis(post_timeout_ms))
+                .with_tcp_loss_act(ws_route_dispatch);
+                info!(
+                    "spawning Hyperliquid ws client id={} ip={} url={} combined_post_limit={} post_timeout_ms={} limit_scope=connection configured_local_ip; all connections/processes sharing one public egress IP must aggregate to <=100 posts",
+                    idx,
+                    client.local_ip(),
+                    ws_url,
+                    max_inflight,
+                    post_timeout_ms
+                );
+                let handle = tokio::task::spawn_local(async move {
+                    client.run().await;
+                });
+                worker_handles.push(("hyperliquid_ws_client", handle));
                 endpoints.push(WsEndpointHandle::new(cmd_queue, state));
             }
             Some(endpoints)
@@ -2701,6 +2798,7 @@ impl TradeEngine {
             let binance_spot_ws_endpoints = binance_spot_ws_endpoints.clone();
             let gate_spot_ws_endpoints = ws_endpoints.clone();
             let gate_futures_ws_endpoints = gate_futures_ws_endpoints.clone();
+            let hyperliquid_ws_endpoints = ws_endpoints.clone();
             let use_ltp_backend_for_query_router = use_ltp_backend;
             let shutdown_for_query_router = shutdown.clone();
             let fast_poll_for_query_router = fast_poll;
@@ -2726,6 +2824,7 @@ impl TradeEngine {
                 let mut binance_query_rr = 0usize;
                 let mut gate_query_rr = 0usize;
                 let mut gate_futures_query_rr = 0usize;
+                let mut hyperliquid_query_rr = 0usize;
                 let mut okex_query_rate_limiter = OkexQueryRateLimiter::default();
                 let mut bitget_query_rate_limiter = BitgetQueryRateLimiter::default();
                 let mut query_req_ingress = query_req_ingress;
@@ -4115,6 +4214,68 @@ impl TradeEngine {
                                         query_count_1m: None,
                                     });
                                 }
+                            }
+                        }
+                        Exchange::Hyperliquid => {
+                            if !QueryTypeMapping::is_hyperliquid_ws(msg.req_type) {
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 400,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+                            let Some(endpoints) = hyperliquid_ws_endpoints.as_ref() else {
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            };
+                            if endpoints.is_empty() {
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
+                                continue;
+                            }
+
+                            let len = endpoints.len();
+                            let start = hyperliquid_query_rr;
+                            hyperliquid_query_rr = (hyperliquid_query_rr + 1) % len;
+                            let target = (0..len)
+                                .map(|offset| (start + offset) % len)
+                                .find(|idx| endpoints[*idx].is_available());
+                            if let Some(idx) = target {
+                                endpoints[idx].enqueue_available(WsCommand::SendQuery(msg));
+                            } else {
+                                warn!(
+                                    "hyperliquid ws query endpoints unavailable req_type={:?} client_query_id={}",
+                                    msg.req_type, msg.client_query_id
+                                );
+                                let _ = query_resp_sink.send(QueryExecOutcome {
+                                    req_type: msg.req_type,
+                                    client_query_id: msg.client_query_id,
+                                    status: 503,
+                                    body: bytes::Bytes::from_static(b"E"),
+                                    exchange: exchange_copy,
+                                    ip_used_weight_1m: None,
+                                    query_count_1m: None,
+                                });
                             }
                         }
                         _ => {

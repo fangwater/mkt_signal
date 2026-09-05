@@ -67,3 +67,15 @@ pub use signal_channel::{SignalChannel, DEFAULT_BACKWARD_CHANNEL, DEFAULT_SIGNAL
 pub use trade_eng_channel::TradeEngHub;
 
 pub(crate) const POSITION_LIMIT_PENDING_BUFFER_MULTIPLIER: f64 = 1.2;
+
+pub(crate) fn hyperliquid_account_hash_from_env() -> Result<[u8; 32], String> {
+    let address = std::env::var("HYPERLIQUID_ACCOUNT_ADDRESS")
+        .map_err(|_| "HYPERLIQUID_ACCOUNT_ADDRESS is required".to_string())?;
+    let endpoints = signal_common::hyperliquid::HyperliquidEndpoints::from_env()
+        .map_err(|err| format!("invalid Hyperliquid endpoint configuration: {err:#}"))?;
+    mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash(
+        &address,
+        endpoints.testnet,
+    )
+    .map_err(|err| format!("invalid HYPERLIQUID_ACCOUNT_ADDRESS: {err:#}"))
+}
