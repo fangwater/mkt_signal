@@ -382,13 +382,14 @@ fn rapidx_prefix(venue: TradingVenue) -> Result<&'static str> {
         TradingVenue::BinanceMargin => Ok("BINANCE_SPOT_"),
         TradingVenue::BinanceFutures => Ok("BINANCE_PERP_"),
         TradingVenue::OkexMargin => Ok("OKX_SPOT_"),
-        // RapidX documents TRADE qty as base currency, while native OKX swap
-        // `sz` is contract count. Current RapidX BBO and ORDER_BOOK docs only
-        // say "quantity" and do not specify their OKX perpetual unit. Even
-        // though VenueMinQtyTable can load ctVal, applying it here would be an
-        // unverified conversion, so reject rather than publish mixed units.
+        // RapidX documents TRADE qty as base currency, while its order and
+        // position APIs document OKX quantities as contracts. Its public BBO,
+        // ORDER_BOOK, and OPEN_INTEREST pages merely say "quantity" / "total
+        // open interest" without an OKX perpetual unit. We therefore cannot
+        // determine whether a ctVal conversion is needed (or would double
+        // convert), so reject rather than publish mixed units.
         TradingVenue::OkexFutures => bail!(
-            "RapidX OKX perpetual requires an OKX ctVal quantity converter; spread_pbs has none"
+            "RapidX OKX perpetual disabled: public BBO, ORDER_BOOK, and OPEN_INTEREST documentation does not specify whether quantities are base units or OKX contracts"
         ),
         other => bail!("RapidX provider does not support native venue {other:?}"),
     }
@@ -513,9 +514,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_okx_perp_without_a_ct_val_converter() {
+    fn rejects_okx_perp_when_public_market_data_units_are_undocumented() {
         let err = RapidXAdapter::new(TradingVenue::OkexFutures).err().unwrap();
-        assert!(err.to_string().contains("ctVal quantity converter"));
+        assert!(err.to_string().contains("does not specify"));
     }
 
     #[test]

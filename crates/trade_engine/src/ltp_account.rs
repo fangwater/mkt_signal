@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub struct PositionSnapshotState {
-    known: HashMap<(String, char), BasicAccountScope>,
+    known: HashMap<(String, char), (BasicAccountScope, i64)>,
 }
 
 impl PositionSnapshotState {
@@ -23,27 +23,52 @@ impl PositionSnapshotState {
         observed_ms: i64,
     ) -> Result<()> {
         let mut present = HashSet::new();
+        let mut accepted = Vec::new();
         for event in events.iter() {
-            let Some((BasicAccountEventType::PositionUpdate, scope, data)) =
+            let Some((kind, scope, data)) =
                 mkt_parsers::msg::basic_account_msg::split_basic_account_event(event)
             else {
                 continue;
             };
-            let position = BasicPositionMsg::from_bytes(data)?;
-            let key = (position.inst_id, position.position_side);
-            self.known.insert(key.clone(), scope);
-            present.insert(key);
+            match kind {
+                BasicAccountEventType::PositionUpdate => {
+                    let position = BasicPositionMsg::from_bytes(data)?;
+                    let key = (position.inst_id, position.position_side);
+                    present.insert(key.clone());
+                    if self
+                        .known
+                        .get(&key)
+                        .is_some_and(|(_, ts)| *ts > position.timestamp)
+                    {
+                        continue;
+                    }
+                    self.known.insert(key, (scope, position.timestamp));
+                }
+                BasicAccountEventType::UnrealizedPnlUpdate => {
+                    let pnl = BasicUmUnrealizedMsg::from_bytes(data)?;
+                    if self
+                        .known
+                        .get(&(pnl.inst_id, pnl.position_side))
+                        .is_some_and(|(_, ts)| *ts > pnl.timestamp)
+                    {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            accepted.push(event.clone());
         }
         if complete {
-            for ((symbol, side), scope) in &self.known {
-                if !present.contains(&(symbol.clone(), *side)) {
-                    events.push(wrap(
+            for ((symbol, side), (scope, timestamp)) in &mut self.known {
+                if !present.contains(&(symbol.clone(), *side)) && *timestamp <= observed_ms {
+                    *timestamp = observed_ms;
+                    accepted.push(wrap(
                         BasicAccountEventType::PositionUpdate,
                         *scope,
                         BasicPositionMsg::create(observed_ms, symbol.clone(), *side, 0.0)
                             .to_bytes(),
                     ));
-                    events.push(wrap(
+                    accepted.push(wrap(
                         BasicAccountEventType::UnrealizedPnlUpdate,
                         *scope,
                         BasicUmUnrealizedMsg::create(observed_ms, symbol.clone(), *side, 0.0)
@@ -52,6 +77,7 @@ impl PositionSnapshotState {
                 }
             }
         }
+        *events = accepted;
         Ok(())
     }
 }
@@ -66,6 +92,23 @@ pub fn parse_order_push(
     };
     if order.portfolio_id != portfolio_id || !order.exchange_type.eq_ignore_ascii_case(exchange) {
         return Err(anyhow!("LTP order scope mismatch"));
+    }
+    if order
+        .client_order_id
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .is_none()
+        || order
+            .order_id
+            .parse::<i64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .is_none()
+    {
+        // The journal and execution history retain external string identities.
+        // They cannot be assigned to a numeric strategy order by guessing an ID.
+        return Ok(None);
     }
     if matches!(order.order_state.as_str(), "NEW" | "REJECT" | "FAIL") {
         return Ok(None);
@@ -460,6 +503,53 @@ mod tests {
                 .is_none()
         );
         assert!(parse_order_push(&order_fixture("BINANCE", "FILLED"), "999", "BINANCE").is_err());
+    }
+
+    #[test]
+    fn external_string_order_identity_is_not_assigned_to_a_numeric_strategy() {
+        for exchange in ["BINANCE", "OKX"] {
+            let mut row: Value = serde_json::from_str(&order_fixture(exchange, "FILLED")).unwrap();
+            row["data"]["clientOrderId"] = Value::String("manual_order".into());
+            assert!(parse_order_push(&row.to_string(), "123", exchange)
+                .unwrap()
+                .is_none());
+            row["data"]["clientOrderId"] = Value::String("20".into());
+            row["data"]["orderId"] = Value::String("external_order".into());
+            assert!(parse_order_push(&row.to_string(), "123", exchange)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn position_snapshot_cannot_rewind_or_clear_a_newer_delta() {
+        let mut state = PositionSnapshotState::default();
+        let scope = BasicAccountScope::OkexUnified;
+        let mut newer = vec![wrap(
+            BasicAccountEventType::PositionUpdate,
+            scope,
+            BasicPositionMsg::create(30, "BTC-USDT-SWAP".into(), 'N', 2.0).to_bytes(),
+        )];
+        state.reconcile(&mut newer, false, 30).unwrap();
+        let mut missing = vec![];
+        state.reconcile(&mut missing, true, 20).unwrap();
+        assert!(missing.is_empty());
+        let mut stale = vec![
+            wrap(
+                BasicAccountEventType::PositionUpdate,
+                scope,
+                BasicPositionMsg::create(10, "BTC-USDT-SWAP".into(), 'N', 1.0).to_bytes(),
+            ),
+            wrap(
+                BasicAccountEventType::UnrealizedPnlUpdate,
+                scope,
+                BasicUmUnrealizedMsg::create(10, "BTC-USDT-SWAP".into(), 'N', 1.0).to_bytes(),
+            ),
+        ];
+        state.reconcile(&mut stale, true, 20).unwrap();
+        assert!(stale.is_empty());
+        state.reconcile(&mut missing, true, 40).unwrap();
+        assert_eq!(missing.len(), 2);
     }
 
     #[test]

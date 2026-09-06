@@ -46,9 +46,51 @@ Run only one execution backend for a given exchange within an IPC namespace.
   signed fees, rebates and financial fields. Journals are permission `0600`
   under `data/rapidx_account/<source>/` by default.
 - Bounded REST snapshots refresh Assets, Positions and Accounts in rotation.
-  Complete position snapshots clear previously observed missing positions;
-  journal recovery restores position identities across monitor restarts.
+  Complete asset/position snapshots clear previously observed missing identities;
+  journal recovery restores both kinds of identity across monitor restarts.
+  Older snapshots cannot rewind newer updates. Omission clearing uses the
+  request-start boundary, not response-arrival time.
   Disconnect/snapshot failure publishes an invalid account risk value.
+- Account REST refresh and execution-history recovery run separately from the
+  private WS receive loop. Full account snapshots have a 20-second deadline;
+  private heartbeats are not blocked by REST pagination.
+- Reported account risk stays gated until fresh Assets, Positions, Accounts,
+  LoanInfo, LoanCapacity and recent execution recovery have completed. Abnormal
+  or unknown account/loan status cannot reopen the gate. This is a monitor-side
+  recovery gate, not an atomic consumer-acknowledged account snapshot contract.
+
+## Finance And Recovery
+
+`latest_financial.json` in the source journal directory is atomically replaced
+with permission `0600`. It exposes separate gross/net equity, margin values,
+available margin, frozen/maintenance margin, asset debts, explicit loans and
+per-currency `max_borrow_capacity`. Decimal values retain string precision;
+unreported metrics stay `null`. Raw financial evidence and per-source observation
+times are retained. `recovery_ready=false` marks incomplete/disconnected state.
+These inspection fields do not silently become strategy borrowing permissions.
+
+Loan status and portfolio borrowing capacity use the read-only
+`rapidxLoan/loan/info` and `rapidxLoan/loan/maxLoan` endpoints. Explicit portfolio
+loan capacity is not native spot automatic-borrow capacity, and no borrow or
+repay request is sent. Unknown accrued interest is not fabricated as zero.
+
+Execution recovery defaults to the preceding 24 hours on first startup;
+`--history-lookback-hours` allows 1 through 2136 hours (89 days). Subsequent
+sessions resume their durable checkpoint with a one-minute overlap. Recovery
+uses one-hour windows, recent execution pages and the 7-to-90-day archive,
+including the boundary in both queries with duplicate checking. The active tail
+is polled every 30 seconds. A checkpoint older than the documented 90-day
+retention is an error, not silently truncated history.
+
+Every page is checked for scope, timestamps, duplicate IDs and stable pagination;
+an incomplete window never advances the checkpoint. Each endpoint/window has a
+100-page bound and 2.1-second inter-page spacing. Execution observations preserve
+string order/client/transaction IDs. WS signed fees and REST split fee/rebate
+currencies are retained separately, not added together or apportioned from
+ambiguous cumulative fields. Repeated same-source evidence is idempotent;
+conflicting records fail recovery. Journal writes precede progress checkpoints.
+Only an unterminated final journal line is ignored on restart; complete corrupt
+records fail recovery. Journal write/sync failure stops further processing.
 
 ## Market Data
 
@@ -72,17 +114,20 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 
 ## Remaining Boundaries
 
-- Raw Trades journaling is not historical transaction recovery, a durable
-  consumer-acknowledged replay protocol, or full `persist_manager` fee/ledger
-  normalization. Journal rotation/retention also needs operational policy.
-- Borrow capacity, liabilities, interest, collateral discounts and all portfolio
-  financial fields are not normalized to full OKX parity. Missing values are
-  not fabricated from balance, equity or maximum transferable amounts.
-- Complete asset snapshots do not yet clear omitted assets with durable asset
-  identity recovery. There is no atomic all-account readiness snapshot protocol.
+- Historical executions are recovered into the local journal, not yet through a
+  durable consumer-acknowledged replay protocol or full `persist_manager`
+  order/fee/ledger reconciliation. Journal rotation/retention needs operational
+  policy. Late venue corrections beyond the one-minute overlap require a wider
+  recovery, and endpoint retention/completeness still needs authenticated testing.
+- Financial/loan inspection is implemented, but accrued interest, collateral
+  tier rules and all strategy-facing financial fields are not at full OKX parity.
+  Neither native max-loan query semantics nor automatic borrowing are inferred
+  from the explicit portfolio-loan API. There is no atomic all-account IPC
+  readiness snapshot protocol.
 - Nonnumeric external client IDs remain outside the native numeric order
-  lifecycle; raw evidence is retained, but unmatched/forced-close recovery is
-  not complete. Malformed lifecycle messages invalidate the monitor session.
+  lifecycle; they no longer invalidate an otherwise valid order stream. Their
+  execution evidence is retained, but central unmatched/forced-close attribution
+  is not complete. Malformed lifecycle messages invalidate the monitor session.
 - Native Binance auto-repay/collection are disabled for RapidX. Exec startup is
   refused because cancel-all, leverage and rule initialization still use native
   account paths. FR/MM paths may remain gated by unavailable normalized account
@@ -100,4 +145,8 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 - [Portfolio account](https://apidocliquidity.readme.io/reference/get-portfolio-overview)
 - [Portfolio assets](https://apidocliquidity.readme.io/reference/get-portfolio-assets-details)
 - [Positions](https://apidocliquidity.readme.io/reference/query-portfolio-position)
+- [Loan status](https://apidocliquidity.readme.io/reference/query-loan-info)
+- [Portfolio borrowing capacity](https://apidocliquidity.readme.io/reference/query-max-loan-amount)
+- [Recent execution pages](https://apidocliquidity.readme.io/reference/query-transactions-pageable)
+- [Archived execution pages](https://apidocliquidity.readme.io/reference/query-archived-transactions-pageable)
 - [Error codes](https://apidocliquidity.readme.io/docs/error-codes)

@@ -72,6 +72,7 @@ impl LtpRestClient {
 
     /// A complete, identity-checked snapshot, shaped like the corresponding WS channel.
     pub async fn fetch_account_push(&self, channel: &str, exchange: &str) -> Result<String> {
+        let snapshot_started_ms = chrono::Utc::now().timestamp_millis();
         let mut params = BTreeMap::new();
         let path = match channel {
             "Assets" => {
@@ -145,7 +146,6 @@ impl LtpRestClient {
                 if expected_total.is_some_and(|n| n != rows.len() as u64) {
                     return Err(anyhow!("RapidX assets snapshot is incomplete"));
                 }
-                let observed_ms = chrono::Utc::now().timestamp_millis();
                 let mut selected = Vec::new();
                 for mut row in rows {
                     let source = row
@@ -169,7 +169,7 @@ impl LtpRestClient {
                     if channel == "Accounts" && row.get("updateAt").is_none() {
                         row.as_object_mut()
                             .context("RapidX account row must be object")?
-                            .insert("updateAt".into(), json!(observed_ms.to_string()));
+                            .insert("updateAt".into(), json!(snapshot_started_ms.to_string()));
                     }
                     selected.push(row);
                 }
@@ -335,7 +335,43 @@ impl LtpRestClient {
         }
     }
 
-    async fn signed_get(
+    pub async fn fetch_loan_info(&self) -> Result<Value> {
+        self.fetch_financial_response("/api/v1/trading/rapidxLoan/loan/info", &BTreeMap::new())
+            .await
+    }
+
+    pub async fn fetch_loan_capacity(&self, exchange: &str) -> Result<Value> {
+        anyhow::ensure!(
+            matches!(exchange, "BINANCE" | "OKX"),
+            "unsupported RapidX loan exchange"
+        );
+        self.fetch_financial_response(
+            "/api/v1/trading/rapidxLoan/loan/maxLoan",
+            &BTreeMap::from([("exchange".into(), exchange.into())]),
+        )
+        .await
+    }
+
+    async fn fetch_financial_response(
+        &self,
+        path: &str,
+        params: &BTreeMap<String, String>,
+    ) -> Result<Value> {
+        let (status, body) = self.signed_get(path, params).await?;
+        anyhow::ensure!(status == 200, "RapidX financial HTTP status {status}");
+        let response: Value =
+            serde_json::from_str(&body).context("decode RapidX financial response")?;
+        anyhow::ensure!(
+            matches!(
+                response.get("code").and_then(Value::as_i64),
+                Some(200 | 200000)
+            ),
+            "RapidX financial response failed or missing code"
+        );
+        Ok(response)
+    }
+
+    pub(crate) async fn signed_get(
         &self,
         path: &str,
         params: &BTreeMap<String, String>,
@@ -1153,6 +1189,80 @@ mod tests {
         .unwrap();
         assert_eq!(value["data"].as_array().unwrap().len(), 2);
         assert_eq!(value["channel"], "Assets");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ltp_financial_and_history_requests_use_documented_paths_and_binding() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let end = chrono::Utc::now().timestamp_millis();
+        let begin = end - 1000;
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let path = request
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
+                assert!(!path.contains("portfolioId="));
+                assert!(request.to_ascii_lowercase().contains("\r\nsignature: "));
+                assert!(request.to_ascii_lowercase().contains("\r\nts: "));
+                let data = match index {
+                    0 => {
+                        assert_eq!(path, "/api/v1/trading/rapidxLoan/loan/info");
+                        json!({"portfolioId":123,"accounts":[]})
+                    }
+                    1 => {
+                        assert_eq!(path, "/api/v1/trading/rapidxLoan/loan/maxLoan?exchange=OKX");
+                        json!([{ "exchange":"OKX","coin":"USDT","portfolioMaxLoanCoin":"0" }])
+                    }
+                    _ => {
+                        assert_eq!(path, format!("/api/v1/trading/executions/pageable?begin={begin}&end={end}&exchange=OKX&page=1&pageSize=1000"));
+                        json!({"page":1,"pageSize":1000,"pageNum":0,"totalSize":0,"list":[]})
+                    }
+                };
+                let body = json!({"code":200000,"data":data}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            }
+        });
+        let client = LtpRestClient {
+            base_url: format!("http://{address}"),
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        };
+        assert_eq!(
+            client.fetch_loan_info().await.unwrap()["data"]["portfolioId"],
+            123
+        );
+        assert_eq!(
+            client.fetch_loan_capacity("OKX").await.unwrap()["data"][0]["portfolioMaxLoanCoin"],
+            "0"
+        );
+        assert!(client
+            .fetch_transaction_history("OKX", begin, end)
+            .await
+            .unwrap()
+            .is_empty());
         server.await.unwrap();
     }
 
