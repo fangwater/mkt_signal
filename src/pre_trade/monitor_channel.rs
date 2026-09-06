@@ -1497,8 +1497,12 @@ fn hyperliquid_fact_ack_matches_payload(
             == hyperliquid_account_fact_value_digest(&metadata.stable_key, exact_value))
 }
 
-fn account_service_requires_non_overflow(exchange: Exchange) -> bool {
+fn account_service_requires_non_overflow(
+    exchange: Exchange,
+    backend: runtime_common::execution_backend::ExecBackend,
+) -> bool {
     exchange == Exchange::Hyperliquid
+        || backend == runtime_common::execution_backend::ExecBackend::Ltp
 }
 
 fn is_incompatible_overflow_behavior(error: &impl std::fmt::Debug) -> bool {
@@ -1534,6 +1538,7 @@ struct BasicAccountListener {
     strategy_mgr: Rc<RefCell<crate::strategy::StrategyManager>>,
     dedup: DedupCache,
     require_existing_service: bool,
+    require_non_overflow: bool,
     node: Node<ipc::Service>,
     subscriber: Option<Subscriber<ipc::Service, [u8; ACCOUNT_PAYLOAD], ()>>,
     next_open_attempt_at: Instant,
@@ -1556,7 +1561,11 @@ impl BasicAccountListener {
         let node = NodeBuilder::new()
             .name(&NodeName::new(&node_name)?)
             .create::<ipc::Service>()?;
-        let require_existing_service = exchange == Exchange::Gate
+        let backend = runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?;
+        let require_non_overflow = account_service_requires_non_overflow(exchange, backend);
+        let require_existing_service = backend
+            == runtime_common::execution_backend::ExecBackend::Ltp
+            || exchange == Exchange::Gate
             || exchange == Exchange::Hyperliquid
             || (exchange == Exchange::Binance
                 && binance_account_mode == Some(BinanceAccountMode::Standard));
@@ -1586,6 +1595,7 @@ impl BasicAccountListener {
             strategy_mgr,
             dedup: DedupCache::new(8192),
             require_existing_service,
+            require_non_overflow,
             node,
             subscriber: None,
             next_open_attempt_at: Instant::now(),
@@ -1865,7 +1875,7 @@ impl BasicAccountListener {
                 .max_subscribers(PM_MAX_SUBSCRIBERS)
                 .history_size(PM_HISTORY_SIZE)
                 .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE);
-            if account_service_requires_non_overflow(self.exchange) {
+            if self.require_non_overflow {
                 builder.enable_safe_overflow(false)
             } else {
                 builder
@@ -1876,11 +1886,9 @@ impl BasicAccountListener {
             match service_builder().open() {
                 Ok(service) => service,
                 Err(err) => {
-                    if account_service_requires_non_overflow(self.exchange)
-                        && is_incompatible_overflow_behavior(&err)
-                    {
+                    if self.require_non_overflow && is_incompatible_overflow_behavior(&err) {
                         error!(
-                            "account_monitor service has incompatible safe-overflow policy; Hyperliquid requires safe_overflow=false: service={} exchange={:?} err={:?}",
+                            "account_monitor service requires safe_overflow=false: service={} exchange={:?} err={:?}",
                             self.service_name, self.exchange, err
                         );
                     } else {
@@ -1904,11 +1912,10 @@ impl BasicAccountListener {
                     match service_builder().open_or_create() {
                         Ok(service) => service,
                         Err(err) => {
-                            if account_service_requires_non_overflow(self.exchange)
-                                && is_incompatible_overflow_behavior(&err)
+                            if self.require_non_overflow && is_incompatible_overflow_behavior(&err)
                             {
                                 error!(
-                                    "账户 IceOryx service safe-overflow 配置不兼容；Hyperliquid 要求 safe_overflow=false: service={} err={:?}",
+                                    "account_monitor service requires safe_overflow=false: service={} err={:?}",
                                     self.service_name, err
                                 );
                             } else {
@@ -5031,7 +5038,10 @@ impl MonitorChannel {
         exchanges.insert(hedge_exchange);
         let mut account_listeners = Vec::with_capacity(exchanges.len());
         for ex in exchanges {
-            let service_name = build_service_name(&format!("account_pubs/{}_pm", ex.as_str()));
+            let service_name = build_service_name(&format!(
+                "account_pubs/{}_pm",
+                runtime_common::execution_backend::account_stream_slug(ex)?
+            ));
             let node_name = format!("pre_trade_account_pubs_{}_pm", ex.as_str());
             account_listeners.push(BasicAccountListener::new(
                 service_name,
@@ -7835,10 +7845,28 @@ mod tests {
     }
 
     #[test]
-    fn only_hyperliquid_account_service_requires_non_overflow() {
-        assert!(account_service_requires_non_overflow(Exchange::Hyperliquid));
-        assert!(!account_service_requires_non_overflow(Exchange::Binance));
-        assert!(!account_service_requires_non_overflow(Exchange::Gate));
+    fn factual_account_services_require_non_overflow() {
+        use runtime_common::execution_backend::ExecBackend;
+        assert!(account_service_requires_non_overflow(
+            Exchange::Hyperliquid,
+            ExecBackend::Native
+        ));
+        assert!(account_service_requires_non_overflow(
+            Exchange::Binance,
+            ExecBackend::Ltp
+        ));
+        assert!(account_service_requires_non_overflow(
+            Exchange::Okex,
+            ExecBackend::Ltp
+        ));
+        assert!(!account_service_requires_non_overflow(
+            Exchange::Binance,
+            ExecBackend::Native
+        ));
+        assert!(!account_service_requires_non_overflow(
+            Exchange::Gate,
+            ExecBackend::Native
+        ));
     }
 
     fn temporary_fact_cursor_path(label: &str) -> PathBuf {

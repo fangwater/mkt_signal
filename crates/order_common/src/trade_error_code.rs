@@ -7,6 +7,9 @@ pub mod gate;
 pub mod hyperliquid;
 pub mod okex;
 
+/// Internal transport outcome: the action may have been accepted and must be queried.
+pub const ACTION_RESULT_UNKNOWN: i32 = -32080;
+
 /// Map common trade/rest/ws error codes to a short, stable description.
 ///
 /// Notes:
@@ -14,6 +17,9 @@ pub mod okex;
 /// - Some exchanges return additional dynamic details (e.g. OKX `sMsg`); those should be logged
 ///   separately and are not encoded here.
 pub fn describe_trade_error_code(exchange: Exchange, code: i32) -> Option<&'static str> {
+    if code == ACTION_RESULT_UNKNOWN {
+        return Some("Action result unknown; order status query required");
+    }
     match exchange {
         Exchange::Binance => binance::describe_trade_error_code(code),
         Exchange::Bitget => bitget::describe_trade_error_code(code),

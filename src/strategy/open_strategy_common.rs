@@ -17,7 +17,7 @@ use crate::strategy::manager::{OpenPriceMapEntry, OrphanHandoff, OrphanStrategyR
 use crate::strategy::order_query_builder::build_order_query_request;
 pub use crate::strategy::order_reconcile::PendingOrderQueryReason;
 use crate::strategy::order_reconcile::{
-    hyperliquid_ambiguous_query_reason, order_query_watchdog_delay_us,
+    ambiguous_action_query_reason, order_query_watchdog_delay_us,
     order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, ORDER_QUERY_WATCHDOG_DELAY_US,
 };
 use crate::strategy::uniform_order_helper::{
@@ -2016,10 +2016,10 @@ pub trait OpenStrategyCommon {
             .unwrap_or("unknown");
 
         if let Some(reason) =
-            hyperliquid_ambiguous_query_reason(response, PendingOrderQueryReason::CancelWatchdog)
+            ambiguous_action_query_reason(response, PendingOrderQueryReason::CancelWatchdog)
         {
             warn!(
-                "{}: strategy_id={} Hyperliquid action ambiguous: req_type={} client_order_id={} query_reason={:?}",
+                "{}: strategy_id={} action result unknown: req_type={} client_order_id={} query_reason={:?}",
                 self.strategy_name(),
                 self.strategy_id(),
                 response.req_type(),

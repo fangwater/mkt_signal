@@ -6,7 +6,7 @@ use tokio::sync::watch;
 
 use mkt_signal::cfg::Config;
 use mkt_signal::spread_pbs::publisher::SpreadPbsPublishRoots;
-use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, SpreadPbsApp};
+use mkt_signal::spread_pbs::{BinanceFuturesRole, BybitRole, MarketDataProvider, SpreadPbsApp};
 use order_common::TradingVenue;
 use runtime_common::affinity::pin_to_core;
 
@@ -33,6 +33,10 @@ struct Args {
     /// Bybit only: full, market, or bookticker.
     #[arg(long, value_parser = parse_bybit_role, default_value = "full")]
     bybit_role: BybitRole,
+
+    /// Public market-data provider. Native exchange feeds remain the default.
+    #[arg(long, value_parser = parse_market_data_provider, default_value = "native")]
+    market_data_provider: MarketDataProvider,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -47,10 +51,17 @@ async fn main() -> Result<()> {
     let config_str = config_path.to_string_lossy();
     log::info!("spread_pbs venue selection: {}", args.venue.label());
     validate_role_selection(&args.venue, args.binance_futures_role, args.bybit_role)?;
+    if args.market_data_provider == MarketDataProvider::RapidX
+        && (args.binance_futures_role != BinanceFuturesRole::Full
+            || args.bybit_role != BybitRole::Full)
+    {
+        bail!("--market-data-provider rapidx requires full venue roles");
+    }
     log::info!(
-        "spread_pbs binance_futures_role={} bybit_role={}",
+        "spread_pbs binance_futures_role={} bybit_role={} market_data_provider={}",
         args.binance_futures_role.as_str(),
         args.bybit_role.as_str(),
+        args.market_data_provider.as_str(),
     );
     let publish_roots = if args.test {
         SpreadPbsPublishRoots::test()
@@ -73,6 +84,7 @@ async fn main() -> Result<()> {
             publish_roots,
             args.binance_futures_role,
             args.bybit_role,
+            args.market_data_provider,
         ))
         .await
 }
@@ -125,6 +137,10 @@ fn parse_binance_futures_role(raw: &str) -> std::result::Result<BinanceFuturesRo
 
 fn parse_bybit_role(raw: &str) -> std::result::Result<BybitRole, String> {
     BybitRole::parse(raw)
+}
+
+fn parse_market_data_provider(raw: &str) -> std::result::Result<MarketDataProvider, String> {
+    MarketDataProvider::parse(raw)
 }
 
 fn validate_role_selection(
@@ -231,6 +247,7 @@ async fn run_selected(
     publish_roots: SpreadPbsPublishRoots,
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
+    market_data_provider: MarketDataProvider,
 ) -> Result<()> {
     let labels: Vec<&'static str> = configs
         .iter()
@@ -261,7 +278,8 @@ async fn run_selected(
             publish_roots.clone(),
             role,
             bybit_role,
-        );
+        )
+        .with_market_data_provider(market_data_provider);
         tasks.push(tokio::task::spawn_local(async move {
             (venue_slug, app.run_with_shutdown(rx).await)
         }));

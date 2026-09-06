@@ -123,6 +123,33 @@ pub struct SpreadPbsApp {
     publish_roots: SpreadPbsPublishRoots,
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
+    market_data_provider: MarketDataProvider,
+}
+
+/// Selects the public data source independently from the native execution venue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketDataProvider {
+    Native,
+    RapidX,
+}
+
+impl MarketDataProvider {
+    pub fn parse(raw: &str) -> std::result::Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "native" => Ok(Self::Native),
+            "rapidx" | "rapid-x" => Ok(Self::RapidX),
+            _ => Err(format!(
+                "unsupported market-data provider {raw:?}; expected native or rapidx"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::RapidX => "rapidx",
+        }
+    }
 }
 
 fn is_okex_venue(venue: order_common::TradingVenue) -> bool {
@@ -170,7 +197,11 @@ fn role_stream_policy(
     venue: TradingVenue,
     binance_futures_role: BinanceFuturesRole,
     bybit_role: BybitRole,
+    provider: MarketDataProvider,
 ) -> (bool, bool) {
+    if provider == MarketDataProvider::RapidX {
+        return (true, true);
+    }
     if is_hyperliquid_venue(venue) {
         return (true, true);
     }
@@ -196,7 +227,10 @@ fn is_okex_derivatives_venue(venue: TradingVenue) -> bool {
     matches!(venue, order_common::TradingVenue::OkexFutures)
 }
 
-fn direct_trade_replacement_enabled(venue: TradingVenue) -> bool {
+fn direct_trade_replacement_enabled(venue: TradingVenue, provider: MarketDataProvider) -> bool {
+    if provider == MarketDataProvider::RapidX {
+        return true;
+    }
     is_okex_venue(venue)
         || is_bitget_venue(venue)
         || is_bybit_venue(venue)
@@ -205,7 +239,13 @@ fn direct_trade_replacement_enabled(venue: TradingVenue) -> bool {
         || matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures)
 }
 
-fn direct_incremental_replacement_enabled(venue: TradingVenue) -> bool {
+fn direct_incremental_replacement_enabled(
+    venue: TradingVenue,
+    provider: MarketDataProvider,
+) -> bool {
+    if provider == MarketDataProvider::RapidX {
+        return true;
+    }
     is_okex_venue(venue)
         || is_bitget_venue(venue)
         || is_bybit_venue(venue)
@@ -214,7 +254,13 @@ fn direct_incremental_replacement_enabled(venue: TradingVenue) -> bool {
         || matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures)
 }
 
-fn direct_derivatives_replacement_enabled(venue: TradingVenue) -> bool {
+fn direct_derivatives_replacement_enabled(
+    venue: TradingVenue,
+    provider: MarketDataProvider,
+) -> bool {
+    if provider == MarketDataProvider::RapidX {
+        return true;
+    }
     matches!(
         venue,
         TradingVenue::OkexFutures
@@ -408,6 +454,7 @@ struct FixMdLeg {
 /// 跨 leg 共享的上下文：adapter / publisher / state / ws url 在 spread_pbs 整个生命周期不变。
 struct LegCtx {
     adapter: Rc<dyn VenueAdapter>,
+    market_data_provider: MarketDataProvider,
     publisher: Option<Rc<SpreadPublisher>>,
     trade_publisher: Option<Rc<SpreadTradePublisher>>,
     incremental_publisher: Option<Rc<SpreadIncrementalPublisher>>,
@@ -444,6 +491,7 @@ impl SpreadPbsApp {
             publish_roots: SpreadPbsPublishRoots::production(),
             binance_futures_role: BinanceFuturesRole::Full,
             bybit_role: BybitRole::Full,
+            market_data_provider: MarketDataProvider::Native,
         }
     }
 
@@ -453,6 +501,7 @@ impl SpreadPbsApp {
             publish_roots,
             binance_futures_role: BinanceFuturesRole::Full,
             bybit_role: BybitRole::Full,
+            market_data_provider: MarketDataProvider::Native,
         }
     }
 
@@ -466,6 +515,7 @@ impl SpreadPbsApp {
             publish_roots,
             binance_futures_role,
             bybit_role: BybitRole::Full,
+            market_data_provider: MarketDataProvider::Native,
         }
     }
 
@@ -480,7 +530,13 @@ impl SpreadPbsApp {
             publish_roots,
             binance_futures_role,
             bybit_role,
+            market_data_provider: MarketDataProvider::Native,
         }
+    }
+
+    pub fn with_market_data_provider(mut self, provider: MarketDataProvider) -> Self {
+        self.market_data_provider = provider;
+        self
     }
 
     pub async fn run(self) -> Result<()> {
@@ -505,6 +561,7 @@ impl SpreadPbsApp {
         // subscription backfill can cover all trades that occur during startup.
         let app_started_at_us = get_timestamp_us().div_euclid(1_000) * 1_000;
         let venue = self.config.venue;
+        let market_data_provider = self.market_data_provider;
         let venue_slug: &'static str = venue.data_pub_slug();
         let binance_spot_transport = if venue == TradingVenue::BinanceMargin {
             BinanceSpotTransport::from_env()?
@@ -523,7 +580,13 @@ impl SpreadPbsApp {
             BybitRole::Full
         };
 
-        let adapter = match create_adapter(venue).await? {
+        let adapter = match market_data_provider {
+            MarketDataProvider::Native => create_adapter(venue).await?,
+            MarketDataProvider::RapidX => Some(Box::new(
+                crate::spread_pbs::rapidx::RapidXAdapter::new(venue)?,
+            ) as Box<dyn VenueAdapter>),
+        };
+        let adapter = match adapter {
             Some(a) => Rc::<dyn VenueAdapter>::from(a),
             None => bail!(
                 "spread_pbs 当前不支持 venue {:?}（仅 OKex/Binance/Bybit/Gate/Bitget/Hyperliquid × spot+futures）",
@@ -531,8 +594,9 @@ impl SpreadPbsApp {
             ),
         };
         log::info!(
-            "spread_pbs starting venue={} adapter={} spread_root={} dat_root={} binance_futures_role={} bybit_role={} binance_spot_transport={:?}",
+            "spread_pbs starting venue={} provider={} adapter={} spread_root={} dat_root={} binance_futures_role={} bybit_role={} binance_spot_transport={:?}",
             venue_slug,
+            market_data_provider.as_str(),
             adapter.name(),
             publish_roots.spread_root(),
             publish_roots.dat_root(),
@@ -565,6 +629,14 @@ impl SpreadPbsApp {
                 ENV_SYMBOLS
             );
         }
+        if market_data_provider == MarketDataProvider::RapidX && initial_symbols.len() > 5 {
+            bail!(
+                "spread_pbs[{}] RapidX unauthenticated provider supports at most 5 pairs per connection; selected {} symbols. Authenticated sharding is not configured, set {} to at most 5 symbols or use native provider",
+                venue_slug,
+                initial_symbols.len(),
+                ENV_SYMBOLS,
+            );
+        }
         let static_critical_incremental_symbols: Vec<String> = if is_hyperliquid_venue(venue) {
             Vec::new()
         } else if venue == TradingVenue::BinanceCoinFutures {
@@ -580,6 +652,7 @@ impl SpreadPbsApp {
         };
         adapter.seed_symbols(&initial_symbols);
         let mut current_symbols: HashSet<String> = initial_symbols.iter().cloned().collect();
+        let (funding_symbols_tx, funding_symbols_rx) = watch::channel(initial_symbols.clone());
         let enable_trade = env_enabled_or(ENV_ENABLE_TRADE, self.config.data_types.enable_trade);
         let enable_incremental = env_enabled_or(
             ENV_ENABLE_INCREMENTAL,
@@ -591,19 +664,24 @@ impl SpreadPbsApp {
         );
         let is_binance_futures_market_role = venue == TradingVenue::BinanceFutures
             && binance_futures_role == BinanceFuturesRole::Market;
-        let (bbo_enabled, replacement_enabled) =
-            role_stream_policy(venue, binance_futures_role, bybit_role);
-        let direct_trade_enabled =
-            replacement_enabled && enable_trade && direct_trade_replacement_enabled(venue);
+        let (bbo_enabled, replacement_enabled) = role_stream_policy(
+            venue,
+            binance_futures_role,
+            bybit_role,
+            market_data_provider,
+        );
+        let direct_trade_enabled = replacement_enabled
+            && enable_trade
+            && direct_trade_replacement_enabled(venue, market_data_provider);
         let direct_incremental_enabled = enable_incremental
             && replacement_enabled
-            && direct_incremental_replacement_enabled(venue)
+            && direct_incremental_replacement_enabled(venue, market_data_provider)
             && !adapter
                 .build_incremental_subscribe(&initial_symbols)
                 .is_empty();
         let direct_derivatives_enabled = enable_derivatives
             && replacement_enabled
-            && direct_derivatives_replacement_enabled(venue)
+            && direct_derivatives_replacement_enabled(venue, market_data_provider)
             && (is_okex_derivatives_venue(venue)
                 || !adapter
                     .build_derivatives_subscribe(&initial_symbols)
@@ -779,7 +857,8 @@ impl SpreadPbsApp {
             last_dedup_reset_us: get_timestamp_us(),
         }));
 
-        if venue == TradingVenue::BinanceMargin
+        if market_data_provider == MarketDataProvider::Native
+            && venue == TradingVenue::BinanceMargin
             && binance_spot_transport == BinanceSpotTransport::FixSbe
         {
             log::info!(
@@ -821,6 +900,7 @@ impl SpreadPbsApp {
 
         let ctx = LegCtx {
             adapter: adapter.clone(),
+            market_data_provider,
             publisher: publisher.clone(),
             trade_publisher: main_trade_publisher,
             incremental_publisher: main_incremental_publisher,
@@ -899,6 +979,23 @@ impl SpreadPbsApp {
             derivatives_publisher.clone(),
             state.clone(),
         );
+        let funding_task = if market_data_provider == MarketDataProvider::RapidX
+            && matches!(
+                venue,
+                TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+            ) {
+            derivatives_publisher.as_ref().map(|publisher| {
+                crate::spread_pbs::rapidx::spawn_funding_poller(
+                    crate::spread_pbs::rapidx::RapidXAdapter::new(venue)
+                        .expect("RapidX venue was validated during adapter construction"),
+                    funding_symbols_rx.clone(),
+                    publisher.clone(),
+                    shutdown_rx.clone(),
+                )
+            })
+        } else {
+            None
+        };
 
         // ---- 起两条 leg：primary / secondary，独立 shutdown 通道 ----
         let mut primary = if is_binance_futures_market_role {
@@ -995,6 +1092,9 @@ impl SpreadPbsApp {
                     }
                     for leg in &mut direct_extra_legs {
                         let _ = leg.shutdown_tx.send(true);
+                    }
+                    if let Some(task) = funding_task.as_ref() {
+                        task.abort();
                     }
                     if let Some(primary) = primary.as_mut() {
                         let _ = (&mut primary.handle).await;
@@ -1128,6 +1228,7 @@ impl SpreadPbsApp {
                                             binance_futures_role,
                                             &ctx,
                                             &mut current_symbols,
+                                            &funding_symbols_tx,
                                         ).await;
                                         next_primary_restart = Instant::now() + restart_duration;
                                         Some("primary")
@@ -1146,6 +1247,7 @@ impl SpreadPbsApp {
                                         binance_futures_role,
                                         &ctx,
                                         &mut current_symbols,
+                                        &funding_symbols_tx,
                                     ).await;
                                     next_secondary_restart = Instant::now() + restart_duration;
                                     Some("secondary")
@@ -1170,6 +1272,7 @@ impl SpreadPbsApp {
                             binance_futures_role,
                             &ctx,
                             &mut current_symbols,
+                            &funding_symbols_tx,
                         ).await;
                     }
                     next_primary_restart = Instant::now() + restart_duration;
@@ -1183,6 +1286,7 @@ impl SpreadPbsApp {
                             binance_futures_role,
                             &ctx,
                             &mut current_symbols,
+                            &funding_symbols_tx,
                         ).await;
                     }
                     next_secondary_restart = Instant::now() + restart_duration;
@@ -1516,6 +1620,7 @@ fn make_fix_md_handler(
                         bids,
                         asks,
                         incremental_max_levels,
+                        false,
                     );
                 }
             },
@@ -1816,6 +1921,7 @@ async fn restart_leg(
     binance_futures_role: BinanceFuturesRole,
     ctx: &LegCtx,
     current_symbols: &mut HashSet<String>,
+    funding_symbols_tx: &watch::Sender<Vec<String>>,
 ) {
     log::info!("spread_pbs[{}] leg={} restart begin", venue_slug, leg.label);
 
@@ -1846,6 +1952,15 @@ async fn restart_leg(
             venue_slug,
             leg.label.clone(),
             ENV_SYMBOLS
+        );
+        return;
+    }
+    if ctx.market_data_provider == MarketDataProvider::RapidX && new_symbols.len() > 5 {
+        log::error!(
+            "spread_pbs[{}] leg={} RapidX refresh rejected: {} symbols exceed unauthenticated 5-pair connection limit",
+            venue_slug,
+            leg.label,
+            new_symbols.len(),
         );
         return;
     }
@@ -1929,7 +2044,11 @@ async fn restart_leg(
             }
         }
     }
+    let funding_symbols_changed = *current_symbols != new_set;
     *current_symbols = new_set;
+    if funding_symbols_changed {
+        let _ = funding_symbols_tx.send(new_symbols.clone());
+    }
 
     // 关旧、等真正退出，再起新。错开半周期保证此刻另一条 leg 仍在工作。
     let _ = leg.shutdown_tx.send(true);
@@ -2760,14 +2879,20 @@ fn make_replacement_handler(
         if let Some(incremental_publisher) = incremental_publisher.as_ref() {
             for incremental in batch.incrementals {
                 let slot_index = adapter.symbol_slot_index(incremental_frame_symbol(&incremental));
-                process_incremental_frame(
+                let gap = process_incremental_frame(
                     &mut s,
                     incremental_publisher,
                     slot_index,
                     adapter.incremental_dedup_policy(),
                     incremental,
                     incremental_max_levels,
+                    adapter.reconnect_on_incremental_gap(),
                 );
+                if gap && adapter.reconnect_on_incremental_gap() {
+                    return Err(anyhow::anyhow!(
+                        "RapidX verified ORDER_BOOK sequence gap; reconnect for fresh snapshot"
+                    ));
+                }
             }
         }
         if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
@@ -2821,6 +2946,7 @@ fn process_raw_replacement_frame(
                         book.bids.as_slice(),
                         book.asks.as_slice(),
                         incremental_max_levels,
+                        false,
                     );
                 }
                 RawIncremental::View(book) => {
@@ -2955,14 +3081,20 @@ fn make_handler(
         if let Some(incremental_publisher) = incremental_publisher.as_ref() {
             for incremental in batch.incrementals {
                 let slot_index = adapter.symbol_slot_index(incremental_frame_symbol(&incremental));
-                process_incremental_frame(
+                let gap = process_incremental_frame(
                     &mut s,
                     incremental_publisher,
                     slot_index,
                     adapter.incremental_dedup_policy(),
                     incremental,
                     incremental_max_levels,
+                    adapter.reconnect_on_incremental_gap(),
                 );
+                if gap && adapter.reconnect_on_incremental_gap() {
+                    return Err(anyhow::anyhow!(
+                        "RapidX verified ORDER_BOOK sequence gap; reconnect for fresh snapshot"
+                    ));
+                }
             }
         }
         if let Some(derivatives_publisher) = derivatives_publisher.as_ref() {
@@ -3077,7 +3209,8 @@ fn process_incremental_frame(
     dedup_policy: IncrementalDedupPolicy,
     frame: IncrementalFrame,
     max_levels: Option<usize>,
-) {
+    reject_on_gap: bool,
+) -> bool {
     let (
         symbol,
         timestamp,
@@ -3125,12 +3258,16 @@ fn process_incremental_frame(
             if should_drop_incremental(&slot, seq_id, false, dedup_policy) {
                 state.incremental_dropped_by_seq += 1;
                 let _ = timestamp;
-                return;
+                return false;
             }
+            let gap = has_incremental_gap(slot.prev, prev_seq_id, false);
             warn_incremental_gap_if_needed(state, &symbol, slot.prev, seq_id, prev_seq_id, false);
+            if should_reject_incremental_gap(reject_on_gap, gap) {
+                return true;
+            }
             state.symbol_state.set_incremental_slot(slot, seq_id);
             let _ = timestamp;
-            return;
+            return false;
         }
     };
 
@@ -3150,7 +3287,8 @@ fn process_incremental_frame(
         &bids,
         &asks,
         max_levels,
-    );
+        reject_on_gap,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3170,7 +3308,8 @@ fn process_incremental_fields<L: PayloadLevel>(
     bids: &[L],
     asks: &[L],
     max_levels: Option<usize>,
-) {
+    reject_on_gap: bool,
+) -> bool {
     let slot = slot_index
         .map(|idx| state.symbol_state.incremental_slot_by_index(idx))
         .unwrap_or_else(|| state.symbol_state.incremental_slot(symbol));
@@ -3186,11 +3325,17 @@ fn process_incremental_fields<L: PayloadLevel>(
             .is_some_and(|identity| state.contains_recent_incremental(slot.idx, identity))
     {
         state.incremental_dropped_by_seq += 1;
-        return;
+        return false;
     }
 
     if gap_check {
         warn_incremental_gap_if_needed(state, symbol, slot.prev, seq_id, prev_seq_id, is_snapshot);
+        if should_reject_incremental_gap(
+            reject_on_gap,
+            has_incremental_gap(slot.prev, prev_seq_id, is_snapshot),
+        ) {
+            return true;
+        }
     }
 
     let total_levels = bids.len() + asks.len();
@@ -3220,7 +3365,7 @@ fn process_incremental_fields<L: PayloadLevel>(
                     chunk_idx,
                     total_chunks,
                 ) {
-                    return;
+                    return false;
                 }
                 bids_start += bids_count;
                 asks_start += asks_count;
@@ -3245,7 +3390,7 @@ fn process_incremental_fields<L: PayloadLevel>(
                 0,
                 1,
             ) {
-                return;
+                return false;
             }
         }
     }
@@ -3253,6 +3398,7 @@ fn process_incremental_fields<L: PayloadLevel>(
         state.record_recent_incremental(slot.idx, identity);
     }
     state.symbol_state.set_incremental_slot(slot, seq_id);
+    false
 }
 
 fn process_incremental_view(
@@ -3502,6 +3648,15 @@ fn warn_incremental_gap_if_needed(
     }
 }
 
+fn has_incremental_gap(local_prev_seq_id: i64, prev_seq_id: i64, is_snapshot: bool) -> bool {
+    // A strict feed also needs a snapshot before its first delta.
+    !is_snapshot && (local_prev_seq_id == i64::MIN || prev_seq_id != local_prev_seq_id)
+}
+
+fn should_reject_incremental_gap(reject_on_gap: bool, has_gap: bool) -> bool {
+    reject_on_gap && has_gap
+}
+
 fn level_chunk_count(total_bids: usize, total_asks: usize, max: usize) -> usize {
     if max == 0 {
         return 1;
@@ -3711,6 +3866,7 @@ mod tests {
                 TradingVenue::BinanceFutures,
                 BinanceFuturesRole::Full,
                 BybitRole::Full,
+                MarketDataProvider::Native,
             ),
             (true, true)
         );
@@ -3719,6 +3875,7 @@ mod tests {
                 TradingVenue::BinanceFutures,
                 BinanceFuturesRole::Market,
                 BybitRole::Full,
+                MarketDataProvider::Native,
             ),
             (false, true)
         );
@@ -3727,6 +3884,7 @@ mod tests {
                 TradingVenue::BinanceFutures,
                 BinanceFuturesRole::BookTicker,
                 BybitRole::Full,
+                MarketDataProvider::Native,
             ),
             (true, false)
         );
@@ -3741,23 +3899,71 @@ mod tests {
     }
 
     #[test]
+    fn rapidx_depth_gap_check_accepts_snapshot_and_mirrored_duplicate_but_rejects_gap() {
+        // A snapshot establishes the shared sequence baseline. The same update
+        // from the mirrored leg is dropped before its stale pre_seq is checked.
+        assert!(!has_incremental_gap(i64::MIN, 10, true));
+        assert!(has_incremental_gap(i64::MIN, 10, false));
+        assert!(!has_incremental_gap(11, 11, false));
+        assert!(should_drop_incremental(
+            &SymbolSlot {
+                idx: 0,
+                prev: 12,
+                prev_ts_us: 0,
+            },
+            12,
+            false,
+            IncrementalDedupPolicy::MonotonicIncludingSnapshots,
+        ));
+        assert!(should_drop_incremental(
+            &SymbolSlot {
+                idx: 0,
+                prev: 12,
+                prev_ts_us: 0,
+            },
+            11,
+            true,
+            IncrementalDedupPolicy::MonotonicIncludingSnapshots,
+        ));
+        let gap = has_incremental_gap(12, 10, false);
+        assert!(gap);
+        // Native adapters retain their historical log-and-publish behavior.
+        assert!(!should_reject_incremental_gap(false, gap));
+        // RapidX rejects before reaching the publisher and reconnects.
+        assert!(should_reject_incremental_gap(true, gap));
+    }
+
+    #[test]
     fn hyperliquid_uses_bbo_trade_incremental_and_perp_derivatives() {
         for venue in [
             TradingVenue::HyperliquidMargin,
             TradingVenue::HyperliquidFutures,
         ] {
             assert_eq!(
-                role_stream_policy(venue, BinanceFuturesRole::Full, BybitRole::Full),
+                role_stream_policy(
+                    venue,
+                    BinanceFuturesRole::Full,
+                    BybitRole::Full,
+                    MarketDataProvider::Native,
+                ),
                 (true, true)
             );
-            assert!(direct_trade_replacement_enabled(venue));
-            assert!(direct_incremental_replacement_enabled(venue));
+            assert!(direct_trade_replacement_enabled(
+                venue,
+                MarketDataProvider::Native
+            ));
+            assert!(direct_incremental_replacement_enabled(
+                venue,
+                MarketDataProvider::Native
+            ));
         }
         assert!(!direct_derivatives_replacement_enabled(
-            TradingVenue::HyperliquidMargin
+            TradingVenue::HyperliquidMargin,
+            MarketDataProvider::Native,
         ));
         assert!(direct_derivatives_replacement_enabled(
-            TradingVenue::HyperliquidFutures
+            TradingVenue::HyperliquidFutures,
+            MarketDataProvider::Native,
         ));
     }
 

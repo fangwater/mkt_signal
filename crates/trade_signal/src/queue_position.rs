@@ -897,13 +897,15 @@ fn spawn_account_listener(exchange: Exchange) {
         let result: Result<()> = async move {
             let service_name = build_service_name(&format!(
                 "account_pubs/{}_pm",
-                exchange.as_str()
+                runtime_common::execution_backend::account_stream_slug(exchange)?
             ));
             let node_name = format!("trade_signal_queue_position_{}_account", exchange.as_str());
             let node = NodeBuilder::new()
                 .name(&NodeName::new(&node_name)?)
                 .create::<ipc::Service>()?;
             let service_name_obj = ServiceName::new(&service_name)?;
+            let require_non_overflow = exchange == Exchange::Hyperliquid
+                || runtime_common::execution_backend::ExecBackend::for_exchange(exchange)? == runtime_common::execution_backend::ExecBackend::Ltp;
             let service_builder = || {
                 let builder = node
                     .service_builder(&service_name_obj)
@@ -912,7 +914,7 @@ fn spawn_account_listener(exchange: Exchange) {
                     .max_subscribers(PM_MAX_SUBSCRIBERS)
                     .history_size(PM_HISTORY_SIZE)
                     .subscriber_max_buffer_size(PM_SUBSCRIBER_MAX_BUFFER_SIZE);
-                if exchange == Exchange::Hyperliquid {
+                if require_non_overflow {
                     builder.enable_safe_overflow(false)
                 } else {
                     builder

@@ -59,11 +59,11 @@ impl PendingOrderQueryReason {
     }
 }
 
-pub fn hyperliquid_ambiguous_query_reason(
+pub fn ambiguous_action_query_reason(
     response: &dyn TradeEngineResponse,
     cancel_reason: PendingOrderQueryReason,
 ) -> Option<PendingOrderQueryReason> {
-    if !response.is_hyperliquid_action_ambiguous() {
+    if !response.is_action_result_unknown() {
         return None;
     }
     match response.request_kind() {
@@ -101,7 +101,7 @@ pub fn parse_strategy_compact_order_query_resp(
 #[cfg(test)]
 mod tests {
     use super::{
-        hyperliquid_ambiguous_query_reason, monotonic_cumulative_fill,
+        ambiguous_action_query_reason, monotonic_cumulative_fill,
         order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, PendingOrderQueryReason,
         BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US, ORDER_QUERY_WATCHDOG_DELAY_US,
     };
@@ -153,7 +153,7 @@ mod tests {
             ACTION_AMBIGUOUS,
         );
         assert_eq!(
-            hyperliquid_ambiguous_query_reason(&open, PendingOrderQueryReason::CancelWatchdog),
+            ambiguous_action_query_reason(&open, PendingOrderQueryReason::CancelWatchdog),
             Some(PendingOrderQueryReason::OrderWatchdog)
         );
 
@@ -165,8 +165,36 @@ mod tests {
             ACTION_AMBIGUOUS,
         );
         assert_eq!(
-            hyperliquid_ambiguous_query_reason(&cancel, PendingOrderQueryReason::CancelFailed),
+            ambiguous_action_query_reason(&cancel, PendingOrderQueryReason::CancelFailed),
             Some(PendingOrderQueryReason::CancelFailed)
         );
+    }
+
+    #[test]
+    fn rapidx_ambiguous_actions_use_the_same_reconciliation_path() {
+        for (exchange, request, expected) in [
+            (
+                symbol_utils::Exchange::Binance,
+                TradeRequestType::BinanceNewUMOrder,
+                PendingOrderQueryReason::OrderWatchdog,
+            ),
+            (
+                symbol_utils::Exchange::Okex,
+                TradeRequestType::OkexCancelUMOrder,
+                PendingOrderQueryReason::CancelFailed,
+            ),
+        ] {
+            let response = TradeEngineResponseMessage::new(
+                503,
+                request as u32,
+                exchange as u32,
+                42,
+                order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+            );
+            assert_eq!(
+                ambiguous_action_query_reason(&response, PendingOrderQueryReason::CancelFailed),
+                Some(expected)
+            );
+        }
     }
 }

@@ -19,6 +19,7 @@ pub mod latency;
 pub mod okex;
 pub mod okex_derivatives;
 pub mod publisher;
+pub mod rapidx;
 pub mod ws;
 pub mod zmq_forward;
 
@@ -26,4 +27,4 @@ pub use adapter::{
     create_adapter, BboFrame, IncrementalDedupPolicy, IncrementalFrame, KeepaliveSpec,
     TradeDedupPolicy, TradeFrame, VenueAdapter,
 };
-pub use app::{BinanceFuturesRole, BybitRole, SpreadPbsApp};
+pub use app::{BinanceFuturesRole, BybitRole, MarketDataProvider, SpreadPbsApp};

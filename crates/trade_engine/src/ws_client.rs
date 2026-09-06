@@ -176,19 +176,6 @@ fn parse_bitget_control_event(payload: &str) -> Option<(String, String, String, 
     ))
 }
 
-fn is_ltp_terminal_order_push(resp: &ltp_ws::LtpWsResponse) -> bool {
-    let raw = resp
-        .data
-        .get("orderState")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_ascii_uppercase();
-    matches!(
-        raw.as_str(),
-        "FILLED" | "CANCELLED" | "CANCELED" | "REJECT" | "FAIL"
-    )
-}
-
 fn truncate_for_log(text: &str, max_chars: usize) -> String {
     let mut truncated = String::new();
     for (idx, ch) in text.chars().enumerate() {
@@ -671,6 +658,8 @@ pub struct TradeWsClient {
     gate_creds: Option<GateCredentials>,
     hyperliquid_client: Option<Arc<HyperliquidTradingClient>>,
     ltp_creds: Option<LtpCredentials>,
+    ltp_waiting_pong: bool,
+    ltp_portfolio_id: Option<String>,
     okex_http_client: Option<reqwest::Client>,
     okex_inst_id_code_cache: FastHashMap<String, i64>,
     okex_loaded_inst_types: FastHashSet<&'static str>,
@@ -880,6 +869,12 @@ impl TradeWsClient {
             gate_creds,
             hyperliquid_client: None,
             ltp_creds,
+            ltp_waiting_pong: false,
+            ltp_portfolio_id: if use_ltp_backend {
+                runtime_common::execution_backend::rapidx_portfolio_id().ok()
+            } else {
+                None
+            },
             okex_http_client: (exchange == Exchange::Okex).then(reqwest::Client::new),
             okex_inst_id_code_cache: fast_hash_map(),
             okex_loaded_inst_types: fast_hash_set(),
@@ -1175,9 +1170,11 @@ impl TradeWsClient {
     fn queue_disconnected_command(&mut self, cmd: WsCommand, context: &str) {
         match cmd {
             WsCommand::Send(msg) => {
-                if self.exchange == Exchange::Hyperliquid && msg.req_type.is_new_order() {
+                if (self.exchange == Exchange::Hyperliquid || self.use_ltp_backend)
+                    && msg.req_type.is_new_order()
+                {
                     let reason = format!(
-                        "Hyperliquid new order reached a disconnected endpoint {context}; refusing delayed replay"
+                        "new order reached a disconnected endpoint {context}; refusing delayed replay"
                     );
                     warn!(
                         "trade ws client id={} rejecting disconnected Hyperliquid new order client_order_id={}: {}",
@@ -1280,7 +1277,9 @@ impl TradeWsClient {
                 res = Self::establish_connection_with(local_ip, &url, connect_timeout_ms, &ws_headers) => {
                     match res {
                         Ok((mut ws, remote_addr, raw_fd)) => {
-                            self.endpoint_state.borrow_mut().mark_connected();
+                            if !self.use_ltp_backend {
+                                self.endpoint_state.borrow_mut().mark_connected();
+                            }
                             self.current_remote_addr = Some(remote_addr);
                             self.current_tcp_fd = Some(raw_fd);
                             self.tcp_health_last = None;
@@ -1408,6 +1407,25 @@ impl TradeWsClient {
                                 }
                             }
 
+                            if self.use_ltp_backend {
+                                self.ltp_waiting_pong = false;
+                                let authenticated = time::timeout(
+                                    Duration::from_secs(10),
+                                    Self::await_ltp_login(&mut ws),
+                                ).await;
+                                if !matches!(authenticated, Ok(Ok(()))) {
+                                    warn!("RapidX login failed or timed out: endpoint={} result={:?}", self.id, authenticated);
+                                    let _ = ws.close(None).await;
+                                    self.endpoint_state.borrow_mut().mark_disconnected();
+                                    self.current_remote_addr = None;
+                                    self.current_tcp_fd = None;
+                                    self.health.entry.borrow_mut().remote_addr = None;
+                                    time::sleep(Duration::from_millis(backoff_ms)).await;
+                                    backoff_ms = (backoff_ms * 2).min(30_000);
+                                    continue;
+                                }
+                                self.endpoint_state.borrow_mut().mark_connected();
+                            }
                             self.finish_proactive_reconnect(remote_addr);
                             self.update_health_queue_depths();
                             backoff_ms = 500;
@@ -1422,6 +1440,14 @@ impl TradeWsClient {
                             }
                             self.fail_hyperliquid_trades_after_disconnect();
                             self.fail_hyperliquid_queries_after_disconnect();
+                            if self.use_ltp_backend {
+                                for meta in Self::drain_trade_inflight(&mut self.inflight) {
+                                    self.publish_ltp_ambiguous(&meta, "connection lost before action acknowledgement");
+                                }
+                                while let Some(request) = self.pending.pop_front() {
+                                    self.notify_rejected(&request, "RapidX connection lost before queued request was sent");
+                                }
+                            }
                             self.reset_binance_session_logon();
                             self.endpoint_state.borrow_mut().mark_disconnected();
                             self.current_remote_addr = None;
@@ -1518,8 +1544,14 @@ impl TradeWsClient {
                     let _ = ws.close(None).await;
                     return Ok(());
                 }
-                _ = hyperliquid_post_timeout_interval.tick(), if self.exchange == Exchange::Hyperliquid => {
-                    self.expire_hyperliquid_posts(Instant::now());
+                _ = hyperliquid_post_timeout_interval.tick(), if self.exchange == Exchange::Hyperliquid || self.use_ltp_backend => {
+                    if self.use_ltp_backend {
+                        for meta in Self::take_expired_trade_inflight(&mut self.inflight, Instant::now(), Duration::from_secs(10)) {
+                            self.publish_ltp_ambiguous(&meta, "action acknowledgement timed out");
+                        }
+                    } else {
+                        self.expire_hyperliquid_posts(Instant::now());
+                    }
                 }
                 cmd = self.next_command() => {
                     self.handle_command_connected(cmd, ws).await?;
@@ -1542,6 +1574,9 @@ impl TradeWsClient {
                     }
                 }
                 _ = ping_interval.tick() => {
+                    if self.use_ltp_backend && self.ltp_waiting_pong {
+                        return Err(anyhow!("RapidX pong timeout"));
+                    }
                     if self.exchange == Exchange::Bitget && self.bitget_waiting_pong {
                         warn!(
                             "trade ws client id={} Bitget ping timeout, reconnecting",
@@ -1835,7 +1870,7 @@ impl TradeWsClient {
                     "trade ws client id={} send failed for order {}: {}",
                     self.id, msg.client_order_id, err
                 );
-                if Self::requeue_after_send_failure(self.exchange) {
+                if !self.use_ltp_backend && Self::requeue_after_send_failure(self.exchange) {
                     self.pending.push_front(msg);
                 }
                 return Err(err);
@@ -1847,7 +1882,7 @@ impl TradeWsClient {
                     "trade ws client id={} send failed for query {}: {}",
                     self.id, msg.client_query_id, err
                 );
-                if Self::requeue_after_send_failure(self.exchange) {
+                if !self.use_ltp_backend && Self::requeue_after_send_failure(self.exchange) {
                     self.pending_query.push_front(msg);
                 }
                 return Err(err);
@@ -1920,6 +1955,10 @@ impl TradeWsClient {
         let transport_id = self.next_transport_id();
         let payload = match self.build_payload(msg, transport_id).await {
             Ok(payload) => payload,
+            Err(error) if self.use_ltp_backend => {
+                self.notify_rejected(msg, &format!("RapidX request rejected locally: {error:#}"));
+                return Ok(());
+            }
             Err(error) if self.exchange == Exchange::Hyperliquid => {
                 let body = json!({
                     "transport": "ws",
@@ -1978,7 +2017,7 @@ impl TradeWsClient {
             );
         }
         let ws_send_start_time_us = get_timestamp_us();
-        if self.exchange == Exchange::Hyperliquid {
+        if self.exchange == Exchange::Hyperliquid || self.use_ltp_backend {
             self.track_inflight(msg, transport_id, ws_send_start_time_us);
             ws.send(Message::Text(payload)).await?;
         } else {
@@ -2898,12 +2937,12 @@ impl TradeWsClient {
     fn process_incoming_payload(&mut self, payload: &str) {
         if self.use_ltp_backend {
             if ltp_ws::is_text_pong(payload) {
+                self.ltp_waiting_pong = false;
                 debug!("trade ws client id={} LTP received pong", self.id);
                 return;
             }
-            if self.handle_ltp_payload(payload) {
-                return;
-            }
+            self.handle_ltp_payload(payload);
+            return;
         }
 
         if self.exchange == Exchange::Hyperliquid {
@@ -3244,6 +3283,64 @@ impl TradeWsClient {
         }
     }
 
+    async fn await_ltp_login(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Result<()> {
+        loop {
+            let message = ws
+                .next()
+                .await
+                .context("RapidX disconnected during login")??;
+            let payload = match message {
+                Message::Text(text) => text,
+                Message::Binary(bytes) => String::from_utf8(bytes).context("RapidX login UTF-8")?,
+                Message::Ping(bytes) => {
+                    ws.send(Message::Pong(bytes)).await?;
+                    continue;
+                }
+                Message::Pong(_) => continue,
+                Message::Close(_) => return Err(anyhow!("RapidX closed during login")),
+                Message::Frame(_) => continue,
+            };
+            let response = ltp_ws::LtpWsResponse::from_json_str(&payload)
+                .context("RapidX malformed login response")?;
+            if !response.is_login() || !response.is_success() {
+                return Err(anyhow!(
+                    "RapidX expected successful login, received event={:?} code={}",
+                    response.event,
+                    response.code
+                ));
+            }
+            return Ok(());
+        }
+    }
+
+    fn publish_ltp_ambiguous(&self, meta: &TradeInflightMeta, reason: &str) {
+        let _ = self.resp_sink.send(Self::ltp_ambiguous_outcome(
+            self.logical_exchange,
+            meta,
+            reason,
+        ));
+    }
+
+    fn ltp_ambiguous_outcome(
+        exchange: Exchange,
+        meta: &TradeInflightMeta,
+        reason: &str,
+    ) -> TradeExecOutcome {
+        TradeExecOutcome {
+            req_type: meta.req_type,
+            client_order_id: meta.client_order_id,
+            status: 503,
+            body: json!({"backend":"ltp", "code":order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+                "state":"ambiguous", "requiresQuery":true, "msg":reason}).to_string(),
+            exchange,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
+            response_price: 0.0,
+        }
+    }
+
     fn handle_ltp_payload(&mut self, payload: &str) -> bool {
         let Some(resp) = ltp_ws::LtpWsResponse::from_json_str(payload) else {
             return false;
@@ -3265,14 +3362,28 @@ impl TradeWsClient {
         }
 
         if resp.is_trade_ack() {
-            let Some(meta) = self.take_trade_inflight(resp.id, resp.client_order_id_i64()) else {
+            let Some(meta) = resp.id.and_then(|id| self.inflight.remove(&id)) else {
                 self.warn_uncorrelated_trade_payload(payload);
                 return true;
             };
-            let client_order_id = resp.client_order_id_i64().unwrap_or(meta.client_order_id);
-            if resp.is_success() {
+            let client_order_id = meta.client_order_id;
+            if !resp.has_code
+                || resp.code == 0
+                || resp
+                    .client_order_id_i64()
+                    .is_some_and(|id| id != client_order_id)
+                || (resp.event.as_deref() == Some("place_order")) != meta.req_type.is_new_order()
+            {
+                self.publish_ltp_ambiguous(&meta, "malformed or mismatched action acknowledgement");
+                return true;
+            }
+            if resp.requires_order_query() {
+                self.publish_ltp_ambiguous(
+                    &meta,
+                    "exchange reports an existing or completed order; query lifecycle",
+                );
+            } else if resp.is_success() {
                 self.publish_ltp_ws_response(client_order_id, &meta, &resp, false);
-                self.keep_ltp_inflight_after_success_ack(resp.id, client_order_id, meta);
             } else {
                 self.publish_ltp_ws_response(client_order_id, &meta, &resp, true);
             }
@@ -3280,49 +3391,45 @@ impl TradeWsClient {
         }
 
         if resp.is_order_push() {
-            let Some(client_order_id) = resp.client_order_id_i64() else {
-                self.warn_uncorrelated_trade_payload(payload);
+            let Ok(Some(ltp_ws::LtpUserData::Order(order))) = ltp_ws::parse_ltp_user_data(payload)
+            else {
+                warn!("RapidX malformed order push: endpoint={}", self.id);
                 return true;
             };
-            let Some(meta) = self.take_trade_inflight_by_client_order_id(client_order_id) else {
-                debug!(
-                    "trade ws client id={} LTP order push without inflight client_order_id={} payload={}",
-                    self.id,
-                    client_order_id,
-                    truncate_for_log(&payload.replace(['\r', '\n'], " "), 512)
-                );
+            if self.ltp_portfolio_id.as_deref() != Some(order.portfolio_id.as_str()) {
                 return true;
+            }
+            let req_type = match (
+                self.logical_exchange,
+                order.exchange_type.as_str(),
+                order.business_type.as_str(),
+            ) {
+                (Exchange::Binance, "BINANCE", "PERP") => TradeRequestType::BinanceNewUMOrder,
+                (Exchange::Binance, "BINANCE", "SPOT" | "MARGIN") => {
+                    TradeRequestType::BinanceNewMarginOrder
+                }
+                (Exchange::Okex, "OKX", "PERP") => TradeRequestType::OkexNewUMOrder,
+                (Exchange::Okex, "OKX", "SPOT" | "MARGIN") => TradeRequestType::OkexNewMarginOrder,
+                _ => return true,
+            };
+            let Ok(client_order_id) = order.client_order_id.parse::<i64>() else {
+                return true;
+            };
+            if client_order_id <= 0 || order.order_state == "NEW" {
+                return true;
+            }
+            // Lifecycle pushes are independent of any endpoint's request correlation table.
+            let meta = TradeInflightMeta {
+                req_type,
+                client_order_id,
+                ws_open_update_enabled: true,
+                sent_at: Instant::now(),
             };
             self.publish_ltp_ws_response(client_order_id, &meta, &resp, true);
-            if !is_ltp_terminal_order_push(&resp) {
-                self.keep_ltp_inflight_after_success_ack(None, client_order_id, meta);
-            }
             return true;
         }
 
         false
-    }
-
-    fn keep_ltp_inflight_after_success_ack(
-        &mut self,
-        transport_id: Option<i64>,
-        client_order_id: i64,
-        meta: TradeInflightMeta,
-    ) {
-        let mut meta = meta;
-        meta.client_order_id = client_order_id;
-        if let Some(transport_id) = transport_id.filter(|id| *id > 0) {
-            self.inflight.insert(transport_id, meta);
-            return;
-        }
-        let key = self
-            .inflight
-            .keys()
-            .copied()
-            .max()
-            .unwrap_or(self.next_binance_transport_id)
-            .saturating_add(1);
-        self.inflight.insert(key, meta);
     }
 
     fn publish_ltp_ws_response(
@@ -3362,10 +3469,26 @@ impl TradeWsClient {
             body: body_payload,
             exchange: self.logical_exchange,
             order_id: resp.order_id_i64(),
-            order_status_u8: resp.order_status_u8(),
-            order_update_time: resp.order_update_time_ms(),
-            executed_qty: resp.executed_qty(),
-            response_price: resp.response_price(),
+            order_status_u8: if resp.is_order_push() {
+                resp.order_status_u8()
+            } else {
+                0
+            },
+            order_update_time: if resp.is_order_push() {
+                resp.order_update_time_ms()
+            } else {
+                0
+            },
+            executed_qty: if resp.is_order_push() {
+                resp.executed_qty()
+            } else {
+                0.0
+            },
+            response_price: if resp.is_order_push() {
+                resp.response_price()
+            } else {
+                0.0
+            },
         });
     }
 
@@ -4492,6 +4615,7 @@ impl TradeWsClient {
     ) -> Result<()> {
         debug!("trade ws client id={} sending ping", self.id);
         if self.use_ltp_backend {
+            self.ltp_waiting_pong = true;
             ws.send(Message::Text("ping".to_string())).await?;
         } else if self.exchange == Exchange::Bitget {
             self.bitget_waiting_pong = true;
@@ -4518,6 +4642,63 @@ impl TradeWsClient {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn ltp_login_gate_requires_explicit_login_success() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::{client_async, tungstenite::Message, MaybeTlsStream};
+        for (payload, expected) in [
+            (r#"{"event":"login","code":0}"#, true),
+            (r#"{"event":"login"}"#, false),
+            (r#"{"event":"login","code":200000}"#, false),
+            (r#"{"event":"place_order","code":200000}"#, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                ws.send(Message::Text(payload.into())).await.unwrap();
+            });
+            let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+            let (mut ws, _) =
+                client_async(format!("ws://{address}"), MaybeTlsStream::Plain(socket))
+                    .await
+                    .unwrap();
+            assert_eq!(
+                super::TradeWsClient::await_ltp_login(&mut ws).await.is_ok(),
+                expected
+            );
+            server.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn ltp_disconnect_outcome_requires_query_for_open_and_cancel() {
+        for req_type in [
+            super::TradeRequestType::BinanceNewUMOrder,
+            super::TradeRequestType::OkexCancelUMOrder,
+        ] {
+            let meta = super::TradeInflightMeta {
+                req_type,
+                client_order_id: 42,
+                ws_open_update_enabled: true,
+                sent_at: std::time::Instant::now(),
+            };
+            let outcome = super::TradeWsClient::ltp_ambiguous_outcome(
+                super::Exchange::Binance,
+                &meta,
+                "disconnect",
+            );
+            let body: serde_json::Value = serde_json::from_str(&outcome.body).unwrap();
+            assert_eq!(
+                body["code"],
+                order_common::trade_error_code::ACTION_RESULT_UNKNOWN
+            );
+            assert_eq!(outcome.client_order_id, 42);
+            assert_eq!(outcome.status, 503);
+            assert_eq!(outcome.executed_qty, 0.0);
+        }
+    }
     use super::{
         binance_ed25519_api_key_from_env, hyperliquid_new_order_expired_at,
         is_bitget_pong_response, parse_bitget_control_event, HyperliquidActionTail,

@@ -125,6 +125,14 @@ pub trait TradeEngineResponse {
             && self.error_code() == hyperliquid::ACTION_AMBIGUOUS
     }
 
+    fn is_action_result_unknown(&self) -> bool {
+        self.is_hyperliquid_action_ambiguous()
+            || (matches!(
+                self.request_kind(),
+                TradeRequestKind::Open | TradeRequestKind::Cancel
+            ) && self.error_code() == crate::trade_error_code::ACTION_RESULT_UNKNOWN)
+    }
+
     /// Whether the order is rejected because maker-only/post-only would cross.
     ///
     /// Notes:

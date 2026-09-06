@@ -1275,7 +1275,7 @@ impl TradeEngine {
                 exchange
             ));
         }
-        let exec_backend = ExecBackend::for_exchange(exchange);
+        let exec_backend = ExecBackend::for_exchange(exchange)?;
         if !exec_backend.supports_exchange(exchange) {
             return Err(anyhow!(
                 "execution backend '{}' does not support exchange '{}'",
@@ -1284,6 +1284,9 @@ impl TradeEngine {
             ));
         }
         let use_ltp_backend = exec_backend == ExecBackend::Ltp;
+        if use_ltp_backend {
+            runtime_common::execution_backend::rapidx_portfolio_id()?;
+        }
 
         let canonical_exchange = exchange.as_str();
         let fast_poll = enable_ipc_fast_poll();
@@ -1625,6 +1628,11 @@ impl TradeEngine {
 
             let connect_timeout_ms = WsConstants::CONNECT_TIMEOUT_MS;
             let ping_interval_ms = env_u64_or("LTP_WS_PING_INTERVAL_MS", 10_000);
+            if !(1_000..=10_000).contains(&ping_interval_ms) {
+                return Err(anyhow!(
+                    "LTP_WS_PING_INTERVAL_MS must be between 1000 and 10000"
+                ));
+            }
             let max_inflight = WsConstants::MAX_INFLIGHT;
             let ltp_ws_url = std::env::var("LTP_WS_URL")
                 .ok()

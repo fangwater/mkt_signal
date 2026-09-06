@@ -76,6 +76,7 @@ pub struct LtpWsResponse {
     pub id: Option<i64>,
     pub event: Option<String>,
     pub code: i32,
+    pub has_code: bool,
     pub msg: String,
     pub data: Value,
     pub channel: Option<String>,
@@ -98,7 +99,11 @@ impl LtpWsResponse {
             .get("event")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let code = val.get("code").and_then(parse_i32_value).unwrap_or(0);
+        let has_code = val.get("code").and_then(parse_i32_value).is_some();
+        let code = val
+            .get("code")
+            .and_then(parse_i32_value)
+            .unwrap_or_default();
         let msg = val
             .get("msg")
             .or_else(|| val.get("message"))
@@ -110,6 +115,7 @@ impl LtpWsResponse {
             id,
             event,
             code,
+            has_code,
             msg,
             data,
             channel,
@@ -128,8 +134,18 @@ impl LtpWsResponse {
         )
     }
 
+    pub fn requires_order_query(&self) -> bool {
+        // These responses describe an existing order, not its current lifecycle.
+        self.has_code && matches!(self.code, 401009 | 401117)
+    }
+
     pub fn is_success(&self) -> bool {
-        self.code == 0 || self.code == 200000
+        self.has_code
+            && match self.event.as_deref() {
+                Some("login") => self.code == 0,
+                Some("place_order") | Some("cancel_order") => self.code == 200000,
+                _ => false,
+            }
     }
 
     pub fn is_order_push(&self) -> bool {
@@ -163,11 +179,10 @@ impl LtpWsResponse {
     }
 
     pub fn response_price(&self) -> f64 {
-        self.data
-            .get("lastExecutedPrice")
-            .or_else(|| self.data.get("executedAvgPrice"))
-            .or_else(|| self.data.get("limitPrice"))
-            .and_then(parse_f64_value)
+        ["executedAvgPrice", "lastExecutedPrice", "limitPrice"]
+            .iter()
+            .filter_map(|field| self.data.get(*field).and_then(parse_f64_value))
+            .find(|price| price.is_finite() && *price > 0.0)
             .unwrap_or(0.0)
     }
 
@@ -193,6 +208,166 @@ impl LtpWsResponse {
     }
 }
 
+/// A fully validated LTP private user-data push. Numeric protocol values remain
+/// strings so downstream persistence does not lose precision or fee identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LtpUserData {
+    Order(LtpOrderPush),
+    Trade(LtpTradePush),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LtpOrderPush {
+    pub portfolio_id: String,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub exchange_type: String,
+    pub business_type: String,
+    pub sym: String,
+    pub limit_price: String,
+    pub order_qty: String,
+    pub quote_order_qty: String,
+    pub side: String,
+    pub exchange_order_type: String,
+    pub time_in_force: String,
+    pub executed_qty: String,
+    pub executed_amount: String,
+    pub executed_avg_price: String,
+    pub last_executed_qty: String,
+    pub last_executed_price: String,
+    pub last_executed_amount: String,
+    pub fee: String,
+    pub fee_coin: String,
+    pub rebate: String,
+    pub rebate_coin: String,
+    pub order_state: String,
+    pub update_at_ms: i64,
+    pub create_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LtpTradePush {
+    pub transaction_id: String,
+    pub portfolio_id: String,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub exchange_type: String,
+    pub business_type: String,
+    pub sym: String,
+    pub side: String,
+    pub quantity: String,
+    pub price: String,
+    pub trading_fee: String,
+    pub trading_fee_coin: String,
+    pub rpnl: String,
+    pub create_at_ms: i64,
+    pub exec_type: String,
+}
+
+pub fn parse_ltp_user_data(payload: &str) -> Result<Option<LtpUserData>> {
+    let value: Value =
+        serde_json::from_str(payload).with_context(|| "decode LTP user-data push")?;
+    let Some(channel) = value.get("channel").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if !matches!(channel, "Orders" | "Trades") {
+        return Ok(None);
+    }
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("LTP {channel} push missing object data"))?;
+
+    match channel {
+        "Orders" => Ok(Some(LtpUserData::Order(LtpOrderPush {
+            portfolio_id: required_protocol_string(data, "portfolioId")?,
+            order_id: required_protocol_string(data, "orderId")?,
+            client_order_id: required_protocol_string(data, "clientOrderId")?,
+            exchange_type: required_protocol_string(data, "exchangeType")?,
+            business_type: required_protocol_string(data, "businessType")?,
+            sym: required_protocol_string(data, "sym")?,
+            limit_price: required_optional_decimal_string(data, "limitPrice")?,
+            order_qty: required_optional_decimal_string(data, "orderQty")?,
+            quote_order_qty: required_decimal_string(data, "quoteOrderQty")?,
+            side: required_protocol_string(data, "side")?,
+            exchange_order_type: required_protocol_string(data, "exchangeOrderType")?,
+            time_in_force: required_protocol_string(data, "timeInForce")?,
+            executed_qty: required_decimal_string(data, "executedQty")?,
+            executed_amount: required_decimal_string(data, "executedAmount")?,
+            executed_avg_price: required_decimal_string(data, "executedAvgPrice")?,
+            last_executed_qty: required_decimal_string(data, "lastExecutedQty")?,
+            last_executed_price: required_decimal_string(data, "lastExecutedPrice")?,
+            last_executed_amount: required_decimal_string(data, "lastExecutedAmount")?,
+            fee: required_decimal_string(data, "fee")?,
+            fee_coin: required_protocol_string(data, "feeCoin")?,
+            rebate: required_decimal_string(data, "rebate")?,
+            rebate_coin: required_protocol_string(data, "rebateCoin")?,
+            order_state: required_protocol_string(data, "orderState")?,
+            update_at_ms: required_millis_timestamp(data, "updateAt")?,
+            create_at_ms: required_millis_timestamp(data, "createAt")?,
+        }))),
+        "Trades" => Ok(Some(LtpUserData::Trade(LtpTradePush {
+            transaction_id: required_protocol_string(data, "transactionId")?,
+            portfolio_id: required_protocol_string(data, "portfolioId")?,
+            order_id: required_protocol_string(data, "orderId")?,
+            client_order_id: required_protocol_string(data, "clientOrderId")?,
+            exchange_type: required_protocol_string(data, "exchangeType")?,
+            business_type: required_protocol_string(data, "businessType")?,
+            sym: required_protocol_string(data, "sym")?,
+            side: required_protocol_string(data, "side")?,
+            quantity: required_decimal_string(data, "quantity")?,
+            price: required_decimal_string(data, "price")?,
+            trading_fee: required_decimal_string(data, "tradingFee")?,
+            trading_fee_coin: required_protocol_string(data, "tradingFeeCoin")?,
+            rpnl: required_decimal_string(data, "rpnl")?,
+            create_at_ms: required_millis_timestamp(data, "createAt")?,
+            exec_type: required_protocol_string(data, "execType")?,
+        }))),
+        _ => Ok(None),
+    }
+}
+
+fn required_protocol_string(data: &serde_json::Map<String, Value>, field: &str) -> Result<String> {
+    let value = data
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("LTP user-data field {field} must be a string"))?;
+    Ok(value.to_string())
+}
+
+fn required_decimal_string(data: &serde_json::Map<String, Value>, field: &str) -> Result<String> {
+    let value = required_protocol_string(data, field)?;
+    let number = value
+        .parse::<f64>()
+        .with_context(|| format!("LTP user-data field {field} is not decimal"))?;
+    if !number.is_finite() {
+        return Err(anyhow!("LTP user-data field {field} is not finite"));
+    }
+    Ok(value)
+}
+
+fn required_optional_decimal_string(
+    data: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<String> {
+    let value = required_protocol_string(data, field)?;
+    if value.is_empty() {
+        return Ok(value);
+    }
+    required_decimal_string(data, field)
+}
+
+fn required_millis_timestamp(data: &serde_json::Map<String, Value>, field: &str) -> Result<i64> {
+    let value = required_protocol_string(data, field)?;
+    let timestamp = value
+        .parse::<i64>()
+        .with_context(|| format!("LTP user-data field {field} is not an integer timestamp"))?;
+    if timestamp <= 0 {
+        return Err(anyhow!("LTP user-data field {field} must be positive"));
+    }
+    Ok(timestamp)
+}
+
 pub fn is_text_pong(payload: &str) -> bool {
     payload.trim().eq_ignore_ascii_case("pong")
 }
@@ -202,6 +377,29 @@ pub fn build_order_payload(
     msg: &TradeRequestMsg,
     transport_id: i64,
 ) -> Result<String> {
+    let expected_exchange = match msg.req_type {
+        TradeRequestType::BinanceNewUMOrder
+        | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceWsNewUMOrder
+        | TradeRequestType::BinanceWsNewMarginOrder
+        | TradeRequestType::BinanceCancelUMOrder
+        | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceWsCancelUMOrder
+        | TradeRequestType::BinanceWsCancelMarginOrder => Exchange::Binance,
+        TradeRequestType::OkexNewUMOrder
+        | TradeRequestType::OkexNewMarginOrder
+        | TradeRequestType::OkexCancelUMOrder
+        | TradeRequestType::OkexCancelMarginOrder => Exchange::Okex,
+        _ => return Err(anyhow!("unsupported RapidX request type")),
+    };
+    if logical_exchange != expected_exchange {
+        return Err(anyhow!("RapidX request does not match logical exchange"));
+    }
+    if msg.client_order_id <= 0 {
+        return Err(anyhow!(
+            "RapidX request requires a positive client order ID"
+        ));
+    }
     let (action, args) = match msg.req_type {
         TradeRequestType::BinanceNewUMOrder
         | TradeRequestType::BinanceNewMarginOrder
@@ -257,9 +455,14 @@ pub fn build_order_payload(
     serde_json::to_string(&json!({
         "id": transport_id.to_string(),
         "action": action,
+        "ts": ltp_timestamp_us(),
         "args": args,
     }))
     .with_context(|| "serialize LTP ws payload")
+}
+
+fn ltp_timestamp_us() -> String {
+    chrono::Utc::now().timestamp_micros().to_string()
 }
 
 fn header_for_msg(msg: &TradeRequestMsg) -> TradeRequestHeader {
@@ -469,7 +672,7 @@ pub fn ltp_status_for_response(resp: &LtpWsResponse) -> u16 {
         .and_then(|v| v.as_str())
         .map(|s| matches!(s.to_ascii_uppercase().as_str(), "FAIL" | "REJECT"))
         .unwrap_or(false);
-    if !resp.is_success() || order_state_failed {
+    if order_state_failed || (!resp.is_order_push() && !resp.is_success()) {
         400
     } else {
         206
@@ -493,6 +696,19 @@ pub fn warn_if_unsupported_ltp_exchange(exchange: Exchange) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn existing_order_acknowledgements_require_a_query() {
+        for code in [401009, 401117] {
+            let payload = serde_json::json!({"event":"place_order", "code":code});
+            assert!(super::LtpWsResponse::from_json_str(&payload.to_string())
+                .unwrap()
+                .requires_order_query());
+        }
+        let response =
+            super::LtpWsResponse::from_json_str(r#"{"event":"place_order","code":200000}"#)
+                .unwrap();
+        assert!(!response.requires_order_query());
+    }
     use super::*;
     use signal_common::tick_math::QuantizedValue;
 
@@ -531,6 +747,8 @@ mod tests {
         let value: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(value["id"], "9");
         assert_eq!(value["action"], "place_order");
+        let ts = value["ts"].as_str().expect("microsecond action timestamp");
+        assert!(ts.parse::<i64>().unwrap() > 1_000_000_000_000_000);
         assert_eq!(value["args"]["clientOrderId"], "123");
         assert_eq!(value["args"]["sym"], "BINANCE_PERP_BTC_USDT");
         assert_eq!(value["args"]["timeInForce"], "GTX");
@@ -545,5 +763,56 @@ mod tests {
         assert_eq!(resp.client_order_id_i64(), Some(123));
         assert_eq!(resp.order_status_u8(), OrderStatus::Filled.to_u8());
         assert_eq!(resp.order_update_time_ms(), 1703213979731);
+    }
+
+    #[test]
+    fn requires_action_specific_success_codes() {
+        let login = LtpWsResponse::from_json_str(r#"{"event":"login","code":0}"#).unwrap();
+        assert!(login.is_success());
+        let login_action_code =
+            LtpWsResponse::from_json_str(r#"{"event":"login","code":200000}"#).unwrap();
+        assert!(!login_action_code.is_success());
+        let action =
+            LtpWsResponse::from_json_str(r#"{"event":"place_order","code":200000,"data":{}}"#)
+                .unwrap();
+        assert!(action.is_success());
+        let missing_code =
+            LtpWsResponse::from_json_str(r#"{"event":"place_order","data":{}}"#).unwrap();
+        assert!(!missing_code.is_success());
+    }
+
+    #[test]
+    fn parses_documented_order_and_trade_pushes_without_lossy_coercion() {
+        let order = parse_ltp_user_data(
+            r#"{"channel":"Orders","data":{"portfolioId":"1702884522340000","orderId":"1703213979730000","clientOrderId":"abc123","exchangeType":"BINANCE","businessType":"PERP","sym":"BINANCE_PERP_ETH_USDT","limitPrice":"2346.00000001","orderQty":"0.01","quoteOrderQty":"0","side":"BUY","exchangeOrderType":"LIMIT","timeInForce":"GTC","executedQty":"0","executedAmount":"0","executedAvgPrice":"0","lastExecutedQty":"0","lastExecutedPrice":"0","lastExecutedAmount":"0","fee":"10","feeCoin":"USDT","rebate":"0.1","rebateCoin":"USDT","orderState":"NEW","updateAt":"1703213979731","createAt":"1703213979731"}}"#,
+        )
+        .unwrap();
+        let Some(LtpUserData::Order(order)) = order else {
+            panic!("expected order push");
+        };
+        assert_eq!(order.order_id, "1703213979730000");
+        assert_eq!(order.client_order_id, "abc123");
+        assert_eq!(order.limit_price, "2346.00000001");
+        assert_eq!(order.fee_coin, "USDT");
+        assert_eq!(order.update_at_ms, 1_703_213_979_731);
+
+        let trade = parse_ltp_user_data(
+            r#"{"channel":"Trades","data":{"transactionId":"38132969466022978","portfolioId":"2066376093138754","orderId":"2104172237333826","exchangeType":"BINANCE","businessType":"PERP","sym":"BINANCE_PERP_APT_USDT","side":"BUY","quantity":"4","price":"2.24509925","tradingFee":"-0.00089804","tradingFeeCoin":"USDT","rpnl":"0","clientOrderId":"abc123","createAt":"1763977805203","execType":"MAKER"}}"#,
+        )
+        .unwrap();
+        let Some(LtpUserData::Trade(trade)) = trade else {
+            panic!("expected trade push");
+        };
+        assert_eq!(trade.transaction_id, "38132969466022978");
+        assert_eq!(trade.trading_fee, "-0.00089804");
+        assert_eq!(trade.trading_fee_coin, "USDT");
+        assert_eq!(trade.create_at_ms, 1_763_977_805_203);
+    }
+
+    #[test]
+    fn rejects_lossy_or_incomplete_user_data() {
+        let err = parse_ltp_user_data(r#"{"channel":"Trades","data":{"transactionId":1}}"#)
+            .expect_err("numeric protocol identity must not be coerced");
+        assert!(err.to_string().contains("transactionId"));
     }
 }

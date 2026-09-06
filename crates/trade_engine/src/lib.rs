@@ -16,6 +16,7 @@ pub mod gate_query;
 pub mod gate_ws;
 pub mod hyperliquid_ws;
 pub mod internal_terminate;
+pub mod ltp_account;
 pub mod ltp_rest;
 pub mod ltp_ws;
 pub mod okex;

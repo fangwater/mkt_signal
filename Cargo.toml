@@ -93,6 +93,10 @@ name = "hyperliquid_account_monitor"
 path = "src/bin/hyperliquid_account_monitor.rs"
 
 [[bin]]
+name = "rapidx_account_monitor"
+path = "src/bin/rapidx_account_monitor.rs"
+
+[[bin]]
 name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 

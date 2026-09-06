@@ -3,7 +3,7 @@ use crate::pre_trade::QueryEngHub;
 use crate::strategy::manager::Strategy;
 use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::order_reconcile::{
-    hyperliquid_ambiguous_query_reason, order_query_watchdog_delay_us, PendingOrderQueryReason,
+    ambiguous_action_query_reason, order_query_watchdog_delay_us, PendingOrderQueryReason,
     ORDER_QUERY_WATCHDOG_DELAY_US,
 };
 use crate::strategy::ws_order_update::prepare_failed_trade_engine_response_for_strategy;
@@ -129,10 +129,10 @@ pub trait HedgeOrderReconcileCommon: Strategy {
             .unwrap_or("unknown");
 
         if let Some(reason) =
-            hyperliquid_ambiguous_query_reason(response, PendingOrderQueryReason::CancelFailed)
+            ambiguous_action_query_reason(response, PendingOrderQueryReason::CancelFailed)
         {
             warn!(
-                "{}: strategy_id={} Hyperliquid action ambiguous: req_type={} client_order_id={} query_reason={:?} {}",
+                "{}: strategy_id={} action result unknown: req_type={} client_order_id={} query_reason={:?} {}",
                 self.hedge_reconcile_strategy_name(),
                 self.hedge_reconcile_strategy_id(),
                 response.req_type(),

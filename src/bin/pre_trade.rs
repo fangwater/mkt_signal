@@ -550,8 +550,28 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     }
     let need_binance = open_venue.trade_engine_exchange() == "binance"
         || hedge_venue.trade_engine_exchange() == "binance";
+    let mut rapidx_exchanges = std::collections::HashSet::new();
+    for venue in [open_venue, hedge_venue] {
+        let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
+            .context("invalid trade engine exchange")?;
+        if runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?
+            == runtime_common::execution_backend::ExecBackend::Ltp
+        {
+            runtime_common::execution_backend::rapidx_portfolio_id()?;
+            rapidx_exchanges.insert(exchange);
+        }
+    }
+    let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
+    let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
+    if exec_pre_trade && !rapidx_exchanges.is_empty() {
+        anyhow::bail!("RapidX Exec startup cancel-all/leverage/rule reconciliation is not implemented; refusing native account operations");
+    }
     let binance_account_mode = if need_binance {
-        Some(init_binance_account_mode("pre_trade"))
+        Some(if rapidx_binance {
+            BinanceAccountMode::Unified
+        } else {
+            init_binance_account_mode("pre_trade")
+        })
     } else {
         None
     };
@@ -590,20 +610,23 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
         None
     };
     let mut required_env: Vec<&str> = Vec::new();
-    if open_venue.trade_engine_exchange() == "binance"
-        || hedge_venue.trade_engine_exchange() == "binance"
-    {
+    if need_binance && !rapidx_binance {
         required_env.extend(["BINANCE_API_KEY", "BINANCE_API_SECRET"]);
     }
-    if need_binance {
+    if need_binance && !rapidx_binance {
         required_env.push("BINANCE_ACCOUNT_MODE");
     }
     if need_hyperliquid {
         required_env.push("HYPERLIQUID_ACCOUNT_ADDRESS");
     }
-    if open_venue.trade_engine_exchange() == "okex" || hedge_venue.trade_engine_exchange() == "okex"
+    if !rapidx_okex
+        && (open_venue.trade_engine_exchange() == "okex"
+            || hedge_venue.trade_engine_exchange() == "okex")
     {
         required_env.extend(["OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"]);
+    }
+    if !rapidx_exchanges.is_empty() {
+        required_env.extend(["LTP_API_KEY", "LTP_API_SECRET", "LTP_PORTFOLIO_ID"]);
     }
     if !required_env.is_empty() {
         info!("Required env vars: {}", required_env.join(", "));
@@ -843,7 +866,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     || matches!(hedge_venue, TradingVenue::BinanceMargin);
                 let binance_is_unified =
                     matches!(binance_account_mode, Some(BinanceAccountMode::Unified));
-                if binance_in_play && binance_is_unified {
+                if binance_in_play && binance_is_unified && !rapidx_binance {
                     let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();
                     let binance_api_secret =
                         std::env::var("BINANCE_API_SECRET").unwrap_or_default();
@@ -906,9 +929,8 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // - pre_trade 重启后立即执行一次；
             // - 每天 UTC+8 12:00 执行一次；
             let mut auto_collection_service = None;
-            if matches!(open_venue, TradingVenue::BinanceMargin)
-                || matches!(hedge_venue, TradingVenue::BinanceMargin)
-            {
+            if !rapidx_binance && (matches!(open_venue, TradingVenue::BinanceMargin)
+                || matches!(hedge_venue, TradingVenue::BinanceMargin)) {
                 let is_unified = matches!(binance_account_mode, Some(BinanceAccountMode::Unified));
                 if is_unified {
                     let binance_api_key = std::env::var("BINANCE_API_KEY").unwrap_or_default();

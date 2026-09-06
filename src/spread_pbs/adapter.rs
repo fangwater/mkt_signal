@@ -225,6 +225,11 @@ pub trait VenueAdapter {
     fn reconnect_on_parse_error(&self) -> bool {
         false
     }
+    /// A verified post-de-dup order-book gap must terminate the current public
+    /// session before the discontinuous delta is published.
+    fn reconnect_on_incremental_gap(&self) -> bool {
+        false
+    }
     /// Called before reconnecting after a fatal parse error.
     fn on_fatal_parse_error(&self) {}
     /// Optional symbol-table hook for adapters that keep per-symbol hot-path state.

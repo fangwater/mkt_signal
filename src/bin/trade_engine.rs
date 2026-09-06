@@ -344,7 +344,7 @@ async fn main() -> Result<()> {
     let exchange_name = args.exchange.as_str();
     let exchange = Exchange::from_str(exchange_name)
         .ok_or_else(|| anyhow::anyhow!("Invalid exchange name: {}", exchange_name))?;
-    let exec_backend = ExecBackend::for_exchange(exchange);
+    let exec_backend = ExecBackend::for_exchange(exchange)?;
     info!(
         "trade_engine starting (exchange={} exec_backend={})",
         exchange_name,
