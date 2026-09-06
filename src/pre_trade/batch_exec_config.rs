@@ -91,6 +91,7 @@ pub struct BatchExecConfigReloader {
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
     leverage_init: BatchExecLeverageInitState,
+    leverage_confirmed_symbols: BTreeSet<String>,
     leverage_blocked_symbols: BTreeSet<String>,
     snapshots: BTreeMap<String, BatchExecRedisValue>,
     position_ledger: Option<BatchExecPositionLedger>,
@@ -107,6 +108,7 @@ const LEVERAGE_INIT_KEY: &str = "batch_exec_state:leverage_initialized";
 const POSITION_LEDGER_VERSION: u32 = 1;
 const LEVERAGE_INIT_VERSION: u32 = 1;
 const POSITION_ALLOCATION_EPS: f64 = 1e-10;
+const LEVERAGE_INIT_REQUEST_SPACING: Duration = Duration::from_millis(75);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +116,16 @@ struct BatchExecLeverageInitState {
     version: u32,
     leverage: u8,
     symbols: BTreeSet<String>,
+    #[serde(default)]
+    scope: BatchExecLeverageInitScope,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchExecLeverageInitScope {
+    venue: String,
+    backend: String,
+    rapidx_portfolio_id: Option<String>,
 }
 
 impl BatchExecLeverageInitState {
@@ -122,6 +134,7 @@ impl BatchExecLeverageInitState {
             version: LEVERAGE_INIT_VERSION,
             leverage: crate::pre_trade::leverage_guard::BATCH_EXEC_DEFAULT_LEVERAGE,
             symbols: BTreeSet::new(),
+            scope: BatchExecLeverageInitScope::default(),
         }
     }
 
@@ -146,6 +159,45 @@ impl BatchExecLeverageInitState {
             }
         }
         Ok(())
+    }
+
+    fn with_scope(mut self, scope: BatchExecLeverageInitScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    fn confirmed_on_startup(&self) -> BTreeSet<String> {
+        if self.scope.rapidx_portfolio_id.is_some() {
+            BTreeSet::new()
+        } else {
+            self.symbols.clone()
+        }
+    }
+}
+
+impl BatchExecLeverageInitScope {
+    fn current(venue: TradingVenue) -> Result<Self> {
+        let exchange = match venue {
+            TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
+                runtime_common::exchange::Exchange::Binance
+            }
+            TradingVenue::OkexFutures => runtime_common::exchange::Exchange::Okex,
+            other => anyhow::bail!(
+                "unsupported BatchExec futures venue for leverage-init scope: {other:?}"
+            ),
+        };
+        let backend = runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?;
+        let rapidx_portfolio_id = if backend == runtime_common::execution_backend::ExecBackend::Ltp
+        {
+            Some(runtime_common::execution_backend::rapidx_portfolio_id()?)
+        } else {
+            None
+        };
+        Ok(Self {
+            venue: venue.data_pub_slug().to_string(),
+            backend: backend.as_str().to_string(),
+            rapidx_portfolio_id,
+        })
     }
 }
 
@@ -433,24 +485,41 @@ impl BatchExecConfigReloader {
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Result<Self> {
         let mut client = RedisClient::connect(redis).await?;
-        let leverage_init = client
+        let loaded_leverage_init = client
             .get_json::<BatchExecLeverageInitState>(LEVERAGE_INIT_KEY)
             .await
             .with_context(|| format!("load Redis key {LEVERAGE_INIT_KEY}"))?
             .unwrap_or_else(BatchExecLeverageInitState::empty);
-        leverage_init
+        loaded_leverage_init
             .validate()
             .with_context(|| format!("invalid BatchExec leverage-init key={LEVERAGE_INIT_KEY}"))?;
+        let scope = BatchExecLeverageInitScope::current(venue)?;
+        let leverage_init = if loaded_leverage_init.scope == scope {
+            loaded_leverage_init
+        } else {
+            info!(
+                "BatchExec leverage-init scope changed; clearing audit symbols: previous_venue={} previous_backend={} venue={} backend={}",
+                loaded_leverage_init.scope.venue,
+                loaded_leverage_init.scope.backend,
+                scope.venue,
+                scope.backend,
+            );
+            BatchExecLeverageInitState::empty().with_scope(scope)
+        };
         info!(
-            "BatchExec leverage-init loaded: leverage={} initialized_symbols={}",
+            "BatchExec leverage-init audit loaded: venue={} backend={} leverage={} initialized_symbols={}; RapidX symbols require process-start confirmation",
+            leverage_init.scope.venue,
+            leverage_init.scope.backend,
             leverage_init.leverage,
             leverage_init.symbols.len()
         );
+        let leverage_confirmed_symbols = leverage_init.confirmed_on_startup();
         Ok(Self {
             client,
             venue,
             binance_account_mode,
             leverage_init,
+            leverage_confirmed_symbols,
             leverage_blocked_symbols: BTreeSet::new(),
             snapshots: BTreeMap::new(),
             position_ledger: None,
@@ -515,8 +584,8 @@ impl BatchExecConfigReloader {
     ) -> BTreeSet<String> {
         let mut blocked = BTreeSet::new();
         let mut newly_initialized = BTreeSet::new();
-        for symbol in required_symbols {
-            if self.leverage_init.symbols.contains(symbol) {
+        for (index, symbol) in required_symbols.iter().enumerate() {
+            if self.leverage_confirmed_symbols.contains(symbol) {
                 continue;
             }
             match crate::pre_trade::leverage_guard::set_batch_exec_default_leverage(
@@ -532,6 +601,7 @@ impl BatchExecConfigReloader {
                         symbol, self.venue, self.leverage_init.leverage
                     );
                     newly_initialized.insert(symbol.clone());
+                    self.leverage_confirmed_symbols.insert(symbol.clone());
                 }
                 Err(err) => {
                     warn!(
@@ -540,6 +610,11 @@ impl BatchExecConfigReloader {
                     );
                     blocked.insert(symbol.clone());
                 }
+            }
+            if self.leverage_init.scope.rapidx_portfolio_id.is_some()
+                && index + 1 < required_symbols.len()
+            {
+                tokio::time::sleep(LEVERAGE_INIT_REQUEST_SPACING).await;
             }
         }
 
@@ -554,6 +629,7 @@ impl BatchExecConfigReloader {
             {
                 for symbol in &newly_initialized {
                     self.leverage_init.symbols.remove(symbol);
+                    self.leverage_confirmed_symbols.remove(symbol);
                     blocked.insert(symbol.clone());
                 }
                 warn!(
@@ -1778,6 +1854,28 @@ mod tests {
             &BTreeSet::new(),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn rapidx_audit_marker_never_confirms_leverage_after_restart() {
+        let mut state = BatchExecLeverageInitState::empty();
+        state.symbols.insert("BTCUSDT".into());
+        state.scope = BatchExecLeverageInitScope {
+            venue: "okex-futures".into(),
+            backend: "native".into(),
+            rapidx_portfolio_id: None,
+        };
+        assert_eq!(state.confirmed_on_startup(), state.symbols);
+        state.scope.backend = "ltp".into();
+        state.scope.rapidx_portfolio_id = Some("123".into());
+        assert!(state.confirmed_on_startup().is_empty());
+        let mut other = state.scope.clone();
+        other.rapidx_portfolio_id = Some("456".into());
+        assert_ne!(state.scope, other);
+        let bytes = serde_json::to_vec(&state).unwrap();
+        let recovered: BatchExecLeverageInitState = serde_json::from_slice(&bytes).unwrap();
+        assert!(recovered.confirmed_on_startup().is_empty());
+        assert_eq!(recovered.symbols, state.symbols);
     }
 
     #[test]

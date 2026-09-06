@@ -244,6 +244,31 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 
 ## Remaining Boundaries
 
+### Exec Startup Work
+
+Portfolio-scoped startup cancellation and BatchExec leverage initialization now
+have RapidX adapters. Cancellation first validates a complete perpetual open-order
+snapshot for the configured portfolio and logical venue, then sends individual
+JSON-body DELETE requests and queries until the snapshot is empty. The user-wide
+`cancelAll` endpoint is deliberately not used. Accepted cancellation is not final
+confirmation. Malformed/incomplete snapshots, cross-portfolio rows, failed
+requests and the existing `EXEC_STARTUP_CANCEL_TIMEOUT_SECS` deadline fail the
+gate without falling back to native exchange credentials.
+
+The leverage adapter sets the existing BatchExec default of 5 and reads the exact
+perpetual symbol back before activation. Only Binance/OKX USDT perpetual symbols
+are supported; this does not add inverse-futures support or change account mode.
+The existing leverage marker is bound to venue/backend/portfolio. A scope change
+invalidates its symbol set. RapidX confirmations are process-local and must be
+renewed after restart; persisted markers alone cannot activate RapidX symbols.
+
+The top-level RapidX Exec startup gate remains in place: the rule producer lives
+in the separate `crypto_cta_manager` repository. Its native-only refresh must be
+made backend-aware and the single existing cache must identify its rule source
+before Exec can safely consume RapidX constraints. Exec must not poll `sym/info`
+independently or silently use native rules. These adapters alone do not mean
+RapidX Exec is enabled or ready for live startup.
+
 - Durable execution-fact replay, read-only execution/order fee reconciliation
   and settlement-ledger recovery/reporting are implemented. Cross-checking ledger
   totals against account snapshots and a normalized strategy PNL view remain
@@ -263,8 +288,8 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
   uses documented journal evidence, but live unmatched/uniform-order forced-close
   plumbing remains incomplete. Malformed lifecycle messages invalidate the session.
 - Native Binance auto-repay/collection are disabled for RapidX. Exec startup is
-  refused because cancel-all, leverage and rule initialization still use native
-  account paths. FR/MM paths may remain gated by unavailable normalized account
+  still refused pending the Manager rule producer/cache alignment described above.
+  FR/MM paths may remain gated by unavailable normalized account
   fields; this is not a claim of production-ready automatic trading.
 - No private credential smoke test, live order, leverage/account change or
   deployment was performed for this implementation.
@@ -285,4 +310,10 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 - [Recent execution pages](https://apidocliquidity.readme.io/reference/query-transactions-pageable)
 - [Archived execution pages](https://apidocliquidity.readme.io/reference/query-archived-transactions-pageable)
 - [Settlement statements](https://apidocliquidity.readme.io/reference/query-statement)
+- [Open orders](https://apidocliquidity.readme.io/reference/current-open-orders)
+- [Single-order cancellation](https://apidocliquidity.readme.io/reference/cancel-order)
+- [User-wide cancellation scope](https://apidocliquidity.readme.io/reference/cancel-one-portfolio-orders)
+- [Set leverage](https://apidocliquidity.readme.io/reference/set-leverage)
+- [Read leverage](https://apidocliquidity.readme.io/reference/get-perp-leverage)
+- [Symbol trading rules](https://apidocliquidity.readme.io/reference/sym-info)
 - [Error codes](https://apidocliquidity.readme.io/docs/error-codes)

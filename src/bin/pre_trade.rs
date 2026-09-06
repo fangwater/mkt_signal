@@ -338,6 +338,27 @@ async fn cancel_all_exec_orders_on_startup(
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
 ) -> Result<()> {
+    let exchange = runtime_common::exchange::Exchange::from_str(venue.trade_engine_exchange())
+        .context("invalid Exec startup exchange")?;
+    if runtime_common::execution_backend::ExecBackend::for_exchange(exchange)?
+        == runtime_common::execution_backend::ExecBackend::Ltp
+    {
+        let wire_exchange = match venue {
+            TradingVenue::BinanceFutures => "BINANCE",
+            TradingVenue::OkexFutures => "OKX",
+            _ => anyhow::bail!("RapidX Exec startup supports linear perpetual venues only"),
+        };
+        let timeout = std::env::var("EXEC_STARTUP_CANCEL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(120)
+            .max(1);
+        let client = trade_engine::ltp_rest::LtpRestClient::from_env()?;
+        warn!("exec-pre-trade startup gate: cancelling RapidX {} PERP orders in portfolio {} and verifying empty", wire_exchange, client.portfolio_id());
+        return client
+            .cancel_exec_orders_on_startup(wire_exchange, Duration::from_secs(timeout))
+            .await;
+    }
     let cwd = std::env::current_dir().context("resolve current directory")?;
     let (script_name, args): (&str, Vec<String>) = match venue {
         TradingVenue::BinanceFutures => match binance_account_mode {
@@ -564,7 +585,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
     if exec_pre_trade && !rapidx_exchanges.is_empty() {
-        anyhow::bail!("RapidX Exec startup cancel-all/leverage/rule reconciliation is not implemented; refusing native account operations");
+        anyhow::bail!("RapidX Exec requires RapidX-aware Manager market rules; retaining startup gate until the Manager producer and Exec cache contract are aligned");
     }
     let binance_account_mode = if need_binance {
         Some(if rapidx_binance {

@@ -9,6 +9,8 @@ use hmac::{Hmac, Mac};
 use log::{info, warn};
 use order_common::TradingVenue;
 use reqwest::Client;
+use runtime_common::exchange::Exchange;
+use runtime_common::execution_backend::ExecBackend;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::time_util::get_timestamp_us;
 use serde_json::{json, Value};
@@ -250,6 +252,25 @@ pub async fn set_batch_exec_default_leverage(
     symbol: &str,
     binance_account_mode: Option<BinanceAccountMode>,
 ) -> Result<()> {
+    let backend = match venue {
+        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => {
+            ExecBackend::for_exchange(Exchange::Binance)?
+        }
+        TradingVenue::OkexFutures => ExecBackend::for_exchange(Exchange::Okex)?,
+        other => bail!(
+            "unsupported BatchExec futures venue for default leverage: {:?}",
+            other
+        ),
+    };
+    if backend == ExecBackend::Ltp {
+        return trade_engine::ltp_init_leverage::set_and_verify_batch_exec_leverage(
+            venue,
+            symbol,
+            BATCH_EXEC_DEFAULT_LEVERAGE,
+        )
+        .await;
+    }
+
     let client = Client::builder()
         .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECS))
         .build()

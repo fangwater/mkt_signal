@@ -70,6 +70,68 @@ impl LtpRestClient {
         &self.portfolio_id
     }
 
+    #[cfg(test)]
+    pub(crate) fn fixture(base_url: String) -> Self {
+        Self {
+            base_url,
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        }
+    }
+
+    pub(crate) async fn signed_json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &Value,
+    ) -> Result<(u16, String)> {
+        anyhow::ensure!(
+            matches!(
+                method,
+                reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::DELETE
+            ),
+            "invalid RapidX JSON method"
+        );
+        let params = body
+            .as_object()
+            .context("RapidX JSON body must be an object")?
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    Value::String(value) => value.clone(),
+                    Value::Number(_) | Value::Bool(_) => value.to_string(),
+                    _ => return Err(anyhow!("RapidX signed body requires scalar parameters")),
+                };
+                Ok((key.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let nonce = chrono::Utc::now().timestamp().to_string();
+        let signature = sign_params(&self.creds.secret_key, &params, &nonce)?;
+        let response = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path))
+            .header("X-MBX-APIKEY", &self.creds.api_key)
+            .header("nonce", nonce)
+            .header("ts", chrono::Utc::now().timestamp_micros().to_string())
+            .header("signature", signature)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("RapidX JSON request {path}"))?;
+        let status = response.status().as_u16();
+        Ok((
+            status,
+            response.text().await.context("read RapidX JSON response")?,
+        ))
+    }
+
     /// A complete, identity-checked snapshot, shaped like the corresponding WS channel.
     pub async fn fetch_account_push(&self, channel: &str, exchange: &str) -> Result<String> {
         let snapshot_started_ms = chrono::Utc::now().timestamp_millis();
