@@ -4,6 +4,8 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
 use order_common::TradingVenue;
+use runtime_common::exchange::Exchange;
+use runtime_common::execution_backend::{rapidx_portfolio_id, ExecBackend};
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::min_qty_symbol_key;
 use serde::Deserialize;
@@ -30,6 +32,8 @@ struct ManagerMarketRule {
 #[serde(deny_unknown_fields)]
 struct ManagerMarketRulesSnapshot {
     venue: String,
+    execution_backend: String,
+    portfolio_id: Option<String>,
     fetched_at_us: i64,
     symbols: BTreeMap<String, ManagerMarketRule>,
 }
@@ -37,6 +41,8 @@ struct ManagerMarketRulesSnapshot {
 pub struct ManagerMarketRulesReloader {
     client: RedisClient,
     venue: TradingVenue,
+    backend: ExecBackend,
+    portfolio_id: Option<String>,
     last_fetched_at_us: i64,
 }
 
@@ -50,11 +56,39 @@ impl ManagerMarketRulesReloader {
         ) {
             bail!("Manager market-rules cache does not support venue {venue:?}");
         }
+        let exchange =
+            Exchange::from_str(venue.trade_engine_exchange()).context("invalid rule exchange")?;
+        let backend = ExecBackend::for_exchange(exchange)?;
+        anyhow::ensure!(
+            backend != ExecBackend::Ltp || venue != TradingVenue::BinanceCoinFutures,
+            "RapidX inverse futures rules are unsupported"
+        );
+        let portfolio_id = if backend == ExecBackend::Ltp {
+            Some(rapidx_portfolio_id()?)
+        } else {
+            None
+        };
         Ok(Self {
             client: RedisClient::connect(redis).await?,
             venue,
+            backend,
+            portfolio_id,
             last_fetched_at_us: 0,
         })
+    }
+
+    /// Validate the Manager-owned cache before any startup cancellation or leverage writes.
+    pub async fn verify_startup(redis: RedisSettings, venue: TradingVenue) -> Result<()> {
+        let mut reloader = Self::connect(redis, venue).await?;
+        let snapshot = reloader
+            .client
+            .get_json::<ManagerMarketRulesSnapshot>(MARKET_RULES_KEY)
+            .await?
+            .context("Manager market-rules cache is required before RapidX Exec startup")?;
+        snapshot.validate_provenance(venue, reloader.backend, reloader.portfolio_id.as_deref())?;
+        snapshot.validate_startup_time(runtime_common::time_util::get_timestamp_us())?;
+        snapshot.into_tables(venue)?;
+        Ok(())
     }
 
     pub async fn reload(&mut self) -> Result<bool> {
@@ -66,6 +100,7 @@ impl ManagerMarketRulesReloader {
         else {
             return Ok(false);
         };
+        snapshot.validate_provenance(self.venue, self.backend, self.portfolio_id.as_deref())?;
         if snapshot.fetched_at_us == self.last_fetched_at_us {
             return Ok(false);
         }
@@ -114,6 +149,43 @@ impl ManagerMarketRulesReloader {
 }
 
 impl ManagerMarketRulesSnapshot {
+    fn validate_startup_time(&self, now_us: i64) -> Result<()> {
+        let age = now_us.saturating_sub(self.fetched_at_us);
+        anyhow::ensure!(
+            self.fetched_at_us > 0 && (-60_000_000..=180_000_000).contains(&age),
+            "Manager market-rules cache is stale or future-dated at startup"
+        );
+        Ok(())
+    }
+    fn validate_provenance(
+        &self,
+        venue: TradingVenue,
+        backend: ExecBackend,
+        portfolio: Option<&str>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.venue == venue.data_pub_slug(),
+            "Manager market-rules venue mismatch"
+        );
+        anyhow::ensure!(
+            self.execution_backend == backend.as_str(),
+            "Manager market-rules execution backend mismatch"
+        );
+        anyhow::ensure!(
+            self.portfolio_id.as_deref() == portfolio,
+            "Manager market-rules portfolio mismatch"
+        );
+        if backend == ExecBackend::Ltp {
+            runtime_common::execution_backend::validate_portfolio_id(
+                portfolio.context("missing RapidX rule portfolio")?,
+            )?;
+            anyhow::ensure!(
+                venue != TradingVenue::BinanceCoinFutures,
+                "RapidX inverse futures rules unsupported"
+            );
+        }
+        Ok(())
+    }
     fn into_tables(
         &self,
         expected_venue: TradingVenue,
@@ -180,6 +252,8 @@ impl ManagerMarketRulesSnapshot {
                     symbol.clone(),
                     positive_decimal(&symbol, "contract_multiplier", value)?,
                 );
+            } else if self.execution_backend == "ltp" {
+                bail!("RapidX futures rule lacks contract multiplier: {symbol}");
             }
         }
         Ok((market_type, filters, multipliers, tradable_symbols))
@@ -210,9 +284,81 @@ fn positive_decimal(symbol: &str, field: &str, value: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn startup_requires_recent_positive_rule_timestamp() {
+        let mut snapshot = sample_snapshot();
+        let now = 1_000_000_000;
+        for offset in [-60_000_000, 0, 180_000_000] {
+            snapshot.fetched_at_us = now - offset;
+            snapshot.validate_startup_time(now).unwrap();
+        }
+        for timestamp in [0, now - 180_000_001, now + 60_000_001, i64::MIN] {
+            snapshot.fetched_at_us = timestamp;
+            assert!(snapshot.validate_startup_time(now).is_err());
+        }
+    }
+
+    #[test]
+    fn rapidx_okx_cache_preserves_contract_units_and_suspension() {
+        let raw = r#"{"venue":"okex-futures","execution_backend":"ltp","portfolio_id":"123",
+            "fetched_at_us":123,"symbols":{"ETHUSDT":{"status":"live","base_asset":"ETH",
+            "quote_asset":"USDT","price_tick":"0.01","qty_step":"1","min_qty":"1",
+            "min_notional":null,"contract_multiplier":"0.01"}}}"#;
+        let mut snapshot: ManagerMarketRulesSnapshot = serde_json::from_str(raw).unwrap();
+        snapshot
+            .validate_provenance(TradingVenue::OkexFutures, ExecBackend::Ltp, Some("123"))
+            .unwrap();
+        let (_, rules, multipliers, tradable) =
+            snapshot.into_tables(TradingVenue::OkexFutures).unwrap();
+        assert_eq!(rules["ETHUSDT"].step_size, 1.0);
+        assert_eq!(multipliers["ETHUSDT"], 0.01);
+        assert!(tradable.contains("ETHUSDT"));
+        snapshot.symbols.get_mut("ETHUSDT").unwrap().status = "suspend".into();
+        let (_, rules, _, tradable) = snapshot.into_tables(TradingVenue::OkexFutures).unwrap();
+        assert!(rules.contains_key("ETHUSDT"));
+        assert!(tradable.is_empty());
+    }
+
+    #[test]
+    fn cache_provenance_rejects_native_rules_and_other_portfolios_for_rapidx() {
+        let mut snapshot = sample_snapshot();
+        assert!(snapshot
+            .validate_provenance(TradingVenue::BinanceFutures, ExecBackend::Native, None)
+            .is_ok());
+        assert!(snapshot
+            .validate_provenance(TradingVenue::BinanceFutures, ExecBackend::Ltp, Some("123"))
+            .is_err());
+        snapshot.execution_backend = "ltp".into();
+        snapshot.portfolio_id = Some("123".into());
+        assert!(snapshot
+            .validate_provenance(TradingVenue::BinanceFutures, ExecBackend::Ltp, Some("123"))
+            .is_ok());
+        assert!(snapshot
+            .validate_provenance(TradingVenue::BinanceFutures, ExecBackend::Ltp, Some("456"))
+            .is_err());
+        assert!(snapshot
+            .validate_provenance(TradingVenue::BinanceFutures, ExecBackend::Native, None)
+            .is_err());
+        snapshot
+            .symbols
+            .values_mut()
+            .next()
+            .unwrap()
+            .contract_multiplier = None;
+        assert!(snapshot.into_tables(TradingVenue::BinanceFutures).is_err());
+    }
+
+    #[test]
+    fn old_cache_without_provenance_is_not_a_second_supported_format() {
+        let raw = r#"{"venue":"okex-futures","fetched_at_us":1,"symbols":{}}"#;
+        assert!(serde_json::from_str::<ManagerMarketRulesSnapshot>(raw).is_err());
+    }
+
     fn sample_snapshot() -> ManagerMarketRulesSnapshot {
         ManagerMarketRulesSnapshot {
             venue: "binance-futures".to_string(),
+            execution_backend: "native".into(),
+            portfolio_id: None,
             fetched_at_us: 123,
             symbols: BTreeMap::from([(
                 "牛来USDT".to_string(),
@@ -286,6 +432,8 @@ mod tests {
     fn deserializes_manager_wire_contract_without_version_dispatch() {
         let raw = r#"{
             "venue":"binance-futures",
+            "execution_backend":"native",
+            "portfolio_id":null,
             "fetched_at_us":123,
             "symbols":{
                 "BTCUSDT":{

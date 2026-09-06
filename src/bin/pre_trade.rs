@@ -334,6 +334,13 @@ fn exec_python_bin() -> String {
         })
 }
 
+fn exec_redis_prefix(source: Option<&str>, venue: TradingVenue) -> String {
+    match source {
+        Some(name) if !name.is_empty() => format!("{}:{}:", name, venue.data_pub_slug()),
+        _ => format!("{}:", venue.data_pub_slug()),
+    }
+}
+
 async fn cancel_all_exec_orders_on_startup(
     venue: TradingVenue,
     binance_account_mode: Option<BinanceAccountMode>,
@@ -585,7 +592,19 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     let rapidx_binance = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Binance);
     let rapidx_okex = rapidx_exchanges.contains(&runtime_common::exchange::Exchange::Okex);
     if exec_pre_trade && !rapidx_exchanges.is_empty() {
-        anyhow::bail!("RapidX Exec requires RapidX-aware Manager market rules; retaining startup gate until the Manager producer and Exec cache contract are aligned");
+        anyhow::ensure!(
+            matches!(
+                open_venue,
+                TradingVenue::BinanceFutures | TradingVenue::OkexFutures
+            ),
+            "RapidX Exec supports Binance/OKX linear perpetual venues only"
+        );
+        let mut redis = RedisSettings::default();
+        redis.prefix = Some(exec_redis_prefix(
+            infer_dir_prefix_from_cwd().as_deref(),
+            open_venue,
+        ));
+        ManagerMarketRulesReloader::verify_startup(redis, open_venue).await?;
     }
     let binance_account_mode = if need_binance {
         Some(if rapidx_binance {
@@ -678,12 +697,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // 统一标准：使用 kebab-case venue slug（例如 okex-margin），与 scripts/ 运维保持一致。
             let dir_prefix = infer_dir_prefix_from_cwd();
             let prefix = if exec_pre_trade {
-                match dir_prefix.as_deref() {
-                    Some(name) if !name.is_empty() => {
-                        format!("{}:{}:", name, open_venue.data_pub_slug())
-                    }
-                    _ => format!("{}:", open_venue.data_pub_slug()),
-                }
+                exec_redis_prefix(dir_prefix.as_deref(), open_venue)
             } else {
                 match dir_prefix.as_deref() {
                 Some(name) if !name.is_empty() => format!(

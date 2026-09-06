@@ -24,28 +24,6 @@ if [[ "$PMDAEMON_BIN" != */* ]] && ! command -v "$PMDAEMON_BIN" >/dev/null 2>&1;
   exit 1
 fi
 
-BIN_CANDIDATES=(
-  "${BASE_DIR}/account_monitor"
-  "${BASE_DIR}/scripts/account_monitor"
-  "${BASE_DIR}/target/release/account_monitor"
-  "${SCRIPT_DIR}/account_monitor"
-)
-
-BIN_PATH=""
-for cand in "${BIN_CANDIDATES[@]}"; do
-  if [[ -x "$cand" ]]; then
-    BIN_PATH="$cand"
-    break
-  fi
-done
-
-if [[ -z "$BIN_PATH" ]]; then
-  echo "[ERROR] account_monitor binary not found. Deploy/build first." >&2
-  echo "[ERROR] Expected one of:" >&2
-  printf '  - %s\n' "${BIN_CANDIDATES[@]}" >&2
-  exit 1
-fi
-
 dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
@@ -73,6 +51,117 @@ if type mm_normalize_exchange >/dev/null 2>&1; then
 fi
 if [[ -z "$ENV_TAG" ]]; then
   ENV_TAG="$MODE"
+fi
+
+EXEC_BACKEND="native"
+ACCOUNT_MONITOR_ARGS=()
+if [[ "$MODE" == "exec" ]]; then
+  # Keep this parser aligned with runtime_common::execution_backend::ExecBackend.
+  parse_exec_backend() {
+    local raw="$1"
+    raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    case "$raw" in
+      ''|native|exchange|direct) printf '%s\n' native ;;
+      ltp|rapidx|liquidity|liquiditytech) printf '%s\n' ltp ;;
+      *) echo "[ERROR] invalid execution backend: $1 (expected native or rapidx)" >&2; return 1 ;;
+    esac
+  }
+
+  exec_backend_for_exchange() {
+    local exchange="$1"
+    local default_backend="${TRADE_ENGINE_EXEC_BACKEND:-}"
+    local mapping="${TRADE_ENGINE_EXEC_BACKEND_MAP:-}"
+    local parsed_default wildcard='' specific='' entry key value parsed
+    local wildcard_set=0 specific_set=0
+    local -a entries=()
+
+    if [[ "$mapping" == *$'\n'* || "$mapping" == *$'\r'* ]]; then
+      echo "[ERROR] execution backend map must not contain newlines" >&2
+      return 1
+    fi
+    parsed_default="$(parse_exec_backend "$default_backend")" || return 1
+    IFS=',' read -r -a entries <<< "$mapping"
+    for entry in "${entries[@]}"; do
+      entry="$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [[ -z "$entry" ]] && continue
+      if [[ "$entry" != *=* ]]; then
+        echo "[ERROR] invalid execution backend map entry: $entry (expected exchange=backend)" >&2
+        return 1
+      fi
+      key="$(printf '%s' "${entry%%=*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+      value="${entry#*=}"
+      parsed="$(parse_exec_backend "$value")" || return 1
+      case "$key" in
+        '*')
+          if ((wildcard_set)); then
+            echo "[ERROR] duplicate wildcard execution backend mapping" >&2
+            return 1
+          fi
+          wildcard="$parsed"
+          wildcard_set=1
+          ;;
+        binance|okex|bybit|bitget|gate|hyperliquid)
+          if [[ "$key" == "$exchange" ]]; then
+            if ((specific_set)); then
+              echo "[ERROR] duplicate $exchange execution backend mapping" >&2
+              return 1
+            fi
+            specific="$parsed"
+            specific_set=1
+          fi
+          ;;
+        *)
+          echo "[ERROR] unknown exchange in execution backend map: $key" >&2
+          return 1
+          ;;
+      esac
+    done
+
+    if ((specific_set)); then
+      printf '%s\n' "$specific"
+    elif ((wildcard_set)); then
+      printf '%s\n' "$wildcard"
+    else
+      printf '%s\n' "$parsed_default"
+    fi
+  }
+
+  EXEC_BACKEND="$(exec_backend_for_exchange "$EXCHANGE")" || exit 1
+  if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+    case "$EXCHANGE" in
+      binance|okex) ;;
+      *) echo "[ERROR] RapidX account monitor supports Binance/OKX Exec only" >&2; exit 1 ;;
+    esac
+    ACCOUNT_MONITOR_ARGS=(--exchange "$EXCHANGE")
+    BIN_CANDIDATES=(
+      "${BASE_DIR}/rapidx_account_monitor"
+      "${BASE_DIR}/target/release/rapidx_account_monitor"
+    )
+  fi
+fi
+
+if [[ "$EXEC_BACKEND" == "native" ]]; then
+  BIN_CANDIDATES=(
+    "${BASE_DIR}/account_monitor"
+    "${BASE_DIR}/scripts/account_monitor"
+    "${BASE_DIR}/target/release/account_monitor"
+    "${SCRIPT_DIR}/account_monitor"
+  )
+fi
+
+BIN_PATH=""
+for cand in "${BIN_CANDIDATES[@]}"; do
+  if [[ -x "$cand" ]]; then
+    BIN_PATH="$cand"
+    break
+  fi
+done
+
+if [[ -z "$BIN_PATH" ]]; then
+  echo "[ERROR] account monitor binary not found for backend=${EXEC_BACKEND}. Deploy/build first." >&2
+  echo "[ERROR] Expected one of:" >&2
+  printf '  - %s\n' "${BIN_CANDIDATES[@]}" >&2
+  exit 1
 fi
 
 if [[ "$MODE" == "mm" ]]; then
@@ -144,7 +233,7 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "$RUST_LOG")"
 cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
-for arg in "${core_args[@]}"; do
+for arg in "${ACCOUNT_MONITOR_ARGS[@]}" "${core_args[@]}"; do
   cmd+=" $(shell_quote "$arg")"
 done
 json_cmd="$(json_escape "$cmd")"

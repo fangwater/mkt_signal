@@ -104,7 +104,7 @@ find_running_pids() {
   local -a matched=()
   local -a all_pids=()
 
-  for comm in "account_monitor" "${EXCHANGE}_account_monitor"; do
+  for comm in "account_monitor" "${EXCHANGE}_account_monitor" "rapidx_account_monitor"; do
     mapfile -t matched < <(safe_find_running_pids "$comm" "$BASE_DIR" || true)
     if [[ ${#matched[@]} -gt 0 ]]; then
       all_pids+=("${matched[@]}")

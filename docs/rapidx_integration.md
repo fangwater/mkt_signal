@@ -19,8 +19,11 @@ not an account-mode switch. Unsupported venues and malformed backend maps fail
 startup. There is no fallback to native execution on RapidX errors.
 
 The account publisher is `rapidx_account_monitor --exchange binance` or
-`rapidx_account_monitor --exchange okex`. Existing deployment/start wrappers do
-not automatically select this new binary. REST and private WS source IPs use
+`rapidx_account_monitor --exchange okex`. Exec startup wrappers select this
+named binary and pass the exchange when the backend is RapidX. Prepare
+`<env>/rapidx_account_monitor` before using `start-exec.sh`; this change does not
+automatically install it through deploy/publish wrappers. Other strategy wrappers
+are unchanged. REST and private WS source IPs use
 the existing trade-engine configuration; the monitor also accepts `--local-ip`.
 `LTP_REST_URL` and `LTP_WS_URL` override the private endpoints when needed.
 
@@ -262,12 +265,31 @@ The existing leverage marker is bound to venue/backend/portfolio. A scope change
 invalidates its symbol set. RapidX confirmations are process-local and must be
 renewed after restart; persisted markers alone cannot activate RapidX symbols.
 
-The top-level RapidX Exec startup gate remains in place: the rule producer lives
-in the separate `crypto_cta_manager` repository. Its native-only refresh must be
-made backend-aware and the single existing cache must identify its rule source
-before Exec can safely consume RapidX constraints. Exec must not poll `sym/info`
-independently or silently use native rules. These adapters alone do not mean
-RapidX Exec is enabled or ready for live startup.
+The rule producer in the independent `crypto_cta_manager` repository reads the
+source's existing `env_path` (default derived from its RocksDB path) and resolves
+`TRADE_ENGINE_EXEC_BACKEND` / `TRADE_ENGINE_EXEC_BACKEND_MAP` with the same
+precedence as Exec. RapidX sources use authenticated `sym/info`; native sources
+retain their venue public APIs. Manager refreshes every 60 seconds, spaces RapidX
+requests by four seconds, and publishes through the same source/venue Redis key.
+It neither imports this repository nor opens an Exec database for writing.
+
+The single cache contract now requires `execution_backend` (`native` or `ltp`)
+and carries `portfolio_id` (null for native). Both repositories must be updated
+together; old cache shapes are rejected, not supported through another format.
+The normal Exec cache reloader validates this identity before applying rules.
+RapidX startup additionally requires a complete validated cache no older than
+180 seconds (at most 60 seconds future skew) before any cancellation or leverage
+write. A missing, mismatched, invalid or stale startup cache fails closed. Exec
+does not poll `sym/info` independently or silently fall back to native rules.
+Hot reload retains the last good snapshot on refresh errors, matching the native
+path; a complete snapshot omitting or suspending a symbol blocks new orders.
+
+With these prerequisites met, Binance/OKX USDT perpetual RapidX Exec can pass the
+former blanket startup refusal. Startup scripts select RapidX credentials and
+skip native Python cancellation dependencies. Inverse futures remain unsupported.
+This is implemented and fixture-tested startup wiring, not an authenticated live
+trading certification. Manager's separate native account query/leverage controls
+reject RapidX sources rather than touching native accounts.
 
 - Durable execution-fact replay, read-only execution/order fee reconciliation
   and settlement-ledger recovery/reporting are implemented. Cross-checking ledger
@@ -288,7 +310,7 @@ RapidX Exec is enabled or ready for live startup.
   uses documented journal evidence, but live unmatched/uniform-order forced-close
   plumbing remains incomplete. Malformed lifecycle messages invalidate the session.
 - Native Binance auto-repay/collection are disabled for RapidX. Exec startup is
-  still refused pending the Manager rule producer/cache alignment described above.
+  conditional on Manager rule provenance, scoped cancellation and verified leverage.
   FR/MM paths may remain gated by unavailable normalized account
   fields; this is not a claim of production-ready automatic trading.
 - No private credential smoke test, live order, leverage/account change or
