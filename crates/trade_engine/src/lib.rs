@@ -20,6 +20,7 @@ pub mod ltp_account;
 pub mod ltp_finance;
 pub mod ltp_history;
 pub mod ltp_journal;
+pub mod ltp_persist;
 pub mod ltp_rest;
 pub mod ltp_snapshot;
 pub mod ltp_ws;

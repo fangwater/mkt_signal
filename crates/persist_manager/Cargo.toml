@@ -43,6 +43,11 @@ name = "trade_history_reconcile"
 path = "src/bin/trade_history_reconcile.rs"
 required-features = ["runtime"]
 
+[[bin]]
+name = "rapidx_execution_export"
+path = "src/bin/rapidx_execution_export.rs"
+required-features = ["runtime"]
+
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.7", features = ["ws"], optional = true }

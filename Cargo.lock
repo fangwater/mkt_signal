@@ -3087,6 +3087,9 @@ dependencies = [
 name = "persist_common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 
@@ -5678,6 +5681,7 @@ dependencies = [
  "native-tls",
  "openssl",
  "order_common",
+ "persist_common",
  "reqwest",
  "rmp-serde",
  "rolling_common",

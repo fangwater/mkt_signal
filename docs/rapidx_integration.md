@@ -92,6 +92,53 @@ conflicting records fail recovery. Journal writes precede progress checkpoints.
 Only an unterminated final journal line is ignored on restart; complete corrupt
 records fail recovery. Journal write/sync failure stops further processing.
 
+## Execution Persistence
+
+The monitor now forwards durable execution observations directly to
+`persist_manager` in the same `IPC_NAMESPACE`, without passing incremental fills
+through the cumulative order-update path. Run that consumer to drain the outbox;
+its absence does not discard the journal or block the WS reader.
+
+The shared `persist_common::rapidx_execution` contract retains string identities,
+decimal strings and separate fee currencies. The RocksDB `rapidx_executions` CF
+uses a stable key over portfolio, exchange, transaction ID and observation source.
+WS and REST observations occupy separate records because their fee semantics
+differ. They are evidence of the same execution, not two additive fills. Neither
+observation increases `uniform_orders.amount_update` or assigns a strategy owner.
+Conflicting same-source records are rejected without overwriting existing facts.
+
+The receiver acknowledges the exact key and canonical content only after a
+synchronous RocksDB write. With persist sync enabled, the fact and replication
+outbox share that durable write. Lost ACKs and IPC sends retry with a bounded
+128-record in-flight window; duplicate receipts do not append more outbox rows.
+The journal remains intact, and monitor restart replays all retained executions.
+Delivery also runs during connection attempts and reconnect backoff.
+`latest_financial.json.execution_persistence_pending` reports journal backlog plus
+in-flight records; `recovery_ready` still describes account/history recovery, not
+central persistence completion. A persist ACK means local durable storage, not
+that the remote sync collector has received the record.
+
+The new CF participates in generic persist sync replication, but not the
+timestamp-keyed order-export repair sweep or existing order parquet schema.
+Replication must be enabled when facts are first inserted; enabling it later
+does not backfill facts previously acknowledged with replication disabled.
+Use the read-only JSONL exporter for inspection (timestamps are microseconds,
+the requested interval is half-open):
+
+```bash
+cargo run -p persist_manager --features runtime --bin rapidx_execution_export -- \
+  --db-path data/persist_manager --portfolio 123 --exchange OKX \
+  --start-us 1788652800000000 --end-us 1788739200000000 --observation rest
+```
+
+Replace the example portfolio with the intended identity. `--observation ws`
+selects signed WS fees; `all` retains both observations and must not be summed as
+fills or fees. `--source-id` reads the corresponding source CF in a sync-center
+database. JSONL is written to stdout, diagnostics to stderr. The exporter never
+writes to the database; an error can leave partial stdout output and must not be
+treated as a complete export. Export rows preserve the venue's millisecond
+timestamp inside the execution evidence.
+
 ## Market Data
 
 `spread_pbs --market-data-provider rapidx` selects the public RapidX feed;
@@ -114,9 +161,10 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 
 ## Remaining Boundaries
 
-- Historical executions are recovered into the local journal, not yet through a
-  durable consumer-acknowledged replay protocol or full `persist_manager`
-  order/fee/ledger reconciliation. Journal rotation/retention needs operational
+- Durable execution-fact replay is implemented, but full order/fee/ledger
+  reconciliation and a normalized strategy PNL view remain incomplete. In
+  particular, REST's reported cumulative rebate is not apportioned to fills.
+  Journal rotation/retention needs operational
   policy. Late venue corrections beyond the one-minute overlap require a wider
   recovery, and endpoint retention/completeness still needs authenticated testing.
 - Financial/loan inspection is implemented, but accrued interest, collateral
@@ -126,7 +174,7 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
   readiness snapshot protocol.
 - Nonnumeric external client IDs remain outside the native numeric order
   lifecycle; they no longer invalidate an otherwise valid order stream. Their
-  execution evidence is retained, but central unmatched/forced-close attribution
+  execution evidence is centrally persisted, but unmatched/forced-close attribution
   is not complete. Malformed lifecycle messages invalidate the monitor session.
 - Native Binance auto-repay/collection are disabled for RapidX. Exec startup is
   refused because cancel-all, leverage and rule initialization still use native

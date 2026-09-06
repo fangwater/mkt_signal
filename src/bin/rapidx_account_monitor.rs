@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::Message;
 use trade_engine::ltp_account::{parse_account_push, parse_order_push, PositionSnapshotState};
 use trade_engine::ltp_finance::PortfolioFinancialSnapshot;
 use trade_engine::ltp_journal::{write_snapshot, AccountJournal};
+use trade_engine::ltp_persist::ExecutionPublisher;
 use trade_engine::ltp_rest::LtpRestClient;
 use trade_engine::ltp_snapshot::{AccountSnapshotState, RecoveryReadiness};
 use trade_engine::ltp_ws::{LtpCredentials, LtpWsResponse, DEFAULT_WS_URL};
@@ -37,6 +38,7 @@ struct Args {
 struct Forwarder {
     ipc: PmForwarder,
     journal: AccountJournal,
+    executions: ExecutionPublisher,
     portfolio: String,
     exchange: &'static str,
     scope: BasicAccountScope,
@@ -49,6 +51,18 @@ struct Forwarder {
 }
 
 impl Forwarder {
+    fn poll_execution_delivery(&mut self) -> Result<()> {
+        self.executions.poll()?;
+        while self.executions.has_capacity() {
+            let Some(record) = self.journal.next_execution_record()? else {
+                break;
+            };
+            self.executions.enqueue(&record)?;
+            self.journal.execution_record_enqueued();
+        }
+        Ok(())
+    }
+
     fn process(
         &mut self,
         payload: &str,
@@ -147,6 +161,7 @@ impl Forwarder {
             &json!({
                 "recovery_ready":self.readiness.is_ready(),
                 "history_end_ms":self.journal.history_end_ms,
+                "execution_persistence_pending":self.journal.execution_delivery_pending() + self.executions.pending_count(),
                 "financial":self.financial
             }),
         )
@@ -336,6 +351,7 @@ async fn main() -> Result<()> {
     let mut forwarder = Forwarder {
         ipc: PmForwarder::new_non_overflowing(&slug)?,
         journal,
+        executions: ExecutionPublisher::new()?,
         portfolio: rest.portfolio_id().to_string(),
         exchange: wire_exchange,
         scope: if exchange == Exchange::Binance {
@@ -354,13 +370,26 @@ async fn main() -> Result<()> {
         last_risk_timestamp: 0,
     };
     let url = std::env::var("LTP_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string());
+    let mut persist_tick = tokio::time::interval(Duration::from_millis(25));
+    persist_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut shutdown = false;
     loop {
         forwarder.invalidate()?;
-        let connection = tokio::time::timeout(
+        let connect = tokio::time::timeout(
             Duration::from_secs(15),
             WsConnector::connect_with_local_ip_raw(&url, &local_ip),
-        )
-        .await;
+        );
+        tokio::pin!(connect);
+        let connection = loop {
+            tokio::select! {
+                result = &mut connect => break Some(result),
+                _ = persist_tick.tick() => forwarder.poll_execution_delivery()?,
+                _ = tokio::signal::ctrl_c() => break None,
+            }
+        };
+        let Some(connection) = connection else {
+            break;
+        };
         if let Ok(Ok(connection)) = connection {
             let mut ws = connection.ws_stream.lock().await;
             let mut workers = Vec::new();
@@ -398,6 +427,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         update = rx.recv() => forwarder.apply_refresh(update.context("RapidX recovery worker stopped")??)?,
+                        _ = persist_tick.tick() => forwarder.poll_execution_delivery()?,
                         _ = heartbeat.tick() => {
                             if waiting_pong { bail!("RapidX account heartbeat expired"); }
                             ws.send(Message::Text("ping".into())).await?;
@@ -422,9 +452,17 @@ async fn main() -> Result<()> {
         } else {
             log::warn!("RapidX account connection unavailable");
         }
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+        let backoff = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(backoff);
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => { shutdown = true; break; },
+                _ = &mut backoff => break,
+                _ = persist_tick.tick() => forwarder.poll_execution_delivery()?,
+            }
+        }
+        if shutdown {
+            break;
         }
     }
     Ok(())

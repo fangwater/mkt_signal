@@ -54,7 +54,7 @@ pub fn create_record_subscriber_with_max_publishers(
     create_sized_record_subscriber_with_max_publishers(channel, max_publishers)
 }
 
-fn create_sized_record_subscriber_with_max_publishers<const PAYLOAD: usize>(
+pub(crate) fn create_sized_record_subscriber_with_max_publishers<const PAYLOAD: usize>(
     channel: &str,
     max_publishers: usize,
 ) -> Result<Subscriber<ipc::Service, [u8; PAYLOAD], ()>> {

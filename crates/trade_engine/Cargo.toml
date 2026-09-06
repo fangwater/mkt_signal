@@ -19,6 +19,7 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 iceoryx2 = "0.8.1"
 log = "0.4"
 order_common = { path = "../order_common" }
+persist_common = { path = "../persist_common" }
 rolling_common = { path = "../rolling_common" }
 runtime_common = { path = "../runtime_common" }
 serde = { version = "1.0", features = ["derive"] }

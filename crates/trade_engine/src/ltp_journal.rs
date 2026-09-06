@@ -1,158 +1,21 @@
 use anyhow::{ensure, Context, Result};
-use serde::{Deserialize, Serialize};
+use persist_common::rapidx_execution::ExecutionRecord;
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-/// A factual execution observation. REST fees/rebates stay separate; a WS signed
-/// fee is not added to its REST counterpart. Neither implies an order lifecycle.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExecutionEvidence {
-    pub transaction_id: String,
-    pub order_id: String,
-    pub client_order_id: String,
-    pub symbol: String,
-    pub side: String,
-    pub quantity: String,
-    pub price: String,
-    pub timestamp_ms: i64,
-    pub realized_pnl: String,
-    pub signed_fee: Option<String>,
-    pub signed_fee_currency: Option<String>,
-    pub fee: Option<String>,
-    pub fee_currency: Option<String>,
-    pub reported_rebate: Option<String>,
-    pub rebate_currency: Option<String>,
-    pub rest: bool,
-}
-
-impl ExecutionEvidence {
-    pub fn parse(row: &Value, portfolio: &str, exchange: &str, rest: bool) -> Result<Self> {
-        ensure!(
-            string(row, "portfolioId")? == portfolio,
-            "execution portfolio mismatch"
-        );
-        ensure!(
-            string(row, "exchangeType")? == exchange,
-            "execution venue mismatch"
-        );
-        let symbol = string(row, "sym")?;
-        let business = string(row, "businessType")?;
-        ensure!(
-            matches!(business, "SPOT" | "MARGIN" | "PERP"),
-            "unsupported execution business"
-        );
-        let parts: Vec<_> = symbol.split('_').collect();
-        ensure!(
-            parts.len() == 4
-                && parts[0] == exchange
-                && parts[1] == business
-                && !parts[2].is_empty()
-                && !parts[3].is_empty(),
-            "execution symbol scope mismatch"
-        );
-        let side = string(row, "side")?;
-        ensure!(matches!(side, "BUY" | "SELL"), "invalid execution side");
-        let timestamp_ms = string(row, "createAt")?
-            .parse::<i64>()
-            .context("execution timestamp")?;
-        ensure!(timestamp_ms > 0, "invalid execution timestamp");
-        let quantity = decimal(row, "quantity")?;
-        let price = decimal(row, "price")?;
-        ensure!(
-            quantity.parse::<f64>()? > 0.0 && price.parse::<f64>()? > 0.0,
-            "nonpositive execution quantity/price"
-        );
-        let (signed_fee, signed_fee_currency, fee, fee_currency, reported_rebate, rebate_currency) =
-            if rest {
-                let fee = decimal(row, "fee")?;
-                let rebate = decimal(row, "rebate")?;
-                ensure!(
-                    fee.parse::<f64>()? >= 0.0 && rebate.parse::<f64>()? >= 0.0,
-                    "negative split fee/rebate"
-                );
-                (
-                    None,
-                    None,
-                    Some(fee.clone()),
-                    Some(currency(row, "feeCoin", &fee)?),
-                    Some(rebate.clone()),
-                    Some(currency(row, "rebateCoin", &rebate)?),
-                )
-            } else {
-                let fee = decimal(row, "tradingFee")?;
-                (
-                    Some(fee.clone()),
-                    Some(currency(row, "tradingFeeCoin", &fee)?),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            };
-        Ok(Self {
-            transaction_id: string(row, "transactionId")?.into(),
-            order_id: string(row, "orderId")?.into(),
-            // External/manual orders can legitimately lack a numeric client ID.
-            client_order_id: row
-                .get("clientOrderId")
-                .and_then(Value::as_str)
-                .context("execution clientOrderId must be string")?
-                .into(),
-            symbol: symbol.into(),
-            side: side.into(),
-            quantity,
-            price,
-            timestamp_ms,
-            realized_pnl: decimal(row, "rpnl")?,
-            signed_fee,
-            signed_fee_currency,
-            fee,
-            fee_currency,
-            reported_rebate,
-            rebate_currency,
-            rest,
-        })
-    }
-}
-
-fn string<'a>(row: &'a Value, key: &str) -> Result<&'a str> {
-    row.get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .with_context(|| format!("execution missing {key}"))
-}
-fn decimal(row: &Value, key: &str) -> Result<String> {
-    let value = string(row, key)?;
-    ensure!(
-        value
-            .parse::<f64>()
-            .with_context(|| format!("invalid {key}"))?
-            .is_finite(),
-        "non-finite {key}"
-    );
-    Ok(value.into())
-}
-fn currency(row: &Value, key: &str, amount: &str) -> Result<String> {
-    let value = row
-        .get(key)
-        .and_then(Value::as_str)
-        .with_context(|| format!("missing {key}"))?;
-    ensure!(
-        !value.is_empty() || amount.parse::<f64>()? == 0.0,
-        "nonzero fee/rebate missing currency"
-    );
-    Ok(value.into())
-}
+pub use persist_common::rapidx_execution::ExecutionEvidence;
 
 pub struct AccountJournal {
     file: File,
     portfolio: String,
     exchange: String,
     executions: HashMap<(String, bool), ExecutionEvidence>,
+    delivery_pending: VecDeque<(String, bool)>,
     healthy: bool,
     pub history_end_ms: Option<i64>,
 }
@@ -213,11 +76,15 @@ impl AccountJournal {
                 uuid::Uuid::new_v4()
             )))?;
         File::open(dir)?.sync_all()?;
+        // ACKs are intentionally not used as a local deletion cursor. Replaying
+        // every durable fact on restart also repairs a restarted downstream.
+        let delivery_pending = executions.keys().cloned().collect();
         Ok(Self {
             file,
             portfolio: portfolio.into(),
             exchange: exchange.into(),
             executions,
+            delivery_pending,
             healthy: true,
             history_end_ms,
         })
@@ -240,6 +107,7 @@ impl AccountJournal {
             &json!({"portfolio":self.portfolio,"exchange":self.exchange,"execution":evidence}),
         )?;
         self.sync()?;
+        self.delivery_pending.push_back(key.clone());
         self.executions.insert(key, evidence);
         Ok(true)
     }
@@ -274,6 +142,7 @@ impl AccountJournal {
                 ensure!(old == item, "conflicting historical RapidX execution");
             }
         }
+        let mut added = Vec::new();
         for (row, item) in rows.iter().zip(evidence) {
             self.append(&json!({"received_us":chrono::Utc::now().timestamp_micros(), "source":"rest_history", "message":{"channel":"HistoricalExecution","data":row}}))?;
             let key = (item.transaction_id.clone(), true);
@@ -281,10 +150,42 @@ impl AccountJournal {
                 self.append(
                     &json!({"portfolio":self.portfolio,"exchange":self.exchange,"execution":item}),
                 )?;
+                added.push(key.clone());
                 self.executions.insert(key, item);
             }
         }
-        self.sync()
+        self.sync()?;
+        self.delivery_pending.extend(added);
+        Ok(())
+    }
+
+    pub fn execution_delivery_pending(&self) -> usize {
+        self.delivery_pending.len()
+    }
+
+    pub fn next_execution_record(&self) -> Result<Option<ExecutionRecord>> {
+        self.ensure_healthy()?;
+        self.delivery_pending
+            .front()
+            .map(|key| {
+                let record = ExecutionRecord {
+                    portfolio: self.portfolio.clone(),
+                    exchange: self.exchange.clone(),
+                    execution: self
+                        .executions
+                        .get(key)
+                        .context("missing journal execution")?
+                        .clone(),
+                };
+                record.validate()?;
+                Ok(record)
+            })
+            .transpose()
+    }
+
+    /// Called only after the bounded sender has accepted this durable record.
+    pub fn execution_record_enqueued(&mut self) {
+        self.delivery_pending.pop_front();
     }
 
     fn append(&mut self, record: &Value) -> Result<()> {
@@ -397,12 +298,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rapidx-journal-{}", uuid::Uuid::new_v4()));
         let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
         assert!(journal.record_execution(&trade(), true).unwrap());
+        assert_eq!(journal.execution_delivery_pending(), 1);
+        let record = journal.next_execution_record().unwrap().unwrap();
+        assert_eq!(record.execution.transaction_id, "external_fill");
+        journal.execution_record_enqueued();
+        assert!(journal.next_execution_record().unwrap().is_none());
         journal.complete_history(1000).unwrap();
         drop(journal);
         let mut recovered = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
         assert_eq!(recovered.history_end_ms, Some(1000));
+        assert_eq!(recovered.execution_delivery_pending(), 1);
+        assert_eq!(recovered.next_execution_record().unwrap().unwrap(), record);
         assert!(!recovered.record_execution(&trade(), true).unwrap());
         assert!(recovered.record_execution(&trade(), false).unwrap());
+        assert_eq!(recovered.execution_delivery_pending(), 2);
         assert!(recovered.complete_history(999).is_err());
         drop(recovered);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -416,11 +325,13 @@ mod tests {
         invalid["quantity"] = json!("NaN");
         assert!(journal.record_history(&[trade(), invalid]).is_err());
         assert!(journal.executions.is_empty());
+        assert_eq!(journal.execution_delivery_pending(), 0);
         assert!(journal.history_end_ms.is_none());
         assert!(journal.record_history(&[trade(), trade()]).is_err());
         assert!(journal.executions.is_empty());
         journal.record_history(&[trade()]).unwrap();
         assert_eq!(journal.executions.len(), 1);
+        assert_eq!(journal.execution_delivery_pending(), 1);
         drop(journal);
         std::fs::remove_dir_all(&dir).unwrap();
     }

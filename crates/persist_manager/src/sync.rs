@@ -18,6 +18,7 @@ use crate::runtime_common::get_timestamp_us;
 use super::hyperliquid_account_fact::CF_HYPERLIQUID_ACCOUNT_FACT;
 use super::order_queue_position::CF_ORDER_QUEUE_POSITION;
 use super::order_update::CF_ORDER_UPDATE_UNMATCHED;
+use super::rapidx_execution::CF_RAPIDX_EXECUTION;
 use super::storage::RocksDbStore;
 use super::trade_update::CF_TRADE_UPDATE_UNMATCHED;
 use super::uniform_order_persist::CF_UNIFORM_ORDER;
@@ -130,6 +131,7 @@ pub fn persist_sync_column_families() -> &'static [&'static str] {
         CF_ORDER_QUEUE_POSITION,
         CF_UNIFORM_ORDER,
         CF_HYPERLIQUID_ACCOUNT_FACT,
+        CF_RAPIDX_EXECUTION,
     ]
 }
 
@@ -2223,6 +2225,7 @@ mod tests {
         MultiCollectorSource, SyncOutboxRecord, CF_SYNC_META, CF_SYNC_OUTBOX, META_NEXT_SEQ_KEY,
     };
     use crate::hyperliquid_account_fact::CF_HYPERLIQUID_ACCOUNT_FACT;
+    use crate::rapidx_execution::CF_RAPIDX_EXECUTION;
     use crate::storage::RocksDbStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2295,6 +2298,12 @@ mod tests {
     fn hyperliquid_fact_is_synced_without_entering_order_export_schema() {
         assert!(persist_sync_column_families().contains(&CF_HYPERLIQUID_ACCOUNT_FACT));
         assert!(!order_export_sync_column_families().contains(&CF_HYPERLIQUID_ACCOUNT_FACT));
+    }
+
+    #[test]
+    fn rapidx_execution_is_synced_without_entering_order_export_schema() {
+        assert!(persist_sync_column_families().contains(&CF_RAPIDX_EXECUTION));
+        assert!(!order_export_sync_column_families().contains(&CF_RAPIDX_EXECUTION));
     }
 
     #[test]
