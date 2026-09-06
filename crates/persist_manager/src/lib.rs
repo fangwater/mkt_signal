@@ -9,6 +9,7 @@ mod order_update;
 pub mod parquet;
 mod polling;
 pub mod rapidx_execution;
+pub mod rapidx_reconcile;
 pub mod read_server;
 mod runtime_common;
 mod storage;

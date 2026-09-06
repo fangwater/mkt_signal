@@ -139,6 +139,46 @@ writes to the database; an error can leave partial stdout output and must not be
 treated as a complete export. Export rows preserve the venue's millisecond
 timestamp inside the execution evidence.
 
+## Execution Reconciliation
+
+Add `--reconcile` to `rapidx_execution_export` to produce one JSON report with
+unique executions and per-order totals instead of raw observation JSONL. This
+requires `--observation all`. WS/REST records join by portfolio, venue and
+transaction ID. Identity, time, exact quantity, price, reported PNL and charged
+fees must agree; decimal spellings such as `1` and `1.0` compare equal. Conflicts
+fail before report output, including a counterpart outside the requested window.
+
+Order totals cover only `[start-us, end-us)`, not necessarily the whole order.
+Quantities retain venue units. Fees use exact decimal arithmetic and separate
+currency buckets with charged/rebated amounts and an optional net charge. There
+is no currency conversion or strategy net PNL calculation. The report declares
+`coverage=persisted_executions_in_window` and `strategy_attribution=unassigned`;
+it does not verify exchange history completeness. `realized_pnl_reported` is
+only the venue's reported PNL summed for each order, not settlement cash.
+
+WS signed fees supply per-fill rebates. REST-only nonzero cumulative rebates
+remain unresolved and are never summed or apportioned. The report is written
+but the command exits with an error; `--allow-incomplete-fees` permits inspection
+with success status without overriding conflicts. An unresolved fill makes its
+order's net fee totals unknown. `--max-executions` bounds retained identities for
+the whole selected portfolio/venue, including out-of-window counterparts
+(default 100000); exceeding the bound fails rather than dropping records.
+
+Repeat `--account-journal /path/to/source.jsonl` to attach `LiquidationPosition`
+or `LiquidationPositionByUser` evidence from account-monitor journals. Exact
+portfolio/venue/order identity, symbol, direction and order lifetime are checked
+before marking `exchange_forced_close:liquidation`. Cancellation snapshots and
+arbitrary `tradeSource` strings are not proof of forced execution. Penalties and
+order-level trading-fee/PNL snapshots stay separate from fill totals and are not
+prorated for the requested window (`liquidation_totals_verified=false`). Matched
+and other-scope liquidation observation counts are reported; other portfolios
+on `LiquidationPositionByUser` never enter the selected portfolio's totals.
+Whole liquidation order lifetimes inside the
+window without any selected fill appear in `unmatched_liquidations` and cause
+an error, never synthetic fills. Corrupt and unterminated journal lines fail in
+this offline audit, unlike live journal recovery. Retry after the writer finishes
+or use a closed snapshot. These are read-only inputs, not live actions.
+
 ## Market Data
 
 `spread_pbs --market-data-provider rapidx` selects the public RapidX feed;
@@ -161,8 +201,9 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 
 ## Remaining Boundaries
 
-- Durable execution-fact replay is implemented, but full order/fee/ledger
-  reconciliation and a normalized strategy PNL view remain incomplete. In
+- Durable execution-fact replay and read-only execution/order fee reconciliation
+  are implemented, but account-ledger reconciliation and a normalized strategy
+  PNL view remain incomplete. In
   particular, REST's reported cumulative rebate is not apportioned to fills.
   Journal rotation/retention needs operational
   policy. Late venue corrections beyond the one-minute overlap require a wider
@@ -174,8 +215,9 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
   readiness snapshot protocol.
 - Nonnumeric external client IDs remain outside the native numeric order
   lifecycle; they no longer invalidate an otherwise valid order stream. Their
-  execution evidence is centrally persisted, but unmatched/forced-close attribution
-  is not complete. Malformed lifecycle messages invalidate the monitor session.
+  execution evidence is centrally persisted. Read-only liquidation attribution
+  uses documented journal evidence, but live unmatched/uniform-order forced-close
+  plumbing remains incomplete. Malformed lifecycle messages invalidate the session.
 - Native Binance auto-repay/collection are disabled for RapidX. Exec startup is
   refused because cancel-all, leverage and rule initialization still use native
   account paths. FR/MM paths may remain gated by unavailable normalized account
@@ -190,6 +232,7 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 - [Funding rate](https://apidocliquidity.readme.io/reference/get-current-fundingfee)
 - [Private WS](https://apidocliquidity.readme.io/reference/ws-user-data-overview)
 - [Private channels](https://apidocliquidity.readme.io/reference/ws-user-data-orders-trades-assets-positions)
+- [Liquidation order evidence](https://apidocliquidity.readme.io/reference/ws-liquidation)
 - [Portfolio account](https://apidocliquidity.readme.io/reference/get-portfolio-overview)
 - [Portfolio assets](https://apidocliquidity.readme.io/reference/get-portfolio-assets-details)
 - [Positions](https://apidocliquidity.readme.io/reference/query-portfolio-position)
