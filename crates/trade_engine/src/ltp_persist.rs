@@ -2,11 +2,12 @@ use anyhow::{ensure, Context, Result};
 use iceoryx2::port::{publisher::Publisher, subscriber::Subscriber};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
-use persist_common::rapidx_execution::{
-    ExecutionRecord, ACK_BYTES, ACK_CHANNEL, MAX_BYTES, RECORD_CHANNEL,
-};
+use persist_common::rapidx_execution::ExecutionRecord;
+use persist_common::rapidx_fact::{RapidXFact, ACK_BYTES, MAX_BYTES};
+use persist_common::rapidx_statement::StatementRecord;
 use runtime_common::ipc_service_name::build_service_name;
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 const IN_FLIGHT_LIMIT: usize = 128;
@@ -20,20 +21,25 @@ struct Pending {
 
 /// The journal is the durable outbox. This bounded window only owns in-flight
 /// copies; restart replays the journal and the receiver deduplicates by identity.
-pub struct ExecutionPublisher {
+pub struct FactPublisher<R> {
     publisher: Publisher<ipc::Service, [u8; MAX_BYTES], ()>,
     subscriber: Subscriber<ipc::Service, [u8; ACK_BYTES], ()>,
     pending: VecDeque<Pending>,
+    record_type: PhantomData<R>,
 }
 
-impl ExecutionPublisher {
+pub type ExecutionPublisher = FactPublisher<ExecutionRecord>;
+pub type StatementPublisher = FactPublisher<StatementRecord>;
+
+impl<R: RapidXFact> FactPublisher<R> {
     pub fn new() -> Result<Self> {
         let node = NodeBuilder::new()
-            .name(&NodeName::new("rapidx_execution_delivery")?)
+            .name(&NodeName::new(&format!("{}_delivery", R::RECORD_CHANNEL))?)
             .create::<ipc::Service>()?;
         let records = node
             .service_builder(&ServiceName::new(&build_service_name(&format!(
-                "persist_pubs/{RECORD_CHANNEL}"
+                "persist_pubs/{}",
+                R::RECORD_CHANNEL
             )))?)
             .publish_subscribe::<[u8; MAX_BYTES]>()
             .max_publishers(32)
@@ -41,10 +47,11 @@ impl ExecutionPublisher {
             .history_size(128)
             .subscriber_max_buffer_size(256)
             .open_or_create()
-            .context("open RapidX execution record service")?;
+            .context("open RapidX fact record service")?;
         let acks = node
             .service_builder(&ServiceName::new(&build_service_name(&format!(
-                "persist_acks/{ACK_CHANNEL}"
+                "persist_acks/{}",
+                R::ACK_CHANNEL
             )))?)
             .publish_subscribe::<[u8; ACK_BYTES]>()
             .max_publishers(1)
@@ -52,11 +59,12 @@ impl ExecutionPublisher {
             .history_size(128)
             .subscriber_max_buffer_size(256)
             .open_or_create()
-            .context("open RapidX execution ACK service")?;
+            .context("open RapidX fact ACK service")?;
         Ok(Self {
             publisher: records.publisher_builder().create()?,
             subscriber: acks.subscriber_builder().create()?,
             pending: VecDeque::new(),
+            record_type: PhantomData,
         })
     }
 
@@ -68,11 +76,8 @@ impl ExecutionPublisher {
         self.pending.len()
     }
 
-    pub fn enqueue(&mut self, record: &ExecutionRecord) -> Result<()> {
-        ensure!(
-            self.has_capacity(),
-            "RapidX execution in-flight window full"
-        );
+    pub fn enqueue(&mut self, record: &R) -> Result<()> {
+        ensure!(self.has_capacity(), "RapidX fact in-flight window full");
         let ack = record.ack()?;
         if self.pending.iter().any(|item| item.ack == ack) {
             return Ok(());
@@ -90,7 +95,7 @@ impl ExecutionPublisher {
             let Some(sample) = self
                 .subscriber
                 .receive()
-                .context("receive RapidX execution ACK")?
+                .context("receive RapidX fact ACK")?
             else {
                 break;
             };
@@ -100,11 +105,11 @@ impl ExecutionPublisher {
             let sample = self
                 .publisher
                 .loan_uninit()
-                .context("loan RapidX execution sample")?;
+                .context("loan RapidX fact sample")?;
             sample
                 .write_payload(*payload)
                 .send()
-                .context("send RapidX execution fact")?;
+                .context("send RapidX fact")?;
             Ok(())
         })?;
         Ok(())

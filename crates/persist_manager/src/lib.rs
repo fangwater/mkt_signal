@@ -10,6 +10,7 @@ pub mod parquet;
 mod polling;
 pub mod rapidx_execution;
 pub mod rapidx_reconcile;
+pub mod rapidx_statement;
 pub mod read_server;
 mod runtime_common;
 mod storage;
@@ -29,7 +30,7 @@ use hyperliquid_account_fact::HyperliquidAccountFactPersistor;
 use order_queue_position::OrderQueuePositionPersistor;
 use order_update::{OrderUpdatePersistor, OrderUpdateUnmatchedPersistor};
 use polling::PollStats;
-use rapidx_execution::RapidXExecutionPersistor;
+use rapidx_execution::{RapidXExecutionPersistor, RapidXStatementPersistor};
 use sync::{serve_sync_source, PersistSyncConfig};
 use trade_update::{TradeUpdatePersistor, TradeUpdateUnmatchedPersistor};
 use uniform_order_persist::{PendingUniformOrder, UniformOrderPersistor};
@@ -126,6 +127,7 @@ impl PersistManager {
         let hyperliquid_account_fact =
             HyperliquidAccountFactPersistor::new(store.clone(), sync_enabled)?;
         let rapidx_execution = RapidXExecutionPersistor::new(store.clone(), sync_enabled)?;
+        let rapidx_statement = RapidXStatementPersistor::new(store.clone(), sync_enabled)?;
 
         info!("starting order update persistor");
         let order_update = OrderUpdatePersistor::new(store.clone(), sync_enabled)?;
@@ -155,6 +157,7 @@ impl PersistManager {
                 trade_update_unmatched,
                 hyperliquid_account_fact,
                 rapidx_execution,
+                rapidx_statement,
                 order_update,
                 order_update_unmatched,
                 order_queue_position,
@@ -177,6 +180,7 @@ async fn run_persistors(
     trade_update_unmatched: TradeUpdateUnmatchedPersistor,
     mut hyperliquid_account_fact: HyperliquidAccountFactPersistor,
     rapidx_execution: RapidXExecutionPersistor,
+    rapidx_statement: RapidXStatementPersistor,
     order_update: OrderUpdatePersistor,
     order_update_unmatched: OrderUpdateUnmatchedPersistor,
     order_queue_position: OrderQueuePositionPersistor,
@@ -195,6 +199,7 @@ async fn run_persistors(
         stats.merge(trade_update_unmatched.poll_available());
         stats.merge(hyperliquid_account_fact.poll_available());
         stats.merge(rapidx_execution.poll_available());
+        stats.merge(rapidx_statement.poll_available());
         stats.merge(order_update.poll_available());
         stats.merge(order_update_unmatched.poll_available());
         stats.merge(order_queue_position.poll_available());

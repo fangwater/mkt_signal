@@ -1,5 +1,7 @@
 pub mod order_queue_position;
 pub mod rapidx_execution;
+pub mod rapidx_fact;
+pub mod rapidx_statement;
 pub mod unified_order;
 
 use sha2::{Digest, Sha256};

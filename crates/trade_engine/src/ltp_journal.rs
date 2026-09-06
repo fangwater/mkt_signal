@@ -1,5 +1,6 @@
 use anyhow::{ensure, Context, Result};
 use persist_common::rapidx_execution::ExecutionRecord;
+use persist_common::rapidx_statement::StatementRecord;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -16,8 +17,11 @@ pub struct AccountJournal {
     exchange: String,
     executions: HashMap<(String, bool), ExecutionEvidence>,
     delivery_pending: VecDeque<(String, bool)>,
+    statements: HashMap<String, StatementRecord>,
+    statement_delivery_pending: VecDeque<String>,
     healthy: bool,
     pub history_end_ms: Option<i64>,
+    pub statement_history_end_ms: Option<i64>,
 }
 
 impl AccountJournal {
@@ -35,6 +39,8 @@ impl AccountJournal {
         files.sort();
         let mut executions = HashMap::new();
         let mut history_end_ms: Option<i64> = None;
+        let mut statements = HashMap::new();
+        let mut statement_history_end_ms: Option<i64> = None;
         for path in files {
             read_records(BufReader::new(File::open(&path)?), |record| {
                 if let Some(message) = record.get("message") {
@@ -62,6 +68,34 @@ impl AccountJournal {
                         .context("invalid history checkpoint")?;
                     history_end_ms = Some(history_end_ms.map_or(end, |old| old.max(end)));
                 }
+                if let Some(statement) = record.get("statement") {
+                    ensure!(
+                        record["portfolio"] == portfolio && record["exchange"] == exchange,
+                        "journal statement scope mismatch"
+                    );
+                    let statement: StatementRecord = serde_json::from_value(statement.clone())?;
+                    statement.validate()?;
+                    ensure!(
+                        statement.portfolio == portfolio && statement.exchange == exchange,
+                        "journal statement record scope mismatch"
+                    );
+                    let id = statement.statement_id.clone();
+                    if let Some(old) = statements.insert(id, statement.clone()) {
+                        ensure!(old == statement, "conflicting statement record in journal");
+                    }
+                }
+                if let Some(end) = record.get("statement_history_end_ms") {
+                    ensure!(
+                        record["portfolio"] == portfolio && record["exchange"] == exchange,
+                        "journal statement checkpoint scope mismatch"
+                    );
+                    let end = end
+                        .as_i64()
+                        .filter(|n| *n > 0)
+                        .context("invalid statement history checkpoint")?;
+                    statement_history_end_ms =
+                        Some(statement_history_end_ms.map_or(end, |old| old.max(end)));
+                }
                 Ok(())
             })
             .with_context(|| format!("recover RapidX journal {}", path.display()))?;
@@ -79,14 +113,18 @@ impl AccountJournal {
         // ACKs are intentionally not used as a local deletion cursor. Replaying
         // every durable fact on restart also repairs a restarted downstream.
         let delivery_pending = executions.keys().cloned().collect();
+        let statement_delivery_pending = statements.keys().cloned().collect();
         Ok(Self {
             file,
             portfolio: portfolio.into(),
             exchange: exchange.into(),
             executions,
             delivery_pending,
+            statements,
+            statement_delivery_pending,
             healthy: true,
             history_end_ms,
+            statement_history_end_ms,
         })
     }
 
@@ -188,6 +226,88 @@ impl AccountJournal {
         self.delivery_pending.pop_front();
     }
 
+    pub fn record_statements(&mut self, statements: &[StatementRecord]) -> Result<()> {
+        self.ensure_healthy()?;
+        // Validate the entire batch before its first durable append. A bad later
+        // statement must never leave an earlier statement partially recorded.
+        let mut batch_ids = std::collections::HashSet::new();
+        let mut added = Vec::new();
+        for statement in statements {
+            statement.validate()?;
+            ensure!(
+                statement.portfolio == self.portfolio && statement.exchange == self.exchange,
+                "statement scope mismatch"
+            );
+            ensure!(
+                batch_ids.insert(&statement.statement_id),
+                "duplicate statement in batch"
+            );
+            if let Some(old) = self.statements.get(&statement.statement_id) {
+                ensure!(old == statement, "conflicting duplicate statement");
+            } else {
+                statement.to_ipc_payload()?;
+                added.push(statement.clone());
+            }
+        }
+        for statement in &added {
+            self.append(&json!({
+                "portfolio": self.portfolio,
+                "exchange": self.exchange,
+                "statement": statement,
+            }))?;
+        }
+        self.sync()?;
+        for statement in added {
+            let id = statement.statement_id.clone();
+            self.statements.insert(id.clone(), statement);
+            self.statement_delivery_pending.push_back(id);
+        }
+        Ok(())
+    }
+
+    pub fn complete_statement_history(&mut self, end_ms: i64) -> Result<()> {
+        ensure!(
+            end_ms > 0
+                && self
+                    .statement_history_end_ms
+                    .is_none_or(|old| end_ms >= old),
+            "statement history checkpoint must not regress"
+        );
+        self.append(&json!({
+            "portfolio": self.portfolio,
+            "exchange": self.exchange,
+            "statement_history_end_ms": end_ms,
+        }))?;
+        self.sync()?;
+        self.statement_history_end_ms = Some(end_ms);
+        Ok(())
+    }
+
+    pub fn statement_delivery_pending(&self) -> usize {
+        self.statement_delivery_pending.len()
+    }
+
+    pub fn next_statement_record(&self) -> Result<Option<StatementRecord>> {
+        self.ensure_healthy()?;
+        self.statement_delivery_pending
+            .front()
+            .map(|id| {
+                let statement = self
+                    .statements
+                    .get(id)
+                    .context("missing journal statement")?
+                    .clone();
+                statement.validate()?;
+                Ok(statement)
+            })
+            .transpose()
+    }
+
+    /// Called only after the bounded statement sender has accepted this durable record.
+    pub fn statement_record_enqueued(&mut self) {
+        self.statement_delivery_pending.pop_front();
+    }
+
     fn append(&mut self, record: &Value) -> Result<()> {
         self.ensure_healthy()?;
         let mut bytes = serde_json::to_vec(record)?;
@@ -257,6 +377,7 @@ pub fn write_snapshot(path: &Path, snapshot: &impl Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn trade() -> Value {
         json!({"portfolioId":"123","exchangeType":"OKX","businessType":"SPOT","sym":"OKX_SPOT_BTC_USDT",
             "transactionId":"external_fill","orderId":"external_order","clientOrderId":"manual",
@@ -264,6 +385,29 @@ mod tests {
             "fee":"0.00001","feeCoin":"BTC","rebate":"0.02","rebateCoin":"USDT",
             "tradingFee":"-0.02","tradingFeeCoin":"USDT"})
     }
+
+    fn statement(statement_id: &str) -> StatementRecord {
+        let row = json!({
+            "portfolioId": 123,
+            "statementId": statement_id,
+            "requestId": "r1",
+            "coin": "USDT",
+            "sym": "",
+            "statementType": "DEDUCT_INTEREST",
+            "exchangeType": "OKX",
+            "businessType": "SPOT",
+            "beforeAvailable": "10",
+            "afterAvailable": "10",
+            "beforeOverdraw": "0",
+            "afterOverdraw": "0",
+            "beforeBorrow": "0",
+            "afterBorrow": "0",
+            "deltaAmount": "0",
+            "createAt": 1000,
+        });
+        StatementRecord::parse(&row, "123", "OKX").unwrap()
+    }
+
     #[test]
     fn separate_fee_currencies_and_external_identity_are_preserved() {
         let parsed = ExecutionEvidence::parse(&trade(), "123", "OKX", true).unwrap();
@@ -332,6 +476,79 @@ mod tests {
         journal.record_history(&[trade()]).unwrap();
         assert_eq!(journal.executions.len(), 1);
         assert_eq!(journal.execution_delivery_pending(), 1);
+        drop(journal);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn statement_dedup_and_delivery_replay_survive_restart() {
+        let dir = std::env::temp_dir().join(format!("rapidx-statement-{}", uuid::Uuid::new_v4()));
+        let first = statement("s1");
+        let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        journal.record_statements(&[first.clone()]).unwrap();
+        assert_eq!(journal.statement_delivery_pending(), 1);
+        assert_eq!(
+            journal.next_statement_record().unwrap(),
+            Some(first.clone())
+        );
+        journal.statement_record_enqueued();
+        assert!(journal.next_statement_record().unwrap().is_none());
+        journal.complete_statement_history(2_000).unwrap();
+        assert_eq!(journal.statement_history_end_ms, Some(2_000));
+        assert_eq!(journal.record_statements(&[first.clone()]).unwrap(), ());
+        drop(journal);
+
+        let recovered = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        assert_eq!(recovered.statement_history_end_ms, Some(2_000));
+        assert_eq!(recovered.statement_delivery_pending(), 1);
+        assert_eq!(recovered.next_statement_record().unwrap(), Some(first));
+        drop(recovered);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn statement_and_execution_checkpoints_are_independent() {
+        let dir =
+            std::env::temp_dir().join(format!("rapidx-statement-cursors-{}", uuid::Uuid::new_v4()));
+        let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        journal.complete_history(1_000).unwrap();
+        assert_eq!(journal.history_end_ms, Some(1_000));
+        assert!(journal.statement_history_end_ms.is_none());
+        journal.complete_statement_history(2_000).unwrap();
+        assert_eq!(journal.history_end_ms, Some(1_000));
+        assert_eq!(journal.statement_history_end_ms, Some(2_000));
+        drop(journal);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_statement_batch_does_not_partially_write_or_enqueue() {
+        let dir =
+            std::env::temp_dir().join(format!("rapidx-statement-batch-{}", uuid::Uuid::new_v4()));
+        let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        let valid = statement("s1");
+        let mut invalid = statement("s2");
+        invalid.timestamp_us = 0;
+        assert!(journal.record_statements(&[valid, invalid]).is_err());
+        assert!(journal.statements.is_empty());
+        assert_eq!(journal.statement_delivery_pending(), 0);
+        drop(journal);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_statement_sync_does_not_enqueue_or_mutate_state() {
+        let dir =
+            std::env::temp_dir().join(format!("rapidx-statement-sync-{}", uuid::Uuid::new_v4()));
+        let mut journal = AccountJournal::open(&dir, "123", "OKX", |_| Ok(())).unwrap();
+        // Writes to /dev/null succeed but fdatasync is rejected, exercising the
+        // post-append durability failure path rather than a write failure.
+        journal.file = OpenOptions::new().write(true).open("/dev/null").unwrap();
+        assert!(journal.record_statements(&[statement("s1")]).is_err());
+        assert!(journal.statements.is_empty());
+        assert_eq!(journal.statement_delivery_pending(), 0);
+        assert!(journal.ensure_healthy().is_err());
         drop(journal);
         std::fs::remove_dir_all(&dir).unwrap();
     }

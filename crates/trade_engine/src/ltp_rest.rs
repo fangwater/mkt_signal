@@ -1200,7 +1200,7 @@ mod tests {
         let end = chrono::Utc::now().timestamp_millis();
         let begin = end - 1000;
         let server = tokio::spawn(async move {
-            for index in 0..3 {
+            for index in 0..4 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
@@ -1229,8 +1229,12 @@ mod tests {
                         assert_eq!(path, "/api/v1/trading/rapidxLoan/loan/maxLoan?exchange=OKX");
                         json!([{ "exchange":"OKX","coin":"USDT","portfolioMaxLoanCoin":"0" }])
                     }
-                    _ => {
+                    2 => {
                         assert_eq!(path, format!("/api/v1/trading/executions/pageable?begin={begin}&end={end}&exchange=OKX&page=1&pageSize=1000"));
+                        json!({"page":1,"pageSize":1000,"pageNum":0,"totalSize":0,"list":[]})
+                    }
+                    _ => {
+                        assert_eq!(path, format!("/api/v1/trading/statement?endTime={end}&exchange=OKX&page=1&pageSize=1000&startTime={begin}"));
                         json!({"page":1,"pageSize":1000,"pageNum":0,"totalSize":0,"list":[]})
                     }
                 };
@@ -1260,6 +1264,11 @@ mod tests {
         );
         assert!(client
             .fetch_transaction_history("OKX", begin, end)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(client
+            .fetch_statement_history("OKX", begin, end)
             .await
             .unwrap()
             .is_empty());

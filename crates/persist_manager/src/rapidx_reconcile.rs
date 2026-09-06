@@ -490,7 +490,7 @@ fn zero_fees() -> FeeTotals {
     }
 }
 
-fn decimal(raw: &str) -> Result<BigDecimal> {
+pub(crate) fn decimal(raw: &str) -> Result<BigDecimal> {
     ensure!(
         raw.len() <= 256,
         "reconciliation decimal exceeds 256 characters"

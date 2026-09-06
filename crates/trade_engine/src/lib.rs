@@ -23,6 +23,7 @@ pub mod ltp_journal;
 pub mod ltp_persist;
 pub mod ltp_rest;
 pub mod ltp_snapshot;
+pub mod ltp_statement;
 pub mod ltp_ws;
 pub mod okex;
 pub mod okex_precheck;

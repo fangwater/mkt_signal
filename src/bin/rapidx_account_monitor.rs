@@ -5,6 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use mkt_parsers::msg::basic_account_msg::{
     BasicAccountEventMsg, BasicAccountEventType, BasicAccountRiskMsg, BasicAccountScope,
 };
+use persist_common::rapidx_statement::StatementRecord;
 use runtime_common::exchange::Exchange;
 use runtime_common::execution_backend::{account_stream_slug, ExecBackend};
 use runtime_common::ws_connection::WsConnector;
@@ -15,9 +16,10 @@ use tokio_tungstenite::tungstenite::Message;
 use trade_engine::ltp_account::{parse_account_push, parse_order_push, PositionSnapshotState};
 use trade_engine::ltp_finance::PortfolioFinancialSnapshot;
 use trade_engine::ltp_journal::{write_snapshot, AccountJournal};
-use trade_engine::ltp_persist::ExecutionPublisher;
+use trade_engine::ltp_persist::{ExecutionPublisher, StatementPublisher};
 use trade_engine::ltp_rest::LtpRestClient;
 use trade_engine::ltp_snapshot::{AccountSnapshotState, RecoveryReadiness};
+use trade_engine::ltp_statement::STATEMENT_REQUEST_INTERVAL;
 use trade_engine::ltp_ws::{LtpCredentials, LtpWsResponse, DEFAULT_WS_URL};
 
 #[derive(Parser)]
@@ -30,7 +32,7 @@ struct Args {
     journal_dir: PathBuf,
     #[arg(long)]
     core: Option<usize>,
-    /// Initial execution recovery window; subsequent runs resume the durable checkpoint.
+    /// Initial execution/statement window; subsequent runs resume independent checkpoints.
     #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u32).range(1..=2136))]
     history_lookback_hours: u32,
 }
@@ -39,6 +41,7 @@ struct Forwarder {
     ipc: PmForwarder,
     journal: AccountJournal,
     executions: ExecutionPublisher,
+    statements: StatementPublisher,
     portfolio: String,
     exchange: &'static str,
     scope: BasicAccountScope,
@@ -51,14 +54,22 @@ struct Forwarder {
 }
 
 impl Forwarder {
-    fn poll_execution_delivery(&mut self) -> Result<()> {
+    fn poll_fact_delivery(&mut self) -> Result<()> {
         self.executions.poll()?;
+        self.statements.poll()?;
         while self.executions.has_capacity() {
             let Some(record) = self.journal.next_execution_record()? else {
                 break;
             };
             self.executions.enqueue(&record)?;
             self.journal.execution_record_enqueued();
+        }
+        while self.statements.has_capacity() {
+            let Some(record) = self.journal.next_statement_record()? else {
+                break;
+            };
+            self.statements.enqueue(&record)?;
+            self.journal.statement_record_enqueued();
         }
         Ok(())
     }
@@ -162,6 +173,8 @@ impl Forwarder {
                 "recovery_ready":self.readiness.is_ready(),
                 "history_end_ms":self.journal.history_end_ms,
                 "execution_persistence_pending":self.journal.execution_delivery_pending() + self.executions.pending_count(),
+                "statement_history_end_ms":self.journal.statement_history_end_ms,
+                "statement_persistence_pending":self.journal.statement_delivery_pending() + self.statements.pending_count(),
                 "financial":self.financial
             }),
         )
@@ -211,6 +224,13 @@ impl Forwarder {
                     self.readiness.mark_complete("Trades");
                 }
             }
+            Refresh::Statements(end, rows) => {
+                self.journal.record_statements(&rows)?;
+                self.journal.complete_statement_history(end)?;
+                if chrono::Utc::now().timestamp_millis() - end < 60_000 {
+                    self.readiness.mark_complete("Statements");
+                }
+            }
         }
         self.write_financial()
     }
@@ -220,6 +240,7 @@ enum Refresh {
     Account(String, i64),
     Financial(&'static str, Value),
     History(i64, Vec<Value>),
+    Statements(i64, Vec<StatementRecord>),
 }
 
 async fn refresh_accounts(
@@ -299,6 +320,34 @@ async fn refresh_history(
     }
 }
 
+async fn refresh_statements(
+    rest: LtpRestClient,
+    exchange: &'static str,
+    start_ms: i64,
+    tx: tokio::sync::mpsc::Sender<Result<Refresh>>,
+) {
+    let mut begin = start_ms;
+    loop {
+        let now = chrono::Utc::now().timestamp_millis();
+        let end = (begin + 3_600_000).min(now);
+        let result = rest
+            .fetch_statement_history(exchange, begin, end)
+            .await
+            .map(|rows| Refresh::Statements(end, rows));
+        let failed = result.is_err();
+        if tx.send(result).await.is_err() || failed {
+            return;
+        }
+        begin = (end - 60_000).max(start_ms);
+        tokio::time::sleep(if end == now {
+            Duration::from_secs(30)
+        } else {
+            STATEMENT_REQUEST_INTERVAL
+        })
+        .await;
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -352,6 +401,7 @@ async fn main() -> Result<()> {
         ipc: PmForwarder::new_non_overflowing(&slug)?,
         journal,
         executions: ExecutionPublisher::new()?,
+        statements: StatementPublisher::new()?,
         portfolio: rest.portfolio_id().to_string(),
         exchange: wire_exchange,
         scope: if exchange == Exchange::Binance {
@@ -383,7 +433,7 @@ async fn main() -> Result<()> {
         let connection = loop {
             tokio::select! {
                 result = &mut connect => break Some(result),
-                _ = persist_tick.tick() => forwarder.poll_execution_delivery()?,
+                _ = persist_tick.tick() => forwarder.poll_fact_delivery()?,
                 _ = tokio::signal::ctrl_c() => break None,
             }
         };
@@ -403,7 +453,9 @@ async fn main() -> Result<()> {
                 let initial_begin = chrono::Utc::now().timestamp_millis() - i64::from(args.history_lookback_hours) * 3_600_000;
                 let begin = forwarder.journal.history_end_ms.map(|end| end - 60_000).unwrap_or(initial_begin);
                 workers.push(tokio::spawn(refresh_accounts(rest.clone(), wire_exchange, tx.clone())));
-                workers.push(tokio::spawn(refresh_history(rest.clone(), wire_exchange, begin, tx)));
+                workers.push(tokio::spawn(refresh_history(rest.clone(), wire_exchange, begin, tx.clone())));
+                let statement_begin = forwarder.journal.statement_history_end_ms.map(|end| end - 60_000).unwrap_or(initial_begin);
+                workers.push(tokio::spawn(refresh_statements(rest.clone(), wire_exchange, statement_begin, tx)));
                 let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
                 heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 let mut waiting_pong = false;
@@ -427,7 +479,7 @@ async fn main() -> Result<()> {
                             }
                         }
                         update = rx.recv() => forwarder.apply_refresh(update.context("RapidX recovery worker stopped")??)?,
-                        _ = persist_tick.tick() => forwarder.poll_execution_delivery()?,
+                        _ = persist_tick.tick() => forwarder.poll_fact_delivery()?,
                         _ = heartbeat.tick() => {
                             if waiting_pong { bail!("RapidX account heartbeat expired"); }
                             ws.send(Message::Text("ping".into())).await?;
@@ -458,7 +510,7 @@ async fn main() -> Result<()> {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => { shutdown = true; break; },
                 _ = &mut backoff => break,
-                _ = persist_tick.tick() => forwarder.poll_execution_delivery()?,
+                _ = persist_tick.tick() => forwarder.poll_fact_delivery()?,
             }
         }
         if shutdown {

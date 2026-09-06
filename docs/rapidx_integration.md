@@ -179,6 +179,49 @@ an error, never synthetic fills. Corrupt and unterminated journal lines fail in
 this offline audit, unlike live journal recovery. Retry after the writer finishes
 or use a closed snapshot. These are read-only inputs, not live actions.
 
+## Settlement Ledger
+
+The account monitor recovers `FUNDING_FEE`, `DEDUCT_INTEREST`,
+`LIQUIDATION_FEE` and `LIQ_COMPENSATION` through the documented REST statement
+endpoint. There is no invented statement WS subscription. Recovery uses
+one-hour windows, a separate durable `statement_history_end_ms` checkpoint and
+a 60-second overlap; initial lookback defaults to 24 hours and must fit within
+the endpoint's 90-day retention. Tail refresh runs every 30 seconds. Requests
+within pagination and catch-up windows are spaced by 1.5 seconds; multiple
+deployments sharing credentials still need coordinated rate budgets.
+
+Statement recovery is required for account readiness. The financial inspection
+snapshot includes its checkpoint and `statement_persistence_pending`. Records
+are journaled and synced before checkpoint advancement, then retried through
+the existing durable ACK mechanism. Restart replays the journal; stable
+portfolio/venue/statement identities deduplicate unchanged records and reject
+conflicts. Pagination inconsistencies and cross-portfolio rows fail closed.
+
+Statements use the independent `rapidx_statements` RocksDB column family and
+sync outbox. They do not create trades, change positions, or reapply balance
+deltas to account snapshots. Like execution facts, their hash keys are excluded
+from timestamp-based order repair and order parquet schemas.
+
+Read-only reporting from a closed database snapshot:
+
+```bash
+rapidx_statement_export --db-path /path/to/persist_manager \
+  --portfolio 123 --exchange BINANCE \
+  --start-us 1788220800000000 --end-us 1788307200000000
+```
+
+Use `--source-id` for a namespaced sync-center source. Reports cover the
+half-open microsecond window and retain raw decimal strings. Exact totals are
+grouped by portfolio, venue, currency, symbol, business and statement type.
+Reported settlement, available-balance changes, overdraft changes and loan
+changes remain separate: the official interest example has zero `deltaAmount`
+but increased overdraft. Zero settlement therefore does not mean zero interest.
+No sign reinterpretation, cross-currency sum, net-PNL formula or strategy
+attribution is inferred. Coverage is `persisted_statements_in_window`, not proof
+of complete venue history. `--max-statements` bounds selected records; corruption
+and conflicting records fail before report output. No accrued-unpaid-interest
+calculation, automatic borrowing or repayment is added.
+
 ## Market Data
 
 `spread_pbs --market-data-provider rapidx` selects the public RapidX feed;
@@ -201,9 +244,10 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 
 ## Remaining Boundaries
 
-- Durable execution-fact replay and read-only execution/order fee reconciliation
-  are implemented, but account-ledger reconciliation and a normalized strategy
-  PNL view remain incomplete. In
+- Durable execution-fact replay, read-only execution/order fee reconciliation
+  and settlement-ledger recovery/reporting are implemented. Cross-checking ledger
+  totals against account snapshots and a normalized strategy PNL view remain
+  incomplete. In
   particular, REST's reported cumulative rebate is not apportioned to fills.
   Journal rotation/retention needs operational
   policy. Late venue corrections beyond the one-minute overlap require a wider
@@ -240,4 +284,5 @@ with RapidX execution. Separate kline/ticker pipelines are not added here.
 - [Portfolio borrowing capacity](https://apidocliquidity.readme.io/reference/query-max-loan-amount)
 - [Recent execution pages](https://apidocliquidity.readme.io/reference/query-transactions-pageable)
 - [Archived execution pages](https://apidocliquidity.readme.io/reference/query-archived-transactions-pageable)
+- [Settlement statements](https://apidocliquidity.readme.io/reference/query-statement)
 - [Error codes](https://apidocliquidity.readme.io/docs/error-codes)

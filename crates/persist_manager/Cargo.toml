@@ -48,6 +48,11 @@ name = "rapidx_execution_export"
 path = "src/bin/rapidx_execution_export.rs"
 required-features = ["runtime"]
 
+[[bin]]
+name = "rapidx_statement_export"
+path = "src/bin/rapidx_statement_export.rs"
+required-features = ["runtime"]
+
 [dependencies]
 anyhow = "1.0"
 bigdecimal = { version = "0.4", optional = true }
