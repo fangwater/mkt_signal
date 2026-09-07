@@ -1,0 +1,20 @@
+[package]
+name = "cn_futures_l2"
+version.workspace = true
+edition.workspace = true
+description = "Parallel Tonglian L2 replay into a year+product RocksDB (simulated trades, last 5-level, OI changes, DCE/GFEX queues)"
+
+[dependencies]
+anyhow = "1.0"
+arrow = { version = "54", default-features = false }
+chrono = "0.4"
+chrono-tz = "0.10"
+clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = "0.5"
+csv = "1.3"
+parquet = { version = "54", default-features = false, features = ["arrow", "zstd"] }
+rocksdb = { version = "0.21", default-features = false, features = ["lz4"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -4,6 +4,10 @@
 
 `mkt_signal` is a multi-binary Rust trading system for market data, funding-rate arbitrage, intra-exchange arbitrage, cross-exchange arbitrage, market making, account monitoring, order execution, persistence, and visualization.
 
+The actively maintained worktree is `/home/fanghaizhou/mkt_signal`.
+`/home/u171/fanghaizhou/mkt_signal` is not an active development worktree; do
+not edit, commit, or push from that copy.
+
 The crate is both a library and a binary collection. Primary code lives under `src/`; scripts and deployment wrappers live under `scripts/`, `xarb_scripts/`, `intra_scripts/`, `cross_scripts/`, and `mm_scripts/`.
 
 Important modules:
@@ -165,7 +169,22 @@ SID_MARKETS = {
 
 ## Domestic Futures Baseline Replay
 
-`tonglian_baseline_replay` is a bounded offline batch tool. Its `volume_multiple` values and `verified` state must come only from the read-only PostgreSQL table `market_metadata.public.domestic_future_product_multipliers` through Unix socket `/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not restore inline product maps, DataGateway or exchange-API calls, turnover inference, or a default of `1`. A product missing from the loaded catalog must panic with identifying context. This explicit batch-tool rule is an exception to the long-running-service panic guidance below. Never write to this metadata instance and never use the read-only PostgreSQL standby on port `5432` for this workflow.
+`crates/cn_futures_l2` is the only maintained Tonglian domestic-futures replay
+and export implementation. It writes the production RocksDB and derives 1s,
+1min, ylabel, and HFQ parquet outputs. The former root binary
+`tonglian_baseline_replay` and its ClickHouse staging configuration were removed
+when this crate replaced them; do not restore or run that path.
+
+`cn_futures_l2` loads `volume_multiple` values and their `verified` state only
+from the read-only PostgreSQL table
+`market_metadata.public.domestic_future_product_multipliers` through Unix socket
+`/mnt/nvme-raid0-28t/postgresql/domestic_futures/16/run` on port `5433`. Do not
+restore inline product maps, DataGateway or exchange-API calls, turnover
+inference, or a default of `1`. A product missing from the loaded catalog must
+panic with identifying context. This explicit batch-tool rule is an exception
+to the long-running-service panic guidance below. Never write to this metadata
+instance and never use the read-only PostgreSQL standby on port `5432` for this
+workflow.
 
 The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
 

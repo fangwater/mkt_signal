@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/account_common",
     "crates/cme_tas_replay",
+    "crates/cn_futures_l2",
     "crates/usstock_replay",
     "crates/account_monitor_common",
     "crates/depth_pub",
@@ -176,10 +177,6 @@ path = "src/bin/tardis_ipc_replay.rs"
 [[bin]]
 name = "cme_tas_census"
 path = "src/bin/cme_tas_census.rs"
-
-[[bin]]
-name = "tonglian_baseline_replay"
-path = "src/bin/tonglian_baseline_replay.rs"
 
 [[bin]]
 name = "cn_features_replay"
