@@ -29,7 +29,10 @@ use mkt_signal::common::binance_announcement::{
     fetch_spot_delist_snapshot, http_client as binance_http_client, ParsedAnnouncement, WatchState,
     CATALOG_DELISTING,
 };
-use mkt_signal::common::bitget_announcement::{fetch_delist_notices, fetch_offtime_snapshot};
+use mkt_signal::common::bitget_announcement::{
+    article_body_processed, fetch_delist_notices, fetch_offtime_snapshot, has_article_body,
+    hydrate_notice_body, mark_article_body_processed,
+};
 use mkt_signal::common::delist_accounts::{
     build_account_views, load_universes, summarize, AccountRiskResponse,
 };
@@ -649,6 +652,8 @@ async fn refresh_announcements(
     llm_client: Option<&Client>,
     llm_budget: &Mutex<LlmBudget>,
 ) {
+    let mut bitget_detail_errors =
+        backfill_bitget_details(state, public, llm, llm_client, llm_budget).await;
     let mut watch = WatchState::default();
     {
         let book = state.book.read().await;
@@ -709,10 +714,24 @@ async fn refresh_announcements(
         Ok(items) => {
             info!("bitget announcements new={}", items.len());
             mark_ok(state, "bitget_announcements", "fetch").await;
-            for item in items {
+            for mut item in items {
+                if let Err(err) = hydrate_notice_body(public, &mut item).await {
+                    warn!("Bitget article detail failed id={}: {err:#}", item.id);
+                    bitget_detail_errors.push(format!("{}: {err:#}", item.id));
+                    continue;
+                }
                 let input = LlmExtractInput::from_raw(&item);
                 remember_raw(state, &item).await;
-                maybe_extract(state, llm, llm_client, llm_budget, &input).await;
+                if maybe_extract(state, llm, llm_client, llm_budget, &input).await {
+                    if let Err(err) = mark_article_body_processed(&mut item) {
+                        warn!(
+                            "Bitget article completion mark failed id={}: {err:#}",
+                            item.id
+                        );
+                    } else {
+                        remember_raw(state, &item).await;
+                    }
+                }
             }
         }
         Err(err) => {
@@ -720,6 +739,59 @@ async fn refresh_announcements(
             mark_err(state, "bitget_announcements", "fetch", &format!("{err:#}")).await;
         }
     }
+    if bitget_detail_errors.is_empty() {
+        mark_ok(state, "bitget_article_detail", "fetch").await;
+    } else {
+        mark_err(
+            state,
+            "bitget_article_detail",
+            "fetch",
+            &bitget_detail_errors.join("; "),
+        )
+        .await;
+    }
+}
+
+async fn backfill_bitget_details(
+    state: &AppState,
+    client: &Client,
+    llm: Option<&LlmConfig>,
+    llm_client: Option<&Client>,
+    llm_budget: &Mutex<LlmBudget>,
+) -> Vec<String> {
+    let Some(store) = state.store.as_ref() else {
+        return Vec::new();
+    };
+    let items = match store.load_announcements().await {
+        Ok(items) => items,
+        Err(err) => return vec![format!("load stored announcements: {err:#}")],
+    };
+    let mut errors = Vec::new();
+    for mut item in items
+        .into_iter()
+        .filter(|item| item.exchange == "bitget" && !article_body_processed(item))
+    {
+        if !has_article_body(&item) {
+            if let Err(err) = hydrate_notice_body(client, &mut item).await {
+                warn!(
+                    "Bitget stored article detail failed id={}: {err:#}",
+                    item.id
+                );
+                errors.push(format!("{}: {err:#}", item.id));
+                continue;
+            }
+            remember_raw(state, &item).await;
+        }
+        let input = LlmExtractInput::from_raw(&item);
+        if maybe_extract(state, llm, llm_client, llm_budget, &input).await {
+            if let Err(err) = mark_article_body_processed(&mut item) {
+                errors.push(format!("{}: completion mark: {err:#}", item.id));
+            } else {
+                remember_raw(state, &item).await;
+            }
+        }
+    }
+    errors
 }
 
 const DEFAULT_FORCE_LLM_IDS: &str = "fab1676df7fb464a9e4634c6f777659e";
@@ -786,20 +858,22 @@ async fn maybe_extract(
     llm_client: Option<&Client>,
     llm_budget: &Mutex<LlmBudget>,
     input: &LlmExtractInput,
-) {
+) -> bool {
     let (Some(llm), Some(client)) = (llm, llm_client) else {
-        return;
+        return false;
     };
     if !llm_budget.lock().allow() {
-        return;
+        return false;
     }
     match extract_for_emit(client, llm, input).await {
         Ok(value) => {
             state.book.write().await.ingest_llm_value(input, &value);
             mark_llm(state, input, true, None).await;
+            true
         }
         Err(err) => {
             mark_llm(state, input, false, Some(&format!("{err:#}"))).await;
+            false
         }
     }
 }

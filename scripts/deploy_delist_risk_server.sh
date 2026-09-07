@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_NAME="delist_risk_server"
-BIN_PATH="${ROOT_DIR}/target/release/${BIN_NAME}"
+BIN_PATH=""
 SSH_HOST="${DELIST_DEPLOY_HOST:-jp-meta-elvpn}"
 LOCAL_TARGET=""
 DO_BUILD=1
@@ -88,12 +88,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
+  CARGO_TARGET_ROOT="$({
+    cd "$ROOT_DIR"
+    cargo metadata --no-deps --format-version 1
+  } | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+  BIN_PATH="${CARGO_TARGET_ROOT}/release/${BIN_NAME}"
   echo "[INFO] building ${BIN_NAME} (release)"
-  cargo build --release --bin "$BIN_NAME"
+  (
+    cd "$ROOT_DIR"
+    cargo build --release --bin "$BIN_NAME"
+  )
   if [[ ! -x "$BIN_PATH" ]]; then
     echo "[ERROR] missing binary: $BIN_PATH" >&2
     exit 1
   fi
+  echo "[INFO] release artifact: $BIN_PATH"
 fi
 
 install_tree() {
@@ -296,8 +305,15 @@ install_tree "$STAGING"
 
 "${SSH[@]}" "$SSH_HOST" "mkdir -p ~/delist_risk_server/scripts ~/delist_risk_server/config ~/delist_risk_server/data ~/delist_risk_server/docs ~/delist_risk_server/web/delist_risk"
 if [[ "$DO_BUILD" -eq 1 ]]; then
+  LOCAL_BIN_SHA="$(sha256sum "$STAGING/$BIN_NAME" | awk '{print $1}')"
   "${SCP[@]}" "$STAGING/$BIN_NAME" "$SSH_HOST:~/delist_risk_server/.${BIN_NAME}.new"
-  "${SSH[@]}" "$SSH_HOST" "chmod +x ~/delist_risk_server/.${BIN_NAME}.new && mv -f ~/delist_risk_server/.${BIN_NAME}.new ~/delist_risk_server/${BIN_NAME}"
+  REMOTE_BIN_SHA="$("${SSH[@]}" "$SSH_HOST" "sha256sum ~/delist_risk_server/.${BIN_NAME}.new | awk '{print \$1}'")"
+  if [[ "$LOCAL_BIN_SHA" != "$REMOTE_BIN_SHA" ]]; then
+    echo "[ERROR] uploaded binary checksum mismatch: local=${LOCAL_BIN_SHA} remote=${REMOTE_BIN_SHA}" >&2
+    exit 1
+  fi
+  "${SSH[@]}" "$SSH_HOST" "chmod +x ~/delist_risk_server/.${BIN_NAME}.new && ~/delist_risk_server/.${BIN_NAME}.new --help >/dev/null && mv -f ~/delist_risk_server/.${BIN_NAME}.new ~/delist_risk_server/${BIN_NAME}"
+  echo "[INFO] verified uploaded binary sha256=${LOCAL_BIN_SHA}"
 fi
 if [[ "$DO_SCRIPTS" -eq 1 ]]; then
   "${SCP[@]}" "$STAGING/scripts/"*.sh "$SSH_HOST:~/delist_risk_server/scripts/"

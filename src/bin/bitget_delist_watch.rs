@@ -1,7 +1,7 @@
-//! Bitget 下架公告拉取。只打印官方字段，不做 ticker / 标题解析。
+//! Bitget 下架公告拉取。列表发现公告后读取支持页正文。
 //!
 //! 公告：`GET /api/v2/public/annoucements?annType=symbol_delisting`
-//! 近一个月，无正文，只有 title + annUrl。
+//! 近一个月；列表只有 title + annUrl，正文从 annUrl 补齐。
 //! 当前状态：现货 / U 本位合约 `offTime`。
 //!
 //! ```text
@@ -18,7 +18,9 @@ use mkt_signal::common::announcement_llm::{
 use mkt_signal::common::announcement_watch::{
     emit_announcement, http_client, load_store, save_store, SeenStore,
 };
-use mkt_signal::common::bitget_announcement::{fetch_delist_notices, fetch_offtime_snapshot};
+use mkt_signal::common::bitget_announcement::{
+    fetch_delist_notices, fetch_offtime_snapshot, hydrate_notice_body,
+};
 use reqwest::Client;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -160,7 +162,11 @@ async fn poll_announcements(
     let items =
         fetch_delist_notices(client, &args.language, args.limit, args.max_pages, store).await?;
     info!("bitget announcements fetched new={}", items.len());
-    for item in items {
+    for mut item in items {
+        if let Err(err) = hydrate_notice_body(client, &mut item).await {
+            warn!("Bitget article detail failed id={}: {err:#}", item.id);
+            continue;
+        }
         if emit_announcement(store, item.clone()) {
             if let (Some(llm), Some(llm_client)) = (llm, llm_client) {
                 if llm_budget.allow() {

@@ -34,7 +34,7 @@ No API token. Do not put secrets in query strings.
 
 | Source | Interval | Notes |
 | --- | --- | --- |
-| Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`) | **1h** | Raw JSON stored in Postgres |
+| Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`) | **1h** | List discovery plus article detail; raw JSON stored in Postgres |
 | Gate announcement WS | persistent | Incremental; reconnects on drop |
 | Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **3h** | Replaces that source in the book |
 
@@ -180,7 +180,7 @@ curl -sS 'http://<host>:4191/delist/risk?days=30&include_past=true'
 - `past` — older than 7 days (hidden unless `include_past=true`)
 - `unknown` — no usable `utc`
 
-`action`: `delist`, `disable_margin`, `disable_loan`, `monitoring`, `other`.
+`action`: `delist`, `disable_open`, `disable_margin`, `disable_loan`, `monitoring`, `other`.
 
 `listing` comes from public exchangeInfo / instrument catalogs (no API key):
 

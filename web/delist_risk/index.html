@@ -206,33 +206,54 @@
         return days ? `${days}天${hours}小时后` : `${Math.max(1, totalHours)}小时后`;
       }
       function conclusion(hit) {
-        const byVenue = new Map();
-        const offer = (venue, priority, text) => {
-          const existing = byVenue.get(venue);
-          if (!existing || priority > existing.priority) byVenue.set(venue, { priority, text });
+        const stages = new Map();
+        const offer = (venue, action, utc, priority, text) => {
+          const key = `${venue}|${action}|${utc || ''}`;
+          if (!stages.has(key)) stages.set(key, { venue, action, utc: utc || '', priority, text });
+        };
+        const timedText = (venue, event, futureVerb, completedText) => {
+          const remaining = remainingTime(event.utc);
+          if (remaining) return `${venue} ${remaining}${futureVerb}`;
+          if (Number.isFinite(Date.parse(event.utc || ''))) return `${venue} ${completedText}`;
+          return `${venue} ${futureVerb}时间待确认`;
         };
         (hit.events || []).forEach((event) => {
           const venue = VENUES[event.venue] || event.venue || '交易所';
           if (event.action === 'catalog_removed') {
-            offer(venue, 50, `${venue} 已不在交易列表`);
+            offer(venue, event.action, event.utc, 50, `${venue} 已不在交易列表`);
             return;
           }
           if (event.action === 'delist') {
             const remaining = remainingTime(event.utc);
-            if (remaining) offer(venue, 40, `${venue} ${remaining}下架`);
-            else if (event.listing === 'delisted') offer(venue, 30, `${venue} 已下架`);
-            else offer(venue, 20, `${venue} 下架时间已过，待确认`);
+            if (remaining) offer(venue, event.action, event.utc, 40, `${venue} ${remaining}下架`);
+            else if (event.listing === 'delisted') offer(venue, event.action, event.utc, 40, `${venue} 已下架`);
+            else if (Number.isFinite(Date.parse(event.utc || ''))) offer(venue, event.action, event.utc, 40, `${venue} 下架时间已过，待确认`);
+            else offer(venue, event.action, event.utc, 40, `${venue} 下架时间待确认`);
             return;
           }
-          if (event.action === 'disable_loan') {
-            offer(venue, 10, `${venue} 已停止借贷`);
+          if (event.action === 'disable_open') {
+            offer(venue, event.action, event.utc, 45, timedText(venue, event, '停止开仓', '已停止开仓'));
+          } else if (event.action === 'disable_loan') {
+            offer(venue, event.action, event.utc, 30, timedText(venue, event, '停止借贷', '已停止借贷'));
           } else if (event.action === 'disable_margin') {
-            offer(venue, 10, `${venue} 已停止杠杆`);
+            offer(venue, event.action, event.utc, 35, timedText(venue, event, '停止杠杆', '已停止杠杆'));
           } else if (event.action === 'monitoring') {
-            offer(venue, 5, `${venue} 已列入观察`);
+            offer(venue, event.action, event.utc, 5, `${venue} 已列入观察`);
           }
         });
-        return [...byVenue.values()].sort((left, right) => right.priority - left.priority).map((item) => item.text).join('；') || '需人工核查';
+        const values = [...stages.values()];
+        const catalogVenues = new Set(values.filter((item) => item.action === 'catalog_removed').map((item) => item.venue));
+        const dated = new Set(values.filter((item) => item.utc).map((item) => `${item.venue}|${item.action}`));
+        return values
+          .filter((item) => item.action === 'catalog_removed' || !catalogVenues.has(item.venue))
+          .filter((item) => item.utc || !dated.has(`${item.venue}|${item.action}`))
+          .sort((left, right) => {
+            const leftTime = Date.parse(left.utc || '');
+            const rightTime = Date.parse(right.utc || '');
+            const timeOrder = (Number.isFinite(leftTime) ? leftTime : Number.MAX_SAFE_INTEGER) - (Number.isFinite(rightTime) ? rightTime : Number.MAX_SAFE_INTEGER);
+            return timeOrder || right.priority - left.priority;
+          })
+          .map((item) => item.text).join('；') || '需人工核查';
       }
       function accountRows(account) {
         const status = TONES[account.tone] || account.tone;

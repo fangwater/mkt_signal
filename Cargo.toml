@@ -300,6 +300,7 @@ uuid = { version = "1.17.0", features = ["v4"] }
 sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = { version = "0.12.19", features = ["json", "blocking"] }
+scraper = "0.27"
 postgres = { version = "0.19", features = ["with-chrono-0_4"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
 prettytable = "0.10.0"

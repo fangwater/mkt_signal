@@ -53,18 +53,6 @@ port_in_use() {
   return 1
 }
 
-npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-for _ in {1..10}; do
-  if ! port_in_use "$PORT"; then
-    break
-  fi
-  sleep 1
-done
-if port_in_use "$PORT"; then
-  echo "[ERROR] port ${PORT} is still in use; aborting" >&2
-  exit 1
-fi
-
 ARGS=(
   --bind "$BIND"
   --book "$BOOK_PATH"
@@ -101,8 +89,15 @@ if [[ -n "${DELIST_SG_REDIS_URL:-}" ]]; then
     -o ServerAliveCountMax=3 \
     -L "127.0.0.1:${SG_TUNNEL_PORT}:127.0.0.1:6379" \
     "$SG_SSH_HOST"
-  sleep 1
-  if ! (echo > "/dev/tcp/127.0.0.1/${SG_TUNNEL_PORT}") >/dev/null 2>&1; then
+  tunnel_ready=0
+  for _ in {1..10}; do
+    if (echo > "/dev/tcp/127.0.0.1/${SG_TUNNEL_PORT}") >/dev/null 2>&1; then
+      tunnel_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$tunnel_ready" -ne 1 ]]; then
     echo "[ERROR] SG Redis SSH tunnel did not listen on 127.0.0.1:${SG_TUNNEL_PORT}" >&2
     exit 1
   fi
@@ -126,6 +121,18 @@ if [[ -z "${BINANCE_API_KEY:-}" || -z "${BINANCE_API_SECRET:-}" ]]; then
   unset BINANCE_API_KEY BINANCE_API_SECRET
 fi
 
+npx pm2 delete "$APP_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+for _ in {1..10}; do
+  if ! port_in_use "$PORT"; then
+    break
+  fi
+  sleep 1
+done
+if port_in_use "$PORT"; then
+  echo "[ERROR] port ${PORT} is still in use; aborting" >&2
+  exit 1
+fi
+
 echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} bind=${BIND}"
 (
   cd "$BASE_DIR"
@@ -139,6 +146,8 @@ echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} 
   DELIST_LLM_BACKUP_MODEL="${DELIST_LLM_BACKUP_MODEL:-}" \
   DELIST_LLM_BACKUP_REASONING_EFFORT="${DELIST_LLM_BACKUP_REASONING_EFFORT:-}" \
   DELIST_LLM_HTTP_HEADER="${DELIST_LLM_HTTP_HEADER:-}" \
+  BINANCE_API_KEY="${BINANCE_API_KEY:-}" \
+  BINANCE_API_SECRET="${BINANCE_API_SECRET:-}" \
   OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
   OPENAI_BASE_URL="${OPENAI_BASE_URL:-}" \
   RUST_LOG="${RUST_LOG:-info}" \

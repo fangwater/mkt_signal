@@ -1,13 +1,14 @@
-//! Bitget 下架公告拉取。只转发官方字段，不做 parser。
+//! Bitget 下架公告拉取。列表用于发现，支持页用于补齐正文。
 //!
 //! 官方 REST：`GET /api/v2/public/annoucements`（拼写就是 annoucements）
 //! `annType=symbol_delisting`，近一个月，cursor 用上一页最后一条 `annId`。
-//! 接口没有正文，只有 title + annUrl。
+//! 列表接口没有正文，只有 title + annUrl；正文来自 annUrl 的 SSR JSON。
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
+use scraper::Html;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::common::announcement_watch::{RawAnnouncement, SeenStore};
 
@@ -146,6 +147,137 @@ fn to_announcement(notice: BitgetNotice) -> RawAnnouncement {
     }
 }
 
+pub async fn hydrate_notice_body(client: &Client, item: &mut RawAnnouncement) -> Result<()> {
+    let parsed_url = reqwest::Url::parse(&item.url)
+        .with_context(|| format!("invalid Bitget article URL for {}", item.id))?;
+    if parsed_url.scheme() != "https"
+        || !matches!(parsed_url.host_str(), Some("www.bitget.com" | "bitget.com"))
+    {
+        bail!(
+            "unexpected Bitget article URL for {}: {}",
+            item.id,
+            item.url
+        );
+    }
+    let response = client
+        .get(parsed_url)
+        .send()
+        .await
+        .with_context(|| format!("request Bitget article {} failed", item.id))?;
+    let status = response.status();
+    let page = response
+        .text()
+        .await
+        .with_context(|| format!("read Bitget article {} failed", item.id))?;
+    if !status.is_success() {
+        bail!(
+            "Bitget article {} failed: status={status} body={}",
+            item.id,
+            page.chars().take(300).collect::<String>()
+        );
+    }
+    let body = parse_article_body(&page, &item.id)?;
+    let extra = item.extra.get_or_insert_with(|| json!({}));
+    let object = extra
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Bitget announcement extra is not an object for {}", item.id))?;
+    object.insert("body".to_string(), Value::String(body));
+    object.insert(
+        "bodySource".to_string(),
+        Value::String("bitget_support_article".to_string()),
+    );
+    Ok(())
+}
+
+pub fn has_article_body(item: &RawAnnouncement) -> bool {
+    item.extra
+        .as_ref()
+        .and_then(|extra| extra.get("body"))
+        .and_then(Value::as_str)
+        .is_some_and(|body| !body.trim().is_empty())
+}
+
+pub fn article_body_processed(item: &RawAnnouncement) -> bool {
+    item.extra
+        .as_ref()
+        .and_then(|extra| extra.get("bodyProcessed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub fn mark_article_body_processed(item: &mut RawAnnouncement) -> Result<()> {
+    let extra = item.extra.get_or_insert_with(|| json!({}));
+    let object = extra
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Bitget announcement extra is not an object for {}", item.id))?;
+    object.insert("bodyProcessed".to_string(), Value::Bool(true));
+    Ok(())
+}
+
+fn parse_article_body(page: &str, article_id: &str) -> Result<String> {
+    const STATE_MARKER: &str = "window.__ZEUS_REACT_QUERY_STATE__";
+    let state_start = page
+        .find(STATE_MARKER)
+        .ok_or_else(|| anyhow!("Bitget article {article_id} missing SSR state"))?;
+    let after_marker = &page[state_start + STATE_MARKER.len()..];
+    let json_start = after_marker
+        .find('=')
+        .map(|offset| offset + 1)
+        .ok_or_else(|| anyhow!("Bitget article {article_id} has invalid SSR state"))?;
+    let script_end = after_marker[json_start..]
+        .find("</script>")
+        .map(|offset| json_start + offset)
+        .ok_or_else(|| anyhow!("Bitget article {article_id} has unterminated SSR state"))?;
+    let raw_state = after_marker[json_start..script_end]
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    let state: Value = serde_json::from_str(raw_state)
+        .with_context(|| format!("parse Bitget article {article_id} SSR state failed"))?;
+    let content = find_article_content(&state, article_id)
+        .ok_or_else(|| anyhow!("Bitget article {article_id} missing articleDetails.content"))?;
+    let fragment = Html::parse_fragment(content);
+    let text = fragment
+        .root_element()
+        .text()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        bail!("Bitget article {article_id} body is empty");
+    }
+    Ok(text)
+}
+
+fn find_article_content<'a>(value: &'a Value, article_id: &str) -> Option<&'a str> {
+    match value {
+        Value::Object(map) => {
+            if let Some(details) = map.get("articleDetails").and_then(Value::as_object) {
+                let id_matches = details
+                    .get("contentId")
+                    .and_then(Value::as_str)
+                    .map(|id| id == article_id)
+                    .unwrap_or(true);
+                if id_matches {
+                    if let Some(content) = details.get("content").and_then(Value::as_str) {
+                        if !content.trim().is_empty() {
+                            return Some(content);
+                        }
+                    }
+                }
+            }
+            map.values()
+                .find_map(|nested| find_article_content(nested, article_id))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|nested| find_article_content(nested, article_id)),
+        _ => None,
+    }
+}
+
 pub async fn fetch_offtime_snapshot(client: &Client) -> Result<serde_json::Value> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let spot = upcoming_spot(client, now_ms).await?;
@@ -260,6 +392,19 @@ mod tests {
         assert_eq!(item.id, "12560603892891");
         assert_eq!(item.published_ms, 1787300702000);
         assert!(item.title.contains("ICXUSDT"));
+    }
+
+    #[test]
+    fn parses_article_body_from_ssr_state() {
+        let page = r#"<html><script >window.__ZEUS_REACT_QUERY_STATE__ = {"queries":[{"state":{"data":{"articleDetails":{"contentId":"123","content":"<div>Disable&nbsp;<strong>BAN, ALT</strong><br>at 10:00 UTC</div>"}}}}]};</script></html>"#;
+        let body = parse_article_body(page, "123").unwrap();
+        assert_eq!(body, "Disable BAN, ALT at 10:00 UTC");
+    }
+
+    #[test]
+    fn rejects_ssr_state_for_another_article() {
+        let page = r#"<script>window.__ZEUS_REACT_QUERY_STATE__={"articleDetails":{"contentId":"other","content":"wrong"}};</script>"#;
+        assert!(parse_article_body(page, "123").is_err());
     }
 
     #[test]

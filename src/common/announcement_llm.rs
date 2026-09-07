@@ -41,10 +41,12 @@ venue is only the trading book:
 Never leave venue unknown when exchange_hint is known. Spot delist = {exchange}-margin.
 action:
 - delist = trading of that book will stop (spot/margin/futures)
+- disable_open = opening new futures positions stops before final settlement/delist; a switch to reduce-only is disable_open
 - disable_margin / disable_loan = borrow or loan stops before full delist
 - monitoring = watchlist / monitoring tag, not a confirmed delist
 - other = only if none of the above
 Emit at most one action per (venue, action, utc).
+Emit every distinct operational cutoff as its own action. For example, reduce-only at 07:30 and final delist/settlement at 08:00 must produce both disable_open at 07:30 and delist at 08:00, with the affected symbols on both actions.
 assets vs symbols:
 - symbols = exact tradable pairs named in the text, compact no slash: SUI/BNB → SUIBNB, HIVE/USDC → HIVEUSDC, ICXUSDT → ICXUSDT.
 - Coin/coin and alt-quote pairs (SUI/BNB, LTC/BNB, XXX/USDC, BTC/ETH) are pair-only events. Put them ONLY in symbols. Do not copy the base (SUI) or the quote (BNB) into assets.
@@ -239,7 +241,7 @@ fn body_from_raw(item: &RawAnnouncement) -> String {
     let Some(extra) = item.extra.as_ref() else {
         return String::new();
     };
-    for key in ["brief", "annDesc", "body"] {
+    for key in ["body", "brief", "annDesc"] {
         if let Some(text) = extra.get(key).and_then(Value::as_str) {
             if !text.trim().is_empty() {
                 return text.to_string();
@@ -350,7 +352,7 @@ fn extract_schema() -> Value {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["delist", "disable_margin", "disable_loan", "monitoring", "other"]
+                            "enum": ["delist", "disable_open", "disable_margin", "disable_loan", "monitoring", "other"]
                         },
                         "venue": { "type": "string" },
                         "exchange": { "type": "string" },
@@ -445,7 +447,7 @@ pub fn normalize_venue(exchange: &str, raw: &str, action: &str) -> String {
         return format!("{exchange}-margin");
     }
     match action {
-        "disable_margin" | "disable_loan" | "delist" | "monitoring" | "other" => {
+        "disable_open" | "disable_margin" | "disable_loan" | "delist" | "monitoring" | "other" => {
             if matches!(
                 key.as_str(),
                 "binance-margin"
@@ -477,7 +479,7 @@ pub fn normalize_venue(exchange: &str, raw: &str, action: &str) -> String {
 
 fn normalize_action(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "delist" | "disable_margin" | "disable_loan" | "monitoring" | "other" => {
+        "delist" | "disable_open" | "disable_margin" | "disable_loan" | "monitoring" | "other" => {
             raw.trim().to_ascii_lowercase()
         }
         other => other.to_string(),
@@ -602,6 +604,23 @@ mod tests {
             "binance-margin"
         );
         assert_eq!(normalize_exchange("Bitget", "gate"), "bitget");
+    }
+
+    #[test]
+    fn raw_announcement_prefers_article_body_over_list_description() {
+        let item = RawAnnouncement {
+            exchange: "bitget".into(),
+            id: "1".into(),
+            title: "title".into(),
+            url: "https://www.bitget.com/support/articles/1".into(),
+            published_ms: 1,
+            source: "test".into(),
+            extra: Some(json!({
+                "annDesc": "symbol_delisting",
+                "body": "full article body"
+            })),
+        };
+        assert_eq!(LlmExtractInput::from_raw(&item).body, "full article body");
     }
 
     #[test]
