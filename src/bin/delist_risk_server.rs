@@ -99,7 +99,7 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     listing_interval_secs: u64,
 
-    /// Remove symbols from Redis after every account venue confirms removal.
+    /// Remove symbols from Redis after any account venue confirms removal.
     #[arg(long)]
     auto_remove_redis: bool,
 

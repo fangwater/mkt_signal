@@ -215,10 +215,11 @@ The HTML board at `/delist/` uses this endpoint. Style matches crypto NAV manage
 ### `GET /removal-candidates`
 
 Returns the Redis symbols eligible for automatic removal. A symbol is eligible
-only when every venue used by that account is `delisted` in one complete,
-successful Binance/Bitget/Gate catalog refresh. FR and intra accounts therefore
-require both margin and futures to be gone. Market-making accounts require their
-futures venue to be gone. CTA maps are excluded.
+when any venue used by that account is `delisted` in one complete, successful
+Binance/Bitget/Gate catalog refresh. A missing margin or futures leg makes an FR
+or intra symbol unusable. Market-making accounts use their futures venue. CTA
+maps are excluded. The audit `venues` field records only the venue(s) that
+triggered removal.
 
 ### `GET /removals`
 
