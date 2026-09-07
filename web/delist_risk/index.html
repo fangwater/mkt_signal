@@ -237,10 +237,6 @@
             offer(venue, event.action, event.utc, 30, timedText(venue, event, '停止借贷', '已停止借贷'));
           } else if (event.action === 'disable_margin') {
             offer(venue, event.action, event.utc, 35, timedText(venue, event, '停止杠杆', '已停止杠杆'));
-          } else if (event.action === 'monitoring') {
-            const exchange = EXCHANGES[event.exchange] || venue.split(' ')[0] || '交易所';
-            const state = event.listing === 'listed' ? '当前仍可交易，暂无下架通知' : '交易状态需人工核查';
-            offer(venue, event.action, event.utc, 5, `${exchange} Monitoring Tag：高风险观察；${state}`);
           }
         });
         const values = [...stages.values()];

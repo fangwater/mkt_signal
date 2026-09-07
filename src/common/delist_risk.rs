@@ -182,6 +182,12 @@ impl RiskBook {
         self.updated_ms = Utc::now().timestamp_millis();
     }
 
+    pub fn retain_delist_events(&mut self) {
+        self.events
+            .retain(|event| is_delist_lifecycle_action(&event.action));
+        self.touch();
+    }
+
     pub fn remember_announcement(&mut self, item: &AnnouncementMeta) {
         if self
             .announcements
@@ -200,7 +206,10 @@ impl RiskBook {
     pub fn upsert_events(&mut self, events: Vec<RiskEvent>) -> usize {
         let mut added = 0;
         for event in events {
-            if event.venue.is_empty() || event.index_keys().is_empty() {
+            if !is_delist_lifecycle_action(&event.action)
+                || event.venue.is_empty()
+                || event.index_keys().is_empty()
+            {
                 continue;
             }
             let id = event.id();
@@ -377,6 +386,13 @@ impl RiskBook {
         }
         by_exchange
     }
+}
+
+fn is_delist_lifecycle_action(action: &str) -> bool {
+    matches!(
+        action,
+        "delist" | "disable_open" | "disable_margin" | "disable_loan"
+    )
 }
 
 pub fn events_from_official_snapshot(
@@ -708,6 +724,26 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(items[0].assets.is_empty());
         assert_eq!(items[0].symbols, vec!["SUIBNB", "HIVEUSDC", "LTCBNB"]);
+    }
+
+    #[test]
+    fn risk_book_keeps_only_delist_lifecycle_actions() {
+        let mut book = RiskBook::default();
+        assert_eq!(
+            book.upsert_events(vec![
+                sample_event("HEI", "binance-margin", "", "monitoring"),
+                sample_event("RSOXL", "bitget-margin", "", "other"),
+                sample_event("GRT", "bitget-margin", "2026-09-11T10:00:00Z", "delist",),
+            ]),
+            1
+        );
+        book.events
+            .push(sample_event("HEI", "binance-margin", "", "monitoring"));
+
+        book.retain_delist_events();
+
+        assert_eq!(book.events.len(), 1);
+        assert_eq!(book.events[0].action, "delist");
     }
 
     #[test]

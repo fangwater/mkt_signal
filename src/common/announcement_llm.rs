@@ -30,7 +30,7 @@ const DEFAULT_HEADER: &str = "x-openai-actor-authorization: local-image-extensio
 const BODY_CHAR_LIMIT: usize = 12_000;
 
 const SYSTEM_PROMPT: &str = r#"Extract risk events from one exchange delist announcement.
-This is a risk hint, not a full product timetable. Ignore gift card, pay, convert, mining, earn, copy-trading, bots unless they are the only event.
+This service tracks listing and delisting lifecycle events only. Gift card, pay, convert, mining, earn, copy-trading, bots, watchlists, monitoring tags, and other risk labels are not listing/delisting events. If those are the only subject, set relevant=false and actions=[].
 Return JSON only. Do not invent tickers, venues, or times that are not in the text.
 If a field is unknown, use an empty string or empty array.
 utc must be ISO-8601 UTC like 2026-09-03T03:00:00Z, or "".
@@ -43,8 +43,6 @@ action:
 - delist = trading of that book will stop (spot/margin/futures)
 - disable_open = opening new futures positions stops before final settlement/delist; a switch to reduce-only is disable_open
 - disable_margin / disable_loan = borrow or loan stops before full delist
-- monitoring = watchlist / monitoring tag, not a confirmed delist
-- other = only if none of the above
 Emit at most one action per (venue, action, utc).
 Emit every distinct operational cutoff as its own action. For example, reduce-only at 07:30 and final delist/settlement at 08:00 must produce both disable_open at 07:30 and delist at 08:00, with the affected symbols on both actions.
 assets vs symbols:
@@ -352,7 +350,7 @@ fn extract_schema() -> Value {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["delist", "disable_open", "disable_margin", "disable_loan", "monitoring", "other"]
+                            "enum": ["delist", "disable_open", "disable_margin", "disable_loan"]
                         },
                         "venue": { "type": "string" },
                         "exchange": { "type": "string" },

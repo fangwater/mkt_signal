@@ -180,7 +180,8 @@ curl -sS 'http://<host>:4191/delist/risk?days=30&include_past=true'
 - `past` — older than 7 days (hidden unless `include_past=true`)
 - `unknown` — no usable `utc`
 
-`action`: `delist`, `disable_open`, `disable_margin`, `disable_loan`, `monitoring`, `other`.
+`action`: `delist`, `disable_open`, `disable_margin`, `disable_loan`.
+Monitoring/watchlist tags, trading-bot removals, and other risk labels are excluded from the risk book.
 
 `listing` comes from public exchangeInfo / instrument catalogs (no API key):
 
@@ -270,7 +271,7 @@ Source names:
 
 - fetch: `binance_cms`, `bitget_announcements`, `gate_market`,
   `bitget_instrument_offtime`, `binance_spot_delist`, `binance_margin_delist`,
-  `binance_monitoring`, `exchange_info`, `schedule:binance-futures`, `schedule:binance-coin-futures`,
+  `exchange_info`, `schedule:binance-futures`, `schedule:binance-coin-futures`,
   `schedule:gate-futures`, `schedule:bitget-futures`, `schedule:bitget-coin-futures`
 - ws: `gate_ws`
 - llm: `llm` plus per-announcement rows in `llm_failures`

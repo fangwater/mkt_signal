@@ -25,9 +25,8 @@ use mkt_signal::common::announcement_watch::{
     http_client as public_http_client, RawAnnouncement, SeenStore,
 };
 use mkt_signal::common::binance_announcement::{
-    backfill_catalog, fetch_margin_delist_snapshot, fetch_monitoring_tag_snapshot,
-    fetch_spot_delist_snapshot, http_client as binance_http_client, ParsedAnnouncement, WatchState,
-    CATALOG_DELISTING,
+    backfill_catalog, fetch_margin_delist_snapshot, fetch_spot_delist_snapshot,
+    http_client as binance_http_client, ParsedAnnouncement, WatchState, CATALOG_DELISTING,
 };
 use mkt_signal::common::bitget_announcement::{
     article_body_processed, fetch_delist_notices, fetch_offtime_snapshot, has_article_body,
@@ -150,6 +149,7 @@ async fn main() -> Result<()> {
         warn!("load risk book failed, start empty: {err:#}");
         RiskBook::default()
     });
+    book.retain_delist_events();
 
     let pg_url = args
         .postgres
@@ -186,7 +186,11 @@ async fn main() -> Result<()> {
             Err(err) => warn!("restore announcements failed: {err:#}"),
         }
         match store.load_sources().await {
-            Ok(rows) => status.replace_sources(rows),
+            Ok(rows) => status.replace_sources(
+                rows.into_iter()
+                    .filter(|row| row.source != "binance_monitoring")
+                    .collect(),
+            ),
             Err(err) => warn!("restore source_status failed: {err:#}"),
         }
         match store.load_llm().await {
@@ -593,21 +597,6 @@ async fn ingest_binance_official(state: &AppState, client: &Client) {
         Err(err) => {
             warn!("binance margin delist snapshot skipped: {err:#}");
             mark_err(state, "binance_margin_delist", "fetch", &format!("{err:#}")).await;
-        }
-    }
-    match fetch_monitoring_tag_snapshot(client).await {
-        Ok(snapshot) => {
-            let events =
-                events_from_official_snapshot("binance-margin", "binance", "monitoring", &snapshot);
-            let n = events.len();
-            let source = snapshot.source.clone();
-            state.book.write().await.replace_source(&source, events);
-            info!("official binance monitoring events={n}");
-            mark_ok(state, "binance_monitoring", "fetch").await;
-        }
-        Err(err) => {
-            warn!("binance monitoring snapshot skipped: {err:#}");
-            mark_err(state, "binance_monitoring", "fetch", &format!("{err:#}")).await;
         }
     }
 }
