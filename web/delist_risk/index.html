@@ -100,7 +100,12 @@
       .hit-list { display: grid; gap: 5px; }
       .hit { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 7px 9px; border-left: 2px solid #d67b75; background: var(--danger-soft); }
       .hit .symbol { flex: 0 0 auto; color: #852d29; font-size: 11px; font-weight: 700; }
-      .hit__detail { min-width: 0; overflow: hidden; color: #795e5c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .hit__detail { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #795e5c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .flatten-state { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; color: #795e5c; font-size: 11px; white-space: nowrap; }
+      .flatten-state strong { color: #852d29; font-variant-numeric: tabular-nums; }
+      .flatten-action { min-height: 26px; padding: 0 9px; border: 1px solid #b84b45; border-radius: 4px; background: #b33a35; color: #fff; cursor: pointer; font-size: 11px; font-weight: 650; }
+      .flatten-action:hover { background: #972f2b; }
+      .flatten-action:disabled { cursor: wait; opacity: 0.65; }
       .empty { padding: 42px 18px; color: var(--muted); text-align: center; }
       .chip { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: 3px; font-size: 10px; font-weight: 650; line-height: 1; white-space: nowrap; }
       .chip--ok { color: var(--good); background: var(--good-soft); }
@@ -133,8 +138,9 @@
         .account-table td:last-child { text-align: right; }
         .hit-row { padding-top: 0 !important; }
         .hit-row td { display: block; padding: 0; background: transparent; }
-        .hit { align-items: flex-start; }
+        .hit { align-items: flex-start; flex-wrap: wrap; }
         .hit__detail { white-space: normal; }
+        .flatten-state { width: 100%; margin: 5px 0 0; flex-wrap: wrap; }
       }
     </style>
   </head>
@@ -162,6 +168,8 @@
       const TONES = { ok: '正常', risk: '需处理', error: 'Redis 未连接', uncovered: '风险源待接入' };
       let filter = 'all';
       let payload = null;
+      let flattenPayload = null;
+      let flattenByKey = new Map();
 
       function escapeHtml(value) {
         return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
@@ -170,11 +178,16 @@
         if (!ms) return '更新时间暂不可用';
         return `更新于 ${new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(ms))}`;
       }
-      function api(path) {
+      function api(path, options = {}) {
         const base = location.pathname.endsWith('/') ? location.pathname : location.pathname.replace(/[^/]+$/, '');
-        return fetch(base + path.replace(/^\//, ''), { cache: 'no-store' }).then((response) => {
-          if (!response.ok) throw new Error(`${path} ${response.status}`);
-          return response.json();
+        return fetch(base + path.replace(/^\//, ''), { cache: 'no-store', ...options }).then(async (response) => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const error = new Error(data.error || `${path} ${response.status}`);
+            error.status = response.status;
+            throw error;
+          }
+          return data;
         });
       }
       function setSystem(tone, text) {
@@ -253,11 +266,45 @@
           })
           .map((item) => item.text).join('；') || '需人工核查';
       }
+      function flattenKey(account, symbol) {
+        return `${account}|${symbol}`;
+      }
+      function formatHours(milliseconds) {
+        const hours = Math.max(0, Math.ceil(Number(milliseconds || 0) / 3_600_000));
+        return `${hours}小时`;
+      }
+      function flattenControl(account, hit) {
+        const item = flattenByKey.get(flattenKey(account.slug, hit.symbol));
+        if (!item) return '';
+        const audit = item.latest || {};
+        const position = `${Number(item.position_usdt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}U`;
+        const timing = `距下架 ${formatHours(item.remaining_ms)}`;
+        let state = item.disposition === 'manual' ? '需人工清仓' : '等待自动清仓';
+        let action = item.disposition === 'manual';
+        if (audit.status === 'running' || audit.status === 'notifying') {
+          state = audit.status === 'running' ? '清仓执行中' : '正在推送告警';
+          action = false;
+        } else if (audit.status === 'success') {
+          const residualPosition = Number(item.snapshot_ms || 0) > Number(audit.completed_ms || 0);
+          state = residualPosition ? '清仓后仍有持仓，需人工处理' : '清仓脚本已完成';
+          action = residualPosition;
+        } else if (audit.status === 'failed') {
+          state = '自动清仓失败，需人工处理';
+          action = true;
+        } else if (audit.status === 'manual_required') {
+          state = '已通知，需人工清仓';
+          action = true;
+        }
+        const button = action
+          ? `<button class="flatten-action" type="button" data-account="${escapeHtml(account.slug)}" data-symbol="${escapeHtml(hit.symbol)}">执行清仓</button>`
+          : '';
+        return `<span class="flatten-state"><strong>${escapeHtml(position)}</strong><span>${escapeHtml(timing)}</span><span>${escapeHtml(state)}</span>${button}</span>`;
+      }
       function accountRows(account) {
         const status = TONES[account.tone] || account.tone;
         const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span></td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
-        const hits = account.hits.map((hit) => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span></div>`).join('');
+        const hits = account.hits.map((hit) => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`).join('');
         return `${row}<tr class="hit-row"><td colspan="6"><div class="hit-list">${hits}</div></td></tr>`;
       }
       function exchangeBlock(exchange, accounts) {
@@ -275,6 +322,7 @@
         accounts.forEach((account) => { if (!groups.has(account.exchange)) groups.set(account.exchange, []); groups.get(account.exchange).push(account); });
         const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0), 0);
         root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
+        root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
       }
       function render() {
         if (!payload) return;
@@ -287,15 +335,44 @@
         document.getElementById('error').textContent = '';
         setSystem('risk', '正在同步');
         try {
-          payload = await api('accounts');
+          [payload, flattenPayload] = await Promise.all([api('accounts'), api('flatten-candidates')]);
+          flattenByKey = new Map((flattenPayload.items || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
           const summary = payload.summary || {};
-          const tone = summary.error ? 'error' : summary.risk ? 'risk' : 'ok';
-          const text = summary.error ? `${summary.error} 个 Redis 连接异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
+          const flattenErrors = (flattenPayload.snapshot_errors || []).length;
+          const tone = summary.error || flattenErrors ? 'error' : summary.risk ? 'risk' : 'ok';
+          const text = summary.error ? `${summary.error} 个 Redis 连接异常` : flattenErrors ? `${flattenErrors} 个持仓快照异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
           setSystem(tone, text);
           render();
         } catch (error) {
           setSystem('error', '加载失败');
           document.getElementById('error').innerHTML = `<div class="error-state"><strong>账户风险加载失败</strong>${escapeHtml(error.message || '未知错误')}</div>`;
+        }
+      }
+      async function executeManualFlatten(button) {
+        const account = button.dataset.account;
+        const symbol = button.dataset.symbol;
+        const item = flattenByKey.get(flattenKey(account, symbol));
+        if (!item) return;
+        const position = Number(item.position_usdt || 0).toFixed(2);
+        if (!window.confirm(`${account} ${symbol}\n当前持仓 ${position}U\n执行 flatten --symbol ${symbol} --mode clear？`)) return;
+        let token = window.sessionStorage.getItem('delistFlattenToken') || '';
+        if (!token) token = window.prompt('请输入人工清仓操作口令') || '';
+        if (!token) return;
+        window.sessionStorage.setItem('delistFlattenToken', token);
+        button.disabled = true;
+        button.textContent = '执行中';
+        try {
+          await api('flatten', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_slug: account, symbol }),
+          });
+          window.alert(`${account} ${symbol} 清仓脚本执行完成`);
+        } catch (error) {
+          if (error.status === 401) window.sessionStorage.removeItem('delistFlattenToken');
+          window.alert(`${account} ${symbol} 清仓失败：${error.message || '未知错误'}`);
+        } finally {
+          await load();
         }
       }
       document.getElementById('refresh').addEventListener('click', load);

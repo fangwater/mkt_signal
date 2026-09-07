@@ -88,6 +88,38 @@ pub struct RedisDumpAudit {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FlattenExecutionAudit {
+    pub id: i64,
+    pub requested_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<i64>,
+    pub dedup_key: String,
+    pub trigger: String,
+    pub account_slug: String,
+    pub exchange: String,
+    pub symbol: String,
+    pub delist_utc: String,
+    pub deadline_ms: i64,
+    pub snapshot_ms: i64,
+    pub open_usdt: f64,
+    pub hedge_usdt: f64,
+    pub position_usdt: f64,
+    pub manual_threshold_usdt: f64,
+    pub command: Value,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_status: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct StatusBook {
     sources: BTreeMap<String, SourceStatus>,
@@ -334,6 +366,32 @@ impl DelistStore {
                     );
                     CREATE INDEX IF NOT EXISTS redis_symbol_dump_audit_detected_idx
                         ON redis_symbol_dump_audit (detected_ms DESC);
+                    CREATE TABLE IF NOT EXISTS delist_flatten_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        requested_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        dedup_key TEXT NOT NULL UNIQUE,
+                        trigger TEXT NOT NULL,
+                        account_slug TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        delist_utc TEXT NOT NULL,
+                        deadline_ms BIGINT NOT NULL,
+                        snapshot_ms BIGINT NOT NULL,
+                        open_usdt DOUBLE PRECISION NOT NULL,
+                        hedge_usdt DOUBLE PRECISION NOT NULL,
+                        position_usdt DOUBLE PRECISION NOT NULL,
+                        manual_threshold_usdt DOUBLE PRECISION NOT NULL,
+                        command JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        exit_code INTEGER,
+                        stdout TEXT,
+                        stderr TEXT,
+                        error TEXT,
+                        notification_status TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS delist_flatten_audit_requested_idx
+                        ON delist_flatten_audit (requested_ms DESC);
                     CREATE TABLE IF NOT EXISTS exchange_symbol_snapshot_runs (
                         snapshot_date DATE PRIMARY KEY,
                         scheduled_ms BIGINT NOT NULL,
@@ -810,6 +868,220 @@ impl DelistStore {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_flatten_execution(
+        &self,
+        dedup_key: &str,
+        trigger: &str,
+        account_slug: &str,
+        exchange: &str,
+        symbol: &str,
+        delist_utc: &str,
+        deadline_ms: i64,
+        snapshot_ms: i64,
+        open_usdt: f64,
+        hedge_usdt: f64,
+        position_usdt: f64,
+        manual_threshold_usdt: f64,
+        command: Value,
+        initial_status: &str,
+    ) -> Result<Option<i64>> {
+        let requested_ms = chrono::Utc::now().timestamp_millis();
+        let dedup_key = dedup_key.to_string();
+        let trigger = trigger.to_string();
+        let account_slug = account_slug.to_string();
+        let exchange = exchange.to_string();
+        let symbol = symbol.to_string();
+        let delist_utc = delist_utc.to_string();
+        let initial_status = initial_status.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_opt(
+                    r#"
+                    INSERT INTO delist_flatten_audit (
+                        requested_ms, dedup_key, trigger, account_slug, exchange,
+                        symbol, delist_utc, deadline_ms, snapshot_ms, open_usdt,
+                        hedge_usdt, position_usdt, manual_threshold_usdt, command,
+                        status
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                        $13, $14, $15
+                    )
+                    ON CONFLICT (dedup_key) DO NOTHING
+                    RETURNING id
+                    "#,
+                    &[
+                        &requested_ms,
+                        &dedup_key,
+                        &trigger,
+                        &account_slug,
+                        &exchange,
+                        &symbol,
+                        &delist_utc,
+                        &deadline_ms,
+                        &snapshot_ms,
+                        &open_usdt,
+                        &hedge_usdt,
+                        &position_usdt,
+                        &manual_threshold_usdt,
+                        &command,
+                        &initial_status,
+                    ],
+                )
+                .await
+                .context("claim delist flatten audit failed")?;
+            Ok((client, row.map(|row| row.get(0))))
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_flatten_execution(
+        &self,
+        id: i64,
+        status: &str,
+        exit_code: Option<i32>,
+        stdout: Option<&str>,
+        stderr: Option<&str>,
+        error: Option<&str>,
+        notification_status: Option<&str>,
+    ) -> Result<()> {
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        let status = status.to_string();
+        let stdout = stdout.map(truncate_output);
+        let stderr = stderr.map(truncate_output);
+        let error = error.map(truncate_error);
+        let notification_status = notification_status.map(str::to_string);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    UPDATE delist_flatten_audit
+                    SET completed_ms = $2, status = $3, exit_code = $4,
+                        stdout = $5, stderr = $6, error = $7,
+                        notification_status = $8
+                    WHERE id = $1
+                    "#,
+                    &[
+                        &id,
+                        &completed_ms,
+                        &status,
+                        &exit_code,
+                        &stdout,
+                        &stderr,
+                        &error,
+                        &notification_status,
+                    ],
+                )
+                .await
+                .context("finish delist flatten audit failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_flatten_executions(&self, limit: i64) -> Result<Vec<FlattenExecutionAudit>> {
+        let limit = limit.clamp(1, 1_000);
+        self.run(move |client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, requested_ms, completed_ms, dedup_key, trigger,
+                           account_slug, exchange, symbol, delist_utc, deadline_ms,
+                           snapshot_ms, open_usdt, hedge_usdt, position_usdt,
+                           manual_threshold_usdt, command, status, exit_code,
+                           stdout, stderr, error, notification_status
+                    FROM delist_flatten_audit
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                    &[&limit],
+                )
+                .await
+                .context("load delist flatten audits failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| FlattenExecutionAudit {
+                    id: row.get(0),
+                    requested_ms: row.get(1),
+                    completed_ms: row.get(2),
+                    dedup_key: row.get(3),
+                    trigger: row.get(4),
+                    account_slug: row.get(5),
+                    exchange: row.get(6),
+                    symbol: row.get(7),
+                    delist_utc: row.get(8),
+                    deadline_ms: row.get(9),
+                    snapshot_ms: row.get(10),
+                    open_usdt: row.get(11),
+                    hedge_usdt: row.get(12),
+                    position_usdt: row.get(13),
+                    manual_threshold_usdt: row.get(14),
+                    command: row.get(15),
+                    status: row.get(16),
+                    exit_code: row.get(17),
+                    stdout: row.get(18),
+                    stderr: row.get(19),
+                    error: row.get(20),
+                    notification_status: row.get(21),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn flatten_execution_state(
+        &self,
+        dedup_key: &str,
+    ) -> Result<Option<(i64, String, Option<String>)>> {
+        let dedup_key = dedup_key.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_opt(
+                    "SELECT id, status, notification_status FROM delist_flatten_audit WHERE dedup_key = $1",
+                    &[&dedup_key],
+                )
+                .await
+                .context("query delist flatten audit status failed")?;
+            Ok((
+                client,
+                row.map(|row| (row.get(0), row.get(1), row.get(2))),
+            ))
+        })
+        .await
+    }
+
+    pub async fn flatten_success_covers_snapshot(
+        &self,
+        account_slug: &str,
+        symbol: &str,
+        deadline_ms: i64,
+        snapshot_ms: i64,
+    ) -> Result<bool> {
+        let account_slug = account_slug.to_string();
+        let symbol = symbol.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_one(
+                    r#"
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM delist_flatten_audit
+                        WHERE account_slug = $1 AND symbol = $2
+                          AND deadline_ms = $3 AND status = 'success'
+                          AND completed_ms >= $4
+                    )
+                    "#,
+                    &[&account_slug, &symbol, &deadline_ms, &snapshot_ms],
+                )
+                .await
+                .context("query covered flatten snapshot failed")?;
+            Ok((client, row.get(0)))
+        })
+        .await
+    }
+
     pub async fn write_symbol_snapshot(
         &self,
         snapshot_date: chrono::NaiveDate,
@@ -964,6 +1236,16 @@ fn truncate_error(err: &str) -> String {
         trimmed.to_string()
     } else {
         trimmed.chars().take(LIMIT).collect::<String>() + "…"
+    }
+}
+
+fn truncate_output(output: &str) -> String {
+    const LIMIT: usize = 8_000;
+    let trimmed = output.trim();
+    if trimmed.chars().count() <= LIMIT {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(LIMIT).collect::<String>() + "..."
     }
 }
 

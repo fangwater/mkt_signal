@@ -23,6 +23,8 @@ http://<jp-host>:4191/delist/removal-candidates
 http://<jp-host>:4191/delist/removals
 http://<jp-host>:4191/delist/dump-candidates
 http://<jp-host>:4191/delist/dump-transitions
+http://<jp-host>:4191/delist/flatten-candidates
+http://<jp-host>:4191/delist/flatten-executions
 http://<jp-host>:4191/delist/status
 ```
 
@@ -254,6 +256,35 @@ Returns the latest automatic open-to-dump audit rows from PostgreSQL table
 `redis_symbol_dump_audit`, including the triggering event, snapshot timestamp,
 both leg notionals, applied threshold, Redis key changes, and result.
 
+### Final-24-hour flatten
+
+`GET /flatten-candidates` returns positioned FR symbols whose actual `delist`
+deadline is within the next 24 hours. The decision value is the larger absolute
+USDT notional of the margin and futures legs. The response includes the latest
+audit state for each account/symbol/deadline.
+
+With `DELIST_AUTO_FLATTEN_POSITION_RISK=1`, positions at or below 1000 USDT are
+first moved to `dump` and removed from both open lists, then the service runs the
+fixed account-local exchange script with `--symbols SYMBOL --mode clear
+--execute`. Positions above 1000 USDT are never run automatically: one
+`manual_required` audit is created and the existing local notification service
+pushes a Telegram alert. Script, Redis, PostgreSQL, timeout, and notification
+errors remain visible in `delist_flatten_audit`; a failed automatic execution is
+not retried automatically. If a newer position snapshot still shows exposure
+after a successful script run, the service marks the source degraded and the
+page exposes the manual action instead of repeating live orders automatically.
+
+The page displays final-window position and execution state. `POST /flatten`
+backs its manual button. It accepts only `account_slug` and `symbol`, requires a
+Bearer token matching `DELIST_FLATTEN_API_TOKEN`, reloads a fresh snapshot,
+rechecks the deadline and position, and resolves the executable from the fixed
+mounted-account map. It cannot accept a command or filesystem path. A successful
+execution cannot run again against a snapshot captured before that execution.
+
+`GET /flatten-executions` returns the latest PostgreSQL execution rows. The
+`trigger` is `auto`, `manual`, or `manual_required`; `status` is `running`,
+`success`, `failed`, or `manual_required`.
+
 ### `GET /announcements`
 
 Recently seen announcement metadata (not full bodies). Full raw payloads live
@@ -337,6 +368,9 @@ Database `delist_risk` on `127.0.0.1:5432` stores:
 - `redis_symbol_dump_audit` — position-aware FR open-to-dump operations and
   failures, with the exact event, position snapshot, threshold, and Redis key
   changes
+- `delist_flatten_audit` — final-window manual-required decisions and automatic
+  or operator-triggered clear executions, including exit status and bounded
+  stdout/stderr
 
 The daily snapshot is transactional and date-idempotent. All nine public
 catalogs must succeed before rows are committed. On restart, the service fills
@@ -384,6 +418,13 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_OFFICIAL_INTERVAL_SECS` | default `86400` |
 | `DELIST_LISTING_INTERVAL_SECS` | default `86400`; a separate catalog fetch runs at `00:00 UTC` |
 | `DELIST_AUTO_REMOVE_REDIS` | `1` enables audited confirmed-delisting removal; default `0` |
+| `DELIST_AUTO_FLATTEN_POSITION_RISK` | `1` enables real final-window automatic clear; default `0` |
+| `DELIST_FLATTEN_WINDOW_HOURS` | actual delist window, default `24` |
+| `DELIST_FLATTEN_MANUAL_THRESHOLD_USDT` | larger leg above this value is manual-only, default `1000` |
+| `DELIST_FLATTEN_ENV_ROOT` | account deployment parent, default `/home/ubuntu` |
+| `DELIST_FLATTEN_TIMEOUT_SECS` | one script timeout, default `300` |
+| `DELIST_FLATTEN_API_TOKEN` | required Bearer token for the manual page action |
+| `PRE_TRADE_NOTIFICATION_URL` / `NOTIFICATION_API_TOKEN` | existing local notify endpoint and optional token; required for automatic flatten |
 | `DELIST_LLM_API_URL` / `DELIST_LLM_API_KEY` / `DELIST_LLM_MODEL` | OpenAI Responses compatible |
 | `DELIST_LLM_BACKUP_*` | optional backup endpoint |
 | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | optional SAPI snapshots |

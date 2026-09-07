@@ -24,6 +24,8 @@ pub struct PositionDumpCandidate {
     pub hedge_usdt: f64,
     pub impacted_position_usdt: f64,
     pub threshold_usdt: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delist_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,6 +151,12 @@ pub async fn position_dump_candidates(
         for (symbol, mut actionable) in events_by_symbol {
             actionable.sort_by(|left, right| left.utc.cmp(&right.utc));
             let event = actionable.first().expect("group is non-empty");
+            let delist_utc = actionable
+                .iter()
+                .filter(|event| event.action == "delist")
+                .map(|event| event.utc.as_str())
+                .min()
+                .map(str::to_string);
             let position = positions.get(&symbol).expect("matched position symbol");
             let impacted_position_usdt = actionable.iter().fold(0.0_f64, |max, event| {
                 let value = if event.venue.ends_with("-margin") {
@@ -160,7 +168,7 @@ pub async fn position_dump_candidates(
                 };
                 max.max(value)
             });
-            if !impacted_position_usdt.is_finite() || impacted_position_usdt < threshold_usdt {
+            if !meets_position_threshold(impacted_position_usdt, threshold_usdt) {
                 continue;
             }
             candidates.push(PositionDumpCandidate {
@@ -178,10 +186,15 @@ pub async fn position_dump_candidates(
                 hedge_usdt: position.hedge_usdt,
                 impacted_position_usdt,
                 threshold_usdt,
+                delist_utc,
             });
         }
     }
     (candidates, errors)
+}
+
+fn meets_position_threshold(position_usdt: f64, threshold_usdt: f64) -> bool {
+    position_usdt.is_finite() && position_usdt > 0.0 && position_usdt >= threshold_usdt
 }
 
 async fn fetch_snapshot(client: &Client, url: &str) -> Result<DashboardSnapshot> {
@@ -400,6 +413,13 @@ mod tests {
                 .unwrap();
         assert_eq!((before, after), (2, 1));
         assert_eq!(open, r#"["BTCUSDT"]"#);
+    }
+
+    #[test]
+    fn includes_exact_threshold_but_excludes_zero() {
+        assert!(meets_position_threshold(50.0, 50.0));
+        assert!(!meets_position_threshold(49.99, 50.0));
+        assert!(!meets_position_threshold(0.0, 0.0));
     }
 
     #[tokio::test]

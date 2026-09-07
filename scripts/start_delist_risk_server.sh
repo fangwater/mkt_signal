@@ -63,6 +63,10 @@ ARGS=(
   --position-risk-interval-secs "${DELIST_POSITION_RISK_INTERVAL_SECS:-60}"
   --position-risk-threshold-usdt "${DELIST_POSITION_RISK_THRESHOLD_USDT:-50}"
   --position-snapshot-max-age-secs "${DELIST_POSITION_SNAPSHOT_MAX_AGE_SECS:-120}"
+  --flatten-window-hours "${DELIST_FLATTEN_WINDOW_HOURS:-24}"
+  --flatten-manual-threshold-usdt "${DELIST_FLATTEN_MANUAL_THRESHOLD_USDT:-1000}"
+  --flatten-env-root "${DELIST_FLATTEN_ENV_ROOT:-/home/ubuntu}"
+  --flatten-timeout-secs "${DELIST_FLATTEN_TIMEOUT_SECS:-300}"
   --snapshot-base-url "${DELIST_SNAPSHOT_BASE_URL:-http://127.0.0.1:4191}"
   --llm-max "${DELIST_LLM_MAX:-0}"
   --web-dir "${BASE_DIR}/web/delist_risk"
@@ -127,6 +131,9 @@ fi
 if [[ "${DELIST_AUTO_DUMP_POSITION_RISK:-1}" == "1" ]]; then
   ARGS+=(--auto-dump-position-risk)
 fi
+if [[ "${DELIST_AUTO_FLATTEN_POSITION_RISK:-0}" == "1" ]]; then
+  ARGS+=(--auto-flatten-position-risk)
+fi
 
 if [[ -z "${BINANCE_API_KEY:-}" || -z "${BINANCE_API_SECRET:-}" ]]; then
   unset BINANCE_API_KEY BINANCE_API_SECRET
@@ -157,6 +164,10 @@ echo "[INFO] starting delist_risk_server app=${APP_NAME} namespace=${NAMESPACE} 
   DELIST_LLM_BACKUP_MODEL="${DELIST_LLM_BACKUP_MODEL:-}" \
   DELIST_LLM_BACKUP_REASONING_EFFORT="${DELIST_LLM_BACKUP_REASONING_EFFORT:-}" \
   DELIST_LLM_HTTP_HEADER="${DELIST_LLM_HTTP_HEADER:-}" \
+  DELIST_FLATTEN_API_TOKEN="${DELIST_FLATTEN_API_TOKEN:-}" \
+  PRE_TRADE_NOTIFICATION_URL="${PRE_TRADE_NOTIFICATION_URL:-}" \
+  PRE_TRADE_NOTIFICATION_TIMEOUT_MS="${PRE_TRADE_NOTIFICATION_TIMEOUT_MS:-}" \
+  NOTIFICATION_API_TOKEN="${NOTIFICATION_API_TOKEN:-}" \
   BINANCE_API_KEY="${BINANCE_API_KEY:-}" \
   BINANCE_API_SECRET="${BINANCE_API_SECRET:-}" \
   OPENAI_API_KEY="${OPENAI_API_KEY:-}" \

@@ -6,6 +6,7 @@ pub mod binance_announcement;
 pub mod bitget_announcement;
 pub mod delist_accounts;
 pub mod delist_dump;
+pub mod delist_flatten;
 pub mod delist_prune;
 pub mod delist_risk;
 pub mod delist_schedule;
