@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -17,14 +17,47 @@ pub struct ListingIndex {
     books: BTreeMap<String, BTreeMap<String, ListingRow>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ListingSnapshotRow {
+    pub exchange: String,
+    pub venue: String,
+    pub market_type: String,
+    pub symbol: String,
+    pub normalized_symbol: String,
+    pub status: String,
+    pub listed: bool,
+    pub pending: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ListingRow {
+    pub symbol: String,
     pub status: String,
     pub listed: bool,
     pub pending: bool,
 }
 
 impl ListingIndex {
+    pub fn snapshot_rows(&self) -> Vec<ListingSnapshotRow> {
+        self.books
+            .iter()
+            .flat_map(|(venue, book)| {
+                let (exchange, market_type) = snapshot_scope(venue);
+                book.iter()
+                    .map(move |(normalized_symbol, row)| ListingSnapshotRow {
+                        exchange: exchange.to_string(),
+                        venue: venue.clone(),
+                        market_type: market_type.to_string(),
+                        symbol: row.symbol.clone(),
+                        normalized_symbol: normalized_symbol.clone(),
+                        status: row.status.clone(),
+                        listed: row.listed,
+                        pending: row.pending,
+                    })
+            })
+            .collect()
+    }
+
     pub fn listing_for(&self, venue: &str, symbols: &[String], assets: &[String]) -> String {
         let Some(book) = self.books.get(venue) else {
             return "unknown".to_string();
@@ -66,11 +99,12 @@ impl ListingIndex {
         }
     }
 
-    fn insert(&mut self, venue: &str, symbol: &str, row: ListingRow) {
+    fn insert(&mut self, venue: &str, symbol: &str, mut row: ListingRow) {
         let key = normalize_symbol(symbol);
         if key.is_empty() {
             return;
         }
+        row.symbol = symbol.to_string();
         self.books
             .entry(venue.to_string())
             .or_default()
@@ -107,10 +141,23 @@ fn lookup_keys(symbols: &[String], assets: &[String]) -> Vec<String> {
 fn row(status: &str, pending: bool) -> ListingRow {
     let listed = is_listed_status(status) && !pending;
     ListingRow {
+        symbol: String::new(),
         status: status.to_string(),
         listed,
         pending,
     }
+}
+
+fn snapshot_scope(venue: &str) -> (&str, &str) {
+    let exchange = venue.split('-').next().unwrap_or(venue);
+    let market_type = if venue.ends_with("-coin-futures") {
+        "coin_futures"
+    } else if venue.ends_with("-futures") {
+        "usdt_futures"
+    } else {
+        "spot"
+    };
+    (exchange, market_type)
 }
 
 fn is_listed_status(status: &str) -> bool {
@@ -136,6 +183,10 @@ pub async fn fetch_listing_index(client: &Client) -> (ListingIndex, Vec<(String,
             fetch_binance_futures(client, &mut index, now_ms).await,
         ),
         (
+            "binance_coin_futures_exchange_info",
+            fetch_binance_coin_futures(client, &mut index, now_ms).await,
+        ),
+        (
             "bitget_spot_exchange_info",
             fetch_bitget_spot(client, &mut index, now_ms).await,
         ),
@@ -144,12 +195,20 @@ pub async fn fetch_listing_index(client: &Client) -> (ListingIndex, Vec<(String,
             fetch_bitget_futures(client, &mut index, now_ms).await,
         ),
         (
+            "bitget_coin_futures_exchange_info",
+            fetch_bitget_coin_futures(client, &mut index, now_ms).await,
+        ),
+        (
             "gate_spot_exchange_info",
             fetch_gate_spot(client, &mut index, now_ms).await,
         ),
         (
             "gate_futures_exchange_info",
             fetch_gate_futures(client, &mut index, now_ms).await,
+        ),
+        (
+            "gate_coin_futures_exchange_info",
+            fetch_gate_coin_futures(client, &mut index, now_ms).await,
         ),
     ] {
         if let Err(err) = result {
@@ -185,6 +244,21 @@ async fn fetch_binance_futures(
     Ok(())
 }
 
+async fn fetch_binance_coin_futures(
+    client: &Client,
+    index: &mut ListingIndex,
+    now_ms: i64,
+) -> Result<()> {
+    let body = get_json(
+        client,
+        "https://dapi.binance.com/dapi/v1/exchangeInfo",
+        "Binance coin futures exchangeInfo",
+    )
+    .await?;
+    ingest_binance_symbols(&body, "binance-coin-futures", index, now_ms)?;
+    Ok(())
+}
+
 fn ingest_binance_symbols(
     body: &Value,
     venue: &str,
@@ -204,7 +278,11 @@ fn ingest_binance_symbols(
         if symbol.is_empty() {
             continue;
         }
-        let status = item.get("status").and_then(Value::as_str).unwrap_or("");
+        let status = item
+            .get("status")
+            .or_else(|| item.get("contractStatus"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let delivery = item
             .get("deliveryDate")
             .and_then(Value::as_i64)
@@ -258,6 +336,33 @@ async fn fetch_bitget_futures(
     Ok(())
 }
 
+async fn fetch_bitget_coin_futures(
+    client: &Client,
+    index: &mut ListingIndex,
+    now_ms: i64,
+) -> Result<()> {
+    let parsed: BitgetEnvelope<Vec<BitgetMix>> = get_typed(
+        client,
+        "https://api.bitget.com/api/v3/market/instruments?category=COIN-FUTURES",
+        "Bitget coin futures",
+    )
+    .await?;
+    if parsed.data.is_empty() {
+        bail!("Bitget coin futures returned an empty catalog");
+    }
+    for item in parsed.data {
+        let off =
+            parse_ms(item.off_time.as_deref()).or_else(|| parse_ms(item.delivery_time.as_deref()));
+        let pending = future_ms(off, now_ms);
+        index.insert(
+            "bitget-coin-futures",
+            &item.symbol,
+            row(&item.status, pending),
+        );
+    }
+    Ok(())
+}
+
 async fn fetch_gate_spot(client: &Client, index: &mut ListingIndex, now_ms: i64) -> Result<()> {
     let body = get_text(
         client,
@@ -298,6 +403,33 @@ async fn fetch_gate_futures(client: &Client, index: &mut ListingIndex, now_ms: i
     for contract in contracts {
         index.insert(
             "gate-futures",
+            &contract.name,
+            row(&contract.status, contract.in_delisting),
+        );
+    }
+    Ok(())
+}
+
+async fn fetch_gate_coin_futures(
+    client: &Client,
+    index: &mut ListingIndex,
+    now_ms: i64,
+) -> Result<()> {
+    let _ = now_ms;
+    let body = get_text(
+        client,
+        "https://api.gateio.ws/api/v4/futures/btc/contracts",
+        "Gate BTC futures",
+    )
+    .await?;
+    let contracts: Vec<GateFutures> =
+        serde_json::from_str(&body).context("parse Gate BTC futures JSON failed")?;
+    if contracts.is_empty() {
+        bail!("Gate BTC futures returned an empty catalog");
+    }
+    for contract in contracts {
+        index.insert(
+            "gate-coin-futures",
             &contract.name,
             row(&contract.status, contract.in_delisting),
         );
@@ -451,5 +583,38 @@ mod tests {
             index.listing_for("binance-margin", &["AAAUSDT".into()], &[]),
             "delisted"
         );
+    }
+
+    #[test]
+    fn binance_coin_futures_uses_contract_status() {
+        let body = serde_json::json!({
+            "symbols": [{
+                "symbol": "BTCUSD_PERP",
+                "contractStatus": "TRADING",
+                "deliveryDate": 4133404800000_i64
+            }]
+        });
+        let mut index = ListingIndex::default();
+        ingest_binance_symbols(&body, "binance-coin-futures", &mut index, 1).unwrap();
+        assert_eq!(
+            index.listing_for("binance-coin-futures", &["BTCUSD_PERP".into()], &[]),
+            "listed"
+        );
+    }
+
+    #[test]
+    fn snapshot_rows_cover_raw_symbols_and_market_types() {
+        let mut index = ListingIndex::default();
+        index.insert("gate-margin", "BTC_USDT", row("tradable", false));
+        index.insert("binance-coin-futures", "BTCUSD_PERP", row("TRADING", false));
+
+        let rows = index.snapshot_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].market_type, "coin_futures");
+        assert_eq!(rows[0].symbol, "BTCUSD_PERP");
+        assert_eq!(rows[0].normalized_symbol, "BTCUSDPERP");
+        assert_eq!(rows[1].market_type, "spot");
+        assert_eq!(rows[1].symbol, "BTC_USDT");
+        assert_eq!(rows[1].normalized_symbol, "BTCUSDT");
     }
 }

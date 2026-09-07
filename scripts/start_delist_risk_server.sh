@@ -57,9 +57,9 @@ ARGS=(
   --bind "$BIND"
   --book "$BOOK_PATH"
   --days "${DELIST_DAYS:-30}"
-  --announcement-interval-secs "${DELIST_ANNOUNCEMENT_INTERVAL_SECS:-3600}"
-  --official-interval-secs "${DELIST_OFFICIAL_INTERVAL_SECS:-10800}"
-  --listing-interval-secs "${DELIST_LISTING_INTERVAL_SECS:-60}"
+  --announcement-interval-secs "${DELIST_ANNOUNCEMENT_INTERVAL_SECS:-86400}"
+  --official-interval-secs "${DELIST_OFFICIAL_INTERVAL_SECS:-86400}"
+  --listing-interval-secs "${DELIST_LISTING_INTERVAL_SECS:-86400}"
   --llm-max "${DELIST_LLM_MAX:-0}"
   --web-dir "${BASE_DIR}/web/delist_risk"
 )

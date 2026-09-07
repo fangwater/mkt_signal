@@ -1,7 +1,8 @@
 //! 下架风险查询 HTTP。
 //!
 //! 官方快照 + 公告 LLM 抽取写入同一本风险簿，全量扁平 JSON 查询。
-//! 公告默认 1h 拉取，官方市场/offTime/schedule 默认 3h。
+//! 公告、官方市场/offTime/schedule 与完整产品目录默认每天拉取一次。
+//! 每天 00:00 UTC 将完整产品目录快照写入 Postgres。
 //! 原始公告与拉取/LLM 状态写入 Postgres，失败原因可查。
 //!
 //! ```text
@@ -16,6 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use chrono::{DateTime, NaiveDate, Utc};
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use log::{info, warn};
@@ -91,20 +93,20 @@ struct Args {
     #[arg(long)]
     skip_postgres: bool,
 
-    /// Official market / offTime / schedule snapshot interval. Default 3h.
-    #[arg(long, default_value_t = 10_800)]
+    /// Official market / offTime / schedule snapshot interval. Default 24h.
+    #[arg(long, default_value_t = 86_400)]
     official_interval_secs: u64,
 
-    /// Complete public product-catalog interval. Default 60s.
-    #[arg(long, default_value_t = 60)]
+    /// Complete public product-catalog interval. Default 24h.
+    #[arg(long, default_value_t = 86_400)]
     listing_interval_secs: u64,
 
     /// Remove symbols from Redis after any account venue confirms removal.
     #[arg(long)]
     auto_remove_redis: bool,
 
-    /// Announcement poll interval. Default 1h.
-    #[arg(long, default_value_t = 3_600)]
+    /// Announcement poll interval. Default 24h.
+    #[arg(long, default_value_t = 86_400)]
     announcement_interval_secs: u64,
 
     #[arg(long, default_value_t = 0)]
@@ -491,7 +493,11 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let llm_budget = Arc::new(Mutex::new(LlmBudget::new(args.llm_max)));
 
     if !args.skip_official {
-        refresh_listings(&state, &public).await;
+        let snapshot_date = Utc::now().date_naive();
+        match refresh_listings(&state, &public).await {
+            Ok(index) => persist_symbol_snapshot(&state, &index, snapshot_date).await,
+            Err(err) => record_symbol_snapshot_failure(&state, snapshot_date, &err).await,
+        }
         refresh_official(&state, &public, &binance, args.days).await;
         persist(&state).await;
     }
@@ -536,6 +542,8 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
         time::interval(Duration::from_secs(args.announcement_interval_secs.max(60)));
     announcements.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     announcements.tick().await;
+    let daily_snapshot = time::sleep(duration_until_next_utc_midnight(Utc::now()));
+    tokio::pin!(daily_snapshot);
 
     loop {
         tokio::select! {
@@ -544,7 +552,12 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 persist(&state).await;
             }
             _ = listings.tick(), if !args.skip_official => {
-                refresh_listings(&state, &public).await;
+                let snapshot_date = Utc::now().date_naive();
+                match refresh_listings(&state, &public).await {
+                    Ok(index) => persist_symbol_snapshot(&state, &index, snapshot_date).await,
+                    Err(err) => record_symbol_snapshot_failure(&state, snapshot_date, &err).await,
+                }
+                persist(&state).await;
             }
             _ = announcements.tick(), if !args.skip_announcements => {
                 refresh_announcements(
@@ -572,6 +585,17 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 }
                 persist(&state).await;
                 time::sleep(Duration::from_secs(3)).await;
+            }
+            _ = &mut daily_snapshot, if !args.skip_official => {
+                let snapshot_date = Utc::now().date_naive();
+                match refresh_listings(&state, &public).await {
+                    Ok(index) => persist_symbol_snapshot(&state, &index, snapshot_date).await,
+                    Err(err) => record_symbol_snapshot_failure(&state, snapshot_date, &err).await,
+                }
+                persist(&state).await;
+                daily_snapshot.as_mut().reset(
+                    time::Instant::now() + duration_until_next_utc_midnight(Utc::now())
+                );
             }
         }
     }
@@ -624,10 +648,10 @@ async fn refresh_official(state: &AppState, public: &Client, binance: &Client, d
     ingest_schedule_venues(state, days).await;
 }
 
-async fn refresh_listings(state: &AppState, public: &Client) {
+async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIndex> {
     let (index, errors) = fetch_listing_index(public).await;
-    *state.listings.write().await = index;
     if errors.is_empty() {
+        *state.listings.write().await = index.clone();
         mark_ok(state, "exchange_info", "fetch").await;
         info!("official exchange_info refreshed");
         if state.auto_remove_redis {
@@ -642,22 +666,121 @@ async fn refresh_listings(state: &AppState, public: &Client) {
                 }
             }
         }
-        return;
+        return Ok(index);
     }
     for (source, err) in &errors {
         warn!("exchange_info {source} failed: {err}");
     }
-    mark_err(
-        state,
-        "exchange_info",
-        "fetch",
-        &errors
-            .iter()
-            .map(|(source, err)| format!("{source}: {err}"))
-            .collect::<Vec<_>>()
-            .join("; "),
-    )
-    .await;
+    let error = errors
+        .iter()
+        .map(|(source, err)| format!("{source}: {err}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    mark_err(state, "exchange_info", "fetch", &error).await;
+    anyhow::bail!(error)
+}
+
+fn scheduled_midnight_ms(snapshot_date: NaiveDate) -> i64 {
+    snapshot_date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc()
+        .timestamp_millis()
+}
+
+fn duration_until_next_utc_midnight(now: DateTime<Utc>) -> Duration {
+    let next_date = now.date_naive().succ_opt().expect("next UTC date is valid");
+    let next = next_date
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
+    (next - now)
+        .to_std()
+        .unwrap_or_else(|_| Duration::from_secs(1))
+}
+
+async fn persist_symbol_snapshot(state: &AppState, index: &ListingIndex, snapshot_date: NaiveDate) {
+    let Some(store) = state.store.as_ref() else {
+        mark_err(
+            state,
+            "exchange_symbol_snapshot",
+            "persist",
+            "postgres unavailable",
+        )
+        .await;
+        return;
+    };
+    let rows = index.snapshot_rows();
+    if rows.is_empty() {
+        record_symbol_snapshot_failure(
+            state,
+            snapshot_date,
+            &anyhow::anyhow!("complete exchange symbol catalog is empty"),
+        )
+        .await;
+        return;
+    }
+    let captured_ms = Utc::now().timestamp_millis();
+    match store
+        .write_symbol_snapshot(
+            snapshot_date,
+            scheduled_midnight_ms(snapshot_date),
+            captured_ms,
+            &rows,
+        )
+        .await
+    {
+        Ok(created) => {
+            mark_ok(state, "exchange_symbol_snapshot", "persist").await;
+            if created {
+                let venues = rows
+                    .iter()
+                    .map(|row| row.venue.as_str())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+                info!(
+                    "exchange symbol snapshot persisted date={} venues={} symbols={}",
+                    snapshot_date,
+                    venues,
+                    rows.len()
+                );
+            } else {
+                info!("exchange symbol snapshot already complete date={snapshot_date}");
+            }
+        }
+        Err(err) => {
+            warn!("exchange symbol snapshot persist failed: {err:#}");
+            mark_err(
+                state,
+                "exchange_symbol_snapshot",
+                "persist",
+                &format!("{err:#}"),
+            )
+            .await;
+        }
+    }
+}
+
+async fn record_symbol_snapshot_failure(
+    state: &AppState,
+    snapshot_date: NaiveDate,
+    err: &anyhow::Error,
+) {
+    let message = format!("{err:#}");
+    mark_err(state, "exchange_symbol_snapshot", "persist", &message).await;
+    let Some(store) = state.store.as_ref() else {
+        return;
+    };
+    if let Err(store_err) = store
+        .record_symbol_snapshot_failure(
+            snapshot_date,
+            scheduled_midnight_ms(snapshot_date),
+            &message,
+        )
+        .await
+    {
+        warn!("record exchange symbol snapshot failure failed: {store_err:#}");
+    }
 }
 
 async fn prune_confirmed_delists(state: &AppState) -> Result<usize> {
@@ -1206,5 +1329,30 @@ async fn handle_gate_text(
         }
         Ok(None) => {}
         Err(err) => warn!("skip Gate announcement ws frame: {err:#}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn next_snapshot_is_exactly_utc_midnight() {
+        let before_midnight = Utc.with_ymd_and_hms(2026, 9, 7, 23, 59, 59).unwrap();
+        assert_eq!(
+            duration_until_next_utc_midnight(before_midnight),
+            Duration::from_secs(1)
+        );
+
+        let midnight = Utc.with_ymd_and_hms(2026, 9, 7, 0, 0, 0).unwrap();
+        assert_eq!(
+            duration_until_next_utc_midnight(midnight),
+            Duration::from_secs(86_400)
+        );
+        assert_eq!(
+            scheduled_midnight_ms(midnight.date_naive()),
+            midnight.timestamp_millis()
+        );
     }
 }

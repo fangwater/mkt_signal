@@ -36,10 +36,10 @@ No API token. Do not put secrets in query strings.
 
 | Source | Interval | Notes |
 | --- | --- | --- |
-| Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`) | **1h** | List discovery plus article detail; raw JSON stored in Postgres |
-| Gate announcement WS | persistent | Incremental; reconnects on drop |
-| Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **3h** | Replaces that source in the book |
-| Complete public product catalogs | **60s** | Drives current listing state and confirmed Redis removal |
+| Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`) | **24h** | List discovery plus article detail; raw JSON stored in Postgres |
+| Gate announcement WS | persistent | Push stream rather than a polling check; reconnects on drop |
+| Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **24h** | Replaces that source in the book |
+| Complete public product catalogs | **24h**, plus **00:00 UTC** | Drives current listing state and confirmed Redis removal; the midnight fetch is persisted to Postgres |
 
 LLM extract runs only on **new** announcements. LLM / fetch failures never
 block the other source. Reasons are queryable at `/status`.
@@ -50,7 +50,7 @@ block the other source. Reasons are queryable at `/status`.
 | --- | --- |
 | `binance-margin` / `bitget-margin` / `gate-margin` | Spot, margin, loan |
 | `binance-futures` / `bitget-futures` / `gate-futures` | USDT-M perpetual / delivery |
-| `binance-coin-futures` / `bitget-coin-futures` | Coin-M |
+| `binance-coin-futures` / `bitget-coin-futures` / `gate-coin-futures` | Coin-M |
 
 `BINANCE_API_KEY` / `BINANCE_API_SECRET` are required for Binance spot/margin
 SAPI (`delist-schedule`, `asset/tags`). Without them, `binance-margin` still
@@ -301,12 +301,25 @@ Source names:
 
 ## Postgres
 
-Database `delist_risk` on `127.0.0.1:5432`. Restart recovery reads:
+Database `delist_risk` on `127.0.0.1:5432` stores:
 
 - `announcements` — raw fetched announcement JSON, `first_fetched_ms`,
   `last_fetched_ms`
 - `source_status` — last success / last error per source
 - `llm_status` — last LLM extract result per announcement
+- `exchange_symbol_snapshot_runs` — one daily run at `00:00 UTC`, including
+  completion state, venue count, symbol count, and failure text
+- `exchange_symbol_snapshots` — complete daily symbol rows for Binance, Bitget,
+  and Gate Spot, USDT-M, and Coin-M; stores both the exchange symbol and its
+  normalized lookup symbol
+
+The daily snapshot is transactional and date-idempotent. All nine public
+catalogs must succeed before rows are committed. On restart, the service fills
+the current UTC date only when no successful snapshot exists; the normal run at
+midnight is not overwritten.
+
+Restart recovery loads `announcements`, `source_status`, and `llm_status` back
+into memory. Daily symbol snapshots remain historical query data in Postgres.
 
 The in-memory JSON book (`data/delist_risk.json`) is a secondary cache.
 
@@ -342,9 +355,9 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_REDIS_URL` | JP Redis, default `redis://127.0.0.1:6379/0` |
 | `DELIST_SG_REDIS_URL` | SG Bybit Redis through a local SSH tunnel, `redis://127.0.0.1:16379/0` |
 | `DELIST_SG_REDIS_SSH_HOST` | SSH target for the SG tunnel, default `sg` |
-| `DELIST_ANNOUNCEMENT_INTERVAL_SECS` | default `3600` |
-| `DELIST_OFFICIAL_INTERVAL_SECS` | default `10800` |
-| `DELIST_LISTING_INTERVAL_SECS` | default `60` |
+| `DELIST_ANNOUNCEMENT_INTERVAL_SECS` | default `86400` |
+| `DELIST_OFFICIAL_INTERVAL_SECS` | default `86400` |
+| `DELIST_LISTING_INTERVAL_SECS` | default `86400`; a separate catalog fetch runs at `00:00 UTC` |
 | `DELIST_AUTO_REMOVE_REDIS` | `1` enables audited confirmed-delisting removal; default `0` |
 | `DELIST_LLM_API_URL` / `DELIST_LLM_API_KEY` / `DELIST_LLM_MODEL` | OpenAI Responses compatible |
 | `DELIST_LLM_BACKUP_*` | optional backup endpoint |

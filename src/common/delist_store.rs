@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 
 use crate::common::announcement_watch::RawAnnouncement;
+use crate::common::exchange_info::ListingSnapshotRow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceStatus {
@@ -291,6 +292,32 @@ impl DelistStore {
                     );
                     CREATE INDEX IF NOT EXISTS redis_symbol_removal_audit_detected_idx
                         ON redis_symbol_removal_audit (detected_ms DESC);
+                    CREATE TABLE IF NOT EXISTS exchange_symbol_snapshot_runs (
+                        snapshot_date DATE PRIMARY KEY,
+                        scheduled_ms BIGINT NOT NULL,
+                        captured_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        status TEXT NOT NULL,
+                        venue_count INTEGER NOT NULL DEFAULT 0,
+                        symbol_count INTEGER NOT NULL DEFAULT 0,
+                        error TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS exchange_symbol_snapshots (
+                        snapshot_date DATE NOT NULL REFERENCES exchange_symbol_snapshot_runs(snapshot_date)
+                            ON DELETE CASCADE,
+                        captured_ms BIGINT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        venue TEXT NOT NULL,
+                        market_type TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        normalized_symbol TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        listed BOOLEAN NOT NULL,
+                        pending BOOLEAN NOT NULL,
+                        PRIMARY KEY (snapshot_date, venue, normalized_symbol)
+                    );
+                    CREATE INDEX IF NOT EXISTS exchange_symbol_snapshots_lookup_idx
+                        ON exchange_symbol_snapshots (venue, normalized_symbol, snapshot_date DESC);
                     "#,
                 )
                 .await
@@ -611,6 +638,152 @@ impl DelistStore {
                 })
                 .collect();
             Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn write_symbol_snapshot(
+        &self,
+        snapshot_date: chrono::NaiveDate,
+        scheduled_ms: i64,
+        captured_ms: i64,
+        rows: &[ListingSnapshotRow],
+    ) -> Result<bool> {
+        let rows = rows.to_vec();
+        self.run(move |mut client| async move {
+            let transaction = client
+                .transaction()
+                .await
+                .context("begin exchange symbol snapshot transaction failed")?;
+            let exists = transaction
+                .query_opt(
+                    "SELECT 1 FROM exchange_symbol_snapshot_runs WHERE snapshot_date = $1 AND status = 'success'",
+                    &[&snapshot_date],
+                )
+                .await
+                .context("query exchange symbol snapshot run failed")?
+                .is_some();
+            if exists {
+                drop(transaction);
+                return Ok((client, false));
+            }
+
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO exchange_symbol_snapshot_runs (
+                        snapshot_date, scheduled_ms, captured_ms, status,
+                        venue_count, symbol_count, error
+                    ) VALUES ($1, $2, $3, 'pending', 0, 0, NULL)
+                    ON CONFLICT (snapshot_date) DO UPDATE SET
+                        scheduled_ms = EXCLUDED.scheduled_ms,
+                        captured_ms = EXCLUDED.captured_ms,
+                        completed_ms = NULL,
+                        status = 'pending',
+                        venue_count = 0,
+                        symbol_count = 0,
+                        error = NULL
+                    "#,
+                    &[&snapshot_date, &scheduled_ms, &captured_ms],
+                )
+                .await
+                .context("upsert pending exchange symbol snapshot run failed")?;
+            transaction
+                .execute(
+                    "DELETE FROM exchange_symbol_snapshots WHERE snapshot_date = $1",
+                    &[&snapshot_date],
+                )
+                .await
+                .context("clear incomplete exchange symbol snapshot failed")?;
+            for row in &rows {
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO exchange_symbol_snapshots (
+                            snapshot_date, captured_ms, exchange, venue, market_type,
+                            symbol, normalized_symbol, status, listed, pending
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        "#,
+                        &[
+                            &snapshot_date,
+                            &captured_ms,
+                            &row.exchange,
+                            &row.venue,
+                            &row.market_type,
+                            &row.symbol,
+                            &row.normalized_symbol,
+                            &row.status,
+                            &row.listed,
+                            &row.pending,
+                        ],
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "insert exchange symbol snapshot failed: venue={} symbol={}",
+                            row.venue, row.symbol
+                        )
+                    })?;
+            }
+            let completed_ms = chrono::Utc::now().timestamp_millis();
+            let venue_count = rows
+                .iter()
+                .map(|row| row.venue.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len() as i32;
+            let symbol_count = rows.len() as i32;
+            transaction
+                .execute(
+                    r#"
+                    UPDATE exchange_symbol_snapshot_runs
+                    SET completed_ms = $2, status = 'success', venue_count = $3,
+                        symbol_count = $4, error = NULL
+                    WHERE snapshot_date = $1
+                    "#,
+                    &[&snapshot_date, &completed_ms, &venue_count, &symbol_count],
+                )
+                .await
+                .context("complete exchange symbol snapshot run failed")?;
+            transaction
+                .commit()
+                .await
+                .context("commit exchange symbol snapshot failed")?;
+            Ok((client, true))
+        })
+        .await
+    }
+
+    pub async fn record_symbol_snapshot_failure(
+        &self,
+        snapshot_date: chrono::NaiveDate,
+        scheduled_ms: i64,
+        error: &str,
+    ) -> Result<()> {
+        let captured_ms = chrono::Utc::now().timestamp_millis();
+        let error = truncate_error(error);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO exchange_symbol_snapshot_runs (
+                        snapshot_date, scheduled_ms, captured_ms, completed_ms,
+                        status, venue_count, symbol_count, error
+                    ) VALUES ($1, $2, $3, $3, 'failed', 0, 0, $4)
+                    ON CONFLICT (snapshot_date) DO UPDATE SET
+                        scheduled_ms = EXCLUDED.scheduled_ms,
+                        captured_ms = EXCLUDED.captured_ms,
+                        completed_ms = EXCLUDED.completed_ms,
+                        status = 'failed',
+                        venue_count = 0,
+                        symbol_count = 0,
+                        error = EXCLUDED.error
+                    WHERE exchange_symbol_snapshot_runs.status <> 'success'
+                    "#,
+                    &[&snapshot_date, &scheduled_ms, &captured_ms, &error],
+                )
+                .await
+                .context("record exchange symbol snapshot failure failed")?;
+            Ok((client, ()))
         })
         .await
     }
