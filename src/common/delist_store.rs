@@ -66,6 +66,28 @@ pub struct RedisRemovalAudit {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RedisDumpAudit {
+    pub id: i64,
+    pub detected_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<i64>,
+    pub account_slug: String,
+    pub exchange: String,
+    pub redis_site: String,
+    pub symbol: String,
+    pub event: Value,
+    pub snapshot_ms: i64,
+    pub open_usdt: f64,
+    pub hedge_usdt: f64,
+    pub impacted_position_usdt: f64,
+    pub threshold_usdt: f64,
+    pub changes: Value,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct StatusBook {
     sources: BTreeMap<String, SourceStatus>,
@@ -292,6 +314,26 @@ impl DelistStore {
                     );
                     CREATE INDEX IF NOT EXISTS redis_symbol_removal_audit_detected_idx
                         ON redis_symbol_removal_audit (detected_ms DESC);
+                    CREATE TABLE IF NOT EXISTS redis_symbol_dump_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        detected_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        account_slug TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        redis_site TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        event JSONB NOT NULL,
+                        snapshot_ms BIGINT NOT NULL,
+                        open_usdt DOUBLE PRECISION NOT NULL,
+                        hedge_usdt DOUBLE PRECISION NOT NULL,
+                        impacted_position_usdt DOUBLE PRECISION NOT NULL,
+                        threshold_usdt DOUBLE PRECISION NOT NULL,
+                        changes JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        error TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS redis_symbol_dump_audit_detected_idx
+                        ON redis_symbol_dump_audit (detected_ms DESC);
                     CREATE TABLE IF NOT EXISTS exchange_symbol_snapshot_runs (
                         snapshot_date DATE PRIMARY KEY,
                         scheduled_ms BIGINT NOT NULL,
@@ -635,6 +677,132 @@ impl DelistStore {
                     changes: row.get(8),
                     status: row.get(9),
                     error: row.get(10),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn begin_redis_dump(
+        &self,
+        account_slug: &str,
+        exchange: &str,
+        redis_site: &str,
+        symbol: &str,
+        event: Value,
+        snapshot_ms: i64,
+        open_usdt: f64,
+        hedge_usdt: f64,
+        impacted_position_usdt: f64,
+        threshold_usdt: f64,
+        changes: Value,
+    ) -> Result<i64> {
+        let detected_ms = chrono::Utc::now().timestamp_millis();
+        let account_slug = account_slug.to_string();
+        let exchange = exchange.to_string();
+        let redis_site = redis_site.to_string();
+        let symbol = symbol.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_one(
+                    r#"
+                    INSERT INTO redis_symbol_dump_audit (
+                        detected_ms, account_slug, exchange, redis_site, symbol,
+                        event, snapshot_ms, open_usdt, hedge_usdt,
+                        impacted_position_usdt, threshold_usdt, changes, status
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                        'pending'
+                    )
+                    RETURNING id
+                    "#,
+                    &[
+                        &detected_ms,
+                        &account_slug,
+                        &exchange,
+                        &redis_site,
+                        &symbol,
+                        &event,
+                        &snapshot_ms,
+                        &open_usdt,
+                        &hedge_usdt,
+                        &impacted_position_usdt,
+                        &threshold_usdt,
+                        &changes,
+                    ],
+                )
+                .await
+                .context("insert Redis dump audit failed")?;
+            Ok((client, row.get(0)))
+        })
+        .await
+    }
+
+    pub async fn finish_redis_dump(
+        &self,
+        id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        let status = status.to_string();
+        let error = error.map(truncate_error);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    UPDATE redis_symbol_dump_audit
+                    SET completed_ms = $2, status = $3, error = $4
+                    WHERE id = $1
+                    "#,
+                    &[&id, &completed_ms, &status, &error],
+                )
+                .await
+                .context("finish Redis dump audit failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_redis_dumps(&self, limit: i64) -> Result<Vec<RedisDumpAudit>> {
+        let limit = limit.clamp(1, 1_000);
+        self.run(move |client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, detected_ms, completed_ms, account_slug, exchange,
+                           redis_site, symbol, event, snapshot_ms, open_usdt,
+                           hedge_usdt, impacted_position_usdt, threshold_usdt,
+                           changes, status, error
+                    FROM redis_symbol_dump_audit
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                    &[&limit],
+                )
+                .await
+                .context("load Redis dump audits failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| RedisDumpAudit {
+                    id: row.get(0),
+                    detected_ms: row.get(1),
+                    completed_ms: row.get(2),
+                    account_slug: row.get(3),
+                    exchange: row.get(4),
+                    redis_site: row.get(5),
+                    symbol: row.get(6),
+                    event: row.get(7),
+                    snapshot_ms: row.get(8),
+                    open_usdt: row.get(9),
+                    hedge_usdt: row.get(10),
+                    impacted_position_usdt: row.get(11),
+                    threshold_usdt: row.get(12),
+                    changes: row.get(13),
+                    status: row.get(14),
+                    error: row.get(15),
                 })
                 .collect();
             Ok((client, out))

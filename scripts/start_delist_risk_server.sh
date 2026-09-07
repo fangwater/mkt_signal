@@ -60,6 +60,10 @@ ARGS=(
   --announcement-interval-secs "${DELIST_ANNOUNCEMENT_INTERVAL_SECS:-86400}"
   --official-interval-secs "${DELIST_OFFICIAL_INTERVAL_SECS:-86400}"
   --listing-interval-secs "${DELIST_LISTING_INTERVAL_SECS:-86400}"
+  --position-risk-interval-secs "${DELIST_POSITION_RISK_INTERVAL_SECS:-60}"
+  --position-risk-threshold-usdt "${DELIST_POSITION_RISK_THRESHOLD_USDT:-50}"
+  --position-snapshot-max-age-secs "${DELIST_POSITION_SNAPSHOT_MAX_AGE_SECS:-120}"
+  --snapshot-base-url "${DELIST_SNAPSHOT_BASE_URL:-http://127.0.0.1:4191}"
   --llm-max "${DELIST_LLM_MAX:-0}"
   --web-dir "${BASE_DIR}/web/delist_risk"
 )
@@ -119,6 +123,9 @@ if [[ "${DELIST_SKIP_WS:-0}" == "1" ]]; then
 fi
 if [[ "${DELIST_AUTO_REMOVE_REDIS:-0}" == "1" ]]; then
   ARGS+=(--auto-remove-redis)
+fi
+if [[ "${DELIST_AUTO_DUMP_POSITION_RISK:-1}" == "1" ]]; then
+  ARGS+=(--auto-dump-position-risk)
 fi
 
 if [[ -z "${BINANCE_API_KEY:-}" || -z "${BINANCE_API_SECRET:-}" ]]; then

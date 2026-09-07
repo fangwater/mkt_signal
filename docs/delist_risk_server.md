@@ -21,6 +21,8 @@ http://<jp-host>:4191/delist/risk
 http://<jp-host>:4191/delist/accounts
 http://<jp-host>:4191/delist/removal-candidates
 http://<jp-host>:4191/delist/removals
+http://<jp-host>:4191/delist/dump-candidates
+http://<jp-host>:4191/delist/dump-transitions
 http://<jp-host>:4191/delist/status
 ```
 
@@ -232,6 +234,26 @@ Redis lists are updated with a compare-and-set Lua script. If a config service
 changes any involved key after it was read, the removal aborts and retries on a
 later catalog refresh. PostgreSQL unavailability also blocks the mutation.
 
+### `GET /dump-candidates`
+
+Returns funding-rate symbols that have a dated upcoming/due `disable_open` or
+`delist` event and a fresh account `/snapshot`. The affected venue leg must have
+an absolute position of at least `DELIST_POSITION_RISK_THRESHOLD_USDT` (50 USDT
+by default). This local snapshot scan runs every 60 seconds and does not poll an
+exchange announcement or instrument API.
+
+With `DELIST_AUTO_DUMP_POSITION_RISK=1`, the service atomically removes each
+candidate from both `fr_fwd_trade_symbols` and `fr_bwd_trade_symbols` and adds it
+to `fr_dump_symbols`. It does not submit or cancel orders. Missing/stale
+snapshots, PostgreSQL failure, missing Redis keys, or concurrent Redis changes
+block the update.
+
+### `GET /dump-transitions`
+
+Returns the latest automatic open-to-dump audit rows from PostgreSQL table
+`redis_symbol_dump_audit`, including the triggering event, snapshot timestamp,
+both leg notionals, applied threshold, Redis key changes, and result.
+
 ### `GET /announcements`
 
 Recently seen announcement metadata (not full bodies). Full raw payloads live
@@ -312,6 +334,9 @@ Database `delist_risk` on `127.0.0.1:5432` stores:
 - `exchange_symbol_snapshots` — complete daily symbol rows for Binance, Bitget,
   and Gate Spot, USDT-M, and Coin-M; stores both the exchange symbol and its
   normalized lookup symbol
+- `redis_symbol_dump_audit` — position-aware FR open-to-dump operations and
+  failures, with the exact event, position snapshot, threshold, and Redis key
+  changes
 
 The daily snapshot is transactional and date-idempotent. All nine public
 catalogs must succeed before rows are committed. On restart, the service fills

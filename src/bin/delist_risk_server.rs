@@ -38,6 +38,9 @@ use mkt_signal::common::bitget_announcement::{
 use mkt_signal::common::delist_accounts::{
     build_account_views, load_universes, summarize, AccountRiskResponse,
 };
+use mkt_signal::common::delist_dump::{
+    apply_redis_dump, position_dump_candidates, prepare_redis_dump, PositionDumpCandidate,
+};
 use mkt_signal::common::delist_prune::{
     apply_redis_removal, confirmed_removal_candidates, prepare_redis_removal,
     removal_universe_errors, RedisRemovalCandidate,
@@ -105,6 +108,26 @@ struct Args {
     #[arg(long)]
     auto_remove_redis: bool,
 
+    /// Move positioned FR symbols from open lists to dump before a scheduled delist.
+    #[arg(long)]
+    auto_dump_position_risk: bool,
+
+    /// Local position snapshot scan interval. This does not poll exchange delist APIs.
+    #[arg(long, default_value_t = 60)]
+    position_risk_interval_secs: u64,
+
+    /// Minimum absolute affected-leg position required for automatic dump.
+    #[arg(long, default_value_t = 50.0)]
+    position_risk_threshold_usdt: f64,
+
+    /// Reject account snapshots older than this many seconds.
+    #[arg(long, default_value_t = 120)]
+    position_snapshot_max_age_secs: u64,
+
+    /// Base URL serving /fr/<env>/snapshot.
+    #[arg(long, default_value = "http://127.0.0.1:4191")]
+    snapshot_base_url: String,
+
     /// Announcement poll interval. Default 24h.
     #[arg(long, default_value_t = 86_400)]
     announcement_interval_secs: u64,
@@ -146,6 +169,11 @@ struct AppState {
     jp_redis: String,
     sg_redis: Option<String>,
     auto_remove_redis: bool,
+    auto_dump_position_risk: bool,
+    position_risk_threshold_usdt: f64,
+    position_snapshot_max_age_ms: i64,
+    snapshot_base_url: String,
+    snapshot_client: Client,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +271,12 @@ async fn main() -> Result<()> {
         jp_redis,
         sg_redis,
         auto_remove_redis: args.auto_remove_redis,
+        auto_dump_position_risk: args.auto_dump_position_risk,
+        position_risk_threshold_usdt: args.position_risk_threshold_usdt,
+        position_snapshot_max_age_ms: (args.position_snapshot_max_age_secs as i64)
+            .saturating_mul(1_000),
+        snapshot_base_url: args.snapshot_base_url.clone(),
+        snapshot_client: public_http_client()?,
     };
 
     let refresh = state.clone();
@@ -254,6 +288,7 @@ async fn main() -> Result<()> {
         official_interval_secs: args.official_interval_secs,
         listing_interval_secs: args.listing_interval_secs,
         announcement_interval_secs: args.announcement_interval_secs,
+        position_risk_interval_secs: args.position_risk_interval_secs,
         days: args.days,
         llm_max: args.llm_max,
         force_llm_ids: args.force_llm_ids.clone(),
@@ -275,15 +310,20 @@ async fn main() -> Result<()> {
         .route("/accounts", get(query_accounts))
         .route("/removal-candidates", get(query_removal_candidates))
         .route("/removals", get(query_removals))
+        .route("/dump-candidates", get(query_dump_candidates))
+        .route("/dump-transitions", get(query_dump_transitions))
         .with_state(state);
 
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
     info!(
-        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s auto_remove_redis={}",
+        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s auto_remove_redis={} auto_dump_position_risk={} position_scan={}s threshold={}U",
         args.official_interval_secs,
         args.listing_interval_secs,
         args.announcement_interval_secs,
         args.auto_remove_redis,
+        args.auto_dump_position_risk,
+        args.position_risk_interval_secs,
+        args.position_risk_threshold_usdt,
     );
     axum::serve(
         tokio::net::TcpListener::bind(addr)
@@ -450,6 +490,51 @@ async fn query_removals(
     }
 }
 
+async fn query_dump_candidates(State(state): State<AppState>) -> Response {
+    match collect_position_dump_candidates(&state).await {
+        Ok((items, snapshot_errors)) => Json(json!({
+            "ok": true,
+            "auto_dump_position_risk": state.auto_dump_position_risk,
+            "threshold_usdt": state.position_risk_threshold_usdt,
+            "snapshot_errors": snapshot_errors,
+            "count": items.len(),
+            "items": items,
+        }))
+        .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("{err:#}")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn query_dump_transitions(
+    State(state): State<AppState>,
+    Query(params): Query<RemovalParams>,
+) -> Response {
+    let Some(store) = state.store.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ok": false, "error": "postgres unavailable"})),
+        )
+            .into_response();
+    };
+    match store.load_redis_dumps(params.limit.unwrap_or(200)).await {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "count": items.len(),
+            "items": items,
+        }))
+        .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("{err:#}")})),
+        )
+            .into_response(),
+    }
+}
+
 fn to_query(params: &RiskParams, default_days: i64) -> RiskQuery {
     RiskQuery {
         venue: params.venue.clone(),
@@ -467,6 +552,7 @@ struct RefreshArgs {
     official_interval_secs: u64,
     listing_interval_secs: u64,
     announcement_interval_secs: u64,
+    position_risk_interval_secs: u64,
     days: i64,
     llm_max: usize,
     force_llm_ids: Option<String>,
@@ -531,6 +617,9 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
             persist(&backfill_state).await;
         });
     }
+    if state.auto_dump_position_risk {
+        run_position_dump_scan(&state).await;
+    }
 
     let mut official = time::interval(Duration::from_secs(args.official_interval_secs.max(60)));
     official.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -542,6 +631,11 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
         time::interval(Duration::from_secs(args.announcement_interval_secs.max(60)));
     announcements.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     announcements.tick().await;
+    let mut position_risk = time::interval(Duration::from_secs(
+        args.position_risk_interval_secs.max(10),
+    ));
+    position_risk.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    position_risk.tick().await;
     let daily_snapshot = time::sleep(duration_until_next_utc_midnight(Utc::now()));
     tokio::pin!(daily_snapshot);
 
@@ -569,6 +663,9 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                     &llm_budget,
                 ).await;
                 persist(&state).await;
+            }
+            _ = position_risk.tick(), if state.auto_dump_position_risk => {
+                run_position_dump_scan(&state).await;
             }
             result = gate_ws_session(
                 &state,
@@ -780,6 +877,129 @@ async fn record_symbol_snapshot_failure(
         .await
     {
         warn!("record exchange symbol snapshot failure failed: {store_err:#}");
+    }
+}
+
+async fn collect_position_dump_candidates(
+    state: &AppState,
+) -> Result<(Vec<PositionDumpCandidate>, Vec<String>)> {
+    let book = state.book.read().await;
+    let mut risk = book.query(&RiskQuery {
+        venue: None,
+        exchange: None,
+        days: Some(state.default_days),
+        include_past: false,
+    });
+    let listings = state.listings.read().await.clone();
+    listings.decorate(&mut risk);
+    drop(book);
+    Ok(position_dump_candidates(
+        &state.snapshot_client,
+        &state.snapshot_base_url,
+        &risk,
+        state.position_risk_threshold_usdt,
+        state.position_snapshot_max_age_ms,
+    )
+    .await)
+}
+
+async fn run_position_dump_scan(state: &AppState) {
+    let Some(store) = state.store.as_ref() else {
+        mark_err(
+            state,
+            "redis_delist_dump",
+            "mutation",
+            "postgres is required before automatic FR dump",
+        )
+        .await;
+        return;
+    };
+    let (candidates, mut errors) = match collect_position_dump_candidates(state).await {
+        Ok(result) => result,
+        Err(err) => {
+            mark_err(state, "redis_delist_dump", "mutation", &format!("{err:#}")).await;
+            return;
+        }
+    };
+    let mut changed = 0usize;
+    for candidate in &candidates {
+        match dump_position_candidate(state, store, candidate).await {
+            Ok(did_change) => changed += usize::from(did_change),
+            Err(err) => errors.push(format!(
+                "account={} symbol={}: {err:#}",
+                candidate.account_slug, candidate.symbol
+            )),
+        }
+    }
+    if errors.is_empty() {
+        mark_ok(state, "redis_delist_dump", "mutation").await;
+        info!(
+            "FR positioned-delist scan completed candidates={} changes={changed}",
+            candidates.len()
+        );
+    } else {
+        let message = errors.join("; ");
+        warn!("FR positioned-delist scan degraded: {message}");
+        mark_err(state, "redis_delist_dump", "mutation", &message).await;
+    }
+}
+
+async fn dump_position_candidate(
+    state: &AppState,
+    store: &DelistStore,
+    candidate: &PositionDumpCandidate,
+) -> Result<bool> {
+    let redis_url = match candidate.redis_site.as_str() {
+        "jp" => state.jp_redis.as_str(),
+        "sg" => state
+            .sg_redis
+            .as_deref()
+            .context("SG Redis is not configured")?,
+        site => anyhow::bail!("unsupported Redis site {site}"),
+    };
+    let Some(plan) = prepare_redis_dump(redis_url, candidate).await? else {
+        return Ok(false);
+    };
+    let audit_id = store
+        .begin_redis_dump(
+            &candidate.account_slug,
+            &candidate.exchange,
+            &candidate.redis_site,
+            &candidate.symbol,
+            serde_json::to_value(&candidate.event)?,
+            candidate.snapshot_ms,
+            candidate.open_usdt,
+            candidate.hedge_usdt,
+            candidate.impacted_position_usdt,
+            candidate.threshold_usdt,
+            serde_json::to_value(&plan.changes)?,
+        )
+        .await?;
+    info!(
+        "Redis delist dump pending audit_id={} account={} symbol={} position={}U",
+        audit_id, candidate.account_slug, candidate.symbol, candidate.impacted_position_usdt
+    );
+    match apply_redis_dump(redis_url, &plan).await {
+        Ok(()) => {
+            store.finish_redis_dump(audit_id, "success", None).await?;
+            info!(
+                "Redis delist dump success audit_id={} account={} symbol={} changes={}",
+                audit_id,
+                candidate.account_slug,
+                candidate.symbol,
+                serde_json::to_string(&plan.changes)?
+            );
+            Ok(true)
+        }
+        Err(err) => {
+            if let Err(audit_err) = store
+                .finish_redis_dump(audit_id, "failed", Some(&format!("{err:#}")))
+                .await
+            {
+                warn!("finish failed dump audit id={audit_id}: {audit_err:#}");
+            }
+            Err(err)
+        }
     }
 }
 
