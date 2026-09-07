@@ -1,6 +1,7 @@
 //! Position-aware FR delist candidates and atomic Redis open-to-dump updates.
 
 use anyhow::{bail, Context, Result};
+use futures_util::future::join_all;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -76,29 +77,38 @@ pub async fn position_dump_candidates(
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
 
-    for spec in mounted_accounts().iter().filter(|spec| {
-        spec.kind == "funding_rate" && matches!(spec.exchange, "binance" | "bitget" | "gate")
-    }) {
-        let Some(bucket) = risk.exchanges.get(spec.exchange) else {
-            continue;
-        };
-        let (_keys, venues) = redis_keys(spec);
-        let actionable_events = bucket.items.iter().filter(|event| {
-            venues.iter().any(|venue| venue == &event.venue)
-                && matches!(event.action.as_str(), "delist" | "disable_open")
-                && matches!(event.status.as_str(), "upcoming" | "due")
-                && !event.utc.is_empty()
+    let scans = mounted_accounts()
+        .iter()
+        .filter(|spec| {
+            spec.kind == "funding_rate" && matches!(spec.exchange, "binance" | "bitget" | "gate")
+        })
+        .filter_map(|spec| {
+            let bucket = risk.exchanges.get(spec.exchange)?;
+            let (_keys, venues) = redis_keys(spec);
+            let events: Vec<_> = bucket
+                .items
+                .iter()
+                .filter(|event| {
+                    venues.iter().any(|venue| venue == &event.venue)
+                        && matches!(event.action.as_str(), "delist" | "disable_open")
+                        && matches!(event.status.as_str(), "upcoming" | "due")
+                        && !event.utc.is_empty()
+                })
+                .collect();
+            (!events.is_empty()).then_some((spec, events))
         });
-        let actionable_events: Vec<_> = actionable_events.collect();
-        if actionable_events.is_empty() {
-            continue;
-        }
+    let snapshots = join_all(scans.map(|(spec, events)| async move {
         let url = format!(
             "{}/fr/{}/snapshot",
             snapshot_base_url.trim_end_matches('/'),
             spec.slug
         );
-        let snapshot = match fetch_snapshot(client, &url).await {
+        (spec, events, fetch_snapshot(client, &url).await)
+    }))
+    .await;
+
+    for (spec, actionable_events, snapshot) in snapshots {
+        let snapshot = match snapshot {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 errors.push(format!("{}: {err:#}", spec.slug));
@@ -110,9 +120,9 @@ pub async fn position_dump_candidates(
             continue;
         };
         let age_ms = now_ms.saturating_sub(snapshot_ms);
-        if age_ms < 0 || age_ms > max_snapshot_age_ms {
+        if age_ms.unsigned_abs() > max_snapshot_age_ms.max(0) as u64 {
             errors.push(format!(
-                "{}: stale position snapshot age_ms={age_ms}",
+                "{}: stale position snapshot clock_offset_ms={age_ms}",
                 spec.slug
             ));
             continue;
@@ -395,11 +405,12 @@ mod tests {
     #[tokio::test]
     async fn finds_positioned_delist_without_a_redis_universe() {
         let now_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot_ms = now_ms + 30_000;
         let app = Router::new().fallback(get(move || async move {
             Json(serde_json::json!({
                 "entries": [{
                     "channel": "pre_trade_exposure",
-                    "entry": {"ts_ms": now_ms, "rows": [{
+                    "entry": {"ts_ms": snapshot_ms, "rows": [{
                         "asset": "TSLAX", "open_usdt": 1227.0, "hedge_usdt": -1232.0
                     }]}
                 }]
