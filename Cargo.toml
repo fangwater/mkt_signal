@@ -4,6 +4,8 @@ members = [
     "crates/account_common",
     "crates/cme_tas_replay",
     "crates/cn_futures_l2",
+    "crates/usstock_lseg_mbp_replay",
+    "crates/usstock_lseg_raw_replay",
     "crates/usstock_replay",
     "crates/account_monitor_common",
     "crates/depth_pub",

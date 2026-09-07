@@ -188,6 +188,22 @@ workflow.
 
 The current table is an undated 88-product snapshot. Replay configs must retain a separately validated bounded date range; do not infer full historical applicability from the table. Snapshot-construction provenance lives in `../preprocess/database/domestic_future_product_multipliers.sql` and is not a runtime source.
 
+## LSEG US Stock Replay
+
+US-stock production replay code is maintained in this repository. Keep the
+three source products separate because their source contracts and persisted
+codecs differ:
+
+- `crates/usstock_replay`: TAS/normalised source-row replay and downstream tools.
+- `crates/usstock_lseg_mbp_replay`: Market By Price raw replay, template audit,
+  Python correctness baseline, and MBP/normalised comparison tools.
+- `crates/usstock_lseg_raw_replay`: general RAW zstd staging, typed event replay,
+  verifier, schema printer, Python correctness baselines, and audit fixtures.
+
+The data-contract and audit-result documentation remains in
+`../preprocess/data_format/lseg/`. Do not add replay implementations back under
+`preprocess`.
+
 ## IPC And Config
 
 Processes communicate primarily through iceoryx2 shared-memory IPC, with some Redis-backed configuration/state and RocksDB persistence.

@@ -1,0 +1,6 @@
+period = "2021-07-01_2022-07-01"
+staging_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_raw_zstd_shards/shanghai_evolution_equities_raw_ric_list_0_raw_2021-07-01_2022-07-01"
+rocksdb_dir = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_raw_rocksdb/2021-07-01_2022-07-01"
+progress_every = 1000000
+keep_temporary_column_families = false
+workers = 16
