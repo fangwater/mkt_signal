@@ -14,8 +14,8 @@ Usage: scripts/publish-jp-meta-fr.sh [options]
 
 Options:
   --host <ssh-host>    SSH config host (default: jp-meta-elvpn)
-  --env-name <name>   Binance/Gate/Bitget FR environment (default: binance_fr_arb03)
-  --exchange <name>   Exchange (binance, gate, or bitget; inferred from env-name)
+  --env-name <name>   Binance/Gate/Bitget/OKX FR environment (default: binance_fr_arb03)
+  --exchange <name>   Exchange (binance, gate, bitget, or okex; inferred from env-name)
   --check-only        Only verify that publish target processes are stopped
   --skip-build        Reuse binaries built by update-jp-meta-fr.sh
   -h, --help          Show this help
@@ -61,8 +61,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "$ENV_NAME" =~ ^(binance|gate|bitget)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
-  echo "[ERROR] env-name must match binance_fr_<suffix>, gate_fr_<suffix>, or bitget_fr_<suffix>: $ENV_NAME" >&2
+if [[ ! "$ENV_NAME" =~ ^(binance|gate|bitget|okex)_fr_[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "[ERROR] env-name must match binance_fr_<suffix>, gate_fr_<suffix>, bitget_fr_<suffix>, or okex_fr_<suffix>: $ENV_NAME" >&2
   exit 2
 fi
 INFERRED_EXCHANGE="${BASH_REMATCH[1]}"
@@ -71,9 +71,9 @@ if [[ -z "$EXCHANGE" ]]; then
   EXCHANGE="$INFERRED_EXCHANGE"
 fi
 case "$EXCHANGE" in
-  binance|gate|bitget) ;;
+  binance|gate|bitget|okex) ;;
   *)
-    echo "[ERROR] exchange must be binance, gate, or bitget: $EXCHANGE" >&2
+    echo "[ERROR] exchange must be binance, gate, bitget, or okex: $EXCHANGE" >&2
     exit 2
     ;;
 esac
