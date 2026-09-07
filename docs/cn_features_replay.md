@@ -83,6 +83,14 @@ missing. It is not converted to zero and does not invalidate unrelated sides or
 levels. Infinite values, finite non-positive prices, finite negative amounts,
 and a crossed finite best book are input errors.
 
+`cn_features_1min_hfq` is the explicit exception for additive-HFQ research
+prices, matching the CME CL/WTI convention. Its specialized constructor and
+state entry point allow finite zero or negative adjusted prices while retaining
+the same five-level shape, non-negative amount, finite-value, and crossed-book
+checks. The 632 formulas are unchanged; operations that are mathematically
+undefined for such inputs remain `NULL`. Raw replay and live input continue to
+reject finite non-positive quote prices.
+
 After the whole-book presence check passes, missing values propagate according
 to each formula's actual dependencies:
 

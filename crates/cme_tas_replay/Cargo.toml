@@ -32,6 +32,10 @@ name = "cme_tas_export_settlements"
 path = "src/bin/cme_tas_export_settlements.rs"
 
 [[bin]]
+name = "cme_tas_export_status"
+path = "src/bin/cme_tas_export_status.rs"
+
+[[bin]]
 name = "cme_ll2_replay"
 path = "src/bin/cme_ll2_replay.rs"
 

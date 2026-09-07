@@ -76,6 +76,10 @@ fn main() -> Result<()> {
     if args.workers == 0 {
         bail!("--workers must be positive");
     }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.workers)
+        .build_global()
+        .context("configure cn_features_1min_hfq worker pool")?;
     let start = parse_day(&args.start)?;
     let end = parse_day(&args.end)?;
     if start > end {
@@ -228,7 +232,7 @@ fn replay_product(
             || prev_trading_day.is_some_and(|previous| previous != trading_day);
         prev_trading_day = Some(trading_day);
         let values = take_shifted_values(&mut pending_values, segment_break, factor_names.len());
-        state.push(FuturesFusionInput {
+        state.push_additive_hfq(FuturesFusionInput {
             ts_ms: ts * 1000,
             symbol: product.to_string(),
             trading_day,
@@ -317,7 +321,7 @@ fn read_day(path: &Path, product: &str) -> Result<(Vec<InputRow>, u64)> {
             .with_context(|| format!("null ts row {i} {}", path.display()))?;
         let bid0 = bid_p[0].get(i).unwrap_or(f64::NAN);
         let ask0 = ask_p[0].get(i).unwrap_or(f64::NAN);
-        if !(bid0.is_finite() && bid0 > 0.0 && ask0.is_finite() && ask0 >= bid0) {
+        if !(bid0.is_finite() && ask0.is_finite() && ask0 >= bid0) {
             skipped += 1;
             continue;
         }
@@ -335,8 +339,12 @@ fn read_day(path: &Path, product: &str) -> Result<(Vec<InputRow>, u64)> {
             ask_prices[lvl] = ask_p[lvl].get(i).unwrap_or(f64::NAN);
             ask_amounts[lvl] = ask_v[lvl].get(i).unwrap_or(f64::NAN);
         }
-        let depth =
-            FuturesDepth5::from_slices(&bid_prices, &bid_amounts, &ask_prices, &ask_amounts)?;
+        let depth = FuturesDepth5::from_additive_hfq_slices(
+            &bid_prices,
+            &bid_amounts,
+            &ask_prices,
+            &ask_amounts,
+        )?;
         let trading_day = trad_day_u32(ts_sec);
         out.push(InputRow {
             ts: ts_sec,
