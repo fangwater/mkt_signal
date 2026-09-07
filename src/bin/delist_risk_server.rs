@@ -12,7 +12,8 @@
 
 use anyhow::{Context, Result};
 use axum::extract::{Query, State};
-use axum::response::{Html, IntoResponse};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use clap::Parser;
@@ -34,6 +35,10 @@ use mkt_signal::common::bitget_announcement::{
 };
 use mkt_signal::common::delist_accounts::{
     build_account_views, load_universes, summarize, AccountRiskResponse,
+};
+use mkt_signal::common::delist_prune::{
+    apply_redis_removal, confirmed_removal_candidates, prepare_redis_removal,
+    removal_universe_errors, RedisRemovalCandidate,
 };
 use mkt_signal::common::delist_risk::{
     announcement_from_raw, events_from_bitget_offtime, events_from_delist_schedule,
@@ -90,6 +95,14 @@ struct Args {
     #[arg(long, default_value_t = 10_800)]
     official_interval_secs: u64,
 
+    /// Complete public product-catalog interval. Default 60s.
+    #[arg(long, default_value_t = 60)]
+    listing_interval_secs: u64,
+
+    /// Remove symbols from Redis after every account venue confirms removal.
+    #[arg(long)]
+    auto_remove_redis: bool,
+
     /// Announcement poll interval. Default 1h.
     #[arg(long, default_value_t = 3_600)]
     announcement_interval_secs: u64,
@@ -130,6 +143,7 @@ struct AppState {
     default_days: i64,
     jp_redis: String,
     sg_redis: Option<String>,
+    auto_remove_redis: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,6 +240,7 @@ async fn main() -> Result<()> {
         default_days: args.days,
         jp_redis,
         sg_redis,
+        auto_remove_redis: args.auto_remove_redis,
     };
 
     let refresh = state.clone();
@@ -235,6 +250,7 @@ async fn main() -> Result<()> {
         skip_official: args.skip_official,
         skip_ws: args.skip_ws,
         official_interval_secs: args.official_interval_secs,
+        listing_interval_secs: args.listing_interval_secs,
         announcement_interval_secs: args.announcement_interval_secs,
         days: args.days,
         llm_max: args.llm_max,
@@ -255,12 +271,17 @@ async fn main() -> Result<()> {
         .route("/announcements", get(query_announcements))
         .route("/status", get(query_status))
         .route("/accounts", get(query_accounts))
+        .route("/removal-candidates", get(query_removal_candidates))
+        .route("/removals", get(query_removals))
         .with_state(state);
 
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
     info!(
-        "delist_risk_server listening at http://{addr} official={}s announcements={}s",
-        args.official_interval_secs, args.announcement_interval_secs
+        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s auto_remove_redis={}",
+        args.official_interval_secs,
+        args.listing_interval_secs,
+        args.announcement_interval_secs,
+        args.auto_remove_redis,
     );
     axum::serve(
         tokio::net::TcpListener::bind(addr)
@@ -346,7 +367,7 @@ async fn query_accounts(
 ) -> impl IntoResponse {
     let book = state.book.read().await;
     let mut risk = book.query(&to_query(&params, state.default_days));
-    let listings = state.listings.read().await;
+    let listings = state.listings.read().await.clone();
     listings.decorate(&mut risk);
     drop(book);
     let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
@@ -375,6 +396,58 @@ async fn query_accounts(
     })
 }
 
+async fn query_removal_candidates(State(state): State<AppState>) -> impl IntoResponse {
+    let listings = state.listings.read().await.clone();
+    let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
+    let redis_errors = removal_universe_errors(&universes);
+    let candidates = confirmed_removal_candidates(&listings, &universes);
+    let catalog_complete = state
+        .status
+        .read()
+        .await
+        .source("exchange_info")
+        .is_some_and(|status| status.ok);
+    Json(json!({
+        "ok": true,
+        "auto_remove_redis": state.auto_remove_redis,
+        "catalog_complete": catalog_complete,
+        "redis_errors": redis_errors,
+        "count": candidates.len(),
+        "items": candidates,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct RemovalParams {
+    limit: Option<i64>,
+}
+
+async fn query_removals(
+    State(state): State<AppState>,
+    Query(params): Query<RemovalParams>,
+) -> Response {
+    let Some(store) = state.store.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ok": false, "error": "postgres unavailable"})),
+        )
+            .into_response();
+    };
+    match store.load_redis_removals(params.limit.unwrap_or(200)).await {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "count": items.len(),
+            "items": items,
+        }))
+        .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("{err:#}")})),
+        )
+            .into_response(),
+    }
+}
+
 fn to_query(params: &RiskParams, default_days: i64) -> RiskQuery {
     RiskQuery {
         venue: params.venue.clone(),
@@ -390,6 +463,7 @@ struct RefreshArgs {
     skip_official: bool,
     skip_ws: bool,
     official_interval_secs: u64,
+    listing_interval_secs: u64,
     announcement_interval_secs: u64,
     days: i64,
     llm_max: usize,
@@ -417,6 +491,7 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let llm_budget = Arc::new(Mutex::new(LlmBudget::new(args.llm_max)));
 
     if !args.skip_official {
+        refresh_listings(&state, &public).await;
         refresh_official(&state, &public, &binance, args.days).await;
         persist(&state).await;
     }
@@ -454,6 +529,9 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let mut official = time::interval(Duration::from_secs(args.official_interval_secs.max(60)));
     official.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     official.tick().await;
+    let mut listings = time::interval(Duration::from_secs(args.listing_interval_secs.max(60)));
+    listings.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    listings.tick().await;
     let mut announcements =
         time::interval(Duration::from_secs(args.announcement_interval_secs.max(60)));
     announcements.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -464,6 +542,9 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
             _ = official.tick(), if !args.skip_official => {
                 refresh_official(&state, &public, &binance, args.days).await;
                 persist(&state).await;
+            }
+            _ = listings.tick(), if !args.skip_official => {
+                refresh_listings(&state, &public).await;
             }
             _ = announcements.tick(), if !args.skip_announcements => {
                 refresh_announcements(
@@ -541,7 +622,6 @@ async fn refresh_official(state: &AppState, public: &Client, binance: &Client, d
 
     ingest_binance_official(state, binance).await;
     ingest_schedule_venues(state, days).await;
-    refresh_listings(state, public).await;
 }
 
 async fn refresh_listings(state: &AppState, public: &Client) {
@@ -550,6 +630,18 @@ async fn refresh_listings(state: &AppState, public: &Client) {
     if errors.is_empty() {
         mark_ok(state, "exchange_info", "fetch").await;
         info!("official exchange_info refreshed");
+        if state.auto_remove_redis {
+            match prune_confirmed_delists(state).await {
+                Ok(count) => {
+                    mark_ok(state, "redis_delist_prune", "mutation").await;
+                    info!("Redis confirmed-delist prune completed removals={count}");
+                }
+                Err(err) => {
+                    warn!("Redis confirmed-delist prune failed: {err:#}");
+                    mark_err(state, "redis_delist_prune", "mutation", &format!("{err:#}")).await;
+                }
+            }
+        }
         return;
     }
     for (source, err) in &errors {
@@ -566,6 +658,95 @@ async fn refresh_listings(state: &AppState, public: &Client) {
             .join("; "),
     )
     .await;
+}
+
+async fn prune_confirmed_delists(state: &AppState) -> Result<usize> {
+    let store = state
+        .store
+        .as_ref()
+        .context("postgres is required before Redis auto-removal")?;
+    let listings = state.listings.read().await.clone();
+    let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
+    let universe_errors = removal_universe_errors(&universes);
+    if !universe_errors.is_empty() {
+        anyhow::bail!("Redis universe load failed: {}", universe_errors.join("; "));
+    }
+    let candidates = confirmed_removal_candidates(&listings, &universes);
+    let mut removed = 0usize;
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        match prune_candidate(state, store, &candidate).await {
+            Ok(changed) => removed += usize::from(changed),
+            Err(err) => errors.push(format!(
+                "account={} symbol={}: {err:#}",
+                candidate.account_slug, candidate.symbol
+            )),
+        }
+    }
+    if errors.is_empty() {
+        Ok(removed)
+    } else {
+        anyhow::bail!(errors.join("; "))
+    }
+}
+
+async fn prune_candidate(
+    state: &AppState,
+    store: &DelistStore,
+    candidate: &RedisRemovalCandidate,
+) -> Result<bool> {
+    let redis_url = match candidate.redis_site.as_str() {
+        "jp" => state.jp_redis.as_str(),
+        "sg" => state
+            .sg_redis
+            .as_deref()
+            .context("SG Redis is not configured")?,
+        site => anyhow::bail!("unsupported Redis site {site}"),
+    };
+    let Some(plan) = prepare_redis_removal(redis_url, candidate).await? else {
+        return Ok(false);
+    };
+    let audit_id = store
+        .begin_redis_removal(
+            &candidate.account_slug,
+            &candidate.exchange,
+            &candidate.redis_site,
+            &candidate.symbol,
+            serde_json::to_value(&candidate.venues)?,
+            serde_json::to_value(&plan.changes)?,
+        )
+        .await?;
+    info!(
+        "Redis delist removal pending audit_id={} account={} symbol={} keys={}",
+        audit_id,
+        candidate.account_slug,
+        candidate.symbol,
+        plan.changes.len()
+    );
+    match apply_redis_removal(redis_url, &plan).await {
+        Ok(()) => {
+            store
+                .finish_redis_removal(audit_id, "success", None)
+                .await?;
+            info!(
+                "Redis delist removal success audit_id={} account={} symbol={} changes={}",
+                audit_id,
+                candidate.account_slug,
+                candidate.symbol,
+                serde_json::to_string(&plan.changes)?
+            );
+            Ok(true)
+        }
+        Err(err) => {
+            if let Err(audit_err) = store
+                .finish_redis_removal(audit_id, "failed", Some(&format!("{err:#}")))
+                .await
+            {
+                warn!("finish failed removal audit id={audit_id}: {audit_err:#}");
+            }
+            Err(err)
+        }
+    }
 }
 
 async fn ingest_binance_official(state: &AppState, client: &Client) {

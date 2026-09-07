@@ -48,6 +48,23 @@ pub struct StatusSnapshot {
     pub llm_failures: Vec<LlmRunStatus>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RedisRemovalAudit {
+    pub id: i64,
+    pub detected_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_ms: Option<i64>,
+    pub account_slug: String,
+    pub exchange: String,
+    pub redis_site: String,
+    pub symbol: String,
+    pub venues: Value,
+    pub changes: Value,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct StatusBook {
     sources: BTreeMap<String, SourceStatus>,
@@ -259,6 +276,21 @@ impl DelistStore {
                         last_error TEXT,
                         PRIMARY KEY (exchange, announcement_id)
                     );
+                    CREATE TABLE IF NOT EXISTS redis_symbol_removal_audit (
+                        id BIGSERIAL PRIMARY KEY,
+                        detected_ms BIGINT NOT NULL,
+                        completed_ms BIGINT,
+                        account_slug TEXT NOT NULL,
+                        exchange TEXT NOT NULL,
+                        redis_site TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        venues JSONB NOT NULL,
+                        changes JSONB NOT NULL,
+                        status TEXT NOT NULL,
+                        error TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS redis_symbol_removal_audit_detected_idx
+                        ON redis_symbol_removal_audit (detected_ms DESC);
                     "#,
                 )
                 .await
@@ -471,6 +503,111 @@ impl DelistStore {
                     last_attempt_ms: row.get(4),
                     last_success_ms: row.get(5),
                     last_error: row.get(6),
+                })
+                .collect();
+            Ok((client, out))
+        })
+        .await
+    }
+
+    pub async fn begin_redis_removal(
+        &self,
+        account_slug: &str,
+        exchange: &str,
+        redis_site: &str,
+        symbol: &str,
+        venues: Value,
+        changes: Value,
+    ) -> Result<i64> {
+        let detected_ms = chrono::Utc::now().timestamp_millis();
+        let account_slug = account_slug.to_string();
+        let exchange = exchange.to_string();
+        let redis_site = redis_site.to_string();
+        let symbol = symbol.to_string();
+        self.run(move |client| async move {
+            let row = client
+                .query_one(
+                    r#"
+                    INSERT INTO redis_symbol_removal_audit (
+                        detected_ms, account_slug, exchange, redis_site, symbol,
+                        venues, changes, status
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+                    RETURNING id
+                    "#,
+                    &[
+                        &detected_ms,
+                        &account_slug,
+                        &exchange,
+                        &redis_site,
+                        &symbol,
+                        &venues,
+                        &changes,
+                    ],
+                )
+                .await
+                .context("insert Redis removal audit failed")?;
+            Ok((client, row.get(0)))
+        })
+        .await
+    }
+
+    pub async fn finish_redis_removal(
+        &self,
+        id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let completed_ms = chrono::Utc::now().timestamp_millis();
+        let status = status.to_string();
+        let error = error.map(truncate_error);
+        self.run(move |client| async move {
+            client
+                .execute(
+                    r#"
+                    UPDATE redis_symbol_removal_audit
+                    SET completed_ms = $2, status = $3, error = $4
+                    WHERE id = $1
+                    "#,
+                    &[&id, &completed_ms, &status, &error],
+                )
+                .await
+                .context("finish Redis removal audit failed")?;
+            Ok((client, ()))
+        })
+        .await
+    }
+
+    pub async fn load_redis_removals(&self, limit: i64) -> Result<Vec<RedisRemovalAudit>> {
+        let limit = limit.clamp(1, 1_000);
+        self.run(move |client| async move {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, detected_ms, completed_ms, account_slug, exchange,
+                           redis_site, symbol, venues, changes, status, error
+                    FROM redis_symbol_removal_audit
+                    ORDER BY id DESC
+                    LIMIT $1
+                    "#,
+                    &[&limit],
+                )
+                .await
+                .context("load Redis removal audits failed")?;
+            let out = rows
+                .into_iter()
+                .map(|row| RedisRemovalAudit {
+                    id: row.get(0),
+                    detected_ms: row.get(1),
+                    completed_ms: row.get(2),
+                    account_slug: row.get(3),
+                    exchange: row.get(4),
+                    redis_site: row.get(5),
+                    symbol: row.get(6),
+                    venues: row.get(7),
+                    changes: row.get(8),
+                    status: row.get(9),
+                    error: row.get(10),
                 })
                 .collect();
             Ok((client, out))

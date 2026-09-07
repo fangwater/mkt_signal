@@ -19,6 +19,8 @@ http://<jp-host>:4191/delist/healthz
 http://<jp-host>:4191/delist/venues
 http://<jp-host>:4191/delist/risk
 http://<jp-host>:4191/delist/accounts
+http://<jp-host>:4191/delist/removal-candidates
+http://<jp-host>:4191/delist/removals
 http://<jp-host>:4191/delist/status
 ```
 
@@ -37,6 +39,7 @@ No API token. Do not put secrets in query strings.
 | Announcements (Binance CMS delisting catalog, Bitget `symbol_delisting`) | **1h** | List discovery plus article detail; raw JSON stored in Postgres |
 | Gate announcement WS | persistent | Incremental; reconnects on drop |
 | Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **3h** | Replaces that source in the book |
+| Complete public product catalogs | **60s** | Drives current listing state and confirmed Redis removal |
 
 LLM extract runs only on **new** announcements. LLM / fetch failures never
 block the other source. Reasons are queryable at `/status`.
@@ -209,6 +212,25 @@ the service has no matching delist announcement.
 
 The HTML board at `/delist/` uses this endpoint. Style matches crypto NAV manager.
 
+### `GET /removal-candidates`
+
+Returns the Redis symbols eligible for automatic removal. A symbol is eligible
+only when every venue used by that account is `delisted` in one complete,
+successful Binance/Bitget/Gate catalog refresh. FR and intra accounts therefore
+require both margin and futures to be gone. Market-making accounts require their
+futures venue to be gone. CTA maps are excluded.
+
+### `GET /removals`
+
+Returns the latest automatic Redis removal audit rows from local Postgres. The
+service inserts a `pending` row before changing Redis and updates it to `success`
+or `failed` afterward. `changes` records Redis key names and item counts; process
+logs also include the audit ID, account, symbol, and result.
+
+Redis lists are updated with a compare-and-set Lua script. If a config service
+changes any involved key after it was read, the removal aborts and retries on a
+later catalog refresh. PostgreSQL unavailability also blocks the mutation.
+
 ### `GET /announcements`
 
 Recently seen announcement metadata (not full bodies). Full raw payloads live
@@ -321,6 +343,8 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_SG_REDIS_SSH_HOST` | SSH target for the SG tunnel, default `sg` |
 | `DELIST_ANNOUNCEMENT_INTERVAL_SECS` | default `3600` |
 | `DELIST_OFFICIAL_INTERVAL_SECS` | default `10800` |
+| `DELIST_LISTING_INTERVAL_SECS` | default `60` |
+| `DELIST_AUTO_REMOVE_REDIS` | `1` enables audited confirmed-delisting removal; default `0` |
 | `DELIST_LLM_API_URL` / `DELIST_LLM_API_KEY` / `DELIST_LLM_MODEL` | OpenAI Responses compatible |
 | `DELIST_LLM_BACKUP_*` | optional backup endpoint |
 | `BINANCE_API_KEY` / `BINANCE_API_SECRET` | optional SAPI snapshots |

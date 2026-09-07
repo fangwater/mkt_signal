@@ -59,6 +59,7 @@ ARGS=(
   --days "${DELIST_DAYS:-30}"
   --announcement-interval-secs "${DELIST_ANNOUNCEMENT_INTERVAL_SECS:-3600}"
   --official-interval-secs "${DELIST_OFFICIAL_INTERVAL_SECS:-10800}"
+  --listing-interval-secs "${DELIST_LISTING_INTERVAL_SECS:-60}"
   --llm-max "${DELIST_LLM_MAX:-0}"
   --web-dir "${BASE_DIR}/web/delist_risk"
 )
@@ -115,6 +116,9 @@ if [[ "${DELIST_SKIP_OFFICIAL:-0}" == "1" ]]; then
 fi
 if [[ "${DELIST_SKIP_WS:-0}" == "1" ]]; then
   ARGS+=(--skip-ws)
+fi
+if [[ "${DELIST_AUTO_REMOVE_REDIS:-0}" == "1" ]]; then
+  ARGS+=(--auto-remove-redis)
 fi
 
 if [[ -z "${BINANCE_API_KEY:-}" || -z "${BINANCE_API_SECRET:-}" ]]; then

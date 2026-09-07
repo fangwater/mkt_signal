@@ -5,6 +5,7 @@ pub mod binance_account_mode;
 pub mod binance_announcement;
 pub mod bitget_announcement;
 pub mod delist_accounts;
+pub mod delist_prune;
 pub mod delist_risk;
 pub mod delist_schedule;
 pub mod delist_store;

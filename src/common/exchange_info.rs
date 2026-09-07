@@ -76,6 +76,11 @@ impl ListingIndex {
             .or_default()
             .insert(key, row);
     }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test(&mut self, venue: &str, symbol: &str) {
+        self.insert(venue, symbol, row("TRADING", false));
+    }
 }
 
 fn lookup_keys(symbols: &[String], assets: &[String]) -> Vec<String> {
@@ -161,7 +166,7 @@ async fn fetch_binance_spot(client: &Client, index: &mut ListingIndex, now_ms: i
         "Binance spot exchangeInfo",
     )
     .await?;
-    ingest_binance_symbols(&body, "binance-margin", index, now_ms);
+    ingest_binance_symbols(&body, "binance-margin", index, now_ms)?;
     Ok(())
 }
 
@@ -176,14 +181,24 @@ async fn fetch_binance_futures(
         "Binance futures exchangeInfo",
     )
     .await?;
-    ingest_binance_symbols(&body, "binance-futures", index, now_ms);
+    ingest_binance_symbols(&body, "binance-futures", index, now_ms)?;
     Ok(())
 }
 
-fn ingest_binance_symbols(body: &Value, venue: &str, index: &mut ListingIndex, now_ms: i64) {
-    let Some(symbols) = body.get("symbols").and_then(Value::as_array) else {
-        return;
-    };
+fn ingest_binance_symbols(
+    body: &Value,
+    venue: &str,
+    index: &mut ListingIndex,
+    now_ms: i64,
+) -> Result<()> {
+    let symbols = body
+        .get("symbols")
+        .and_then(Value::as_array)
+        .with_context(|| format!("{venue} exchangeInfo is missing symbols"))?;
+    if symbols.is_empty() {
+        bail!("{venue} exchangeInfo returned an empty symbol catalog");
+    }
+    let mut inserted = 0usize;
     for item in symbols {
         let symbol = item.get("symbol").and_then(Value::as_str).unwrap_or("");
         if symbol.is_empty() {
@@ -195,7 +210,12 @@ fn ingest_binance_symbols(body: &Value, venue: &str, index: &mut ListingIndex, n
             .and_then(Value::as_i64)
             .filter(|ms| *ms > now_ms && *ms < now_ms + 400 * 86_400_000);
         index.insert(venue, symbol, row(status, delivery.is_some()));
+        inserted += 1;
     }
+    if inserted == 0 {
+        bail!("{venue} exchangeInfo contains no valid symbols");
+    }
+    Ok(())
 }
 
 async fn fetch_bitget_spot(client: &Client, index: &mut ListingIndex, now_ms: i64) -> Result<()> {
@@ -205,6 +225,9 @@ async fn fetch_bitget_spot(client: &Client, index: &mut ListingIndex, now_ms: i6
         "Bitget spot symbols",
     )
     .await?;
+    if parsed.data.is_empty() {
+        bail!("Bitget spot symbols returned an empty catalog");
+    }
     for item in parsed.data {
         let pending = future_ms(parse_ms(item.off_time.as_deref()), now_ms);
         index.insert("bitget-margin", &item.symbol, row(&item.status, pending));
@@ -223,6 +246,9 @@ async fn fetch_bitget_futures(
         "Bitget USDT futures",
     )
     .await?;
+    if parsed.data.is_empty() {
+        bail!("Bitget USDT futures returned an empty catalog");
+    }
     for item in parsed.data {
         let off =
             parse_ms(item.off_time.as_deref()).or_else(|| parse_ms(item.delivery_time.as_deref()));
@@ -241,6 +267,9 @@ async fn fetch_gate_spot(client: &Client, index: &mut ListingIndex, now_ms: i64)
     .await?;
     let pairs: Vec<GateSpot> =
         serde_json::from_str(&body).context("parse Gate spot currency_pairs JSON failed")?;
+    if pairs.is_empty() {
+        bail!("Gate spot currency_pairs returned an empty catalog");
+    }
     let now_sec = now_ms / 1000;
     for pair in pairs {
         let off_ms = pair
@@ -263,6 +292,9 @@ async fn fetch_gate_futures(client: &Client, index: &mut ListingIndex, now_ms: i
     .await?;
     let contracts: Vec<GateFutures> =
         serde_json::from_str(&body).context("parse Gate USDT futures JSON failed")?;
+    if contracts.is_empty() {
+        bail!("Gate USDT futures returned an empty catalog");
+    }
     for contract in contracts {
         index.insert(
             "gate-futures",
