@@ -840,7 +840,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
                     open_venue.data_pub_slug()
                 );
-            } else if matches!(
+            } else if arb_mode == ArbMode::IntraArb || matches!(
                 open_venue,
                 TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
             ) || matches!(
@@ -849,7 +849,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             ) {
                 trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, hedge_venue)?;
                 info!(
-                    "Hyperliquid IOC protection BBO subscribers initialized: open={} hedge={}",
+                    "Pre-trade protection BBO subscribers initialized: open={} hedge={}",
                     open_venue.data_pub_slug(),
                     hedge_venue.data_pub_slug()
                 );

@@ -320,6 +320,15 @@ impl TimedNetQtyQueue {
     /// `qv` 使用 pending 需求方向，而不是 hedge 订单方向。比如 open 买入形成 `+2` 的
     /// pending，挂 sell hedge 时这里借出的仍然是 `+2`。函数只做数量扣减，不表达成交。
     pub fn borrow(&mut self, now_ts: i64, qv: f64) -> TimedNetQtyBorrow {
+        self.borrow_inner(now_ts, qv, None)
+    }
+
+    /// A protective exit may reserve its own leg before the scheduled hedge time.
+    pub fn borrow_open_id(&mut self, now_ts: i64, qv: f64, open_id: i64) -> TimedNetQtyBorrow {
+        self.borrow_inner(now_ts, qv, Some(open_id))
+    }
+
+    fn borrow_inner(&mut self, now_ts: i64, qv: f64, open_id: Option<i64>) -> TimedNetQtyBorrow {
         if qv.abs() <= NET_QTY_EPS {
             return TimedNetQtyBorrow::default();
         }
@@ -334,14 +343,18 @@ impl TimedNetQtyQueue {
         let mut borrowed_lots = Vec::new();
 
         while remaining_qty > NET_QTY_EPS {
-            let Some(oldest_key) = self.lots.keys().next().copied() else {
+            let key = match open_id {
+                Some(id) => self.find_key_by_open_id(id),
+                None => self.lots.keys().next().copied(),
+            };
+            let Some(oldest_key) = key else {
                 break;
             };
 
             let Some(oldest_lot) = self.lots.get(&oldest_key).cloned() else {
                 break;
             };
-            if oldest_lot.close_ts > 0 && oldest_lot.close_ts > now_ts {
+            if open_id.is_none() && oldest_lot.close_ts > 0 && oldest_lot.close_ts > now_ts {
                 break;
             }
             if direction_from_signed_qty(oldest_lot.qv) != direction {
@@ -480,6 +493,20 @@ pub fn signed_qty_for_direction(direction: NetQtyDirection, qty: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{NetQtyDirection, NetQtyQueue, TimedNetQtyQueue};
+
+    #[test]
+    fn protective_borrow_only_takes_target_even_before_due() {
+        let mut queue = TimedNetQtyQueue::new();
+        queue.upsert_open_lot(1, 100, 1.0, 100.0, 1);
+        queue.upsert_open_lot(2, 200, 2.0, 99.0, 2);
+        let borrowed = queue.borrow_open_id(50, 0.75, 2);
+        assert_eq!(borrowed.qty, 0.75);
+        assert_eq!(borrowed.lots[0].open_client_order_id, Some(2));
+        assert_eq!(queue.find_lot_by_open_id(1).unwrap().qty, 1.0);
+        assert_eq!(queue.find_lot_by_open_id(2).unwrap().qty, 1.25);
+        assert_eq!(queue.borrow_open_id(50, -1.0, 2).qty, 0.0);
+        assert_eq!(queue.borrow_open_id(50, 1.0, 3).qty, 0.0);
+    }
 
     #[test]
     fn same_direction_lots_are_sorted_by_time() {

@@ -220,6 +220,11 @@ impl OpenStrategyCommon for ArbOpenStrategy {
 
     fn hedge_on_incremental_open_fill(&self) -> bool {
         arb_open_partial_hedge_enabled()
+            || self.open_strategy_symbol().is_some_and(|symbol| {
+                crate::pre_trade::params_load::PreTradeParamsLoader::instance()
+                    .intra_trailing_stop_for_symbol(symbol)
+                    .is_some()
+            })
     }
 
     fn log_open_deleveraging_risk_rejects(&self) -> bool {

@@ -1379,6 +1379,7 @@ __PER_SYMBOL_PANELS_HTML__
       }
       await loadRollingParams();
       await loadSpreadMapping();
+      await updateIntraTrailingStop(false);
     }
 
     applyFixedContext();
@@ -2363,12 +2364,14 @@ def render_index_html(
     html = html.replace(
         "__PER_SYMBOL_PANELS_HTML__",
         ps_overrides.render_per_symbol_panels_html()
-        + ps_overrides.render_taker_decision_model_panel_html(),
+        + ps_overrides.render_taker_decision_model_panel_html()
+        + ps_overrides.render_intra_trailing_stop_panel_html(),
     )
     html = html.replace(
         "__PER_SYMBOL_PANELS_JS__",
         ps_overrides.render_per_symbol_panels_js()
-        + ps_overrides.render_taker_decision_model_panel_js(),
+        + ps_overrides.render_taker_decision_model_panel_js()
+        + ps_overrides.render_intra_trailing_stop_panel_js(),
     )
     return html
 
@@ -2639,6 +2642,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
             "/api/taker-decision-model",
+            "/api/intra-trailing-stop",
         ):
             try:
                 _, open_venue, hedge_venue, _ = self._resolve_request_context(params)
@@ -2653,6 +2657,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 if parsed.path == "/api/amount-u":
                     data = ps_overrides.read_amount_u(rds, env_name, open_venue, hedge_venue)
+                elif parsed.path == "/api/intra-trailing-stop":
+                    data = ps_overrides.read_intra_trailing_stop(rds, env_name, open_venue, hedge_venue)
                 elif parsed.path == "/api/max-pos-u":
                     data = ps_overrides.read_max_pos_u(rds, env_name, open_venue, hedge_venue)
                 elif parsed.path == "/api/hedge-offset-limits":
@@ -2921,6 +2927,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/hedge-offset-limits",
             "/api/open-offset-lower",
             "/api/taker-decision-model",
+            "/api/intra-trailing-stop",
         ):
             try:
                 _, open_v, hedge_v, _ = self._resolve_payload_context(payload)
@@ -2936,6 +2943,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 if parsed.path == "/api/amount-u":
                     result = ps_overrides.write_amount_u(rds, env_name, open_v, hedge_v, values)
+                elif parsed.path == "/api/intra-trailing-stop":
+                    result = ps_overrides.write_intra_trailing_stop(rds, env_name, open_v, hedge_v, values)
                 elif parsed.path == "/api/max-pos-u":
                     result = ps_overrides.write_max_pos_u(rds, env_name, open_v, hedge_v, values)
                 elif parsed.path == "/api/hedge-offset-limits":

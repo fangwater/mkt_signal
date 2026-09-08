@@ -1,4 +1,5 @@
-use anyhow::Result;
+use crate::strategy::intra_trailing_stop::TrailingStopConfig;
+use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -41,6 +42,7 @@ struct PreTradeParamsData {
     max_pos_u_overrides: MaxPosUOverrides,
     arb_order_amount_u: f64,
     arb_amount_u_overrides: AmountUOverrideTable,
+    intra_trailing_stop_overrides: FastHashMap<String, TrailingStopConfig>,
     open_orders_per_round: u32,
     max_symbol_exposure_ratio: f64,
     max_total_exposure_ratio: f64,
@@ -81,6 +83,7 @@ impl Default for PreTradeParamsData {
             max_pos_u_overrides: fast_hash_map(),
             arb_order_amount_u: DEFAULT_ARB_ORDER_AMOUNT_U,
             arb_amount_u_overrides: fast_hash_map(),
+            intra_trailing_stop_overrides: fast_hash_map(),
             open_orders_per_round: DEFAULT_OPEN_ORDERS_PER_ROUND,
             max_symbol_exposure_ratio: 0.8,
             max_total_exposure_ratio: 1.0,
@@ -204,6 +207,46 @@ fn is_internal_symbol_key(symbol: &str) -> bool {
         && symbol
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+fn intra_trailing_stop_key(
+    env_name: Option<&str>,
+    open: TradingVenue,
+    hedge: TradingVenue,
+) -> Option<String> {
+    let env = env_name.map(str::trim).filter(|s| !s.is_empty())?;
+    if open == hedge || open.trade_engine_exchange() != hedge.trade_engine_exchange() {
+        return None;
+    }
+    Some(format!(
+        "{env}:{}:{}:intra_trailing_stop_overrides",
+        open.data_pub_slug(),
+        hedge.data_pub_slug()
+    ))
+}
+
+fn parse_intra_trailing_stop(
+    raw: &str,
+    key: &str,
+) -> Result<FastHashMap<String, TrailingStopConfig>> {
+    let values: HashMap<String, TrailingStopConfig> =
+        serde_json::from_str(raw).with_context(|| format!("invalid trailing stop JSON: {key}"))?;
+    let mut normalized = fast_hash_map();
+    for (symbol, config) in values {
+        let symbol = normalize_symbol_for_internal(symbol.trim());
+        anyhow::ensure!(
+            is_internal_symbol_key(&symbol),
+            "invalid trailing stop symbol in {key}"
+        );
+        let config = config
+            .validate()
+            .with_context(|| format!("{key} symbol={symbol}"))?;
+        anyhow::ensure!(
+            normalized.insert(symbol.clone(), config).is_none(),
+            "duplicate normalized symbol {symbol} in {key}"
+        );
+    }
+    Ok(normalized)
 }
 
 fn max_pos_u_symbol_key(symbol: &str) -> Cow<'_, str> {
@@ -469,6 +512,12 @@ impl PreTradeParamsLoader {
             }
         }
 
+        let mut trailing_stops = fast_hash_map();
+        if let Some(key) = intra_trailing_stop_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&key).await? {
+                trailing_stops = parse_intra_trailing_stop(&raw, &key)?;
+            }
+        }
         self.apply_loaded_params(
             hash_map,
             max_pos_u_overrides,
@@ -477,6 +526,7 @@ impl PreTradeParamsLoader {
             amount_u_overrides,
             is_mm_pre_trade_mode(open_venue, hedge_venue),
         );
+        PARAMS_DATA.with(|data| data.borrow_mut().intra_trailing_stop_overrides = trailing_stops);
         Ok(())
     }
 
@@ -562,6 +612,12 @@ impl PreTradeParamsLoader {
             }
         }
 
+        let mut trailing_stops = fast_hash_map();
+        if let Some(key) = intra_trailing_stop_key(env_name, open_venue, hedge_venue) {
+            if let Some(raw) = client.get_string(&key)? {
+                trailing_stops = parse_intra_trailing_stop(&raw, &key)?;
+            }
+        }
         self.apply_loaded_params(
             hash_map,
             max_pos_u_overrides,
@@ -570,6 +626,7 @@ impl PreTradeParamsLoader {
             amount_u_overrides,
             is_mm_pre_trade_mode(open_venue, hedge_venue),
         );
+        PARAMS_DATA.with(|data| data.borrow_mut().intra_trailing_stop_overrides = trailing_stops);
         Ok(())
     }
 
@@ -997,6 +1054,15 @@ impl PreTradeParamsLoader {
 
     pub fn arb_order_amount_u(&self) -> f64 {
         PARAMS_DATA.with(|data| data.borrow().arb_order_amount_u)
+    }
+
+    pub fn intra_trailing_stop_for_symbol(&self, symbol: &str) -> Option<TrailingStopConfig> {
+        PARAMS_DATA.with(|data| {
+            data.borrow()
+                .intra_trailing_stop_overrides
+                .get(max_pos_u_symbol_key(symbol).as_ref())
+                .copied()
+        })
     }
 
     pub fn arb_amount_u_for_symbol(&self, symbol: &str) -> f64 {
@@ -1429,6 +1495,26 @@ mod tests {
             resolve_amount_u_for_symbol(100.0, &overrides, "SOLUSDT"),
             100.0
         );
+    }
+
+    #[test]
+    fn trailing_stop_config_is_strict_and_normalized() {
+        let values = parse_intra_trailing_stop(
+            r#"{"btc-usdt":{"take_profit":0.005,"reward_risk_ratio":2}}"#,
+            "test",
+        )
+        .unwrap();
+        assert_eq!(values["BTCUSDT"].take_profit, 0.005);
+        assert!(values.get("ETHUSDT").is_none());
+        assert!(parse_intra_trailing_stop("{}", "test").unwrap().is_empty());
+        for raw in [
+            r#"{"BTCUSDT":{"take_profit":0,"reward_risk_ratio":2}}"#,
+            r#"{"BTCUSDT":{"take_profit":0.005,"reward_risk_ratio":0}}"#,
+            r#"{"BTCUSDT":{"take_profit":0.005,"reward_risk_ratio":2,"extra":1}}"#,
+            r#"{"BTCUSDT":{"take_profit":0.005}}"#,
+        ] {
+            assert!(parse_intra_trailing_stop(raw, "test").is_err());
+        }
     }
 
     #[test]

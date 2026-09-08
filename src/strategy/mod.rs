@@ -5,6 +5,7 @@ pub mod batch_exec_strategy;
 pub mod hedge_order_reconcile;
 pub mod hedge_orphan_order_strategy;
 pub mod hedge_strategy_common;
+pub mod intra_trailing_stop;
 pub mod manager;
 pub mod mm_hedge_strategy;
 pub mod mm_open_strategy;
