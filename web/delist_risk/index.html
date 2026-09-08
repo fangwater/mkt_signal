@@ -101,8 +101,13 @@
       .hit { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 7px 9px; border-left: 2px solid #d67b75; background: var(--danger-soft); }
       .hit .symbol { flex: 0 0 auto; color: #852d29; font-size: 11px; font-weight: 700; }
       .hit__detail { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #795e5c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .hit--closed { border-left-color: #4d9a76; background: var(--good-soft); }
+      .hit--closed .symbol { color: var(--good); }
+      .hit--closed .hit__detail { color: #49685a; }
       .flatten-state { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; color: #795e5c; font-size: 11px; white-space: nowrap; }
       .flatten-state strong { color: #852d29; font-variant-numeric: tabular-nums; }
+      .closed-state { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; color: #49685a; font-size: 11px; white-space: nowrap; }
+      .closed-state strong { color: var(--good); }
       .flatten-action { min-height: 26px; padding: 0 9px; border: 1px solid #b84b45; border-radius: 4px; background: #b33a35; color: #fff; cursor: pointer; font-size: 11px; font-weight: 650; }
       .flatten-action:hover { background: #972f2b; }
       .flatten-action:disabled { cursor: wait; opacity: 0.65; }
@@ -141,6 +146,7 @@
         .hit { align-items: flex-start; flex-wrap: wrap; }
         .hit__detail { white-space: normal; }
         .flatten-state { width: 100%; margin: 5px 0 0; flex-wrap: wrap; }
+        .closed-state { width: 100%; margin: 5px 0 0; flex-wrap: wrap; }
       }
     </style>
   </head>
@@ -170,6 +176,7 @@
       let payload = null;
       let flattenPayload = null;
       let flattenByKey = new Map();
+      let positionStatusByKey = new Map();
 
       function escapeHtml(value) {
         return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
@@ -274,6 +281,12 @@
         return `${hours}小时`;
       }
       function flattenControl(account, hit) {
+        const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
+        if (positionStatus && positionStatus.closed) {
+          const open = Number(positionStatus.open_usdt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const hedge = Number(positionStatus.hedge_usdt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          return `<span class="closed-state"><strong>声明要下架，但已平仓完毕</strong><span>现货 ${escapeHtml(open)}U · 合约 ${escapeHtml(hedge)}U</span></span>`;
+        }
         const item = flattenByKey.get(flattenKey(account.slug, hit.symbol));
         if (!item) return '';
         const audit = item.latest || {};
@@ -304,7 +317,10 @@
         const status = TONES[account.tone] || account.tone;
         const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span></td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span></td></tr>`;
         if (!account.hits || !account.hits.length) return row;
-        const hits = account.hits.map((hit) => `<div class="hit"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`).join('');
+        const hits = account.hits.map((hit) => {
+          const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
+          return `<div class="hit ${positionStatus && positionStatus.closed ? 'hit--closed' : ''}"><span class="symbol">${escapeHtml(hit.symbol)}</span><span class="hit__detail">${escapeHtml(conclusion(hit))}</span>${flattenControl(account, hit)}</div>`;
+        }).join('');
         return `${row}<tr class="hit-row"><td colspan="6"><div class="hit-list">${hits}</div></td></tr>`;
       }
       function exchangeBlock(exchange, accounts) {
@@ -337,10 +353,12 @@
         try {
           [payload, flattenPayload] = await Promise.all([api('accounts'), api('flatten-candidates')]);
           flattenByKey = new Map((flattenPayload.items || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
+          positionStatusByKey = new Map((flattenPayload.position_statuses || []).map((item) => [flattenKey(item.account_slug, item.symbol), item]));
           const summary = payload.summary || {};
           const flattenErrors = (flattenPayload.snapshot_errors || []).length;
-          const tone = summary.error || flattenErrors ? 'error' : summary.risk ? 'risk' : 'ok';
-          const text = summary.error ? `${summary.error} 个 Redis 连接异常` : flattenErrors ? `${flattenErrors} 个持仓快照异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
+          const dumpErrors = (flattenPayload.dump_errors || []).length;
+          const tone = summary.error || flattenErrors || dumpErrors ? 'error' : summary.risk ? 'risk' : 'ok';
+          const text = summary.error ? `${summary.error} 个 Redis 连接异常` : flattenErrors ? `${flattenErrors} 个持仓快照异常` : dumpErrors ? `${dumpErrors} 个 dump 状态异常` : summary.risk ? `${summary.risk} 个盘子需处理` : '数据已同步';
           setSystem(tone, text);
           render();
         } catch (error) {

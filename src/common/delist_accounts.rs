@@ -477,6 +477,52 @@ pub async fn load_universes(
     out
 }
 
+pub async fn load_fr_dump_symbols(
+    jp_url: &str,
+    sg_url: Option<&str>,
+) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
+    let mut jp_keys = Vec::new();
+    let mut sg_keys = Vec::new();
+    let mut owners: Vec<(String, RedisSite, String)> = Vec::new();
+    for spec in mounted_accounts()
+        .iter()
+        .filter(|spec| spec.kind == "funding_rate")
+    {
+        let suffix = format!("{}-margin_{}-futures", spec.exchange, spec.exchange);
+        let key = format!("{}:fr_dump_symbols:{suffix}", spec.slug);
+        match spec.site {
+            RedisSite::Jp => jp_keys.push(key.clone()),
+            RedisSite::Sg => sg_keys.push(key.clone()),
+        }
+        owners.push((spec.slug.to_string(), spec.site, key));
+    }
+    let jp = mget_strings(jp_url, &jp_keys).await;
+    let sg = match sg_url {
+        Some(url) if !url.trim().is_empty() => mget_strings(url, &sg_keys).await,
+        _ if sg_keys.is_empty() => Ok(Vec::new()),
+        _ => Err(anyhow::anyhow!("sg redis not configured")),
+    };
+    let jp_map = to_map(&jp_keys, jp);
+    let sg_map = to_map(&sg_keys, sg);
+    let mut out = BTreeMap::new();
+    for (slug, site, key) in owners {
+        let source = match site {
+            RedisSite::Jp => &jp_map,
+            RedisSite::Sg => &sg_map,
+        };
+        let symbols = match source {
+            Err(err) => Err(err.clone()),
+            Ok(values) => Ok(values
+                .get(&key)
+                .and_then(|raw| raw.as_deref())
+                .map(parse_universe)
+                .unwrap_or_default()),
+        };
+        out.insert(slug, symbols);
+    }
+    out
+}
+
 fn to_map(
     keys: &[String],
     result: Result<Vec<Option<String>>, anyhow::Error>,

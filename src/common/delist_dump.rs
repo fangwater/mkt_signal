@@ -28,6 +28,18 @@ pub struct PositionDumpCandidate {
     pub delist_utc: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PositionCloseStatus {
+    pub account_slug: String,
+    pub symbol: String,
+    pub snapshot_ms: i64,
+    pub open_usdt: f64,
+    pub hedge_usdt: f64,
+    pub in_dump: bool,
+    pub closed: bool,
+    pub threshold_usdt: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RedisDumpChange {
     pub key: String,
@@ -194,7 +206,41 @@ pub async fn position_dump_candidates(
 }
 
 fn meets_position_threshold(position_usdt: f64, threshold_usdt: f64) -> bool {
-    position_usdt.is_finite() && position_usdt > 0.0 && position_usdt >= threshold_usdt
+    position_usdt.is_finite() && position_usdt >= 0.0 && position_usdt >= threshold_usdt.max(0.0)
+}
+
+pub fn position_close_statuses(
+    positioned: &[PositionDumpCandidate],
+    dump_symbols: &BTreeMap<String, Result<BTreeSet<String>, String>>,
+    threshold_usdt: f64,
+) -> Vec<PositionCloseStatus> {
+    let mut statuses = positioned
+        .iter()
+        .map(|candidate| {
+            let in_dump = dump_symbols
+                .get(&candidate.account_slug)
+                .and_then(|symbols| symbols.as_ref().ok())
+                .is_some_and(|symbols| symbols.contains(&candidate.symbol));
+            PositionCloseStatus {
+                account_slug: candidate.account_slug.clone(),
+                symbol: candidate.symbol.clone(),
+                snapshot_ms: candidate.snapshot_ms,
+                open_usdt: candidate.open_usdt,
+                hedge_usdt: candidate.hedge_usdt,
+                in_dump,
+                closed: in_dump
+                    && candidate.open_usdt.abs() < threshold_usdt
+                    && candidate.hedge_usdt.abs() < threshold_usdt,
+                threshold_usdt,
+            }
+        })
+        .collect::<Vec<_>>();
+    statuses.sort_by(|left, right| {
+        left.account_slug
+            .cmp(&right.account_slug)
+            .then_with(|| left.symbol.cmp(&right.symbol))
+    });
+    statuses
 }
 
 async fn fetch_snapshot(client: &Client, url: &str) -> Result<DashboardSnapshot> {
@@ -416,10 +462,45 @@ mod tests {
     }
 
     #[test]
-    fn includes_exact_threshold_but_excludes_zero() {
+    fn includes_exact_threshold_and_zero_for_snapshot_status() {
         assert!(meets_position_threshold(50.0, 50.0));
         assert!(!meets_position_threshold(49.99, 50.0));
-        assert!(!meets_position_threshold(0.0, 0.0));
+        assert!(!meets_position_threshold(0.0, 50.0));
+        assert!(meets_position_threshold(0.0, 0.0));
+    }
+
+    #[test]
+    fn close_status_requires_dump_and_both_legs_strictly_below_threshold() {
+        let mut candidate = PositionDumpCandidate {
+            account_slug: "gate_fr_arb01".to_string(),
+            exchange: "gate".to_string(),
+            redis_site: "jp".to_string(),
+            symbol: "TSLAXUSDT".to_string(),
+            event: AccountHitEvent {
+                venue: "gate-futures".to_string(),
+                action: "delist".to_string(),
+                utc: "2026-09-09T08:00:00Z".to_string(),
+                status: "upcoming".to_string(),
+                listing: "listed".to_string(),
+                title: "test".to_string(),
+                url: String::new(),
+            },
+            snapshot_ms: 1,
+            open_usdt: 99.99,
+            hedge_usdt: -99.99,
+            impacted_position_usdt: 99.99,
+            threshold_usdt: 0.0,
+            delist_utc: Some("2026-09-09T08:00:00Z".to_string()),
+        };
+        let dumps = BTreeMap::from([(
+            candidate.account_slug.clone(),
+            Ok(BTreeSet::from([candidate.symbol.clone()])),
+        )]);
+
+        assert!(position_close_statuses(&[candidate.clone()], &dumps, 100.0)[0].closed);
+        candidate.hedge_usdt = -100.0;
+        assert!(!position_close_statuses(&[candidate.clone()], &dumps, 100.0)[0].closed);
+        assert!(!position_close_statuses(&[candidate], &BTreeMap::new(), 100.0)[0].closed);
     }
 
     #[tokio::test]

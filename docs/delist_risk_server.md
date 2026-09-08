@@ -263,6 +263,12 @@ deadline is within the next 24 hours. The decision value is the larger absolute
 USDT notional of the margin and futures legs. The response includes the latest
 audit state for each account/symbol/deadline.
 
+The response also includes `position_statuses` for every dated upcoming/due FR
+delist risk found in a fresh account snapshot. `closed=true` requires the symbol
+to be present in that account's `fr_dump_symbols` and requires both
+`abs(open_usdt) < 100` and `abs(hedge_usdt) < 100`. The board keeps the delist
+declaration visible and marks such a row as `声明要下架，但已平仓完毕`.
+
 With `DELIST_AUTO_FLATTEN_POSITION_RISK=1`, positions at or below 1000 USDT are
 first moved to `dump` and removed from both open lists, then the service runs the
 fixed account-local exchange script with `--symbols SYMBOL --mode clear

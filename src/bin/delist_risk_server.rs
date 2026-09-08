@@ -36,10 +36,11 @@ use mkt_signal::common::bitget_announcement::{
     hydrate_notice_body, mark_article_body_processed,
 };
 use mkt_signal::common::delist_accounts::{
-    build_account_views, load_universes, summarize, AccountRiskResponse,
+    build_account_views, load_fr_dump_symbols, load_universes, summarize, AccountRiskResponse,
 };
 use mkt_signal::common::delist_dump::{
-    apply_redis_dump, position_dump_candidates, prepare_redis_dump, PositionDumpCandidate,
+    apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
+    PositionDumpCandidate,
 };
 use mkt_signal::common::delist_flatten::{
     audit_dedup_key, flatten_candidates, FlattenCandidate, FlattenExecutor, FlattenRunOutput,
@@ -75,6 +76,8 @@ use tokio_tungstenite::tungstenite::Message;
 use mkt_signal::pre_trade::notification_client::{
     LocalNotificationClient, NotificationRequest, NotificationSeverity,
 };
+
+const POSITION_CLOSED_THRESHOLD_USDT: f64 = 100.0;
 
 #[derive(Parser)]
 #[command(name = "delist_risk_server")]
@@ -623,7 +626,11 @@ struct FlattenCandidateView {
 }
 
 async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
-    let (items, snapshot_errors, _) = match collect_flatten_candidates(&state).await {
+    let (collected, dump_symbols) = tokio::join!(
+        collect_flatten_candidates(&state),
+        load_fr_dump_symbols(&state.jp_redis, state.sg_redis.as_deref())
+    );
+    let (items, snapshot_errors, positioned) = match collected {
         Ok(result) => result,
         Err(err) => {
             return (
@@ -646,6 +653,14 @@ async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
         },
         None => Vec::new(),
     };
+    let dump_errors = dump_symbols
+        .iter()
+        .filter_map(|(account, result)| {
+            result.as_ref().err().map(|err| format!("{account}: {err}"))
+        })
+        .collect::<Vec<_>>();
+    let position_statuses =
+        position_close_statuses(&positioned, &dump_symbols, POSITION_CLOSED_THRESHOLD_USDT);
     let mut latest = BTreeMap::new();
     for audit in audits {
         latest
@@ -675,7 +690,10 @@ async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
         "auto_flatten_position_risk": state.auto_flatten_position_risk,
         "window_ms": state.flatten_window_ms,
         "manual_threshold_usdt": state.flatten_manual_threshold_usdt,
+        "position_closed_threshold_usdt": POSITION_CLOSED_THRESHOLD_USDT,
         "snapshot_errors": snapshot_errors,
+        "dump_errors": dump_errors,
+        "position_statuses": position_statuses,
         "count": views.len(),
         "items": views,
     }))
