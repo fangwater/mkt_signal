@@ -13,6 +13,7 @@ use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::{ArbDecision, VolGateCompare};
+use super::inventory_hedge_inputs::effective_return_score_adjust_hedge;
 use super::mm_decision::MmDecision;
 use super::return_score_threshold::{
     model_score_threshold_output_key, parse_return_score_thresholds, ReturnScoreCancelThresholds,
@@ -98,6 +99,15 @@ fn model_service_param_or_disabled(
             );
             "-".to_string()
         }
+    }
+}
+
+fn normalize_optional_model_service(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -1882,32 +1892,22 @@ impl StrategyParams {
     }
 
     fn parse_model_output_services(&self) -> Vec<String> {
-        let mut services = Vec::new();
-        for raw in [&self.return_model_service, &self.environment_model_service] {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() || trimmed == "-" {
-                continue;
-            }
-            services.push(trimmed.to_string());
-        }
-        services
+        [&self.return_model_service, &self.environment_model_service]
+            .into_iter()
+            .filter_map(|raw| normalize_optional_model_service(raw))
+            .collect()
     }
 
     /// 应用参数到所有单例
     pub(crate) fn apply(&self) {
         // 1. 更新 ArbDecision / MmDecision
-        let return_trimmed = self.return_model_service.trim();
-        let return_model_service = if return_trimmed.is_empty() || return_trimmed == "-" {
-            None
-        } else {
-            Some(return_trimmed.to_string())
-        };
-        let env_trimmed = self.environment_model_service.trim();
-        let environment_model_service = if env_trimmed.is_empty() || env_trimmed == "-" {
-            None
-        } else {
-            Some(env_trimmed.to_string())
-        };
+        let return_model_service = normalize_optional_model_service(&self.return_model_service);
+        let environment_model_service =
+            normalize_optional_model_service(&self.environment_model_service);
+        let enable_return_score_adjust_hedge = effective_return_score_adjust_hedge(
+            self.enable_return_score_adjust_hedge,
+            return_model_service.as_deref(),
+        );
         let arb_vol_band_scale =
             self.parse_required_vol_scale_range(&self.vol_band_scale, "vol_band_scale");
         let arb_state_applied = ArbDecision::with_state_mut(|arb| {
@@ -1934,7 +1934,7 @@ impl StrategyParams {
             );
             arb.hedge_window_scale_low = self.hedge_window_scale_low;
             arb.hedge_window_scale_high = self.hedge_window_scale_high;
-            arb.enable_return_score_adjust_hedge = self.enable_return_score_adjust_hedge;
+            arb.enable_return_score_adjust_hedge = enable_return_score_adjust_hedge;
             arb.hedge_aggressive_seq_threshold = self.hedge_aggressive_seq_threshold;
             arb.enable_tlen_cancel = self.enable_tlen_cancel;
             arb.tlen_cancel_freq_ms = self.tlen_cancel_freq_ms;
@@ -1996,7 +1996,7 @@ impl StrategyParams {
                 self.hedge_window_scale_high,
                 self.max_hedge_price_pct_change,
                 self.next_query_delay_ms,
-                self.enable_return_score_adjust_hedge,
+                enable_return_score_adjust_hedge,
             );
             _decision.update_hedge_price_offset_limit_overrides(
                 self.mm_hedge_price_offset_limit_lower_overrides.clone(),
@@ -2050,7 +2050,7 @@ impl StrategyParams {
         );
 
         info!(
-            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_fr_open_spread_limit={}, fr_fwd_open_spread={}, fr_bwd_open_spread={}, vol_gate_compare={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
+            "✅ 策略参数已更新: amount={:.2}, arb_vol_band_scale={}, mm_open_buy_vol_scale={}, mm_open_sell_vol_scale={}, hedge_window_scale_low={:.4}, hedge_window_scale_high={:.4}, order_interval_ms={}, enable_clock_shift_ms={}, open_orders_per_round={}, cooldown={}s, enable_return_score_cancel={}, return_score_buy_cancel_quantile={}, return_score_sell_cancel_quantile={}, enable_tlen_cancel={}, tlen_cancel_freq_ms={}, spread_cancel_cooldown_ms={}, enable_intra_funding_close_signal={}, enable_return_score_adjust_hedge={}, effective_return_score_adjust_hedge={}, enable_environment_model={}, enable_volatility_limit={}, open_volatility_limit={}, enable_fr_open_spread_limit={}, fr_fwd_open_spread={}, fr_bwd_open_spread={}, vol_gate_compare={}, enable_tradecount_limit={}, open_tradecount_limit={}, enable_open_time_block={}, open_block_utc_time_range={}, return_model_service={}, environment_model_service={}",
             self.order_amount,
             self.vol_band_scale,
             self.open_buy_vol_scale,
@@ -2069,6 +2069,7 @@ impl StrategyParams {
             self.spread_cancel_cooldown_ms,
             self.enable_intra_funding_close_signal,
             self.enable_return_score_adjust_hedge,
+            enable_return_score_adjust_hedge,
             self.enable_environment_model,
             self.enable_volatility_limit,
             self.open_volatility_limit,
@@ -2107,6 +2108,16 @@ mod tests {
         assert_eq!(
             model_service_param_or_disabled(&values, "test", "mm", "missing_model_service"),
             "-"
+        );
+    }
+
+    #[test]
+    fn optional_model_service_normalizes_disabled_values() {
+        assert_eq!(normalize_optional_model_service("-"), None);
+        assert_eq!(normalize_optional_model_service("  "), None);
+        assert_eq!(
+            normalize_optional_model_service(" return_model "),
+            Some("return_model".to_string())
         );
     }
 

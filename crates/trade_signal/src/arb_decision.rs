@@ -11,7 +11,9 @@ use std::sync::OnceLock;
 use std::thread::LocalKey;
 use std::time::{Duration, Instant};
 
-use crate::inventory_hedge_inputs::resolve_inventory_hedge_signal_inputs;
+use crate::inventory_hedge_inputs::{
+    effective_return_score_adjust_hedge, resolve_inventory_hedge_signal_inputs,
+};
 use crate::FundingRatePeriod;
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use ipc_common::iceoryx_subscriber::GenericSignalSubscriber;
@@ -2015,16 +2017,11 @@ fn resolve_arb_hedge_build_params(
     hedge_venue: TradingVenue,
 ) -> Option<ArbHedgeBuildParams> {
     match ArbDecision::with_state_mut(|arb| {
-        let enable_return_score_adjust_hedge = arb.enable_return_score_adjust_hedge;
-        let model_service = if enable_return_score_adjust_hedge {
-            Some(
-                arb.return_model_service
-                    .clone()
-                    .ok_or_else(|| "return_model_service unavailable".to_string())?,
-            )
-        } else {
-            None
-        };
+        let model_service = arb.return_model_service.clone();
+        let enable_return_score_adjust_hedge = effective_return_score_adjust_hedge(
+            arb.enable_return_score_adjust_hedge,
+            model_service.as_deref(),
+        );
         let amount_cap_u = arb.resolve_order_amount_u(symbol);
         let hedge_vol_multiplier = arb.hedge_vol_multiplier;
         let hedge_offset_ratio = arb.hedge_offset_ratio;

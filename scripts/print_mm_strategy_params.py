@@ -90,7 +90,7 @@ PARAM_COMMENTS: Dict[str, str] = {
     "hedge_offset_ratio": "对冲偏移手动系数（最终 offset 直接乘该系数）",
     "hedge_window_scale_low": "对冲拆单窗口下界系数（中心 offset 乘该系数作为最内层档位）",
     "hedge_window_scale_high": "对冲拆单窗口上界系数（中心 offset 乘该系数作为最外层档位）",
-    "enable_return_score_adjust_hegde": "是否启用 return score 调整 MM hedge offset（false=使用中性 score 计算 hedge offset）",
+    "enable_return_score_adjust_hegde": "是否启用 return score 调整 MM hedge offset（false 或 return_model_service='-' 均使用中性 score）",
     "enable_environment_model": "是否启用 env 开仓限制（false=继续读取 env / pnlu 并写入 from_key，但不阻拦开仓）",
     "enable_volatility_limit": "是否启用波动率限制下单",
     "open_volatility_limit": "波动率限制分位数（trade signal / MM 决策侧内联波动率阈值采样使用，默认 70）",

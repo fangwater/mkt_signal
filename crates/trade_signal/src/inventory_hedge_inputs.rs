@@ -16,6 +16,16 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+pub(crate) fn effective_return_score_adjust_hedge(
+    configured_enabled: bool,
+    model_service: Option<&str>,
+) -> bool {
+    configured_enabled
+        && model_service
+            .map(str::trim)
+            .is_some_and(|service| !service.is_empty() && service != "-")
+}
+
 pub fn resolve_inventory_hedge_signal_inputs(
     factor_value_hub: &mut FactorValueHub,
     model_output_hub: Option<&mut ModelOutputHub>,
@@ -24,6 +34,8 @@ pub fn resolve_inventory_hedge_signal_inputs(
     venue: TradingVenue,
     enable_return_score_adjust_hedge: bool,
 ) -> Result<(f64, Option<f64>, f64), String> {
+    let enable_return_score_adjust_hedge =
+        effective_return_score_adjust_hedge(enable_return_score_adjust_hedge, model_service);
     let factor_lookup =
         factor_value_hub.lookup_factor_value_with_last_valid_fallback(symbol, venue);
     let volatility = factor_lookup
@@ -159,6 +171,22 @@ fn resolve_inventory_hedge_signal_quantile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn return_score_adjust_hedge_requires_switch_and_model_service() {
+        assert!(effective_return_score_adjust_hedge(
+            true,
+            Some("return_model")
+        ));
+        assert!(!effective_return_score_adjust_hedge(
+            false,
+            Some("return_model")
+        ));
+        assert!(!effective_return_score_adjust_hedge(true, Some("-")));
+        assert!(!effective_return_score_adjust_hedge(true, Some("  ")));
+        assert!(!effective_return_score_adjust_hedge(true, None));
+        assert!(!effective_return_score_adjust_hedge(false, None));
+    }
 
     #[test]
     fn missing_return_model_falls_back_to_neutral_signal_and_quantile() {
