@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/account_common",
     "crates/cme_tas_replay",
+    "crates/cn_futures_trim",
     "crates/cn_futures_l2",
     "crates/usstock_lseg_mbp_replay",
     "crates/usstock_lseg_raw_replay",

@@ -198,6 +198,27 @@ fn replay_product(
     end: NaiveDate,
 ) -> Result<(u64, u64, u64)> {
     let days = list_days(&args.in_root, exchange, product)?;
+    // A product is the unit of stateful factor computation.  Skip it on resume
+    // only when every requested input trading day has an atomically published
+    // output file; a partial product is replayed from its full history.
+    if !args.dry_run && !args.overwrite {
+        let expected_days = days
+            .iter()
+            .filter(|day| day.day >= start && day.day <= end)
+            .collect::<Vec<_>>();
+        if !expected_days.is_empty()
+            && expected_days.iter().all(|day| {
+                args.out_root
+                    .join(exchange)
+                    .join(product)
+                    .join(format!("{}.parquet", day.day.format("%Y%m%d")))
+                    .is_file()
+            })
+        {
+            eprintln!("{exchange} {product} already complete");
+            return Ok((0, 0, 0));
+        }
+    }
     let mut series: Vec<InputRow> = Vec::new();
     let mut skipped = 0u64;
     for day in &days {

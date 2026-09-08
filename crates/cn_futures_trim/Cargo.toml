@@ -1,0 +1,21 @@
+[package]
+name = "cn_futures_trim"
+version.workspace = true
+edition.workspace = true
+description = "Parallel materializer for continuous-session-only CN futures parquet"
+
+[[bin]]
+name = "trim_cn_futures_continuous_sessions"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+arrow = { version = "54", default-features = false }
+chrono = "0.4"
+chrono-tz = "0.10"
+clap = { version = "4.5", features = ["derive"] }
+parquet = { version = "54", default-features = false, features = ["arrow", "zstd"] }
+rayon = "1.10"
+reqwest = { version = "0.12.19", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
