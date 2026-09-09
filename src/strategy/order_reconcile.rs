@@ -5,24 +5,13 @@ use order_common::{TimeInForce, TradingVenue};
 use signal_common::tick_math::QuantizedValue;
 use trade_engine::query_parsers::compact_order::CompactOrderQueryResp;
 
-pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 300_000;
-pub const BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 6_000_000;
+pub const ORDER_QUERY_WATCHDOG_DELAY_US: i64 = 6_000_000;
 
 pub fn order_query_watchdog_delay_us_for_venue(
-    venue: TradingVenue,
-    binance_is_standard: bool,
+    _venue: TradingVenue,
+    _binance_is_standard: bool,
 ) -> i64 {
-    if matches!(
-        venue,
-        TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::BinanceCoinFutures
-    ) && !binance_is_standard
-    {
-        BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
-    } else {
-        ORDER_QUERY_WATCHDOG_DELAY_US
-    }
+    ORDER_QUERY_WATCHDOG_DELAY_US
 }
 
 pub fn order_query_watchdog_delay_us(order: &Order, binance_is_standard: bool) -> i64 {
@@ -103,7 +92,7 @@ mod tests {
     use super::{
         ambiguous_action_query_reason, monotonic_cumulative_fill,
         order_query_watchdog_delay_us_for_venue, qv_decimal_or_fallback, PendingOrderQueryReason,
-        BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US, ORDER_QUERY_WATCHDOG_DELAY_US,
+        ORDER_QUERY_WATCHDOG_DELAY_US,
     };
     use order_common::trade_error_code::hyperliquid::ACTION_AMBIGUOUS;
     use order_common::{TradeEngineResponseMessage, TradeRequestType, TradingVenue};
@@ -124,23 +113,21 @@ mod tests {
     }
 
     #[test]
-    fn binance_pm_uses_long_order_query_watchdog_delay() {
-        assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceFutures, false),
-            BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
-        );
-        assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceMargin, false),
-            BINANCE_PM_ORDER_QUERY_WATCHDOG_DELAY_US
-        );
-        assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::BinanceFutures, true),
-            ORDER_QUERY_WATCHDOG_DELAY_US
-        );
-        assert_eq!(
-            order_query_watchdog_delay_us_for_venue(TradingVenue::GateFutures, false),
-            ORDER_QUERY_WATCHDOG_DELAY_US
-        );
+    fn all_venues_use_long_order_query_watchdog_delay() {
+        for (venue, binance_is_standard) in [
+            (TradingVenue::BinanceFutures, false),
+            (TradingVenue::BinanceMargin, true),
+            (TradingVenue::GateFutures, false),
+            (TradingVenue::BitgetFutures, false),
+            (TradingVenue::OkexFutures, false),
+            (TradingVenue::BybitFutures, false),
+            (TradingVenue::HyperliquidFutures, false),
+        ] {
+            assert_eq!(
+                order_query_watchdog_delay_us_for_venue(venue, binance_is_standard),
+                ORDER_QUERY_WATCHDOG_DELAY_US
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::strategy::manager::{OrphanHandoff, OrphanStrategyRole, Strategy};
-use crate::strategy::orphan_order_common::{OrphanOrderOwner, OrphanOrderTracker};
+use crate::strategy::orphan_order_common::{
+    OrphanOrderOwner, OrphanOrderTracker, ORPHAN_QUERY_BASE_TICKS, ORPHAN_QUERY_MAX_TICKS,
+};
 use log::{info, warn};
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
@@ -8,8 +10,6 @@ use runtime_common::symbol_util::normalize_symbol_for_internal;
 use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
 
-const ORPHAN_QUERY_BASE_TICKS: u32 = 25;
-const ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 const ORPHAN_ROLE: &str = "OrphanOrderStrategy";
 
 #[derive(Debug, Clone)]

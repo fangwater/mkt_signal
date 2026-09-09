@@ -4110,6 +4110,21 @@ impl MonitorChannel {
         });
     }
 
+    pub fn finalize_close_inventory_order(
+        &self,
+        client_order_id: i64,
+        cumulative_filled_base_qty: f64,
+        reason: &str,
+    ) {
+        Self::with_inner(|inner| {
+            inner.close_inventory.borrow_mut().finalize_close_order(
+                client_order_id,
+                cumulative_filled_base_qty,
+                reason,
+            );
+        });
+    }
+
     pub fn release_close_inventory_unfilled(&self, client_order_id: i64, reason: &str) {
         Self::with_inner(|inner| {
             inner

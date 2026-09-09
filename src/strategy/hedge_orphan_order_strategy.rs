@@ -6,7 +6,8 @@ use crate::strategy::order_query_builder::build_order_query_request;
 use crate::strategy::orphan_order_common::{
     commit_query_policy_for, format_orphan_query_table, infer_query_time_in_force,
     order_query_time_utc, orphan_initial_query_ticks_for, query_backoff_ticks,
-    standard_commit_query_policy, COMMIT_QUERY_BACKOFF_SHIFT, ORPHAN_QUERY_LOG_THRESHOLD,
+    standard_commit_query_policy, COMMIT_QUERY_BACKOFF_SHIFT, ORPHAN_QUERY_BASE_TICKS,
+    ORPHAN_QUERY_LOG_THRESHOLD, ORPHAN_QUERY_MAX_TICKS,
 };
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
@@ -23,9 +24,6 @@ use runtime_common::symbol_util::normalize_symbol_for_internal;
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::trade_signal::TradeSignal;
 use std::any::Any;
-
-const HEDGE_ORPHAN_QUERY_BASE_TICKS: u32 = 25;
-const HEDGE_ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HedgeOrphanOrderOwner {
@@ -64,7 +62,7 @@ impl HedgeOrphanOrderStrategy {
     fn initial_query_state() -> HedgeOrphanQueryState {
         HedgeOrphanQueryState {
             query_count: 0,
-            ticks_until_next_query: HEDGE_ORPHAN_QUERY_BASE_TICKS,
+            ticks_until_next_query: ORPHAN_QUERY_BASE_TICKS,
         }
     }
 
@@ -87,7 +85,7 @@ impl HedgeOrphanOrderStrategy {
         let ticks_until_next_query = orphan_initial_query_ticks_for(
             order.venue,
             binance_is_standard,
-            HEDGE_ORPHAN_QUERY_BASE_TICKS,
+            ORPHAN_QUERY_BASE_TICKS,
         );
         HedgeOrphanQueryState {
             query_count: 0,
@@ -99,15 +97,15 @@ impl HedgeOrphanOrderStrategy {
         let multiplier = 1_u32
             .checked_shl(query_count.min(31) as u32)
             .unwrap_or(u32::MAX);
-        HEDGE_ORPHAN_QUERY_BASE_TICKS
+        ORPHAN_QUERY_BASE_TICKS
             .saturating_mul(multiplier)
-            .min(HEDGE_ORPHAN_QUERY_MAX_TICKS)
+            .min(ORPHAN_QUERY_MAX_TICKS)
     }
 
     fn commit_next_query_ticks(base_ticks: u32, query_count: u8) -> u32 {
         query_backoff_ticks(
             base_ticks,
-            HEDGE_ORPHAN_QUERY_MAX_TICKS,
+            ORPHAN_QUERY_MAX_TICKS,
             query_count,
             COMMIT_QUERY_BACKOFF_SHIFT,
         )

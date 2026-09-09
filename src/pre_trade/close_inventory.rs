@@ -329,6 +329,28 @@ impl CloseInventoryLedger {
         true
     }
 
+    pub fn finalize_close_order(
+        &mut self,
+        client_order_id: i64,
+        cumulative_filled_base_qty: f64,
+        reason: &str,
+    ) -> bool {
+        let already_applied = self
+            .entries
+            .values()
+            .find_map(|entry| entry.orders.get(&client_order_id))
+            .map(|reservation| reservation.filled_base_qty);
+        let Some(already_applied) = already_applied else {
+            return false;
+        };
+        let cumulative_filled_base_qty = finite_or_zero(cumulative_filled_base_qty).max(0.0);
+        let fill_delta = (cumulative_filled_base_qty - already_applied).max(0.0);
+        if fill_delta > CLOSE_INVENTORY_EPS {
+            self.apply_close_fill_delta(client_order_id, fill_delta);
+        }
+        self.release_close_unfilled(client_order_id, reason)
+    }
+
     pub fn release_close_unfilled(&mut self, client_order_id: i64, reason: &str) -> bool {
         self.release_close_unfilled_inner(client_order_id, reason, true)
     }
@@ -494,6 +516,39 @@ mod tests {
         ledger.apply_close_fill_delta(1, 400.0);
 
         assert!(ledger.release_close_unfilled(1, "canceled"));
+
+        assert_eq!(
+            ledger.closable_inventory_base(venue, "COTIUSDT"),
+            Some(3_600.0)
+        );
+        assert_eq!(ledger.reserved_for_side(venue, "COTIUSDT", Side::Sell), 0.0);
+        assert!(!ledger.has_reservation(1));
+    }
+
+    #[test]
+    fn orphan_terminal_reconciles_cumulative_fill_before_release() {
+        let mut ledger = CloseInventoryLedger::new();
+        let venue = TradingVenue::BinanceMargin;
+        ledger.reserve_close(venue, "COTIUSDT", Side::Sell, 1_000.0, 1, 4_000.0);
+
+        assert!(ledger.finalize_close_order(1, 400.0, "orphan terminal"));
+
+        assert_eq!(
+            ledger.closable_inventory_base(venue, "COTIUSDT"),
+            Some(3_600.0)
+        );
+        assert_eq!(ledger.reserved_for_side(venue, "COTIUSDT", Side::Sell), 0.0);
+        assert!(!ledger.has_reservation(1));
+    }
+
+    #[test]
+    fn orphan_terminal_does_not_double_apply_known_fill() {
+        let mut ledger = CloseInventoryLedger::new();
+        let venue = TradingVenue::BinanceMargin;
+        ledger.reserve_close(venue, "COTIUSDT", Side::Sell, 1_000.0, 1, 4_000.0);
+        ledger.apply_close_fill_delta(1, 400.0);
+
+        assert!(ledger.finalize_close_order(1, 400.0, "orphan terminal"));
 
         assert_eq!(
             ledger.closable_inventory_base(venue, "COTIUSDT"),

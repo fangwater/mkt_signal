@@ -23,33 +23,22 @@ use signal_common::hyperliquid::{
 };
 
 pub(crate) const ORPHAN_QUERY_LOG_THRESHOLD: u8 = 25;
-pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 3;
-pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 50;
+pub(crate) const COMMIT_QUERY_MAX_ATTEMPTS: u8 = 6;
+pub(crate) const COMMIT_QUERY_BASE_TICKS: u32 = 500;
 /// Commit 查询每档 ×4（`4^query_count`）；非 commit orphan 仍 ×2。
 pub(crate) const COMMIT_QUERY_BACKOFF_SHIFT: u32 = 2;
 pub(crate) const ORPHAN_QUERY_BACKOFF_SHIFT: u32 = 1;
-pub(crate) const BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS: u32 = 100;
-pub(crate) const BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS: u8 = 6;
-pub(crate) const BINANCE_PM_COMMIT_QUERY_BASE_TICKS: u32 = 500;
+pub(crate) const ORPHAN_QUERY_BASE_TICKS: u32 = 100;
+pub(crate) const ORPHAN_QUERY_MAX_TICKS: u32 = 3_200;
 pub(crate) const EXEC_COMMIT_NOT_FOUND_GRACE_US: i64 = 15_000_000;
 const FILL_EPS: f64 = 1e-12;
 
 pub(crate) fn orphan_initial_query_ticks_for(
-    venue: TradingVenue,
-    binance_is_standard: bool,
+    _venue: TradingVenue,
+    _binance_is_standard: bool,
     default_ticks: u32,
 ) -> u32 {
-    if matches!(
-        venue,
-        TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::BinanceCoinFutures
-    ) && !binance_is_standard
-    {
-        BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
-    } else {
-        default_ticks
-    }
+    default_ticks
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,26 +48,10 @@ pub(crate) struct CommitQueryPolicy {
 }
 
 pub(crate) fn commit_query_policy_for(
-    venue: TradingVenue,
-    binance_is_standard: bool,
+    _venue: TradingVenue,
+    _binance_is_standard: bool,
 ) -> CommitQueryPolicy {
-    if matches!(
-        venue,
-        TradingVenue::BinanceMargin
-            | TradingVenue::BinanceFutures
-            | TradingVenue::BinanceCoinFutures
-    ) && !binance_is_standard
-    {
-        CommitQueryPolicy {
-            base_ticks: BINANCE_PM_COMMIT_QUERY_BASE_TICKS,
-            max_attempts: BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
-        }
-    } else {
-        CommitQueryPolicy {
-            base_ticks: COMMIT_QUERY_BASE_TICKS,
-            max_attempts: COMMIT_QUERY_MAX_ATTEMPTS,
-        }
-    }
+    standard_commit_query_policy()
 }
 
 pub(crate) const fn standard_commit_query_policy() -> CommitQueryPolicy {
@@ -903,6 +876,11 @@ impl OrphanOrderTracker {
             let cumulative_base_qty = MonitorChannel::instance()
                 .qty_to_base_at_price(venue, &symbol, cumulative_qty, price)
                 .unwrap_or(0.0);
+            MonitorChannel::instance().finalize_close_inventory_order(
+                client_order_id,
+                cumulative_base_qty,
+                "orphan_terminal",
+            );
             let should_record = owner.source_role == OrphanStrategyRole::Exec
                 || match owner.source_kind {
                     OrphanSourceKind::Open => cumulative_base_qty > eps,
@@ -1327,9 +1305,8 @@ mod tests {
         commit_query_policy_for, format_orphan_query_table,
         hyperliquid_not_found_terminal_barrier_us, infer_query_time_in_force,
         orphan_initial_query_ticks_for, CommitQueryAction, OrphanOrderOwner, OrphanOrderTracker,
-        OrphanQueryState, BINANCE_PM_COMMIT_QUERY_BASE_TICKS, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS,
-        BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS, COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
-        EXEC_COMMIT_NOT_FOUND_GRACE_US,
+        OrphanQueryState, COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_MAX_ATTEMPTS,
+        EXEC_COMMIT_NOT_FOUND_GRACE_US, ORPHAN_QUERY_BASE_TICKS, ORPHAN_QUERY_MAX_TICKS,
     };
     use crate::strategy::manager::{OrphanSourceKind, OrphanStrategyRole};
     use crate::strategy::uniform_order_helper::UniformPublishCtx;
@@ -1390,16 +1367,23 @@ mod tests {
     }
 
     #[test]
-    fn commit_query_budget_uses_x4_backoff_from_one_second() {
+    fn commit_query_budget_uses_six_attempts_with_x4_backoff() {
         let client_order_id = 42;
-        let mut tracker =
-            OrphanOrderTracker::new(COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_BASE_TICKS, 3_200);
+        let query_max_ticks = ORPHAN_QUERY_MAX_TICKS;
+        let mut tracker = OrphanOrderTracker::new(
+            COMMIT_QUERY_BASE_TICKS,
+            COMMIT_QUERY_BASE_TICKS,
+            query_max_ticks,
+        );
         tracker.track_order_id(client_order_id);
 
         let expected_waits = [
             COMMIT_QUERY_BASE_TICKS,
             COMMIT_QUERY_BASE_TICKS * 4,
-            COMMIT_QUERY_BASE_TICKS * 16,
+            query_max_ticks,
+            query_max_ticks,
+            query_max_ticks,
+            query_max_ticks,
         ];
         for (expected_query_count, wait_ticks) in
             (1..=COMMIT_QUERY_MAX_ATTEMPTS).zip(expected_waits)
@@ -1416,7 +1400,7 @@ mod tests {
             );
         }
 
-        for _ in 0..COMMIT_QUERY_BASE_TICKS * 64 {
+        for _ in 0..query_max_ticks {
             assert_eq!(tracker.commit_query_due_now(client_order_id), None);
         }
         assert_eq!(
@@ -1428,8 +1412,12 @@ mod tests {
     #[test]
     fn exec_commit_order_keeps_querying_after_budget_instead_of_closing() {
         let client_order_id = 43;
-        let mut tracker =
-            OrphanOrderTracker::new(COMMIT_QUERY_BASE_TICKS, COMMIT_QUERY_BASE_TICKS, 3_200);
+        let query_max_ticks = ORPHAN_QUERY_MAX_TICKS;
+        let mut tracker = OrphanOrderTracker::new(
+            COMMIT_QUERY_BASE_TICKS,
+            COMMIT_QUERY_BASE_TICKS,
+            query_max_ticks,
+        );
         tracker.adopt_order_owner(
             client_order_id,
             OrphanOrderOwner {
@@ -1448,7 +1436,10 @@ mod tests {
         let waits = [
             COMMIT_QUERY_BASE_TICKS,
             COMMIT_QUERY_BASE_TICKS * 4,
-            COMMIT_QUERY_BASE_TICKS * 16,
+            query_max_ticks,
+            query_max_ticks,
+            query_max_ticks,
+            query_max_ticks,
         ];
         for (expected_query_count, wait_ticks) in (1..=COMMIT_QUERY_MAX_ATTEMPTS).zip(waits) {
             for _ in 0..wait_ticks {
@@ -1463,7 +1454,7 @@ mod tests {
             );
         }
 
-        for _ in 0..COMMIT_QUERY_BASE_TICKS * 64 {
+        for _ in 0..query_max_ticks {
             assert_eq!(tracker.commit_query_due_now(client_order_id), None);
         }
         assert_eq!(
@@ -1487,21 +1478,18 @@ mod tests {
             first_not_found_at_us: 0,
         };
 
-        state.record_not_found(first_not_found_at_us);
-        state.record_not_found(first_not_found_at_us + 1_000_000);
+        for attempt in 0..COMMIT_QUERY_MAX_ATTEMPTS - 1 {
+            state.record_not_found(first_not_found_at_us + i64::from(attempt) * 1_000_000);
+        }
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
             first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
             i64::MIN,
         ));
 
-        state.record_not_found(first_not_found_at_us + 2_000_000);
-        assert!(!state.has_confirmed_not_found(
-            COMMIT_QUERY_MAX_ATTEMPTS,
-            first_not_found_at_us + EXEC_COMMIT_NOT_FOUND_GRACE_US,
-            i64::MIN,
-        ));
-
+        state.record_not_found(
+            first_not_found_at_us + i64::from(COMMIT_QUERY_MAX_ATTEMPTS - 1) * 1_000_000,
+        );
         state.query_count = COMMIT_QUERY_MAX_ATTEMPTS;
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
@@ -1537,9 +1525,9 @@ mod tests {
             consecutive_not_found: 0,
             first_not_found_at_us: 0,
         };
-        state.record_not_found(create_time_us + 1_000_000);
-        state.record_not_found(create_time_us + 2_000_000);
-        state.record_not_found(create_time_us + 3_000_000);
+        for attempt in 1..=COMMIT_QUERY_MAX_ATTEMPTS {
+            state.record_not_found(create_time_us + i64::from(attempt) * 1_000_000);
+        }
 
         assert!(!state.has_confirmed_not_found(
             COMMIT_QUERY_MAX_ATTEMPTS,
@@ -1581,16 +1569,20 @@ mod tests {
     #[test]
     fn non_commit_query_uses_exponential_backoff() {
         let client_order_id = 7;
-        let mut tracker = OrphanOrderTracker::new(25, 25, 3_200);
+        let mut tracker = OrphanOrderTracker::new(
+            ORPHAN_QUERY_BASE_TICKS,
+            ORPHAN_QUERY_BASE_TICKS,
+            ORPHAN_QUERY_MAX_TICKS,
+        );
         tracker.track_order_id(client_order_id);
 
-        for _ in 0..25 {
+        for _ in 0..ORPHAN_QUERY_BASE_TICKS {
             assert!(!tracker.query_due_now(client_order_id));
         }
         assert!(tracker.query_due_now(client_order_id));
         assert_eq!(tracker.query_count(client_order_id), Some(1));
 
-        for _ in 0..50 {
+        for _ in 0..ORPHAN_QUERY_BASE_TICKS * 2 {
             assert!(!tracker.query_due_now(client_order_id));
         }
         assert!(tracker.query_due_now(client_order_id));
@@ -1598,39 +1590,33 @@ mod tests {
     }
 
     #[test]
-    fn binance_pm_orphan_initial_query_starts_at_two_seconds() {
-        assert_eq!(
-            orphan_initial_query_ticks_for(TradingVenue::BinanceFutures, false, 25),
-            BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
-        );
-        assert_eq!(
-            orphan_initial_query_ticks_for(TradingVenue::BinanceMargin, false, 25),
-            BINANCE_PM_ORPHAN_INITIAL_QUERY_TICKS
-        );
-        assert_eq!(
-            orphan_initial_query_ticks_for(TradingVenue::BinanceFutures, true, 25),
-            25
-        );
-        assert_eq!(
-            orphan_initial_query_ticks_for(TradingVenue::GateFutures, false, 25),
-            25
-        );
+    fn all_venues_keep_the_configured_orphan_initial_query_delay() {
+        for (venue, binance_is_standard) in [
+            (TradingVenue::BinanceFutures, false),
+            (TradingVenue::BinanceMargin, true),
+            (TradingVenue::GateFutures, false),
+            (TradingVenue::BitgetFutures, false),
+        ] {
+            assert_eq!(
+                orphan_initial_query_ticks_for(venue, binance_is_standard, ORPHAN_QUERY_BASE_TICKS,),
+                ORPHAN_QUERY_BASE_TICKS
+            );
+        }
     }
 
     #[test]
-    fn binance_pm_commit_query_uses_longer_budget() {
-        let pm_policy = commit_query_policy_for(TradingVenue::BinanceFutures, false);
-        assert_eq!(pm_policy.base_ticks, BINANCE_PM_COMMIT_QUERY_BASE_TICKS);
-        assert_eq!(pm_policy.max_attempts, BINANCE_PM_COMMIT_QUERY_MAX_ATTEMPTS);
-        assert_eq!(pm_policy.base_ticks, 500);
-        assert_eq!(pm_policy.max_attempts, 6);
-
-        let standard_policy = commit_query_policy_for(TradingVenue::BinanceFutures, true);
-        assert_eq!(standard_policy.base_ticks, COMMIT_QUERY_BASE_TICKS);
-        assert_eq!(standard_policy.max_attempts, COMMIT_QUERY_MAX_ATTEMPTS);
-
-        let non_binance_policy = commit_query_policy_for(TradingVenue::GateFutures, false);
-        assert_eq!(non_binance_policy.base_ticks, COMMIT_QUERY_BASE_TICKS);
-        assert_eq!(non_binance_policy.max_attempts, COMMIT_QUERY_MAX_ATTEMPTS);
+    fn all_venues_use_the_long_commit_query_budget() {
+        for (venue, binance_is_standard) in [
+            (TradingVenue::BinanceFutures, false),
+            (TradingVenue::BinanceFutures, true),
+            (TradingVenue::GateFutures, false),
+            (TradingVenue::BitgetFutures, false),
+        ] {
+            let policy = commit_query_policy_for(venue, binance_is_standard);
+            assert_eq!(policy.base_ticks, COMMIT_QUERY_BASE_TICKS);
+            assert_eq!(policy.max_attempts, COMMIT_QUERY_MAX_ATTEMPTS);
+            assert_eq!(policy.base_ticks, 500);
+            assert_eq!(policy.max_attempts, 6);
+        }
     }
 }
