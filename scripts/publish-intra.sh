@@ -25,7 +25,7 @@ Options:
 
 Supported environments:
   bybit-intra-arb01, bybit-intra-arb02 -> SG
-  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
+  okex-intra-arb01, binance-intra-arb01, binance-intra-arb02 -> jp-meta-elvpn
 
 Unless --check-only or --skip-build is used, every required release binary is
 built before the first SSH call. Files are staged, SHA-256 checked, rechecked
@@ -98,6 +98,25 @@ for command_name in ssh scp sha256sum awk mktemp readlink; do
     exit 1
   fi
 done
+
+if [[ "$CHECK_ONLY" -eq 0 ]]; then
+  # shellcheck source=scripts/intra_release_guard.sh
+  source "$ROOT_DIR/scripts/intra_release_guard.sh"
+  for release_name in \
+    trade_signal "$INTRA_ACCOUNT_MONITOR_BIN" viz_server pre_trade trade_engine persist_manager; do
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      "$release_name" \
+      "$ROOT_DIR/target/release/$release_name"
+  done
+  if [[ "$INTRA_EXEC_BACKEND" == "ltp" ]]; then
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_open_orders \
+      "$ROOT_DIR/target/release/rapidx_open_orders"
+  fi
+  echo "[INFO] local release guard passed release_id=$(intra_release_id "$ROOT_DIR/target/release")"
+fi
 
 intra_configure_transport "$ROOT_DIR" "$SSH_KEY"
 SSH=("${INTRA_SSH[@]}")
@@ -184,6 +203,7 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
 fi
 
 LOCAL_RELATIVE=(
+  "target/release/intra-release.manifest"
   "target/release/trade_signal"
   "target/release/${INTRA_ACCOUNT_MONITOR_BIN}"
   "target/release/viz_server"
@@ -201,6 +221,8 @@ LOCAL_RELATIVE=(
   "scripts/start_intra_config_server.sh"
   "scripts/stop_intra_config_server.sh"
   "scripts/process_match_lib.sh"
+  "scripts/intra_release_guard.sh"
+  "scripts/execution_backend_lib.sh"
   "intra_scripts/intra_monitor_process_lib.sh"
   "intra_scripts/start_intra_monitors.sh"
   "intra_scripts/stop_intra_monitors.sh"
@@ -216,6 +238,7 @@ LOCAL_RELATIVE=(
   "intra_scripts/stop_intra_viz_server.sh"
 )
 UPLOAD_NAMES=(
+  "intra-release.manifest"
   "trade_signal"
   "$INTRA_ACCOUNT_MONITOR_BIN"
   "viz_server"
@@ -233,6 +256,8 @@ UPLOAD_NAMES=(
   "start_intra_config_server.sh"
   "stop_intra_config_server.sh"
   "process_match_lib.sh"
+  "intra_release_guard.sh"
+  "execution_backend_lib.sh"
   "intra_monitor_process_lib.sh"
   "start_intra_monitors.sh"
   "stop_intra_monitors.sh"
@@ -273,18 +298,23 @@ case "$INTRA_EXCHANGE" in
     UPLOAD_NAMES+=("cancel_okex_pm_orders.py")
     ;;
   binance)
-    LOCAL_RELATIVE+=(
-      "scripts/cancel_binance_std_orders.py"
-      "scripts/binance_cancel_all_std_spot_orders.py"
-      "scripts/binance_cancel_all_std_um_ws_orders.py"
-      "scripts/binance_local_ip.py"
-    )
-    UPLOAD_NAMES+=(
-      "cancel_binance_std_orders.py"
-      "binance_cancel_all_std_spot_orders.py"
-      "binance_cancel_all_std_um_ws_orders.py"
-      "binance_local_ip.py"
-    )
+    if [[ "$INTRA_EXEC_BACKEND" == "ltp" ]]; then
+      LOCAL_RELATIVE+=("target/release/rapidx_open_orders")
+      UPLOAD_NAMES+=("rapidx_open_orders")
+    else
+      LOCAL_RELATIVE+=(
+        "scripts/cancel_binance_std_orders.py"
+        "scripts/binance_cancel_all_std_spot_orders.py"
+        "scripts/binance_cancel_all_std_um_ws_orders.py"
+        "scripts/binance_local_ip.py"
+      )
+      UPLOAD_NAMES+=(
+        "cancel_binance_std_orders.py"
+        "binance_cancel_all_std_spot_orders.py"
+        "binance_cancel_all_std_um_ws_orders.py"
+        "binance_local_ip.py"
+      )
+    fi
     ;;
 esac
 if [[ "${#LOCAL_RELATIVE[@]}" -ne "${#UPLOAD_NAMES[@]}" ]]; then
@@ -344,13 +374,15 @@ check_remote_stopped
 
 "${SSH[@]}" "$INTRA_SSH_HOST" bash -s -- \
   "$REMOTE_DIR" "$REMOTE_STAGE" "$INTRA_EXCHANGE" \
-  "$INTRA_ACCOUNT_MONITOR_BIN" "$INTRA_ACCOUNT_MONITOR_DEST" <<'REMOTE_PUBLISH'
+  "$INTRA_ACCOUNT_MONITOR_BIN" "$INTRA_ACCOUNT_MONITOR_DEST" \
+  "$INTRA_EXEC_BACKEND" <<'REMOTE_PUBLISH'
 set -euo pipefail
 target="$1"
 stage="$2"
 exchange="$3"
 account_monitor_bin="$4"
 account_monitor_dest="$5"
+exec_backend="$6"
 case "$stage" in
   "$target"/.publish-intra.*) ;;
   *) echo "[ERROR] invalid staging path: $stage" >&2; exit 1 ;;
@@ -362,6 +394,7 @@ esac
 publish_file() {
   local upload_name="$1"
   local destination="$2"
+  local mode="${3:-755}"
   local source="$stage/$upload_name"
   local expected=""
   local actual=""
@@ -370,13 +403,14 @@ publish_file() {
   [[ -n "$expected" && -f "$source" ]]
   actual="$(sha256sum "$source" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]]
-  chmod 755 "$source"
+  chmod "$mode" "$source"
   mv -f "$source" "$target/$destination"
   actual="$(sha256sum "$target/$destination" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]]
   echo "[INFO] published $destination sha256=$actual"
 }
 
+publish_file intra-release.manifest intra-release.manifest 644
 publish_file trade_signal trade_signal
 publish_file "$account_monitor_bin" "$account_monitor_dest"
 publish_file viz_server viz_server
@@ -394,6 +428,8 @@ publish_file sync_rolling_metrics_params.py scripts/sync_rolling_metrics_params.
 publish_file start_intra_config_server.sh scripts/start_intra_config_server.sh
 publish_file stop_intra_config_server.sh scripts/stop_intra_config_server.sh
 publish_file process_match_lib.sh scripts/process_match_lib.sh
+publish_file intra_release_guard.sh scripts/intra_release_guard.sh
+publish_file execution_backend_lib.sh scripts/execution_backend_lib.sh
 publish_file intra_monitor_process_lib.sh intra_scripts/intra_monitor_process_lib.sh
 publish_file start_intra_monitors.sh intra_scripts/start_intra_monitors.sh
 publish_file stop_intra_monitors.sh intra_scripts/stop_intra_monitors.sh
@@ -407,6 +443,9 @@ publish_file start_intra_persist_manager.sh intra_scripts/start_intra_persist_ma
 publish_file stop_intra_persist_manager.sh intra_scripts/stop_intra_persist_manager.sh
 publish_file start_intra_viz_server.sh intra_scripts/start_intra_viz_server.sh
 publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
+if [[ "$exec_backend" == "ltp" ]]; then
+  publish_file rapidx_open_orders rapidx_open_orders
+fi
 
 case "$exchange" in
   bybit)

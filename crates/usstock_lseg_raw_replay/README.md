@@ -15,6 +15,28 @@
 - 生产 replay 失败时先删除自身未完成的 `.building`，再 panic；错误日志保留，正式目录不会发布。
 - `quote_reference.py` 和 `event_reference.py` 是 Python 正确性基线，与 Rust 共用 golden bytes。
 
+方向实现以 `direction_reference.py` 为基线，Rust 在逐事件 replay 阶段写定
+B/S/N；场外 N 优先，其余 ORDER_SIDE=1/2 强制取反，再走本场所触价、NBBO、
+midpoint、tick、前序证据、默认 B。method/estimated/forced 随 TradeMsg 保存。
+完整口径与限制见 `../preprocess/data_format/lseg/usstock_raw_trade_side.md`
+（相对仓库根目录）。导出只读取保存的方向，并恢复跨 venue 的 source_order。
+包含撤销/重述的 RIC 默认禁止未净额还原导出；`--allow-uncorrected-trades`
+仅允许带明确标记的诊断样本。
+
+RAW replay 使用有序读线程和固定 RIC worker，不再按 shard 独立维护状态。
+`direction_calendar` 为冻结连续区间 CSV（open_ts/close_ts，UTC 秒半开区间）；
+无可用区间时禁用盘口/tick 历史复用并明确标记。并行吞吐尚未做全量压测，
+本次实现不自动重启生产作业，预先存在的输出目录不会被启动失败清理删除。
+
+现有 shard 可混合多个 RIC，manifest 仅记录 shard 首尾 RIC，不能直接用来
+安全构造 RIC 任务。后续性能优化采用两阶段：先并行解析并生成保留逐事件、
+source_order 的按 RIC staging 和完整 segment manifest，再按 RIC 顺序 replay、
+跨 RIC 并行。不能在当前秒级 RocksDB 完成后补方向，因为秒内早期 Quote
+已经丢失。parsed staging 已在包含 ARKG.BAT/ARKK.BAT 的真实混合 shard 上
+验证：数据区与直接 replay 逐字节一致；首次 parser+replay 因额外 I/O 略慢，
+但 staging 可复用，单独 replay 快 34.1%。启动时会并行复核所有 segment 的
+SHA-256，具体测量记录见口径文档。
+
 ## 运行
 
 ```bash
@@ -46,7 +68,7 @@ key 固定 17 字节：`msg_type:u8 | ts_utc_ns:u64(be) | source_order:u64(be)`�
 高频消息使用紧凑 typed value：
 
 - `0x01 QuoteMsg`：40 字节；
-- `0x02 TradeMsg`：64 字节；
+- `0x02 TradeMsg`：112 字节；保留 ORDER_ID/ORDER_SIDE/PRNTYP/HELD_T_IND/TIMACT_MS，方向及 N 原因见 `../../../preprocess/data_format/lseg/usstock_raw_trade_side.md`。旧 64 字节库必须重建；
 - `0x10 TradeCancelMsg`：72 字节；
 - `0x11 PreviousDayTradeMsg`：72 字节；
 - `0x20 QuoteStateMsg`：24 字节。
@@ -61,7 +83,14 @@ key 固定 17 字节：`msg_type:u8 | ts_utc_ns:u64(be) | source_order:u64(be)`�
 
 包含 `OFF_CLOSE` 的 `UPDATE / CORRECTION` 复用 304 字节 `OfficialCloseStateMsg`。它在 RocksDB 中追加历史事件；消费时仅覆盖本次出现的固定槽位，未出现槽位保持旧状态，只有 `REFRESH` 重置整份状态。
 
-生产 replay 默认 `workers = 16`。16 个 shard worker 各自顺序解压、解析并维护本地 Quote 状态、`WriteBatch` 和 census，共同写入同一座 `<rocksdb>.building`；首次创建列族时使用共享锁。跨 shard 的同秒 Quote 由 RocksDB merge 按 `source_order` 确定性选择最后一条。全部 worker 成功退出后才统一 finalize Quote、写 metadata、删除临时列族并原子发布，不会生成 16 座库。
+省略配置时 replay 的代码默认值是 `workers = 16`；当前生产配置
+`raw_rocksdb_parsed.toml` 明确使用 `workers = 32`。生产先由并行 parser 生成
+按 RIC 分区且保留跨 part/shard `source_order` 的 parsed staging，再把每个 RIC
+固定分给一个 replay worker 严格顺序处理；不同 RIC 并发维护 Quote 状态、
+`WriteBatch` 和 census，共同写入同一座 `<rocksdb>.building`。首次创建列族时
+使用共享锁，同秒 Quote 由 RocksDB merge 按 `source_order` 确定性选择最后一条。
+全部 worker 成功退出后才统一 finalize Quote、写 metadata、删除临时列族并
+原子发布，不会为每个 worker 生成独立数据库。
 
 正式入口对目标持有进程级文件锁。第二个同目标进程会在写库前失败，且没有清理权；任一 worker 返回错误或发生 panic 时，主线程先 join 全部 worker，再清理本进程的 `.building`。
 

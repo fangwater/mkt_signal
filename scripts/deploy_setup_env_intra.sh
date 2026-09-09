@@ -17,7 +17,7 @@ source "$ROOT_DIR/scripts/deploy_intra_lib.sh"
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_setup_env_intra.sh --exchange <binance> [--env-suffix intra-trade] [--env-name binance-intra-trade] [--namespace <ns>]
+用法: scripts/deploy_setup_env_intra.sh --exchange <binance> [--exec-backend native|ltp] [--env-suffix intra-trade] [--env-name binance-intra-trade] [--namespace <ns>]
 
 示例:
   scripts/deploy_setup_env_intra.sh --exchange binance
@@ -35,6 +35,7 @@ ENV_NAME=""
 NAMESPACE=""
 EXCHANGE=""
 ENV_SUFFIX_EXPLICIT="0"
+EXEC_BACKEND="native"
 
 # 从 env_name 推 exchange + env_suffix（intra 唯一格式：<exchange>-intra-<tag>）
 infer_meta_from_env_name() {
@@ -73,6 +74,10 @@ while [[ $# -gt 0 ]]; do
       EXCHANGE="${2:-}"
       shift 2
       ;;
+    --exec-backend)
+      EXEC_BACKEND="${2:-}"
+      shift 2
+      ;;
     *)
       echo "[ERROR] 未知参数: $1"
       usage
@@ -100,6 +105,15 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 
 EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
+case "${EXEC_BACKEND,,}" in
+  native) EXEC_BACKEND="native" ;;
+  ltp|rapidx) EXEC_BACKEND="ltp" ;;
+  *) echo "[ERROR] --exec-backend must be native or ltp" >&2; exit 1 ;;
+esac
+if [[ "$EXEC_BACKEND" == "ltp" && ! "$EXCHANGE" =~ ^(binance|okex)$ ]]; then
+  echo "[ERROR] LTP intra only supports Binance/OKX" >&2
+  exit 1
+fi
 
 read -r OPEN_VENUE HEDGE_VENUE <<<"$(intra_venues_for_exchange "$EXCHANGE")"
 
@@ -114,6 +128,17 @@ fi
 
 emit_creds_block() {
   local ex="$1"
+  if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+    cat <<EOF
+
+# RapidX / LTP portfolio execution
+export TRADE_ENGINE_EXEC_BACKEND_MAP='${ex}=ltp'
+export LTP_API_KEY="\${LTP_API_KEY:-}"
+export LTP_API_SECRET="\${LTP_API_SECRET:-}"
+export LTP_PORTFOLIO_ID="\${LTP_PORTFOLIO_ID:-}"
+EOF
+    return
+  fi
   case "$ex" in
     okex)
       cat <<'EOF'
@@ -171,7 +196,11 @@ EOF
 }
 
 TARGET_DIR="$HOME/${ENV_NAME}"
-mkdir -p "$TARGET_DIR"
+mkdir -p "$TARGET_DIR/config"
+if [[ ! -f "$TARGET_DIR/config/iceoryx2.toml" ]]; then
+  install -m 644 "$ROOT_DIR/config/iceoryx2.toml" "$TARGET_DIR/config/iceoryx2.toml"
+  echo "[INFO] iceoryx2 config deployed to $TARGET_DIR/config/iceoryx2.toml"
+fi
 
 ENV_FILE="$TARGET_DIR/env.sh"
 if [[ -f "$ENV_FILE" ]]; then
@@ -185,6 +214,7 @@ else
 # exchange: $EXCHANGE
 # open venue: $OPEN_VENUE
 # hedge venue: $HEDGE_VENUE
+# execution backend: $EXEC_BACKEND
 # 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 # IceOryx 命名空间（非 dat_pbs 通道会被加上该前缀）

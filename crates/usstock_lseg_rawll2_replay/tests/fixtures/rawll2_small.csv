@@ -1,0 +1,6 @@
+#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs
+ABBV.N,Market Price,2021-07-01T03:46:06.594175513Z,-4,Legacy Level 2,UPDATE,CORRECTION,,,,2508,,45744,2
+,,,,FID,15,,CURRENCY,840,USD
+,,,,FID,436,,BEST_BID1,113.15,
+ABBV.N,Market Price,2021-07-01T04:23:25.122199940Z,-4,Legacy Level 2,UPDATE,UNSPECIFIED,,,,2508,,45776,1
+,,,,FID,6614,,TRD_STATUS,0,"  "

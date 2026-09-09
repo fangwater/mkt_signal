@@ -9,7 +9,16 @@ from typing import Iterable, Mapping
 from reference import Field, Message
 
 
-TRADE = struct.Struct("<QQIIqQQQ4sHH")
+TRADE = struct.Struct("<QQIIqQQQ4sHH24sHBBBB8sHIB3x")
+
+
+def classify_trade_direction(venue: str, order_side: int) -> tuple[int, int, int]:
+    exchanges = {"NAS", "NYS", "PSE", "ASE", "BAT", "BTY", "DEA", "DEX",
+                 "BOS", "CIN", "IEX", "MID", "MMX", "MPE", "XPH"}
+    facilities = {"ADF", "TRF", "FINN", "FINY", "FINC", "XADF"}
+    venue_class = 1 if venue in exchanges else 2 if venue in facilities else 0
+    reason = 1 if venue_class == 2 else 4 if order_side not in (0, 65535) else 2 if venue_class == 1 else 3
+    return ord("N"), reason, venue_class
 CORRECTION = struct.Struct("<QQIIqQQQ4sHHi4x")
 SLOT_VALUE_LEN = 24
 SLOT_ENUM_LEN = 8
@@ -67,12 +76,25 @@ class TradeValue:
     condition: bytes
     flags: int
     quality_code: int
+    order_id: bytes = b"\xff" * 24
+    order_side: int = 65535
+    aggressor_side: int = ord("N")
+    unknown_reason: int = 3
+    venue_class: int = 0
+    print_type: bytes = b"\xff" * 8
+    held_trade_indicator: int = 65535
+    activity_ms: int = 4294967295
+    side_method: int = 0
+    side_flags: int = 0
 
     def encode(self) -> bytes:
         return TRADE.pack(
             self.source_ts_utc_ns, self.source_order, self.event_ms,
             self.exchange_id, self.price, self.size, self.trade_id,
             self.sequence, self.condition, self.flags, self.quality_code,
+            self.order_id, self.order_side, self.aggressor_side,
+            self.unknown_reason, self.venue_class, self.side_method, self.print_type,
+            self.held_trade_indicator, self.activity_ms, self.side_flags,
         )
 
 

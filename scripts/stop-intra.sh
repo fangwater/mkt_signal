@@ -23,7 +23,7 @@ Options:
 
 Supported environments:
   bybit-intra-arb01, bybit-intra-arb02 -> SG
-  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
+  okex-intra-arb01, binance-intra-arb01, binance-intra-arb02 -> jp-meta-elvpn
 
 Live stop order:
   1. trade_engine, followed by an executable-level stopped check
@@ -111,7 +111,7 @@ echo "[INFO] stop target host=$INTRA_SSH_HOST exchange=$INTRA_EXCHANGE env=$ENV_
 intra_remote_bash \
   "$REMOTE_DIR" "$ENV_NAME" "$INTRA_EXCHANGE" \
   "$INTRA_ACCOUNT_MONITOR_DEST" "$INTRA_ACCOUNT_MONITOR_BIN" \
-  "$CHECK_ONLY" <<'REMOTE_STOP'
+  "$CHECK_ONLY" "$INTRA_EXEC_BACKEND" <<'REMOTE_STOP'
 set -euo pipefail
 
 target="$1"
@@ -120,6 +120,7 @@ exchange="$3"
 account_monitor_dest="$4"
 account_monitor_bin="$5"
 check_only="$6"
+expected_backend="$7"
 scripts_dir="$target/scripts"
 intra_scripts_dir="$target/intra_scripts"
 
@@ -132,7 +133,19 @@ if [[ "$(basename "$target")" != "$env_name" || "$env_name" != "${exchange}-intr
   exit 1
 fi
 
-case "$exchange" in
+execution_backend_lib="$scripts_dir/execution_backend_lib.sh"
+if [[ ! -f "$execution_backend_lib" ]]; then
+  echo "[ERROR] required remote file not found: $execution_backend_lib" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$execution_backend_lib"
+
+if [[ "$expected_backend" == "ltp" ]]; then
+  cancel_script="$target/rapidx_open_orders"
+  cancel_command=("$cancel_script" --exchange "$exchange")
+  cancel_scope="rapidx_portfolio_spot_and_perp"
+else case "$exchange" in
   bybit)
     cancel_script="$scripts_dir/cancel_bybit_pm_orders.py"
     cancel_args=(--scope both --spot-order-filters all)
@@ -153,6 +166,7 @@ case "$exchange" in
     exit 1
     ;;
 esac
+fi
 
 required_files=(
   "$target/env.sh"
@@ -166,7 +180,7 @@ required_files=(
   "$intra_scripts_dir/stop_intra_persist_manager.sh"
   "$intra_scripts_dir/stop_intra_viz_server.sh"
 )
-if [[ "$exchange" == "binance" ]]; then
+if [[ "$exchange" == "binance" && "$expected_backend" != "ltp" ]]; then
   required_files+=(
     "$scripts_dir/binance_cancel_all_std_spot_orders.py"
     "$scripts_dir/binance_cancel_all_std_um_ws_orders.py"
@@ -179,7 +193,7 @@ for required_file in "${required_files[@]}"; do
     exit 1
   fi
 done
-for required_command in bash python3 pmdaemon npx ps readlink grep; do
+for required_command in bash pmdaemon npx ps readlink grep; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "[ERROR] required remote command not found: $required_command" >&2
     exit 1
@@ -192,7 +206,12 @@ done
   # shellcheck disable=SC1090
   source "$target/env.sh" >/dev/null 2>&1
   set +a
-  case "$exchange" in
+  actual_backend="$(execution_backend_for_exchange "$exchange")"
+  [[ "$actual_backend" == "$expected_backend" ]]
+  if [[ "$expected_backend" == "ltp" ]]; then
+    [[ -n "${LTP_API_KEY:-}" && -n "${LTP_API_SECRET:-}" ]]
+    [[ "${LTP_PORTFOLIO_ID:-}" =~ ^[0-9]{1,64}$ ]]
+  else case "$exchange" in
     bybit)
       [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]]
       ;;
@@ -204,6 +223,7 @@ done
       [[ "${BINANCE_ACCOUNT_MODE:-}" == "STANDARD" ]]
       ;;
   esac
+  fi
 ) || {
   echo "[ERROR] $target/env.sh does not provide valid $exchange credentials/account mode" >&2
   exit 1
@@ -296,7 +316,11 @@ echo "[INFO] trade_engine confirmed stopped"
 echo
 echo "[STEP] cancel all $exchange futures and spot/margin open orders"
 set +e
-cancel_output="$(python3 "$cancel_script" "${cancel_args[@]}" --execute </dev/null 2>&1)"
+if [[ "$expected_backend" == "ltp" ]]; then
+  cancel_output="$("${cancel_command[@]}" --execute </dev/null 2>&1)"
+else
+  cancel_output="$(python3 "$cancel_script" "${cancel_args[@]}" --execute </dev/null 2>&1)"
+fi
 cancel_status=$?
 set -e
 if [[ -n "$cancel_output" ]]; then
@@ -314,7 +338,11 @@ fi
 echo
 echo "[STEP] verify $exchange futures and spot/margin order scopes are empty"
 set +e
-verify_output="$(python3 "$cancel_script" "${cancel_args[@]}" </dev/null 2>&1)"
+if [[ "$expected_backend" == "ltp" ]]; then
+  verify_output="$("${cancel_command[@]}" </dev/null 2>&1)"
+else
+  verify_output="$(python3 "$cancel_script" "${cancel_args[@]}" </dev/null 2>&1)"
+fi
 verify_status=$?
 set -e
 if [[ -n "$verify_output" ]]; then
@@ -336,10 +364,18 @@ case "$exchange" in
     fi
     ;;
   binance)
-    if ! grep -Fq '[plan] symbols=0 open_orders=0 execute=False' <<<"$verify_output" || \
-       ! grep -Fq '[plan] no open UM futures orders found' <<<"$verify_output"; then
-      echo "[ERROR] post-cancel verification did not confirm empty Binance Spot and UM scopes" >&2
-      exit 1
+    if [[ "$expected_backend" == "ltp" ]]; then
+      if ! grep -Fq '[plan] backend=ltp exchange=binance spot_open_orders=0 perp_open_orders=0 execute=false' <<<"$verify_output" || \
+         ! grep -Fq '[plan] no RapidX spot or perpetual open orders found' <<<"$verify_output"; then
+        echo "[ERROR] post-cancel verification did not confirm empty RapidX Spot and PERP scopes" >&2
+        exit 1
+      fi
+    else
+      if ! grep -Fq '[plan] symbols=0 open_orders=0 execute=False' <<<"$verify_output" || \
+         ! grep -Fq '[plan] no open UM futures orders found' <<<"$verify_output"; then
+        echo "[ERROR] post-cancel verification did not confirm empty Binance Spot and UM scopes" >&2
+        exit 1
+      fi
     fi
     ;;
 esac

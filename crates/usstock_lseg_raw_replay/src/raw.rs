@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use csv::StringRecord;
-use std::io::Read;
+use std::io::{Cursor, ErrorKind, Read, Write};
 
 pub const RAW_HEADER: [&str; 14] = [
     "#RIC",
@@ -37,6 +37,142 @@ pub struct RawMessage {
     pub source_sequence: String,
     pub fields: Vec<RawField>,
     declared_fields: usize,
+}
+
+const PARSED_MESSAGE_MAX: usize = 16 * 1024 * 1024;
+
+fn put_string(out: &mut Vec<u8>, value: &str) -> Result<()> {
+    let len = u32::try_from(value.len()).context("parsed RAW string exceeds u32")?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn take_u32(input: &mut Cursor<&[u8]>) -> Result<u32> {
+    let mut bytes = [0; 4];
+    input.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn take_u64(input: &mut Cursor<&[u8]>) -> Result<u64> {
+    let mut bytes = [0; 8];
+    input.read_exact(&mut bytes)?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn take_string(input: &mut Cursor<&[u8]>) -> Result<String> {
+    let len = usize::try_from(take_u32(input)?)?;
+    if len > PARSED_MESSAGE_MAX
+        || len
+            > input
+                .get_ref()
+                .len()
+                .saturating_sub(input.position() as usize)
+    {
+        bail!("invalid parsed RAW string length {len}");
+    }
+    let start = usize::try_from(input.position())?;
+    let end = start + len;
+    input.set_position(u64::try_from(end)?);
+    Ok(std::str::from_utf8(&input.get_ref()[start..end])?.to_owned())
+}
+
+/// Compact lossless representation after CSV boundary/FID validation.
+pub fn write_parsed_message<W: Write>(writer: &mut W, message: &RawMessage) -> Result<u64> {
+    let mut payload = Vec::with_capacity(256 + message.fields.len() * 40);
+    payload.extend_from_slice(&message.source_row.to_le_bytes());
+    for value in [
+        &message.ric,
+        &message.date_time,
+        &message.message_class,
+        &message.update_type,
+        &message.source_sequence,
+    ] {
+        put_string(&mut payload, value)?;
+    }
+    payload.extend_from_slice(&u32::try_from(message.fields.len())?.to_le_bytes());
+    for field in &message.fields {
+        payload.extend_from_slice(&field.fid.to_le_bytes());
+        put_string(&mut payload, &field.name)?;
+        put_string(&mut payload, &field.value)?;
+        put_string(&mut payload, &field.enum_value)?;
+    }
+    if payload.len() > PARSED_MESSAGE_MAX {
+        bail!("parsed RAW message exceeds {PARSED_MESSAGE_MAX} bytes");
+    }
+    writer.write_all(&u32::try_from(payload.len())?.to_le_bytes())?;
+    writer.write_all(&payload)?;
+    Ok(u64::try_from(payload.len() + 4)?)
+}
+
+pub fn read_parsed_messages<R, F>(
+    mut reader: R,
+    expected_ric: &str,
+    mut on_message: F,
+) -> Result<u64>
+where
+    R: Read,
+    F: FnMut(RawMessage) -> Result<()>,
+{
+    let mut count = 0;
+    loop {
+        let mut length = [0; 4];
+        let first = match reader.read(&mut length[..1]) {
+            Ok(0) => return Ok(count),
+            Ok(1) => 1,
+            Ok(_) => unreachable!(),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if let Err(error) = reader.read_exact(&mut length[first..]) {
+            if error.kind() == ErrorKind::UnexpectedEof {
+                bail!("truncated parsed RAW length after {count} messages");
+            }
+            return Err(error.into());
+        }
+        let len = usize::try_from(u32::from_le_bytes(length))?;
+        if len == 0 || len > PARSED_MESSAGE_MAX {
+            bail!("invalid parsed RAW message length {len}");
+        }
+        let mut payload = vec![0; len];
+        reader
+            .read_exact(&mut payload)
+            .context("truncated parsed RAW payload")?;
+        let mut input = Cursor::new(payload.as_slice());
+        let source_row = take_u64(&mut input)?;
+        let ric = take_string(&mut input)?;
+        let date_time = take_string(&mut input)?;
+        let message_class = take_string(&mut input)?;
+        let update_type = take_string(&mut input)?;
+        let source_sequence = take_string(&mut input)?;
+        if ric != expected_ric {
+            bail!("parsed segment expected {expected_ric}, found {ric}");
+        }
+        let fields_len = usize::try_from(take_u32(&mut input)?)?;
+        let mut fields = Vec::with_capacity(fields_len);
+        for _ in 0..fields_len {
+            fields.push(RawField {
+                fid: take_u32(&mut input)?,
+                name: take_string(&mut input)?,
+                value: take_string(&mut input)?,
+                enum_value: take_string(&mut input)?,
+            });
+        }
+        if input.position() != u64::try_from(payload.len())? {
+            bail!("parsed RAW payload has trailing bytes");
+        }
+        on_message(RawMessage {
+            source_row,
+            ric,
+            date_time,
+            message_class,
+            update_type,
+            source_sequence,
+            fields,
+            declared_fields: fields_len,
+        })?;
+        count += 1;
+    }
 }
 
 impl RawMessage {

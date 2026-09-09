@@ -1,9 +1,15 @@
-//! Exchange-default continuous sessions. Parser does not filter with these.
+//! Shared output-window classification for domestic futures.
 //!
-//! Mirrors `cn_futures.session`. Product-specific calendars are not loaded here.
-//! Keep the clocks for a later reader; `process_instrument` writes every source row.
+//! Replay staging writes every source row. Parquet exporters call this module
+//! to exclude opening auctions and the known post-close tail of equity-index
+//! futures. Other closing times remain source-driven until product calendars
+//! are available.
 
-use chrono::NaiveTime;
+use chrono::{NaiveTime, TimeZone, Timelike, Utc};
+use chrono_tz::Asia::Shanghai;
+use chrono_tz::Tz;
+
+use crate::universe::product_id;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Exchange {
@@ -90,62 +96,82 @@ pub fn is_auction(clock: NaiveTime, exchange: Exchange) -> bool {
     }
 }
 
-pub fn continuous_segment(clock: NaiveTime, exchange: Exchange) -> Option<&'static str> {
-    if is_auction(clock, exchange) {
-        return None;
-    }
-    match exchange {
-        Exchange::Ccfx => {
-            if in_window(clock, t(9, 30), t(11, 30)) {
-                Some("day_am")
-            } else if in_window(clock, t(13, 0), t(15, 0)) {
-                Some("day_pm")
-            } else {
-                None
-            }
-        }
-        _ => {
-            if in_window(clock, t(21, 0), t(2, 30)) {
-                Some("night")
-            } else if in_window(clock, t(9, 0), t(10, 15)) {
-                Some("day_am1")
-            } else if in_window(clock, t(10, 30), t(11, 30)) {
-                Some("day_am2")
-            } else if in_window(clock, t(13, 30), t(15, 0)) {
-                Some("day_pm")
-            } else {
-                None
-            }
-        }
-    }
+pub fn shanghai(ts_sec: i64) -> chrono::DateTime<Tz> {
+    Utc.timestamp_opt(ts_sec, 0)
+        .single()
+        .expect("unix second")
+        .with_timezone(&Shanghai)
 }
 
-pub fn skip_output(clock: NaiveTime, exchange: Exchange) -> bool {
-    continuous_segment(clock, exchange).is_none()
+pub fn is_auction_ts(ts_sec: i64, exchange: Exchange) -> bool {
+    is_auction(shanghai(ts_sec).time(), exchange)
+}
+
+fn product_key(contract_id: &str) -> String {
+    product_id(contract_id).unwrap_or_else(|| contract_id.trim().to_ascii_uppercase())
+}
+
+pub fn is_equity_index_product(contract_id: &str) -> bool {
+    matches!(product_key(contract_id).as_str(), "IC" | "IF" | "IH" | "IM")
+}
+
+/// Equity-index continuous trading ends at 15:00 Shanghai. The complete
+/// 15:00 minute is retained; 15:01 onward is excluded. This deliberately does
+/// not apply to CFFEX treasury futures, whose day session continues to 15:15.
+pub fn after_equity_index_close(ts_sec: i64, contract_id: &str) -> bool {
+    if !is_equity_index_product(contract_id) {
+        return false;
+    }
+    let local = shanghai(ts_sec);
+    local.hour() > 15 || (local.hour() == 15 && local.minute() >= 1)
+}
+
+/// Return whether derived parquet outputs must omit this timestamp. This is
+/// intentionally narrower than a complete session calendar.
+pub fn skip_output(ts_sec: i64, exchange: Exchange, contract_id: &str) -> bool {
+    is_auction_ts(ts_sec, exchange) || after_equity_index_close(ts_sec, contract_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn commodity_night_wraps_midnight() {
-        let exchange = Exchange::Xsge;
-        assert_eq!(continuous_segment(t(21, 0), exchange), Some("night"));
-        assert_eq!(continuous_segment(t(0, 0), exchange), Some("night"));
-        assert_eq!(continuous_segment(t(2, 29), exchange), Some("night"));
-        assert_eq!(continuous_segment(t(2, 30), exchange), None);
-        assert!(is_auction(t(20, 59), exchange));
-        assert!(!is_auction(t(21, 0), exchange));
-        assert!(skip_output(t(15, 0), exchange));
-        assert_eq!(continuous_segment(t(9, 0), exchange), Some("day_am1"));
+    fn sec(hour: u32, minute: u32, second: u32) -> i64 {
+        Shanghai
+            .with_ymd_and_hms(2024, 1, 2, hour, minute, second)
+            .single()
+            .unwrap()
+            .timestamp()
     }
 
     #[test]
-    fn ccfx_has_no_night_and_later_open() {
-        assert_eq!(continuous_segment(t(9, 30), Exchange::Ccfx), Some("day_am"));
-        assert_eq!(continuous_segment(t(9, 0), Exchange::Ccfx), None);
-        assert!(is_auction(t(9, 25), Exchange::Ccfx));
-        assert_eq!(continuous_segment(t(21, 0), Exchange::Ccfx), None);
+    fn opening_auction_windows_are_exchange_specific() {
+        assert!(is_auction(t(8, 59), Exchange::Xsge));
+        assert!(is_auction(t(20, 59), Exchange::Xsge));
+        assert!(!is_auction(t(9, 0), Exchange::Xsge));
+        assert!(!is_auction(t(21, 0), Exchange::Xsge));
+        assert!(is_auction(t(9, 29), Exchange::Ccfx));
+        assert!(!is_auction(t(9, 30), Exchange::Ccfx));
+    }
+
+    #[test]
+    fn only_equity_indexes_drop_after_the_retained_1500_minute() {
+        for product in ["IF", "IH2409", "IC2412", "IM2503"] {
+            assert!(!after_equity_index_close(sec(15, 0, 0), product));
+            assert!(!after_equity_index_close(sec(15, 0, 59), product));
+            assert!(after_equity_index_close(sec(15, 1, 0), product));
+        }
+        for product in ["T", "TF2409", "TL2412", "TS2503", "rb2410"] {
+            assert!(!after_equity_index_close(sec(15, 1, 0), product));
+            assert!(!after_equity_index_close(sec(15, 15, 0), product));
+        }
+    }
+
+    #[test]
+    fn output_filter_combines_auction_and_equity_index_close() {
+        assert!(skip_output(sec(9, 29, 0), Exchange::Ccfx, "IF2409"));
+        assert!(!skip_output(sec(15, 0, 59), Exchange::Ccfx, "IF2409"));
+        assert!(skip_output(sec(15, 1, 0), Exchange::Ccfx, "IF2409"));
+        assert!(!skip_output(sec(15, 1, 0), Exchange::Ccfx, "T2409"));
     }
 }

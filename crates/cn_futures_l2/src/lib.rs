@@ -28,6 +28,6 @@ pub use codec::{
 pub use db::{
     open_rocksdb, open_rocksdb_read_only, run_replay, Job, ReplayArgs, DEFAULT_ROCKSDB_DIR,
 };
-pub use export_1s::{exchange_of, is_cffex_product, split_depth_segments, ExportArgs, ExportStats};
+pub use export_1s::{exchange_of, split_depth_segments, ExportArgs, ExportStats};
 pub use session::Exchange;
 pub use source::{parse_day, DEFAULT_LOOKBACK_DAYS, DEFAULT_OVERLAP_CUT};

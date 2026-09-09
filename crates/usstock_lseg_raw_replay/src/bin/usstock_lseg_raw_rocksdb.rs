@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use std::fs;
 use std::path::PathBuf;
@@ -22,10 +22,17 @@ fn main() -> Result<()> {
     let config = load_raw_replay_config(&args.config)
         .with_context(|| format!("load RAW replay config {}", args.config.display()))?;
     let _replay_lock = acquire_raw_target_lock(&config.rocksdb_dir)?;
+    let building_path = raw_building_path(&config.rocksdb_dir);
+    if config.rocksdb_dir.exists() || building_path.exists() {
+        bail!(
+            "RAW output already exists; preserving {} and {}",
+            config.rocksdb_dir.display(),
+            building_path.display()
+        );
+    }
     match replay_raw(&config) {
         Ok(census) => println!("{census}"),
         Err(error) => {
-            let building_path = raw_building_path(&config.rocksdb_dir);
             if building_path.exists() {
                 fs::remove_dir_all(&building_path).unwrap_or_else(|cleanup_error| {
                     panic!(

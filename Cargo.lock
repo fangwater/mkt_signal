@@ -6722,14 +6722,33 @@ dependencies = [
  "env_logger 0.11.9",
  "flate2",
  "fs2",
+ "hex",
  "log",
+ "polars",
  "rayon",
+ "rocksdb",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml 0.8.23",
+ "zstd",
+]
+
+[[package]]
+name = "usstock_lseg_rawll2_replay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "csv",
+ "flate2",
  "rocksdb",
  "serde",
  "serde_json",
  "tempfile",
  "toml 0.8.23",
- "zstd",
 ]
 
 [[package]]
@@ -6742,7 +6761,9 @@ dependencies = [
  "clap",
  "csv",
  "flate2",
+ "mkt_signal",
  "polars",
+ "rayon",
  "rocksdb",
  "serde",
  "serde_json",

@@ -1814,7 +1814,14 @@ fn log_parsed_event(msg: &Bytes) {
         }
         BasicAccountEventType::HyperliquidFill
         | BasicAccountEventType::HyperliquidSnapshotComplete
-        | BasicAccountEventType::HyperliquidFactReplayControl => {}
+        | BasicAccountEventType::HyperliquidFactReplayControl
+        | BasicAccountEventType::HyperliquidFunding
+        | BasicAccountEventType::HyperliquidLedger
+        | BasicAccountEventType::HyperliquidSpotBalance
+        | BasicAccountEventType::HyperliquidPerpDexState
+        | BasicAccountEventType::HyperliquidTwapSliceFill
+        | BasicAccountEventType::HyperliquidTwapHistory
+        | BasicAccountEventType::HyperliquidNativeEvent => {}
         BasicAccountEventType::Error => {}
     }
 }
@@ -1877,7 +1884,14 @@ impl AccountEventDeduper {
                 .map(|m| self.key_binance_basic_order(&m)),
             BasicAccountEventType::HyperliquidFill
             | BasicAccountEventType::HyperliquidSnapshotComplete
-            | BasicAccountEventType::HyperliquidFactReplayControl => return true,
+            | BasicAccountEventType::HyperliquidFactReplayControl
+            | BasicAccountEventType::HyperliquidFunding
+            | BasicAccountEventType::HyperliquidLedger
+            | BasicAccountEventType::HyperliquidSpotBalance
+            | BasicAccountEventType::HyperliquidPerpDexState
+            | BasicAccountEventType::HyperliquidTwapSliceFill
+            | BasicAccountEventType::HyperliquidTwapHistory
+            | BasicAccountEventType::HyperliquidNativeEvent => return true,
             BasicAccountEventType::Error => return true,
         };
 

@@ -7,6 +7,7 @@ members = [
     "crates/cn_futures_l2",
     "crates/usstock_lseg_mbp_replay",
     "crates/usstock_lseg_raw_replay",
+    "crates/usstock_lseg_rawll2_replay",
     "crates/usstock_replay",
     "crates/account_monitor_common",
     "crates/depth_pub",
@@ -99,6 +100,10 @@ path = "src/bin/hyperliquid_account_monitor.rs"
 [[bin]]
 name = "rapidx_account_monitor"
 path = "src/bin/rapidx_account_monitor.rs"
+
+[[bin]]
+name = "rapidx_open_orders"
+path = "src/bin/rapidx_open_orders.rs"
 
 [[bin]]
 name = "trade_engine"

@@ -11,8 +11,8 @@ use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 
 use crate::codec::{DepthRecord, TradeRecord};
-use crate::export_1s::{is_session_break, shanghai};
-use crate::universe::product_id;
+use crate::export_1s::is_session_break;
+use crate::session::after_equity_index_close;
 
 #[derive(Clone, Debug)]
 pub struct PrintTrade {
@@ -681,25 +681,6 @@ fn apply_fill(row: &mut BaselineMinute, state: &mut FillState) {
     {
         state.book = row.book.clone();
     }
-}
-
-pub fn is_stock_index_product(product: &str) -> bool {
-    matches!(product, "IC" | "IF" | "IH" | "IM")
-}
-
-/// Equity-index continuous session ends at 15:00 Shanghai. Keep the 15:00
-/// minute; drop 15:01 onward. Bond products (T/TF/TL/TS) still close 15:15.
-fn product_key(contract_id: &str) -> String {
-    product_id(contract_id).unwrap_or_else(|| contract_id.trim().to_ascii_uppercase())
-}
-
-pub fn after_equity_index_close(ts_sec: i64, contract_id: &str) -> bool {
-    if !is_stock_index_product(&product_key(contract_id)) {
-        return false;
-    }
-    let local = shanghai(ts_sec);
-    use chrono::Timelike;
-    local.hour() > 15 || (local.hour() == 15 && local.minute() >= 1)
 }
 
 /// Floor a UTC second onto its minute left edge.

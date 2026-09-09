@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::min_qty_table::MinQtyTable;
+use crate::pre_trade::account_order_stream_health::{
+    record_binance_decode_failure, record_binance_decode_success,
+};
 use crate::pre_trade::basic_balance_manager::BasicBalanceManager;
 use crate::pre_trade::basic_um_manager::BasicUmManager;
 use crate::pre_trade::binance_std_cm_margin_guard::BinanceStdCmMarginGuard;
@@ -2593,15 +2596,19 @@ impl BasicAccountListener {
                             dispatch_order_update_generic(&self.strategy_mgr, &msg);
                         }
                     }
-                    Exchange::Binance => {
-                        if let Ok(msg) = BinanceBasicOrderMsg::from_bytes(data) {
+                    Exchange::Binance => match BinanceBasicOrderMsg::from_bytes(data) {
+                        Ok(msg) => {
+                            record_binance_decode_success();
                             if msg.external_order_label().is_some() {
                                 dispatch_binance_external_order_update(&msg);
                             } else {
                                 dispatch_order_update_generic(&self.strategy_mgr, &msg);
                             }
                         }
-                    }
+                        Err(err) => {
+                            record_binance_decode_failure(account_scope, data.len(), &err);
+                        }
+                    },
                     Exchange::Gate => {
                         if let Ok(msg) = GateBasicOrderMsg::from_bytes(data) {
                             dispatch_order_update_generic(&self.strategy_mgr, &msg);

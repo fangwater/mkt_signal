@@ -59,6 +59,19 @@ Deployed environments normally live in `$HOME/<env-name>` and include:
 
 Most runtime wrappers source `env.sh` automatically from the environment directory. Do not hard-code credentials or account-specific values in repo files.
 
+## RapidX / LTP API Documentation
+
+Use the LiquidityTech LTP API reference as the authoritative external contract:
+https://apidocliquidity.readme.io/reference/get-account-list. For an
+agent-readable documentation index and OpenAPI links, use
+https://apidocliquidity.readme.io/llms.txt; appending `.md` to a documentation
+page URL returns its Markdown representation.
+
+`GET /api/v1/tradeAccount/list` requires a primary-user or sub-user LTP API key
+with `READ` permission. RapidX sub-portfolio API keys cannot call this endpoint,
+so an authorization failure there alone does not prove that a sub-portfolio key
+is invalid for its supported trading endpoints.
+
 Current production SSH hosts are only `jp-meta-elvpn` (Japan) and `sg` / `ubuntu@47.131.162.78` (Singapore). Do not use retired aliases such as `jp2`.
 
 After deploying, migrating, or retiring a live env on `jp-meta-elvpn` or `sg`, update the living ops docs when they change: `docs/core_allocation.md` (CPU pins) and `docs/jp-meta-elvpn_ip_binding.md` (`local_ips` / ENI source IPs).

@@ -16,6 +16,7 @@ Rules:
 - Only explicitly requested envs get concrete allocations.
 - Unconfigured envs must fail closed. Do not infer ports from suffixes.
 - Bybit intra arb01 is fixed on SG `6351` and should not be moved.
+- Binance intra arb02 is fixed on JP `6358` and should not be moved.
 - Public URL format: `http://<host>:<port>`.
 - Local bind format: `127.0.0.1:<bind_port>`.
 - Bind formula: `bind_port = 50000 + public_port - 6300`.
@@ -45,6 +46,7 @@ Regions:
 | 6354 | hk | intra | `okex-intra-arb01` | `okex-intra-arb01` | `http://47.238.128.48:6354` | `127.0.0.1:50054` | planned |
 | 6355 | jp | mm | `okex_mm_alpha` | `okex_mm_alpha` | `http://127.0.0.1:6355` | `127.0.0.1:50055` | fixed |
 | 6356 | jp | mm | `binance_mm_alpha` | `binance_mm_alpha` | `http://127.0.0.1:6356` | `127.0.0.1:50056` | fixed |
+| 6358 | jp | intra | `binance-intra-arb02` | `binance-intra-arb02` | `http://127.0.0.1:6358` | `127.0.0.1:50058` | fixed |
 
 ## Setup Notes
 

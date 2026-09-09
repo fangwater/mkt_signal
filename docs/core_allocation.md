@@ -1,6 +1,6 @@
 # 隔离核心分配登记(jp-meta-elvpn / sg)
 
-最后更新:2026-08-17。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
+最后更新:2026-09-08。**部署、迁移、下线任何绑核进程时,请同步更新本表。**
 source IP / `local_ips` 变更同步更新 `docs/jp-meta-elvpn_ip_binding.md`。
 
 ## jp-meta-elvpn(ip-172-31-35-228,c7i.metal-24xl)
@@ -36,7 +36,11 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 25 | trade_signal(binance_mm_alpha) | |
 | 26 | pre_trade(binance_mm_alpha) | |
 | 27 | trade_engine(binance_mm_alpha) | 单线程；原 31 号 te-ipc 核已回收 |
-| 28-45 | (空) | |
+| 28 | account_monitor(binance-intra-arb02, RapidX/LTP) | |
+| 29 | trade_signal(binance-intra-arb02) | 首次部署保持停止，显式放量后再启动 |
+| 30 | pre_trade(binance-intra-arb02) | |
+| 31 | trade_engine(binance-intra-arb02, RapidX/LTP) | 单线程 |
+| 32-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
 
@@ -45,6 +49,7 @@ binance_fr_arb03/04、gate_fr_arb01/02、bitget_fr_arb02、okex_fr_arb01、
 okex-intra-arb01 全套、trade_flow_feature ×8、rolling_metrics ×5、fusion_factor_1m、
 persist_center、predict_file 及各类 viz/config/dashboard 服务。
 `okex_mm_alpha` 的 persist_manager 与其它 persist 一起堆叠在 15。
+`binance-intra-arb02` 的 persist_manager 也堆叠在 15。
 其中 fr_arb / okex-intra 的 trade_engine 与 housekeeping 上的系统服务同核,
 数据面 NIC IRQ 已迁到 46/47,不再与它们抢硬中断。如在意调度抖动仍可迁入空闲隔离核。
 

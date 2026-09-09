@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -16,6 +17,9 @@ START_SCRIPT = ROOT / "scripts" / "start-intra.sh"
 STOP_SCRIPT = ROOT / "scripts" / "stop-intra.sh"
 UPDATE_SCRIPT = ROOT / "scripts" / "update-intra.sh"
 ORCHESTRATION_LIB = ROOT / "scripts" / "intra_orchestration_lib.sh"
+SSH_REMOTE_BASH_LIB = ROOT / "scripts" / "lib" / "ssh_remote_bash.sh"
+EXECUTION_BACKEND_LIB = ROOT / "scripts" / "execution_backend_lib.sh"
+INTRA_RELEASE_GUARD = ROOT / "scripts" / "intra_release_guard.sh"
 
 
 class IntraOrchestrationTests(unittest.TestCase):
@@ -49,6 +53,9 @@ class IntraOrchestrationTests(unittest.TestCase):
         shutil.copy2(source, destination)
         if source != BUILD_SCRIPT:
             shutil.copy2(ORCHESTRATION_LIB, repo / "scripts" / ORCHESTRATION_LIB.name)
+            ssh_helper = repo / "scripts" / "lib" / SSH_REMOTE_BASH_LIB.name
+            ssh_helper.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SSH_REMOTE_BASH_LIB, ssh_helper)
         return destination
 
     def _run(
@@ -108,6 +115,14 @@ class IntraOrchestrationTests(unittest.TestCase):
                   echo "[INFO] fake remote process check"
                   exit {check_status}
                 fi
+                if [[ $# -eq 1 && "$1" == tmp=*ssh-remote-bash* ]]; then
+                  if [[ "{execute}" == "1" ]]; then
+                    exec /bin/bash -c "$1"
+                  fi
+                  /bin/cat >/dev/null
+                  echo "[INFO] fake remote process check"
+                  exit {check_status}
+                fi
                 echo "unexpected fake ssh command: $*" >&2
                 exit 97
                 """
@@ -154,6 +169,11 @@ class IntraOrchestrationTests(unittest.TestCase):
             ),
             executable=True,
         )
+        self._write(
+            self.fake_bin / "git",
+            "#!/usr/bin/env bash\nprintf '%040d\\n' 1\n",
+            executable=True,
+        )
 
         result = self._run(
             script,
@@ -165,12 +185,20 @@ class IntraOrchestrationTests(unittest.TestCase):
         self.assertIn("--bin bybit_account_monitor", commands[0])
         self.assertIn("--bin okex_account_monitor", commands[0])
         self.assertIn("--bin binance_account_monitor", commands[0])
+        self.assertIn("--bin rapidx_account_monitor", commands[0])
+        self.assertIn("--bin rapidx_open_orders", commands[0])
         self.assertIn("--bin pre_trade", commands[0])
         self.assertIn("--bin trade_engine", commands[0])
         self.assertIn("-p trade_signal --bin trade_signal", commands[1])
         self.assertIn("-p viz_server --bin viz_server", commands[2])
         self.assertIn("-p persist_manager --features runtime --bin persist_manager", commands[3])
         self.assertIn("persist_manager=included", result.stdout)
+        manifest = (repo / "target" / "release" / "intra-release.manifest").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("release_id ", manifest)
+        self.assertIn("git_commit 0000000000000000000000000000000000000001", manifest)
+        self.assertIn("binary pre_trade ", manifest)
 
     def test_every_entrypoint_rejects_unsupported_env_before_ssh(self) -> None:
         self._write(
@@ -229,7 +257,11 @@ class IntraOrchestrationTests(unittest.TestCase):
     def test_jp_environments_always_use_jp_meta_elvpn(self) -> None:
         self._install_remote_ssh(execute_remote=False)
         ssh_log = Path(f"{self.action_log}.ssh")
-        for env_name in ("okex-intra-arb01", "binance-intra-arb01"):
+        for env_name in (
+            "okex-intra-arb01",
+            "binance-intra-arb01",
+            "binance-intra-arb02",
+        ):
             for script in (PUBLISH_SCRIPT, START_SCRIPT, STOP_SCRIPT):
                 with self.subTest(env_name=env_name, script=script.name):
                     ssh_log.unlink(missing_ok=True)
@@ -252,6 +284,44 @@ class IntraOrchestrationTests(unittest.TestCase):
                         all(" -i " not in call for call in ssh_calls),
                         ssh_calls,
                     )
+
+    def test_binance_arb02_metadata_selects_ltp_monitor(self) -> None:
+        command = (
+            f"source {ORCHESTRATION_LIB}; "
+            "intra_configure_env binance-intra-arb02; "
+            "printf '%s|%s|%s|%s|%s\n' "
+            '"$INTRA_SSH_HOST" "$INTRA_EXEC_BACKEND" '
+            '"$INTRA_ACCOUNT_MONITOR_BIN" "$INTRA_CONFIG_PORT" "$INTRA_VIZ_PORT"'
+        )
+        result = subprocess.run(
+            ["bash", "-lc", command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(
+            result.stdout.strip(),
+            "jp-meta-elvpn|ltp|rapidx_account_monitor|19172|10181",
+        )
+
+    def test_ltp_backend_does_not_leak_into_next_environment(self) -> None:
+        command = (
+            f"source {ORCHESTRATION_LIB}; "
+            "intra_configure_env binance-intra-arb02; "
+            "intra_configure_env okex-intra-arb01; "
+            'printf \'%s|%s\\n\' "$INTRA_EXEC_BACKEND" "$INTRA_ACCOUNT_MONITOR_BIN"'
+        )
+        result = subprocess.run(
+            ["bash", "-lc", command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.strip(), "native|okex_account_monitor")
 
     def _install_update_fakes(self, repo: Path, *, build_status: int = 0, stop_status: int = 0) -> None:
         statuses = {
@@ -302,6 +372,9 @@ class IntraOrchestrationTests(unittest.TestCase):
                 "stop-intra:--env-name binance-intra-arb01",
                 "publish-intra:--env-name binance-intra-arb01 --skip-build",
                 "start-intra:--env-name binance-intra-arb01",
+                "stop-intra:--env-name binance-intra-arb02",
+                "publish-intra:--env-name binance-intra-arb02 --skip-build",
+                "start-intra:--env-name binance-intra-arb02",
             ],
         )
 
@@ -427,6 +500,17 @@ class IntraOrchestrationTests(unittest.TestCase):
                 "[plan] symbols=0 open_orders=0 execute=False\n"
                 "[plan] no open UM futures orders found",
             ),
+            "binance_ltp": (
+                "binance-intra-arb02",
+                "rapidx_open_orders",
+                "export TRADE_ENGINE_EXEC_BACKEND_MAP='binance=ltp'\n"
+                "export LTP_API_KEY='test-key'\n"
+                "export LTP_API_SECRET='test-secret'\n"
+                "export LTP_PORTFOLIO_ID='123456'\n",
+                "[plan] backend=ltp exchange=binance spot_open_orders=0 "
+                "perp_open_orders=0 execute=false\n"
+                "[plan] no RapidX spot or perpetual open orders found",
+            ),
         }
         env_name, cancel_name, credentials, verify_body = metadata[exchange]
         remote_dir, remote_env = self._remote_env(env_name)
@@ -434,21 +518,41 @@ class IntraOrchestrationTests(unittest.TestCase):
         intra_dir = remote_dir / "intra_scripts"
         self._write(remote_dir / "env.sh", credentials)
         self._write(scripts_dir / "process_match_lib.sh", "#!/usr/bin/env bash\n")
-        self._write(
-            scripts_dir / cancel_name,
-            textwrap.dedent(
-                f"""\
-                import os
-                import sys
-                with open(os.environ["FAKE_ACTION_LOG"], "a", encoding="utf-8") as handle:
-                    handle.write("cancel-{exchange}:" + " ".join(sys.argv[1:]) + "\\n")
-                if "--execute" in sys.argv:
-                    print({"[WARN] fake query failure" if warning else "cancel submitted"!r})
-                else:
-                    print({verify_body!r})
-                """
-            ),
-        )
+        shutil.copy2(EXECUTION_BACKEND_LIB, scripts_dir / EXECUTION_BACKEND_LIB.name)
+        cancel_path = remote_dir / cancel_name if exchange == "binance_ltp" else scripts_dir / cancel_name
+        if exchange == "binance_ltp":
+            execute_body = "[WARN] fake query failure" if warning else "cancel submitted"
+            self._write(
+                cancel_path,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    printf '%s\\n' "cancel-{exchange}:$*" >>"$FAKE_ACTION_LOG"
+                    if [[ " $* " == *" --execute "* ]]; then
+                      printf '%s\\n' {execute_body!r}
+                    else
+                      printf '%s\\n' {verify_body!r}
+                    fi
+                    """
+                ),
+                executable=True,
+            )
+        else:
+            self._write(
+                cancel_path,
+                textwrap.dedent(
+                    f"""\
+                    import os
+                    import sys
+                    with open(os.environ["FAKE_ACTION_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write("cancel-{exchange}:" + " ".join(sys.argv[1:]) + "\\n")
+                    if "--execute" in sys.argv:
+                        print({"[WARN] fake query failure" if warning else "cancel submitted"!r})
+                    else:
+                        print({verify_body!r})
+                    """
+                ),
+            )
         if exchange == "binance":
             for dependency in (
                 "binance_cancel_all_std_spot_orders.py",
@@ -552,6 +656,30 @@ class IntraOrchestrationTests(unittest.TestCase):
         )
         self.assertIn("cancel script reported a warning/error", result.stdout)
 
+    def test_stop_ltp_cancels_and_verifies_portfolio_spot_and_perp(self) -> None:
+        _, remote_env = self._prepare_stop_remote("binance_ltp")
+        result = self._run(
+            STOP_SCRIPT,
+            "--env-name",
+            "binance-intra-arb02",
+            env_overrides=remote_env,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(
+            self.action_log.read_text(encoding="utf-8").splitlines(),
+            [
+                "stop-engine",
+                "cancel-binance_ltp:--exchange binance --execute",
+                "cancel-binance_ltp:--exchange binance",
+                "stop-signal",
+                "stop-pre-trade",
+                "stop-monitor",
+                "stop-config",
+                "stop-persist",
+                "stop-viz",
+            ],
+        )
+
     def _prepare_start_remote(
         self,
         exchange: str = "bybit",
@@ -583,9 +711,20 @@ class IntraOrchestrationTests(unittest.TestCase):
                 19171,
                 10180,
             ),
+            "binance_ltp": (
+                "binance-intra-arb02",
+                "export IPC_NAMESPACE='test-intra-ltp'\n"
+                "export TRADE_ENGINE_EXEC_BACKEND_MAP='binance=ltp'\n"
+                "export LTP_API_KEY='test-key'\n"
+                "export LTP_API_SECRET='test-secret'\n"
+                "export LTP_PORTFOLIO_ID='123456'\n",
+                19172,
+                10181,
+            ),
         }
         env_name, env_contents, config_port, viz_port = metadata[exchange]
-        account_monitor_dest = f"account_monitor_{exchange}"
+        monitor_exchange = "binance" if exchange == "binance_ltp" else exchange
+        account_monitor_dest = f"account_monitor_{monitor_exchange}"
         remote_dir, remote_env = self._remote_env(env_name)
         marker_dir = self.temp_path / f"markers-{exchange}"
         marker_dir.mkdir()
@@ -602,6 +741,8 @@ class IntraOrchestrationTests(unittest.TestCase):
         )
         self._write(scripts_dir / "intra_config_server.py", "# test marker\n")
         self._write(scripts_dir / "process_match_lib.sh", "#!/usr/bin/env bash\n")
+        shutil.copy2(EXECUTION_BACKEND_LIB, scripts_dir / EXECUTION_BACKEND_LIB.name)
+        shutil.copy2(INTRA_RELEASE_GUARD, scripts_dir / INTRA_RELEASE_GUARD.name)
 
         binary_names = (
             "trade_signal",
@@ -613,6 +754,29 @@ class IntraOrchestrationTests(unittest.TestCase):
         )
         for binary in binary_names:
             self._write(remote_dir / binary, "#!/usr/bin/env bash\nexit 0\n", executable=True)
+
+        monitor_release_name = (
+            "rapidx_account_monitor"
+            if exchange == "binance_ltp"
+            else f"{monitor_exchange}_account_monitor"
+        )
+        release_entries = {
+            "trade_signal": remote_dir / "trade_signal",
+            monitor_release_name: remote_dir / account_monitor_dest,
+            "viz_server": remote_dir / "viz_server",
+            "pre_trade": remote_dir / "pre_trade",
+            "trade_engine": remote_dir / "trade_engine",
+            "persist_manager": remote_dir / "persist_manager",
+        }
+        manifest_body = "".join(
+            f"binary {name} {hashlib.sha256(path.read_bytes()).hexdigest()}\n"
+            for name, path in release_entries.items()
+        )
+        release_id = hashlib.sha256(manifest_body.encode()).hexdigest()
+        self._write(
+            remote_dir / "intra-release.manifest",
+            f"release_id {release_id}\ngit_commit {'1' * 40}\n{manifest_body}",
+        )
 
         start_actions = {
             scripts_dir / "start_intra_config_server.sh": ("config", "config"),
@@ -693,6 +857,25 @@ class IntraOrchestrationTests(unittest.TestCase):
             executable=True,
         )
         self._write(
+            self.fake_bin / "sha256sum",
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                case "${1:-}" in
+                  /proc/901/exe) set -- "$FAKE_REMOTE_DIR/viz_server" ;;
+                  /proc/902/exe) set -- "$FAKE_REMOTE_DIR/persist_manager" ;;
+                  /proc/903/exe) set -- "$FAKE_REMOTE_DIR/trade_engine" ;;
+                  /proc/904/exe) set -- "$FAKE_REMOTE_DIR/pre_trade" ;;
+                  /proc/905/exe) set -- "$FAKE_REMOTE_DIR/$FAKE_ACCOUNT_MONITOR_DEST" ;;
+                  /proc/906/exe) set -- "$FAKE_REMOTE_DIR/trade_signal" ;;
+                esac
+                exec /usr/bin/sha256sum "$@"
+                """
+            ),
+            executable=True,
+        )
+        self._write(
             self.fake_bin / "ss",
             textwrap.dedent(
                 """\
@@ -725,7 +908,7 @@ class IntraOrchestrationTests(unittest.TestCase):
         return remote_dir, remote_env
 
     def test_start_health_checks_base_stack_and_keeps_signal_stopped(self) -> None:
-        for exchange in ("bybit", "okex", "binance"):
+        for exchange in ("bybit", "okex", "binance", "binance_ltp"):
             with self.subTest(exchange=exchange):
                 self.action_log.unlink(missing_ok=True)
                 _, remote_env = self._prepare_start_remote(exchange)
@@ -740,10 +923,72 @@ class IntraOrchestrationTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertEqual(
                     self.action_log.read_text(encoding="utf-8").splitlines(),
-                    ["config", "viz", "persist", "engine", "pre-trade", "monitor"],
+                    ["config", "viz", "persist", "engine", "monitor", "pre-trade"],
                 )
                 self.assertIn("trade_signal_started=false", result.stdout)
                 self.assertNotIn("trade_signal health check passed", result.stdout)
+
+    def test_start_refuses_mixed_release_before_starting_any_process(self) -> None:
+        remote_dir, remote_env = self._prepare_start_remote("binance")
+        self._write(
+            remote_dir / "pre_trade",
+            "#!/usr/bin/env bash\n# mismatched build\nexit 0\n",
+            executable=True,
+        )
+        result = self._run(
+            START_SCRIPT,
+            "--env-name",
+            "binance-intra-arb01",
+            env_overrides=remote_env,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(self.action_log.exists())
+        self.assertIn("Intra release mismatch: binary=pre_trade", result.stdout)
+
+    def test_release_guard_rejects_old_running_image_after_binary_replacement(self) -> None:
+        release_dir = self.temp_path / "release-guard"
+        binary = release_dir / "pre_trade"
+        old_binary = release_dir / "pre_trade.old"
+        self._write(binary, "new build\n", executable=True)
+        self._write(old_binary, "old build\n", executable=True)
+        expected_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+        self._write(
+            release_dir / "intra-release.manifest",
+            f"release_id {'1' * 64}\nbinary pre_trade {expected_hash}\n",
+        )
+        self._write(self.fake_bin / "ps", "#!/usr/bin/env bash\necho 904\n", executable=True)
+        self._write(
+            self.fake_bin / "readlink",
+            f"#!/usr/bin/env bash\necho {binary}\n",
+            executable=True,
+        )
+        self._write(
+            self.fake_bin / "sha256sum",
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                if [[ "${1:-}" == "/proc/904/exe" ]]; then
+                  exec /usr/bin/sha256sum "$FAKE_OLD_BINARY"
+                fi
+                exec /usr/bin/sha256sum "$@"
+                """
+            ),
+            executable=True,
+        )
+        command = (
+            f"source {INTRA_RELEASE_GUARD}; "
+            f"intra_release_verify_running_file {release_dir} pre_trade {binary}"
+        )
+        result = subprocess.run(
+            ["bash", "-c", command],
+            env={**self.base_env, "FAKE_OLD_BINARY": str(old_binary)},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("running Intra release mismatch: binary=pre_trade", result.stdout)
 
     def test_start_refuses_running_trade_signal_before_starting_base_stack(self) -> None:
         _, remote_env = self._prepare_start_remote()

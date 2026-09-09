@@ -25,15 +25,15 @@ Options:
 
 Supported environments:
   bybit-intra-arb01, bybit-intra-arb02 -> SG
-  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
+  okex-intra-arb01, binance-intra-arb01, binance-intra-arb02 -> jp-meta-elvpn
 
 Live start order, with a stability check after every step:
   1. config_server
   2. viz_server
   3. persist_manager
   4. trade_engine
-  5. pre_trade
-  6. account_monitor
+  5. account_monitor
+  6. pre_trade
 
 trade_signal is never started. The script refuses to begin when trade_signal is
 running and verifies that it remains stopped at the end. Normal start requires
@@ -129,6 +129,7 @@ intra_remote_bash \
   "$CHECK_ONLY" \
   "$INTRA_CONFIG_PORT" \
   "$INTRA_VIZ_PORT" \
+  "$INTRA_EXEC_BACKEND" \
   "$STARTUP_WAIT_SECONDS" \
   "$STARTUP_SETTLE_SECONDS" <<'REMOTE_START'
 set -euo pipefail
@@ -141,8 +142,9 @@ account_monitor_bin="$5"
 check_only="$6"
 config_port="$7"
 viz_port="$8"
-startup_wait_seconds="$9"
-startup_settle_seconds="${10}"
+exec_backend="$9"
+startup_wait_seconds="${10}"
+startup_settle_seconds="${11}"
 scripts_dir="$target/scripts"
 intra_scripts_dir="$target/intra_scripts"
 
@@ -157,10 +159,13 @@ fi
 
 required_files=(
   "$target/env.sh"
+  "$target/intra-release.manifest"
   "$target/config/viz.toml"
   "$target/config/intra_config_server.env"
   "$scripts_dir/intra_config_server.py"
   "$scripts_dir/process_match_lib.sh"
+  "$scripts_dir/intra_release_guard.sh"
+  "$scripts_dir/execution_backend_lib.sh"
 )
 required_executables=(
   "$target/trade_signal"
@@ -194,12 +199,15 @@ for required_executable in "${required_executables[@]}"; do
     exit 1
   fi
 done
-for required_command in bash pmdaemon npx ps readlink awk grep ss sleep; do
+for required_command in bash pmdaemon npx ps readlink awk grep sha256sum ss sleep; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "[ERROR] required remote command not found: $required_command" >&2
     exit 1
   fi
 done
+
+# shellcheck disable=SC1090
+source "$scripts_dir/intra_release_guard.sh"
 
 configured_port="$(
   unset PORT
@@ -235,7 +243,16 @@ fi
   # shellcheck disable=SC1090
   source "$target/env.sh" >/dev/null 2>&1
   set +a
+  # shellcheck disable=SC1090
+  source "$scripts_dir/execution_backend_lib.sh"
   [[ -n "${IPC_NAMESPACE:-}" ]] || exit 1
+  actual_backend="$(execution_backend_for_exchange "$exchange")" || exit 1
+  [[ "$actual_backend" == "$exec_backend" ]] || exit 1
+  if [[ "$exec_backend" == "ltp" ]]; then
+    [[ -n "${LTP_API_KEY:-}" && -n "${LTP_API_SECRET:-}" ]]
+    [[ "${LTP_PORTFOLIO_ID:-}" =~ ^[0-9]{1,64}$ ]]
+    exit 0
+  fi
   case "$exchange" in
     bybit)
       [[ -n "${BYBIT_API_KEY:-}" && -n "${BYBIT_API_SECRET:-}" ]]
@@ -260,26 +277,39 @@ labels=(
   viz_server
   persist_manager
   trade_engine
-  pre_trade
   account_monitor
+  pre_trade
 )
 binaries=(
   "$target/viz_server"
   "$target/persist_manager"
   "$target/trade_engine"
-  "$target/pre_trade"
   "$target/$account_monitor_dest"
+  "$target/pre_trade"
+)
+release_names=(
+  viz_server
+  persist_manager
+  trade_engine
+  "$account_monitor_bin"
+  pre_trade
 )
 start_scripts=(
   "$intra_scripts_dir/start_intra_viz_server.sh"
   "$intra_scripts_dir/start_intra_persist_manager.sh"
   "$intra_scripts_dir/start_intra_trade_engine.sh"
-  "$intra_scripts_dir/start_intra_pre_trade.sh"
   "$intra_scripts_dir/start_intra_monitors.sh"
+  "$intra_scripts_dir/start_intra_pre_trade.sh"
 )
 trade_signal_binary="$target/trade_signal"
 legacy_account_monitor_binary="$target/$account_monitor_bin"
 config_server_script="$scripts_dir/intra_config_server.py"
+
+for index in "${!binaries[@]}"; do
+  intra_release_verify_file "$target" "${release_names[$index]}" "${binaries[$index]}"
+done
+intra_release_verify_file "$target" trade_signal "$trade_signal_binary"
+echo "[INFO] release guard passed release_id=$(intra_release_id "$target")"
 
 find_exact_pids() {
   local expected="$1"
@@ -451,6 +481,7 @@ start_and_verify_binary() {
   local label="$1"
   local binary="$2"
   local start_script="$3"
+  local release_name="$4"
   local initial_pid=""
   local pids=()
   echo
@@ -467,10 +498,11 @@ start_and_verify_binary() {
     echo "[ERROR] viz_server is live but port=$viz_port is not listening" >&2
     return 1
   fi
+  intra_release_verify_running_file "$target" "$release_name" "$binary"
   echo "[INFO] $label health check passed pid=$initial_pid"
 }
 
-echo "[INFO] remote preflight passed"
+echo "[INFO] remote preflight passed backend=$exec_backend"
 print_process_state
 require_trade_signal_stopped
 if [[ "$check_only" == "1" ]]; then
@@ -480,13 +512,14 @@ fi
 
 require_all_stopped
 cd "$target"
-echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=$exchange trade_signal=stopped"
+echo "[WARN] LIVE start begins: env=$(basename "$target") exchange=$exchange backend=$exec_backend trade_signal=stopped"
 start_and_verify_config_server
 for index in "${!labels[@]}"; do
   start_and_verify_binary \
     "${labels[$index]}" \
     "${binaries[$index]}" \
-    "${start_scripts[$index]}"
+    "${start_scripts[$index]}" \
+    "${release_names[$index]}"
 done
 
 require_trade_signal_stopped

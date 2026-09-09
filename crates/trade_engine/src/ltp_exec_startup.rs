@@ -21,13 +21,14 @@ fn response(status: u16, body: &str) -> Result<Value> {
     Ok(value)
 }
 
-fn order_id(row: &Value, portfolio: &str, exchange: &str) -> Result<String> {
+fn order_id(row: &Value, portfolio: &str, exchange: &str, business_type: &str) -> Result<String> {
     ensure!(
         row["portfolioId"].as_str() == Some(portfolio),
         "RapidX startup order portfolio mismatch"
     );
     ensure!(
-        row["exchangeType"].as_str() == Some(exchange) && row["businessType"] == "PERP",
+        row["exchangeType"].as_str() == Some(exchange)
+            && row["businessType"].as_str() == Some(business_type),
         "RapidX startup order market mismatch"
     );
     let symbol = row["sym"].as_str().context("missing RapidX order symbol")?;
@@ -35,7 +36,7 @@ fn order_id(row: &Value, portfolio: &str, exchange: &str) -> Result<String> {
     ensure!(
         parts.len() == 4
             && parts[0] == exchange
-            && parts[1] == "PERP"
+            && parts[1] == business_type
             && !parts[2].is_empty()
             && !parts[3].is_empty(),
         "invalid RapidX startup order symbol"
@@ -55,10 +56,14 @@ fn order_id(row: &Value, portfolio: &str, exchange: &str) -> Result<String> {
 }
 
 impl LtpRestClient {
-    async fn exec_open_orders(&self, exchange: &str) -> Result<Vec<String>> {
+    pub async fn open_order_ids(&self, exchange: &str, business_type: &str) -> Result<Vec<String>> {
         ensure!(
             matches!(exchange, "OKX" | "BINANCE"),
             "unsupported RapidX Exec exchange"
+        );
+        ensure!(
+            matches!(business_type, "SPOT" | "PERP"),
+            "unsupported RapidX business type"
         );
         let mut orders = Vec::new();
         let mut ids = HashSet::new();
@@ -69,7 +74,7 @@ impl LtpRestClient {
             }
             let params = BTreeMap::from([
                 ("exchange".into(), exchange.into()),
-                ("businessType".into(), "PERP".into()),
+                ("businessType".into(), business_type.into()),
                 ("page".into(), page.to_string()),
                 ("pageSize".into(), PAGE_SIZE.to_string()),
             ]);
@@ -111,7 +116,7 @@ impl LtpRestClient {
                 "incomplete RapidX open order page"
             );
             for row in rows {
-                let id = order_id(row, self.portfolio_id(), exchange)?;
+                let id = order_id(row, self.portfolio_id(), exchange, business_type)?;
                 ensure!(ids.insert(id.clone()), "duplicate RapidX open order ID");
                 orders.push(id);
             }
@@ -122,16 +127,21 @@ impl LtpRestClient {
         anyhow::bail!("RapidX open order page limit exceeded")
     }
 
+    pub async fn open_perp_order_ids(&self, exchange: &str) -> Result<Vec<String>> {
+        self.open_order_ids(exchange, "PERP").await
+    }
+
     /// Never invoke the user-wide cancelAll endpoint or infer cancellation from an ACK.
-    pub async fn cancel_exec_orders_on_startup(
+    pub async fn cancel_open_orders(
         &self,
         exchange: &str,
+        business_type: &str,
         timeout: Duration,
     ) -> Result<()> {
         tokio::time::timeout(timeout, async {
             let mut sent = HashSet::new();
             loop {
-                let orders = self.exec_open_orders(exchange).await?;
+                let orders = self.open_order_ids(exchange, business_type).await?;
                 if orders.is_empty() {
                     return Ok(());
                 }
@@ -164,7 +174,22 @@ impl LtpRestClient {
             }
         })
         .await
-        .context("RapidX startup cancel timed out; open orders not confirmed empty")?
+        .with_context(|| {
+            format!(
+                "RapidX cancel timed out; exchange={} business_type={} orders not confirmed empty",
+                exchange, business_type
+            )
+        })?
+    }
+
+    pub async fn cancel_exec_orders_on_startup(
+        &self,
+        exchange: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        self.cancel_open_orders(exchange, "PERP", timeout)
+            .await
+            .context("RapidX startup cancel failed")
     }
 }
 
@@ -275,7 +300,7 @@ mod tests {
     fn rejects_cross_portfolio_spot_and_bad_identity_before_cancellation() {
         let row = json!({"portfolioId":"123","exchangeType":"OKX","businessType":"PERP",
             "sym":"OKX_PERP_BTC_USDT","orderState":"OPEN","orderId":"external"});
-        assert_eq!(order_id(&row, "123", "OKX").unwrap(), "external");
+        assert_eq!(order_id(&row, "123", "OKX", "PERP").unwrap(), "external");
         for (key, value) in [
             ("portfolioId", "456"),
             ("exchangeType", "BINANCE"),
@@ -286,8 +311,11 @@ mod tests {
         ] {
             let mut bad = row.clone();
             bad[key] = value.into();
-            assert!(order_id(&bad, "123", "OKX").is_err());
+            assert!(order_id(&bad, "123", "OKX", "PERP").is_err());
         }
+        let spot = json!({"portfolioId":"123","exchangeType":"OKX","businessType":"SPOT",
+            "sym":"OKX_SPOT_BTC_USDT","orderState":"PARTIALLY_FILLED","orderId":"spot"});
+        assert_eq!(order_id(&spot, "123", "OKX", "SPOT").unwrap(), "spot");
         assert!(response(200, r#"{"code":2000}"#).is_err());
         assert!(response(500, r#"{"code":200000}"#).is_err());
     }

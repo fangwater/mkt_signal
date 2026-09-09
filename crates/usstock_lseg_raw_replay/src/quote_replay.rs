@@ -1,8 +1,8 @@
 use crate::event_codec::{
-    decode_correction, decode_trade, encode_correction, encode_exact_slots, encode_trade,
-    layout_for_message, layout_for_type, validate_exact_slots, CorrectionValue, TradeValue,
-    WireLayout, MISSING_DATE, MISSING_U16, MISSING_U32, MISSING_U64, MSG_CANCEL, MSG_PREVIOUS_DAY,
-    MSG_TRADE,
+    classify_trade_direction, decode_correction, decode_trade, encode_correction,
+    encode_exact_slots, encode_trade, layout_for_message, layout_for_type, validate_exact_slots,
+    CorrectionValue, TradeValue, WireLayout, MISSING_DATE, MISSING_U16, MISSING_U32, MISSING_U64,
+    MSG_CANCEL, MSG_PREVIOUS_DAY, MSG_TRADE,
 };
 use crate::quote_codec::{
     decode_candidate, decode_key, encode_candidate, encode_key, encode_quote, encode_quote_state,
@@ -13,9 +13,10 @@ use crate::raw::{read_messages, RawField, RawMessage};
 use crate::{Manifest, MANIFEST_FILE};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, NaiveTime, Timelike, Utc};
-use crossbeam_channel::unbounded;
+use crossbeam_channel::{bounded, Receiver};
 use flate2::read::MultiGzDecoder;
 use fs2::FileExt;
+use rayon::prelude::*;
 use rocksdb::{
     BoundColumnFamily, ColumnFamilyDescriptor, DBWithThreadMode, MergeOperands, MultiThreaded,
     Options, WriteBatch, WriteOptions,
@@ -40,7 +41,7 @@ const TEMP_PREFIX: &str = "tmp:";
 const VENUE_PREFIX: &str = "v:";
 const INSTRUMENT_PREFIX: &str = "i:";
 
-const QUOTE_FIELDS: [(u32, &str); 24] = [
+const QUOTE_FIELDS: [(u32, &str); 31] = [
     (22, "BID"),
     (25, "ASK"),
     (30, "BIDSIZE"),
@@ -60,12 +61,26 @@ const QUOTE_FIELDS: [(u32, &str); 24] = [
     (3264, "PRC_QL3"),
     (8406, "QTE_ORIGIN"),
     (1041, "GV1_FLAG"),
+    // Exchange-published retail-interest metadata. It does not affect the
+    // reconstructed top-of-book candidate, but must be accepted explicitly.
+    (8935, "RETAIL_INT"),
+    // Instrument and order-book status metadata, present alongside the
+    // normal Quote fields in the LSEG US equities feed.
+    (1501, "STOCK_TYPE"),
+    (6513, "SETL_TYPE"),
+    (6516, "BOOK_STATE"),
     (12783, "NBBO_IND"),
     (3855, "QUOTIM_MS"),
     (1025, "QUOTIM"),
     (14238, "ORDRECV_MS"),
     (14246, "ORDREC2_MS"),
+    // BAT publishes incremental side updates with nanosecond quote times.
+    (14263, "ASK_TIM_NS"),
+    (14264, "BID_TIM_NS"),
+    (14265, "QUOTIM_NS"),
 ];
+
+const QUOTE_DATE_FIELD: (u32, &str) = (3386, "QUOTE_DATE");
 
 const QUOTE_RIPPLE_FIELDS: [(u32, &str); 4] =
     [(23, "BID_1"), (24, "BID_2"), (26, "ASK_1"), (27, "ASK_2")];
@@ -92,6 +107,7 @@ const RANGE_FIELDS: [(u32, &str); 14] = [
 pub struct QuoteReplayConfig {
     pub period: String,
     pub staging_dir: Option<PathBuf>,
+    pub parsed_staging_dir: Option<PathBuf>,
     #[serde(default)]
     pub inputs: Vec<PathBuf>,
     pub rocksdb_dir: PathBuf,
@@ -101,6 +117,8 @@ pub struct QuoteReplayConfig {
     pub keep_temporary_column_families: bool,
     #[serde(default = "default_replay_workers")]
     pub workers: usize,
+    /// Frozen continuous-session intervals. No file means no quote/tick reuse.
+    pub direction_calendar: Option<PathBuf>,
 }
 
 fn default_progress_every() -> u64 {
@@ -121,6 +139,7 @@ pub struct QuoteReplayCensus {
     pub source_trades: u64,
     pub source_corrections: u64,
     pub source_states: u64,
+    pub source_statuses: u64,
     pub source_refreshes: u64,
     pub temporary_snapshots: u64,
     pub quote_seconds: u64,
@@ -128,6 +147,7 @@ pub struct QuoteReplayCensus {
     pub quote_state_values: u64,
     pub event_values: u64,
     pub encoded_by_type: BTreeMap<String, u64>,
+    pub direction_by_day: BTreeMap<String, (u64, u128)>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -139,6 +159,8 @@ pub struct QuoteVerifyCensus {
     pub quote_state_values: u64,
     pub event_values: u64,
     pub values_by_type: BTreeMap<String, u64>,
+    pub trade_sides: BTreeMap<String, u64>,
+    pub trade_direction_methods: BTreeMap<String, u64>,
 }
 
 impl QuoteReplayCensus {
@@ -151,6 +173,7 @@ impl QuoteReplayCensus {
         self.source_trades += other.source_trades;
         self.source_corrections += other.source_corrections;
         self.source_states += other.source_states;
+        self.source_statuses += other.source_statuses;
         self.source_refreshes += other.source_refreshes;
         self.temporary_snapshots += other.temporary_snapshots;
         self.quote_seconds += other.quote_seconds;
@@ -160,6 +183,11 @@ impl QuoteReplayCensus {
         for (name, count) in other.encoded_by_type {
             *self.encoded_by_type.entry(name).or_default() += count;
         }
+        for (key, (count, volume)) in other.direction_by_day {
+            let row = self.direction_by_day.entry(key).or_default();
+            row.0 += count;
+            row.1 += volume;
+        }
     }
 }
 
@@ -167,7 +195,7 @@ impl std::fmt::Display for QuoteVerifyCensus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RAW verify status={} venue_column_families={} instrument_column_families={} venue_quote_values={} quote_state_values={} event_values={} values_by_type={:?}",
+            "RAW verify status={} venue_column_families={} instrument_column_families={} venue_quote_values={} quote_state_values={} event_values={} values_by_type={:?} trade_sides={:?} trade_direction_methods={:?}",
             self.status,
             self.venue_column_families,
             self.instrument_column_families,
@@ -175,6 +203,8 @@ impl std::fmt::Display for QuoteVerifyCensus {
             self.quote_state_values,
             self.event_values,
             self.values_by_type,
+            self.trade_sides,
+            self.trade_direction_methods,
         )
     }
 }
@@ -183,7 +213,7 @@ impl std::fmt::Display for QuoteReplayCensus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RAW replay source_messages={} source_quotes={} source_quote_ripples={} source_empty_closing_runs={} source_range_updates={} source_trades={} source_corrections={} source_states={} source_refreshes={} temporary_snapshots={} quote_seconds={} venue_quote_values={} quote_state_values={} event_values={} encoded_by_type={:?}",
+            "RAW replay source_messages={} source_quotes={} source_quote_ripples={} source_empty_closing_runs={} source_range_updates={} source_trades={} source_corrections={} source_states={} source_statuses={} source_refreshes={} temporary_snapshots={} quote_seconds={} venue_quote_values={} quote_state_values={} event_values={} encoded_by_type={:?}",
             self.source_messages,
             self.source_quotes,
             self.source_quote_ripples,
@@ -192,6 +222,7 @@ impl std::fmt::Display for QuoteReplayCensus {
             self.source_trades,
             self.source_corrections,
             self.source_states,
+            self.source_statuses,
             self.source_refreshes,
             self.temporary_snapshots,
             self.quote_seconds,
@@ -210,8 +241,11 @@ pub fn load_quote_replay_config(path: &Path) -> Result<QuoteReplayConfig> {
     if config.period.is_empty() {
         bail!("RAW replay period must not be empty");
     }
-    if config.staging_dir.is_some() == !config.inputs.is_empty() {
-        bail!("set exactly one of staging_dir or inputs");
+    let sources = usize::from(config.staging_dir.is_some())
+        + usize::from(config.parsed_staging_dir.is_some())
+        + usize::from(!config.inputs.is_empty());
+    if sources != 1 {
+        bail!("set exactly one of staging_dir, parsed_staging_dir, or inputs");
     }
     if config.workers == 0 {
         bail!("RAW replay workers must be >= 1");
@@ -327,7 +361,7 @@ fn open_existing_db(path: &Path) -> Result<(ReplayDb, Vec<String>)> {
         .map(|name| ColumnFamilyDescriptor::new(name, cf_options()));
     let mut options = Options::default();
     options.set_merge_operator_associative("raw_quote_last", quote_candidate_merge);
-    let db = ReplayDb::open_cf_descriptors(&options, path, descriptors)
+    let db = ReplayDb::open_cf_descriptors_read_only(&options, path, descriptors, false)
         .with_context(|| format!("open RAW RocksDB {}", path.display()))?;
     Ok((db, names))
 }
@@ -423,28 +457,36 @@ fn field<'a>(message: &'a RawMessage, name: &str) -> Result<&'a RawField> {
 }
 
 fn validate_quote_signature(message: &RawMessage) -> Result<()> {
-    let mut expected = QUOTE_FIELDS.to_vec();
-    if message.fields.len() == 25 {
-        expected.insert(22, (3386, "QUOTE_DATE"));
-    }
-    let actual = message
-        .fields
-        .iter()
-        .map(|field| (field.fid, field.name.as_str()))
-        .collect::<Vec<_>>();
-    if actual != expected {
-        bail!(
-            "unsupported Quote FID signature for {} {}: {:?}",
-            message.ric,
-            message.date_time,
-            actual
-        );
+    let mut seen = BTreeSet::new();
+    for field in &message.fields {
+        let identity = (field.fid, field.name.as_str());
+        if !seen.insert(identity) {
+            bail!(
+                "duplicate Quote FID {} {} at {} {}",
+                field.fid,
+                field.name,
+                message.ric,
+                message.date_time
+            );
+        }
+        if !QUOTE_FIELDS.contains(&(field.fid, field.name.as_str())) && identity != QUOTE_DATE_FIELD
+        {
+            bail!(
+                "unsupported Quote FID {} {} at {} {}",
+                field.fid,
+                field.name,
+                message.ric,
+                message.date_time
+            );
+        }
     }
     Ok(())
 }
 
 fn is_quote_ripple(message: &RawMessage) -> Result<bool> {
-    if message.message_class != "UPDATE" || message.update_type != "QUOTE" {
+    if message.message_class != "UPDATE"
+        || !matches!(message.update_type.as_str(), "QUOTE" | "UNSPECIFIED")
+    {
         return Ok(false);
     }
     if message.fields.is_empty()
@@ -502,6 +544,10 @@ fn is_empty_closing_run(message: &RawMessage) -> Result<bool> {
     Ok(true)
 }
 
+fn is_empty_status(message: &RawMessage) -> bool {
+    message.message_class == "STATUS" && message.update_type.is_empty() && message.fields.is_empty()
+}
+
 fn is_range_update_only(message: &RawMessage) -> bool {
     message.message_class == "UPDATE"
         && message.update_type == "UNSPECIFIED"
@@ -528,19 +574,28 @@ fn parse_venue(field: &RawField) -> Result<String> {
     }
 }
 
-fn parse_quality(message: &RawMessage) -> Result<u16> {
-    let left = field(message, "PRC_QL_CD")?.value.trim();
-    let right = field(message, "PRC_QL3")?.value.trim();
+fn parse_quality(message: &RawMessage) -> Result<(u16, bool)> {
+    let quality_updated = optional_field(message, "PRC_QL_CD").is_some()
+        || optional_field(message, "PRC_QL3").is_some();
+    let left = optional_field(message, "PRC_QL_CD")
+        .map(|field| field.value.trim())
+        .unwrap_or_default();
+    let right = optional_field(message, "PRC_QL3")
+        .map(|field| field.value.trim())
+        .unwrap_or_default();
     if !left.is_empty() && !right.is_empty() && left != right {
         bail!("Quote quality codes disagree: {left:?} vs {right:?}");
     }
     let value = if left.is_empty() { right } else { left };
     if value.is_empty() {
-        Ok(MISSING_CODE)
+        Ok((MISSING_CODE, quality_updated))
     } else {
-        value
-            .parse::<u16>()
-            .with_context(|| format!("parse quote quality code {value:?}"))
+        Ok((
+            value
+                .parse::<u16>()
+                .with_context(|| format!("parse quote quality code {value:?}"))?,
+            true,
+        ))
     }
 }
 
@@ -555,9 +610,13 @@ fn quote_bucket_ns(message: &RawMessage, source_ts_utc_ns: u64) -> Result<u64> {
         }
         _ => DateTime::<Utc>::from_timestamp_nanos(i64::try_from(source_ts_utc_ns)?).date_naive(),
     };
-    let quote_ms = field(message, "QUOTIM_MS")?.value.trim();
+    let quote_ms = optional_field(message, "QUOTIM_MS")
+        .map(|field| field.value.trim())
+        .unwrap_or_default();
     let millis = if quote_ms.is_empty() {
-        let raw = field(message, "QUOTIM")?.value.trim();
+        let raw = optional_field(message, "QUOTIM")
+            .map(|field| field.value.trim())
+            .unwrap_or_default();
         if raw.is_empty() {
             return Ok((source_ts_utc_ns / NS_PER_SEC) * NS_PER_SEC);
         }
@@ -582,9 +641,34 @@ fn quote_bucket_ns(message: &RawMessage, source_ts_utc_ns: u64) -> Result<u64> {
     Ok(midnight + (millis / 1_000) * NS_PER_SEC)
 }
 
-pub fn parse_quote(message: &RawMessage, part: u16, shard: u16) -> Result<(u64, QuoteCandidate)> {
+#[derive(Debug)]
+struct QuoteUpdate {
+    bucket: u64,
+    candidate: QuoteCandidate,
+    bid_updated: bool,
+    ask_updated: bool,
+    quality_updated: bool,
+}
+
+fn side_updated(message: &RawMessage, price: &str, size: &str) -> Result<bool> {
+    match (
+        optional_field(message, price),
+        optional_field(message, size),
+    ) {
+        (Some(_), Some(_)) => Ok(true),
+        (None, None) => Ok(false),
+        _ => bail!(
+            "Quote {} {} has incomplete {} side update",
+            message.ric,
+            message.date_time,
+            if price == "BID" { "bid" } else { "ask" }
+        ),
+    }
+}
+
+fn parse_quote_update(message: &RawMessage, part: u16, shard: u16) -> Result<QuoteUpdate> {
     if message.message_class != "UPDATE" || message.update_type != "QUOTE" {
-        bail!("parse_quote called for non-UPDATE/QUOTE message");
+        bail!("parse_quote_update called for non-UPDATE/QUOTE message");
     }
     validate_quote_signature(message)?;
     if message.source_row > u64::from(u32::MAX) {
@@ -593,20 +677,90 @@ pub fn parse_quote(message: &RawMessage, part: u16, shard: u16) -> Result<(u64, 
     let source_ts_utc_ns = parse_date_time_ns(&message.date_time)?;
     let source_order = (u64::from(part) << 48) | (u64::from(shard) << 32) | message.source_row;
     let bucket = quote_bucket_ns(message, source_ts_utc_ns)?;
-    Ok((
+    let bid_updated = side_updated(message, "BID", "BIDSIZE")?;
+    let ask_updated = side_updated(message, "ASK", "ASKSIZE")?;
+    let (quality_code, quality_updated) = parse_quality(message)?;
+    if !bid_updated && !ask_updated && !quality_updated {
+        bail!(
+            "Quote {} {} has neither a side nor quality update",
+            message.ric,
+            message.date_time
+        );
+    }
+    Ok(QuoteUpdate {
         bucket,
-        QuoteCandidate {
+        candidate: QuoteCandidate {
             source_ts_utc_ns,
             source_order,
-            bid: parse_price_e9(&field(message, "BID")?.value)?,
-            bid_size: parse_size(&field(message, "BIDSIZE")?.value)?,
-            ask: parse_price_e9(&field(message, "ASK")?.value)?,
-            ask_size: parse_size(&field(message, "ASKSIZE")?.value)?,
-            bid_venue: parse_venue(field(message, "BIDXID")?)?,
-            ask_venue: parse_venue(field(message, "ASKXID")?)?,
-            quality_code: parse_quality(message)?,
+            bid: if bid_updated {
+                parse_price_e9(&field(message, "BID")?.value)?
+            } else {
+                MISSING_PRICE
+            },
+            bid_size: if bid_updated {
+                parse_size(&field(message, "BIDSIZE")?.value)?
+            } else {
+                MISSING_SIZE
+            },
+            ask: if ask_updated {
+                parse_price_e9(&field(message, "ASK")?.value)?
+            } else {
+                MISSING_PRICE
+            },
+            ask_size: if ask_updated {
+                parse_size(&field(message, "ASKSIZE")?.value)?
+            } else {
+                MISSING_SIZE
+            },
+            bid_venue: if bid_updated {
+                optional_field(message, "BIDXID")
+                    .map(parse_venue)
+                    .transpose()?
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            },
+            ask_venue: if ask_updated {
+                optional_field(message, "ASKXID")
+                    .map(parse_venue)
+                    .transpose()?
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            },
+            quality_code,
         },
-    ))
+        bid_updated,
+        ask_updated,
+        quality_updated,
+    })
+}
+
+pub fn parse_quote(message: &RawMessage, part: u16, shard: u16) -> Result<(u64, QuoteCandidate)> {
+    let update = parse_quote_update(message, part, shard)?;
+    Ok((update.bucket, update.candidate))
+}
+
+fn merge_quote_update(previous: &QuoteCandidate, update: QuoteUpdate) -> QuoteCandidate {
+    let mut merged = previous.clone();
+    if update.candidate.source_order >= merged.source_order {
+        merged.source_ts_utc_ns = update.candidate.source_ts_utc_ns;
+        merged.source_order = update.candidate.source_order;
+    }
+    if update.bid_updated {
+        merged.bid = update.candidate.bid;
+        merged.bid_size = update.candidate.bid_size;
+        merged.bid_venue = update.candidate.bid_venue;
+    }
+    if update.ask_updated {
+        merged.ask = update.candidate.ask;
+        merged.ask_size = update.candidate.ask_size;
+        merged.ask_venue = update.candidate.ask_venue;
+    }
+    if update.quality_updated {
+        merged.quality_code = update.candidate.quality_code;
+    }
+    merged
 }
 
 fn source_order(message: &RawMessage, part: u16, shard: u16) -> Result<u64> {
@@ -773,6 +927,18 @@ fn parse_trade_event(
         .map(|field| parse_u16_or_missing(field.value.trim(), "PRC_QL2"))
         .transpose()?
         .unwrap_or(MISSING_U16);
+    let order_side = optional_field(message, "ORDER_SIDE")
+        .map(|field| parse_u16_or_missing(field.value.trim(), "ORDER_SIDE"))
+        .transpose()?
+        .unwrap_or(MISSING_U16);
+    let direction_venue =
+        if optional_field(message, venue_name).is_none() && message.ric.ends_with(".BAT") {
+            "BAT"
+        } else {
+            &venue
+        };
+    let (aggressor_side, unknown_reason, venue_class) =
+        classify_trade_direction(direction_venue, order_side);
     let row = TradeValue {
         source_ts_utc_ns,
         source_order,
@@ -785,6 +951,22 @@ fn parse_trade_event(
         condition,
         flags,
         quality_code,
+        order_id: trade_ascii_field(message, "ORDER_ID")?,
+        order_side,
+        aggressor_side,
+        unknown_reason,
+        venue_class,
+        side_method: 0,
+        side_flags: 0,
+        print_type: trade_ascii_field(message, "PRNTYP")?,
+        held_trade_indicator: optional_field(message, "HELD_T_IND")
+            .map(|f| parse_u16_or_missing(f.value.trim(), "HELD_T_IND"))
+            .transpose()?
+            .unwrap_or(MISSING_U16),
+        activity_ms: optional_field(message, "TIMACT_MS")
+            .map(|f| parse_event_ms(f.value.trim(), "TIMACT_MS"))
+            .transpose()?
+            .unwrap_or(MISSING_U32),
     };
     Ok(EncodedEvent {
         msg_type: MSG_TRADE,
@@ -792,6 +974,19 @@ fn parse_trade_event(
         value: encode_trade(&row).to_vec(),
         name: "TradeMsg".to_string(),
     })
+}
+
+fn trade_ascii_field<const N: usize>(message: &RawMessage, name: &str) -> Result<[u8; N]> {
+    let Some(field) = optional_field(message, name) else {
+        return Ok([0xff; N]);
+    };
+    let text = field.value.as_bytes();
+    if !text.is_ascii() || text.contains(&0) || text.len() > N {
+        bail!("{name} cannot fit fixed {N}-byte ASCII slot");
+    }
+    let mut result = [0; N];
+    result[..text.len()].copy_from_slice(text);
+    Ok(result)
 }
 
 fn parse_correction_event(
@@ -913,7 +1108,7 @@ fn encode_nonquote_events(
     }
 }
 
-fn source_location(path: &Path) -> Result<(u16, u16)> {
+pub(crate) fn source_location(path: &Path) -> Result<(u16, u16)> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1054,15 +1249,12 @@ fn finalize_one_ric(
         let candidate = decode_candidate(&value)?;
         let bid_clear = side_is_clear(candidate.bid, candidate.bid_size)?;
         let ask_clear = side_is_clear(candidate.ask, candidate.ask_size)?;
-        if !bid_clear && candidate.bid_venue.is_empty() {
-            bail!("valid bid has no venue for {ric} at {bucket}");
-        }
-        if !ask_clear && candidate.ask_venue.is_empty() {
-            bail!("valid ask has no venue for {ric} at {bucket}");
-        }
-
         let quote_key = encode_key(MSG_QUOTE, bucket, 0);
-        if !bid_clear && !ask_clear && candidate.bid_venue == candidate.ask_venue {
+        if !bid_clear
+            && !ask_clear
+            && !candidate.bid_venue.is_empty()
+            && candidate.bid_venue == candidate.ask_venue
+        {
             put_venue_quote(
                 db,
                 cf_lock,
@@ -1081,7 +1273,7 @@ fn finalize_one_ric(
             )?;
             census.venue_quote_values += 1;
         } else {
-            if !bid_clear {
+            if !bid_clear && !candidate.bid_venue.is_empty() {
                 put_venue_quote(
                     db,
                     cf_lock,
@@ -1100,7 +1292,7 @@ fn finalize_one_ric(
                 )?;
                 census.venue_quote_values += 1;
             }
-            if !ask_clear {
+            if !ask_clear && !candidate.ask_venue.is_empty() {
                 put_venue_quote(
                     db,
                     cf_lock,
@@ -1158,7 +1350,7 @@ fn write_metadata(
     census: &QuoteReplayCensus,
 ) -> Result<()> {
     let cf = db.cf_handle(CF_META).context("missing replay_meta CF")?;
-    let status = if config.staging_dir.is_some() {
+    let status = if config.staging_dir.is_some() || config.parsed_staging_dir.is_some() {
         "complete"
     } else {
         "diagnostic-complete"
@@ -1168,6 +1360,19 @@ fn write_metadata(
         ("scope", "all-audited-raw-messages".to_string()),
         ("status", status.to_string()),
         ("period", config.period.clone()),
+        (
+            "trade_value_bytes",
+            crate::event_codec::TRADE_VALUE_LEN.to_string(),
+        ),
+        (
+            "trade_direction_policy",
+            "off-exchange N; forced ORDER_SIDE reversal; causal venue touch, NBBO touch, midpoint, tick, previous evidence, default B; source-ordered RIC workers"
+                .to_string(),
+        ),
+        ("direction_calendar", config.direction_calendar.as_ref().map(|p| p.display().to_string()).unwrap_or_default()),
+        ("direction_method_codes", "1 order_side_reverse; 2 venue_single_side_quote_test; 3 nbbo_touch; 4 nbbo_midpoint; 5 tick_rule; 6 forced_tick_rule; 7 forced_previous_side; 8 forced_default_buy; 9 off_exchange_reporting; 10 invalid_trade".to_string()),
+        ("direction_flag_bits", "0 estimated; 1 forced; 2 trade_source_clock_fallback; 3 no_continuous_session".to_string()),
+        ("direction_by_utc_day", serde_json::to_string(&census.direction_by_day)?),
         (
             "quote_value_bytes",
             crate::quote_codec::QUOTE_VALUE_LEN.to_string(),
@@ -1193,6 +1398,7 @@ fn write_metadata(
         ("source_trades", census.source_trades.to_string()),
         ("source_corrections", census.source_corrections.to_string()),
         ("source_states", census.source_states.to_string()),
+        ("source_statuses", census.source_statuses.to_string()),
         ("source_refreshes", census.source_refreshes.to_string()),
         ("quote_seconds", census.quote_seconds.to_string()),
         ("venue_quote_values", census.venue_quote_values.to_string()),
@@ -1287,11 +1493,27 @@ pub fn verify_quote_rocksdb(path: &Path) -> Result<QuoteVerifyCensus> {
                     }
                     MSG_TRADE => {
                         let decoded = decode_trade(&value)?;
+                        let valid =
+                            decoded.price > 0 && decoded.size > 0 && decoded.size != MISSING_U64;
+                        if decoded.side_method == 0 || (decoded.side_method == 10) == valid {
+                            bail!("TradeMsg direction not finalized or invalid classification in {name}");
+                        }
                         if (decoded.source_ts_utc_ns, decoded.source_order)
                             != (key_ts, source_order)
                         {
                             bail!("TradeMsg key/value source mismatch in {name}");
                         }
+                        *census
+                            .trade_sides
+                            .entry((decoded.aggressor_side as char).to_string())
+                            .or_default() += 1;
+                        *census
+                            .trade_direction_methods
+                            .entry(format!(
+                                "method={};flags={}",
+                                decoded.side_method, decoded.side_flags
+                            ))
+                            .or_default() += 1;
                         census.event_values += 1;
                     }
                     MSG_CANCEL | MSG_PREVIOUS_DAY => {
@@ -1343,6 +1565,7 @@ pub fn verify_quote_rocksdb(path: &Path) -> Result<QuoteVerifyCensus> {
         "source_trades",
         "source_corrections",
         "source_states",
+        "source_statuses",
         "source_refreshes",
     ]
     .into_iter()
@@ -1415,12 +1638,104 @@ pub fn acquire_raw_target_lock(final_path: &Path) -> Result<RawTargetLock> {
     Ok(RawTargetLock { _file: file })
 }
 
-fn replay_one_input(
+#[derive(Debug, Deserialize)]
+struct DirectionSession {
+    open_ts: u64,
+    close_ts: u64,
+}
+
+fn direction_sessions(config: &QuoteReplayConfig) -> Result<Vec<DirectionSession>> {
+    let Some(path) = &config.direction_calendar else {
+        log::warn!("no direction_calendar: quote/tick history disabled, forced directions explicitly flagged");
+        return Ok(Vec::new());
+    };
+    let mut reader = csv::Reader::from_path(path)?;
+    let sessions: Vec<DirectionSession> = reader
+        .deserialize()
+        .collect::<std::result::Result<_, _>>()?;
+    if sessions.is_empty() {
+        bail!("direction calendar is empty");
+    }
+    for (i, s) in sessions.iter().enumerate() {
+        if s.open_ts >= s.close_ts
+            || s.close_ts > u64::MAX / NS_PER_SEC
+            || (i > 0 && sessions[i - 1].close_ts > s.open_ts)
+        {
+            bail!("invalid or overlapping direction session at row {}", i + 2);
+        }
+    }
+    Ok(sessions)
+}
+
+fn direction_clock(message: &RawMessage, source: u64, names: &[&str]) -> Result<(u64, bool)> {
+    for name in names {
+        let Some(field) = optional_field(message, name).filter(|f| !f.value.trim().is_empty())
+        else {
+            continue;
+        };
+        let raw = field.value.trim();
+        let ns = if raw.contains(':') {
+            let time = NaiveTime::parse_from_str(raw, "%H:%M:%S%.f")?;
+            u64::from(time.num_seconds_from_midnight()) * NS_PER_SEC + u64::from(time.nanosecond())
+        } else {
+            let units = if name.ends_with("_NS") { 1 } else { 1_000_000 };
+            raw.parse::<u64>()?
+                .checked_mul(units)
+                .context("event clock overflow")?
+        };
+        if ns >= 86_400 * NS_PER_SEC {
+            bail!("{name} outside UTC day");
+        }
+        let day = source / (86_400 * NS_PER_SEC) * (86_400 * NS_PER_SEC);
+        let date_day = if names.contains(&"QUOTIM_MS") {
+            optional_field(message, "QUOTE_DATE")
+                .filter(|f| !f.value.trim().is_empty())
+                .map(|f| parse_date_time_ns(&format!("{}T00:00:00Z", f.value.trim())))
+                .transpose()?
+                .unwrap_or(day)
+        } else {
+            day
+        };
+        let event = date_day + ns;
+        // A clock later than its source observation is not comparable evidence.
+        return Ok(if event <= source {
+            (event, false)
+        } else {
+            (source, true)
+        });
+    }
+    Ok((source, true))
+}
+
+#[derive(Default)]
+struct RicDirection {
+    state: crate::direction::DirectionState,
+    session: Option<usize>,
+    last_order: Option<u64>,
+}
+
+impl RicDirection {
+    fn enter(&mut self, sessions: &[DirectionSession], event: u64, source: u64) -> bool {
+        let pos = sessions.partition_point(|s| s.open_ts <= event / NS_PER_SEC);
+        let session = pos.checked_sub(1).filter(|&i| {
+            let s = &sessions[i];
+            event < s.close_ts * NS_PER_SEC
+                && source >= s.open_ts * NS_PER_SEC
+                && source < s.close_ts * NS_PER_SEC
+        });
+        if session.is_none() || session != self.session {
+            self.state.reset();
+        }
+        self.session = session;
+        session.is_some()
+    }
+}
+
+fn replay_one_stream(
     db: &ReplayDb,
     cf_lock: &Mutex<()>,
-    part: u16,
-    shard: u16,
-    path: &Path,
+    jobs: Receiver<(u16, u16, RawMessage)>,
+    sessions: &[DirectionSession],
     abort: &AtomicBool,
     progress_every: u64,
 ) -> Result<(QuoteReplayCensus, BTreeSet<String>)> {
@@ -1428,17 +1743,43 @@ fn replay_one_input(
     let mut temporary_names = BTreeSet::new();
     let mut batch = WriteBatch::default();
     let mut open = BTreeMap::<String, (u64, QuoteCandidate)>::new();
-    read_one_input(path, |message| {
+    let mut directions = BTreeMap::<String, RicDirection>::new();
+    let mut process = |part: u16, shard: u16, message: RawMessage| -> Result<()> {
         if abort.load(Ordering::Relaxed) {
             bail!("RAW replay worker aborted after another worker failed");
         }
         census.source_messages += 1;
+        let direction = directions.entry(message.ric.clone()).or_default();
+        let order = source_order(&message, part, shard)?;
+        if direction
+            .last_order
+            .is_some_and(|previous| previous >= order)
+        {
+            bail!("non-increasing source_order for {}", message.ric);
+        }
+        direction.last_order = Some(order);
+        if message.message_class == "REFRESH"
+            || message.message_class == "STATUS"
+            || message.update_type == "CORRECTION"
+            || message.fields.iter().any(|f| {
+                matches!(
+                    f.name.as_str(),
+                    "TRD_STATUS" | "HALT_REASN" | "HALT_RSN" | "BOOK_STATE"
+                )
+            })
+        {
+            direction.state.reset();
+        }
         if is_quote_ripple(&message)? {
             census.source_quote_ripples += 1;
             return Ok(());
         }
         if is_empty_closing_run(&message)? {
             census.source_empty_closing_runs += 1;
+            return Ok(());
+        }
+        if is_empty_status(&message) {
+            census.source_statuses += 1;
             return Ok(());
         }
         if is_range_update_only(&message) {
@@ -1471,7 +1812,71 @@ fn replay_one_input(
                     message.date_time
                 )
             })?;
-            for event in events {
+            for mut event in events {
+                if event.msg_type == MSG_TRADE {
+                    let mut trade = decode_trade(&event.value)?;
+                    let (event_ns, fallback) = direction_clock(
+                        &message,
+                        trade.source_ts_utc_ns,
+                        if optional_field(&message, "TRDPRC_1").is_some() {
+                            &["TRDTIM_MS", "TIMACT_MS", "SALTIM_MS"]
+                        } else {
+                            &["IRGTIM_MS", "TIMACT_MS", "SALTIM_MS"]
+                        },
+                    )?;
+                    let in_session = direction.enter(sessions, event_ns, trade.source_ts_utc_ns);
+                    let venue_field = if optional_field(&message, "TRDPRC_1").is_some() {
+                        "TRADE_EXID"
+                    } else {
+                        "IRG_EXID"
+                    };
+                    let venue = if optional_field(&message, venue_field).is_none()
+                        && message.ric.ends_with(".BAT")
+                    {
+                        "BAT"
+                    } else {
+                        &event.venue
+                    };
+                    if trade.price > 0 && trade.size > 0 && trade.size != MISSING_U64 {
+                        let result = direction.state.classify(
+                            event_ns,
+                            trade.source_ts_utc_ns,
+                            order,
+                            trade.price,
+                            venue,
+                            trade.order_side,
+                        );
+                        trade.aggressor_side = result.side;
+                        trade.unknown_reason = if result.side == b'N' { 1 } else { 0 };
+                        trade.side_method = result.method;
+                        trade.side_flags = u8::from(result.estimated)
+                            | (u8::from(result.forced) << 1)
+                            | (u8::from(fallback) << 2)
+                            | (u8::from(!in_session) << 3);
+                    } else {
+                        trade.side_method = 10;
+                    }
+                    let day = DateTime::<Utc>::from_timestamp_nanos(i64::try_from(
+                        trade.source_ts_utc_ns,
+                    )?)
+                    .date_naive();
+                    let audit = census
+                        .direction_by_day
+                        .entry(format!(
+                            "{}|{}|{}|{}|{}",
+                            message.ric,
+                            day,
+                            trade.aggressor_side as char,
+                            trade.side_method,
+                            trade.side_flags
+                        ))
+                        .or_default();
+                    audit.0 += 1;
+                    if trade.side_method != 10 {
+                        audit.1 += u128::from(trade.size);
+                    }
+                    event.value = encode_trade(&trade).to_vec();
+                }
                 let source_ts = u64::from_le_bytes(event.value[0..8].try_into()?);
                 let order = u64::from_le_bytes(event.value[8..16].try_into()?);
                 let cf_name = if event.venue.is_empty() {
@@ -1494,13 +1899,57 @@ fn replay_one_input(
             return Ok(());
         }
         census.source_quotes += 1;
-        let (bucket, candidate) = parse_quote(&message, part, shard)?;
+        let update = parse_quote_update(&message, part, shard)?;
+        let source = update.candidate.source_ts_utc_ns;
+        for bid in [true, false] {
+            if if bid {
+                update.bid_updated
+            } else {
+                update.ask_updated
+            } {
+                let (event, _) = direction_clock(
+                    &message,
+                    source,
+                    if bid {
+                        &["BID_TIM_NS", "QUOTIM_NS", "QUOTIM_MS", "QUOTIM"]
+                    } else {
+                        &["ASK_TIM_NS", "QUOTIM_NS", "QUOTIM_MS", "QUOTIM"]
+                    },
+                )?;
+                if direction.enter(sessions, event, source) {
+                    let c = &update.candidate;
+                    let venue = if bid { &c.bid_venue } else { &c.ask_venue };
+                    let venue = if optional_field(&message, if bid { "BIDXID" } else { "ASKXID" })
+                        .is_none()
+                        && message.ric.ends_with(".BAT")
+                    {
+                        "BAT"
+                    } else {
+                        venue
+                    };
+                    let size = if bid { c.bid_size } else { c.ask_size };
+                    direction.state.quote(
+                        bid,
+                        event,
+                        source,
+                        order,
+                        if bid { c.bid } else { c.ask },
+                        if size == MISSING_SIZE {
+                            0
+                        } else {
+                            u64::from(size)
+                        },
+                        venue.to_owned(),
+                    );
+                }
+            }
+        }
+        let bucket = update.bucket;
         let ric = message.ric;
         if let Some((previous_bucket, previous)) = open.get(&ric) {
             if *previous_bucket == bucket {
-                if candidate.source_order >= previous.source_order {
-                    open.insert(ric, (bucket, candidate));
-                }
+                let candidate = merge_quote_update(previous, update);
+                open.insert(ric, (bucket, candidate));
                 return Ok(());
             }
             let temp_name = temporary_cf_name(&ric)?;
@@ -1516,10 +1965,13 @@ fn replay_one_input(
                 flush_batch(db, &mut batch)?;
             }
         }
-        open.insert(ric, (bucket, candidate));
+        open.insert(ric, (bucket, update.candidate));
         Ok(())
-    })
-    .with_context(|| format!("replay RAW messages from {}", path.display()))?;
+    };
+    for (part, shard, message) in jobs {
+        process(part, shard, message)
+            .with_context(|| format!("replay RAW part={part} shard={shard}"))?;
+    }
     for (ric, (bucket, candidate)) in open {
         let temp_name = temporary_cf_name(&ric)?;
         let cf = ensure_cf(db, cf_lock, &temp_name)?;
@@ -1533,17 +1985,27 @@ fn replay_one_input(
     }
     flush_batch(db, &mut batch)?;
     if progress_every > 0 && census.source_messages >= progress_every {
-        log::info!(
-            "RAW replay completed part={part} shard={shard} {} {census}",
-            path.display()
-        );
+        log::info!("RAW replay RIC worker completed {census}");
     }
     Ok((census, temporary_names))
 }
 
 pub fn replay_quotes(config: &QuoteReplayConfig) -> Result<QuoteReplayCensus> {
-    let inputs = discover_inputs(config)?;
-    if inputs.is_empty() {
+    let inputs = if config.parsed_staging_dir.is_none() {
+        discover_inputs(config)?
+    } else {
+        Vec::new()
+    };
+    let parsed = config
+        .parsed_staging_dir
+        .as_ref()
+        .map(|root| {
+            let manifest = crate::parsed::ParsedManifest::load(root)?;
+            Ok::<_, anyhow::Error>((root.clone(), manifest))
+        })
+        .transpose()?;
+    let sessions = Arc::new(direction_sessions(config)?);
+    if inputs.is_empty() && parsed.is_none() {
         bail!("RAW replay has no inputs");
     }
     let final_path = &config.rocksdb_dir;
@@ -1560,64 +2022,41 @@ pub fn replay_quotes(config: &QuoteReplayConfig) -> Result<QuoteReplayCensus> {
     let abort = Arc::new(AtomicBool::new(false));
     let mut census = QuoteReplayCensus::default();
     let mut temporary_names = BTreeSet::new();
-    let worker_count = config.workers.min(inputs.len()).max(1);
+    let worker_count = config.workers.max(1);
     log::info!(
         "RAW replay starting workers={worker_count} shards={} rocksdb={}",
-        inputs.len(),
+        parsed
+            .as_ref()
+            .map_or(inputs.len(), |(_, m)| m.segments.len()),
         building_path.display()
     );
-    let (job_tx, job_rx) = unbounded();
-    for input in inputs {
-        job_tx
-            .send(input)
-            .map_err(|_| anyhow!("RAW replay job queue closed before workers started"))?;
-    }
-    drop(job_tx);
+    let mut senders = Vec::with_capacity(worker_count);
     let mut handles = Vec::with_capacity(worker_count);
     for worker_id in 0..worker_count {
         let db = Arc::clone(&db);
         let cf_lock = Arc::clone(&cf_lock);
         let abort = Arc::clone(&abort);
-        let job_rx = job_rx.clone();
+        let (job_tx, job_rx) = bounded(256);
+        senders.push(job_tx);
+        let sessions = Arc::clone(&sessions);
         let progress_every = config.progress_every;
         handles.push(
             thread::Builder::new()
-                .name(format!("usstock-raw-shard-{worker_id}"))
+                .name(format!("usstock-raw-ric-{worker_id}"))
                 .spawn(move || -> Result<(QuoteReplayCensus, BTreeSet<String>)> {
                     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let mut local_census = QuoteReplayCensus::default();
-                        let mut local_names = BTreeSet::new();
-                        while let Ok((part, shard, path)) = job_rx.recv() {
-                            if abort.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            log::info!(
-                                "RAW replay worker={worker_id} claimed part={part} shard={shard} {}",
-                                path.display()
-                            );
-                            match replay_one_input(
-                                &db,
-                                &cf_lock,
-                                part,
-                                shard,
-                                &path,
-                                &abort,
-                                progress_every,
-                            ) {
-                                Ok((part_census, names)) => {
-                                    local_census.merge_from(part_census);
-                                    local_names.extend(names);
-                                }
-                                Err(error) => {
-                                    abort.store(true, Ordering::Relaxed);
-                                    return Err(error.context(format!(
-                                        "RAW replay worker {worker_id} failed on part={part} shard={shard} {}",
-                                        path.display()
-                                    )));
-                                }
-                            }
+                        let result = replay_one_stream(
+                            &db,
+                            &cf_lock,
+                            job_rx,
+                            &sessions,
+                            &abort,
+                            progress_every,
+                        );
+                        if result.is_err() {
+                            abort.store(true, Ordering::Relaxed);
                         }
-                        Ok((local_census, local_names))
+                        result
                     }));
                     match run {
                         Ok(result) => result,
@@ -1630,7 +2069,79 @@ pub fn replay_quotes(config: &QuoteReplayConfig) -> Result<QuoteReplayCensus> {
                 .with_context(|| format!("spawn RAW replay worker {worker_id}"))?,
         );
     }
-    drop(job_rx);
+    let read_result: Result<()> = if let Some((root, manifest)) = parsed {
+        let groups = manifest.by_ric(&root).into_iter().collect::<Vec<_>>();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .thread_name(|i| format!("usstock-raw-parsed-reader-{i}"))
+            .build()?;
+        pool.install(|| {
+            groups
+                .par_iter()
+                .try_for_each(|(ric, segments)| -> Result<()> {
+                    let hash = ric.bytes().fold(14695981039346656037_u64, |h, b| {
+                        (h ^ u64::from(b)).wrapping_mul(1099511628211)
+                    });
+                    let sender = &senders[hash as usize % worker_count];
+                    for (part, shard, path) in segments {
+                        if abort.load(Ordering::Relaxed) {
+                            bail!("parsed RAW reader aborted after worker failure");
+                        }
+                        let expected = manifest
+                            .segments
+                            .iter()
+                            .find(|s| {
+                                s.ric == *ric
+                                    && s.original_part == *part
+                                    && s.shard_index == *shard
+                                    && root.join(&s.file) == *path
+                            })
+                            .context("parsed segment missing from manifest")?;
+                        let count =
+                            crate::parsed::read_segment(path, ric, *part, *shard, |message| {
+                                sender
+                                    .send((*part, *shard, message))
+                                    .map_err(|_| anyhow!("RAW RIC worker channel closed"))
+                            })
+                            .with_context(|| format!("read parsed RAW {}", path.display()))?;
+                        if count != expected.messages {
+                            bail!(
+                                "parsed segment message count mismatch in {}",
+                                path.display()
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+        })
+    } else {
+        (|| {
+            for (part, shard, path) in inputs {
+                log::info!(
+                    "RAW ordered reader part={part} shard={shard} {}",
+                    path.display()
+                );
+                read_one_input(&path, |message| {
+                    if abort.load(Ordering::Relaxed) {
+                        bail!("RAW reader aborted after worker failure");
+                    }
+                    // Fixed FNV-1a assignment, independent of randomized HashMap seeds.
+                    let hash = message.ric.bytes().fold(14695981039346656037_u64, |h, b| {
+                        (h ^ u64::from(b)).wrapping_mul(1099511628211)
+                    });
+                    senders[hash as usize % worker_count]
+                        .send((part, shard, message))
+                        .map_err(|_| anyhow!("RAW RIC worker channel closed"))
+                })
+                .with_context(|| format!("read ordered RAW {}", path.display()))?;
+            }
+            Ok(())
+        })()
+    };
+    if read_result.is_err() {
+        abort.store(true, Ordering::Relaxed);
+    }
+    drop(senders);
     let mut results = Vec::with_capacity(handles.len());
     for (worker_id, handle) in handles.into_iter().enumerate() {
         results.push(match handle.join() {
@@ -1662,6 +2173,7 @@ pub fn replay_quotes(config: &QuoteReplayConfig) -> Result<QuoteReplayCensus> {
     if let Some(error) = first_abort {
         return Err(error);
     }
+    read_result?;
 
     for name in &temporary_names {
         finalize_one_ric(&db, &cf_lock, name, &mut census)?;
@@ -1689,11 +2201,312 @@ pub fn replay_raw(config: &RawReplayConfig) -> Result<RawReplayCensus> {
     replay_quotes(config)
 }
 
+/// Streaming byte comparison, independent of SST layout and compaction order.
+fn compare_raw_rocksdb_impl(left: &Path, right: &Path, include_metadata: bool) -> Result<u64> {
+    let (left_db, mut left_names) = open_existing_db(left)?;
+    let (right_db, mut right_names) = open_existing_db(right)?;
+    left_names.sort();
+    right_names.sort();
+    if left_names != right_names {
+        bail!("RAW comparison column families differ");
+    }
+    let mut count = 0;
+    for name in left_names {
+        if !include_metadata && matches!(name.as_str(), "default" | CF_META) {
+            continue;
+        }
+        let left_cf = left_db.cf_handle(&name).context("left CF missing")?;
+        let right_cf = right_db.cf_handle(&name).context("right CF missing")?;
+        let mut left_rows = left_db.iterator_cf(&left_cf, rocksdb::IteratorMode::Start);
+        let mut right_rows = right_db.iterator_cf(&right_cf, rocksdb::IteratorMode::Start);
+        loop {
+            match (left_rows.next(), right_rows.next()) {
+                (None, None) => break,
+                (Some(left), Some(right)) => {
+                    let left = left?;
+                    let right = right?;
+                    if left != right {
+                        bail!("RAW comparison differs in {name} at logical row {count}");
+                    }
+                    count += 1;
+                }
+                _ => bail!("RAW comparison row counts differ in {name}"),
+            }
+        }
+    }
+    Ok(count)
+}
+
+pub fn compare_raw_rocksdb(left: &Path, right: &Path) -> Result<u64> {
+    compare_raw_rocksdb_impl(left, right, true)
+}
+
+pub fn compare_raw_data(left: &Path, right: &Path) -> Result<u64> {
+    compare_raw_rocksdb_impl(left, right, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::quote_codec::{decode_quote, decode_quote_state};
     use tempfile::TempDir;
+
+    #[test]
+    fn trade_preserves_order_evidence_without_inventing_aggressor() {
+        let message = parse_one(concat!(
+            "ARKG.BAT,Market Price,2022-02-24T17:20:10.743673286Z,-5,Raw,UPDATE,TRADE,,,,5054,,25582,7\n",
+            ",,,,FID,1022,,PRNTYP,\" \",\n",
+            ",,,,FID,372,,IRGPRC,43.99,\n",
+            ",,,,FID,373,,IRGVOL,100,\n",
+            ",,,,FID,13457,,HELD_T_IND,0,\"   \"\n",
+            ",,,,FID,3426,,ORDER_ID,4299763959769040207,\n",
+            ",,,,FID,3428,,ORDER_SIDE,1,BID\n",
+            ",,,,FID,4148,,TIMACT_MS,62410725,\n",
+        ));
+        let encoded = parse_trade_event(&message, 1, 2).unwrap();
+        let trade = decode_trade(&encoded.value).unwrap();
+        assert_eq!(&trade.order_id[..19], b"4299763959769040207");
+        assert_eq!(trade.order_side, 1);
+        assert_eq!(trade.activity_ms, 62410725);
+        assert_eq!(trade.held_trade_indicator, 0);
+        assert_eq!(trade.print_type[0], b' ');
+        assert_eq!(
+            (
+                trade.aggressor_side,
+                trade.unknown_reason,
+                trade.venue_class
+            ),
+            (b'N', 4, 1)
+        );
+        assert_eq!(classify_trade_direction("ADF", 1), (b'N', 1, 2));
+        assert_eq!(classify_trade_direction("NAS", MISSING_U16), (b'N', 2, 1));
+        assert_eq!(classify_trade_direction("", MISSING_U16), (b'N', 3, 0));
+        assert!(decode_trade(&encoded.value[..64]).is_err());
+    }
+
+    fn parse_one(rows: &str) -> RawMessage {
+        let source = format!(
+            "#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs\n{rows}"
+        );
+        let mut message = None;
+        read_messages(source.as_bytes(), |row| {
+            message = Some(row);
+            Ok(())
+        })
+        .unwrap();
+        message.unwrap()
+    }
+
+    #[test]
+    fn partial_quote_uses_source_second_when_quote_time_is_absent() {
+        let message = parse_one(
+            "AAPL.O,Market Price,2022-05-04T18:42:40.718847845Z,-4,Raw,UPDATE,QUOTE,,,,48064,,0,14\n\
+             ,,,,FID,11683,,BIDFINMMID,,\n\
+             ,,,,FID,22,,BID,161,\n\
+             ,,,,FID,6579,,BID_COND_N,R,\n\
+             ,,,,FID,3298,,BIDXID,43,NAS\n\
+             ,,,,FID,296,,ASK_MMID1,NYS,\n\
+             ,,,,FID,11684,,ASKFINMMID,,\n\
+             ,,,,FID,118,,PRC_QL_CD,0,\"   \"\n\
+             ,,,,FID,3264,,PRC_QL3,0,\"   \"\n\
+             ,,,,FID,30,,BIDSIZE,5,\n\
+             ,,,,FID,3297,,ASKXID,2,NYS\n\
+             ,,,,FID,31,,ASKSIZE,1,\n\
+             ,,,,FID,6580,,ASK_COND_N,R,\n\
+             ,,,,FID,25,,ASK,161.03,\n\
+             ,,,,FID,293,,BID_MMID1,NAS,\n",
+        );
+        let (bucket, quote) = parse_quote(&message, 0, 65).unwrap();
+        assert_eq!(bucket, 1_651_689_760_000_000_000);
+        assert_eq!(quote.bid, 161_000_000_000);
+        assert_eq!(quote.ask, 161_030_000_000);
+        assert_eq!(quote.bid_size, 5);
+        assert_eq!(quote.ask_size, 1);
+        assert_eq!(quote.bid_venue, "NAS");
+        assert_eq!(quote.ask_venue, "NYS");
+        assert_eq!(quote.quality_code, 0);
+    }
+
+    #[test]
+    fn partial_quote_still_rejects_unknown_or_incomplete_side_fields() {
+        let unknown = parse_one(
+            "AAPL.O,Market Price,2022-05-04T18:42:40.718847845Z,-4,Raw,UPDATE,QUOTE,,,,48064,,0,8\n\
+             ,,,,FID,22,,BID,161,\n\
+             ,,,,FID,25,,ASK,161.03,\n\
+             ,,,,FID,30,,BIDSIZE,5,\n\
+             ,,,,FID,31,,ASKSIZE,1,\n\
+             ,,,,FID,3298,,BIDXID,43,NAS\n\
+             ,,,,FID,3297,,ASKXID,2,NYS\n\
+             ,,,,FID,118,,PRC_QL_CD,0,\n\
+             ,,,,FID,99999,,UNKNOWN,0,\n",
+        );
+        assert!(validate_quote_signature(&unknown)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported Quote FID"));
+
+        let missing = parse_one(
+            "AAPL.O,Market Price,2022-05-04T18:42:40.718847845Z,-4,Raw,UPDATE,QUOTE,,,,48064,,0,6\n\
+             ,,,,FID,22,,BID,161,\n\
+             ,,,,FID,25,,ASK,161.03,\n\
+             ,,,,FID,31,,ASKSIZE,1,\n\
+             ,,,,FID,3298,,BIDXID,43,NAS\n\
+             ,,,,FID,3297,,ASKXID,2,NYS\n\
+             ,,,,FID,118,,PRC_QL_CD,0,\n",
+        );
+        assert!(parse_quote(&missing, 0, 65)
+            .unwrap_err()
+            .to_string()
+            .contains("incomplete bid side update"));
+    }
+
+    #[test]
+    fn unspecified_depth_only_update_is_a_quote_ripple() {
+        let message = parse_one(concat!(
+            "ABBV.N,Market Price,2021-09-02T07:40:00.020096839Z,-4,Raw,UPDATE,UNSPECIFIED,,,,6562,,37104,2\n",
+            ",,,,FID,23,,BID_1,0,\n",
+            ",,,,FID,26,,ASK_1,0,\n",
+        ));
+        assert!(is_quote_ripple(&message).unwrap());
+    }
+
+    #[test]
+    fn quote_with_retail_interest_metadata_is_accepted() {
+        let message = parse_one(concat!(
+            "ABBV.N,Market Price,2021-07-22T14:47:49.427579075Z,-4,Raw,UPDATE,QUOTE,,,,6562,,51600,11\n",
+            ",,,,FID,22,,BID,117.44,\n",
+            ",,,,FID,25,,ASK,117.48,\n",
+            ",,,,FID,30,,BIDSIZE,3,\n",
+            ",,,,FID,31,,ASKSIZE,1,\n",
+            ",,,,FID,118,,PRC_QL_CD,60,\"R  \"\n",
+            ",,,,FID,3264,,PRC_QL3,60,\"R  \"\n",
+            ",,,,FID,8935,,RETAIL_INT,3,\"A  \"\n",
+            ",,,,FID,1501,,STOCK_TYPE,B,\n",
+            ",,,,FID,6513,,SETL_TYPE,5,NRM\n",
+            ",,,,FID,6516,,BOOK_STATE,1,N\n",
+            ",,,,FID,3855,,QUOTIM_MS,53269413,\n",
+        ));
+        let (bucket, quote) = parse_quote(&message, 0, 79).unwrap();
+        assert_eq!(bucket, 1_626_965_269_000_000_000);
+        assert_eq!(quote.bid, 117_440_000_000);
+        assert_eq!(quote.ask, 117_480_000_000);
+        assert!(quote.bid_venue.is_empty());
+        assert!(quote.ask_venue.is_empty());
+        assert_eq!(quote.quality_code, 60);
+    }
+
+    #[test]
+    fn incremental_quote_sides_merge_with_nanosecond_metadata() {
+        let bid = parse_one(concat!(
+            "ARKG.BAT,Market Price,2022-02-24T17:20:05.247730047Z,-5,Raw,UPDATE,QUOTE,,,,5054,,24768,4\n",
+            ",,,,FID,22,,BID,44,\n",
+            ",,,,FID,30,,BIDSIZE,2,\n",
+            ",,,,FID,14264,,BID_TIM_NS,17:20:05.221000000,\n",
+            ",,,,FID,14265,,QUOTIM_NS,17:20:05.221000000,\n",
+        ));
+        let ask = parse_one(concat!(
+            "ARKG.BAT,Market Price,2022-02-24T17:20:05.983749317Z,-5,Raw,UPDATE,QUOTE,,,,5054,,24880,4\n",
+            ",,,,FID,25,,ASK,44.01,\n",
+            ",,,,FID,31,,ASKSIZE,200,\n",
+            ",,,,FID,14263,,ASK_TIM_NS,17:20:05.966000000,\n",
+            ",,,,FID,14265,,QUOTIM_NS,17:20:05.966000000,\n",
+        ));
+        let bid = parse_quote_update(&bid, 0, 161).unwrap();
+        let ask = parse_quote_update(&ask, 0, 161).unwrap();
+        assert_eq!(bid.bucket, ask.bucket);
+        let merged = merge_quote_update(&bid.candidate, ask);
+        assert_eq!(merged.bid, 44_000_000_000);
+        assert_eq!(merged.bid_size, 2);
+        assert_eq!(merged.ask, 44_010_000_000);
+        assert_eq!(merged.ask_size, 200);
+        assert_eq!(merged.quality_code, MISSING_CODE);
+    }
+
+    #[test]
+    fn venue_less_quote_writes_state_without_a_placeholder_venue() {
+        let temp = TempDir::new().unwrap();
+        let input = temp.path().join("merged-Data-part-000000-shard-000079.csv");
+        std::fs::write(
+            &input,
+            concat!(
+                "#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs\n",
+                "ABBV.N,Market Price,2021-07-22T14:47:49.427579075Z,-4,Raw,UPDATE,QUOTE,,,,6562,,51600,11\n",
+                ",,,,FID,22,,BID,117.44,\n",
+                ",,,,FID,25,,ASK,117.48,\n",
+                ",,,,FID,30,,BIDSIZE,3,\n",
+                ",,,,FID,31,,ASKSIZE,1,\n",
+                ",,,,FID,118,,PRC_QL_CD,60,\"R  \"\n",
+                ",,,,FID,3264,,PRC_QL3,60,\"R  \"\n",
+                ",,,,FID,8935,,RETAIL_INT,3,\"A  \"\n",
+                ",,,,FID,1501,,STOCK_TYPE,B,\n",
+                ",,,,FID,6513,,SETL_TYPE,5,NRM\n",
+                ",,,,FID,6516,,BOOK_STATE,1,N\n",
+                ",,,,FID,3855,,QUOTIM_MS,53269413,\n",
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join("quote-db");
+        let census = replay_quotes(&QuoteReplayConfig {
+            period: "test".to_string(),
+            staging_dir: None,
+            parsed_staging_dir: None,
+            inputs: vec![input],
+            rocksdb_dir: output.clone(),
+            progress_every: 1,
+            keep_temporary_column_families: false,
+            workers: 1,
+            direction_calendar: None,
+        })
+        .unwrap();
+        assert_eq!(census.venue_quote_values, 0);
+        assert_eq!(census.quote_state_values, 1);
+        assert_eq!(
+            verify_quote_rocksdb(&output).unwrap().venue_column_families,
+            0
+        );
+    }
+
+    #[test]
+    fn empty_status_is_an_accounted_control_notification() {
+        let temp = TempDir::new().unwrap();
+        let input = temp.path().join("merged-Data-part-000001-shard-000034.csv");
+        std::fs::write(
+            &input,
+            concat!(
+                "#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs\n",
+                "IGV.BAT,Market Price,2021-12-25T19:07:14.164131865Z,-5,Raw,STATUS,,,,,5054,,,0\n",
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join("status-db");
+        let census = replay_quotes(&QuoteReplayConfig {
+            period: "status-test".to_string(),
+            staging_dir: None,
+            parsed_staging_dir: None,
+            inputs: vec![input],
+            rocksdb_dir: output.clone(),
+            progress_every: 0,
+            keep_temporary_column_families: false,
+            workers: 1,
+            direction_calendar: None,
+        })
+        .unwrap();
+        assert_eq!(census.source_messages, 1);
+        assert_eq!(census.source_statuses, 1);
+        assert_eq!(census.event_values, 0);
+        assert_eq!(
+            verify_quote_rocksdb(&output).unwrap(),
+            QuoteVerifyCensus {
+                status: "diagnostic-complete".to_string(),
+                ..QuoteVerifyCensus::default()
+            }
+        );
+
+        let non_empty = parse_one(
+            "IGV.BAT,Market Price,2021-12-25T19:07:14.164131865Z,-5,Raw,STATUS,NOTICE,,,,5054,,,0\n",
+        );
+        assert!(!is_empty_status(&non_empty));
+    }
 
     #[test]
     fn prices_are_exact_and_missing_is_distinct_from_zero() {
@@ -1730,11 +2543,13 @@ mod tests {
         let config = QuoteReplayConfig {
             period: "fixture".to_string(),
             staging_dir: None,
+            parsed_staging_dir: None,
             inputs: vec![input],
             rocksdb_dir: output.clone(),
             progress_every: 0,
             keep_temporary_column_families: false,
             workers: 1,
+            direction_calendar: None,
         };
         let census = replay_quotes(&config).unwrap();
         assert_eq!(census.source_messages, 8);
@@ -1767,6 +2582,8 @@ mod tests {
                 quote_state_values: 2,
                 event_values: 1,
                 values_by_type: BTreeMap::from([("TradeMsg".to_string(), 1)]),
+                trade_sides: BTreeMap::from([("B".to_string(), 1)]),
+                trade_direction_methods: BTreeMap::from([("method=8;flags=15".to_string(), 1)]),
             }
         );
         let (db, _) = open_existing_db(&output).unwrap();
@@ -1826,6 +2643,143 @@ mod tests {
     }
 
     #[test]
+    fn parsed_partition_matches_direct_replay_for_mixed_rics_and_shards() {
+        use std::io::Write;
+        let temp = TempDir::new().unwrap();
+        let fixture = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/merged-Data-part-000000-shard-000000.csv"),
+        )
+        .unwrap();
+        let (header, body) = fixture.split_once('\n').unwrap();
+        let other = body.replace("AAPL.O", "ABBV.N");
+        let mut inputs = Vec::new();
+        for shard in 0..2 {
+            let path = temp
+                .path()
+                .join(format!("merged-Data-part-000000-shard-{shard:06}.csv.zst"));
+            let mut encoder =
+                zstd::stream::write::Encoder::new(File::create(&path).unwrap(), 1).unwrap();
+            writeln!(encoder, "{header}").unwrap();
+            encoder
+                .write_all(
+                    if shard == 0 {
+                        format!("{body}{other}")
+                    } else {
+                        format!("{other}{body}")
+                    }
+                    .as_bytes(),
+                )
+                .unwrap();
+            encoder.finish().unwrap();
+            inputs.push(path);
+        }
+        let parsed_root = temp.path().join("parsed");
+        let manifest = crate::parsed::partition(&inputs, &parsed_root, 2).unwrap();
+        assert_eq!(manifest.segments.len(), 4);
+        assert_eq!(
+            manifest
+                .by_ric(&parsed_root)
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["AAPL.O", "ABBV.N"]
+        );
+        let direct = temp.path().join("direct");
+        replay_quotes(&QuoteReplayConfig {
+            period: "mixed-direct".into(),
+            staging_dir: None,
+            parsed_staging_dir: None,
+            inputs: inputs.clone(),
+            rocksdb_dir: direct.clone(),
+            progress_every: 0,
+            keep_temporary_column_families: false,
+            workers: 2,
+            direction_calendar: None,
+        })
+        .unwrap();
+        let staged = temp.path().join("staged");
+        replay_quotes(&QuoteReplayConfig {
+            period: "mixed-direct".into(),
+            staging_dir: None,
+            parsed_staging_dir: Some(parsed_root),
+            inputs: vec![],
+            rocksdb_dir: staged.clone(),
+            progress_every: 0,
+            keep_temporary_column_families: false,
+            workers: 2,
+            direction_calendar: None,
+        })
+        .unwrap();
+        assert!(compare_raw_data(&direct, &staged).unwrap() > 0);
+    }
+
+    #[test]
+    fn direction_survives_shards_and_resets_at_session_boundary() {
+        let temp = TempDir::new().unwrap();
+        let header = "#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs\n";
+        let first = temp.path().join("merged-Data-part-000000-shard-000000.csv");
+        let second = temp.path().join("merged-Data-part-000000-shard-000001.csv");
+        fs::write(&first, format!("{header}{}", concat!(
+            "ARKK.BAT,Market Price,2021-07-01T13:30:00.100Z,-4,Raw,UPDATE,QUOTE,,,,74,,1,4\n",
+            ",,,,FID,22,,BID,100,\n,,,,FID,25,,ASK,101,\n,,,,FID,30,,BIDSIZE,10,\n,,,,FID,31,,ASKSIZE,10,\n",
+            "ARKK.BAT,Market Price,2021-07-01T13:30:00.200Z,-4,Raw,UPDATE,TRADE,,,,74,,2,2\n",
+            ",,,,FID,6,,TRDPRC_1,100,\n,,,,FID,178,,TRDVOL_1,10,\n"
+        ))).unwrap();
+        fs::write(
+            &second,
+            format!(
+                "{header}{}",
+                concat!(
+            "ARKK.BAT,Market Price,2021-07-01T13:30:00.300Z,-4,Raw,UPDATE,TRADE,,,,74,,3,2\n",
+            ",,,,FID,6,,TRDPRC_1,101,\n,,,,FID,178,,TRDVOL_1,10,\n",
+            "ARKK.BAT,Market Price,2021-07-01T13:30:00.400Z,-4,Raw,UPDATE,TRADE,,,,74,,4,3\n",
+            ",,,,FID,6,,TRDPRC_1,101,\n,,,,FID,178,,TRDVOL_1,10,\n,,,,FID,3428,,ORDER_SIDE,1,BID\n",
+            "ARKK.BAT,Market Price,2021-07-01T13:31:00.100Z,-4,Raw,UPDATE,TRADE,,,,74,,5,2\n",
+            ",,,,FID,6,,TRDPRC_1,100,\n,,,,FID,178,,TRDVOL_1,10,\n"
+        )
+            ),
+        )
+        .unwrap();
+        let calendar = temp.path().join("sessions.csv");
+        fs::write(&calendar, "session_date,open_ts,close_ts\n2021-07-01,1625146200,1625146260\n2021-07-01,1625146260,1625146320\n").unwrap();
+        let mut previous = None;
+        for workers in [1, 16, 32] {
+            let path = temp.path().join(format!("out-{workers}"));
+            replay_quotes(&QuoteReplayConfig {
+                period: "direction-fixture".into(),
+                staging_dir: None,
+                parsed_staging_dir: None,
+                inputs: vec![second.clone(), first.clone()],
+                rocksdb_dir: path.clone(),
+                progress_every: 0,
+                keep_temporary_column_families: false,
+                workers,
+                direction_calendar: Some(calendar.clone()),
+            })
+            .unwrap();
+            let dump = logical_dump(&path);
+            let trades: Vec<_> = dump["i:ARKK.BAT"]
+                .iter()
+                .filter(|(key, _)| decode_key(key).unwrap().0 == MSG_TRADE)
+                .map(|(_, value)| decode_trade(value).unwrap())
+                .collect();
+            assert_eq!(
+                trades
+                    .iter()
+                    .map(|t| (t.aggressor_side, t.side_method))
+                    .collect::<Vec<_>>(),
+                vec![(b'S', 2), (b'B', 2), (b'S', 1), (b'B', 8)]
+            );
+            assert_eq!(trades[2].side_flags & 3, 3);
+            if let Some(previous) = previous {
+                assert_eq!(dump, previous);
+            }
+            previous = Some(dump);
+        }
+    }
+
+    #[test]
     fn sixteen_workers_match_one_worker_logically() {
         let temp = TempDir::new().unwrap();
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1843,21 +2797,25 @@ mod tests {
         let serial = replay_quotes(&QuoteReplayConfig {
             period: "parallel-fixture".to_string(),
             staging_dir: None,
+            parsed_staging_dir: None,
             inputs: inputs.clone(),
             rocksdb_dir: serial_path.clone(),
             progress_every: 0,
             keep_temporary_column_families: false,
             workers: 1,
+            direction_calendar: None,
         })
         .unwrap();
         let parallel = replay_quotes(&QuoteReplayConfig {
             period: "parallel-fixture".to_string(),
             staging_dir: None,
+            parsed_staging_dir: None,
             inputs,
             rocksdb_dir: parallel_path.clone(),
             progress_every: 0,
             keep_temporary_column_families: false,
             workers: 16,
+            direction_calendar: None,
         })
         .unwrap();
         assert_eq!(parallel, serial);
@@ -1866,6 +2824,7 @@ mod tests {
             verify_raw_rocksdb(&serial_path).unwrap()
         );
         assert_eq!(logical_dump(&parallel_path), logical_dump(&serial_path));
+        assert!(compare_raw_rocksdb(&parallel_path, &serial_path).unwrap() > 0);
     }
 
     #[test]
@@ -1888,11 +2847,13 @@ mod tests {
         replay_quotes(&QuoteReplayConfig {
             period: "cross-shard-fixture".to_string(),
             staging_dir: None,
+            parsed_staging_dir: None,
             inputs: vec![first, second],
             rocksdb_dir: output.clone(),
             progress_every: 0,
             keep_temporary_column_families: false,
             workers: 2,
+            direction_calendar: None,
         })
         .unwrap();
         let (db, _) = open_existing_db(&output).unwrap();

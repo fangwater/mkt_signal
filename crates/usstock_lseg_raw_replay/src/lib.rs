@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
+pub mod direction;
 pub mod event_codec;
+pub mod parsed;
 pub mod quote_codec;
 pub mod quote_replay;
 pub mod raw;

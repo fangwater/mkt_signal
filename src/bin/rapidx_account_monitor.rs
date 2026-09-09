@@ -449,6 +449,7 @@ async fn main() -> Result<()> {
                     .context("RapidX login connection closed")??;
                 let response = LtpWsResponse::from_json_str(login.to_text()?).context("invalid RapidX login response")?;
                 if !response.is_login() || !response.is_success() { bail!("RapidX account login rejected"); }
+                log::info!("RapidX account websocket login successful exchange={wire_exchange}");
                 let (tx, mut rx) = tokio::sync::mpsc::channel(8);
                 let initial_begin = chrono::Utc::now().timestamp_millis() - i64::from(args.history_lookback_hours) * 3_600_000;
                 let begin = forwarder.journal.history_end_ms.map(|end| end - 60_000).unwrap_or(initial_begin);

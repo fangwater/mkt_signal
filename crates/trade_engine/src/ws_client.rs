@@ -1424,6 +1424,10 @@ impl TradeWsClient {
                                     backoff_ms = (backoff_ms * 2).min(30_000);
                                     continue;
                                 }
+                                info!(
+                                    "trade ws client id={} LTP login successful logical_exchange={}",
+                                    self.id, self.logical_exchange
+                                );
                                 self.endpoint_state.borrow_mut().mark_connected();
                             }
                             self.finish_proactive_reconnect(remote_addr);

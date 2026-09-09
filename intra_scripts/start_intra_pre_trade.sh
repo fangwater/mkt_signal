@@ -10,6 +10,19 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
+EXECUTION_BACKEND_LIB="${BASE_DIR}/scripts/execution_backend_lib.sh"
+INTRA_RELEASE_GUARD="${BASE_DIR}/scripts/intra_release_guard.sh"
+for helper in "$EXECUTION_BACKEND_LIB" "$INTRA_RELEASE_GUARD"; do
+  if [[ ! -f "$helper" ]]; then
+    echo "[ERROR] required helper not found: $helper" >&2
+    exit 1
+  fi
+done
+# shellcheck disable=SC1090
+source "$EXECUTION_BACKEND_LIB"
+# shellcheck disable=SC1090
+source "$INTRA_RELEASE_GUARD"
+
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
 
@@ -94,6 +107,14 @@ if [[ -z "$EXCHANGE" ]]; then
   echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
   exit 1
 fi
+
+EXEC_BACKEND="$(execution_backend_for_exchange "$EXCHANGE")" || exit 1
+MONITOR_RELEASE_NAME="$(intra_release_account_monitor_name "$EXCHANGE" "$EXEC_BACKEND")"
+MONITOR_PATH="${BASE_DIR}/account_monitor_${EXCHANGE}"
+intra_release_verify_file "$BASE_DIR" pre_trade "$BIN_PATH"
+intra_release_verify_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+intra_release_verify_running_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+echo "[INFO] release guard passed release_id=$(intra_release_id "$BASE_DIR") binaries=pre_trade,$MONITOR_RELEASE_NAME"
 
 # OPEN_VENUE / HEDGE_VENUE 优先来自 env.sh，否则按 exchange 默认
 OPEN_VENUE="${OPEN_VENUE:-${EXCHANGE}-margin}"

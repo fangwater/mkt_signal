@@ -8,7 +8,7 @@ source "$ROOT_DIR/scripts/deploy_intra_lib.sh"
 
 usage() {
   cat <<'EOF'
-用法: scripts/deploy_intra_monitors.sh --exchange <binance> [--env-suffix intra-trade] [--env-name binance-intra-trade] [--jobs <n>] [--cargo-target-dir <path>]
+用法: scripts/deploy_intra_monitors.sh --exchange <binance> [--exec-backend native|ltp] [--env-suffix intra-trade] [--env-name binance-intra-trade] [--jobs <n>] [--cargo-target-dir <path>]
 
 说明:
   - 同所期现：只构建并部署单个 account_monitor（对应当前 exchange）
@@ -31,12 +31,14 @@ ENV_NAME=""
 EXCHANGE=""
 CARGO_TARGET_DIR_OVERRIDE=""
 BUILD_JOBS=""
+EXEC_BACKEND="native"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-suffix) ENV_SUFFIX="${2:-intra-trade}"; shift 2 ;;
     --env-name)   ENV_NAME="${2:-}"; shift 2 ;;
     --exchange)   EXCHANGE="${2:-}"; shift 2 ;;
+    --exec-backend) EXEC_BACKEND="${2:-}"; shift 2 ;;
     --jobs)       BUILD_JOBS="${2:-}"; shift 2 ;;
     --cargo-target-dir) CARGO_TARGET_DIR_OVERRIDE="${2:-}"; shift 2 ;;
     *)
@@ -56,6 +58,15 @@ if [[ -z "$EXCHANGE" ]]; then
 fi
 
 EXCHANGE="$(intra_ensure_exchange "$EXCHANGE")"
+case "${EXEC_BACKEND,,}" in
+  native) EXEC_BACKEND="native" ;;
+  ltp|rapidx) EXEC_BACKEND="ltp" ;;
+  *) echo "[ERROR] --exec-backend must be native or ltp" >&2; exit 1 ;;
+esac
+if [[ "$EXEC_BACKEND" == "ltp" && ! "$EXCHANGE" =~ ^(binance|okex)$ ]]; then
+  echo "[ERROR] LTP account monitor only supports Binance/OKX" >&2
+  exit 1
+fi
 
 if [[ -z "$ENV_NAME" ]]; then
   ENV_NAME="${EXCHANGE}-${ENV_SUFFIX}"
@@ -65,7 +76,9 @@ mkdir -p "$TARGET_DIR/intra_scripts"
 
 CARGO_TARGET_DIR_EFFECTIVE="$(intra_effective_cargo_target_dir "$ROOT_DIR" "$CARGO_TARGET_DIR_OVERRIDE")"
 
-case "$EXCHANGE" in
+if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+  BIN_NAME="rapidx_account_monitor"
+else case "$EXCHANGE" in
   okex)    BIN_NAME="okex_account_monitor"    ;;
   binance) BIN_NAME="binance_account_monitor" ;;
   gate)    BIN_NAME="gate_account_monitor"    ;;
@@ -75,6 +88,7 @@ case "$EXCHANGE" in
   *)
     echo "[ERROR] 未支持的 exchange: $EXCHANGE"; exit 1 ;;
 esac
+fi
 OUT_NAME="account_monitor_${EXCHANGE}"
 
 echo "[INFO] 构建 $BIN_NAME (release)"
@@ -92,6 +106,7 @@ fi
 
 SCRIPTS_TO_SYNC=(
   "scripts/process_match_lib.sh"
+  "scripts/execution_backend_lib.sh"
   "intra_scripts/intra_monitor_process_lib.sh"
   "intra_scripts/start_intra_monitors.sh"
   "intra_scripts/stop_intra_monitors.sh"

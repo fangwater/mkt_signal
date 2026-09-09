@@ -27,10 +27,11 @@ use crate::baseline_1min::{
 use crate::codec::{decode_depth, decode_key, decode_trade, encode_key, KIND_DEPTH, KIND_TRADE};
 use crate::db::{open_rocksdb_read_only, L2Db, FORBIDDEN_ROCKSDB_MARK};
 use crate::export_1s::{
-    book_valid, exchange_of, is_cffex_product, list_instruments, parse_product_cf,
-    split_depth_segments, trad_day_from_ts, ExportArgs, ExportStats,
+    book_valid, exchange_of, list_instruments, parse_product_cf, split_depth_segments,
+    trad_day_from_ts, ExportArgs, ExportStats,
 };
 use crate::multipliers::{load_multiplier_catalog, require_multiplier};
+use crate::session::Exchange;
 use crate::universe::is_maintained_product;
 
 pub const DEFAULT_OUT_ROOT: &str =
@@ -295,7 +296,7 @@ fn export_product(
         eprintln!("skip unknown product {product}");
         return Ok(ExportStats::default());
     };
-    let cffex = is_cffex_product(product);
+    let exchange_code = Exchange::parse(exchange).expect("known domestic futures exchange");
     let tmp_root = args
         .out_root
         .join("_tmp")
@@ -312,7 +313,7 @@ fn export_product(
             if depth_secs.is_empty() && trades.is_empty() {
                 continue;
             }
-            let sec_segs = split_depth_segments(&depth_secs, cffex);
+            let sec_segs = split_depth_segments(&depth_secs, exchange_code, &instrument);
             let min_segs = minute_segments_from_seconds(&sec_segs);
             let sparse = synthesize_minutes(&instrument, &trades, &depths, volume_multiple)?;
             let filled = fill_session_minutes_with_twap(&instrument, sparse, &min_segs, &trades)?;

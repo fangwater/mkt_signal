@@ -9,9 +9,7 @@ use anyhow::{bail, Context, Result};
 use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use chrono::{Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc, Weekday};
-use chrono_tz::Asia::Shanghai;
-use chrono_tz::Tz;
+use chrono::{Datelike, Duration, NaiveDate, Timelike, Weekday};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -26,6 +24,7 @@ use crate::codec::{
     decode_depth, decode_key, decode_trade, encode_key, is_product_cf_name, KIND_DEPTH, KIND_TRADE,
 };
 use crate::db::{open_rocksdb_read_only, L2Db, FORBIDDEN_ROCKSDB_MARK};
+use crate::session::{shanghai, skip_output, Exchange};
 use crate::universe::is_maintained_product;
 
 pub const DEFAULT_OUT_ROOT: &str = "/mnt/hdd-raid5-72t/liang_torch/cn_futures_data/backtest_1s";
@@ -80,33 +79,6 @@ pub struct OutRow {
     pub midp: f64,
 }
 
-pub fn shanghai(ts_sec: i64) -> chrono::DateTime<Tz> {
-    Utc.timestamp_opt(ts_sec, 0)
-        .single()
-        .expect("unix second")
-        .with_timezone(&Shanghai)
-}
-
-pub fn is_cffex_product(product: &str) -> bool {
-    matches!(
-        product,
-        "IC" | "IF" | "IH" | "IM" | "T" | "TF" | "TL" | "TS"
-    )
-}
-
-pub fn is_auction_hm(hour: u32, minute: u32, cffex: bool) -> bool {
-    if cffex {
-        hour == 9 && (25..30).contains(&minute)
-    } else {
-        (hour == 8 && (55..60).contains(&minute)) || (hour == 20 && (55..60).contains(&minute))
-    }
-}
-
-pub fn is_auction_ts(ts_sec: i64, cffex: bool) -> bool {
-    let local = shanghai(ts_sec);
-    is_auction_hm(local.hour(), local.minute(), cffex)
-}
-
 fn is_tea_break(prev: i64, next: i64) -> bool {
     if next - prev < TEA_MIN_GAP_SEC {
         return false;
@@ -156,11 +128,15 @@ pub fn book_valid(bid0p: f64, bid0v: f64, ask0p: f64, ask0v: f64) -> bool {
         && ask0v >= 0.0
 }
 
-pub fn split_depth_segments(secs: &[i64], cffex: bool) -> Vec<(i64, i64)> {
+pub fn split_depth_segments(
+    secs: &[i64],
+    exchange: Exchange,
+    contract_id: &str,
+) -> Vec<(i64, i64)> {
     let kept: Vec<i64> = secs
         .iter()
         .copied()
-        .filter(|ts| !is_auction_ts(*ts, cffex))
+        .filter(|ts| !skip_output(*ts, exchange, contract_id))
         .collect();
     if kept.is_empty() {
         return Vec::new();
@@ -231,13 +207,13 @@ pub fn densify_instrument(
     contract_id: &str,
     depths: &[SparseDepth],
     trades: &[SparseTrade],
-    cffex: bool,
+    exchange: Exchange,
 ) -> Vec<OutRow> {
     if depths.is_empty() {
         return Vec::new();
     }
     let secs: Vec<i64> = depths.iter().map(|d| d.ts_sec).collect();
-    let segments = split_depth_segments(&secs, cffex);
+    let segments = split_depth_segments(&secs, exchange, contract_id);
     let buckets = trade_buckets(trades);
     let mut rows = Vec::new();
     for (first_depth, last_depth) in segments {
@@ -541,7 +517,7 @@ fn export_product(
         eprintln!("skip unknown product {product}");
         return Ok(ExportStats::default());
     };
-    let cffex = is_cffex_product(product);
+    let exchange_code = Exchange::parse(exchange).expect("known domestic futures exchange");
     let tmp_root = args.out_root.join("_tmp").join(product);
     if tmp_root.exists() {
         fs::remove_dir_all(&tmp_root).with_context(|| format!("remove {}", tmp_root.display()))?;
@@ -555,7 +531,7 @@ fn export_product(
                 continue;
             }
             let (_, trades) = scan_kind(db, cf_name, KIND_TRADE, &instrument)?;
-            let rows = densify_instrument(&instrument, &depths, &trades, cffex);
+            let rows = densify_instrument(&instrument, &depths, &trades, exchange_code);
             let mut by_day: HashMap<NaiveDate, Vec<OutRow>> = HashMap::new();
             for row in rows {
                 let day = trad_day_from_ts(row.ts);
@@ -723,6 +699,7 @@ pub fn run_export(args: ExportArgs) -> Result<ExportStats> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use chrono_tz::Asia::Shanghai;
 
     fn sec(hour: u32, minute: u32, second: u32) -> i64 {
         let date = NaiveDate::from_ymd_opt(2024, 1, 16).unwrap();
@@ -745,16 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn auction_windows() {
-        assert!(is_auction_hm(8, 59, false));
-        assert!(!is_auction_hm(9, 0, false));
-        assert!(is_auction_hm(20, 59, false));
-        assert!(!is_auction_hm(21, 0, false));
-        assert!(is_auction_hm(9, 29, true));
-        assert!(!is_auction_hm(9, 30, true));
-    }
-
-    #[test]
     fn tea_breaks_segment_short_holes_do_not() {
         let secs = vec![
             sec(9, 0, 0),
@@ -771,7 +738,7 @@ mod tests {
             sec(11, 30, 0),
             sec(13, 30, 0),
         ];
-        let segs = split_depth_segments(&secs, false);
+        let segs = split_depth_segments(&secs, Exchange::Xsge, "rb2405");
         assert_eq!(segs.len(), 3);
         assert_eq!(segs[0], (sec(9, 0, 0), sec(10, 14, 59)));
         assert_eq!(segs[1], (sec(10, 30, 0), sec(11, 30, 0)));
@@ -812,7 +779,7 @@ mod tests {
             price: 101.0,
             aggressor: 1,
         }];
-        let rows = densify_instrument("rb2405", &depths, &trades, false);
+        let rows = densify_instrument("rb2405", &depths, &trades, Exchange::Xsge);
         let first = rows.iter().find(|r| r.ts == sec(9, 0, 1)).unwrap();
         assert_eq!(first.bid0p, 100.0);
         assert_eq!(first.buy_high, Some(101.0));
@@ -835,7 +802,7 @@ mod tests {
             price: 100.5,
             aggressor: 0,
         }];
-        let rows = densify_instrument("rb2405", &depths, &trades, false);
+        let rows = densify_instrument("rb2405", &depths, &trades, Exchange::Xsge);
         let row = rows.iter().find(|r| r.ts == sec(9, 0, 1)).unwrap();
         assert_eq!(row.close, 100.5);
         assert!(row.buy_high.is_none());
@@ -845,7 +812,23 @@ mod tests {
     #[test]
     fn auction_depth_is_not_a_segment() {
         let secs = vec![sec(8, 59, 0), sec(9, 0, 0), sec(9, 0, 1)];
-        let segs = split_depth_segments(&secs, false);
+        let segs = split_depth_segments(&secs, Exchange::Xsge, "rb2405");
         assert_eq!(segs, vec![(sec(9, 0, 0), sec(9, 0, 1))]);
+    }
+
+    #[test]
+    fn equity_index_keeps_1500_and_drops_1501_onward() {
+        let secs = vec![
+            sec(14, 59, 59),
+            sec(15, 0, 0),
+            sec(15, 0, 59),
+            sec(15, 1, 0),
+            sec(15, 15, 0),
+        ];
+        let index = split_depth_segments(&secs, Exchange::Ccfx, "IF2409");
+        assert_eq!(index, vec![(sec(14, 59, 59), sec(15, 0, 59))]);
+
+        let treasury = split_depth_segments(&secs, Exchange::Ccfx, "T2409");
+        assert_eq!(treasury, vec![(sec(14, 59, 59), sec(15, 15, 0))]);
     }
 }

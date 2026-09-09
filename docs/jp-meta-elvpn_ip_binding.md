@@ -1,6 +1,6 @@
 # jp-meta-elvpn IP 绑定
 
-最后更新: 2026-08-24。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
+最后更新: 2026-09-08。**分配、改写 `trade_engine.toml local_ips`、新开或下线任何用独立 source IP 的环境时，请同步更新本文件。**
 
 绑核登记见 `docs/core_allocation.md`。本文件只记公网/私网 IP 与策略环境的对应关系。
 
@@ -33,7 +33,7 @@ curl --interface <private-ip> https://checkip.amazonaws.com
 
 | 私网 IP | 公网 IP | 状态 | 当前用途 |
 | --- | --- | --- | --- |
-| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-intra-arb01`、`okex-intra-arb01`、`bitget-intra-arb01` |
+| `172.31.35.228` | `13.115.227.29` | 已使用 / 固定 | 套利；SSH/默认出口。`binance-intra-arb01`、`binance-intra-arb02`、`okex-intra-arb01`、`bitget-intra-arb01` |
 | `172.31.35.229` | `52.193.90.33` | 已使用 | `binance_mm_alpha` / `okex_mm_alpha` `local_ips[0]` |
 | `172.31.35.230` | `54.238.72.43` | 已使用 | `binance_mm_alpha` / `okex_mm_alpha` `local_ips[1]` |
 | `172.31.35.231` | `52.69.78.134` | 已使用 / 固定 | 资金费率。`binance_fr_arb01`–`04`、`gate_fr_arb01`、`bitget_fr_arb01`/`02`、`okex_fr_arb01` |
@@ -66,6 +66,7 @@ ens42  172.31.46.91/20 172.31.46.92/20 172.31.46.93/20
 
 ```text
 binance-intra-arb01          172.31.35.228, 172.31.35.228   whitelist=172.31.35.228
+binance-intra-arb02          172.31.35.228                  RapidX/LTP
 okex-intra-arb01             172.31.35.228, 172.31.35.228
 bitget-intra-arb01           172.31.35.228, 172.31.35.228
 binance_mm_alpha             172.31.35.229, 172.31.35.230

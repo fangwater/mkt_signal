@@ -23,6 +23,20 @@ else
   echo "[ERROR] intra monitor process helper not found: $INTRA_MONITOR_PROCESS_LIB" >&2
   exit 1
 fi
+EXECUTION_BACKEND_LIB="${BASE_DIR}/scripts/execution_backend_lib.sh"
+if [[ ! -f "$EXECUTION_BACKEND_LIB" ]]; then
+  echo "[ERROR] execution backend helper not found: $EXECUTION_BACKEND_LIB" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$EXECUTION_BACKEND_LIB"
+INTRA_RELEASE_GUARD="${BASE_DIR}/scripts/intra_release_guard.sh"
+if [[ ! -f "$INTRA_RELEASE_GUARD" ]]; then
+  echo "[ERROR] Intra release guard not found: $INTRA_RELEASE_GUARD" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$INTRA_RELEASE_GUARD"
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 PMDAEMON=("$PMDAEMON_BIN")
@@ -101,11 +115,27 @@ bin_for_exchange() {
   return 1
 }
 
+EXEC_BACKEND="$(execution_backend_for_exchange "$EXCHANGE")" || exit 1
+MONITOR_ARGS=()
+if [[ "$EXEC_BACKEND" == "ltp" ]]; then
+  case "$EXCHANGE" in
+    binance|okex) ;;
+    *) echo "[ERROR] RapidX account monitor supports Binance/OKX only" >&2; exit 1 ;;
+  esac
+  MONITOR_ARGS=(--exchange "$EXCHANGE")
+fi
+
 if ! BIN="$(bin_for_exchange "$EXCHANGE")"; then
   echo "[ERROR] 未找到 account monitor 二进制 for exchange=${EXCHANGE}"
   echo "[ERROR] 请先部署: scripts/deploy_intra_monitors.sh --env-name $(basename "$BASE_DIR") --exchange ${EXCHANGE}"
   exit 1
 fi
+MONITOR_RELEASE_NAME="$(intra_release_account_monitor_name "$EXCHANGE" "$EXEC_BACKEND")"
+PRE_TRADE_PATH="${BASE_DIR}/pre_trade"
+intra_release_verify_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$BIN"
+intra_release_verify_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH"
+intra_release_verify_running_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH" 0
+echo "[INFO] release guard passed release_id=$(intra_release_id "$BASE_DIR") binaries=$MONITOR_RELEASE_NAME,pre_trade"
 
 PROC_NAME="intra_am_${EXCHANGE}_${ENV_TAG}"
 
@@ -134,6 +164,9 @@ cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FIL
 for arg in "${core_args[@]}"; do
   cmd+=" $(shell_quote "$arg")"
 done
+for arg in "${MONITOR_ARGS[@]}"; do
+  cmd+=" $(shell_quote "$arg")"
+done
 json_cmd="$(json_escape "$cmd")"
 
 cat >"$cfg_file" <<JSON
@@ -153,7 +186,7 @@ cat >"$cfg_file" <<JSON
 }
 JSON
 
-echo "[INFO] Restarting $PROC_NAME (exchange=$EXCHANGE namespace=$IPC_NAMESPACE)"
+echo "[INFO] Restarting $PROC_NAME (exchange=$EXCHANGE backend=$EXEC_BACKEND namespace=$IPC_NAMESPACE)"
 "${PMDAEMON[@]}" delete "$PROC_NAME" >/dev/null 2>&1 || true
 intra_cleanup_leaked_account_monitor "$BASE_DIR" "$EXCHANGE" "$KILL_WAIT_SECS"
 "${PMDAEMON[@]}" --config "$cfg_file" start --name "$PROC_NAME"

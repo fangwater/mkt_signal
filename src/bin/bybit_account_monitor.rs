@@ -703,7 +703,14 @@ impl AccountEventDeduper {
             BasicAccountEventType::BinanceStdUmWalletSnapshot => return true,
             BasicAccountEventType::HyperliquidFill
             | BasicAccountEventType::HyperliquidSnapshotComplete
-            | BasicAccountEventType::HyperliquidFactReplayControl => return true,
+            | BasicAccountEventType::HyperliquidFactReplayControl
+            | BasicAccountEventType::HyperliquidFunding
+            | BasicAccountEventType::HyperliquidLedger
+            | BasicAccountEventType::HyperliquidSpotBalance
+            | BasicAccountEventType::HyperliquidPerpDexState
+            | BasicAccountEventType::HyperliquidTwapSliceFill
+            | BasicAccountEventType::HyperliquidTwapHistory
+            | BasicAccountEventType::HyperliquidNativeEvent => return true,
             BasicAccountEventType::Error => return true,
         };
 

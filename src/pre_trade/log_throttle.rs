@@ -1,6 +1,6 @@
 use crate::pre_trade::open_order_rate_limiter::OrderRateBucket;
 use crate::pre_trade::order_manager::Side;
-use log::{error, info, warn};
+use log::{error, info, warn, Level};
 use order_common::TradingVenue;
 use runtime_common::time_util::get_timestamp_us;
 use std::cell::RefCell;
@@ -10,6 +10,7 @@ const PRE_TRADE_LIMIT_LOG_INTERVAL_US: i64 = 20_000_000;
 const OPEN_RISK_REJECT_LOG_INTERVAL_US: i64 = 20_000_000;
 const STRATEGY_INACTIVE_LOG_INTERVAL_US: i64 = 20_000_000;
 const CLOSE_BELOW_MIN_LOG_INTERVAL_US: i64 = 60_000_000;
+const ARB_CLOSE_PRECHECK_LOG_INTERVAL_US: i64 = 20_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct OrderRateLimitLogKey {
@@ -92,6 +93,31 @@ struct StrategyInactiveLogState {
     last_reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ArbClosePrecheckLogKey {
+    outcome: &'static str,
+    symbol: String,
+    side_u8: u8,
+}
+
+#[derive(Debug, Clone)]
+struct ArbClosePrecheckLogState {
+    last_log_ts_us: i64,
+    suppressed: usize,
+    last_opening_venue: TradingVenue,
+    last_hedging_venue: TradingVenue,
+    last_hedging_symbol: String,
+    last_opening_pos: f64,
+    last_hedging_pos: f64,
+    last_amount: f64,
+    last_amount_count: i64,
+    last_price: f64,
+    last_notional: f64,
+    last_generation_time_us: i64,
+    last_receive_us: i64,
+    last_receive_lag_us: i64,
+}
+
 thread_local! {
     static ORDER_RATE_LIMIT_LOGS: RefCell<HashMap<OrderRateLimitLogKey, OrderRateLimitLogState>> =
         RefCell::new(HashMap::new());
@@ -103,6 +129,100 @@ thread_local! {
         RefCell::new(HashMap::new());
     static STRATEGY_INACTIVE_LOGS: RefCell<HashMap<StrategyInactiveLogKey, StrategyInactiveLogState>> =
         RefCell::new(HashMap::new());
+    static ARB_CLOSE_PRECHECK_LOGS: RefCell<HashMap<ArbClosePrecheckLogKey, ArbClosePrecheckLogState>> =
+        RefCell::new(HashMap::new());
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn log_arb_close_precheck_summary(
+    outcome: &'static str,
+    level: Level,
+    opening_symbol: &str,
+    opening_venue: TradingVenue,
+    hedging_symbol: &str,
+    hedging_venue: TradingVenue,
+    side: Side,
+    opening_pos: f64,
+    hedging_pos: f64,
+    amount: f64,
+    amount_count: i64,
+    price: f64,
+    generation_time_us: i64,
+    receive_us: i64,
+) {
+    let now_us = get_timestamp_us();
+    let notional = amount * price;
+    let receive_lag_us = if generation_time_us > 0 {
+        receive_us.saturating_sub(generation_time_us)
+    } else {
+        -1
+    };
+    let key = ArbClosePrecheckLogKey {
+        outcome,
+        symbol: opening_symbol.to_string(),
+        side_u8: side.to_u8(),
+    };
+    ARB_CLOSE_PRECHECK_LOGS.with(|logs| {
+        let mut logs = logs.borrow_mut();
+        let state = logs
+            .entry(key)
+            .or_insert_with(|| ArbClosePrecheckLogState {
+                last_log_ts_us: 0,
+                suppressed: 0,
+                last_opening_venue: opening_venue,
+                last_hedging_venue: hedging_venue,
+                last_hedging_symbol: hedging_symbol.to_string(),
+                last_opening_pos: opening_pos,
+                last_hedging_pos: hedging_pos,
+                last_amount: amount,
+                last_amount_count: amount_count,
+                last_price: price,
+                last_notional: notional,
+                last_generation_time_us: generation_time_us,
+                last_receive_us: receive_us,
+                last_receive_lag_us: receive_lag_us,
+            });
+        state.suppressed += 1;
+        state.last_opening_venue = opening_venue;
+        state.last_hedging_venue = hedging_venue;
+        state.last_hedging_symbol.clear();
+        state.last_hedging_symbol.push_str(hedging_symbol);
+        state.last_opening_pos = opening_pos;
+        state.last_hedging_pos = hedging_pos;
+        state.last_amount = amount;
+        state.last_amount_count = amount_count;
+        state.last_price = price;
+        state.last_notional = notional;
+        state.last_generation_time_us = generation_time_us;
+        state.last_receive_us = receive_us;
+        state.last_receive_lag_us = receive_lag_us;
+        if state.last_log_ts_us == 0
+            || now_us.saturating_sub(state.last_log_ts_us) >= ARB_CLOSE_PRECHECK_LOG_INTERVAL_US
+        {
+            log::log!(
+                level,
+                "ArbClose precheck summary: outcome={} opening={} {:?} hedging={} {:?} side={} open_pos={:.8} hedge_pos={:.8} amount={:.8} amount_count={} price={:.8} notional={:.8} min_notional=25 generation_time_us={} receive_us={} receive_lag_us={} suppressed={}",
+                outcome,
+                opening_symbol,
+                state.last_opening_venue,
+                state.last_hedging_symbol,
+                state.last_hedging_venue,
+                side.as_str(),
+                state.last_opening_pos,
+                state.last_hedging_pos,
+                state.last_amount,
+                state.last_amount_count,
+                state.last_price,
+                state.last_notional,
+                state.last_generation_time_us,
+                state.last_receive_us,
+                state.last_receive_lag_us,
+                state.suppressed
+            );
+            state.last_log_ts_us = now_us;
+            state.suppressed = 0;
+        }
+    });
 }
 
 fn classify_order_rate_limit_window(reason: &str) -> &'static str {

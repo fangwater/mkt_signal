@@ -16,6 +16,19 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 NAMESPACE="${PM2_NAMESPACE:-$(basename "${BASE_DIR}")}"
 
+EXECUTION_BACKEND_LIB="${BASE_DIR}/scripts/execution_backend_lib.sh"
+INTRA_RELEASE_GUARD="${BASE_DIR}/scripts/intra_release_guard.sh"
+for helper in "$EXECUTION_BACKEND_LIB" "$INTRA_RELEASE_GUARD"; do
+  if [[ ! -f "$helper" ]]; then
+    echo "[ERROR] required helper not found: $helper" >&2
+    exit 1
+  fi
+done
+# shellcheck disable=SC1090
+source "$EXECUTION_BACKEND_LIB"
+# shellcheck disable=SC1090
+source "$INTRA_RELEASE_GUARD"
+
 BIN_CANDIDATES=(
   "${BASE_DIR}/trade_signal"
   "${SCRIPT_DIR}/trade_signal"
@@ -52,6 +65,20 @@ if [[ -z "$EXCHANGE" || -z "$ENV_TAG" ]]; then
   exit 1
 fi
 ENV_TAG="$(printf '%s' "$ENV_TAG" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+
+EXEC_BACKEND="$(execution_backend_for_exchange "$EXCHANGE")" || exit 1
+MONITOR_RELEASE_NAME="$(intra_release_account_monitor_name "$EXCHANGE" "$EXEC_BACKEND")"
+MONITOR_PATH="${BASE_DIR}/account_monitor_${EXCHANGE}"
+PRE_TRADE_PATH="${BASE_DIR}/pre_trade"
+TRADE_ENGINE_PATH="${BASE_DIR}/trade_engine"
+intra_release_verify_file "$BASE_DIR" trade_signal "$BIN_PATH"
+intra_release_verify_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH"
+intra_release_verify_file "$BASE_DIR" trade_engine "$TRADE_ENGINE_PATH"
+intra_release_verify_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+intra_release_verify_running_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH"
+intra_release_verify_running_file "$BASE_DIR" trade_engine "$TRADE_ENGINE_PATH"
+intra_release_verify_running_file "$BASE_DIR" "$MONITOR_RELEASE_NAME" "$MONITOR_PATH"
+echo "[INFO] release guard passed release_id=$(intra_release_id "$BASE_DIR")"
 
 PROC_NAME="intra_${EXCHANGE}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${EXCHANGE}"

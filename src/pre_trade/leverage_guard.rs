@@ -1012,6 +1012,22 @@ async fn set_target_leverage(
     target: &LeverageTarget,
     leverage: u8,
 ) -> Result<()> {
+    let ltp_exchange = match target.venue {
+        TradingVenue::BinanceFutures | TradingVenue::BinanceCoinFutures => Some(Exchange::Binance),
+        TradingVenue::OkexFutures => Some(Exchange::Okex),
+        _ => None,
+    };
+    if let Some(exchange) = ltp_exchange {
+        if ExecBackend::for_exchange(exchange)? == ExecBackend::Ltp {
+            return trade_engine::ltp_init_leverage::set_and_verify_batch_exec_leverage(
+                target.venue,
+                &target.symbol,
+                leverage,
+            )
+            .await;
+        }
+    }
+
     let symbol = symbol_for_venue(&target.symbol, target.venue);
     match target.venue {
         TradingVenue::BinanceFutures => {

@@ -1,0 +1,12 @@
+data_root = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/raw_data/rawLL2"
+rocksdb_root = "/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/usstock_rawll2_rocksdb"
+periods = [
+  "2021-07-01_2022-07-01",
+  "2022-07-01_2023-07-01",
+  "2023-07-01_2024-06-30",
+  "2024-06-30_2025-07-01",
+  "2025-07-01_2026-07-01",
+  "2026-07-01_2026-08-14",
+]
+batch_messages = 10000
+progress_every = 1000000

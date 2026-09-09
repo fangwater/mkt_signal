@@ -1,4 +1,5 @@
 pub mod account_open_block;
+pub mod account_order_stream_health;
 pub mod auto_collection_service;
 pub mod auto_repay;
 pub mod auto_repay_service;
