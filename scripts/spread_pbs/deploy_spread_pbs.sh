@@ -310,6 +310,9 @@ if [[ ${#REMOTE_VENUES[@]} -gt 0 ]]; then
   fr_remote_init_ssh "$ROOT_DIR"
   for v in "${REMOTE_VENUES[@]}"; do
     fr_remote_sync_path "spread_pbs/$v"
+    if [[ "$v" == bitget-* ]]; then
+      fr_remote_upsert_bitget_public_api_base "spread_pbs/$v"
+    fi
   done
   fr_remote_sync_path "spread_pbs/config"
 fi

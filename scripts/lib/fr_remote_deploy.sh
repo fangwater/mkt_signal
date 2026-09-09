@@ -149,8 +149,8 @@ fr_remote_upsert_dashboard_env_sh() {
     'bash -s' <<'REMOTE_EOF'
 set -euo pipefail
 if [[ ! -f "$ENV_SH" ]]; then
-  : > "$ENV_SH"
-  chmod 600 "$ENV_SH"
+  echo "[ERROR] remote env file does not exist: $ENV_SH" >&2
+  exit 1
 fi
 TMP="$(mktemp)"
 awk -v begin="# BEGIN managed: fr_signal_dashboard" \
@@ -182,6 +182,77 @@ if [[ -f "$TARGET_DIR/dashboard.env" ]]; then
   rm -f "$TARGET_DIR/dashboard.env"
   echo "[remote] removed deprecated $TARGET_DIR/dashboard.env"
 fi
+REMOTE_EOF
+}
+
+fr_remote_upsert_bitget_public_api_base() {
+  # Keep the public-only Bitget base URL in the remote env.sh without touching
+  # credentials or BITGET_API_BASE, which is also used by signed requests.
+  local relative_dir="$1"
+  local opts remote_dir remote_env_sh
+  opts="$(_fr_ssh_opts)"
+  remote_dir="$FR_REMOTE_HOME/$relative_dir"
+  remote_env_sh="$remote_dir/env.sh"
+
+  case "$relative_dir" in
+    bitget_fr_[a-z0-9]*|spread_pbs/bitget-*) ;;
+    *)
+      echo "[ERROR] refusing Bitget public API env update for unexpected path: $relative_dir" >&2
+      return 1
+      ;;
+  esac
+
+  echo "[INFO] upsert Bitget public API base in $FR_DEPLOY_HOST:$remote_env_sh"
+
+  # shellcheck disable=SC2086
+  ssh $opts "$FR_DEPLOY_HOST" \
+    ENV_SH="$remote_env_sh" TARGET_DIR="$remote_dir" \
+    'bash -s' <<'REMOTE_EOF'
+set -euo pipefail
+begin="# BEGIN managed: Bitget public API cache"
+end="# END managed: Bitget public API cache"
+public_base="http://127.0.0.1:28902"
+
+if [[ ! -d "$TARGET_DIR" ]]; then
+  echo "[ERROR] remote target directory does not exist: $TARGET_DIR" >&2
+  exit 1
+fi
+if [[ ! -f "$ENV_SH" ]]; then
+  : > "$ENV_SH"
+  chmod 600 "$ENV_SH"
+fi
+
+tmp="$(mktemp)"
+cleanup() {
+  rm -f "$tmp" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+awk -v begin="$begin" -v end="$end" -v public_base="$public_base" '
+  function emit() {
+    print begin
+    print "export BITGET_PUBLIC_API_BASE=\047" public_base "\047"
+    print end
+  }
+  BEGIN { in_block = 0; replaced = 0 }
+  $0 == begin { in_block = 1; replaced = 1; next }
+  in_block && $0 == end { in_block = 0; emit(); next }
+  in_block { next }
+  /^export BITGET_PUBLIC_API_BASE=/ { next }
+  /^BITGET_PUBLIC_API_BASE=/ { next }
+  { print }
+  END {
+    if (in_block) {
+      print "[ERROR] unterminated Bitget public API cache block" > "/dev/stderr"
+      exit 42
+    }
+    if (!replaced) { print ""; emit() }
+  }
+' "$ENV_SH" > "$tmp"
+mv "$tmp" "$ENV_SH"
+trap - EXIT
+chmod 600 "$ENV_SH"
+grep -E '^export BITGET_PUBLIC_API_BASE=' "$ENV_SH"
 REMOTE_EOF
 }
 

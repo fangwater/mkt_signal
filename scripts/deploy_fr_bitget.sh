@@ -21,7 +21,7 @@ usage() {
       arb03 -> CONFIG 20053 / VIZ 20153
       arb04 -> CONFIG 20054 / VIZ 20154
       arb05 -> CONFIG 20055 / VIZ 20155
-  - --bin: 仅替换二进制（不改脚本/配置/nginx）。
+  - --bin: 仅替换二进制，不改脚本/配置/nginx；仍会幂等维护公共 API 代理基址。
 EOF
 }
 
@@ -214,6 +214,7 @@ else
   fi
   fr_remote_apply_nginx "$ENV_NAME"
 fi
+fr_remote_upsert_bitget_public_api_base "$ENV_NAME"
 
 REMOTE_TARGET_DIR="${FR_REMOTE_HOME}/${ENV_NAME}"
 echo "[INFO] Bitget FR 部署完成（远端 ${FR_DEPLOY_HOST}，未启动进程）"

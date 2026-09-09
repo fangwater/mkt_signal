@@ -6,16 +6,13 @@
 
 本文是交易所公共 REST API 的主机级共享缓存规范。Bitget 是首个已接入的交易所。
 截至最后更新时间，`jp-meta-elvpn` 已部署 Bitget Nginx 缓存，当前监听
-`127.0.0.1:28902`；`bitget_fr_arb01`、`bitget_fr_arb02` 的 `trade_signal`、
-`bitget_position_tier_sidecar` 和 `delist_risk_server` 已切换到该代理。
+`127.0.0.1:28902`。Bitget 当前已部署的长驻公共 REST 调用已完整切换到该代理：
+`bitget_fr_arb01`、`bitget_fr_arb02` 的 `trade_signal`、`fr_signal_dashboard`、
+`pre_trade`，`spread_pbs/bitget-both`，以及 `bitget_position_tier_sidecar` 和
+`delist_risk_server`。`trade_engine`、账户监控及所有签名/写请求继续直连交易所。
 
-`pre_trade`、`spread_pbs` 等只在启动或低频刷新时读取 Bitget 公共规则的进程没有仅为
-缓存而重启。仓库代码已支持 `BITGET_PUBLIC_API_BASE`，它们在后续正常发布并配置该变量后
-才会接入。`trade_engine`、账户监控及所有签名/写请求继续直连交易所。
-
-`bitget_fr_arb01`、`bitget_fr_arb02` 的 `fr_signal_dashboard` 以及 Gate 公共 REST
-缓存尚未接入，详见“已审计、暂缓实施的项目”。当前决定是不再为这些项目修改或重启
-实盘程序；不要把下面的候选方案视为已部署状态。
+Gate 公共 REST 缓存尚未接入，详见“已审计、暂缓实施的项目”。不要把其中的候选方案
+视为已部署状态。
 
 后续 Binance、Gate、OKX、Bybit 等交易所需要公共 API 缓存时，继续更新本文，
 不要为每个交易所创建互相独立、规则不一致的说明文档。
@@ -214,18 +211,33 @@ sudo systemctl reload nginx
 加载 Nginx 配置不会让现有应用自动使用缓存。必须先让相关公共调用支持
 `BITGET_PUBLIC_API_BASE`，再逐个部署和重启对应进程。
 
+`scripts/deploy_fr_bitget.sh` 和 `scripts/spread_pbs/deploy_spread_pbs.sh` 会在发布
+Bitget 环境时幂等维护 `env.sh` 中的托管块：
+
+```bash
+# BEGIN managed: Bitget public API cache
+export BITGET_PUBLIC_API_BASE='http://127.0.0.1:28902'
+# END managed: Bitget public API cache
+```
+
+该操作不读取、不重写 `BITGET_API_BASE` 或任何凭据。即使使用 `--bin` 发布，也会维护
+这个公共基址，避免二进制已支持代理但环境仍遗漏 URL。
+
 ## jp-meta-elvpn 当前部署
 
 - Nginx：`127.0.0.1:28902`，缓存目录 `/var/cache/nginx/public_api/bitget`。
 - `bitget_fr_arb01`、`bitget_fr_arb02`：`env.sh` 设置
-  `BITGET_PUBLIC_API_BASE=http://127.0.0.1:28902`，仅滚动了 `trade_signal`。
+  `BITGET_PUBLIC_API_BASE=http://127.0.0.1:28902`；`trade_signal`、
+  `fr_signal_dashboard` 和 `pre_trade` 均已重发并验证进程环境。
+- `spread_pbs/bitget-both`：同样使用该公共基址拉取启动期 instruments；进程继续固定
+  CPU 11，WebSocket 行情连接继续从 `172.31.46.90` 发出。
 - `bitget_position_tier_sidecar`：PM2 参数显式设置同一本地 `--base-url`。
 - `delist_risk_server`：PM2 环境设置同一本地公共基址，启动时的 Bitget symbols、
   instruments 和 announcements 请求已经过代理。
 - Nginx 没有 `proxy_bind`。调用进程即使绑定策略私网源地址，访问本地监听后也由 Nginx
   通过主机默认路由统一回源。
-- `trade_engine`、`account_monitor`、`pre_trade` 及其他交易进程没有因本次部署而重启；
-  私有账户、下单、撤单和签名查询没有改用代理。
+- `trade_engine` 和 `account_monitor` 的私有账户、仓位、订单、撤单及其他签名查询没有
+  改用代理；进程即使继承 `BITGET_PUBLIC_API_BASE`，这些代码路径也不会读取它。
 
 ## 验证
 
@@ -264,19 +276,9 @@ curl -sS -D - -o /dev/null 'http://127.0.0.1:28902/api/v3/market/margin-loans?co
 ## 已审计、暂缓实施的项目
 
 以下项目于 2026-09-09 UTC 在 `jp-meta-elvpn` 完成只读审计，但没有修改 Gate
-代码或配置，也没有重启 Bitget dashboard。继续实施前需要重新确认应用显式公共基址的
-接入方式；当前不使用 `/etc/hosts`、透明 TLS 代理、iptables 重定向或全局
-`HTTPS_PROXY` 劫持硬编码的交易所 HTTPS 请求。
-
-### Bitget dashboard
-
-- `bitget_fr_arb01`、`bitget_fr_arb02` 的 `fr_signal_dashboard` 都会初始化与
-  `trade_signal` 相同的 `RateFetcher`，但当前线上进程仍直连 Bitget。
-- 审计期间两个 dashboard 分别约每 8 秒遍历 23 个币的 `margin-loans`；一个完整分钟
-  合计产生 345 次直连请求。两个已接入缓存的 `trade_signal` 同分钟向本地代理发出
-  182 次请求，因此 dashboard 是当前 Bitget 公共请求的主要剩余重复源。
-- 线上 dashboard 尚未切换、重启或验证。现有 Bitget Nginx 缓存继续服务已列出的
-  `trade_signal`、position-tier sidecar 和 delist risk server，不自动覆盖其他进程。
+代码或配置。继续实施前需要重新确认应用显式公共基址的接入方式；当前不使用
+`/etc/hosts`、透明 TLS 代理、iptables 重定向或全局 `HTTPS_PROXY` 劫持硬编码的
+交易所 HTTPS 请求。
 
 ### Gate funding 与借贷历史
 
