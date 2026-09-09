@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use signal_common::public_api::bitget_public_api_url;
 use std::collections::BTreeMap;
 
 use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
@@ -297,12 +298,9 @@ fn ingest_binance_symbols(
 }
 
 async fn fetch_bitget_spot(client: &Client, index: &mut ListingIndex, now_ms: i64) -> Result<()> {
-    let parsed: BitgetEnvelope<Vec<BitgetSpot>> = get_typed(
-        client,
-        "https://api.bitget.com/api/v2/spot/public/symbols",
-        "Bitget spot symbols",
-    )
-    .await?;
+    let url = bitget_public_api_url("/api/v2/spot/public/symbols");
+    let parsed: BitgetEnvelope<Vec<BitgetSpot>> =
+        get_typed(client, &url, "Bitget spot symbols").await?;
     if parsed.data.is_empty() {
         bail!("Bitget spot symbols returned an empty catalog");
     }
@@ -318,12 +316,9 @@ async fn fetch_bitget_futures(
     index: &mut ListingIndex,
     now_ms: i64,
 ) -> Result<()> {
-    let parsed: BitgetEnvelope<Vec<BitgetMix>> = get_typed(
-        client,
-        "https://api.bitget.com/api/v3/market/instruments?category=USDT-FUTURES",
-        "Bitget USDT futures",
-    )
-    .await?;
+    let url = bitget_public_api_url("/api/v3/market/instruments?category=USDT-FUTURES");
+    let parsed: BitgetEnvelope<Vec<BitgetMix>> =
+        get_typed(client, &url, "Bitget USDT futures").await?;
     if parsed.data.is_empty() {
         bail!("Bitget USDT futures returned an empty catalog");
     }
@@ -341,12 +336,9 @@ async fn fetch_bitget_coin_futures(
     index: &mut ListingIndex,
     now_ms: i64,
 ) -> Result<()> {
-    let parsed: BitgetEnvelope<Vec<BitgetMix>> = get_typed(
-        client,
-        "https://api.bitget.com/api/v3/market/instruments?category=COIN-FUTURES",
-        "Bitget coin futures",
-    )
-    .await?;
+    let url = bitget_public_api_url("/api/v3/market/instruments?category=COIN-FUTURES");
+    let parsed: BitgetEnvelope<Vec<BitgetMix>> =
+        get_typed(client, &url, "Bitget coin futures").await?;
     if parsed.data.is_empty() {
         bail!("Bitget coin futures returned an empty catalog");
     }

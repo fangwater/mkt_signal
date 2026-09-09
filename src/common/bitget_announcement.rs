@@ -9,10 +9,11 @@ use reqwest::Client;
 use scraper::Html;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use signal_common::public_api::bitget_public_api_url;
 
 use crate::common::announcement_watch::{RawAnnouncement, SeenStore};
 
-pub const ANNOUNCEMENTS_URL: &str = "https://api.bitget.com/api/v2/public/annoucements";
+pub const ANNOUNCEMENTS_PATH: &str = "/api/v2/public/annoucements";
 pub const ANN_TYPE_DELISTING: &str = "symbol_delisting";
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +77,8 @@ pub async fn fetch_delist_notices(
     let mut page = 0u32;
     while page < max_pages {
         page += 1;
-        let mut req = client.get(ANNOUNCEMENTS_URL).query(&[
+        let announcements_url = bitget_public_api_url(ANNOUNCEMENTS_PATH);
+        let mut req = client.get(&announcements_url).query(&[
             ("language", language),
             ("annType", ANN_TYPE_DELISTING),
             ("limit", &limit.min(10).to_string()),
@@ -292,12 +294,9 @@ pub async fn fetch_offtime_snapshot(client: &Client) -> Result<serde_json::Value
 }
 
 async fn upcoming_spot(client: &Client, now_ms: i64) -> Result<Vec<serde_json::Value>> {
-    let parsed: BitgetEnvelope<Vec<SpotSymbol>> = get_json(
-        client,
-        "https://api.bitget.com/api/v2/spot/public/symbols",
-        "Bitget spot symbols",
-    )
-    .await?;
+    let url = bitget_public_api_url("/api/v2/spot/public/symbols");
+    let parsed: BitgetEnvelope<Vec<SpotSymbol>> =
+        get_json(client, &url, "Bitget spot symbols").await?;
     Ok(parsed
         .data
         .into_iter()
@@ -318,7 +317,7 @@ async fn upcoming_mix(
     category: &str,
     now_ms: i64,
 ) -> Result<Vec<serde_json::Value>> {
-    let url = format!("https://api.bitget.com/api/v3/market/instruments?category={category}");
+    let url = bitget_public_api_url(&format!("/api/v3/market/instruments?category={category}"));
     let parsed: BitgetEnvelope<Vec<MixContract>> =
         get_json(client, &url, "Bitget mix contracts").await?;
     Ok(parsed

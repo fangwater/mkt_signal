@@ -6,6 +6,7 @@ use order_common::TradingVenue;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use signal_common::public_api::bitget_public_api_url;
 use std::fmt;
 use std::time::Duration;
 
@@ -652,9 +653,9 @@ async fn bitget_futures_delist_events(
     venue: TradingVenue,
     category: &str,
 ) -> Result<Vec<DelistEvent>> {
-    let url = "https://api.bitget.com/api/v3/market/instruments";
+    let url = bitget_public_api_url("/api/v3/market/instruments");
     let response = http_client()?
-        .get(url)
+        .get(&url)
         .query(&[("category", category)])
         .send()
         .await
@@ -729,9 +730,9 @@ impl DelistScheduleProvider for BitgetSpotDelistProvider {
     }
 
     async fn future_delist_events(&self, query: &DelistScheduleQuery) -> Result<Vec<DelistEvent>> {
-        let url = "https://api.bitget.com/api/v2/spot/public/symbols";
+        let url = bitget_public_api_url("/api/v2/spot/public/symbols");
         let response = http_client()?
-            .get(url)
+            .get(&url)
             .send()
             .await
             .context("request Bitget spot symbols failed")?;

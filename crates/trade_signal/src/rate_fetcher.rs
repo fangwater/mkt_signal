@@ -33,6 +33,7 @@ use runtime_common::symbol_util::{
     binance_coin_futures_symbol, bitget_coin_futures_symbol, extract_assets_from_symbol,
     normalize_symbol_for_internal,
 };
+use signal_common::public_api::{bitget_public_api_base, bitget_public_api_url};
 
 // ==================== API 响应结构 ====================
 
@@ -308,9 +309,7 @@ const BINANCE_LENDING_RATE_API: &str = "https://api.binance.com/sapi/v1/margin/i
 const OKEX_FUNDING_RATE_HISTORY_API: &str =
     "https://www.okx.com/api/v5/public/funding-rate-history";
 const OKEX_FUNDING_RATE_API: &str = "https://www.okx.com/api/v5/public/funding-rate";
-const BITGET_FUNDING_RATE_HISTORY_API: &str =
-    "https://api.bitget.com/api/v3/market/history-fund-rate";
-const BITGET_API_BASE_URL: &str = "https://api.bitget.com";
+const BITGET_FUNDING_RATE_HISTORY_PATH: &str = "/api/v3/market/history-fund-rate";
 const BITGET_MARGIN_LOANS_PATH: &str = "/api/v3/market/margin-loans";
 const BYBIT_FUNDING_RATE_HISTORY_API: &str = "https://api.bybit.com/v5/market/funding/history";
 const BYBIT_API_BASE_URL: &str = "https://api.bybit.com";
@@ -536,7 +535,10 @@ impl RateFetcher {
                 Self::with_inner_mut(|inner| {
                     inner.venue_states.entry(BITGET_CONFIG.venue).or_default();
                 });
-                info!("RateFetcher: Bitget 初始化完成 (lending_rate=required)");
+                info!(
+                    "RateFetcher: Bitget 初始化完成 (lending_rate=required public_api_base={})",
+                    bitget_public_api_base()
+                );
                 Self::spawn_bitget_fetch_task();
             }
             Exchange::Bybit => {
@@ -1668,10 +1670,7 @@ impl RateFetcher {
             "coin={}&category=MARGIN",
             urlencoding::encode(&asset.to_uppercase())
         );
-        let url = format!(
-            "{}{}?{}",
-            BITGET_API_BASE_URL, BITGET_MARGIN_LOANS_PATH, query
-        );
+        let url = bitget_public_api_url(&format!("{}?{}", BITGET_MARGIN_LOANS_PATH, query));
         let resp = client.get(&url).send().await?;
         if !resp.status().is_success() {
             return Err(anyhow!(
@@ -1727,8 +1726,9 @@ impl RateFetcher {
         limit: usize,
     ) -> Result<(Vec<f64>, FundingRatePeriod)> {
         let limit_s = limit.clamp(1, 100).to_string();
+        let url = bitget_public_api_url(BITGET_FUNDING_RATE_HISTORY_PATH);
         let resp = client
-            .get(BITGET_FUNDING_RATE_HISTORY_API)
+            .get(&url)
             .query(&[
                 ("category", category),
                 ("symbol", symbol),

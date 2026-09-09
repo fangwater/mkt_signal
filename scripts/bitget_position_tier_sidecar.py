@@ -433,7 +433,11 @@ def parse_args() -> argparse.Namespace:
         choices=["USDT-FUTURES", "COIN-FUTURES"],
         default="USDT-FUTURES",
     )
-    parser.add_argument("--base-url", default=os.environ.get("BITGET_API_BASE", "https://api.bitget.com"))
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("BITGET_PUBLIC_API_BASE", "https://api.bitget.com"),
+        help="Bitget public REST base URL (default: BITGET_PUBLIC_API_BASE or api.bitget.com).",
+    )
     parser.add_argument("--batch-size", type=int, default=3, help="Max eligible symbols queried per tick.")
     parser.add_argument("--interval-sec", type=float, default=20.0, help="Sleep seconds between ticks.")
     parser.add_argument("--symbol-cooldown-sec", type=float, default=1800.0, help="Minimum seconds between two queries of the same symbol.")

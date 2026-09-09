@@ -5,6 +5,7 @@ use prettytable::{format, Cell, Row, Table};
 use runtime_common::exchange::Exchange;
 use serde::Deserialize;
 use serde_yaml;
+use signal_common::public_api::bitget_public_api_url;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -813,10 +814,7 @@ impl Config {
     /// 从 Bitget HTTP API 获取交易对列表
     /// category: "MARGIN" 或 "USDT-FUTURES"
     async fn get_symbols_from_bitget_api(category: &str) -> Result<Vec<String>> {
-        let url = format!(
-            "https://api.bitget.com/api/v3/market/instruments?category={}",
-            category
-        );
+        let url = bitget_public_api_url(&format!("/api/v3/market/instruments?category={category}"));
         info!("Fetching Bitget symbols from: {}", url);
 
         let client = reqwest::Client::builder()

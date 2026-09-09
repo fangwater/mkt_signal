@@ -271,6 +271,7 @@ Living inventories (no date in the filename). Update them in the same change as 
 
 - `docs/core_allocation.md`: isolated-core bindings on `jp-meta-elvpn` and `sg`.
 - `docs/jp-meta-elvpn_ip_binding.md`: private/public IPv4 to strategy env on `jp-meta-elvpn`. Update whenever `trade_engine.toml local_ips` change, an EIP is assigned, or an env that owns a source IP is added or retired.
+- `docs/public_api_cache.md`: host-local Nginx shared-cache policy, endpoint allowlists, TTLs, and deployment state for exchange public REST APIs. Review and update it before adding a venue or public endpoint, and never route private or mutating APIs through this cache.
 
 Do not create a new dated copy. Edit the living file and bump its `最后更新` line.
 

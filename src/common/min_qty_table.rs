@@ -6,6 +6,7 @@ use reqwest::Client;
 use serde::Deserialize;
 
 use runtime_common::exchange::Exchange;
+use signal_common::public_api::bitget_public_api_url;
 
 // ============================================================================
 // Core Data Structures
@@ -1187,16 +1188,13 @@ impl BitgetProvider {
         Self
     }
 
-    fn get_api_url(&self, market_type: MarketType) -> &'static str {
-        match market_type {
-            MarketType::Spot => "https://api.bitget.com/api/v3/market/instruments?category=SPOT",
-            MarketType::Margin => {
-                "https://api.bitget.com/api/v3/market/instruments?category=MARGIN"
-            }
-            MarketType::Futures => {
-                "https://api.bitget.com/api/v3/market/instruments?category=USDT-FUTURES"
-            }
-        }
+    fn get_api_url(&self, market_type: MarketType) -> String {
+        let category = match market_type {
+            MarketType::Spot => "SPOT",
+            MarketType::Margin => "MARGIN",
+            MarketType::Futures => "USDT-FUTURES",
+        };
+        bitget_public_api_url(&format!("/api/v3/market/instruments?category={category}"))
     }
 
     pub async fn fetch_filters(
@@ -1221,7 +1219,7 @@ impl BitgetProvider {
             MarketType::Futures => "bitget_futures",
             MarketType::Margin => "bitget_margin",
         };
-        let resp = client.get(url).send().await?;
+        let resp = client.get(&url).send().await?;
         let status = resp.status();
         let body = resp.text().await?;
         debug!(

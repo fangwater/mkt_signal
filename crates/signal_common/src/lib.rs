@@ -8,6 +8,7 @@ pub mod lazy_taker_action;
 pub mod min_qty_table;
 pub mod mm_signal;
 pub mod open_signal;
+pub mod public_api;
 pub mod symbol_util;
 pub mod tick_math;
 pub mod trade_signal;
