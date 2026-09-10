@@ -58,7 +58,13 @@ fn decode_private_push(payload: &str) -> Result<Option<Value>> {
         return Ok(None);
     }
     serde_json::from_str(payload)
-        .context("decode RapidX private push")
+        .with_context(|| {
+            format!(
+                "decode RapidX private push len={} first_byte={:?}",
+                payload.len(),
+                payload.as_bytes().first().copied()
+            )
+        })
         .map(Some)
 }
 
