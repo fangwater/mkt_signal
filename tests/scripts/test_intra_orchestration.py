@@ -830,6 +830,12 @@ class IntraOrchestrationTests(unittest.TestCase):
                   if [[ -f "$FAKE_MARKER_DIR/config" ]]; then
                     echo "900 python3 $FAKE_REMOTE_DIR/scripts/intra_config_server.py"
                   fi
+                  [[ -f "$FAKE_MARKER_DIR/viz" ]] && echo "901 $FAKE_REMOTE_DIR/viz_server"
+                  [[ -f "$FAKE_MARKER_DIR/persist" ]] && echo "902 $FAKE_REMOTE_DIR/persist_manager"
+                  [[ -f "$FAKE_MARKER_DIR/engine" ]] && echo "903 $FAKE_REMOTE_DIR/trade_engine"
+                  [[ -f "$FAKE_MARKER_DIR/pre" ]] && echo "904 $FAKE_REMOTE_DIR/pre_trade"
+                  [[ -f "$FAKE_MARKER_DIR/monitor" ]] && echo "905 $FAKE_REMOTE_DIR/$FAKE_ACCOUNT_MONITOR_DEST"
+                  [[ -f "$FAKE_MARKER_DIR/signal" ]] && echo "906 $FAKE_REMOTE_DIR/trade_signal"
                   exit 0
                 fi
                 exec /bin/ps "$@"

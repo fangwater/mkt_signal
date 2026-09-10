@@ -325,7 +325,11 @@ find_exact_pids() {
     if [[ "$exe" == "$expected" ]]; then
       printf '%s\n' "$pid"
     fi
-  done < <(ps -eo pid=)
+  done < <(
+    ps -eo pid=,args= | awk -v expected="$expected" '
+      NF == 1 || index($0, expected) > 0 { print $1 }
+    '
+  )
 }
 
 find_config_server_pids() {

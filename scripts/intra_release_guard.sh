@@ -82,7 +82,11 @@ intra_release_verify_running_file() {
     if [[ "$exe" == "$binary_path" ]]; then
       pids+=("$pid")
     fi
-  done < <(ps -eo pid=)
+  done < <(
+    ps -eo pid=,args= | awk -v binary_path="$binary_path" '
+      NF == 1 || index($0, binary_path) > 0 { print $1 }
+    '
+  )
 
   if [[ "${#pids[@]}" -eq 0 && "$required" == "0" ]]; then
     return 0
