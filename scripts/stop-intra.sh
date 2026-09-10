@@ -250,24 +250,20 @@ find_running_targets() {
   local args=""
   local target_exe=""
 
-  while read -r pid; do
-    [[ -n "$pid" ]] || continue
-    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-    exe="${exe% (deleted)}"
-    for target_exe in "${target_executables[@]}"; do
-      if [[ "$exe" == "$target_exe" ]]; then
-        args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-        echo "pid=$pid exe=$exe args=$args"
-        break
-      fi
-    done
-  done < <(ps -eo pid=)
-
   while read -r pid args; do
     [[ -n "$pid" ]] || continue
     if [[ "$args" == *"$config_server"* ]]; then
       echo "pid=$pid config_server=$args"
     fi
+    [[ "$args" == *"$target/"* ]] || continue
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    exe="${exe% (deleted)}"
+    for target_exe in "${target_executables[@]}"; do
+      if [[ "$exe" == "$target_exe" ]]; then
+        echo "pid=$pid exe=$exe args=$args"
+        break
+      fi
+    done
   done < <(ps -eo pid=,args=)
 }
 
@@ -282,7 +278,11 @@ exact_executable_running() {
     if [[ "$exe" == "$expected" ]]; then
       return 0
     fi
-  done < <(ps -eo pid=)
+  done < <(
+    ps -eo pid=,args= | awk -v expected="$expected" '
+      NF == 1 || index($0, expected) > 0 { print $1 }
+    '
+  )
   return 1
 }
 
