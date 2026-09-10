@@ -144,7 +144,7 @@ source "$execution_backend_lib"
 if [[ "$expected_backend" == "ltp" ]]; then
   cancel_script="$target/rapidx_open_orders"
   cancel_command=("$cancel_script" --exchange "$exchange")
-  cancel_scope="rapidx_portfolio_spot_and_perp"
+  cancel_scope="rapidx_portfolio_spot_margin_and_perp"
 else case "$exchange" in
   bybit)
     cancel_script="$scripts_dir/cancel_bybit_pm_orders.py"
@@ -232,6 +232,11 @@ done
   exit 1
 }
 
+set -a
+# shellcheck disable=SC1090
+source "$target/env.sh" >/dev/null 2>&1
+set +a
+
 target_executables=(
   "$target/trade_signal"
   "$target/$account_monitor_dest"
@@ -250,24 +255,20 @@ find_running_targets() {
   local args=""
   local target_exe=""
 
-  while read -r pid; do
-    [[ -n "$pid" ]] || continue
-    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-    exe="${exe% (deleted)}"
-    for target_exe in "${target_executables[@]}"; do
-      if [[ "$exe" == "$target_exe" ]]; then
-        args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-        echo "pid=$pid exe=$exe args=$args"
-        break
-      fi
-    done
-  done < <(ps -eo pid=)
-
   while read -r pid args; do
     [[ -n "$pid" ]] || continue
     if [[ "$args" == *"$config_server"* ]]; then
       echo "pid=$pid config_server=$args"
     fi
+    [[ "$args" == *"$target/"* ]] || continue
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    exe="${exe% (deleted)}"
+    for target_exe in "${target_executables[@]}"; do
+      if [[ "$exe" == "$target_exe" ]]; then
+        echo "pid=$pid exe=$exe args=$args"
+        break
+      fi
+    done
   done < <(ps -eo pid=,args=)
 }
 
@@ -282,7 +283,11 @@ exact_executable_running() {
     if [[ "$exe" == "$expected" ]]; then
       return 0
     fi
-  done < <(ps -eo pid=)
+  done < <(
+    ps -eo pid=,args= | awk -v expected="$expected" '
+      NF == 1 || index($0, expected) > 0 { print $1 }
+    '
+  )
   return 1
 }
 
@@ -368,9 +373,9 @@ case "$exchange" in
     ;;
   binance)
     if [[ "$expected_backend" == "ltp" ]]; then
-      if ! grep -Fq '[plan] backend=ltp exchange=binance spot_open_orders=0 perp_open_orders=0 execute=false' <<<"$verify_output" || \
-         ! grep -Fq '[plan] no RapidX spot or perpetual open orders found' <<<"$verify_output"; then
-        echo "[ERROR] post-cancel verification did not confirm empty RapidX Spot and PERP scopes" >&2
+      if ! grep -Fq '[plan] backend=ltp exchange=binance spot_open_orders=0 margin_open_orders=0 perp_open_orders=0 execute=false' <<<"$verify_output" || \
+         ! grep -Fq '[plan] no RapidX spot, margin, or perpetual open orders found' <<<"$verify_output"; then
+        echo "[ERROR] post-cancel verification did not confirm empty RapidX Spot, Margin, and PERP scopes" >&2
         exit 1
       fi
     else

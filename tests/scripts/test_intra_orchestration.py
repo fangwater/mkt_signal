@@ -508,8 +508,8 @@ class IntraOrchestrationTests(unittest.TestCase):
                 "export LTP_API_SECRET='test-secret'\n"
                 "export LTP_PORTFOLIO_ID='123456'\n",
                 "[plan] backend=ltp exchange=binance spot_open_orders=0 "
-                "perp_open_orders=0 execute=false\n"
-                "[plan] no RapidX spot or perpetual open orders found",
+                "margin_open_orders=0 perp_open_orders=0 execute=false\n"
+                "[plan] no RapidX spot, margin, or perpetual open orders found",
             ),
         }
         env_name, cancel_name, credentials, verify_body = metadata[exchange]
@@ -656,7 +656,7 @@ class IntraOrchestrationTests(unittest.TestCase):
         )
         self.assertIn("cancel script reported a warning/error", result.stdout)
 
-    def test_stop_ltp_cancels_and_verifies_portfolio_spot_and_perp(self) -> None:
+    def test_stop_ltp_cancels_and_verifies_portfolio_spot_margin_and_perp(self) -> None:
         _, remote_env = self._prepare_stop_remote("binance_ltp")
         result = self._run(
             STOP_SCRIPT,
