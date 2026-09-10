@@ -245,20 +245,42 @@ where
     R: Read,
     F: FnMut(RawMessage) -> Result<()>,
 {
+    read_messages_inner(reader, true, &mut on_message)
+}
+
+/// Read a continuation file from a multipart RAW delivery. Only part zero
+/// carries the CSV header; later parts begin directly with an outer event.
+pub fn read_messages_without_header<R, F>(reader: R, mut on_message: F) -> Result<u64>
+where
+    R: Read,
+    F: FnMut(RawMessage) -> Result<()>,
+{
+    read_messages_inner(reader, false, &mut on_message)
+}
+
+fn read_messages_inner<R, F>(reader: R, expect_header: bool, on_message: &mut F) -> Result<u64>
+where
+    R: Read,
+    F: FnMut(RawMessage) -> Result<()>,
+{
     let mut csv = csv::ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
         .from_reader(reader);
     let mut rows = csv.records();
-    let header = rows.next().ok_or_else(|| anyhow!("empty RAW input"))??;
-    if header.iter().collect::<Vec<_>>() != RAW_HEADER {
-        bail!("unexpected RAW header: {header:?}");
-    }
-
+    let source_row_offset = if expect_header {
+        let header = rows.next().ok_or_else(|| anyhow!("empty RAW input"))??;
+        if header.iter().collect::<Vec<_>>() != RAW_HEADER {
+            bail!("unexpected RAW header: {header:?}");
+        }
+        2
+    } else {
+        1
+    };
     let mut current: Option<RawMessage> = None;
     let mut messages = 0_u64;
     for (index, result) in rows.enumerate() {
-        let source_row = u64::try_from(index)? + 2;
+        let source_row = u64::try_from(index)? + source_row_offset;
         let row = result.with_context(|| format!("parse RAW CSV source row {source_row}"))?;
         if !row.get(0).unwrap_or_default().is_empty() {
             if let Some(message) = current.take() {
@@ -300,6 +322,23 @@ mod tests {
         .unwrap();
         assert_eq!(count, 1);
         assert_eq!(out[0].fields.len(), 2);
+        assert_eq!(out[0].fields[0].fid, 22);
+    }
+
+    #[test]
+    fn parses_continuation_without_header() {
+        let source = concat!(
+            "AAPL.O,Market Price,2021-07-01T00:00:00.1Z,-4,Raw,UPDATE,QUOTE,,,,74,,3,1\n",
+            ",,,,FID,22,,BID,10.1,\n",
+        );
+        let mut out = Vec::new();
+        let count = read_messages_without_header(source.as_bytes(), |message| {
+            out.push(message);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(out[0].source_row, 1);
         assert_eq!(out[0].fields[0].fid, 22);
     }
 }

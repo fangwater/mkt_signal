@@ -1113,13 +1113,18 @@ pub(crate) fn source_location(path: &Path) -> Result<(u16, u16)> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("non-UTF8 RAW shard name"))?;
-    let part = name
-        .strip_prefix("merged-Data-part-")
-        .and_then(|rest| rest.get(..6))
-        .ok_or_else(|| anyhow!("cannot parse source part from {name}"))?;
-    let part = part
-        .parse()
-        .with_context(|| format!("parse part in {name}"))?;
+    // A complete delivered period can be one `merged-Data.csv.gz` rather than
+    // pre-split staging shards. Source order only needs to be unique inside a
+    // period RocksDB, so the sole file has the stable location (0, 0).
+    let part = match name {
+        "merged-Data.csv.gz" => 0,
+        _ => name
+            .strip_prefix("merged-Data-part-")
+            .and_then(|rest| rest.get(..6))
+            .ok_or_else(|| anyhow!("cannot parse source part from {name}"))?
+            .parse()
+            .with_context(|| format!("parse part in {name}"))?,
+    };
     let shard = match name.split_once("-shard-") {
         Some((_, rest)) => rest
             .get(..6)
@@ -2250,6 +2255,21 @@ mod tests {
     use super::*;
     use crate::quote_codec::{decode_quote, decode_quote_state};
     use tempfile::TempDir;
+
+    #[test]
+    fn single_merged_period_has_stable_source_location() {
+        assert_eq!(
+            source_location(Path::new("/raw/merged-Data.csv.gz")).unwrap(),
+            (0, 0)
+        );
+        assert_eq!(
+            source_location(Path::new(
+                "/raw/merged-Data-part-000012-shard-000034.csv.gz"
+            ))
+            .unwrap(),
+            (12, 34)
+        );
+    }
 
     #[test]
     fn trade_preserves_order_evidence_without_inventing_aggressor() {

@@ -5,24 +5,24 @@
 //! snapshot and reads only the selected RIC's RocksDB column families.
 
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use clap::Parser;
+use fs2::FileExt;
 use polars::prelude::{
     DataFrame, NamedFrom, ParquetCompression, ParquetReader, ParquetWriter, SerReader, Series,
 };
 use rocksdb::{Direction, IteratorMode, Options, DB};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use usstock_lseg_raw_replay::event_codec::{
-    decode_trade, TradeValue, MSG_CANCEL, MSG_PREVIOUS_DAY, MSG_TRADE, MSG_TRADE_RESTATEMENT,
-};
+use usstock_lseg_raw_replay::event_codec::{decode_trade, TradeValue, MSG_TRADE};
 use usstock_lseg_raw_replay::quote_codec::{
     decode_key, decode_quote, decode_quote_state, encode_key, QuoteStateValue, QuoteValue,
     MISSING_PRICE, MISSING_SIZE, MSG_QUOTE, MSG_QUOTE_STATE, SIDE_CLEAR,
 };
+use usstock_lseg_raw_replay::size_buckets::{percentile_in_place, SizeBuckets, SizeThresholds};
 
 const NS: u64 = 1_000_000_000;
 const LOOKBACK_SECS: i64 = 86_400;
@@ -38,6 +38,9 @@ struct Args {
     calendar: PathBuf,
     #[arg(long)]
     stage_ll2_root: PathBuf,
+    /// Export only RAW L1/trades. Do not join staged LL2 even when it exists.
+    #[arg(long)]
+    raw_only: bool,
     #[arg(long)]
     backtest_out_root: PathBuf,
     #[arg(long)]
@@ -50,9 +53,6 @@ struct Args {
     /// Permit a RAW-only sample when this RIC has no staged LL2 parquet.
     #[arg(long)]
     allow_missing_ll2: bool,
-    /// Diagnostic only: export prints without cancellation/restatement netting.
-    #[arg(long)]
-    allow_uncorrected_trades: bool,
     /// Inclusive start of the side-classification comparison window, as UTC Unix seconds.
     #[arg(long)]
     side_compare_start_ts: Option<i64>,
@@ -61,6 +61,9 @@ struct Args {
     side_compare_end_ts: Option<i64>,
     #[arg(long)]
     overwrite: bool,
+    /// Recompute the cached previous-month P50/P90 audit for this RIC/month.
+    #[arg(long)]
+    rebuild_size_thresholds: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +71,32 @@ struct CalendarRow {
     session_date: String,
     open_ts: i64,
     close_ts: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SizeAudit {
+    schema: String,
+    ric: String,
+    venue: String,
+    trading_month: String,
+    threshold_source_month: Option<String>,
+    threshold_method: String,
+    threshold_sample: String,
+    threshold_sample_trades: u64,
+    off_exchange_policy: String,
+    p50: Option<f64>,
+    p90: Option<f64>,
+    rocksdb: String,
+}
+
+impl SizeAudit {
+    fn thresholds(&self) -> Result<Option<SizeThresholds>> {
+        match (self.p50, self.p90) {
+            (Some(p50), Some(p90)) => Ok(Some(SizeThresholds::new(p50, p90)?)),
+            (None, None) => Ok(None),
+            _ => bail!("size audit has only one of p50/p90"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -206,8 +235,13 @@ fn stored_trade(trade: TradeValue, venue: &str) -> Result<Option<Trade>> {
     if trade.side_method == 0 || trade.side_method == 10 {
         bail!("RAW trade direction has not been finalized; rebuild replay before export");
     }
-    if trade.aggressor_side == b'N' && trade.unknown_reason != 1 {
-        bail!("valid non-off-exchange RAW trade has unresolved direction");
+    if !matches!(trade.aggressor_side, b'B' | b'S' | b'N') {
+        bail!("RAW trade has an invalid aggressor side");
+    }
+    if trade.aggressor_side == b'N'
+        && (trade.side_method != 9 || trade.unknown_reason != 1 || trade.venue_class != 2)
+    {
+        bail!("valid RAW N trade is not an off-exchange reporting trade");
     }
     Ok(Some(Trade {
         price: trade.price as f64 / 1e9,
@@ -250,7 +284,9 @@ struct RawRows {
     trades: BTreeMap<u64, Vec<Trade>>,
 }
 
-const SIDE_NAMES: [&str; 3] = ["buy", "sell", "unknown"];
+// This comparison is a quote-test diagnostic. Its third state means no quote-test
+// classification, not an off-exchange trade.
+const SIDE_NAMES: [&str; 3] = ["buy", "sell", "unclassified"];
 
 fn side_index(side: Option<bool>) -> usize {
     match side {
@@ -277,7 +313,7 @@ impl SideSummary {
         json!({
             "buy": { "count": self.count[0], "volume": self.volume[0] },
             "sell": { "count": self.count[1], "volume": self.volume[1] },
-            "unknown": { "count": self.count[2], "volume": self.volume[2] },
+            "unclassified": { "count": self.count[2], "volume": self.volume[2] },
         })
     }
 }
@@ -336,13 +372,14 @@ struct Minute {
     sell_amount: f64,
     sell_count: i64,
     sell_low: f64,
-    unknown_volume: f64,
-    unknown_amount: f64,
-    unknown_count: i64,
+    off_exchange_volume: f64,
+    off_exchange_amount: f64,
+    off_exchange_count: i64,
     open: f64,
     high: f64,
     low: f64,
     close: f64,
+    size: SizeBuckets,
 }
 
 impl Minute {
@@ -358,7 +395,7 @@ impl Minute {
         }
     }
 
-    fn add(&mut self, trade: &Trade) {
+    fn add(&mut self, trade: &Trade, thresholds: Option<SizeThresholds>) -> Result<()> {
         let amount = trade.price * trade.size;
         self.volume += trade.size;
         self.amount += amount;
@@ -394,11 +431,15 @@ impl Minute {
                 };
             }
             None => {
-                self.unknown_volume += trade.size;
-                self.unknown_amount += amount;
-                self.unknown_count += 1;
+                self.off_exchange_volume += trade.size;
+                self.off_exchange_amount += amount;
+                self.off_exchange_count += 1;
             }
         }
+        if let Some(thresholds) = thresholds {
+            self.size.add(amount, trade.side, thresholds)?;
+        }
+        Ok(())
     }
 }
 
@@ -420,6 +461,16 @@ fn parse_day(text: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(text, "%Y-%m-%d").with_context(|| format!("parse --day {text}"))
 }
 
+fn require_raw_output_root(path: &Path, expected: &str) -> Result<()> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(expected) {
+        bail!(
+            "RAW export output root must end in the exact directory {expected:?}, got {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn session_bounds(path: &Path, day: NaiveDate) -> Result<(i64, i64)> {
     let mut reader = csv::Reader::from_path(path)
         .with_context(|| format!("open calendar {}", path.display()))?;
@@ -433,6 +484,207 @@ fn session_bounds(path: &Path, day: NaiveDate) -> Result<(i64, i64)> {
         }
     }
     bail!("calendar {} has no session for {day}", path.display())
+}
+
+fn previous_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    }
+}
+
+fn previous_month_sessions(path: &Path, day: NaiveDate) -> Result<(String, Vec<(u64, u64)>)> {
+    let (year, month) = previous_month(day.year(), day.month());
+    let source_month = format!("{year:04}-{month:02}");
+    let mut reader = csv::Reader::from_path(path)
+        .with_context(|| format!("open calendar {}", path.display()))?;
+    let mut sessions = Vec::new();
+    for row in reader.deserialize::<CalendarRow>() {
+        let row = row?;
+        let session_day = NaiveDate::parse_from_str(&row.session_date, "%Y-%m-%d")
+            .with_context(|| format!("parse calendar session_date {:?}", row.session_date))?;
+        if session_day.year() != year || session_day.month() != month {
+            continue;
+        }
+        if row.open_ts < 0 || row.close_ts <= row.open_ts {
+            bail!("invalid session bounds for {session_day}");
+        }
+        sessions.push((row.open_ts as u64 * NS, row.close_ts as u64 * NS));
+    }
+    sessions.sort_unstable();
+    if sessions.is_empty() {
+        bail!(
+            "calendar {} has no sessions for threshold source month {source_month}",
+            path.display()
+        );
+    }
+    for pair in sessions.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            bail!("overlapping calendar sessions in {source_month}");
+        }
+    }
+    Ok((source_month, sessions))
+}
+
+fn collect_size_sample(
+    db: &DB,
+    venue_cfs: &[String],
+    instrument_cf: &str,
+    sessions: &[(u64, u64)],
+) -> Result<Vec<f64>> {
+    let first = sessions.first().context("empty size threshold sessions")?.0;
+    let end = sessions.last().context("empty size threshold sessions")?.1;
+    let mut amounts = Vec::new();
+    for name in venue_cfs
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(instrument_cf))
+    {
+        let trade_venue = if name == instrument_cf {
+            ""
+        } else {
+            name.rsplit_once(':').map(|(_, venue)| venue).unwrap_or("")
+        };
+        let cf = db.cf_handle(name).context("size threshold CF missing")?;
+        let start = encode_key(MSG_TRADE, first, 0);
+        let mut session_index = 0usize;
+        for row in db.iterator_cf(&cf, IteratorMode::From(&start, Direction::Forward)) {
+            let (key, value) = row?;
+            let (kind, ts, _) = decode_key(&key)?;
+            if kind != MSG_TRADE || ts >= end {
+                break;
+            }
+            while session_index < sessions.len() && ts >= sessions[session_index].1 {
+                session_index += 1;
+            }
+            if session_index == sessions.len() {
+                break;
+            }
+            if ts < sessions[session_index].0 {
+                continue;
+            }
+            if let Some(trade) = stored_trade(decode_trade(&value)?, trade_venue)? {
+                amounts.push(trade.price * trade.size);
+            }
+        }
+    }
+    Ok(amounts)
+}
+
+fn size_audit_path(root: &Path, venue: &str, ric: &str, day: NaiveDate) -> PathBuf {
+    root.join("_audit")
+        .join("size_buckets")
+        .join(venue)
+        .join(ric)
+        .join(format!("{:04}{:02}.json", day.year(), day.month()))
+}
+
+fn validate_size_audit(
+    audit: &SizeAudit,
+    rocksdb: &Path,
+    venue: &str,
+    ric: &str,
+    day: NaiveDate,
+) -> Result<()> {
+    let month = format!("{:04}-{:02}", day.year(), day.month());
+    let (source_year, source_month) = previous_month(day.year(), day.month());
+    let expected_source = format!("{source_year:04}-{source_month:02}");
+    if audit.schema != "usstock-raw-size-threshold-v1"
+        || audit.rocksdb != rocksdb.display().to_string()
+        || audit.venue != venue
+        || audit.ric != ric
+        || audit.trading_month != month
+    {
+        bail!("cached size audit does not match this RAW export: {audit:?}");
+    }
+    let thresholds = audit.thresholds()?;
+    match (
+        audit.threshold_source_month.as_deref(),
+        audit.threshold_sample_trades,
+        thresholds,
+    ) {
+        (Some(source), count, Some(_)) if source == expected_source && count > 0 => {}
+        (None, 0, None) => {}
+        _ => bail!("cached size audit has inconsistent source/sample/threshold fields"),
+    }
+    Ok(())
+}
+
+fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
+    let parent = path.parent().context("JSON output has no parent")?;
+    fs::create_dir_all(parent)?;
+    let temporary = path.with_extension("json.tmp");
+    let result = (|| -> Result<()> {
+        fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_or_build_size_audit(
+    db: &DB,
+    venue_cfs: &[String],
+    instrument_cf: &str,
+    rocksdb: &Path,
+    calendar: &Path,
+    output_root: &Path,
+    venue: &str,
+    ric: &str,
+    day: NaiveDate,
+    rebuild: bool,
+) -> Result<(PathBuf, SizeAudit)> {
+    let path = size_audit_path(output_root, venue, ric, day);
+    let parent = path.parent().context("size audit has no parent")?;
+    fs::create_dir_all(parent)?;
+    let lock_path = path.with_extension("json.lock");
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    lock.lock_exclusive()?;
+    if path.is_file() && !rebuild {
+        let audit: SizeAudit = serde_json::from_slice(&fs::read(&path)?)?;
+        validate_size_audit(&audit, rocksdb, venue, ric, day)?;
+        return Ok((path, audit));
+    }
+
+    let (source_month, sessions) = previous_month_sessions(calendar, day)?;
+    let mut amounts = collect_size_sample(db, venue_cfs, instrument_cf, &sessions)?;
+    let sample_trades = amounts.len() as u64;
+    let (threshold_source_month, p50, p90) = if amounts.is_empty() {
+        (None, None, None)
+    } else {
+        let p50 = percentile_in_place(&mut amounts, 0.5)?;
+        let p90 = percentile_in_place(&mut amounts, 0.9)?;
+        SizeThresholds::new(p50, p90)?;
+        (Some(source_month), Some(p50), Some(p90))
+    };
+    let audit = SizeAudit {
+        schema: "usstock-raw-size-threshold-v1".to_string(),
+        ric: ric.to_string(),
+        venue: venue.to_string(),
+        trading_month: format!("{:04}-{:02}", day.year(), day.month()),
+        threshold_source_month,
+        threshold_method: "previous natural month exact linear P50/P90 (NumPy default)".to_string(),
+        threshold_sample:
+            "previous NYSE RTH session-date month valid RAW trade notional, including off-exchange"
+                .to_string(),
+        threshold_sample_trades: sample_trades,
+        off_exchange_policy: "included in total bucket; excluded from buy/sell buckets".to_string(),
+        p50,
+        p90,
+        rocksdb: rocksdb.display().to_string(),
+    };
+    validate_size_audit(&audit, rocksdb, venue, ric, day)?;
+    write_json_atomic(&path, &audit)?;
+    Ok((path, audit))
 }
 
 fn stage_path(root: &Path, venue: &str, ric: &str, day: NaiveDate) -> PathBuf {
@@ -483,32 +735,8 @@ fn collect_raw(
     instrument_cf: &str,
     start_ns: u64,
     end_ns: u64,
-    allow_uncorrected: bool,
 ) -> Result<RawRows> {
     let mut rows = RawRows::default();
-    if !allow_uncorrected {
-        for name in venue_cfs
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once(instrument_cf))
-        {
-            let cf = db.cf_handle(name).context("correction CF missing")?;
-            for kind in [MSG_CANCEL, MSG_PREVIOUS_DAY, MSG_TRADE_RESTATEMENT] {
-                // A later correction may refer to this day; never silently publish
-                // a supposedly netted export based on a source-time-only scan.
-                let start = encode_key(kind, 0, 0);
-                if let Some(row) = db
-                    .iterator_cf(&cf, IteratorMode::From(&start, Direction::Forward))
-                    .next()
-                {
-                    let (key, _) = row?;
-                    if decode_key(&key)?.0 == kind {
-                        bail!("{name} contains trade corrections; netting is not implemented. --allow-uncorrected-trades is diagnostic only");
-                    }
-                }
-            }
-        }
-    }
     for name in venue_cfs {
         let trade_venue = name
             .rsplit_once(':')
@@ -700,6 +928,8 @@ fn write_manifest(
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    require_raw_output_root(&args.backtest_out_root, "backtest_1s_raw")?;
+    require_raw_output_root(&args.baseline_out_root, "baseline_data_1m_raw")?;
     let day = parse_day(&args.day)?;
     let venue = venue_of(&args.ric)?;
     let (open_ts, close_ts) = session_bounds(&args.calendar, day)?;
@@ -714,8 +944,8 @@ fn main() -> Result<()> {
         );
     }
     let stage = stage_path(&args.stage_ll2_root, venue, &args.ric, day);
-    let has_stage_ll2 = stage.is_file();
-    if !has_stage_ll2 && !args.allow_missing_ll2 {
+    let has_stage_ll2 = !args.raw_only && stage.is_file();
+    if !has_stage_ll2 && !args.allow_missing_ll2 && !args.raw_only {
         bail!("staged LL2 is absent: {}", stage.display());
     }
     let backtest_path = output_path(&args.backtest_out_root, venue, &args.ric, day);
@@ -736,8 +966,20 @@ fn main() -> Result<()> {
         &instrument_cf,
         (scan_start_ts as u64) * NS,
         (close_ts as u64) * NS,
-        args.allow_uncorrected_trades,
     )?;
+    let (size_audit_path, size_audit) = load_or_build_size_audit(
+        &db,
+        &venue_cfs,
+        &instrument_cf,
+        &args.rocksdb_dir,
+        &args.calendar,
+        &args.baseline_out_root,
+        venue,
+        &args.ric,
+        day,
+        args.rebuild_size_thresholds,
+    )?;
+    let size_thresholds = size_audit.thresholds()?;
     let stage_rows = if has_stage_ll2 {
         load_stage(&stage, scan_start_ts, close_ts)?
     } else {
@@ -804,7 +1046,7 @@ fn main() -> Result<()> {
             for trade in trades {
                 let composite_side = infer_side(bbo, trade.price);
                 let venue_side = infer_side(venue_books.bbo(&trade.venue), trade.price);
-                minute_data[minute].add(trade);
+                minute_data[minute].add(trade, size_thresholds)?;
                 if second >= side_compare_start_ts && second < side_compare_end_ts {
                     side_comparison.add(trade.clone(), composite_side, venue_side);
                     side_comparison_by_venue
@@ -916,6 +1158,19 @@ fn main() -> Result<()> {
         Series::new("ask0v".into(), &minute_askv),
     ];
     add_l2_columns(&mut baseline_columns, &minute_l2);
+    for (index, minute) in minute_data.iter().enumerate() {
+        let total_tolerance = 1e-8_f64.max(minute.amount.abs() * 1e-12);
+        if let Some(_) = size_thresholds {
+            if (minute.size.total() - minute.amount).abs() > total_tolerance
+                || (minute.size.directional_total() - minute.buy_amount - minute.sell_amount).abs()
+                    > total_tolerance
+            {
+                bail!("size bucket conservation failed at minute {index}");
+            }
+        } else if minute.size.total() != 0.0 || minute.size.directional_total() != 0.0 {
+            bail!("size buckets must be zero without prior-month thresholds");
+        }
+    }
     baseline_columns.extend([
         Series::new(
             "volume".into(),
@@ -968,24 +1223,108 @@ fn main() -> Result<()> {
             minute_data.iter().map(|x| x.sell_low).collect::<Vec<_>>(),
         ),
         Series::new(
-            "unknown_volume".into(),
+            "off_exchange_volume".into(),
             minute_data
                 .iter()
-                .map(|x| x.unknown_volume)
+                .map(|x| x.off_exchange_volume)
                 .collect::<Vec<_>>(),
         ),
         Series::new(
-            "unknown_amount".into(),
+            "off_exchange_amount".into(),
             minute_data
                 .iter()
-                .map(|x| x.unknown_amount)
+                .map(|x| x.off_exchange_amount)
                 .collect::<Vec<_>>(),
         ),
         Series::new(
-            "unknown_count".into(),
+            "off_exchange_count".into(),
             minute_data
                 .iter()
-                .map(|x| x.unknown_count)
+                .map(|x| x.off_exchange_count)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "large_order".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.large_order)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "medium_order".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.medium_order)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "small_order".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.small_order)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "large_buy".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.large_buy)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "large_sell".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.large_sell)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "medium_buy".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.medium_buy)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "medium_sell".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.medium_sell)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "small_buy".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.small_buy)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "small_sell".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.small_sell)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "net_buy_large".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.large_buy - x.size.large_sell)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "net_buy_medium".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.medium_buy - x.size.medium_sell)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new(
+            "net_buy_small".into(),
+            minute_data
+                .iter()
+                .map(|x| x.size.small_buy - x.size.small_sell)
                 .collect::<Vec<_>>(),
         ),
         Series::new(
@@ -1010,7 +1349,7 @@ fn main() -> Result<()> {
     write_atomic(&baseline_path, DataFrame::new(baseline_columns)?)?;
 
     let manifest = json!({
-        "schema": "usstock-raw-rth-export-v1",
+        "schema": "usstock-raw-rth-export",
         "ric": args.ric,
         "venue": venue,
         "session_date": day.to_string(),
@@ -1023,10 +1362,22 @@ fn main() -> Result<()> {
         "raw_rocksdb": args.rocksdb_dir,
         "stage_ll2": if has_stage_ll2 { Some(stage) } else { None },
         "ll2_joined": has_stage_ll2,
+        "raw_only": args.raw_only,
         "raw_trade_corrections_applied": false,
+        "raw_trade_correction_policy": "raw source prints are exported as observed; cancellation, previous-day and restatement messages remain preserved in RocksDB but do not alter trade prints because CAN_TRD_ID/PD_TRDID cannot be losslessly joined to TRADE_ID",
         "trade_side": "stored replay aggressor_side; never recomputed by exporter; N only off_exchange_reporting",
         "trade_order": "within source second, source_order across all venue and instrument CFs",
-        "diagnostic_uncorrected": args.allow_uncorrected_trades,
+        "size_buckets": {
+            "audit": size_audit_path,
+            "trading_month": size_audit.trading_month,
+            "threshold_source_month": size_audit.threshold_source_month,
+            "threshold_method": size_audit.threshold_method,
+            "threshold_sample_trades": size_audit.threshold_sample_trades,
+            "p50": size_audit.p50,
+            "p90": size_audit.p90,
+            "off_exchange_policy": size_audit.off_exchange_policy,
+            "no_threshold_policy": "all 12 size columns are zero",
+        },
         "direction_audit": raw.trades.range((open_ts as u64 * NS)..(close_ts as u64 * NS)).flat_map(|(_, trades)| trades).fold(BTreeMap::<String, (u64, f64)>::new(), |mut counts, trade| {
             let row = counts.entry(format!("method={};flags={}", trade.side_method, trade.side_flags)).or_default();
             row.0 += 1; row.1 += trade.size; counts
@@ -1082,6 +1433,81 @@ mod tests {
     }
 
     #[test]
+    fn raw_output_suffix_is_mandatory() {
+        assert!(
+            require_raw_output_root(Path::new("/tmp/backtest_1s_raw"), "backtest_1s_raw").is_ok()
+        );
+        assert!(require_raw_output_root(Path::new("/tmp/backtest_1s"), "backtest_1s_raw").is_err());
+    }
+
+    #[test]
+    fn quote_comparison_uses_unclassified_not_unknown() {
+        let summary = SideSummary::default().as_json();
+        assert!(summary.get("unclassified").is_some());
+        assert!(summary.get("unknown").is_none());
+    }
+
+    #[test]
+    fn previous_month_threshold_audit_is_cached() {
+        let temporary = tempfile::tempdir().unwrap();
+        let rocksdb = temporary.path().join("raw-rocksdb");
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        let mut db = DB::open(&options, &rocksdb).unwrap();
+        db.create_cf("i:AAPL.O", &Options::default()).unwrap();
+        let cf = db.cf_handle("i:AAPL.O").unwrap();
+        let mut bytes = [0_u8; usstock_lseg_raw_replay::event_codec::TRADE_VALUE_LEN];
+        bytes[24..32].copy_from_slice(&100_000_000_000_i64.to_le_bytes());
+        bytes[32..40].copy_from_slice(&2_u64.to_le_bytes());
+        bytes[90] = b'B';
+        bytes[92] = 1;
+        bytes[93] = 3;
+        bytes[108] = 1;
+        db.put_cf(&cf, encode_key(MSG_TRADE, 1_625_059_900 * NS, 1), bytes)
+            .unwrap();
+
+        let calendar = temporary.path().join("calendar.csv");
+        fs::write(
+            &calendar,
+            "session_date,open_ts,close_ts\n2021-06-30,1625059800,1625083200\n2021-07-01,1625146200,1625169600\n",
+        )
+        .unwrap();
+        let output = temporary.path().join("baseline_data_1m_raw");
+        let (_, first) = load_or_build_size_audit(
+            &db,
+            &[],
+            "i:AAPL.O",
+            &rocksdb,
+            &calendar,
+            &output,
+            "NASDAQ",
+            "AAPL.O",
+            NaiveDate::from_ymd_opt(2021, 7, 1).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(first.threshold_sample_trades, 1);
+        assert_eq!(first.p50, Some(200.0));
+        assert_eq!(first.p90, Some(200.0));
+
+        let (_, cached) = load_or_build_size_audit(
+            &db,
+            &[],
+            "i:AAPL.O",
+            &rocksdb,
+            &calendar,
+            &output,
+            "NASDAQ",
+            "AAPL.O",
+            NaiveDate::from_ymd_opt(2021, 7, 2).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(cached.threshold_sample_trades, 1);
+        assert_eq!(cached.p50, Some(200.0));
+    }
+
+    #[test]
     fn export_uses_stored_direction_and_rejects_unfinished_values() {
         let mut bytes = [0_u8; usstock_lseg_raw_replay::event_codec::TRADE_VALUE_LEN];
         bytes[24..32].copy_from_slice(&101_000_000_000_i64.to_le_bytes());
@@ -1100,23 +1526,32 @@ mod tests {
         );
         assert_eq!(trade.side, Some(false));
         let mut minute = Minute::new();
-        minute.add(&trade);
+        minute.add(&trade, None).unwrap();
         assert_eq!((minute.buy_volume, minute.sell_volume), (0.0, 10.0));
         bytes[90] = b'N';
         bytes[91] = 1;
         bytes[92] = 2;
         bytes[93] = 9;
         bytes[108] = 0;
-        minute.add(
-            &stored_trade(decode_trade(&bytes).unwrap(), "ADF")
-                .unwrap()
-                .unwrap(),
-        );
-        assert_eq!(minute.unknown_volume, 10.0);
+        minute
+            .add(
+                &stored_trade(decode_trade(&bytes).unwrap(), "ADF")
+                    .unwrap()
+                    .unwrap(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(minute.off_exchange_volume, 10.0);
         assert_eq!(
             minute.volume,
-            minute.buy_volume + minute.sell_volume + minute.unknown_volume
+            minute.buy_volume + minute.sell_volume + minute.off_exchange_volume
         );
+        let mut invalid = decode_trade(&bytes).unwrap();
+        invalid.side_method = 3;
+        assert!(stored_trade(invalid, "ADF").is_err());
+        let mut invalid = decode_trade(&bytes).unwrap();
+        invalid.venue_class = 1;
+        assert!(stored_trade(invalid, "ADF").is_err());
         bytes[93] = 0;
         assert!(stored_trade(decode_trade(&bytes).unwrap(), "ADF").is_err());
         bytes[93] = 9;
@@ -1124,6 +1559,39 @@ mod tests {
         assert!(stored_trade(decode_trade(&bytes).unwrap(), "ADF")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn minute_size_buckets_include_off_exchange_only_in_total() {
+        let thresholds = SizeThresholds::new(500.0, 900.0).unwrap();
+        let mut minute = Minute::new();
+        let trade = |price, size, side| Trade {
+            price,
+            size,
+            venue: String::new(),
+            source_order: 0,
+            side,
+            side_method: if side.is_some() { 3 } else { 9 },
+            side_flags: 0,
+        };
+        minute
+            .add(&trade(10.0, 40.0, Some(true)), Some(thresholds))
+            .unwrap();
+        minute
+            .add(&trade(10.0, 60.0, Some(false)), Some(thresholds))
+            .unwrap();
+        minute
+            .add(&trade(10.0, 100.0, None), Some(thresholds))
+            .unwrap();
+        assert_eq!(minute.size.small_buy, 400.0);
+        assert_eq!(minute.size.medium_sell, 600.0);
+        assert_eq!(minute.size.large_order, 1000.0);
+        assert_eq!(minute.size.large_buy + minute.size.large_sell, 0.0);
+        assert_eq!(minute.size.total(), minute.amount);
+        assert_eq!(
+            minute.size.directional_total(),
+            minute.buy_amount + minute.sell_amount
+        );
     }
 
     #[test]
@@ -1153,7 +1621,7 @@ mod tests {
     }
 
     #[test]
-    fn touch_side_leaves_inside_trade_unknown() {
+    fn touch_side_leaves_inside_trade_unclassified() {
         let book = Some((100.0, 1.0, 101.0, 1.0));
         assert_eq!(infer_side(book, 101.0), Some(true));
         assert_eq!(infer_side(book, 100.0), Some(false));

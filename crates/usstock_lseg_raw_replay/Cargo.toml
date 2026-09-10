@@ -24,6 +24,10 @@ name = "usstock_lseg_raw_export"
 path = "src/bin/usstock_lseg_raw_export.rs"
 
 [[bin]]
+name = "usstock_lseg_raw_correction_audit"
+path = "src/bin/usstock_lseg_raw_correction_audit.rs"
+
+[[bin]]
 name = "usstock_lseg_raw_partition"
 path = "src/bin/usstock_lseg_raw_partition.rs"
 

@@ -19,6 +19,7 @@ pub mod parsed;
 pub mod quote_codec;
 pub mod quote_replay;
 pub mod raw;
+pub mod size_buckets;
 
 pub const MANIFEST_FILE: &str = "manifest.json";
 pub const MANIFEST_SCHEMA: &str = "lseg-usstock-raw-shards";

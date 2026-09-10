@@ -58,14 +58,10 @@ pub fn confirmed_removal_candidates(
         };
         let (keys, venues) = redis_keys(spec);
         for symbol in symbols {
-            let removed_venues: Vec<String> = venues
-                .iter()
-                .filter(|venue| {
-                    listings.listing_for(venue, std::slice::from_ref(symbol), &[]) == "delisted"
-                })
-                .cloned()
-                .collect();
-            if !removed_venues.is_empty() {
+            let fully_delisted = venues.iter().all(|venue| {
+                listings.listing_for(venue, std::slice::from_ref(symbol), &[]) == "delisted"
+            });
+            if fully_delisted {
                 out.push(RedisRemovalCandidate {
                     account_slug: spec.slug.to_string(),
                     exchange: spec.exchange.to_string(),
@@ -75,7 +71,7 @@ pub fn confirmed_removal_candidates(
                     }
                     .to_string(),
                     symbol: symbol.clone(),
-                    venues: removed_venues,
+                    venues: venues.clone(),
                     redis_keys: keys.clone(),
                 });
             }
@@ -256,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_requires_at_least_one_account_venue_to_be_gone() {
+    fn candidate_requires_all_account_venues_to_be_gone() {
         let mut listings = ListingIndex::default();
         listings.insert_test("binance-margin", "BTCUSDT");
         listings.insert_test("binance-futures", "BTCUSDT");
@@ -265,14 +261,17 @@ mod tests {
             "binance-intra-arb01".to_string(),
             Ok(BTreeSet::from(["HEIUSDT".to_string()])),
         )]);
-        let candidates = confirmed_removal_candidates(&listings, &universes);
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].venues, vec!["binance-margin"]);
+        assert!(confirmed_removal_candidates(&listings, &universes).is_empty());
 
         let mut listings = ListingIndex::default();
-        listings.insert_test("binance-margin", "HEIUSDT");
-        listings.insert_test("binance-futures", "HEIUSDT");
-        assert!(confirmed_removal_candidates(&listings, &universes).is_empty());
+        listings.insert_test("binance-margin", "BTCUSDT");
+        listings.insert_test("binance-futures", "BTCUSDT");
+        let candidates = confirmed_removal_candidates(&listings, &universes);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].venues,
+            vec!["binance-margin", "binance-futures"]
+        );
     }
 
     #[test]

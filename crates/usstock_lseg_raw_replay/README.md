@@ -20,8 +20,22 @@ B/S/N；场外 N 优先，其余 ORDER_SIDE=1/2 强制取反，再走本场所�
 midpoint、tick、前序证据、默认 B。method/estimated/forced 随 TradeMsg 保存。
 完整口径与限制见 `../preprocess/data_format/lseg/usstock_raw_trade_side.md`
 （相对仓库根目录）。导出只读取保存的方向，并恢复跨 venue 的 source_order。
-包含撤销/重述的 RIC 默认禁止未净额还原导出；`--allow-uncorrected-trades`
-仅允许带明确标记的诊断样本。
+RAW 分钟表是源逐笔 print 的直接导出。取消、前日行情和通用 restatement 消息
+完整保留在 RocksDB，但不会改写已发布的逐笔 print：本批 `CAN_TRD_ID`/`PD_TRDID`
+无法与 `TRADE_ID` 无歧义逐笔关联。每个 manifest 明确 `raw_trade_corrections_applied=false`
+及此策略；不得把该 RAW 输出描述为已撤销/更正净额的 time-and-sales。
+
+分钟导出只写独立的 `baseline_data_1m_raw`，不覆盖 `baseline_data_1m`。有效
+TradeMsg 的 N 已严格限定为 off-exchange reporting，因此 RAW 分钟表直接写
+`off_exchange_volume/off_exchange_amount/off_exchange_count`。大小单
+与 CME 同口径：每个 RIC 的纽约交易日自然月使用上一自然月 RTH 单笔名义成交额
+的精确线性 P50/P90；场外参与 `large/medium/small_order` 总桶，不进入方向桶。
+12 列和月度阈值 audit 写入 RAW 输出；首个没有上月样本的月份 12 列为 0。
+exporter 强制两个输出根目录名分别为 `backtest_1s_raw` 和
+`baseline_data_1m_raw`，参数缺少 `_raw` 后缀时直接失败。
+
+正式 RAW 发布使用 `--raw-only`，因此不会按 RIC 混入覆盖不完整的 staged LL2。
+RAW 的 L1 bid/ask 和成交照常输出；LL2 深度字段为 null，`book_depth=0`。
 
 RAW replay 使用有序读线程和固定 RIC worker，不再按 shard 独立维护状态。
 `direction_calendar` 为冻结连续区间 CSV（open_ts/close_ts，UTC 秒半开区间）；

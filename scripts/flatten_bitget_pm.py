@@ -59,8 +59,9 @@ BUYBACK_QUOTE_BUFFER = Decimal("1.001")
 
 @dataclass
 class SymbolSpec:
-    symbol: str           # BTCUSDT (used as-is for both margin & futures, distinguished by category)
+    symbol: str           # BTCUSDT (used as-is for spot/margin & futures, distinguished by category)
     asset: str            # BTC
+    spot_category: str    # MARGIN normally; SPOT after an exchange removes the margin product
     spot_qty_step: Decimal
     spot_min_qty: Decimal
     spot_quote_step: Decimal
@@ -312,36 +313,43 @@ def fetch_instruments(category: str, symbols: List[str]) -> Dict[str, Dict[str, 
 
 def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
     margin = fetch_instruments("MARGIN", symbols)
+    spot = fetch_instruments("SPOT", symbols)
     futures = fetch_instruments("USDT-FUTURES", symbols)
     out: Dict[str, SymbolSpec] = {}
     for sym in symbols:
         m = margin.get(sym, {})
+        s = spot.get(sym, {})
         f = futures.get(sym, {})
-        if not m:
-            sys.exit(f"[ERROR] Bitget MARGIN instrument not found for {sym}")
+        if not m and not s:
+            sys.exit(f"[ERROR] Bitget MARGIN/SPOT instrument not found for {sym}")
         if not f:
             sys.exit(f"[ERROR] Bitget USDT-FUTURES instrument not found for {sym}")
+        cash = m or s
+        spot_category = "MARGIN" if m else "SPOT"
+        if spot_category == "SPOT":
+            print(f"[WARN] Bitget MARGIN instrument absent for {sym}; using SPOT for the cash leg")
         out[sym] = SymbolSpec(
             symbol=sym,
             asset=split_usdt(sym),
+            spot_category=spot_category,
             # Bitget instruments expose qty step under different keys depending on category;
             # try several common names.
             spot_qty_step=decimal_or(
-                m.get("quantityStep")
-                or m.get("quantityMultiplier")
-                or m.get("sizeStep")
-                or m.get("baseSizeStep"),
-                str(step_from_precision(m.get("quantityPrecision"), "1")),
+                cash.get("quantityStep")
+                or cash.get("quantityMultiplier")
+                or cash.get("sizeStep")
+                or cash.get("baseSizeStep"),
+                str(step_from_precision(cash.get("quantityPrecision"), "1")),
             ),
             spot_min_qty=decimal_or(
-                m.get("minOrderQuantity")
-                or m.get("minOrderQty")
-                or m.get("minTradeNum")
-                or m.get("minQuantity"),
+                cash.get("minOrderQuantity")
+                or cash.get("minOrderQty")
+                or cash.get("minTradeNum")
+                or cash.get("minQuantity"),
                 "0",
             ),
-            spot_quote_step=step_from_precision(m.get("quotePrecision")),
-            spot_min_amount=decimal_or(m.get("minOrderAmount"), "0"),
+            spot_quote_step=step_from_precision(cash.get("quotePrecision")),
+            spot_min_amount=decimal_or(cash.get("minOrderAmount"), "0"),
             futures_qty_step=decimal_or(
                 f.get("quantityStep")
                 or f.get("quantityMultiplier")
@@ -712,14 +720,18 @@ def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.buyback_amt)
     body = {
-        "category": "MARGIN",  # cross-margin (auto-borrow + auto-repay)
+        "category": plan.state.spec.spot_category,
         "symbol": sym,
         "side": "buy",
         "orderType": "market",
         "qty": qty,
         "clientOid": f"frbuy-{int(time.time() * 1000)}",
     }
-    print(f"\n[buyback] {sym} buy quote_qty={qty} category=MARGIN (auto-repay)")
+    print(
+        f"\n[buyback] {sym} buy quote_qty={qty} "
+        f"category={plan.state.spec.spot_category}"
+        + (" (auto-repay)" if plan.state.spec.spot_category == "MARGIN" else "")
+    )
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )
@@ -737,14 +749,14 @@ def execute_selldown(plan: SymbolPlan, api_key, api_secret, passphrase) -> Phase
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.selldown_amt)
     body = {
-        "category": "MARGIN",
+        "category": plan.state.spec.spot_category,
         "symbol": sym,
         "side": "sell",
         "orderType": "market",
         "qty": qty,
         "clientOid": f"frsell-{int(time.time() * 1000)}",
     }
-    print(f"\n[selldown] {sym} sell qty={qty} category=MARGIN")
+    print(f"\n[selldown] {sym} sell qty={qty} category={plan.state.spec.spot_category}")
     status, resp = bitget_private(
         "POST", "/api/v3/trade/place-order", api_key, api_secret, passphrase, body=body,
     )

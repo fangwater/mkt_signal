@@ -205,6 +205,35 @@ pub async fn position_dump_candidates(
     (candidates, errors)
 }
 
+/// A completed catalog delist may remove a symbol from Redis only after a fresh
+/// account snapshot confirms neither FR leg retains material exposure.
+pub async fn snapshot_symbol_is_flat(
+    client: &Client,
+    snapshot_base_url: &str,
+    account_slug: &str,
+    symbol: &str,
+    max_snapshot_age_ms: i64,
+    threshold_usdt: f64,
+) -> Result<bool> {
+    let url = format!(
+        "{}/fr/{account_slug}/snapshot",
+        snapshot_base_url.trim_end_matches('/')
+    );
+    let snapshot = fetch_snapshot(client, &url).await?;
+    let (snapshot_ms, positions) =
+        positions_from_snapshot(&snapshot).context("pre_trade_exposure missing")?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let age_ms = now_ms.saturating_sub(snapshot_ms);
+    if age_ms.unsigned_abs() > max_snapshot_age_ms.max(0) as u64 {
+        bail!("stale position snapshot clock_offset_ms={age_ms}");
+    }
+    let symbol = normalize_symbol(symbol);
+    let Some(position) = positions.get(&symbol) else {
+        return Ok(true);
+    };
+    Ok(position.open_usdt.abs() < threshold_usdt && position.hedge_usdt.abs() < threshold_usdt)
+}
+
 fn meets_position_threshold(position_usdt: f64, threshold_usdt: f64) -> bool {
     position_usdt.is_finite() && position_usdt >= 0.0 && position_usdt >= threshold_usdt.max(0.0)
 }

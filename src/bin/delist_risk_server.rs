@@ -40,7 +40,7 @@ use mkt_signal::common::delist_accounts::{
 };
 use mkt_signal::common::delist_dump::{
     apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
-    PositionDumpCandidate,
+    snapshot_symbol_is_flat, PositionDumpCandidate,
 };
 use mkt_signal::common::delist_flatten::{
     audit_dedup_key, flatten_candidates, FlattenCandidate, FlattenExecutor, FlattenRunOutput,
@@ -78,6 +78,7 @@ use mkt_signal::pre_trade::notification_client::{
 };
 
 const POSITION_CLOSED_THRESHOLD_USDT: f64 = 100.0;
+const POSITION_REMOVAL_THRESHOLD_USDT: f64 = 1.0;
 
 #[derive(Parser)]
 #[command(name = "delist_risk_server")]
@@ -1411,6 +1412,17 @@ async fn record_manual_flatten_required(
     store: &DelistStore,
     candidate: &FlattenCandidate,
 ) -> Result<()> {
+    if store
+        .flatten_success_covers_snapshot(
+            &candidate.account_slug,
+            &candidate.symbol,
+            candidate.deadline_ms,
+            candidate.snapshot_ms,
+        )
+        .await?
+    {
+        return Ok(());
+    }
     let dedup_key = audit_dedup_key(candidate, "manual-required");
     let command = serde_json::to_value(state.flatten_executor.command(candidate)?)?;
     let claimed = store
@@ -1801,6 +1813,22 @@ async fn prune_candidate(
     store: &DelistStore,
     candidate: &RedisRemovalCandidate,
 ) -> Result<bool> {
+    if !snapshot_symbol_is_flat(
+        &state.snapshot_client,
+        &state.snapshot_base_url,
+        &candidate.account_slug,
+        &candidate.symbol,
+        state.position_snapshot_max_age_ms,
+        POSITION_REMOVAL_THRESHOLD_USDT,
+    )
+    .await?
+    {
+        info!(
+            "Redis delist removal retained positioned symbol account={} symbol={}",
+            candidate.account_slug, candidate.symbol
+        );
+        return Ok(false);
+    }
     let redis_url = match candidate.redis_site.as_str() {
         "jp" => state.jp_redis.as_str(),
         "sg" => state
