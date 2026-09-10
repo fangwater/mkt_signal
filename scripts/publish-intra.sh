@@ -114,6 +114,10 @@ if [[ "$CHECK_ONLY" -eq 0 ]]; then
       "$ROOT_DIR/target/release" \
       rapidx_open_orders \
       "$ROOT_DIR/target/release/rapidx_open_orders"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_order_smoke \
+      "$ROOT_DIR/target/release/rapidx_order_smoke"
   fi
   echo "[INFO] local release guard passed release_id=$(intra_release_id "$ROOT_DIR/target/release")"
 fi
@@ -301,6 +305,8 @@ case "$INTRA_EXCHANGE" in
     if [[ "$INTRA_EXEC_BACKEND" == "ltp" ]]; then
       LOCAL_RELATIVE+=("target/release/rapidx_open_orders")
       UPLOAD_NAMES+=("rapidx_open_orders")
+      LOCAL_RELATIVE+=("target/release/rapidx_order_smoke")
+      UPLOAD_NAMES+=("rapidx_order_smoke")
     else
       LOCAL_RELATIVE+=(
         "scripts/cancel_binance_std_orders.py"
@@ -445,6 +451,7 @@ publish_file start_intra_viz_server.sh intra_scripts/start_intra_viz_server.sh
 publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
 if [[ "$exec_backend" == "ltp" ]]; then
   publish_file rapidx_open_orders rapidx_open_orders
+  publish_file rapidx_order_smoke rapidx_order_smoke
 fi
 
 case "$exchange" in

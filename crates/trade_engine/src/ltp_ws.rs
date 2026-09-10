@@ -380,10 +380,12 @@ pub fn build_order_payload(
     let expected_exchange = match msg.req_type {
         TradeRequestType::BinanceNewUMOrder
         | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceLtpNewSpotOrder
         | TradeRequestType::BinanceWsNewUMOrder
         | TradeRequestType::BinanceWsNewMarginOrder
         | TradeRequestType::BinanceCancelUMOrder
         | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceLtpCancelSpotOrder
         | TradeRequestType::BinanceWsCancelUMOrder
         | TradeRequestType::BinanceWsCancelMarginOrder => Exchange::Binance,
         TradeRequestType::OkexNewUMOrder
@@ -403,6 +405,7 @@ pub fn build_order_payload(
     let (action, args) = match msg.req_type {
         TradeRequestType::BinanceNewUMOrder
         | TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceLtpNewSpotOrder
         | TradeRequestType::BinanceWsNewUMOrder
         | TradeRequestType::BinanceWsNewMarginOrder => {
             let params = BinanceNewOrderParams::from_bytes(&msg.params)
@@ -414,6 +417,7 @@ pub fn build_order_payload(
         }
         TradeRequestType::BinanceCancelUMOrder
         | TradeRequestType::BinanceCancelMarginOrder
+        | TradeRequestType::BinanceLtpCancelSpotOrder
         | TradeRequestType::BinanceWsCancelUMOrder
         | TradeRequestType::BinanceWsCancelMarginOrder => {
             let params = BinanceCancelOrderParams::from_bytes(&msg.params)
@@ -481,9 +485,10 @@ fn build_ltp_new_order_args_from_binance(
     params: BinanceNewOrderParams,
 ) -> Result<Value> {
     let business = match req_type {
-        TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+        TradeRequestType::BinanceLtpNewSpotOrder | TradeRequestType::BinanceWsNewMarginOrder => {
             "SPOT"
         }
+        TradeRequestType::BinanceNewMarginOrder => "MARGIN",
         TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceWsNewUMOrder => "PERP",
         _ => return Err(anyhow!("unsupported binance LTP request: {:?}", req_type)),
     };
@@ -509,7 +514,8 @@ fn build_ltp_new_order_args_from_binance(
             if matches!(
                 req_type,
                 TradeRequestType::BinanceNewUMOrder | TradeRequestType::BinanceWsNewUMOrder
-            ) {
+            ) || params.ws_margin_limit_maker
+            {
                 Some("GTX")
             } else {
                 Some("GTC")
@@ -753,6 +759,39 @@ mod tests {
         assert_eq!(value["args"]["sym"], "BINANCE_PERP_BTC_USDT");
         assert_eq!(value["args"]["timeInForce"], "GTX");
         assert_eq!(value["args"]["reduceOnly"], "true");
+    }
+
+    #[test]
+    fn distinguishes_binance_spot_and_margin_and_honors_post_only() {
+        let params = BinanceNewOrderParams {
+            symbol: "XRPUSDT".to_string(),
+            side: order_common::Side::Buy,
+            order_type: OrderType::Limit,
+            quantity_qv: QuantizedValue::from_decimal(10.0).unwrap(),
+            price_qv: QuantizedValue::from_decimal(0.5).unwrap(),
+            reduce_only: false,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: false,
+            ws_margin_limit_maker: true,
+        };
+        let params = params.to_bytes().unwrap();
+        for (req_type, expected_sym) in [
+            (
+                TradeRequestType::BinanceLtpNewSpotOrder,
+                "BINANCE_SPOT_XRP_USDT",
+            ),
+            (
+                TradeRequestType::BinanceNewMarginOrder,
+                "BINANCE_MARGIN_XRP_USDT",
+            ),
+        ] {
+            let msg = TradeRequestMsg::create(req_type, 1, 123, &params).unwrap();
+            let payload = build_order_payload(Exchange::Binance, &msg, 9).unwrap();
+            let value: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(value["args"]["sym"], expected_sym);
+            assert_eq!(value["args"]["timeInForce"], "GTX");
+        }
     }
 
     #[test]

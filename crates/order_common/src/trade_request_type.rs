@@ -26,6 +26,8 @@ pub enum TradeRequestType {
     BinancePmNewCmOrder = 4022,                 // Binance Portfolio Margin COIN-M order
     BinancePmCancelCmOrder = 4023,              // Binance Portfolio Margin COIN-M cancel
     BinancePmCmSetLeverage = 4024,              // Binance Portfolio Margin COIN-M leverage
+    BinanceLtpNewSpotOrder = 4025,              // RapidX Binance spot order
+    BinanceLtpCancelSpotOrder = 4026,           // RapidX Binance spot cancel
     OkexNewMarginOrder = 5001,                  // Okex 下单（现货/杠杆）
     OkexNewUMOrder = 5002,                      // Okex 下单（合约/UM风格）
     OkexCancelMarginOrder = 5003,               // Okex 撤单（现货/杠杆）
@@ -78,6 +80,8 @@ impl TryFrom<u32> for TradeRequestType {
             4022 => Ok(TradeRequestType::BinancePmNewCmOrder),
             4023 => Ok(TradeRequestType::BinancePmCancelCmOrder),
             4024 => Ok(TradeRequestType::BinancePmCmSetLeverage),
+            4025 => Ok(TradeRequestType::BinanceLtpNewSpotOrder),
+            4026 => Ok(TradeRequestType::BinanceLtpCancelSpotOrder),
             5001 => Ok(TradeRequestType::OkexNewMarginOrder),
             5002 => Ok(TradeRequestType::OkexNewUMOrder),
             5003 => Ok(TradeRequestType::OkexCancelMarginOrder),
@@ -116,6 +120,7 @@ impl TradeRequestType {
                 | TradeRequestType::BinanceNewMarginOrder
                 | TradeRequestType::BinanceWsNewUMOrder
                 | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceLtpNewSpotOrder
                 | TradeRequestType::BinanceNewCmOrder
                 | TradeRequestType::BinancePmNewCmOrder
                 | TradeRequestType::OkexNewMarginOrder

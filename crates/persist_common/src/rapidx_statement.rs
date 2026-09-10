@@ -88,7 +88,11 @@ impl StatementRecord {
         ensure!(
             matches!(
                 self.statement_type.as_str(),
-                "FUNDING_FEE" | "DEDUCT_INTEREST" | "LIQUIDATION_FEE" | "LIQ_COMPENSATION"
+                "FUNDING_FEE"
+                    | "DEDUCT_INTEREST"
+                    | "LIQUIDATION_FEE"
+                    | "LIQ_COMPENSATION"
+                    | "TRANSFER"
             ),
             "unknown statement type"
         );
@@ -185,6 +189,17 @@ mod tests {
         changed.after_overdraw = "1".into();
         assert_eq!(record.stable_key().unwrap(), changed.stable_key().unwrap());
         assert_ne!(record.ack().unwrap(), changed.ack().unwrap());
+    }
+
+    #[test]
+    fn transfer_statement_is_accepted() {
+        let mut transfer = row();
+        transfer["exchangeType"] = json!("BINANCE");
+        transfer["coin"] = json!("USDT");
+        transfer["statementType"] = json!("TRANSFER");
+        let record = StatementRecord::parse(&transfer, "123", "BINANCE").unwrap();
+        assert_eq!(record.statement_type, "TRANSFER");
+        assert_eq!(record.business_type, "SPOT");
     }
     #[test]
     fn invalid_scope_type_decimal_and_padding_are_rejected() {

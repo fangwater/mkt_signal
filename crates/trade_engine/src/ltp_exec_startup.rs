@@ -62,7 +62,7 @@ impl LtpRestClient {
             "unsupported RapidX Exec exchange"
         );
         ensure!(
-            matches!(business_type, "SPOT" | "PERP"),
+            matches!(business_type, "SPOT" | "MARGIN" | "PERP"),
             "unsupported RapidX business type"
         );
         let mut orders = Vec::new();

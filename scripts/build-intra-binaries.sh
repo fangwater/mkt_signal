@@ -41,6 +41,7 @@ echo "[INFO] building Intra release binaries"
     --bin binance_account_monitor \
     --bin rapidx_account_monitor \
     --bin rapidx_open_orders \
+    --bin rapidx_order_smoke \
     --bin hyperliquid_account_monitor \
     --bin pre_trade \
     --bin trade_engine
@@ -62,6 +63,7 @@ required_binaries=(
   "$RELEASE_DIR/binance_account_monitor"
   "$RELEASE_DIR/rapidx_account_monitor"
   "$RELEASE_DIR/rapidx_open_orders"
+  "$RELEASE_DIR/rapidx_order_smoke"
   "$RELEASE_DIR/hyperliquid_account_monitor"
   "$RELEASE_DIR/pre_trade"
   "$RELEASE_DIR/trade_engine"

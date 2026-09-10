@@ -137,6 +137,11 @@ export LTP_API_KEY="\${LTP_API_KEY:-}"
 export LTP_API_SECRET="\${LTP_API_SECRET:-}"
 export LTP_PORTFOLIO_ID="\${LTP_PORTFOLIO_ID:-}"
 EOF
+    if [[ "$ex" == "binance" ]]; then
+      cat <<'EOF'
+export RAPIDX_BINANCE_CASH_BUSINESS_TYPE="${RAPIDX_BINANCE_CASH_BUSINESS_TYPE:-SPOT}"
+EOF
+    fi
     return
   fi
   case "$ex" in

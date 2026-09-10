@@ -281,6 +281,7 @@ fn is_cancel_request(req_type: TradeRequestType) -> bool {
             | TradeRequestType::BinanceCancelCmOrder
             | TradeRequestType::BinancePmCancelCmOrder
             | TradeRequestType::BinanceCancelMarginOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder
             | TradeRequestType::BinanceCancelUMConditionalOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsCancelMarginOrder

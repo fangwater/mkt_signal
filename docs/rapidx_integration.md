@@ -1,8 +1,8 @@
 # RapidX Integration
 
 RapidX/LTP is an execution and market-data provider, not a new `TradingVenue`.
-Binance and OKX retain their native symbols, order types and IPC message types.
-This integration has not been deployed or validated with live account actions.
+Binance and OKX retain their existing strategy venue identities and internal symbols.
+Authenticated account actions must be smoke-tested for each deployed portfolio.
 
 ## Configuration
 
@@ -12,6 +12,16 @@ Use the existing execution-backend selector consistently in `trade_engine`,
 ```bash
 export TRADE_ENGINE_EXEC_BACKEND_MAP='binance=rapidx,okex=rapidx'
 ```
+
+For a Binance Intra cash leg, `SPOT` is the default. Select RapidX margin
+orders explicitly when that deployment is intended to auto-borrow:
+
+```bash
+export RAPIDX_BINANCE_CASH_BUSINESS_TYPE=MARGIN
+```
+
+Only `SPOT` and `MARGIN` are accepted. This setting changes the cash-leg order
+symbol between `BINANCE_SPOT_*` and `BINANCE_MARGIN_*`; futures remain `PERP`.
 
 Provide `LTP_API_KEY`, `LTP_API_SECRET` and `LTP_PORTFOLIO_ID` securely in the
 environment. The portfolio ID binds the credential's account identity; it is
@@ -38,6 +48,8 @@ Run only one execution backend for a given exchange within an IPC namespace.
   code `200000` are handled separately. Requests carry microsecond `ts`.
 - Placement/cancellation ACKs correlate by transport ID and expected action;
   an ACK does not invent an order lifecycle or fill.
+- Binance order and cancel routing distinguishes RapidX `SPOT`, `MARGIN` and
+  `PERP`. Cash LIMIT maker orders use `GTX`; MARKET orders omit time in force.
 - Sent requests with a disconnect, failed send or timeout become an unknown
   action result and enter existing query reconciliation. They are not resent.
 - REST order queries preserve the business query ID. Only documented business
@@ -48,6 +60,8 @@ Run only one execution backend for a given exchange within an IPC namespace.
 - Private messages are journaled before conversion, including original Trades,
   signed fees, rebates and financial fields. Journals are permission `0600`
   under `data/rapidx_account/<source>/` by default.
+- Settlement recovery accepts the observed `TRANSFER` statement type as ledger
+  evidence; it is not converted into a fill.
 - Bounded REST snapshots refresh Assets, Positions and Accounts in rotation.
   Complete asset/position snapshots clear previously observed missing identities;
   journal recovery restores both kinds of identity across monitor restarts.
@@ -257,6 +271,12 @@ JSON-body DELETE requests and queries until the snapshot is empty. The user-wide
 confirmation. Malformed/incomplete snapshots, cross-portfolio rows, failed
 requests and the existing `EXEC_STARTUP_CANCEL_TIMEOUT_SECS` deadline fail the
 gate without falling back to native exchange credentials.
+
+The `rapidx_open_orders` operator tool inspects and, only with `--execute`,
+cancels portfolio-scoped `SPOT`, `MARGIN` and `PERP` orders individually. The
+`rapidx_order_smoke` tool sends one order or cancel through the trade-engine IPC
+path, defaults to dry-run, requires `--execute`, and enforces a maximum 10 USDT
+notional cap for placements.
 
 The leverage adapter sets the existing BatchExec default of 5 and reads the exact
 perpetual symbol back before activation. Only Binance/OKX USDT perpetual symbols

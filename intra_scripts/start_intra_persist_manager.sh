@@ -88,7 +88,7 @@ fi
 PROC_NAME="${PMDAEMON_NAME:-intra_pm_${EXCHANGE}_${ENV_TAG}}"
 RUST_LOG="${RUST_LOG:-info}"
 
-mkdir -p "${BASE_DIR}/data/persist_manager" >/dev/null 2>&1 || true
+mkdir -p "${BASE_DIR}/data" >/dev/null 2>&1 || true
 
 core_args=()
 if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then

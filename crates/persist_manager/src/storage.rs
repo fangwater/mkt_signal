@@ -183,7 +183,7 @@ impl RocksDbStore {
         tuning.apply_cf_options(&mut cf_opts);
 
         let mut names = Vec::new();
-        if path_ref.exists() {
+        if path_ref.join("CURRENT").exists() {
             match DB::list_cf(&db_opts, path_ref) {
                 Ok(existing) => names.extend(existing),
                 Err(err) => {
@@ -191,6 +191,17 @@ impl RocksDbStore {
                         .with_context(|| format!("failed to list column families for {}", path));
                 }
             }
+        } else if path_ref.exists()
+            && path_ref
+                .read_dir()
+                .with_context(|| format!("failed to inspect RocksDB directory {}", path))?
+                .next()
+                .is_some()
+        {
+            return Err(anyhow!(
+                "refusing to initialize non-empty RocksDB directory without CURRENT: {}",
+                path
+            ));
         }
         names.push("default".to_string());
         names.extend(cf_names.iter().cloned());
@@ -636,6 +647,41 @@ mod tests {
             );
         }
 
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn writable_open_initializes_existing_empty_directory() {
+        let path = temp_db_path("existing_empty");
+        std::fs::create_dir_all(&path).unwrap();
+        let store = RocksDbStore::open_with_existing_cfs_and_tuning(
+            path.to_str().unwrap(),
+            &["orders".to_string()],
+            false,
+            &RocksDbTuning::default(),
+        )
+        .unwrap();
+        assert!(store.has_column_family("orders"));
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn writable_open_rejects_nonempty_directory_without_manifest() {
+        let path = temp_db_path("nonempty_without_manifest");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("unexpected"), b"data").unwrap();
+        let result = RocksDbStore::open_with_existing_cfs_and_tuning(
+            path.to_str().unwrap(),
+            &["orders".to_string()],
+            false,
+            &RocksDbTuning::default(),
+        );
+        let err = match result {
+            Ok(_) => panic!("non-empty directory without CURRENT must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("non-empty RocksDB directory"));
         std::fs::remove_dir_all(path).unwrap();
     }
 }

@@ -28,7 +28,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => true,
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => true,
 
             // OKEx 所有请求走 WebSocket
             TradeRequestType::OkexNewMarginOrder
@@ -88,7 +90,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
@@ -152,7 +156,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
@@ -216,7 +222,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
@@ -280,7 +288,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder
@@ -344,7 +354,9 @@ impl TradeTypeMapping {
             TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
-            | TradeRequestType::BinanceWsCancelMarginOrder => {
+            | TradeRequestType::BinanceWsCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder => {
                 unreachable!("Binance ws requests run via websocket; REST mapping not used")
             }
             TradeRequestType::OkexNewMarginOrder

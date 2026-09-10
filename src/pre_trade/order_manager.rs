@@ -7,6 +7,10 @@ pub use order_common::{
     OrderQuantizedValue, OrderStatus, OrderType, OrderUpdateSkipReason, ProtectedCumulativeFill,
     Side, TradeUpdateSkipReason, TradingVenue, CUMULATIVE_FILL_ROLLBACK_EPS,
 };
+use runtime_common::exchange::Exchange;
+use runtime_common::execution_backend::{
+    rapidx_binance_cash_business_type, ExecBackend, RapidXCashBusinessType,
+};
 use runtime_common::time_util::get_timestamp_us;
 use signal_common::tick_math::QuantizedValue;
 use std::sync::OnceLock;
@@ -268,8 +272,65 @@ fn qv_text_or_zero(qv: Option<QuantizedValue>) -> String {
         .unwrap_or_else(|| "0".to_string())
 }
 
-fn binance_margin_should_use_margin_buy(use_binance_ws_margin: bool, reduce_only: bool) -> bool {
-    !use_binance_ws_margin && !reduce_only
+#[derive(Debug, Clone, Copy)]
+struct BinanceCashRoute {
+    new_order: trade_engine::trade_request::TradeRequestType,
+    cancel_order: trade_engine::trade_request::TradeRequestType,
+    margin_business: bool,
+    maker_only: bool,
+}
+
+fn binance_cash_route(account_mode: BinanceAccountMode) -> Result<BinanceCashRoute, String> {
+    if account_mode == BinanceAccountMode::Standard {
+        return Ok(binance_cash_route_for(
+            account_mode,
+            ExecBackend::Native,
+            RapidXCashBusinessType::Spot,
+        ));
+    }
+
+    let backend = ExecBackend::for_exchange(Exchange::Binance).map_err(|err| err.to_string())?;
+    let cash_business = if backend == ExecBackend::Ltp {
+        rapidx_binance_cash_business_type().map_err(|err| err.to_string())?
+    } else {
+        RapidXCashBusinessType::Margin
+    };
+    Ok(binance_cash_route_for(account_mode, backend, cash_business))
+}
+
+fn binance_cash_route_for(
+    account_mode: BinanceAccountMode,
+    backend: ExecBackend,
+    cash_business: RapidXCashBusinessType,
+) -> BinanceCashRoute {
+    use trade_engine::trade_request::TradeRequestType;
+
+    if account_mode == BinanceAccountMode::Standard {
+        BinanceCashRoute {
+            new_order: TradeRequestType::BinanceWsNewMarginOrder,
+            cancel_order: TradeRequestType::BinanceWsCancelMarginOrder,
+            margin_business: false,
+            maker_only: true,
+        }
+    } else if backend == ExecBackend::Ltp && cash_business == RapidXCashBusinessType::Spot {
+        BinanceCashRoute {
+            new_order: TradeRequestType::BinanceLtpNewSpotOrder,
+            cancel_order: TradeRequestType::BinanceLtpCancelSpotOrder,
+            margin_business: false,
+            maker_only: true,
+        }
+    } else {
+        BinanceCashRoute {
+            new_order: TradeRequestType::BinanceNewMarginOrder,
+            cancel_order: TradeRequestType::BinanceCancelMarginOrder,
+            margin_business: true,
+            maker_only: backend == ExecBackend::Ltp,
+        }
+    }
+}
+
+fn binance_margin_should_use_margin_buy(margin_business: bool, reduce_only: bool) -> bool {
+    margin_business && !reduce_only
 }
 
 fn check_binance_unified_margin_balance(
@@ -427,11 +488,12 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
 
         match venue {
             TradingVenue::BinanceMargin => {
-                let req_type = if self.binance_is_standard() {
-                    trade_engine::trade_request::TradeRequestType::BinanceWsCancelMarginOrder
+                let req_type = binance_cash_route(if self.binance_is_standard() {
+                    BinanceAccountMode::Standard
                 } else {
-                    trade_engine::trade_request::TradeRequestType::BinanceCancelMarginOrder
-                };
+                    BinanceAccountMode::Unified
+                })?
+                .cancel_order;
                 BinanceCancelOrderParams::request_bytes_from_parts(
                     req_type,
                     get_timestamp_us(),
@@ -657,11 +719,7 @@ impl PreTradeOrderRequestExt for Order {
             TradingVenue::BinanceMargin => {
                 // 使用 origClientOrderId 以客户端订单ID撤单；当前未保存交易所 orderId
                 let req_type =
-                    if self.require_binance_account_mode() == BinanceAccountMode::Standard {
-                        trade_engine::trade_request::TradeRequestType::BinanceWsCancelMarginOrder
-                    } else {
-                        trade_engine::trade_request::TradeRequestType::BinanceCancelMarginOrder
-                    };
+                    binance_cash_route(self.require_binance_account_mode())?.cancel_order;
                 BinanceCancelOrderParams::request_bytes_from_parts(
                     req_type,
                     now,
@@ -848,14 +906,17 @@ impl PreTradeOrderRequestExt for Order {
         match self.venue {
             //币安的杠杆账户下单
             TradingVenue::BinanceMargin => {
-                let use_binance_ws_margin =
-                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let account_mode = self.require_binance_account_mode();
+                let use_binance_ws_margin = account_mode == BinanceAccountMode::Standard;
+                let cash_route = binance_cash_route(account_mode)?;
                 let local_create_ts = get_timestamp_us();
                 if !use_binance_ws_margin {
                     check_binance_unified_margin_balance(self, resolved)?;
                 }
-                let margin_buy =
-                    binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
+                let margin_buy = binance_margin_should_use_margin_buy(
+                    cash_route.margin_business,
+                    self.reduce_only,
+                );
 
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
@@ -870,11 +931,7 @@ impl PreTradeOrderRequestExt for Order {
                         self.reduce_only
                     );
                 }
-                let req_type = if use_binance_ws_margin {
-                    trade_engine::trade_request::TradeRequestType::BinanceWsNewMarginOrder
-                } else {
-                    trade_engine::trade_request::TradeRequestType::BinanceNewMarginOrder
-                };
+                let req_type = cash_route.new_order;
                 BinanceNewOrderParams::request_bytes_from_parts(
                     req_type,
                     local_create_ts,
@@ -886,7 +943,7 @@ impl PreTradeOrderRequestExt for Order {
                     price_qv,
                     self.reduce_only,
                     margin_buy,
-                    use_binance_ws_margin,
+                    cash_route.maker_only,
                     false,
                     use_binance_ws_margin,
                 )
@@ -1175,14 +1232,17 @@ impl PreTradeOrderRequestExt for Order {
 
         match self.venue {
             TradingVenue::BinanceMargin => {
-                let use_binance_ws_margin =
-                    self.require_binance_account_mode() == BinanceAccountMode::Standard;
+                let account_mode = self.require_binance_account_mode();
+                let use_binance_ws_margin = account_mode == BinanceAccountMode::Standard;
+                let cash_route = binance_cash_route(account_mode)?;
                 let local_create_ts = get_timestamp_us();
                 if !use_binance_ws_margin {
                     check_binance_unified_margin_balance(self, resolved)?;
                 }
-                let margin_buy =
-                    binance_margin_should_use_margin_buy(use_binance_ws_margin, self.reduce_only);
+                let margin_buy = binance_margin_should_use_margin_buy(
+                    cash_route.margin_business,
+                    self.reduce_only,
+                );
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
@@ -1196,11 +1256,7 @@ impl PreTradeOrderRequestExt for Order {
                         self.reduce_only
                     );
                 }
-                let req_type = if use_binance_ws_margin {
-                    trade_engine::trade_request::TradeRequestType::BinanceWsNewMarginOrder
-                } else {
-                    trade_engine::trade_request::TradeRequestType::BinanceNewMarginOrder
-                };
+                let req_type = cash_route.new_order;
                 BinanceNewOrderParams::prepared_request_from_parts(
                     req_type,
                     local_create_ts,
@@ -1212,7 +1268,7 @@ impl PreTradeOrderRequestExt for Order {
                     price_qv,
                     self.reduce_only,
                     margin_buy,
-                    use_binance_ws_margin,
+                    cash_route.maker_only,
                     false,
                     use_binance_ws_margin,
                 )
@@ -1494,13 +1550,15 @@ impl PreTradeOrderRequestExt for Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_margin_should_use_margin_buy, bybit_margin_should_use_leverage,
-        hyperliquid_market_protection_price, BybitNewOrderRequest, Order, OrderExecutionStatus,
-        OrderManager, OrderQuantizedValue, OrderStatus, OrderType, PreTradeOrderManagerRequestExt,
-        PreTradeOrderRequestExt, Side, TradeUpdateSkipReason,
+        binance_cash_route_for, binance_margin_should_use_margin_buy,
+        bybit_margin_should_use_leverage, hyperliquid_market_protection_price,
+        BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
+        OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
+        TradeUpdateSkipReason,
     };
     use mkt_parsers::msg::hyperliquid_account_msg::hyperliquid_account_identity_hash;
     use order_common::{BinanceAccountMode, TradingVenue};
+    use runtime_common::execution_backend::{ExecBackend, RapidXCashBusinessType};
     use serde_json::Value;
     use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
     use trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
@@ -1546,7 +1604,7 @@ mod tests {
 
     #[test]
     fn binance_pm_margin_open_uses_margin_buy() {
-        assert!(binance_margin_should_use_margin_buy(false, false));
+        assert!(binance_margin_should_use_margin_buy(true, false));
     }
 
     #[test]
@@ -1586,8 +1644,37 @@ mod tests {
 
     #[test]
     fn binance_standard_or_reduce_only_margin_open_omits_margin_buy() {
-        assert!(!binance_margin_should_use_margin_buy(true, false));
-        assert!(!binance_margin_should_use_margin_buy(false, true));
+        assert!(!binance_margin_should_use_margin_buy(false, false));
+        assert!(!binance_margin_should_use_margin_buy(true, true));
+    }
+
+    #[test]
+    fn rapidx_binance_cash_route_distinguishes_spot_and_margin() {
+        let spot = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Spot,
+        );
+        assert_eq!(spot.new_order, TradeRequestType::BinanceLtpNewSpotOrder);
+        assert_eq!(
+            spot.cancel_order,
+            TradeRequestType::BinanceLtpCancelSpotOrder
+        );
+        assert!(!spot.margin_business);
+        assert!(spot.maker_only);
+
+        let margin = binance_cash_route_for(
+            BinanceAccountMode::Unified,
+            ExecBackend::Ltp,
+            RapidXCashBusinessType::Margin,
+        );
+        assert_eq!(margin.new_order, TradeRequestType::BinanceNewMarginOrder);
+        assert_eq!(
+            margin.cancel_order,
+            TradeRequestType::BinanceCancelMarginOrder
+        );
+        assert!(margin.margin_business);
+        assert!(margin.maker_only);
     }
 
     #[test]

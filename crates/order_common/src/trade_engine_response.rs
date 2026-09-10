@@ -66,6 +66,7 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BinanceWsNewMarginOrder
                 | TradeRequestType::BinanceNewUMConditionalOrder
                 | TradeRequestType::BinanceNewMarginOrder
+                | TradeRequestType::BinanceLtpNewSpotOrder
                 | TradeRequestType::OkexNewMarginOrder
                 | TradeRequestType::OkexNewUMOrder
                 | TradeRequestType::GateUnifiedNewOrder
@@ -85,6 +86,7 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::BinanceWsCancelMarginOrder
                 | TradeRequestType::BinanceCancelUMConditionalOrder
                 | TradeRequestType::BinanceCancelMarginOrder
+                | TradeRequestType::BinanceLtpCancelSpotOrder
                 | TradeRequestType::OkexCancelMarginOrder
                 | TradeRequestType::OkexCancelUMOrder
                 | TradeRequestType::GateUnifiedCancelOrder

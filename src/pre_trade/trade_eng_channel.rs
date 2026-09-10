@@ -1067,7 +1067,13 @@ fn persist_unmatched_trade_engine_response(response: &TradeEngineResponseMessage
 
     if !matches!(
         req_type,
-        TradeRequestType::BinanceWsNewUMOrder
+        TradeRequestType::BinanceNewUMOrder
+            | TradeRequestType::BinanceCancelUMOrder
+            | TradeRequestType::BinanceNewMarginOrder
+            | TradeRequestType::BinanceCancelMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder
+            | TradeRequestType::BinanceLtpCancelSpotOrder
+            | TradeRequestType::BinanceWsNewUMOrder
             | TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsNewMarginOrder
             | TradeRequestType::BinanceWsCancelMarginOrder

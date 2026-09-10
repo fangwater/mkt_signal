@@ -2437,7 +2437,7 @@ impl TradeWsClient {
 
     fn inflight_request_flags(msg: &TradeRequestMsg) -> InflightRequestFlags {
         match msg.req_type {
-            TradeRequestType::BinanceWsNewUMOrder => {
+            TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceNewUMOrder => {
                 let Some(params) = BinanceNewOrderParamsRef::from_bytes(&msg.params) else {
                     return InflightRequestFlags::default();
                 };
@@ -2445,7 +2445,9 @@ impl TradeWsClient {
                     ws_open_update_enabled: params.order_type.is_limit(),
                 }
             }
-            TradeRequestType::BinanceWsNewMarginOrder => InflightRequestFlags {
+            TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceNewMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder => InflightRequestFlags {
                 ws_open_update_enabled: BinanceNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.ws_margin_limit_maker && params.order_type.is_limit())
                     .or_else(|| {
@@ -2466,6 +2468,9 @@ impl TradeWsClient {
             req_type,
             TradeRequestType::BinanceWsNewUMOrder
                 | TradeRequestType::BinanceWsNewMarginOrder
+                | TradeRequestType::BinanceNewUMOrder
+                | TradeRequestType::BinanceNewMarginOrder
+                | TradeRequestType::BinanceLtpNewSpotOrder
                 | TradeRequestType::BybitNewMarginOrder
                 | TradeRequestType::BybitNewUMOrder
                 | TradeRequestType::OkexNewMarginOrder
@@ -2477,7 +2482,7 @@ impl TradeWsClient {
 
     fn ws_open_update_enabled_for_request(msg: &TradeRequestMsg) -> bool {
         match msg.req_type {
-            TradeRequestType::BinanceWsNewUMOrder => {
+            TradeRequestType::BinanceWsNewUMOrder | TradeRequestType::BinanceNewUMOrder => {
                 BinanceNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.order_type.is_limit())
                     .or_else(|| {
@@ -2487,7 +2492,9 @@ impl TradeWsClient {
                     })
                     .unwrap_or(false)
             }
-            TradeRequestType::BinanceWsNewMarginOrder => {
+            TradeRequestType::BinanceWsNewMarginOrder
+            | TradeRequestType::BinanceNewMarginOrder
+            | TradeRequestType::BinanceLtpNewSpotOrder => {
                 BinanceNewOrderParamsRef::from_bytes(&msg.params)
                     .map(|params| params.ws_margin_limit_maker && params.order_type.is_limit())
                     .or_else(|| {
@@ -3409,9 +3416,8 @@ impl TradeWsClient {
                 order.business_type.as_str(),
             ) {
                 (Exchange::Binance, "BINANCE", "PERP") => TradeRequestType::BinanceNewUMOrder,
-                (Exchange::Binance, "BINANCE", "SPOT" | "MARGIN") => {
-                    TradeRequestType::BinanceNewMarginOrder
-                }
+                (Exchange::Binance, "BINANCE", "SPOT") => TradeRequestType::BinanceLtpNewSpotOrder,
+                (Exchange::Binance, "BINANCE", "MARGIN") => TradeRequestType::BinanceNewMarginOrder,
                 (Exchange::Okex, "OKX", "PERP") => TradeRequestType::OkexNewUMOrder,
                 (Exchange::Okex, "OKX", "SPOT" | "MARGIN") => TradeRequestType::OkexNewMarginOrder,
                 _ => return true,

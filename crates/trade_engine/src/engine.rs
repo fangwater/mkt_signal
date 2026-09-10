@@ -991,7 +991,9 @@ fn decode_internal_open_terminate_order_meta(
                 qty: params.quantity_qv.get_val(),
             })
         }
-        TradeRequestType::BinanceNewMarginOrder | TradeRequestType::BinanceWsNewMarginOrder => {
+        TradeRequestType::BinanceNewMarginOrder
+        | TradeRequestType::BinanceWsNewMarginOrder
+        | TradeRequestType::BinanceLtpNewSpotOrder => {
             let params = BinanceNewOrderParams::from_bytes(&msg.params)?;
             Some(InternalOpenTerminateOrderMeta {
                 symbol: params.symbol,

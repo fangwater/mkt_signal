@@ -7,6 +7,28 @@ pub enum ExecBackend {
     Ltp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RapidXCashBusinessType {
+    Spot,
+    Margin,
+}
+
+impl RapidXCashBusinessType {
+    pub fn resolve(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "" | "SPOT" => Ok(Self::Spot),
+            "MARGIN" => Ok(Self::Margin),
+            _ => bail!("invalid RapidX Binance cash business type; expected SPOT or MARGIN"),
+        }
+    }
+}
+
+pub fn rapidx_binance_cash_business_type() -> Result<RapidXCashBusinessType> {
+    RapidXCashBusinessType::resolve(
+        &std::env::var("RAPIDX_BINANCE_CASH_BUSINESS_TYPE").unwrap_or_default(),
+    )
+}
+
 impl ExecBackend {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -119,5 +141,18 @@ mod tests {
         assert!(validate_portfolio_id("../account").is_err());
         assert!(validate_portfolio_id("").is_err());
         assert!(validate_portfolio_id("1702884522340000").is_ok());
+    }
+
+    #[test]
+    fn rapidx_binance_cash_business_defaults_to_spot_and_validates() {
+        assert_eq!(
+            RapidXCashBusinessType::resolve("").unwrap(),
+            RapidXCashBusinessType::Spot
+        );
+        assert_eq!(
+            RapidXCashBusinessType::resolve("margin").unwrap(),
+            RapidXCashBusinessType::Margin
+        );
+        assert!(RapidXCashBusinessType::resolve("perp").is_err());
     }
 }

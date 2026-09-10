@@ -251,6 +251,9 @@ fi
   if [[ "$exec_backend" == "ltp" ]]; then
     [[ -n "${LTP_API_KEY:-}" && -n "${LTP_API_SECRET:-}" ]]
     [[ "${LTP_PORTFOLIO_ID:-}" =~ ^[0-9]{1,64}$ ]]
+    if [[ "$exchange" == "binance" ]]; then
+      [[ "${RAPIDX_BINANCE_CASH_BUSINESS_TYPE:-SPOT}" =~ ^(SPOT|MARGIN)$ ]]
+    fi
     exit 0
   fi
   case "$exchange" in
