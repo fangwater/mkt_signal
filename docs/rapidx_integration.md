@@ -54,6 +54,8 @@ Run only one execution backend for a given exchange within an IPC namespace.
   an ACK does not invent an order lifecycle or fill.
 - Binance order and cancel routing distinguishes RapidX `SPOT`, `MARGIN` and
   `PERP`. Cash LIMIT maker orders use `GTX`; MARKET orders omit time in force.
+- RapidX cash MARKET BUY orders use quote-currency `quoteOrderQty` exclusively;
+  all other Binance order shapes continue to use base `orderQty`.
 - Sent requests with a disconnect, failed send or timeout become an unknown
   action result and enter existing query reconciliation. They are not resent.
 - REST order queries preserve the business query ID. Only documented business

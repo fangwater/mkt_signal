@@ -61,11 +61,15 @@ struct Args {
     #[arg(long, default_value_t = 0.0)]
     quantity: f64,
     #[arg(long, default_value_t = 0.0)]
+    quote_quantity: f64,
+    #[arg(long, default_value_t = 0.0)]
     price: f64,
     #[arg(long, default_value_t = 0.0)]
     risk_price: f64,
     #[arg(long)]
     post_only: bool,
+    #[arg(long)]
+    reduce_only: bool,
     #[arg(long, default_value_t = DEFAULT_MAX_NOTIONAL_USDT)]
     max_notional_usdt: f64,
     #[arg(long, default_value_t = 15)]
@@ -109,8 +113,26 @@ fn validate(args: &Args) -> Result<()> {
     if !matches!(args.action, Action::Place) {
         return Ok(());
     }
-    if !args.quantity.is_finite() || args.quantity <= 0.0 {
-        bail!("--quantity must be positive and finite");
+    if args.reduce_only && !matches!(args.business, Business::Perp) {
+        bail!("--reduce-only is valid only for PERP orders");
+    }
+    let cash_market_buy = matches!(args.business, Business::Spot | Business::Margin)
+        && matches!(args.order_type, Kind::Market)
+        && matches!(args.side, OrderSide::Buy);
+    if cash_market_buy {
+        if args.quantity != 0.0 {
+            bail!("cash MARKET BUY forbids --quantity; use --quote-quantity");
+        }
+        if !args.quote_quantity.is_finite() || args.quote_quantity <= 0.0 {
+            bail!("cash MARKET BUY requires a positive finite --quote-quantity");
+        }
+    } else {
+        if !args.quantity.is_finite() || args.quantity <= 0.0 {
+            bail!("--quantity must be positive and finite");
+        }
+        if args.quote_quantity != 0.0 {
+            bail!("--quote-quantity is only valid for SPOT/MARGIN MARKET BUY");
+        }
     }
     let risk_price = match args.order_type {
         Kind::Limit => {
@@ -123,7 +145,7 @@ fn validate(args: &Args) -> Result<()> {
             if args.post_only {
                 bail!("MARKET order cannot be post-only");
             }
-            if !args.risk_price.is_finite() || args.risk_price <= 0.0 {
+            if !cash_market_buy && (!args.risk_price.is_finite() || args.risk_price <= 0.0) {
                 bail!("MARKET order requires a positive finite --risk-price");
             }
             args.risk_price
@@ -135,7 +157,11 @@ fn validate(args: &Args) -> Result<()> {
     {
         bail!("--max-notional-usdt must be in (0, 10]");
     }
-    let notional = args.quantity * risk_price;
+    let notional = if cash_market_buy {
+        args.quote_quantity
+    } else {
+        args.quantity * risk_price
+    };
     if !notional.is_finite() || notional > args.max_notional_usdt {
         bail!(
             "order notional {:.8} exceeds configured cap {:.8}",
@@ -166,14 +192,24 @@ fn request_bytes(args: &Args) -> Result<bytes::Bytes> {
                 Kind::Limit => OrderType::Limit,
                 Kind::Market => OrderType::Market,
             };
-            let quantity = QuantizedValue::from_decimal(args.quantity)
-                .context("quantity cannot be represented exactly")?;
+            let quantity = if args.quantity == 0.0 {
+                QuantizedValue::zero()
+            } else {
+                QuantizedValue::from_decimal(args.quantity)
+                    .context("quantity cannot be represented exactly")?
+            };
+            let quote_quantity = if args.quote_quantity == 0.0 {
+                QuantizedValue::zero()
+            } else {
+                QuantizedValue::from_decimal(args.quote_quantity)
+                    .context("quote quantity cannot be represented exactly")?
+            };
             let price = match args.order_type {
                 Kind::Limit => QuantizedValue::from_decimal(args.price)
                     .context("price cannot be represented exactly")?,
                 Kind::Market => QuantizedValue::from_parts(0, 0, 1),
             };
-            BinanceNewOrderParams::request_bytes_from_parts(
+            BinanceNewOrderParams::request_bytes_from_parts_with_quote_order_qty(
                 new_type,
                 get_timestamp_us(),
                 args.client_order_id,
@@ -182,11 +218,12 @@ fn request_bytes(args: &Args) -> Result<bytes::Bytes> {
                 order_type,
                 quantity,
                 price,
-                false,
+                args.reduce_only,
                 matches!(args.business, Business::Margin),
                 false,
                 false,
                 args.post_only,
+                quote_quantity,
             )
             .context("build place request")
         }
@@ -305,9 +342,11 @@ mod tests {
             side: OrderSide::Buy,
             order_type: Kind::Limit,
             quantity: 10.0,
+            quote_quantity: 0.0,
             price: 0.5,
             risk_price: 0.0,
             post_only: true,
+            reduce_only: false,
             max_notional_usdt: 10.0,
             timeout_secs: 15,
             execute: false,
@@ -321,10 +360,31 @@ mod tests {
         value.quantity = 21.0;
         assert!(validate(&value).is_err());
         value.quantity = 10.0;
+        value.business = Business::Perp;
         value.order_type = Kind::Market;
         value.post_only = false;
         assert!(validate(&value).is_err());
         value.risk_price = 0.5;
+        assert!(validate(&value).is_ok());
+    }
+
+    #[test]
+    fn cash_market_buy_requires_quote_quantity_only() {
+        let mut value = args();
+        value.order_type = Kind::Market;
+        value.post_only = false;
+        assert!(validate(&value).is_err());
+        value.quantity = 0.0;
+        value.quote_quantity = 5.5;
+        assert!(validate(&value).is_ok());
+    }
+
+    #[test]
+    fn reduce_only_is_limited_to_perp() {
+        let mut value = args();
+        value.reduce_only = true;
+        assert!(validate(&value).is_err());
+        value.business = Business::Perp;
         assert!(validate(&value).is_ok());
     }
 

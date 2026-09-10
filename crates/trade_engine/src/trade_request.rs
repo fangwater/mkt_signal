@@ -691,6 +691,7 @@ pub struct BinanceNewOrderParams {
     pub side: Side,
     pub order_type: OrderType,
     pub quantity_qv: QuantizedValue,
+    pub quote_order_qty_qv: QuantizedValue,
     pub price_qv: QuantizedValue,
     pub reduce_only: bool,
     pub margin_buy: bool,
@@ -705,6 +706,7 @@ pub struct BinanceNewOrderParamsRef<'a> {
     pub side: Side,
     pub order_type: OrderType,
     pub quantity_qv: QuantizedValue,
+    pub quote_order_qty_qv: QuantizedValue,
     pub price_qv: QuantizedValue,
     pub reduce_only: bool,
     pub margin_buy: bool,
@@ -714,13 +716,14 @@ pub struct BinanceNewOrderParamsRef<'a> {
 }
 
 impl BinanceNewOrderParams {
-    const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 1 + 1 + 1 + 1 + 1 + 2;
+    const FIXED_LEN: usize = 1 + 1 + 20 + 20 + 20 + 1 + 1 + 1 + 1 + 1 + 2;
 
     pub fn to_bytes(&self) -> Option<Bytes> {
         let mut buf = BytesMut::with_capacity(Self::FIXED_LEN + self.symbol.len());
         buf.put_u8(self.side.to_u8());
         buf.put_u8(self.order_type.to_u8());
         write_qv(&mut buf, self.quantity_qv);
+        write_qv(&mut buf, self.quote_order_qty_qv);
         write_qv(&mut buf, self.price_qv);
         buf.put_u8(self.reduce_only as u8);
         buf.put_u8(self.margin_buy as u8);
@@ -738,6 +741,7 @@ impl BinanceNewOrderParams {
             side: params.side,
             order_type: params.order_type,
             quantity_qv: params.quantity_qv,
+            quote_order_qty_qv: params.quote_order_qty_qv,
             price_qv: params.price_qv,
             reduce_only: params.reduce_only,
             margin_buy: params.margin_buy,
@@ -763,7 +767,7 @@ impl BinanceNewOrderParams {
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
     ) -> Option<Bytes> {
-        Self::prepared_request_from_parts(
+        Self::request_bytes_from_parts_with_quote_order_qty(
             req_type,
             create_time,
             client_order_id,
@@ -777,6 +781,42 @@ impl BinanceNewOrderParams {
             ws_response_full,
             ws_um_response_result,
             ws_margin_limit_maker,
+            QuantizedValue::zero(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_bytes_from_parts_with_quote_order_qty(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+        margin_buy: bool,
+        ws_response_full: bool,
+        ws_um_response_result: bool,
+        ws_margin_limit_maker: bool,
+        quote_order_qty_qv: QuantizedValue,
+    ) -> Option<Bytes> {
+        Self::prepared_request_from_parts_with_quote_order_qty(
+            req_type,
+            create_time,
+            client_order_id,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            margin_buy,
+            ws_response_full,
+            ws_um_response_result,
+            ws_margin_limit_maker,
+            quote_order_qty_qv,
         )
         .map(|request| request.to_bytes())
     }
@@ -797,6 +837,41 @@ impl BinanceNewOrderParams {
         ws_um_response_result: bool,
         ws_margin_limit_maker: bool,
     ) -> Option<PreparedTradeRequest> {
+        Self::prepared_request_from_parts_with_quote_order_qty(
+            req_type,
+            create_time,
+            client_order_id,
+            symbol,
+            side,
+            order_type,
+            quantity_qv,
+            price_qv,
+            reduce_only,
+            margin_buy,
+            ws_response_full,
+            ws_um_response_result,
+            ws_margin_limit_maker,
+            QuantizedValue::zero(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepared_request_from_parts_with_quote_order_qty(
+        req_type: TradeRequestType,
+        create_time: i64,
+        client_order_id: i64,
+        symbol: &str,
+        side: Side,
+        order_type: OrderType,
+        quantity_qv: QuantizedValue,
+        price_qv: QuantizedValue,
+        reduce_only: bool,
+        margin_buy: bool,
+        ws_response_full: bool,
+        ws_um_response_result: bool,
+        ws_margin_limit_maker: bool,
+        quote_order_qty_qv: QuantizedValue,
+    ) -> Option<PreparedTradeRequest> {
         if symbol.len() > u16::MAX as usize {
             return None;
         }
@@ -811,6 +886,7 @@ impl BinanceNewOrderParams {
                 write_u8_at(out, &mut offset, side.to_u8())?;
                 write_u8_at(out, &mut offset, order_type.to_u8())?;
                 write_qv_at(out, &mut offset, quantity_qv)?;
+                write_qv_at(out, &mut offset, quote_order_qty_qv)?;
                 write_qv_at(out, &mut offset, price_qv)?;
                 write_u8_at(out, &mut offset, reduce_only as u8)?;
                 write_u8_at(out, &mut offset, margin_buy as u8)?;
@@ -898,6 +974,7 @@ impl<'a> BinanceNewOrderParamsRef<'a> {
         let order_type = OrderType::from_u8(raw[offset])?;
         offset += 1;
         let quantity_qv = read_qv(raw, &mut offset)?;
+        let quote_order_qty_qv = read_qv(raw, &mut offset)?;
         let price_qv = read_qv(raw, &mut offset)?;
         if raw.len() < offset + 5 {
             return None;
@@ -918,6 +995,7 @@ impl<'a> BinanceNewOrderParamsRef<'a> {
             side,
             order_type,
             quantity_qv,
+            quote_order_qty_qv,
             price_qv,
             reduce_only,
             margin_buy,
@@ -2558,6 +2636,7 @@ mod tests {
             side: Side::Sell,
             order_type: OrderType::Limit,
             quantity_qv: QuantizedValue::from_parts(1, -3, 300),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, -2, 12345),
             reduce_only: true,
             margin_buy: false,
@@ -2586,6 +2665,7 @@ mod tests {
             side: Side::Buy,
             order_type: OrderType::Market,
             quantity_qv: QuantizedValue::from_parts(1, -2, 125),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_parts(1, 0, 0),
             reduce_only: false,
             margin_buy: false,

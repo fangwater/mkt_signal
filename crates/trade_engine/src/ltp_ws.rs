@@ -498,6 +498,24 @@ fn build_ltp_new_order_args_from_binance(
         other => return Err(anyhow!("LTP backend does not support exchange {}", other)),
     };
     let sym = ltp_sym(exchange, business, &params.symbol);
+    let cash_market_buy = business != "PERP"
+        && params.order_type == OrderType::Market
+        && params.side == order_common::Side::Buy;
+    let quantity = if cash_market_buy {
+        if params.quote_order_qty_qv.is_zero() || !params.quantity_qv.is_zero() {
+            return Err(anyhow!(
+                "RapidX cash market buy requires quoteOrderQty and forbids orderQty"
+            ));
+        }
+        String::new()
+    } else {
+        if !params.quote_order_qty_qv.is_zero() || params.quantity_qv.is_zero() {
+            return Err(anyhow!(
+                "RapidX order requires orderQty and forbids quoteOrderQty"
+            ));
+        }
+        params.quantity_qv.decimal_string()
+    };
     let mut args = json!({
         "clientOrderId": msg.client_order_id.to_string(),
         "sym": sym,
@@ -507,7 +525,7 @@ fn build_ltp_new_order_args_from_binance(
     fill_ltp_order_common_args(
         &mut args,
         params.order_type,
-        params.quantity_qv.decimal_string(),
+        quantity,
         params.price_qv.decimal_string(),
         params.reduce_only,
         if params.order_type.is_limit() {
@@ -524,6 +542,14 @@ fn build_ltp_new_order_args_from_binance(
             None
         },
     );
+    if cash_market_buy {
+        args.as_object_mut()
+            .expect("LTP order args must be an object")
+            .insert(
+                "quoteOrderQty".to_string(),
+                json!(params.quote_order_qty_qv.decimal_string()),
+            );
+    }
     Ok(args)
 }
 
@@ -739,6 +765,7 @@ mod tests {
             side: order_common::Side::Buy,
             order_type: OrderType::Limit,
             quantity_qv: QuantizedValue::from_decimal(0.01).unwrap(),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_decimal(60000.0).unwrap(),
             reduce_only: true,
             margin_buy: false,
@@ -768,6 +795,7 @@ mod tests {
             side: order_common::Side::Buy,
             order_type: OrderType::Limit,
             quantity_qv: QuantizedValue::from_decimal(10.0).unwrap(),
+            quote_order_qty_qv: QuantizedValue::zero(),
             price_qv: QuantizedValue::from_decimal(0.5).unwrap(),
             reduce_only: false,
             margin_buy: false,
@@ -792,6 +820,46 @@ mod tests {
             assert_eq!(value["args"]["sym"], expected_sym);
             assert_eq!(value["args"]["timeInForce"], "GTX");
         }
+    }
+
+    #[test]
+    fn binance_cash_market_buy_uses_quote_quantity_only() {
+        let params = BinanceNewOrderParams {
+            symbol: "XRPUSDT".to_string(),
+            side: order_common::Side::Buy,
+            order_type: OrderType::Market,
+            quantity_qv: QuantizedValue::zero(),
+            quote_order_qty_qv: QuantizedValue::from_decimal(5.5).unwrap(),
+            price_qv: QuantizedValue::zero(),
+            reduce_only: false,
+            margin_buy: false,
+            ws_response_full: false,
+            ws_um_response_result: false,
+            ws_margin_limit_maker: false,
+        };
+        for req_type in [
+            TradeRequestType::BinanceLtpNewSpotOrder,
+            TradeRequestType::BinanceNewMarginOrder,
+        ] {
+            let msg = TradeRequestMsg::create(req_type, 1, 123, &params.to_bytes().unwrap())
+                .expect("trade request");
+            let payload = build_order_payload(Exchange::Binance, &msg, 9).unwrap();
+            let value: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(value["args"]["quoteOrderQty"], "5.5");
+            assert!(value["args"].get("orderQty").is_none());
+            assert!(value["args"].get("timeInForce").is_none());
+        }
+
+        let mut invalid = params;
+        invalid.side = order_common::Side::Sell;
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceLtpNewSpotOrder,
+            1,
+            124,
+            &invalid.to_bytes().unwrap(),
+        )
+        .expect("trade request");
+        assert!(build_order_payload(Exchange::Binance, &msg, 10).is_err());
     }
 
     #[test]
