@@ -10,6 +10,8 @@ use order_common::{ExecutionType, OrderStatus, OrderType, Side, TimeInForce};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
+const NO_MAINTENANCE_MARGIN_RATIO: f64 = 999_999.0;
+
 #[derive(Default)]
 pub struct PositionSnapshotState {
     known: HashMap<(String, char), (BasicAccountScope, i64)>,
@@ -347,14 +349,23 @@ pub fn parse_account_push(payload: &str, portfolio_id: &str, exchange: &str) -> 
                 let adj = optional_decimal(row, "validMargin")
                     .or_else(|| optional_decimal(row, "netMarginValue"));
                 let maintenance = optional_decimal(row, "maintainMargin");
-                let ratio = decimal(row, "uniMMR")?;
+                let reported_ratio = decimal(row, "uniMMR")?;
+                let account_status = row.get("accountStatus").and_then(Value::as_str);
+                let ratio = if account_status == Some("NORMAL")
+                    && reported_ratio == 0.0
+                    && maintenance == Some(0.0)
+                {
+                    NO_MAINTENANCE_MARGIN_RATIO
+                } else {
+                    reported_ratio
+                };
                 let risk = BasicAccountRiskMsg::create(
                     ts,
                     adj.unwrap_or(f64::NAN),
                     actual.unwrap_or(f64::NAN),
                     maintenance.unwrap_or(f64::NAN),
                     f64::NAN,
-                    if row.get("accountStatus").and_then(Value::as_str) == Some("LIQUIDATED") {
+                    if account_status == Some("LIQUIDATED") {
                         0.0
                     } else {
                         ratio
@@ -582,6 +593,27 @@ mod tests {
         assert!(risk.initial_margin_usd.is_nan());
         assert!(risk.borrowed_usd.is_nan());
         assert!(parse_account_push(payload, "999", "BINANCE").is_err());
+    }
+
+    #[test]
+    fn ltp_risk_normalizes_zero_ratio_only_when_normal_without_maintenance_margin() {
+        let no_requirement = r#"{"channel":"Accounts","data":{"portfolioId":"123","exchangeType":"BINANCE","updateAt":"1700000000000","uniMMR":"0","equity":"100","validMargin":"90","maintainMargin":"0","accountStatus":"NORMAL"}}"#;
+        let events = parse_account_push(no_requirement, "123", "BINANCE").unwrap();
+        let (_, _, data) = split_basic_account_event(&events[0]).unwrap();
+        let risk = BasicAccountRiskMsg::from_bytes(data).unwrap();
+        assert_eq!(risk.margin_ratio, NO_MAINTENANCE_MARGIN_RATIO);
+
+        let at_risk = r#"{"channel":"Accounts","data":{"portfolioId":"123","exchangeType":"BINANCE","updateAt":"1700000000001","uniMMR":"0","equity":"100","validMargin":"90","maintainMargin":"1","accountStatus":"NORMAL"}}"#;
+        let events = parse_account_push(at_risk, "123", "BINANCE").unwrap();
+        let (_, _, data) = split_basic_account_event(&events[0]).unwrap();
+        let risk = BasicAccountRiskMsg::from_bytes(data).unwrap();
+        assert_eq!(risk.margin_ratio, 0.0);
+
+        let liquidated = r#"{"channel":"Accounts","data":{"portfolioId":"123","exchangeType":"BINANCE","updateAt":"1700000000002","uniMMR":"999999","equity":"100","validMargin":"90","maintainMargin":"0","accountStatus":"LIQUIDATED"}}"#;
+        let events = parse_account_push(liquidated, "123", "BINANCE").unwrap();
+        let (_, _, data) = split_basic_account_event(&events[0]).unwrap();
+        let risk = BasicAccountRiskMsg::from_bytes(data).unwrap();
+        assert_eq!(risk.margin_ratio, 0.0);
     }
 
     #[test]

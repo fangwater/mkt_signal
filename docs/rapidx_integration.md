@@ -6,6 +6,10 @@ Authenticated account actions must be smoke-tested for each deployed portfolio.
 
 ## Configuration
 
+Intra environments require `PRE_TRADE_NOTIFICATION_URL`. Newly generated
+`env.sh` files default it to the host-local notification service at
+`http://127.0.0.1:18100/v1/notify` and allow an operator override.
+
 Use the existing execution-backend selector consistently in `trade_engine`,
 `pre_trade`, `trade_signal` and the account monitor:
 
@@ -57,6 +61,10 @@ Run only one execution backend for a given exchange within an IPC namespace.
   Duplicate-client-ID/already-completed action responses also query lifecycle.
 - Orders, asset balances, signed/zero positions, unrealized PNL and reported
   account risk enter existing account message types with portfolio validation.
+- A `NORMAL` account snapshot with `maintainMargin=0` and a reported `uniMMR=0`
+  is normalized to the documented no-requirement sentinel `999999` for internal
+  risk messages. A zero ratio with nonzero maintenance margin, liquidation, or
+  monitor invalidation remains zero and therefore fail-closed.
 - Private messages are journaled before conversion, including original Trades,
   signed fees, rebates and financial fields. Journals are permission `0600`
   under `data/rapidx_account/<source>/` by default.
