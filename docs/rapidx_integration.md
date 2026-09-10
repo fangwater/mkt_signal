@@ -58,6 +58,8 @@ Run only one execution backend for a given exchange within an IPC namespace.
   all other Binance order shapes continue to use base `orderQty`.
 - Sent requests with a disconnect, failed send or timeout become an unknown
   action result and enter existing query reconciliation. They are not resent.
+- Empty private websocket text/binary frames are ignored; malformed non-empty
+  payloads still fail the session and trigger fail-closed snapshot recovery.
 - REST order queries preserve the business query ID. Only documented business
   code `401018` means not found; HTTP 404 and malformed responses are errors.
   Duplicate-client-ID/already-completed action responses also query lifecycle.

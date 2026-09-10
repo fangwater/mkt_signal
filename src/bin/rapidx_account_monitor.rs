@@ -53,6 +53,15 @@ struct Forwarder {
     last_risk_timestamp: i64,
 }
 
+fn decode_private_push(payload: &str) -> Result<Option<Value>> {
+    if payload.trim().is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(payload)
+        .context("decode RapidX private push")
+        .map(Some)
+}
+
 impl Forwarder {
     fn poll_fact_delivery(&mut self) -> Result<()> {
         self.executions.poll()?;
@@ -80,7 +89,9 @@ impl Forwarder {
         source: &str,
         snapshot_started_ms: Option<i64>,
     ) -> Result<()> {
-        let value: Value = serde_json::from_str(payload).context("decode RapidX private push")?;
+        let Some(value) = decode_private_push(payload)? else {
+            return Ok(());
+        };
         let Some(channel) = value.get("channel").and_then(Value::as_str) else {
             return Ok(());
         };
@@ -519,4 +530,20 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_private_push;
+
+    #[test]
+    fn empty_private_frames_are_ignored() {
+        assert!(decode_private_push("").unwrap().is_none());
+        assert!(decode_private_push(" \r\n\t").unwrap().is_none());
+    }
+
+    #[test]
+    fn nonempty_invalid_private_frames_still_fail() {
+        assert!(decode_private_push("not-json").is_err());
+    }
 }
