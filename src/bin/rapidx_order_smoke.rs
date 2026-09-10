@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use iceoryx2::prelude::*;
 use iceoryx2::service::ipc;
+use order_common::trade_error_code::rapidx::describe_error_code;
 use order_common::{OrderStatus, OrderType, Side, TradeRequestType};
 use runtime_common::ipc_service_name::build_service_name;
 use runtime_common::time_util::get_timestamp_us;
@@ -243,10 +244,11 @@ fn print_response(payload: &[u8; RESPONSE_BYTES]) -> (u16, i32, Option<OrderStat
     let executed_qty = f64::from_le_bytes(payload[39..47].try_into().unwrap());
     let response_price = f64::from_le_bytes(payload[47..55].try_into().unwrap());
     println!(
-        "[response] req_type={} http_status={} error_code={} order_id={} order_status={} executed_qty={} response_price={}",
+        "[response] req_type={} http_status={} error_code={} error_description={} order_id={} order_status={} executed_qty={} response_price={}",
         req_type,
         status,
         error_code,
+        describe_error_code(error_code).unwrap_or(if error_code == 0 { "none" } else { "unknown" }),
         order_id,
         order_status.map(|value| value.as_str()).unwrap_or("NONE"),
         executed_qty,

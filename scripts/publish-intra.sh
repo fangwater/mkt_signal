@@ -118,6 +118,14 @@ if [[ "$CHECK_ONLY" -eq 0 ]]; then
       "$ROOT_DIR/target/release" \
       rapidx_order_smoke \
       "$ROOT_DIR/target/release/rapidx_order_smoke"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_query_smoke \
+      "$ROOT_DIR/target/release/rapidx_query_smoke"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_transfer \
+      "$ROOT_DIR/target/release/rapidx_transfer"
   fi
   echo "[INFO] local release guard passed release_id=$(intra_release_id "$ROOT_DIR/target/release")"
 fi
@@ -303,6 +311,10 @@ case "$INTRA_EXCHANGE" in
       UPLOAD_NAMES+=("rapidx_open_orders")
       LOCAL_RELATIVE+=("target/release/rapidx_order_smoke")
       UPLOAD_NAMES+=("rapidx_order_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_query_smoke")
+      UPLOAD_NAMES+=("rapidx_query_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_transfer")
+      UPLOAD_NAMES+=("rapidx_transfer")
     else
       LOCAL_RELATIVE+=(
         "scripts/cancel_binance_std_orders.py"
@@ -448,6 +460,8 @@ publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
 if [[ "$exec_backend" == "ltp" ]]; then
   publish_file rapidx_open_orders rapidx_open_orders
   publish_file rapidx_order_smoke rapidx_order_smoke
+  publish_file rapidx_query_smoke rapidx_query_smoke
+  publish_file rapidx_transfer rapidx_transfer
 fi
 
 case "$exchange" in

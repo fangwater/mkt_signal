@@ -11,7 +11,7 @@ use mkt_parsers::msg::basic_account_msg::{
 use order_common::{OrderExecutionStatus, TimeInForce};
 use runtime_common::exchange::Exchange;
 use runtime_common::execution_backend::rapidx_portfolio_id;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -24,6 +24,25 @@ const ORDER_PATH: &str = "/api/v1/trading/order";
 const ASSET_PATH: &str = "/api/v1/trading/portfolio/assets";
 const ACCOUNT_PATH: &str = "/api/v1/trading/account";
 const POSITION_PATH: &str = "/api/v1/trading/position";
+const TRANSFER_APPLY_PATH: &str = "/api/v1/transfer/apply";
+const TRANSFER_GET_PATH: &str = "/api/v1/transfer/get";
+const TRANSFER_LIST_PATH: &str = "/api/v1/transfer/list";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LtpTransferRequest {
+    pub from_trade_account_id: u64,
+    pub to_trade_account_id: u64,
+    pub from_account_type: String,
+    pub to_account_type: String,
+    pub currency: String,
+    pub amount: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    pub rapid_transfer: bool,
+    pub client_order_id: String,
+    pub loan_trans: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct LtpRestClient {
@@ -68,6 +87,55 @@ impl LtpRestClient {
 
     pub fn portfolio_id(&self) -> &str {
         &self.portfolio_id
+    }
+
+    pub async fn apply_transfer(&self, request: &LtpTransferRequest) -> Result<(u16, String)> {
+        let body = serde_json::to_value(request).context("encode RapidX transfer request")?;
+        self.signed_json(reqwest::Method::POST, TRANSFER_APPLY_PATH, &body)
+            .await
+    }
+
+    pub async fn get_transfer(
+        &self,
+        transfer_id: Option<u64>,
+        client_order_id: Option<&str>,
+    ) -> Result<(u16, String)> {
+        let mut params = BTreeMap::new();
+        if let Some(value) = transfer_id {
+            params.insert("transferId".into(), value.to_string());
+        }
+        if let Some(value) = client_order_id {
+            params.insert("clientOrderId".into(), value.to_string());
+        }
+        self.signed_get(TRANSFER_GET_PATH, &params).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_transfers(
+        &self,
+        currency: Option<&str>,
+        status: Option<u8>,
+        start_time_ms: Option<i64>,
+        end_time_ms: Option<i64>,
+        page: u32,
+        page_size: u32,
+    ) -> Result<(u16, String)> {
+        let mut params = BTreeMap::new();
+        if let Some(value) = currency {
+            params.insert("currency".into(), value.to_string());
+        }
+        if let Some(value) = status {
+            params.insert("status".into(), value.to_string());
+        }
+        if let Some(value) = start_time_ms {
+            params.insert("startTime".into(), value.to_string());
+        }
+        if let Some(value) = end_time_ms {
+            params.insert("endTime".into(), value.to_string());
+        }
+        params.insert("page".into(), page.to_string());
+        params.insert("pageSize".into(), page_size.to_string());
+        self.signed_get(TRANSFER_LIST_PATH, &params).await
     }
 
     #[cfg(test)]

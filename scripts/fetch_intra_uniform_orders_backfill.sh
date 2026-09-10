@@ -23,6 +23,7 @@ Usage:
 Sources:
   okex-intra-arb01
   binance-intra-arb01
+  binance-intra-arb02
   gate-intra-arb01
   bitget-intra-arb01
   bitget-gate-cross-arb01
@@ -58,6 +59,7 @@ Options:
 Per-source SSH overrides:
   OKEX_SSH_TARGET, OKEX_SSH_KEY, OKEX_REMOTE_HOME
   BINANCE_SSH_TARGET, BINANCE_SSH_KEY, BINANCE_REMOTE_HOME
+  BINANCE_ARB02_SSH_TARGET, BINANCE_ARB02_SSH_KEY, BINANCE_ARB02_REMOTE_HOME
   GATE_SSH_TARGET, GATE_SSH_KEY, GATE_REMOTE_HOME
   BITGET_SSH_TARGET, BITGET_SSH_KEY, BITGET_REMOTE_HOME
   BITGET_GATE_CROSS_SSH_TARGET, BITGET_GATE_CROSS_SSH_KEY, BITGET_GATE_CROSS_REMOTE_HOME
@@ -65,6 +67,7 @@ Per-source SSH overrides:
 
 Defaults:
   binance:        local, home /home/ubuntu
+  binance arb02:  jp-meta-elvpn, home /home/ubuntu
   gate:           local, home /home/ubuntu
   bitget:         local, home /home/ubuntu
   bitget-gate:    local, home /home/ubuntu
@@ -161,6 +164,8 @@ source_target() {
       echo "${OKEX_SSH_TARGET:-fanghaizhou@47.238.128.48}" ;;
     binance-intra-arb01)
       echo "${BINANCE_SSH_TARGET:-local}" ;;
+    binance-intra-arb02)
+      echo "${BINANCE_ARB02_SSH_TARGET:-jp-meta-elvpn}" ;;
     gate-intra-arb01)
       echo "${GATE_SSH_TARGET:-local}" ;;
     bitget-intra-arb01)
@@ -182,6 +187,8 @@ source_key() {
       echo "${OKEX_SSH_KEY:-}" ;;
     binance-intra-arb01)
       echo "${BINANCE_SSH_KEY:-}" ;;
+    binance-intra-arb02)
+      echo "${BINANCE_ARB02_SSH_KEY:-}" ;;
     gate-intra-arb01)
       echo "${GATE_SSH_KEY:-}" ;;
     bitget-intra-arb01)
@@ -203,6 +210,8 @@ source_home() {
       echo "${OKEX_REMOTE_HOME:-/home/fanghaizhou}" ;;
     binance-intra-arb01)
       echo "${BINANCE_REMOTE_HOME:-/home/ubuntu}" ;;
+    binance-intra-arb02)
+      echo "${BINANCE_ARB02_REMOTE_HOME:-/home/ubuntu}" ;;
     gate-intra-arb01)
       echo "${GATE_REMOTE_HOME:-/home/ubuntu}" ;;
     bitget-intra-arb01)
@@ -228,8 +237,10 @@ require_file() {
 
 ssh_base_opts() {
   local key="$1"
+  if [[ -n "$key" ]]; then
+    printf '%s\n' -i "$key"
+  fi
   printf '%s\n' \
-    -i "$key" \
     -o StrictHostKeyChecking=accept-new \
     -o ConnectTimeout="${SSH_CONNECT_TIMEOUT}"
 }
@@ -349,13 +360,10 @@ for source in "${SOURCES[@]}"; do
     continue
   fi
 
-  if [[ -z "$key" ]]; then
-    echo "[ERROR] [${source}] SSH key is required for remote target ${target}" >&2
-    failed=$((failed + 1))
-    continue
+  if [[ -n "$key" ]]; then
+    require_file "$key" "ssh key for ${source}"
+    chmod 400 "$key" 2>/dev/null || true
   fi
-  require_file "$key" "ssh key for ${source}"
-  chmod 400 "$key" 2>/dev/null || true
 
   ssh_opts=()
   while IFS= read -r opt; do ssh_opts+=("$opt"); done < <(ssh_base_opts "$key")

@@ -110,6 +110,14 @@ name = "rapidx_order_smoke"
 path = "src/bin/rapidx_order_smoke.rs"
 
 [[bin]]
+name = "rapidx_query_smoke"
+path = "src/bin/rapidx_query_smoke.rs"
+
+[[bin]]
+name = "rapidx_transfer"
+path = "src/bin/rapidx_transfer.rs"
+
+[[bin]]
 name = "trade_engine"
 path = "src/bin/trade_engine.rs"
 
