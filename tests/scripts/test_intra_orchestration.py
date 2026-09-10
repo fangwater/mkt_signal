@@ -1048,6 +1048,7 @@ class IntraOrchestrationTests(unittest.TestCase):
         publish = PUBLISH_SCRIPT.read_text(encoding="utf-8")
         self.assertIn('"target/release/${INTRA_ACCOUNT_MONITOR_BIN}"', publish)
         self.assertIn('publish_file "$account_monitor_bin" "$account_monitor_dest"', publish)
+        self.assertIn('if [[ "$exec_backend" != "ltp" ]]', publish)
         self.assertIn('"target/release/persist_manager"', publish)
         self.assertIn("publish_file persist_manager persist_manager", publish)
         for cancel_dependency in (

@@ -169,26 +169,22 @@ target_executables=(
 config_server="$target/scripts/intra_config_server.py"
 found=0
 
-while read -r pid; do
-  [[ -n "$pid" ]] || continue
-  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-  exe="${exe% (deleted)}"
-  for target_exe in "${target_executables[@]}"; do
-    if [[ "$exe" == "$target_exe" ]]; then
-      args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-      echo "[WARN] running publish target pid=$pid exe=$exe args=$args"
-      found=1
-      break
-    fi
-  done
-done < <(ps -eo pid=)
-
 while read -r pid args; do
   [[ -n "$pid" ]] || continue
   if [[ "$args" == *"$config_server"* ]]; then
     echo "[WARN] running publish target pid=$pid config_server=$args"
     found=1
   fi
+  [[ "$args" == *"$target/"* ]] || continue
+  exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  exe="${exe% (deleted)}"
+  for target_exe in "${target_executables[@]}"; do
+    if [[ "$exe" == "$target_exe" ]]; then
+      echo "[WARN] running publish target pid=$pid exe=$exe args=$args"
+      found=1
+      break
+    fi
+  done
 done < <(ps -eo pid=,args=)
 
 if [[ "$found" -ne 0 ]]; then
@@ -468,10 +464,12 @@ case "$exchange" in
     publish_file cancel_okex_pm_orders.py scripts/cancel_okex_pm_orders.py
     ;;
   binance)
-    publish_file cancel_binance_std_orders.py scripts/cancel_binance_std_orders.py
-    publish_file binance_cancel_all_std_spot_orders.py scripts/binance_cancel_all_std_spot_orders.py
-    publish_file binance_cancel_all_std_um_ws_orders.py scripts/binance_cancel_all_std_um_ws_orders.py
-    publish_file binance_local_ip.py scripts/binance_local_ip.py
+    if [[ "$exec_backend" != "ltp" ]]; then
+      publish_file cancel_binance_std_orders.py scripts/cancel_binance_std_orders.py
+      publish_file binance_cancel_all_std_spot_orders.py scripts/binance_cancel_all_std_spot_orders.py
+      publish_file binance_cancel_all_std_um_ws_orders.py scripts/binance_cancel_all_std_um_ws_orders.py
+      publish_file binance_local_ip.py scripts/binance_local_ip.py
+    fi
     ;;
   *)
     echo "[ERROR] unsupported exchange in publish stage: $exchange" >&2
