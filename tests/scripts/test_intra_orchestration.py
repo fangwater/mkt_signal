@@ -31,6 +31,7 @@ class IntraOrchestrationTests(unittest.TestCase):
         self.assertIn('"ARB_OPEN_PARTIAL_HEDGE": "${partial_hedge}"', script)
         self.assertIn('"ARB_HEDGE_FORCE_TAKER": "${force_taker}"', script)
         self.assertIn("export ARB_OPEN_PARTIAL_HEDGE=", script)
+        self.assertIn("RAPIDX_BINANCE_CASH_BUSINESS_TYPE", script)
 
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

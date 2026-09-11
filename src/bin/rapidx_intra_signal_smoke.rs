@@ -2,7 +2,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use ipc_common::iceoryx_publisher::TradeSignalPublisher;
 use order_common::{OrderType, Side, TradingVenue};
-use runtime_common::execution_backend::{rapidx_portfolio_id, ExecBackend};
+use runtime_common::execution_backend::{
+    rapidx_binance_cash_business_type, rapidx_portfolio_id, ExecBackend, RapidXCashBusinessType,
+};
 use runtime_common::{exchange::Exchange, time_util::get_timestamp_us};
 use signal_common::common::{SignalBytes, TradingLeg};
 use signal_common::open_signal::ArbOpenCtx;
@@ -141,9 +143,8 @@ fn validate_runtime() -> Result<()> {
         bail!("rapidx_intra_signal_smoke requires Binance execution backend ltp");
     }
     rapidx_portfolio_id()?;
-    let cash_business = std::env::var("RAPIDX_BINANCE_CASH_BUSINESS").unwrap_or_default();
-    if !cash_business.eq_ignore_ascii_case("MARGIN") {
-        bail!("RAPIDX_BINANCE_CASH_BUSINESS must be MARGIN");
+    if rapidx_binance_cash_business_type()? != RapidXCashBusinessType::Margin {
+        bail!("RAPIDX_BINANCE_CASH_BUSINESS_TYPE must be MARGIN");
     }
     for (name, expected) in [
         ("OPEN_VENUE", "binance-margin"),

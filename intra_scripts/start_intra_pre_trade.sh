@@ -180,7 +180,15 @@ normalize_test_flag() {
 
 partial_hedge="$(normalize_test_flag ARB_OPEN_PARTIAL_HEDGE "${ARB_OPEN_PARTIAL_HEDGE:-}")" || exit 1
 force_taker="$(normalize_test_flag ARB_HEDGE_FORCE_TAKER "${ARB_HEDGE_FORCE_TAKER:-}")" || exit 1
-cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; export ARB_OPEN_PARTIAL_HEDGE=$(shell_quote "$partial_hedge") ARB_HEDGE_FORCE_TAKER=$(shell_quote "$force_taker"); exec $(shell_quote "$BIN_PATH")"
+rapidx_cash_business="${RAPIDX_BINANCE_CASH_BUSINESS_TYPE:-}"
+case "${rapidx_cash_business^^}" in
+  ""|SPOT|MARGIN) rapidx_cash_business="${rapidx_cash_business^^}" ;;
+  *)
+    echo "[ERROR] RAPIDX_BINANCE_CASH_BUSINESS_TYPE must be SPOT or MARGIN, got: $rapidx_cash_business" >&2
+    exit 1
+    ;;
+esac
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; export ARB_OPEN_PARTIAL_HEDGE=$(shell_quote "$partial_hedge") ARB_HEDGE_FORCE_TAKER=$(shell_quote "$force_taker") RAPIDX_BINANCE_CASH_BUSINESS_TYPE=$(shell_quote "$rapidx_cash_business"); exec $(shell_quote "$BIN_PATH")"
 for arg in "${args[@]}"; do
   cmd+=" $(shell_quote "$arg")"
 done
@@ -198,7 +206,8 @@ cat >"$cfg_file" <<JSON
         "RUST_LOG": "${json_rust_log}",
         "IPC_NAMESPACE": "${json_ipc_ns}",
         "ARB_OPEN_PARTIAL_HEDGE": "${partial_hedge}",
-        "ARB_HEDGE_FORCE_TAKER": "${force_taker}"
+        "ARB_HEDGE_FORCE_TAKER": "${force_taker}",
+        "RAPIDX_BINANCE_CASH_BUSINESS_TYPE": "${rapidx_cash_business}"
       }
     }
   ]
