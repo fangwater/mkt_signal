@@ -280,6 +280,24 @@ struct BinanceCashRoute {
     maker_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BinanceCashTransportFlags {
+    ws_response_full: bool,
+    ws_um_response_result: bool,
+    ws_margin_limit_maker: bool,
+}
+
+fn binance_cash_transport_flags(
+    route: BinanceCashRoute,
+    use_binance_ws_margin: bool,
+) -> BinanceCashTransportFlags {
+    BinanceCashTransportFlags {
+        ws_response_full: use_binance_ws_margin,
+        ws_um_response_result: false,
+        ws_margin_limit_maker: route.maker_only,
+    }
+}
+
 fn binance_cash_route(account_mode: BinanceAccountMode) -> Result<BinanceCashRoute, String> {
     if account_mode == BinanceAccountMode::Standard {
         return Ok(binance_cash_route_for(
@@ -917,6 +935,8 @@ impl PreTradeOrderRequestExt for Order {
                     cash_route.margin_business,
                     self.reduce_only,
                 );
+                let transport_flags =
+                    binance_cash_transport_flags(cash_route, use_binance_ws_margin);
 
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
@@ -943,9 +963,9 @@ impl PreTradeOrderRequestExt for Order {
                     price_qv,
                     self.reduce_only,
                     margin_buy,
-                    cash_route.maker_only,
-                    false,
-                    use_binance_ws_margin,
+                    transport_flags.ws_response_full,
+                    transport_flags.ws_um_response_result,
+                    transport_flags.ws_margin_limit_maker,
                 )
                 .ok_or_else(|| "failed to build binance margin order params".to_string())
             }
@@ -1243,6 +1263,8 @@ impl PreTradeOrderRequestExt for Order {
                     cash_route.margin_business,
                     self.reduce_only,
                 );
+                let transport_flags =
+                    binance_cash_transport_flags(cash_route, use_binance_ws_margin);
                 let quantity_qv = resolved.require_quantity_qv(self, "binance")?;
                 let price_qv = resolved.limit_price_qv_or_zero(self, "binance")?;
                 if !suppress_pre_submit_hot_path_logs() {
@@ -1268,9 +1290,9 @@ impl PreTradeOrderRequestExt for Order {
                     price_qv,
                     self.reduce_only,
                     margin_buy,
-                    cash_route.maker_only,
-                    false,
-                    use_binance_ws_margin,
+                    transport_flags.ws_response_full,
+                    transport_flags.ws_um_response_result,
+                    transport_flags.ws_margin_limit_maker,
                 )
                 .ok_or_else(|| "failed to build binance margin order params".to_string())
             }
@@ -1550,7 +1572,7 @@ impl PreTradeOrderRequestExt for Order {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_cash_route_for, binance_margin_should_use_margin_buy,
+        binance_cash_route_for, binance_cash_transport_flags, binance_margin_should_use_margin_buy,
         bybit_margin_should_use_leverage, hyperliquid_market_protection_price,
         BybitNewOrderRequest, Order, OrderExecutionStatus, OrderManager, OrderQuantizedValue,
         OrderStatus, OrderType, PreTradeOrderManagerRequestExt, PreTradeOrderRequestExt, Side,
@@ -1675,6 +1697,21 @@ mod tests {
         );
         assert!(margin.margin_business);
         assert!(margin.maker_only);
+
+        let flags = binance_cash_transport_flags(margin, false);
+        assert!(!flags.ws_response_full);
+        assert!(!flags.ws_um_response_result);
+        assert!(flags.ws_margin_limit_maker);
+
+        let standard = binance_cash_route_for(
+            BinanceAccountMode::Standard,
+            ExecBackend::Native,
+            RapidXCashBusinessType::Spot,
+        );
+        let flags = binance_cash_transport_flags(standard, true);
+        assert!(flags.ws_response_full);
+        assert!(!flags.ws_um_response_result);
+        assert!(flags.ws_margin_limit_maker);
     }
 
     #[test]
@@ -1703,6 +1740,8 @@ mod tests {
             trade_engine::trade_request::BinanceNewOrderParams::from_bytes(params_bytes.as_ref())
                 .expect("Binance params should parse");
         assert!(!params.margin_buy);
+        assert!(params.ws_response_full);
+        assert!(params.ws_margin_limit_maker);
 
         let prepared = order
             .get_order_request_prepared()
@@ -1715,6 +1754,8 @@ mod tests {
             trade_engine::trade_request::BinanceNewOrderParams::from_bytes(prepared.params_slice())
                 .expect("prepared Binance params should parse");
         assert!(!params.margin_buy);
+        assert!(params.ws_response_full);
+        assert!(params.ws_margin_limit_maker);
     }
 
     #[test]
