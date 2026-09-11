@@ -42,6 +42,8 @@ echo "[INFO] building Intra release binaries"
     --bin rapidx_account_monitor \
     --bin rapidx_open_orders \
     --bin rapidx_order_smoke \
+    --bin rapidx_intra_signal_smoke \
+    --bin rapidx_loan \
     --bin rapidx_query_smoke \
     --bin rapidx_transfer \
     --bin hyperliquid_account_monitor \
@@ -66,6 +68,8 @@ required_binaries=(
   "$RELEASE_DIR/rapidx_account_monitor"
   "$RELEASE_DIR/rapidx_open_orders"
   "$RELEASE_DIR/rapidx_order_smoke"
+  "$RELEASE_DIR/rapidx_intra_signal_smoke"
+  "$RELEASE_DIR/rapidx_loan"
   "$RELEASE_DIR/rapidx_query_smoke"
   "$RELEASE_DIR/rapidx_transfer"
   "$RELEASE_DIR/hyperliquid_account_monitor"

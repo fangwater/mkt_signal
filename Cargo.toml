@@ -110,6 +110,14 @@ name = "rapidx_order_smoke"
 path = "src/bin/rapidx_order_smoke.rs"
 
 [[bin]]
+name = "rapidx_intra_signal_smoke"
+path = "src/bin/rapidx_intra_signal_smoke.rs"
+
+[[bin]]
+name = "rapidx_loan"
+path = "src/bin/rapidx_loan.rs"
+
+[[bin]]
 name = "rapidx_query_smoke"
 path = "src/bin/rapidx_query_smoke.rs"
 

@@ -120,6 +120,14 @@ if [[ "$CHECK_ONLY" -eq 0 ]]; then
       "$ROOT_DIR/target/release/rapidx_order_smoke"
     intra_release_verify_file \
       "$ROOT_DIR/target/release" \
+      rapidx_intra_signal_smoke \
+      "$ROOT_DIR/target/release/rapidx_intra_signal_smoke"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
+      rapidx_loan \
+      "$ROOT_DIR/target/release/rapidx_loan"
+    intra_release_verify_file \
+      "$ROOT_DIR/target/release" \
       rapidx_query_smoke \
       "$ROOT_DIR/target/release/rapidx_query_smoke"
     intra_release_verify_file \
@@ -311,6 +319,10 @@ case "$INTRA_EXCHANGE" in
       UPLOAD_NAMES+=("rapidx_open_orders")
       LOCAL_RELATIVE+=("target/release/rapidx_order_smoke")
       UPLOAD_NAMES+=("rapidx_order_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_intra_signal_smoke")
+      UPLOAD_NAMES+=("rapidx_intra_signal_smoke")
+      LOCAL_RELATIVE+=("target/release/rapidx_loan")
+      UPLOAD_NAMES+=("rapidx_loan")
       LOCAL_RELATIVE+=("target/release/rapidx_query_smoke")
       UPLOAD_NAMES+=("rapidx_query_smoke")
       LOCAL_RELATIVE+=("target/release/rapidx_transfer")
@@ -460,6 +472,8 @@ publish_file stop_intra_viz_server.sh intra_scripts/stop_intra_viz_server.sh
 if [[ "$exec_backend" == "ltp" ]]; then
   publish_file rapidx_open_orders rapidx_open_orders
   publish_file rapidx_order_smoke rapidx_order_smoke
+  publish_file rapidx_intra_signal_smoke rapidx_intra_signal_smoke
+  publish_file rapidx_loan rapidx_loan
   publish_file rapidx_query_smoke rapidx_query_smoke
   publish_file rapidx_transfer rapidx_transfer
 fi

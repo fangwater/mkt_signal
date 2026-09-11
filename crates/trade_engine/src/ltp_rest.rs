@@ -27,6 +27,11 @@ const POSITION_PATH: &str = "/api/v1/trading/position";
 const TRANSFER_APPLY_PATH: &str = "/api/v1/transfer/apply";
 const TRANSFER_GET_PATH: &str = "/api/v1/transfer/get";
 const TRANSFER_LIST_PATH: &str = "/api/v1/transfer/list";
+const LOAN_INFO_PATH: &str = "/api/v1/trading/rapidxLoan/loan/info";
+const LOAN_MAX_PATH: &str = "/api/v1/trading/rapidxLoan/loan/maxLoan";
+const LOAN_CONFIG_PATH: &str = "/api/v1/trading/rapidxLoan/loan/config";
+const LOAN_ORDERS_PATH: &str = "/api/v1/trading/rapidxLoan/loan/orders";
+const LOAN_REPAY_PATH: &str = "/api/v1/trading/rapidxLoan/loan/repay";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +47,16 @@ pub struct LtpTransferRequest {
     pub rapid_transfer: bool,
     pub client_order_id: String,
     pub loan_trans: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LtpLoanRepayRequest {
+    pub exchange: String,
+    pub coin: String,
+    pub amount: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -466,7 +481,7 @@ impl LtpRestClient {
     }
 
     pub async fn fetch_loan_info(&self) -> Result<Value> {
-        self.fetch_financial_response("/api/v1/trading/rapidxLoan/loan/info", &BTreeMap::new())
+        self.fetch_financial_response(LOAN_INFO_PATH, &BTreeMap::new())
             .await
     }
 
@@ -476,10 +491,59 @@ impl LtpRestClient {
             "unsupported RapidX loan exchange"
         );
         self.fetch_financial_response(
-            "/api/v1/trading/rapidxLoan/loan/maxLoan",
+            LOAN_MAX_PATH,
             &BTreeMap::from([("exchange".into(), exchange.into())]),
         )
         .await
+    }
+
+    pub async fn fetch_loan_config(&self) -> Result<Value> {
+        self.fetch_financial_response(LOAN_CONFIG_PATH, &BTreeMap::new())
+            .await
+    }
+
+    pub async fn fetch_loan_orders(
+        &self,
+        coin: Option<&str>,
+        order_type: Option<&str>,
+        client_order_id: Option<&str>,
+        start_time_ms: Option<i64>,
+        end_time_ms: Option<i64>,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Value> {
+        let mut params = BTreeMap::from([
+            ("page".into(), page.to_string()),
+            ("pageSize".into(), page_size.to_string()),
+        ]);
+        if let Some(value) = coin {
+            params.insert("coin".into(), value.into());
+        }
+        if let Some(value) = order_type {
+            params.insert("type".into(), value.into());
+        }
+        if let Some(value) = client_order_id {
+            params.insert("clientOrderId".into(), value.into());
+        }
+        if let Some(value) = start_time_ms {
+            params.insert("startTime".into(), value.to_string());
+        }
+        if let Some(value) = end_time_ms {
+            params.insert("endTime".into(), value.to_string());
+        }
+        self.fetch_financial_response(LOAN_ORDERS_PATH, &params)
+            .await
+    }
+
+    pub async fn repay_loan(&self, request: &LtpLoanRepayRequest) -> Result<(u16, String)> {
+        let value = serde_json::to_value(request).context("encode RapidX loan repay request")?;
+        let params = value
+            .as_object()
+            .context("RapidX loan repay request must encode as an object")?
+            .iter()
+            .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.into())))
+            .collect::<BTreeMap<_, _>>();
+        self.signed_post_query(LOAN_REPAY_PATH, &params).await
     }
 
     async fn fetch_financial_response(
@@ -530,6 +594,37 @@ impl LtpRestClient {
         let body = resp.text().await.with_context(|| {
             format!(
                 "read LTP signed GET response body status={} url={}",
+                status, url
+            )
+        })?;
+        Ok((status, body))
+    }
+
+    async fn signed_post_query(
+        &self,
+        path: &str,
+        params: &BTreeMap<String, String>,
+    ) -> Result<(u16, String)> {
+        let nonce = chrono::Utc::now().timestamp().to_string();
+        let ts = chrono::Utc::now().timestamp_micros().to_string();
+        let signature = sign_params(&self.creds.secret_key, params, &nonce)?;
+        let query = encode_query(params);
+        let url = format!("{}{}?{}", self.base_url, path, query);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("X-MBX-APIKEY", self.creds.api_key.as_str())
+            .header("nonce", nonce)
+            .header("signature", signature)
+            .header("ts", ts)
+            .send()
+            .await
+            .with_context(|| format!("LTP signed POST {}", url))?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.with_context(|| {
+            format!(
+                "read LTP signed POST response body status={} url={}",
                 status, url
             )
         })?;
@@ -1402,6 +1497,81 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ltp_loan_config_history_and_repay_use_documented_contract() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let first_line = request.lines().next().unwrap();
+                assert!(request.to_ascii_lowercase().contains("\r\nsignature: "));
+                assert!(request.to_ascii_lowercase().contains("\r\nts: "));
+                match index {
+                    0 => assert_eq!(
+                        first_line,
+                        "GET /api/v1/trading/rapidxLoan/loan/config HTTP/1.1"
+                    ),
+                    1 => assert_eq!(
+                        first_line,
+                        "GET /api/v1/trading/rapidxLoan/loan/orders?clientOrderId=smoke-1&coin=COTI&page=1&pageSize=1000&type=repay HTTP/1.1"
+                    ),
+                    _ => assert_eq!(
+                        first_line,
+                        "POST /api/v1/trading/rapidxLoan/loan/repay?amount=12.34&clientOrderId=smoke-1&coin=COTI&exchange=BINANCE HTTP/1.1"
+                    ),
+                }
+                let body = json!({"code":200000,"message":"Success","data":{}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            }
+        });
+        let client = LtpRestClient {
+            base_url: format!("http://{address}"),
+            creds: LtpCredentials {
+                api_key: "fixture".into(),
+                secret_key: "fixture".into(),
+            },
+            portfolio_id: "123".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        };
+        client.fetch_loan_config().await.unwrap();
+        client
+            .fetch_loan_orders(
+                Some("COTI"),
+                Some("repay"),
+                Some("smoke-1"),
+                None,
+                None,
+                1,
+                1000,
+            )
+            .await
+            .unwrap();
+        let response = client
+            .repay_loan(&LtpLoanRepayRequest {
+                exchange: "BINANCE".into(),
+                coin: "COTI".into(),
+                amount: "12.34".into(),
+                client_order_id: Some("smoke-1".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.0, 200);
         server.await.unwrap();
     }
 

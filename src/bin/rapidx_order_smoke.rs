@@ -18,6 +18,7 @@ use trade_engine::trade_request::{
 
 const RESPONSE_BYTES: usize = 64;
 const DEFAULT_MAX_NOTIONAL_USDT: f64 = 10.0;
+const ABSOLUTE_MAX_NOTIONAL_USDT: f64 = 100.0;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Business {
@@ -154,9 +155,9 @@ fn validate(args: &Args) -> Result<()> {
     };
     if !args.max_notional_usdt.is_finite()
         || args.max_notional_usdt <= 0.0
-        || args.max_notional_usdt > DEFAULT_MAX_NOTIONAL_USDT
+        || args.max_notional_usdt > ABSOLUTE_MAX_NOTIONAL_USDT
     {
-        bail!("--max-notional-usdt must be in (0, 10]");
+        bail!("--max-notional-usdt must be in (0, 100]");
     }
     let notional = if cash_market_buy {
         args.quote_quantity
@@ -404,5 +405,15 @@ mod tests {
             request_types(Business::Perp).0,
             TradeRequestType::BinanceNewUMOrder
         );
+    }
+
+    #[test]
+    fn permits_explicit_cap_up_to_absolute_smoke_limit() {
+        let mut value = args();
+        value.quantity = 180.0;
+        value.max_notional_usdt = 100.0;
+        assert!(validate(&value).is_ok());
+        value.max_notional_usdt = 100.01;
+        assert!(validate(&value).is_err());
     }
 }

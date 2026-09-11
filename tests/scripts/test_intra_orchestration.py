@@ -20,9 +20,18 @@ ORCHESTRATION_LIB = ROOT / "scripts" / "intra_orchestration_lib.sh"
 SSH_REMOTE_BASH_LIB = ROOT / "scripts" / "lib" / "ssh_remote_bash.sh"
 EXECUTION_BACKEND_LIB = ROOT / "scripts" / "execution_backend_lib.sh"
 INTRA_RELEASE_GUARD = ROOT / "scripts" / "intra_release_guard.sh"
+INTRA_PRE_TRADE_START = ROOT / "intra_scripts" / "start_intra_pre_trade.sh"
 
 
 class IntraOrchestrationTests(unittest.TestCase):
+    def test_pre_trade_start_forwards_bounded_live_test_flags(self) -> None:
+        script = INTRA_PRE_TRADE_START.read_text(encoding="utf-8")
+        self.assertIn('normalize_test_flag ARB_OPEN_PARTIAL_HEDGE', script)
+        self.assertIn('normalize_test_flag ARB_HEDGE_FORCE_TAKER', script)
+        self.assertIn('"ARB_OPEN_PARTIAL_HEDGE": "${partial_hedge}"', script)
+        self.assertIn('"ARB_HEDGE_FORCE_TAKER": "${force_taker}"', script)
+        self.assertIn("export ARB_OPEN_PARTIAL_HEDGE=", script)
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)
@@ -188,6 +197,8 @@ class IntraOrchestrationTests(unittest.TestCase):
         self.assertIn("--bin rapidx_account_monitor", commands[0])
         self.assertIn("--bin rapidx_open_orders", commands[0])
         self.assertIn("--bin rapidx_order_smoke", commands[0])
+        self.assertIn("--bin rapidx_intra_signal_smoke", commands[0])
+        self.assertIn("--bin rapidx_loan", commands[0])
         self.assertIn("--bin rapidx_query_smoke", commands[0])
         self.assertIn("--bin rapidx_transfer", commands[0])
         self.assertIn("--bin pre_trade", commands[0])

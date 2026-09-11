@@ -164,7 +164,23 @@ json_shell="$(json_escape "/bin/bash")"
 json_base="$(json_escape "$BASE_DIR")"
 json_rust_log="$(json_escape "${RUST_LOG:-info}")"
 json_ipc_ns="$(json_escape "$IPC_NAMESPACE")"
-cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; exec $(shell_quote "$BIN_PATH")"
+
+normalize_test_flag() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    ""|0|false|FALSE|False|off|OFF|Off) printf '0' ;;
+    1|true|TRUE|True|on|ON|On) printf '1' ;;
+    *)
+      echo "[ERROR] $name must be a boolean flag (0/1/false/true/off/on), got: $value" >&2
+      return 1
+      ;;
+  esac
+}
+
+partial_hedge="$(normalize_test_flag ARB_OPEN_PARTIAL_HEDGE "${ARB_OPEN_PARTIAL_HEDGE:-}")" || exit 1
+force_taker="$(normalize_test_flag ARB_HEDGE_FORCE_TAKER "${ARB_HEDGE_FORCE_TAKER:-}")" || exit 1
+cmd="if [[ -f $(shell_quote "$ENV_FILE") ]]; then source $(shell_quote "$ENV_FILE"); fi; export ARB_OPEN_PARTIAL_HEDGE=$(shell_quote "$partial_hedge") ARB_HEDGE_FORCE_TAKER=$(shell_quote "$force_taker"); exec $(shell_quote "$BIN_PATH")"
 for arg in "${args[@]}"; do
   cmd+=" $(shell_quote "$arg")"
 done
@@ -180,7 +196,9 @@ cat >"$cfg_file" <<JSON
       "cwd": "${json_base}",
       "env": {
         "RUST_LOG": "${json_rust_log}",
-        "IPC_NAMESPACE": "${json_ipc_ns}"
+        "IPC_NAMESPACE": "${json_ipc_ns}",
+        "ARB_OPEN_PARTIAL_HEDGE": "${partial_hedge}",
+        "ARB_HEDGE_FORCE_TAKER": "${force_taker}"
       }
     }
   ]
