@@ -1016,6 +1016,30 @@ impl StrategyManager {
         strategy_id
     }
 
+    pub fn observe_exec_market_trade(
+        &mut self,
+        venue: order_common::TradingVenue,
+        symbol: &str,
+        ts_us: i64,
+        now_us: i64,
+        base_qty: f64,
+        price: f64,
+    ) {
+        let Some(ids) = self.symbol_index.get(symbol) else {
+            return;
+        };
+        for id in ids {
+            if let Some(exec) = self
+                .strategies
+                .get_mut(id)
+                .and_then(|s| s.as_any_mut().downcast_mut::<BatchExecStrategy>())
+                .filter(|s| s.exec_venue() == venue)
+            {
+                exec.observe_pov_trade(ts_us, now_us, base_qty, price);
+            }
+        }
+    }
+
     pub fn batch_exec_snapshots(&self, now_ts: i64) -> Vec<BatchExecSnapshot> {
         let mut snapshots = Vec::new();
         for strategy in self.strategies.values() {
@@ -1758,6 +1782,8 @@ mod tests {
     fn hedge_and_batch_exec_strategy_indexes_follow_lifecycle() {
         let mut manager = StrategyManager::new();
         let batch_exec_config = BatchExecConfig {
+            algorithm: crate::strategy::pov::ExecAlgorithm::Batch,
+            pov: crate::strategy::pov::PovConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: 20,

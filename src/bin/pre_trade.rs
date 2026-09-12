@@ -836,6 +836,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             info!("MonitorChannel initialized successfully");
             if exec_pre_trade {
                 trade_signal::MktChannel::init_bbo_singleton_readonly(open_venue, open_venue)?;
+                mkt_signal::pre_trade::exec_volume_channel::start(open_venue);
                 info!(
                     "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
                     open_venue.data_pub_slug()

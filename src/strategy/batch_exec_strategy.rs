@@ -11,6 +11,7 @@ use crate::strategy::manager::{
     ExecOrphanTerminal, OrphanHandoff, OrphanSourceKind, OrphanStrategyRole, Strategy,
 };
 use crate::strategy::order_reconcile::PendingOrderQueryReason;
+use crate::strategy::pov::{ExecAlgorithm, PovConfig, PovLiquidity, PovState};
 use crate::strategy::uniform_order_helper::{
     publish_uniform_new_order, publish_uniform_terminal_order, publish_uniform_trade_order,
     publish_uniform_trade_order_from_order_update, UniformPublishCtx,
@@ -42,6 +43,10 @@ pub const BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME: &str = "SYSTEM_POSITION_CLOSE
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchExecConfig {
+    #[serde(default)]
+    pub algorithm: ExecAlgorithm,
+    #[serde(default)]
+    pub pov: PovConfig,
     pub single_order_usdt: f64,
     pub orders_per_batch: u32,
     #[serde(default = "default_max_batch")]
@@ -57,6 +62,8 @@ pub struct BatchExecConfig {
 impl Default for BatchExecConfig {
     fn default() -> Self {
         Self {
+            algorithm: ExecAlgorithm::Batch,
+            pov: PovConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: default_max_batch(),
@@ -147,11 +154,19 @@ pub fn validate_target_signal(signal: i32) -> Result<(), String> {
 }
 
 fn should_use_taker(config: &BatchExecConfig, maker_requotes: u32, signal: i32) -> bool {
+    if config.algorithm == ExecAlgorithm::Pov {
+        match config.pov.liquidity {
+            PovLiquidity::MakerOnly => return false,
+            PovLiquidity::TakerOnly => return true,
+            PovLiquidity::MakerThenTaker => {}
+        }
+    }
     signal.abs() == 1 || maker_requotes > config.max_maker_requotes
 }
 
 impl BatchExecConfig {
     pub fn validate(&self) -> Result<(), String> {
+        self.pov.validate()?;
         if !self.single_order_usdt.is_finite() || self.single_order_usdt <= 0.0 {
             return Err("single_order_usdt must be positive".to_string());
         }
@@ -171,6 +186,9 @@ impl BatchExecConfig {
     }
 
     fn effective_single_order_usdt(&self, delta_usdt: f64) -> f64 {
+        if self.algorithm == ExecAlgorithm::Pov {
+            return self.single_order_usdt;
+        }
         let dynamic_single =
             delta_usdt.abs() / f64::from(self.max_batch) / f64::from(self.orders_per_batch);
         self.single_order_usdt.max(dynamic_single)
@@ -184,6 +202,10 @@ impl BatchExecConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchExecConfigOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<ExecAlgorithm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pov: Option<PovConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub single_order_usdt: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,7 +228,9 @@ pub struct BatchExecConfigOverride {
 
 impl BatchExecConfigOverride {
     pub fn is_empty(&self) -> bool {
-        self.single_order_usdt.is_none()
+        self.algorithm.is_none()
+            && self.pov.is_none()
+            && self.single_order_usdt.is_none()
             && self.orders_per_batch.is_none()
             && self.max_batch.is_none()
             && self.maker_price_anchor.is_none()
@@ -219,6 +243,8 @@ impl BatchExecConfigOverride {
 
     pub fn apply_to(&self, defaults: &BatchExecConfig) -> BatchExecConfig {
         BatchExecConfig {
+            algorithm: self.algorithm.unwrap_or(defaults.algorithm),
+            pov: self.pov.clone().unwrap_or_else(|| defaults.pov.clone()),
             single_order_usdt: self.single_order_usdt.unwrap_or(defaults.single_order_usdt),
             orders_per_batch: self.orders_per_batch.unwrap_or(defaults.orders_per_batch),
             max_batch: self.max_batch.unwrap_or(defaults.max_batch),
@@ -423,6 +449,8 @@ impl BatchExecCompletionReason {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchExecSnapshot {
+    pub algorithm: String,
+    pub pov: Option<viz_common::resample::ExecPovState>,
     pub strategy_name: String,
     pub source_updated_at_ms: i64,
     pub symbol: String,
@@ -809,6 +837,7 @@ pub struct BatchExecStrategy {
     symbol: String,
     exec_venue: TradingVenue,
     config: BatchExecConfig,
+    pov_state: PovState,
     source_updated_at_us: i64,
     virtual_position_qty: Option<f64>,
     position_allocation_ready: bool,
@@ -844,6 +873,7 @@ impl BatchExecStrategy {
             symbol: normalize_symbol_for_internal(&symbol.into()),
             exec_venue,
             config,
+            pov_state: PovState::default(),
             source_updated_at_us: 0,
             virtual_position_qty: None,
             position_allocation_ready: false,
@@ -864,6 +894,66 @@ impl BatchExecStrategy {
 
     pub fn exec_venue(&self) -> TradingVenue {
         self.exec_venue
+    }
+
+    fn pov_reserved_qty(&self) -> f64 {
+        self.batches
+            .values()
+            .map(|batch| batch.remaining_base_qty)
+            .sum()
+    }
+
+    fn pov_can_submit(&self, now_us: i64, quote_ts: i64) -> bool {
+        !self.pov_state.expired(&self.config.pov, now_us)
+            && self.pov_state.fresh(&self.config.pov, now_us)
+            && quote_ts > 0
+            && quote_ts <= now_us
+            && now_us - quote_ts <= i64::from(self.config.pov.quote_stale_ms) * 1_000
+    }
+
+    fn pause_pov_batches(&mut self, expired: bool) {
+        let ids: Vec<_> = self.batches.keys().copied().collect();
+        for id in ids {
+            // An unsent batch has no cancel acknowledgement to make it ready again.
+            if expired || !self.batches[&id].child_order_ids.is_empty() {
+                self.begin_cancel_batch(
+                    id,
+                    if expired {
+                        BatchPhase::CancellingForTarget
+                    } else {
+                        BatchPhase::CancellingForRequote
+                    },
+                );
+            }
+        }
+        if expired {
+            self.batches.retain(|id, batch| {
+                !batch.child_order_ids.is_empty()
+                    || self
+                        .orphaned_child_orders
+                        .values()
+                        .any(|meta| meta.batch_seq == *id)
+            });
+        }
+    }
+
+    pub fn observe_pov_trade(&mut self, timestamp_us: i64, now_us: i64, base_qty: f64, price: f64) {
+        if self.config.algorithm != ExecAlgorithm::Pov
+            || self.pending_target.is_some()
+            || !self.position_allocation_ready()
+            || self.active_target.is_none()
+        {
+            return;
+        }
+        let reserved = self.pov_reserved_qty();
+        self.pov_state.observe(
+            &self.config.pov,
+            timestamp_us,
+            now_us,
+            base_qty,
+            price,
+            reserved,
+        );
     }
 
     pub fn strategy_name(&self) -> &str {
@@ -909,6 +999,9 @@ impl BatchExecStrategy {
 
     fn effective_config(&self) -> BatchExecConfig {
         let mut config = self.config.clone();
+        if config.algorithm == ExecAlgorithm::Pov {
+            return config;
+        }
         if let Some(single_order_usdt) = self
             .active_target
             .as_ref()
@@ -1027,29 +1120,76 @@ impl BatchExecStrategy {
             .unwrap_or(0.0);
         let completion_reason = self.settled_completion_reason(position_qty);
         let execution_complete = completion_reason.is_some();
-        let (remaining_batches, estimated_completion_ts_ms) = if execution_complete {
-            (0, 0)
-        } else {
-            target_qty
-                .and_then(|target| self.mark_price().map(|price| (target, price)))
-                .filter(|(_, price)| price.is_finite() && *price > 0.0)
-                .map(|(target, price)| {
-                    let (active_batches, active_completion_ts_us) =
-                        self.relevant_active_batch_progress(target, position_qty, now_ts);
-                    estimate_batch_progress(
-                        &self.effective_config(),
-                        (target - position_qty) * price,
-                        active_batches,
-                        active_completion_ts_us,
-                        now_ts,
-                        self.next_batch_at_us,
-                        self.current_target()
-                            .is_some_and(BatchExecTarget::uses_taker_only),
-                    )
-                })
-                .unwrap_or((0, 0))
-        };
+        let (remaining_batches, estimated_completion_ts_ms) =
+            if execution_complete || self.config.algorithm == ExecAlgorithm::Pov {
+                (0, 0)
+            } else {
+                target_qty
+                    .and_then(|target| self.mark_price().map(|price| (target, price)))
+                    .filter(|(_, price)| price.is_finite() && *price > 0.0)
+                    .map(|(target, price)| {
+                        let (active_batches, active_completion_ts_us) =
+                            self.relevant_active_batch_progress(target, position_qty, now_ts);
+                        estimate_batch_progress(
+                            &self.effective_config(),
+                            (target - position_qty) * price,
+                            active_batches,
+                            active_completion_ts_us,
+                            now_ts,
+                            self.next_batch_at_us,
+                            self.current_target()
+                                .is_some_and(BatchExecTarget::uses_taker_only),
+                        )
+                    })
+                    .unwrap_or((0, 0))
+            };
         BatchExecSnapshot {
+            algorithm: if self.config.algorithm == ExecAlgorithm::Pov {
+                "pov"
+            } else {
+                "batch"
+            }
+            .into(),
+            pov: (self.config.algorithm == ExecAlgorithm::Pov).then(|| {
+                let quote_ts = MktChannel::instance()
+                    .get_quote(&self.symbol, self.exec_venue)
+                    .map(|q| q.ts)
+                    .unwrap_or(0);
+                let status = if execution_complete {
+                    "complete"
+                } else if self.pending_target.is_some() {
+                    "pending_target"
+                } else if !self.position_allocation_ready() {
+                    "waiting_position"
+                } else if self.pov_state.expired(&self.config.pov, now_ts) {
+                    "expired"
+                } else if !self.pov_state.fresh(&self.config.pov, now_ts) {
+                    "waiting_volume"
+                } else if !self.pov_can_submit(now_ts, quote_ts) {
+                    "stale_quote"
+                } else if self.pov_state.available(self.pov_reserved_qty()) <= QTY_EPS {
+                    "volume_budget"
+                } else {
+                    "running"
+                };
+                viz_common::resample::ExecPovState {
+                    status: status.into(),
+                    participation_rate: self.config.pov.participation_rate,
+                    market_base_qty: self.pov_state.market_base_qty,
+                    filled_base_qty: self.pov_state.filled_base_qty,
+                    reserved_base_qty: self.pov_reserved_qty(),
+                    available_base_qty: self.pov_state.available(self.pov_reserved_qty()),
+                    last_trade_ts_ms: self.pov_state.last_trade_at_us / 1_000,
+                    deadline_ts_ms: if self.pov_state.started_at_us > 0 {
+                        self.pov_state
+                            .started_at_us
+                            .saturating_add(i64::from(self.config.pov.duration_ms) * 1_000)
+                            / 1_000
+                    } else {
+                        0
+                    },
+                }
+            }),
             strategy_name: self.strategy_name.clone(),
             source_updated_at_ms: self.source_updated_at_us / 1_000,
             symbol: self.symbol.clone(),
@@ -1210,7 +1350,31 @@ impl BatchExecStrategy {
         if self.config == config {
             return Ok(());
         }
+        let algorithm_changed = self.config.algorithm != config.algorithm;
+        let pov_changed = self.config.pov != config.pov;
         self.config = config;
+        if algorithm_changed || (pov_changed && self.config.algorithm == ExecAlgorithm::Pov) {
+            if let Some(target) = self.active_target.as_mut() {
+                target.effective_single_order_usdt = None;
+            }
+            let started_at_us = self.pov_state.started_at_us;
+            self.pov_state.reset(get_timestamp_us());
+            if !algorithm_changed {
+                self.pov_state.started_at_us = started_at_us;
+            }
+            // Existing orders retain their reservations until cancellation is confirmed.
+            let ids: Vec<_> = self.batches.keys().copied().collect();
+            for id in ids {
+                self.begin_cancel_batch(id, BatchPhase::CancellingForTarget);
+            }
+            self.batches.retain(|id, batch| {
+                !batch.child_order_ids.is_empty()
+                    || self
+                        .orphaned_child_orders
+                        .values()
+                        .any(|meta| meta.batch_seq == *id)
+            });
+        }
         self.completion_reason = None;
         if self.active_target.is_some() && self.batches.is_empty() {
             self.next_batch_at_us = get_timestamp_us();
@@ -1297,6 +1461,7 @@ impl BatchExecStrategy {
             from_key: pending.from_key,
             effective_single_order_usdt: None,
         });
+        self.pov_state.reset(now_ts);
         self.next_batch_at_us = now_ts;
         self.completion_reason = None;
     }
@@ -1421,12 +1586,14 @@ impl BatchExecStrategy {
             aggregate_base_qty * reference_price <= self.config.target_tolerance_usdt;
         let below_exchange_minimum = aggregate_base_qty + QTY_EPS < minimum_base_qty;
         if let Some(batch_seq) = ready_batch {
-            if residual_should_coalesce(
-                aggregate_base_qty,
-                reference_price,
-                self.config.target_tolerance_usdt,
-                minimum_base_qty,
-            ) {
+            if self.config.algorithm != ExecAlgorithm::Pov
+                && residual_should_coalesce(
+                    aggregate_base_qty,
+                    reference_price,
+                    self.config.target_tolerance_usdt,
+                    minimum_base_qty,
+                )
+            {
                 self.coalesce_residual_into_ready_batch(
                     batch_seq,
                     target_generation,
@@ -1460,30 +1627,36 @@ impl BatchExecStrategy {
             return;
         }
         self.completion_reason = None;
-        let effective_single_order_usdt = match self
-            .active_target
-            .as_ref()
-            .and_then(|target| target.effective_single_order_usdt)
-        {
-            Some(value) => value,
-            None => {
-                let Some(mark_price) = self.mark_price() else {
-                    debug!(
+        if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
+            return;
+        }
+        let effective_single_order_usdt = if self.config.algorithm == ExecAlgorithm::Pov {
+            self.config.single_order_usdt
+        } else {
+            match self
+                .active_target
+                .as_ref()
+                .and_then(|target| target.effective_single_order_usdt)
+            {
+                Some(value) => value,
+                None => {
+                    let Some(mark_price) = self.mark_price() else {
+                        debug!(
                         "BatchExecStrategy: strategy_id={} symbol={} waiting for mark price before sizing target generation={}",
                         self.strategy_id, self.symbol, target_generation
                     );
-                    return;
-                };
-                let delta_usdt = aggregate_base_qty * mark_price;
-                let value = self.config.effective_single_order_usdt(delta_usdt);
-                if let Some(target) = self
-                    .active_target
-                    .as_mut()
-                    .filter(|target| target.generation_time == target_generation)
-                {
-                    target.effective_single_order_usdt = Some(value);
-                }
-                info!(
+                        return;
+                    };
+                    let delta_usdt = aggregate_base_qty * mark_price;
+                    let value = self.config.effective_single_order_usdt(delta_usdt);
+                    if let Some(target) = self
+                        .active_target
+                        .as_mut()
+                        .filter(|target| target.generation_time == target_generation)
+                    {
+                        target.effective_single_order_usdt = Some(value);
+                    }
+                    info!(
                     "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} target generation={} mark_price={:.8} delta_usdt={:.4} configured_single_usdt={:.4} effective_single_usdt={:.4} max_batch={}",
                     self.strategy_id,
                     self.strategy_name,
@@ -1495,11 +1668,25 @@ impl BatchExecStrategy {
                     value,
                     self.config.max_batch
                 );
-                value
+                    value
+                }
             }
         };
         let batch_capacity_usdt = self.config.batch_capacity_usdt(effective_single_order_usdt);
-        let desired_batch_base_qty = aggregate_base_qty.min(batch_capacity_usdt / reference_price);
+        let mut desired_batch_base_qty =
+            aggregate_base_qty.min(batch_capacity_usdt / reference_price);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            let Some(qty) = self.pov_state.batch_qty(
+                &self.config.pov,
+                self.pov_reserved_qty(),
+                desired_batch_base_qty,
+                quote.ask,
+                minimum_base_qty,
+            ) else {
+                return;
+            };
+            desired_batch_base_qty = qty;
+        }
         let Some(batch_base_qty) = select_executable_batch_base_qty(
             aggregate_base_qty,
             desired_batch_base_qty,
@@ -1654,6 +1841,9 @@ impl BatchExecStrategy {
         let Some(quote) = MktChannel::instance().get_quote(&self.symbol, self.exec_venue) else {
             return;
         };
+        if self.config.algorithm == ExecAlgorithm::Pov && !self.pov_can_submit(now_ts, quote.ts) {
+            return;
+        }
         if self
             .active_target
             .as_ref()
@@ -1677,6 +1867,16 @@ impl BatchExecStrategy {
                 return;
             }
         };
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            if let Some(limit) = self.config.pov.limit_price {
+                if plans.iter().any(|plan| match plan.side {
+                    Side::Buy => plan.price > limit,
+                    Side::Sell => plan.price < limit,
+                }) {
+                    return;
+                }
+            }
+        }
         if plans.is_empty() {
             warn!(
                 "BatchExecStrategy: strategy_id={} symbol={} batch={} has no order quantity satisfying min qty/notional; release residual to aggregate carry",
@@ -1871,7 +2071,10 @@ impl BatchExecStrategy {
     fn begin_cancel_batch(&mut self, batch_seq: u64, phase: BatchPhase) {
         let order_ids = match self.batches.get_mut(&batch_seq) {
             Some(batch) => {
-                batch.phase = phase;
+                // Target/config cancellation must never turn back into a funded requote.
+                if batch.phase != BatchPhase::CancellingForTarget {
+                    batch.phase = phase;
+                }
                 batch.child_order_ids.iter().copied().collect::<Vec<_>>()
             }
             None => return,
@@ -2024,6 +2227,9 @@ impl BatchExecStrategy {
             return;
         };
         batch.remaining_base_qty = (batch.remaining_base_qty - delta_base_qty).max(0.0);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            self.pov_state.fill(delta_base_qty);
+        }
         if let Some(level_remaining) = batch.remaining_qty_by_level.get_mut(&level_index) {
             *level_remaining = (*level_remaining - delta_base_qty).max(0.0);
             if *level_remaining <= QTY_EPS {
@@ -2488,6 +2694,16 @@ impl Strategy for BatchExecStrategy {
         self.cancel_batches_when_target_no_longer_needs_them();
         self.handle_batch_timeouts(now_ts);
         self.process_pending_target(now_ts);
+        if self.config.algorithm == ExecAlgorithm::Pov {
+            let quote_ts = MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .map(|q| q.ts)
+                .unwrap_or(0);
+            if !self.pov_can_submit(now_ts, quote_ts) {
+                let expired = self.pov_state.expired(&self.config.pov, now_ts);
+                self.pause_pov_batches(expired);
+            }
+        }
         self.maybe_start_or_requote_batch(now_ts);
     }
 
@@ -2508,6 +2724,8 @@ mod tests {
 
     fn config() -> BatchExecConfig {
         BatchExecConfig {
+            algorithm: ExecAlgorithm::Batch,
+            pov: PovConfig::default(),
             single_order_usdt: 100.0,
             orders_per_batch: 3,
             max_batch: 20,
@@ -2529,6 +2747,194 @@ mod tests {
             qty_multiplier: 1.0,
             inverse_contract_size: None,
         }
+    }
+
+    #[test]
+    fn pov_liquidity_policy_and_sizing_override_batch_urgency() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Pov;
+        cfg.pov.liquidity = PovLiquidity::MakerOnly;
+        assert!(!should_use_taker(&cfg, u32::MAX, 1));
+        assert_eq!(cfg.effective_single_order_usdt(1_000_000.0), 100.0);
+        cfg.pov.liquidity = PovLiquidity::TakerOnly;
+        assert!(should_use_taker(&cfg, 0, 0));
+        cfg.pov.liquidity = PovLiquidity::MakerThenTaker;
+        assert!(!should_use_taker(&cfg, 0, 0));
+        assert!(should_use_taker(&cfg, cfg.max_maker_requotes + 1, 0));
+        assert!(should_use_taker(&cfg, 0, -1));
+    }
+
+    #[test]
+    fn pov_orphan_partial_fill_debits_volume_once_and_keeps_reservation() {
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.config.algorithm = ExecAlgorithm::Pov;
+        strategy.pov_state.reset(1);
+        strategy
+            .pov_state
+            .observe(&strategy.config.pov, 2, 2, 20.0, 100.0, 0.0);
+        assert_eq!(
+            strategy.pov_state.available(strategy.pov_reserved_qty()),
+            0.0
+        );
+        let terminal = orphan_terminal(11, 0.5);
+        assert!(strategy.apply_exec_orphan_terminal(&terminal));
+        assert_eq!(strategy.pov_state.filled_base_qty, 0.5);
+        assert_eq!(strategy.pov_reserved_qty(), 1.5);
+        assert_eq!(
+            strategy.pov_state.available(strategy.pov_reserved_qty()),
+            0.0
+        );
+        assert!(!strategy.apply_exec_orphan_terminal(&terminal));
+        assert_eq!(strategy.pov_state.filled_base_qty, 0.5);
+    }
+
+    #[test]
+    fn pov_config_change_preserves_orphan_tracking_and_deadline() {
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.config.algorithm = ExecAlgorithm::Pov;
+        strategy.pov_state.reset(123);
+        let mut cfg = strategy.config.clone();
+        cfg.pov.participation_rate = 0.2;
+        strategy.update_config(cfg).unwrap();
+        assert_eq!(strategy.pov_state.started_at_us, 123);
+        assert_eq!(strategy.batches.len(), 1);
+        assert_eq!(strategy.orphaned_child_orders.len(), 1);
+        strategy.begin_cancel_batch(1, BatchPhase::CancellingForRequote);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert_eq!(
+            strategy.pov_state.available(strategy.pov_reserved_qty()),
+            0.0
+        );
+    }
+
+    #[test]
+    fn pov_child_alignment_never_increases_available_quantity() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Pov;
+        for liquidity in [PovLiquidity::MakerOnly, PovLiquidity::TakerOnly] {
+            cfg.pov.liquidity = liquidity;
+            for raw in [0.01, 0.199, 0.2, 1.199, 2.99, 3.123] {
+                let plans = build_child_order_plans(
+                    &cfg,
+                    Side::Buy,
+                    raw,
+                    0,
+                    0,
+                    99.0,
+                    100.0,
+                    0.1,
+                    0.01,
+                    0.01,
+                    20.0,
+                    1.0,
+                )
+                .unwrap();
+                assert!(plans.iter().map(|plan| plan.qty_base).sum::<f64>() <= raw + QTY_EPS);
+            }
+        }
+    }
+
+    #[test]
+    fn pov_pause_keeps_unsent_batches_ready_and_expiry_keeps_only_unresolved_orders() {
+        let mut strategy = strategy_with_orphan_batch(&[]);
+        strategy.batches.get_mut(&1).unwrap().phase = BatchPhase::ReadyToSubmit;
+        strategy.batches.get_mut(&1).unwrap().remaining_base_qty = 2.0;
+        strategy.pause_pov_batches(false);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::ReadyToSubmit);
+        strategy.pause_pov_batches(true);
+        assert!(strategy.batches.is_empty());
+
+        let mut strategy = strategy_with_orphan_batch(&[(11, 0, 2.0, 0.0)]);
+        strategy.pause_pov_batches(true);
+        assert_eq!(strategy.batches.len(), 1);
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
+        assert!(strategy.apply_exec_orphan_terminal(&orphan_terminal(11, 0.0)));
+        assert!(strategy.batches.is_empty());
+    }
+
+    #[test]
+    fn pov_override_roundtrip_and_invalid_price_policy() {
+        let value = serde_json::json!({"algorithm": "pov", "pov": {
+            "participation_rate": 0.07, "liquidity": "maker_only", "limit_price": 50000.0
+        }});
+        let overrides: BatchExecConfigOverride = serde_json::from_value(value).unwrap();
+        let cfg = overrides.apply_to(&config());
+        cfg.validate().unwrap();
+        assert_eq!(cfg.algorithm, ExecAlgorithm::Pov);
+        assert_eq!(cfg.pov.participation_rate, 0.07);
+        let mut invalid = cfg.clone();
+        invalid.pov.liquidity = PovLiquidity::TakerOnly;
+        assert!(invalid.validate().is_err());
+        assert_eq!(
+            serde_json::from_value::<BatchExecConfig>(serde_json::to_value(cfg.clone()).unwrap())
+                .unwrap(),
+            cfg
+        );
+    }
+
+    #[test]
+    fn pov_market_routing_is_scoped_to_venue_symbol_and_active_target() {
+        let mut cfg = config();
+        cfg.algorithm = ExecAlgorithm::Pov;
+        let mut strategy = BatchExecStrategy::new(
+            101,
+            "pov_test",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            cfg,
+        );
+        strategy.virtual_position_qty = Some(0.0);
+        strategy.position_allocation_ready = true;
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(10.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: Vec::new(),
+            effective_single_order_usdt: Some(10000.0),
+        });
+        assert_eq!(strategy.effective_config().single_order_usdt, 100.0);
+        strategy.pov_state.reset(10);
+        let mut manager = crate::strategy::StrategyManager::new();
+        manager.insert(Box::new(strategy));
+        manager.observe_exec_market_trade(
+            TradingVenue::GateFutures,
+            "BTCUSDT",
+            11,
+            11,
+            100.0,
+            100.0,
+        );
+        manager.observe_exec_market_trade(
+            TradingVenue::BinanceFutures,
+            "ETHUSDT",
+            11,
+            11,
+            100.0,
+            100.0,
+        );
+        manager.observe_exec_market_trade(
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            9,
+            11,
+            100.0,
+            100.0,
+        );
+        manager.observe_exec_market_trade(
+            TradingVenue::BinanceFutures,
+            "BTCUSDT",
+            11,
+            11,
+            20.0,
+            100.0,
+        );
+        let strategy = manager
+            .get(101)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BatchExecStrategy>()
+            .unwrap();
+        assert_eq!(strategy.pov_state.market_base_qty, 20.0);
+        assert_eq!(strategy.pov_state.available(0.0), 2.0);
     }
 
     #[test]

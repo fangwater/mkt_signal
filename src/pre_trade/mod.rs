@@ -16,6 +16,7 @@ mod channel;
 pub mod close_inventory;
 pub mod event;
 pub mod exec_resample_channel;
+pub mod exec_volume_channel;
 pub mod fr_position_concentration_guard;
 pub mod gate_fr_risk_limit_guard;
 pub mod intra_bwd_symbol_list;

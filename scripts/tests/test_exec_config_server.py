@@ -102,6 +102,37 @@ def order_parameters(config):
 
 
 class ExecConfigServerTests(unittest.TestCase):
+    def test_pov_parameters_and_symbol_override_roundtrip(self):
+        config = MODULE.normalize_exec_config({
+            **MODULE.DEFAULT_CONFIG,
+            "algorithm": "pov",
+            "pov": {"participation_rate": 0.075, "liquidity": "maker_only", "limit_price": 100.0},
+            "symbol_overrides": {"btcusdt": {"algorithm": "batch"}, "ethusdt": {
+                "pov": {"participation_rate": 0.2}
+            }},
+        })
+        self.assertEqual(config["pov"]["participation_rate"], 0.075)
+        self.assertEqual(config["pov"]["duration_ms"], 3600000)
+        self.assertEqual(config["symbol_overrides"]["BTCUSDT"]["algorithm"], "batch")
+        self.assertEqual(config["symbol_overrides"]["ETHUSDT"]["pov"]["participation_rate"], 0.2)
+        self.assertEqual(MODULE.normalize_exec_config(config), config)
+
+    def test_pov_rejects_invalid_budgets_and_unenforceable_limit(self):
+        for pov in [
+            {"participation_rate": 0}, {"participation_rate": 1.1},
+            {"participation_rate": float("nan")}, {"participation_rate": True},
+            {"max_batch_usdt": 0}, {"max_carry_usdt": 1},
+            {"volume_stale_ms": 0}, {"quote_stale_ms": -1},
+            {"duration_ms": 0}, {"duration_ms": 4294967296},
+            {"liquidity": "unknown"}, {"limit_price": 100}, {"typo": 1},
+        ]:
+            with self.subTest(pov=pov), self.assertRaises(ValueError):
+                MODULE.normalize_exec_config({**MODULE.DEFAULT_CONFIG, "algorithm": "pov", "pov": pov})
+
+    def test_missing_algorithm_defaults_to_batch(self):
+        config = {key: value for key, value in MODULE.DEFAULT_CONFIG.items() if key not in {"algorithm", "pov"}}
+        self.assertEqual(MODULE.normalize_exec_config(config)["algorithm"], "batch")
+
     def test_old_client_script_is_not_served(self):
         store = fake_store()
         server = ThreadingHTTPServer(

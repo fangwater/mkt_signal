@@ -17,6 +17,7 @@ pub mod order_reconcile;
 pub mod orphan_manager;
 pub mod orphan_order_common;
 pub mod orphan_order_strategy;
+pub mod pov;
 pub mod uniform_order_helper;
 pub mod ws_order_update;
 pub use manager::{Strategy, StrategyManager};

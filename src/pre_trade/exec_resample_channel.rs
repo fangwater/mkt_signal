@@ -91,6 +91,8 @@ impl ExecResampleChannel {
                 let target_qty = snapshot.target_qty.unwrap_or(0.0);
                 let delta_qty = target_qty - snapshot.effective_position_qty;
                 rows.push(ExecStrategyStateRow {
+                    algorithm: snapshot.algorithm,
+                    pov: snapshot.pov,
                     strategy_name: snapshot.strategy_name,
                     source_updated_at_ms: snapshot.source_updated_at_ms,
                     symbol: snapshot.symbol,

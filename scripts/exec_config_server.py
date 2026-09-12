@@ -28,9 +28,11 @@ ORDER_PARAMETER_FIELDS = (
     "maker_timeout_ms",
     "max_maker_requotes",
     "target_tolerance_usdt",
+    "algorithm",
+    "pov",
 )
-REQUIRED_CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets"}
-CONFIG_FIELDS = REQUIRED_CONFIG_FIELDS | {"symbol_overrides"}
+REQUIRED_CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) - {"algorithm", "pov"} | {"targets"}
+CONFIG_FIELDS = set(ORDER_PARAMETER_FIELDS) | {"targets", "symbol_overrides"}
 OPTIONAL_CONFIG_FIELDS = {"updated_at_us"}
 ALLOWED_TARGET_SIGNALS = (-2, -1, 0, 1, 2)
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -44,6 +46,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_maker_requotes": 2,
     "target_tolerance_usdt": 10.0,
     "targets": {},
+    "algorithm": "batch",
+    "pov": {
+        "participation_rate": 0.1,
+        "max_batch_usdt": 300.0,
+        "max_carry_usdt": 600.0,
+        "volume_stale_ms": 5000,
+        "quote_stale_ms": 1000,
+        "duration_ms": 3600000,
+        "liquidity": "maker_then_taker",
+        "limit_price": None,
+    },
 }
 POSITION_CLOSE_STRATEGY_NAME = "SYSTEM_POSITION_CLOSE"
 ORDER_PARAMETER_TOKEN_ENV = "CRYPTO_CTA_MANAGER_WRITE_TOKEN"
@@ -172,6 +185,35 @@ def integer(raw: Any, field: str, *, positive: bool = False) -> int:
     return value
 
 
+def normalize_pov(raw: Any) -> Dict[str, Any]:
+    defaults = DEFAULT_CONFIG["pov"]
+    if not isinstance(raw, dict):
+        raise ValueError("pov must be an object")
+    unknown = sorted(set(raw) - set(defaults))
+    if unknown:
+        raise ValueError(f"unknown pov fields: {', '.join(unknown)}")
+    value = {**defaults, **raw}
+    for name in ("participation_rate", "max_batch_usdt", "max_carry_usdt"):
+        if isinstance(value[name], bool):
+            raise ValueError(f"pov.{name} must be a number")
+        value[name] = finite_float(value[name], f"pov.{name}", positive=True)
+    if value["participation_rate"] > 1:
+        raise ValueError("pov.participation_rate must be in (0, 1]")
+    if value["max_carry_usdt"] < value["max_batch_usdt"]:
+        raise ValueError("pov.max_carry_usdt must be >= max_batch_usdt")
+    for name in ("volume_stale_ms", "quote_stale_ms", "duration_ms"):
+        value[name] = integer(value[name], f"pov.{name}", positive=True)
+    if value["liquidity"] not in ("maker_only", "taker_only", "maker_then_taker"):
+        raise ValueError("invalid pov.liquidity")
+    if value["limit_price"] is not None:
+        if isinstance(value["limit_price"], bool):
+            raise ValueError("pov.limit_price must be a number")
+        value["limit_price"] = finite_float(value["limit_price"], "pov.limit_price", positive=True)
+        if value["liquidity"] != "maker_only":
+            raise ValueError("pov.limit_price requires maker_only liquidity")
+    return value
+
+
 def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("config must be an object")
@@ -184,6 +226,10 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
     if missing:
         raise ValueError(f"missing fields: {', '.join(missing)}")
 
+    algorithm = raw.get("algorithm", "batch")
+    if algorithm not in ("batch", "pov"):
+        raise ValueError("algorithm must be batch or pov")
+
     anchor = str(raw["maker_price_anchor"]).strip()
     if anchor not in {"own_best", "opposite_best_plus_one_tick"}:
         raise ValueError("invalid maker_price_anchor")
@@ -195,6 +241,8 @@ def normalize_exec_config(raw: Any) -> Dict[str, Any]:
         raise ValueError("target_tolerance_usdt must be >= 0")
 
     normalized = {
+        "algorithm": algorithm,
+        "pov": normalize_pov(raw.get("pov", {})),
         "single_order_usdt": finite_float(
             raw["single_order_usdt"], "single_order_usdt", positive=True
         ),
@@ -233,7 +281,7 @@ def normalize_order_parameters(raw: Any) -> Dict[str, Any]:
         raise ValueError("order_parameters must be an object")
     allowed = set(ORDER_PARAMETER_FIELDS)
     unknown = sorted(set(raw) - allowed)
-    missing = sorted(allowed - set(raw))
+    missing = sorted(allowed - {"algorithm", "pov"} - set(raw))
     if unknown:
         raise ValueError(f"unknown order parameter fields: {', '.join(unknown)}")
     if missing:
@@ -523,6 +571,12 @@ INDEX_HTML = r"""<!doctype html>
           <div class="field"><label>Maker Timeout ms</label><input id="maker_timeout_ms" inputmode="numeric" disabled /></div>
           <div class="field"><label>Max Maker Requotes</label><input id="max_maker_requotes" inputmode="numeric" disabled /></div>
           <div class="field"><label>Target Tolerance USDT</label><input id="target_tolerance_usdt" inputmode="decimal" disabled /></div>
+          <div class="field"><label>Algorithm</label><select id="algorithm" disabled><option value="batch">Batch</option><option value="pov">POV</option></select></div>
+        </div>
+      </section>
+      <section id="pov-section" hidden>
+        <div class="section-head"><h2>POV</h2><span class="readonly-state">Read only</span></div>
+        <div class="param-grid" id="pov-fields">
         </div>
       </section>
       <section>
@@ -539,7 +593,8 @@ INDEX_HTML = r"""<!doctype html>
     <script>
       (() => {
         const DEFAULTS = __DEFAULTS__;
-        const fields = ["single_order_usdt", "orders_per_batch", "max_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt"];
+        const fields = ["single_order_usdt", "orders_per_batch", "max_batch", "maker_price_anchor", "tick_spacing", "batch_interval_ms", "maker_timeout_ms", "max_maker_requotes", "target_tolerance_usdt", "algorithm"];
+        const povLabels = {participation_rate: "Participation Rate", max_batch_usdt: "Max Batch USDT", max_carry_usdt: "Max Carry USDT", volume_stale_ms: "Volume Stale ms", quote_stale_ms: "Quote Stale ms", duration_ms: "Duration ms", liquidity: "Liquidity", limit_price: "Limit Price"};
         const state = { bootstrap: null, names: [], name: "", config: null };
         const el = (id) => document.getElementById(id);
         function api(path) { return new URL(`api/${path}`, location.href).toString(); }
@@ -577,6 +632,15 @@ INDEX_HTML = r"""<!doctype html>
         function renderConfig(config) {
           state.config = structuredClone(config);
           fields.forEach((name) => { el(name).value = config[name]; el(name).disabled = true; });
+          el("pov-section").hidden = config.algorithm !== "pov";
+          el("pov-fields").replaceChildren();
+          Object.entries(povLabels).forEach(([name, label]) => {
+            const field = document.createElement("div"); field.className = "field";
+            const caption = document.createElement("label"); caption.textContent = label;
+            const input = document.createElement("input"); input.disabled = true;
+            input.value = (config.pov || DEFAULTS.pov)[name] ?? "";
+            field.append(caption, input); el("pov-fields").append(field);
+          });
           renderTargets(config.targets);
           el("redis-key").textContent = state.bootstrap ? `${state.bootstrap.key_prefix}${state.name}` : "-";
         }

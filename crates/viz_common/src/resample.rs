@@ -136,6 +136,8 @@ pub struct PreTradeVenueRiskResampleEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecStrategyStateRow {
+    pub algorithm: String,
+    pub pov: Option<ExecPovState>,
     pub strategy_name: String,
     pub source_updated_at_ms: i64,
     pub symbol: String,
@@ -158,6 +160,18 @@ pub struct ExecStrategyStateRow {
     pub estimated_completion_ts_ms: i64,
     pub execution_complete: bool,
     pub completion_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecPovState {
+    pub status: String,
+    pub participation_rate: f64,
+    pub market_base_qty: f64,
+    pub filled_base_qty: f64,
+    pub reserved_base_qty: f64,
+    pub available_base_qty: f64,
+    pub last_trade_ts_ms: i64,
+    pub deadline_ts_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,10 +218,12 @@ mod tests {
 
     #[test]
     fn exec_strategy_state_codec_round_trip() {
-        let entry = ExecStrategyStateResampleEntry {
+        let mut entry = ExecStrategyStateResampleEntry {
             ts_ms: 123,
             position_ready: true,
             rows: vec![ExecStrategyStateRow {
+                algorithm: "batch".into(),
+                pov: None,
                 strategy_name: "cta_alpha".to_string(),
                 source_updated_at_ms: 1_700_000_000_000,
                 symbol: "BTCUSDT".to_string(),
@@ -245,5 +261,21 @@ mod tests {
         assert_eq!(decoded.rows[0].estimated_completion_ts_ms, 456);
         assert!(!decoded.rows[0].execution_complete);
         assert!(decoded.rows[0].completion_reason.is_empty());
+
+        entry.rows[0].algorithm = "pov".into();
+        entry.rows[0].pov = Some(super::ExecPovState {
+            status: "expired".into(),
+            participation_rate: 0.1,
+            market_base_qty: 20.0,
+            filled_base_qty: 0.5,
+            reserved_base_qty: 1.5,
+            available_base_qty: 0.0,
+            last_trade_ts_ms: 123,
+            deadline_ts_ms: 456,
+        });
+        let decoded =
+            ExecStrategyStateResampleEntry::from_bytes(&entry.to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.rows[0].algorithm, "pov");
+        assert_eq!(decoded.rows[0].pov, entry.rows[0].pov);
     }
 }
