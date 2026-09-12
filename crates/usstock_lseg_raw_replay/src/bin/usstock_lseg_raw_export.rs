@@ -34,6 +34,10 @@ const L2_WIDTH: usize = 40;
 struct Args {
     #[arg(long)]
     rocksdb_dir: PathBuf,
+    /// Previous-period RAW RocksDB used only when this period lacks the
+    /// previous natural month's size-threshold sample.
+    #[arg(long)]
+    size_reference_rocksdb: Option<PathBuf>,
     #[arg(long)]
     calendar: PathBuf,
     #[arg(long)]
@@ -86,6 +90,9 @@ struct SizeAudit {
     off_exchange_policy: String,
     p50: Option<f64>,
     p90: Option<f64>,
+    /// RocksDB that supplied the previous-natural-month trade sample.
+    threshold_rocksdb: String,
+    /// RocksDB that supplied the exported session's quotes and trades.
     rocksdb: String,
 }
 
@@ -583,6 +590,7 @@ fn size_audit_path(root: &Path, venue: &str, ric: &str, day: NaiveDate) -> PathB
 fn validate_size_audit(
     audit: &SizeAudit,
     rocksdb: &Path,
+    size_reference_rocksdb: Option<&Path>,
     venue: &str,
     ric: &str,
     day: NaiveDate,
@@ -590,8 +598,12 @@ fn validate_size_audit(
     let month = format!("{:04}-{:02}", day.year(), day.month());
     let (source_year, source_month) = previous_month(day.year(), day.month());
     let expected_source = format!("{source_year:04}-{source_month:02}");
-    if audit.schema != "usstock-raw-size-threshold-v1"
+    let valid_threshold_sources = std::iter::once(rocksdb)
+        .chain(size_reference_rocksdb)
+        .any(|path| audit.threshold_rocksdb == path.display().to_string());
+    if audit.schema != "usstock-raw-size-threshold-v2"
         || audit.rocksdb != rocksdb.display().to_string()
+        || !valid_threshold_sources
         || audit.venue != venue
         || audit.ric != ric
         || audit.trading_month != month
@@ -609,6 +621,26 @@ fn validate_size_audit(
         _ => bail!("cached size audit has inconsistent source/sample/threshold fields"),
     }
     Ok(())
+}
+
+fn collect_reference_size_sample(
+    rocksdb: &Path,
+    ric: &str,
+    sessions: &[(u64, u64)],
+) -> Result<Vec<f64>> {
+    let mut options = Options::default();
+    options.create_if_missing(false);
+    options.create_missing_column_families(false);
+    let instrument = format!("i:{ric}");
+    if !DB::list_cf(&options, rocksdb)
+        .with_context(|| format!("list column families in {}", rocksdb.display()))?
+        .iter()
+        .any(|name| name == &instrument)
+    {
+        return Ok(Vec::new());
+    }
+    let (db, venue_cfs, instrument_cf) = open_read_only(rocksdb, ric)?;
+    collect_size_sample(&db, &venue_cfs, &instrument_cf, sessions)
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -632,6 +664,7 @@ fn load_or_build_size_audit(
     venue_cfs: &[String],
     instrument_cf: &str,
     rocksdb: &Path,
+    size_reference_rocksdb: Option<&Path>,
     calendar: &Path,
     output_root: &Path,
     venue: &str,
@@ -651,12 +684,27 @@ fn load_or_build_size_audit(
     lock.lock_exclusive()?;
     if path.is_file() && !rebuild {
         let audit: SizeAudit = serde_json::from_slice(&fs::read(&path)?)?;
-        validate_size_audit(&audit, rocksdb, venue, ric, day)?;
+        validate_size_audit(&audit, rocksdb, size_reference_rocksdb, venue, ric, day)?;
         return Ok((path, audit));
     }
 
     let (source_month, sessions) = previous_month_sessions(calendar, day)?;
     let mut amounts = collect_size_sample(db, venue_cfs, instrument_cf, &sessions)?;
+    let threshold_rocksdb = if amounts.is_empty() {
+        if let Some(reference) = size_reference_rocksdb {
+            let reference_amounts = collect_reference_size_sample(reference, ric, &sessions)?;
+            if !reference_amounts.is_empty() {
+                amounts = reference_amounts;
+                reference
+            } else {
+                rocksdb
+            }
+        } else {
+            rocksdb
+        }
+    } else {
+        rocksdb
+    };
     let sample_trades = amounts.len() as u64;
     let (threshold_source_month, p50, p90) = if amounts.is_empty() {
         (None, None, None)
@@ -667,7 +715,7 @@ fn load_or_build_size_audit(
         (Some(source_month), Some(p50), Some(p90))
     };
     let audit = SizeAudit {
-        schema: "usstock-raw-size-threshold-v1".to_string(),
+        schema: "usstock-raw-size-threshold-v2".to_string(),
         ric: ric.to_string(),
         venue: venue.to_string(),
         trading_month: format!("{:04}-{:02}", day.year(), day.month()),
@@ -680,9 +728,10 @@ fn load_or_build_size_audit(
         off_exchange_policy: "included in total bucket; excluded from buy/sell buckets".to_string(),
         p50,
         p90,
+        threshold_rocksdb: threshold_rocksdb.display().to_string(),
         rocksdb: rocksdb.display().to_string(),
     };
-    validate_size_audit(&audit, rocksdb, venue, ric, day)?;
+    validate_size_audit(&audit, rocksdb, size_reference_rocksdb, venue, ric, day)?;
     write_json_atomic(&path, &audit)?;
     Ok((path, audit))
 }
@@ -972,6 +1021,7 @@ fn main() -> Result<()> {
         &venue_cfs,
         &instrument_cf,
         &args.rocksdb_dir,
+        args.size_reference_rocksdb.as_deref(),
         &args.calendar,
         &args.baseline_out_root,
         venue,
@@ -1373,6 +1423,7 @@ fn main() -> Result<()> {
             "threshold_source_month": size_audit.threshold_source_month,
             "threshold_method": size_audit.threshold_method,
             "threshold_sample_trades": size_audit.threshold_sample_trades,
+            "threshold_rocksdb": size_audit.threshold_rocksdb,
             "p50": size_audit.p50,
             "p90": size_audit.p90,
             "off_exchange_policy": size_audit.off_exchange_policy,
@@ -1478,6 +1529,7 @@ mod tests {
             &[],
             "i:AAPL.O",
             &rocksdb,
+            None,
             &calendar,
             &output,
             "NASDAQ",
@@ -1489,12 +1541,14 @@ mod tests {
         assert_eq!(first.threshold_sample_trades, 1);
         assert_eq!(first.p50, Some(200.0));
         assert_eq!(first.p90, Some(200.0));
+        assert_eq!(first.threshold_rocksdb, rocksdb.display().to_string());
 
         let (_, cached) = load_or_build_size_audit(
             &db,
             &[],
             "i:AAPL.O",
             &rocksdb,
+            None,
             &calendar,
             &output,
             "NASDAQ",
@@ -1505,6 +1559,67 @@ mod tests {
         .unwrap();
         assert_eq!(cached.threshold_sample_trades, 1);
         assert_eq!(cached.p50, Some(200.0));
+    }
+
+    #[test]
+    fn previous_period_supplies_missing_boundary_month_thresholds() {
+        let temporary = tempfile::tempdir().unwrap();
+        let current = temporary.path().join("current");
+        let reference = temporary.path().join("reference");
+        let mut options = Options::default();
+        options.create_if_missing(true);
+
+        let mut current_db = DB::open(&options, &current).unwrap();
+        current_db
+            .create_cf("i:AAPL.O", &Options::default())
+            .unwrap();
+
+        let mut reference_db = DB::open(&options, &reference).unwrap();
+        reference_db
+            .create_cf("i:AAPL.O", &Options::default())
+            .unwrap();
+        let reference_cf = reference_db.cf_handle("i:AAPL.O").unwrap();
+        let mut bytes = [0_u8; usstock_lseg_raw_replay::event_codec::TRADE_VALUE_LEN];
+        bytes[24..32].copy_from_slice(&100_000_000_000_i64.to_le_bytes());
+        bytes[32..40].copy_from_slice(&3_u64.to_le_bytes());
+        bytes[90] = b'B';
+        bytes[92] = 1;
+        bytes[93] = 3;
+        bytes[108] = 1;
+        reference_db
+            .put_cf(
+                &reference_cf,
+                encode_key(MSG_TRADE, 1_625_059_900 * NS, 1),
+                bytes,
+            )
+            .unwrap();
+        drop(reference_db);
+
+        let calendar = temporary.path().join("calendar.csv");
+        fs::write(
+            &calendar,
+            "session_date,open_ts,close_ts\n2021-06-30,1625059800,1625083200\n2021-07-01,1625146200,1625169600\n",
+        )
+        .unwrap();
+        let output = temporary.path().join("baseline_data_1m_raw");
+        let (_, audit) = load_or_build_size_audit(
+            &current_db,
+            &[],
+            "i:AAPL.O",
+            &current,
+            Some(&reference),
+            &calendar,
+            &output,
+            "NASDAQ",
+            "AAPL.O",
+            NaiveDate::from_ymd_opt(2021, 7, 1).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(audit.schema, "usstock-raw-size-threshold-v2");
+        assert_eq!(audit.threshold_sample_trades, 1);
+        assert_eq!(audit.p50, Some(300.0));
+        assert_eq!(audit.threshold_rocksdb, reference.display().to_string());
     }
 
     #[test]

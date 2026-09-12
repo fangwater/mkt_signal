@@ -1,8 +1,9 @@
 use crate::event_codec::{
     classify_trade_direction, decode_correction, decode_trade, encode_correction,
-    encode_exact_slots, encode_trade, layout_for_message, layout_for_type, validate_exact_slots,
-    CorrectionValue, TradeValue, WireLayout, MISSING_DATE, MISSING_U16, MISSING_U32, MISSING_U64,
-    MSG_CANCEL, MSG_PREVIOUS_DAY, MSG_TRADE,
+    encode_exact_slots, encode_raw_extension, encode_trade, is_registered_raw_field,
+    layout_for_message, layout_for_type, unregistered_raw_fields, validate_exact_slots,
+    validate_raw_extension, CorrectionValue, TradeValue, WireLayout, MISSING_DATE, MISSING_U16,
+    MISSING_U32, MISSING_U64, MSG_CANCEL, MSG_PREVIOUS_DAY, MSG_RAW_EXTENSION, MSG_TRADE,
 };
 use crate::quote_codec::{
     decode_candidate, decode_key, encode_candidate, encode_key, encode_quote, encode_quote_state,
@@ -469,18 +470,28 @@ fn validate_quote_signature(message: &RawMessage) -> Result<()> {
                 message.date_time
             );
         }
-        if !QUOTE_FIELDS.contains(&(field.fid, field.name.as_str())) && identity != QUOTE_DATE_FIELD
-        {
-            bail!(
-                "unsupported Quote FID {} {} at {} {}",
-                field.fid,
-                field.name,
-                message.ric,
-                message.date_time
-            );
-        }
     }
     Ok(())
+}
+
+fn quote_auxiliary_fields(message: &RawMessage) -> Vec<&RawField> {
+    message
+        .fields
+        .iter()
+        .filter(|field| {
+            !QUOTE_FIELDS.contains(&(field.fid, field.name.as_str()))
+                && (field.fid, field.name.as_str()) != QUOTE_DATE_FIELD
+        })
+        .collect()
+}
+
+fn has_primary_quote_update(message: &RawMessage) -> bool {
+    message.fields.iter().any(|field| {
+        matches!(
+            field.name.as_str(),
+            "BID" | "BIDSIZE" | "ASK" | "ASKSIZE" | "PRC_QL_CD" | "PRC_QL3"
+        )
+    })
 }
 
 fn is_quote_ripple(message: &RawMessage) -> Result<bool> {
@@ -540,7 +551,6 @@ fn is_empty_closing_run(message: &RawMessage) -> Result<bool> {
     {
         return Ok(false);
     }
-    layout_for_message(message)?;
     Ok(true)
 }
 
@@ -645,25 +655,13 @@ fn quote_bucket_ns(message: &RawMessage, source_ts_utc_ns: u64) -> Result<u64> {
 struct QuoteUpdate {
     bucket: u64,
     candidate: QuoteCandidate,
-    bid_updated: bool,
-    ask_updated: bool,
+    bid_price_updated: bool,
+    bid_size_updated: bool,
+    bid_venue_updated: bool,
+    ask_price_updated: bool,
+    ask_size_updated: bool,
+    ask_venue_updated: bool,
     quality_updated: bool,
-}
-
-fn side_updated(message: &RawMessage, price: &str, size: &str) -> Result<bool> {
-    match (
-        optional_field(message, price),
-        optional_field(message, size),
-    ) {
-        (Some(_), Some(_)) => Ok(true),
-        (None, None) => Ok(false),
-        _ => bail!(
-            "Quote {} {} has incomplete {} side update",
-            message.ric,
-            message.date_time,
-            if price == "BID" { "bid" } else { "ask" }
-        ),
-    }
 }
 
 fn parse_quote_update(message: &RawMessage, part: u16, shard: u16) -> Result<QuoteUpdate> {
@@ -677,10 +675,21 @@ fn parse_quote_update(message: &RawMessage, part: u16, shard: u16) -> Result<Quo
     let source_ts_utc_ns = parse_date_time_ns(&message.date_time)?;
     let source_order = (u64::from(part) << 48) | (u64::from(shard) << 32) | message.source_row;
     let bucket = quote_bucket_ns(message, source_ts_utc_ns)?;
-    let bid_updated = side_updated(message, "BID", "BIDSIZE")?;
-    let ask_updated = side_updated(message, "ASK", "ASKSIZE")?;
+    let bid_price_updated = optional_field(message, "BID").is_some();
+    let bid_size_updated = optional_field(message, "BIDSIZE").is_some();
+    let bid_venue_updated = optional_field(message, "BIDXID").is_some();
+    let ask_price_updated = optional_field(message, "ASK").is_some();
+    let ask_size_updated = optional_field(message, "ASKSIZE").is_some();
+    let ask_venue_updated = optional_field(message, "ASKXID").is_some();
     let (quality_code, quality_updated) = parse_quality(message)?;
-    if !bid_updated && !ask_updated && !quality_updated {
+    if !bid_price_updated
+        && !bid_size_updated
+        && !bid_venue_updated
+        && !ask_price_updated
+        && !ask_size_updated
+        && !ask_venue_updated
+        && !quality_updated
+    {
         bail!(
             "Quote {} {} has neither a side nor quality update",
             message.ric,
@@ -692,46 +701,44 @@ fn parse_quote_update(message: &RawMessage, part: u16, shard: u16) -> Result<Quo
         candidate: QuoteCandidate {
             source_ts_utc_ns,
             source_order,
-            bid: if bid_updated {
+            bid: if bid_price_updated {
                 parse_price_e9(&field(message, "BID")?.value)?
             } else {
                 MISSING_PRICE
             },
-            bid_size: if bid_updated {
+            bid_size: if bid_size_updated {
                 parse_size(&field(message, "BIDSIZE")?.value)?
             } else {
                 MISSING_SIZE
             },
-            ask: if ask_updated {
+            ask: if ask_price_updated {
                 parse_price_e9(&field(message, "ASK")?.value)?
             } else {
                 MISSING_PRICE
             },
-            ask_size: if ask_updated {
+            ask_size: if ask_size_updated {
                 parse_size(&field(message, "ASKSIZE")?.value)?
             } else {
                 MISSING_SIZE
             },
-            bid_venue: if bid_updated {
-                optional_field(message, "BIDXID")
-                    .map(parse_venue)
-                    .transpose()?
-                    .unwrap_or_default()
+            bid_venue: if bid_venue_updated {
+                parse_venue(field(message, "BIDXID")?)?
             } else {
                 String::new()
             },
-            ask_venue: if ask_updated {
-                optional_field(message, "ASKXID")
-                    .map(parse_venue)
-                    .transpose()?
-                    .unwrap_or_default()
+            ask_venue: if ask_venue_updated {
+                parse_venue(field(message, "ASKXID")?)?
             } else {
                 String::new()
             },
             quality_code,
         },
-        bid_updated,
-        ask_updated,
+        bid_price_updated,
+        bid_size_updated,
+        bid_venue_updated,
+        ask_price_updated,
+        ask_size_updated,
+        ask_venue_updated,
         quality_updated,
     })
 }
@@ -741,26 +748,59 @@ pub fn parse_quote(message: &RawMessage, part: u16, shard: u16) -> Result<(u64, 
     Ok((update.bucket, update.candidate))
 }
 
-fn merge_quote_update(previous: &QuoteCandidate, update: QuoteUpdate) -> QuoteCandidate {
+fn merge_quote_update(previous: &QuoteCandidate, update: &QuoteUpdate) -> QuoteCandidate {
     let mut merged = previous.clone();
     if update.candidate.source_order >= merged.source_order {
         merged.source_ts_utc_ns = update.candidate.source_ts_utc_ns;
         merged.source_order = update.candidate.source_order;
     }
-    if update.bid_updated {
+    if update.bid_price_updated {
         merged.bid = update.candidate.bid;
-        merged.bid_size = update.candidate.bid_size;
-        merged.bid_venue = update.candidate.bid_venue;
+        if merged.bid == MISSING_PRICE && !update.bid_size_updated {
+            merged.bid_size = MISSING_SIZE;
+        }
     }
-    if update.ask_updated {
+    if update.bid_size_updated {
+        merged.bid_size = update.candidate.bid_size;
+        if merged.bid_size == MISSING_SIZE && !update.bid_price_updated {
+            merged.bid = MISSING_PRICE;
+        }
+    }
+    if update.bid_venue_updated {
+        merged.bid_venue = update.candidate.bid_venue.clone();
+    }
+    if update.ask_price_updated {
         merged.ask = update.candidate.ask;
+        if merged.ask == MISSING_PRICE && !update.ask_size_updated {
+            merged.ask_size = MISSING_SIZE;
+        }
+    }
+    if update.ask_size_updated {
         merged.ask_size = update.candidate.ask_size;
-        merged.ask_venue = update.candidate.ask_venue;
+        if merged.ask_size == MISSING_SIZE && !update.ask_price_updated {
+            merged.ask = MISSING_PRICE;
+        }
+    }
+    if update.ask_venue_updated {
+        merged.ask_venue = update.candidate.ask_venue.clone();
     }
     if update.quality_updated {
         merged.quality_code = update.candidate.quality_code;
     }
     merged
+}
+
+fn quote_for_output(candidate: &QuoteCandidate) -> QuoteCandidate {
+    let mut output = candidate.clone();
+    if (output.bid == MISSING_PRICE) != (output.bid_size == MISSING_SIZE) {
+        output.bid = MISSING_PRICE;
+        output.bid_size = MISSING_SIZE;
+    }
+    if (output.ask == MISSING_PRICE) != (output.ask_size == MISSING_SIZE) {
+        output.ask = MISSING_PRICE;
+        output.ask_size = MISSING_SIZE;
+    }
+    output
 }
 
 fn source_order(message: &RawMessage, part: u16, shard: u16) -> Result<u64> {
@@ -1062,11 +1102,14 @@ fn encode_nonquote_events(
     part: u16,
     shard: u16,
 ) -> Result<Vec<EncodedEvent>> {
-    let layout = layout_for_message(message)?;
+    let extension_fields = unregistered_raw_fields(message);
+    let mut known_message = message.clone();
+    known_message.fields.retain(is_registered_raw_field);
+    let layout = layout_for_message(&known_message)?;
     let source_ts_utc_ns = parse_date_time_ns(&message.date_time)?;
     let order = source_order(message, part, shard)?;
+    let mut events = Vec::new();
     if message.update_type == "CORRECTION" {
-        let mut events = Vec::new();
         if optional_field(message, "CAN_PRC").is_some() {
             events.push(parse_correction_event(
                 message,
@@ -1087,25 +1130,34 @@ fn encode_nonquote_events(
             events.push(EncodedEvent {
                 msg_type: layout.msg_type,
                 venue: String::new(),
-                value: encode_exact_slots(message, source_ts_utc_ns, order, layout)?,
+                value: encode_exact_slots(&known_message, source_ts_utc_ns, order, layout)?,
                 name: layout.name.clone(),
             });
         }
         if events.is_empty() {
             bail!("{} has no Correction encoder", layout.name);
         }
-        return Ok(events);
+    } else {
+        match layout.msg_type {
+            MSG_TRADE => events.push(parse_trade_event(message, source_ts_utc_ns, order)?),
+            _ if layout.exact_slots => events.push(EncodedEvent {
+                msg_type: layout.msg_type,
+                venue: String::new(),
+                value: encode_exact_slots(&known_message, source_ts_utc_ns, order, layout)?,
+                name: layout.name.clone(),
+            }),
+            _ => bail!("{} has no RAW event encoder", layout.name),
+        }
     }
-    match layout.msg_type {
-        MSG_TRADE => Ok(vec![parse_trade_event(message, source_ts_utc_ns, order)?]),
-        _ if layout.exact_slots => Ok(vec![EncodedEvent {
-            msg_type: layout.msg_type,
+    if !extension_fields.is_empty() {
+        events.push(EncodedEvent {
+            msg_type: MSG_RAW_EXTENSION,
             venue: String::new(),
-            value: encode_exact_slots(message, source_ts_utc_ns, order, layout)?,
-            name: layout.name.clone(),
-        }]),
-        _ => bail!("{} has no RAW event encoder", layout.name),
+            value: encode_raw_extension(message, source_ts_utc_ns, order, &extension_fields)?,
+            name: "RawExtensionMsg".to_string(),
+        });
     }
+    Ok(events)
 }
 
 pub(crate) fn source_location(path: &Path) -> Result<(u16, u16)> {
@@ -1530,6 +1582,16 @@ pub fn verify_quote_rocksdb(path: &Path) -> Result<QuoteVerifyCensus> {
                         }
                         census.event_values += 1;
                     }
+                    MSG_RAW_EXTENSION => {
+                        if !name.starts_with(INSTRUMENT_PREFIX) {
+                            bail!("RawExtensionMsg found in venue column family {name}");
+                        }
+                        let (value_ts, value_order) = validate_raw_extension(&value)?;
+                        if (value_ts, value_order) != (key_ts, source_order) {
+                            bail!("RawExtensionMsg key/value source mismatch in {name}");
+                        }
+                        census.event_values += 1;
+                    }
                     other => {
                         let layout = layout_for_type(other)?;
                         validate_exact_slots(&value, layout)?;
@@ -1904,14 +1966,54 @@ fn replay_one_stream(
             return Ok(());
         }
         census.source_quotes += 1;
+        let extension_fields = quote_auxiliary_fields(&message);
+        if !has_primary_quote_update(&message) && !extension_fields.is_empty() {
+            let source = parse_date_time_ns(&message.date_time)?;
+            let cf = ensure_cf(db, cf_lock, &instrument_cf_name(&message.ric)?)?;
+            batch.put_cf(
+                &cf,
+                encode_key(MSG_RAW_EXTENSION, source, order),
+                encode_raw_extension(&message, source, order, &extension_fields)?,
+            );
+            census.event_values += 1;
+            *census
+                .encoded_by_type
+                .entry("RawExtensionMsg".to_string())
+                .or_default() += 1;
+            if batch.len() >= WRITE_BATCH_OPS {
+                flush_batch(db, &mut batch)?;
+            }
+            return Ok(());
+        }
         let update = parse_quote_update(&message, part, shard)?;
         let source = update.candidate.source_ts_utc_ns;
+        if !extension_fields.is_empty() {
+            let cf = ensure_cf(db, cf_lock, &instrument_cf_name(&message.ric)?)?;
+            batch.put_cf(
+                &cf,
+                encode_key(MSG_RAW_EXTENSION, source, order),
+                encode_raw_extension(&message, source, order, &extension_fields)?,
+            );
+            census.event_values += 1;
+            *census
+                .encoded_by_type
+                .entry("RawExtensionMsg".to_string())
+                .or_default() += 1;
+        }
+        let bucket = update.bucket;
+        let ric = message.ric.clone();
+        let previous = open.get(&ric).cloned();
+        let candidate = previous
+            .as_ref()
+            .map(|(_, prior)| merge_quote_update(prior, &update))
+            .unwrap_or_else(|| update.candidate.clone());
         for bid in [true, false] {
-            if if bid {
-                update.bid_updated
+            let updated = if bid {
+                update.bid_price_updated || update.bid_size_updated || update.bid_venue_updated
             } else {
-                update.ask_updated
-            } {
+                update.ask_price_updated || update.ask_size_updated || update.ask_venue_updated
+            };
+            if updated {
                 let (event, _) = direction_clock(
                     &message,
                     source,
@@ -1922,7 +2024,7 @@ fn replay_one_stream(
                     },
                 )?;
                 if direction.enter(sessions, event, source) {
-                    let c = &update.candidate;
+                    let c = &candidate;
                     let venue = if bid { &c.bid_venue } else { &c.ask_venue };
                     let venue = if optional_field(&message, if bid { "BIDXID" } else { "ASKXID" })
                         .is_none()
@@ -1932,13 +2034,17 @@ fn replay_one_stream(
                     } else {
                         venue
                     };
+                    let price = if bid { c.bid } else { c.ask };
                     let size = if bid { c.bid_size } else { c.ask_size };
+                    if (price == MISSING_PRICE) != (size == MISSING_SIZE) {
+                        continue;
+                    }
                     direction.state.quote(
                         bid,
                         event,
                         source,
                         order,
-                        if bid { c.bid } else { c.ask },
+                        price,
                         if size == MISSING_SIZE {
                             0
                         } else {
@@ -1949,11 +2055,8 @@ fn replay_one_stream(
                 }
             }
         }
-        let bucket = update.bucket;
-        let ric = message.ric;
-        if let Some((previous_bucket, previous)) = open.get(&ric) {
-            if *previous_bucket == bucket {
-                let candidate = merge_quote_update(previous, update);
+        if let Some((previous_bucket, previous)) = previous {
+            if previous_bucket == bucket {
                 open.insert(ric, (bucket, candidate));
                 return Ok(());
             }
@@ -1961,8 +2064,8 @@ fn replay_one_stream(
             let cf = ensure_cf(db, cf_lock, &temp_name)?;
             batch.merge_cf(
                 &cf,
-                encode_key(MSG_QUOTE, *previous_bucket, 0),
-                encode_candidate(previous)?,
+                encode_key(MSG_QUOTE, previous_bucket, 0),
+                encode_candidate(&quote_for_output(&previous))?,
             );
             temporary_names.insert(temp_name);
             census.temporary_snapshots += 1;
@@ -1970,7 +2073,7 @@ fn replay_one_stream(
                 flush_batch(db, &mut batch)?;
             }
         }
-        open.insert(ric, (bucket, update.candidate));
+        open.insert(ric, (bucket, candidate));
         Ok(())
     };
     for (part, shard, message) in jobs {
@@ -1983,7 +2086,7 @@ fn replay_one_stream(
         batch.merge_cf(
             &cf,
             encode_key(MSG_QUOTE, bucket, 0),
-            encode_candidate(&candidate)?,
+            encode_candidate(&quote_for_output(&candidate))?,
         );
         temporary_names.insert(temp_name);
         census.temporary_snapshots += 1;
@@ -2348,7 +2451,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_quote_still_rejects_unknown_or_incomplete_side_fields() {
+    fn partial_quote_preserves_auxiliary_fields_and_defers_incomplete_sides() {
         let unknown = parse_one(
             "AAPL.O,Market Price,2022-05-04T18:42:40.718847845Z,-4,Raw,UPDATE,QUOTE,,,,48064,,0,8\n\
              ,,,,FID,22,,BID,161,\n\
@@ -2360,10 +2463,10 @@ mod tests {
              ,,,,FID,118,,PRC_QL_CD,0,\n\
              ,,,,FID,99999,,UNKNOWN,0,\n",
         );
-        assert!(validate_quote_signature(&unknown)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported Quote FID"));
+        validate_quote_signature(&unknown).unwrap();
+        let auxiliary = quote_auxiliary_fields(&unknown);
+        assert_eq!(auxiliary.len(), 1);
+        assert_eq!(auxiliary[0].name, "UNKNOWN");
 
         let missing = parse_one(
             "AAPL.O,Market Price,2022-05-04T18:42:40.718847845Z,-4,Raw,UPDATE,QUOTE,,,,48064,,0,6\n\
@@ -2374,10 +2477,11 @@ mod tests {
              ,,,,FID,3297,,ASKXID,2,NYS\n\
              ,,,,FID,118,,PRC_QL_CD,0,\n",
         );
-        assert!(parse_quote(&missing, 0, 65)
-            .unwrap_err()
-            .to_string()
-            .contains("incomplete bid side update"));
+        let (_, partial) = parse_quote(&missing, 0, 65).unwrap();
+        assert_eq!(partial.bid, 161_000_000_000);
+        assert_eq!(partial.bid_size, MISSING_SIZE);
+        assert_eq!(partial.ask, 161_030_000_000);
+        assert_eq!(partial.ask_size, 1);
     }
 
     #[test]
@@ -2434,7 +2538,7 @@ mod tests {
         let bid = parse_quote_update(&bid, 0, 161).unwrap();
         let ask = parse_quote_update(&ask, 0, 161).unwrap();
         assert_eq!(bid.bucket, ask.bucket);
-        let merged = merge_quote_update(&bid.candidate, ask);
+        let merged = merge_quote_update(&bid.candidate, &ask);
         assert_eq!(merged.bid, 44_000_000_000);
         assert_eq!(merged.bid_size, 2);
         assert_eq!(merged.ask, 44_010_000_000);
@@ -2526,6 +2630,95 @@ mod tests {
             "IGV.BAT,Market Price,2021-12-25T19:07:14.164131865Z,-5,Raw,STATUS,NOTICE,,,,5054,,,0\n",
         );
         assert!(!is_empty_status(&non_empty));
+    }
+
+    #[test]
+    fn replays_unregistered_fields_as_raw_extensions() {
+        let temp = TempDir::new().unwrap();
+        let input = temp.path().join("merged-Data-part-000000-shard-000000.csv");
+        std::fs::write(
+            &input,
+            concat!(
+                "#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs\n",
+                "AAPL.O,Market Price,2023-01-24T14:30:15.063230118Z,-5,Raw,UPDATE,QUOTE,,,,74,,1,5\n",
+                ",,,,FID,22,,BID,141,\n",
+                ",,,,FID,25,,ASK,141.01,\n",
+                ",,,,FID,30,,BIDSIZE,10,\n",
+                ",,,,FID,31,,ASKSIZE,11,\n",
+                ",,,,FID,8927,,INST_PHASE,16,QP\n",
+                "MSFT.O,Market Price,2023-01-24T14:30:16.063230118Z,-5,Raw,UPDATE,QUOTE,,,,74,,2,1\n",
+                ",,,,FID,8927,,INST_PHASE,16,QP\n",
+                "IAK.P,Market Price,2024-01-15T04:15:38.026933865Z,-5,Raw,REFRESH,,,,,74,,2,1\n",
+                ",,,,FID,14266,,SALTIM_NS,15300,NS\n",
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join("extension-db");
+        let census = replay_quotes(&QuoteReplayConfig {
+            period: "extension-test".to_string(),
+            staging_dir: None,
+            parsed_staging_dir: None,
+            inputs: vec![input],
+            rocksdb_dir: output.clone(),
+            progress_every: 0,
+            keep_temporary_column_families: false,
+            workers: 1,
+            direction_calendar: None,
+        })
+        .unwrap();
+        assert_eq!(census.encoded_by_type.get("RawExtensionMsg"), Some(&3));
+        let verified = verify_raw_rocksdb(&output).unwrap();
+        assert_eq!(verified.values_by_type.get("RawExtensionMsg"), Some(&3));
+    }
+
+    #[test]
+    fn incremental_quote_price_and_size_merge_before_output() {
+        let temp = TempDir::new().unwrap();
+        let input = temp.path().join("merged-Data-part-000000-shard-000000.csv");
+        std::fs::write(
+            &input,
+            concat!(
+                "#RIC,Domain,Date-Time,GMT Offset,Type,MsgClass/FID number,UpdateType/Action,FID Name,FID Value,FID Enum String,PE Code,Template Number,Key/Msg Sequence Number,Number of FIDs\n",
+                "ITA.BAT,Market Price,2024-12-16T13:08:32.900000000Z,-5,Raw,UPDATE,QUOTE,,,,74,,1,6\n",
+                ",,,,FID,22,,BID,148.7,\n",
+                ",,,,FID,25,,ASK,148.8,\n",
+                ",,,,FID,30,,BIDSIZE,10,\n",
+                ",,,,FID,31,,ASKSIZE,11,\n",
+                ",,,,FID,3298,,BIDXID,13,BAT\n",
+                ",,,,FID,3297,,ASKXID,13,BAT\n",
+                "ITA.BAT,Market Price,2024-12-16T13:08:32.931605843Z,-5,Raw,UPDATE,QUOTE,,,,74,,2,1\n",
+                ",,,,FID,25,,ASK,148.98,\n",
+                "ITA.BAT,Market Price,2024-12-16T13:08:32.936566722Z,-5,Raw,UPDATE,QUOTE,,,,74,,3,1\n",
+                ",,,,FID,31,,ASKSIZE,12,\n",
+            ),
+        )
+        .unwrap();
+        let output = temp.path().join("incremental-quote-db");
+        replay_quotes(&QuoteReplayConfig {
+            period: "incremental-quote-test".to_string(),
+            staging_dir: None,
+            parsed_staging_dir: None,
+            inputs: vec![input],
+            rocksdb_dir: output.clone(),
+            progress_every: 0,
+            keep_temporary_column_families: false,
+            workers: 1,
+            direction_calendar: None,
+        })
+        .unwrap();
+        let (db, _) = open_existing_db(&output).unwrap();
+        let cf = db.cf_handle("v:ITA.BAT:BAT").unwrap();
+        let rows = db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let quote = decode_quote(&rows[0].1).unwrap();
+        assert_eq!(quote.bid, 148_700_000_000);
+        assert_eq!(quote.bid_size, 10);
+        assert_eq!(quote.ask, 148_980_000_000);
+        assert_eq!(quote.ask_size, 12);
+        verify_raw_rocksdb(&output).unwrap();
     }
 
     #[test]

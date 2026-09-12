@@ -1,5 +1,5 @@
 use crate::quote_codec::{MSG_QUOTE, MSG_QUOTE_STATE, QUOTE_STATE_VALUE_LEN, QUOTE_VALUE_LEN};
-use crate::raw::RawMessage;
+use crate::raw::{RawField, RawMessage};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,6 +28,7 @@ pub const MSG_VERIFY_STATE: u8 = 0x2b;
 pub const MSG_CLOSING_RUN_CLEAR: u8 = 0x2c;
 pub const MSG_CLOSING_RUN_STATE: u8 = 0x2d;
 pub const MSG_REFRESH: u8 = 0x30;
+pub const MSG_RAW_EXTENSION: u8 = 0x31;
 pub const MSG_ALT_CLOSE: u8 = 0x32;
 
 pub const TRADE_VALUE_LEN: usize = 112;
@@ -40,6 +41,9 @@ pub const MISSING_U16: u16 = u16::MAX;
 pub const MISSING_U32: u32 = u32::MAX;
 pub const MISSING_U64: u64 = u64::MAX;
 pub const MISSING_DATE: i32 = i32::MIN;
+
+const RAW_EXTENSION_VERSION: u8 = 1;
+const RAW_EXTENSION_HEADER_LEN: usize = 40;
 
 const AUDITS: [&str; 4] = [
     include_str!("../audit_part0_shard0.json"),
@@ -695,6 +699,7 @@ fn build_registry() -> Registry {
             CORRECTION_VALUE_LEN,
         ),
         (MSG_QUOTE_STATE, "QuoteStateMsg", QUOTE_STATE_VALUE_LEN),
+        (MSG_RAW_EXTENSION, "RawExtensionMsg", 0),
     ] {
         by_type.insert(
             tag,
@@ -752,8 +757,29 @@ pub fn layout_for_message(message: &RawMessage) -> Result<&'static WireLayout> {
             unknown
         );
     }
-    let tag = semantic_layout(&signature).0;
-    layout_for_type(tag)
+    let layout = layout_for_type(semantic_layout(&signature).0)?;
+    if layout.exact_slots
+        && signature.fields.iter().any(|field| {
+            !layout
+                .slot_fields
+                .iter()
+                .any(|(fid, name)| *fid == field.0 && name == &field.1)
+        })
+    {
+        // A known FID can appear with a field that selects a narrower semantic
+        // layout. Preserve that mixed source patch in the complete restatement
+        // layout rather than dropping a field or rejecting the replay.
+        let fallback = layout_for_type(MSG_TRADE_RESTATEMENT)?;
+        if signature.fields.iter().all(|field| {
+            fallback
+                .slot_fields
+                .iter()
+                .any(|(fid, name)| *fid == field.0 && name == &field.1)
+        }) {
+            return Ok(fallback);
+        }
+    }
+    Ok(layout)
 }
 
 pub fn layout_for_type(msg_type: u8) -> Result<&'static WireLayout> {
@@ -773,6 +799,20 @@ pub fn wire_layouts() -> Vec<(u8, String, usize)> {
 
 pub fn wire_layout_fields(msg_type: u8) -> Result<Vec<(u32, String)>> {
     Ok(layout_for_type(msg_type)?.slot_fields.clone())
+}
+
+pub fn is_registered_raw_field(field: &RawField) -> bool {
+    registry()
+        .known_fields
+        .contains(&(field.fid, field.name.clone()))
+}
+
+pub fn unregistered_raw_fields(message: &RawMessage) -> Vec<&RawField> {
+    message
+        .fields
+        .iter()
+        .filter(|field| !is_registered_raw_field(field))
+        .collect()
 }
 
 fn put_ascii<const N: usize>(out: &mut [u8], value: &str, label: &str) -> Result<()> {
@@ -856,6 +896,103 @@ pub fn validate_exact_slots(bytes: &[u8], layout: &WireLayout) -> Result<()> {
         validate_ascii_slot(&slot[SLOT_VALUE_LEN..])?;
     }
     Ok(())
+}
+
+fn push_extension_text(out: &mut Vec<u8>, value: &str, label: &str) -> Result<()> {
+    let len = u32::try_from(value.len())
+        .with_context(|| format!("{label} is too large for RawExtensionMsg"))?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn take_extension_u32(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<u32> {
+    let end = cursor
+        .checked_add(4)
+        .ok_or_else(|| anyhow!("RawExtensionMsg {label} offset overflow"))?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| anyhow!("RawExtensionMsg is truncated before {label}"))?;
+    *cursor = end;
+    Ok(u32::from_le_bytes(value.try_into()?))
+}
+
+fn take_extension_text<'a>(bytes: &'a [u8], cursor: &mut usize, label: &str) -> Result<&'a str> {
+    let len = usize::try_from(take_extension_u32(bytes, cursor, label)?)?;
+    let end = cursor
+        .checked_add(len)
+        .ok_or_else(|| anyhow!("RawExtensionMsg {label} length overflow"))?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| anyhow!("RawExtensionMsg is truncated in {label}"))?;
+    *cursor = end;
+    std::str::from_utf8(value).with_context(|| format!("RawExtensionMsg {label} is not UTF-8"))
+}
+
+pub fn encode_raw_extension(
+    message: &RawMessage,
+    source_ts_utc_ns: u64,
+    source_order: u64,
+    fields: &[&RawField],
+) -> Result<Vec<u8>> {
+    if fields.is_empty() {
+        bail!("RawExtensionMsg requires at least one field");
+    }
+    let field_count = u32::try_from(fields.len())?;
+    let mut out = Vec::with_capacity(RAW_EXTENSION_HEADER_LEN + fields.len() * 48);
+    out.extend_from_slice(&source_ts_utc_ns.to_le_bytes());
+    out.extend_from_slice(&source_order.to_le_bytes());
+    out.push(RAW_EXTENSION_VERSION);
+    out.extend_from_slice(&[0; 3]);
+    push_extension_text(&mut out, &message.message_class, "message class")?;
+    push_extension_text(&mut out, &message.update_type, "update type")?;
+    push_extension_text(&mut out, &message.source_sequence, "source sequence")?;
+    push_extension_text(&mut out, &message.date_time, "date time")?;
+    out.extend_from_slice(&field_count.to_le_bytes());
+    for field in fields {
+        out.extend_from_slice(&field.fid.to_le_bytes());
+        push_extension_text(&mut out, &field.name, "field name")?;
+        push_extension_text(&mut out, &field.value, "field value")?;
+        push_extension_text(&mut out, &field.enum_value, "field enum value")?;
+    }
+    Ok(out)
+}
+
+pub fn validate_raw_extension(bytes: &[u8]) -> Result<(u64, u64)> {
+    if bytes.len() < RAW_EXTENSION_HEADER_LEN {
+        bail!(
+            "RawExtensionMsg must be at least {RAW_EXTENSION_HEADER_LEN} bytes, got {}",
+            bytes.len()
+        );
+    }
+    if bytes[16] != RAW_EXTENSION_VERSION || bytes[17..20].iter().any(|byte| *byte != 0) {
+        bail!("unsupported RawExtensionMsg version or reserved bytes");
+    }
+    let source_ts_utc_ns = u64::from_le_bytes(bytes[0..8].try_into()?);
+    let source_order = u64::from_le_bytes(bytes[8..16].try_into()?);
+    let mut cursor = 20;
+    let _message_class = take_extension_text(bytes, &mut cursor, "message class")?;
+    let _update_type = take_extension_text(bytes, &mut cursor, "update type")?;
+    let _source_sequence = take_extension_text(bytes, &mut cursor, "source sequence")?;
+    let _date_time = take_extension_text(bytes, &mut cursor, "date time")?;
+    let fields = take_extension_u32(bytes, &mut cursor, "field count")?;
+    if fields == 0 {
+        bail!("RawExtensionMsg has no fields");
+    }
+    let mut identities = BTreeSet::new();
+    for _ in 0..fields {
+        let fid = take_extension_u32(bytes, &mut cursor, "FID")?;
+        let name = take_extension_text(bytes, &mut cursor, "field name")?;
+        let _value = take_extension_text(bytes, &mut cursor, "field value")?;
+        let _enum_value = take_extension_text(bytes, &mut cursor, "field enum value")?;
+        if !identities.insert((fid, name)) {
+            bail!("RawExtensionMsg repeats FID {fid} {name}");
+        }
+    }
+    if cursor != bytes.len() {
+        bail!("RawExtensionMsg has trailing bytes");
+    }
+    Ok((source_ts_utc_ns, source_order))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1127,6 +1264,21 @@ mod tests {
     }
 
     #[test]
+    fn raw_extension_round_trips_unregistered_source_fields() {
+        let message = parse_one(concat!(
+            "IAK.P,Market Price,2024-01-15T04:15:38.026933865Z,-5,Raw,REFRESH,,,,,74,,41,1\n",
+            ",,,,FID,14266,,SALTIM_NS,15300,NS\n",
+        ));
+        let fields = unregistered_raw_fields(&message);
+        assert_eq!(fields.len(), 1);
+        let encoded = encode_raw_extension(&message, 1, 2, &fields).unwrap();
+        assert_eq!(validate_raw_extension(&encoded).unwrap(), (1, 2));
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(validate_raw_extension(&trailing).is_err());
+    }
+
+    #[test]
     fn audited_registry_has_all_82_combinations() {
         assert_eq!(registry().by_signature.len(), 82);
         assert_eq!(layout_for_type(MSG_REFRESH).unwrap().name, "RefreshMsg");
@@ -1154,6 +1306,32 @@ mod tests {
         assert!(encoded[start..start + SLOT_LEN]
             .iter()
             .all(|byte| *byte == 0xff));
+    }
+
+    #[test]
+    fn mixed_known_correction_fields_fall_back_to_complete_patch_layout() {
+        let message = parse_one(concat!(
+            "AAPL.O,Market Price,2023-01-24T22:49:54.712046417Z,-4,Raw,UPDATE,CORRECTION,,,,74,,1,2\n",
+            ",,,,FID,90,,YRHIGH,160.25,\n",
+            ",,,,FID,3449,,52W_HIND,,\n",
+        ));
+        let layout = layout_for_message(&message).unwrap();
+        assert_eq!(layout.msg_type, MSG_TRADE_RESTATEMENT);
+        let encoded = encode_exact_slots(&message, 1, 2, layout).unwrap();
+        validate_exact_slots(&encoded, layout).unwrap();
+    }
+
+    #[test]
+    fn mixed_corporate_action_fields_fall_back_to_complete_patch_layout() {
+        let message = parse_one(concat!(
+            "CHAT.P,Market Price,2023-10-02T04:10:20.399789136Z,-4,Raw,UPDATE,CORRECTION,,,,74,,1,2\n",
+            ",,,,FID,39,,EXDIVDATE,2023-10-04,\n",
+            ",,,,FID,34,,EARNINGS,1.25,\n",
+        ));
+        let layout = layout_for_message(&message).unwrap();
+        assert_eq!(layout.msg_type, MSG_TRADE_RESTATEMENT);
+        let encoded = encode_exact_slots(&message, 1, 2, layout).unwrap();
+        validate_exact_slots(&encoded, layout).unwrap();
     }
 
     #[test]
