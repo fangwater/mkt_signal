@@ -29,7 +29,7 @@ impl OrderSide {
 }
 
 #[derive(Debug, Parser)]
-#[command(about = "Publish one bounded Binance MARGIN/PERP ArbOpen smoke-test signal")]
+#[command(about = "Publish one bounded Binance SPOT-or-MARGIN/PERP ArbOpen smoke-test signal")]
 struct Args {
     #[arg(long)]
     symbol: String,
@@ -138,14 +138,12 @@ fn validate(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn validate_runtime() -> Result<()> {
+fn validate_runtime() -> Result<RapidXCashBusinessType> {
     if ExecBackend::for_exchange(Exchange::Binance)? != ExecBackend::Ltp {
         bail!("rapidx_intra_signal_smoke requires Binance execution backend ltp");
     }
     rapidx_portfolio_id()?;
-    if rapidx_binance_cash_business_type()? != RapidXCashBusinessType::Margin {
-        bail!("RAPIDX_BINANCE_CASH_BUSINESS_TYPE must be MARGIN");
-    }
+    let cash_business = rapidx_binance_cash_business_type()?;
     for (name, expected) in [
         ("OPEN_VENUE", "binance-margin"),
         ("HEDGE_VENUE", "binance-futures"),
@@ -156,7 +154,14 @@ fn validate_runtime() -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(cash_business)
+}
+
+fn cash_business_label(value: RapidXCashBusinessType) -> &'static str {
+    match value {
+        RapidXCashBusinessType::Spot => "SPOT",
+        RapidXCashBusinessType::Margin => "MARGIN",
+    }
 }
 
 fn build_context(args: &Args, now_us: i64, from_key: String) -> Result<ArbOpenCtx> {
@@ -204,14 +209,15 @@ fn build_context(args: &Args, now_us: i64, from_key: String) -> Result<ArbOpenCt
 fn main() -> Result<()> {
     let args = Args::parse();
     validate(&args)?;
-    validate_runtime()?;
+    let cash_business = cash_business_label(validate_runtime()?);
     let from_key = args
         .from_key
         .clone()
         .unwrap_or_else(|| format!("rapidx_intra_signal_smoke|{}", get_timestamp_us()));
     let preview = build_context(&args, get_timestamp_us(), from_key.clone())?;
     println!(
-        "[plan] exchange=binance opening=MARGIN hedge=PERP symbol={} side={} order_type=LIMIT maker_only=true quantity={} price={} notional_usdt={:.8} ttl_secs={} max_notional_usdt={} from_key={} execute={}",
+        "[plan] exchange=binance opening={} hedge=PERP symbol={} side={} order_type=LIMIT maker_only=true quantity={} price={} notional_usdt={:.8} ttl_secs={} max_notional_usdt={} from_key={} execute={}",
+        cash_business,
         args.symbol,
         args.side.side().as_str(),
         preview.amount_value(),
@@ -292,5 +298,14 @@ mod tests {
         assert_eq!(context.amount_value(), 4_000.0);
         assert_eq!(context.price_value(), 0.02);
         assert_eq!(context.exp_time, 60_000_123);
+    }
+
+    #[test]
+    fn labels_both_supported_cash_businesses() {
+        assert_eq!(cash_business_label(RapidXCashBusinessType::Spot), "SPOT");
+        assert_eq!(
+            cash_business_label(RapidXCashBusinessType::Margin),
+            "MARGIN"
+        );
     }
 }
