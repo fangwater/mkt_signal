@@ -44,7 +44,7 @@ fn side_to_char(side: &str) -> char {
     }
 }
 
-fn parse_positions(positions: Vec<RawUmPosition>) -> Vec<Bytes> {
+fn parse_positions(positions: Vec<RawUmPosition>, snapshot_timestamp: i64) -> Vec<Bytes> {
     let mut out = Vec::new();
     for pos in positions {
         if pos.symbol.is_empty() {
@@ -53,19 +53,20 @@ fn parse_positions(positions: Vec<RawUmPosition>) -> Vec<Bytes> {
         let amount = parse_f32(&pos.position_amt);
         let inst_id = pos.symbol.to_ascii_uppercase();
         let side = side_to_char(&pos.position_side);
-        if amount != 0.0 {
-            out.push(
-                BasicPositionMsg::create(pos.update_time, inst_id.clone(), side, amount).to_bytes(),
-            );
+        // The endpoint returns every market symbol. Skip never-used zero rows, but keep a
+        // timestamped zero so a closed position can overwrite an older non-zero WS value.
+        if amount == 0.0 && pos.update_time <= 0 {
+            continue;
         }
+        let timestamp = if pos.update_time > 0 {
+            pos.update_time
+        } else {
+            snapshot_timestamp
+        };
+        out.push(BasicPositionMsg::create(timestamp, inst_id.clone(), side, amount).to_bytes());
         if !pos.unrealized_profit.trim().is_empty() {
             if let Ok(pnl) = pos.unrealized_profit.parse::<f64>() {
-                if pnl.abs() > 0.0 {
-                    out.push(
-                        BasicUmUnrealizedMsg::create(pos.update_time, inst_id, side, pnl)
-                            .to_bytes(),
-                    );
-                }
+                out.push(BasicUmUnrealizedMsg::create(timestamp, inst_id, side, pnl).to_bytes());
             }
         }
     }
@@ -106,7 +107,12 @@ fn parse_standard_account_risk(raw: &RawUmAccountResponse) -> Option<Bytes> {
 
 pub fn parse_binance_um_account_snapshot(json: &str) -> Option<Vec<Bytes>> {
     let raw: RawUmAccountResponse = serde_json::from_str(json).ok()?;
-    Some(parse_positions(raw.positions))
+    let snapshot_timestamp = if raw.update_time > 0 {
+        raw.update_time
+    } else {
+        chrono::Utc::now().timestamp_millis()
+    };
+    Some(parse_positions(raw.positions, snapshot_timestamp))
 }
 
 /// Parse a Standard USD-M account snapshot, including Binance's account-level USD totals.
@@ -114,7 +120,12 @@ pub fn parse_binance_um_account_snapshot(json: &str) -> Option<Vec<Bytes>> {
 pub fn parse_binance_um_account_snapshot_std(json: &str) -> Option<Vec<Bytes>> {
     let raw: RawUmAccountResponse = serde_json::from_str(json).ok()?;
     let risk = parse_standard_account_risk(&raw);
-    let mut out = parse_positions(raw.positions);
+    let snapshot_timestamp = if raw.update_time > 0 {
+        raw.update_time
+    } else {
+        chrono::Utc::now().timestamp_millis()
+    };
+    let mut out = parse_positions(raw.positions, snapshot_timestamp);
     out.extend(risk);
     Some(out)
 }
@@ -193,10 +204,54 @@ mod tests {
         }"#;
 
         let msgs = parse_binance_um_account_snapshot_std(json).expect("parse ok");
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         assert_eq!(
             get_basic_event_type(&msgs[0]),
             BasicAccountEventType::PositionUpdate
         );
+        assert_eq!(
+            get_basic_event_type(&msgs[1]),
+            BasicAccountEventType::UnrealizedPnlUpdate
+        );
+    }
+
+    #[test]
+    fn full_snapshot_emits_timestamped_zero_position() {
+        let json = r#"{
+            "updateTime": 1700000000004,
+            "positions": [{
+                "symbol": "BEAMXUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "unrealizedProfit": "0",
+                "updateTime": 1700000000005
+            }]
+        }"#;
+
+        let msgs = parse_binance_um_account_snapshot(json).expect("parse ok");
+        assert_eq!(msgs.len(), 2);
+        let position = BasicPositionMsg::from_bytes(&msgs[0]).expect("position ok");
+        assert_eq!(position.inst_id, "BEAMXUSDT");
+        assert_eq!(position.timestamp, 1_700_000_000_005);
+        assert_eq!(position.position_amount, 0.0);
+        let pnl = BasicUmUnrealizedMsg::from_bytes(&msgs[1]).expect("pnl ok");
+        assert_eq!(pnl.timestamp, 1_700_000_000_005);
+        assert_eq!(pnl.unrealized_pnl, 0.0);
+    }
+
+    #[test]
+    fn full_snapshot_skips_never_used_zero_position() {
+        let json = r#"{
+            "positions": [{
+                "symbol": "NEVERUSDT",
+                "positionSide": "BOTH",
+                "positionAmt": "0",
+                "unrealizedProfit": "0",
+                "updateTime": 0
+            }]
+        }"#;
+
+        let msgs = parse_binance_um_account_snapshot(json).expect("parse ok");
+        assert!(msgs.is_empty());
     }
 }

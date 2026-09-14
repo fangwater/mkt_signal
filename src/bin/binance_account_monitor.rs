@@ -58,6 +58,8 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
+const DEFAULT_BINANCE_PM_SNAPSHOT_POLL_INTERVAL_SECS: u64 = 30;
+
 #[derive(Parser, Debug)]
 #[command(name = "binance_account_monitor")]
 #[command(about = "Binance account monitor")]
@@ -283,6 +285,53 @@ fn wrap_basic_payload(account_scope: BasicAccountScope, payload: Bytes) -> Optio
     Some(BasicAccountEventMsg::create(event_type, account_scope, payload).to_bytes())
 }
 
+fn forward_unified_snapshot_payloads(payloads: Vec<Bytes>) -> usize {
+    let mut emitted = 0usize;
+    for payload in payloads {
+        if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
+            let _ = forward_account_event(wrapped);
+            emitted += 1;
+        }
+    }
+    emitted
+}
+
+async fn refresh_unified_balance_snapshot(
+    client: &Client,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<usize> {
+    let body = signed_get_binance(
+        client,
+        "https://papi.binance.com",
+        "/papi/v1/balance",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    let payloads = parse_binance_pm_balance_snapshot(&body)
+        .ok_or_else(|| anyhow::anyhow!("parse /papi/v1/balance response failed"))?;
+    Ok(forward_unified_snapshot_payloads(payloads))
+}
+
+async fn refresh_unified_um_snapshot(
+    client: &Client,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<usize> {
+    let body = signed_get_binance(
+        client,
+        "https://papi.binance.com",
+        "/papi/v1/um/account",
+        api_key,
+        api_secret,
+    )
+    .await?;
+    let payloads = parse_binance_um_account_snapshot(&body)
+        .ok_or_else(|| anyhow::anyhow!("parse /papi/v1/um/account response failed"))?;
+    Ok(forward_unified_snapshot_payloads(payloads))
+}
+
 async fn bootstrap_standard_snapshots(
     api_key: &str,
     api_secret: &str,
@@ -425,42 +474,10 @@ async fn bootstrap_unified_snapshots(
         local_ip.unwrap_or("system-default")
     );
 
-    let pm_balance_body = signed_get_binance(
-        &client,
-        "https://papi.binance.com",
-        "/papi/v1/balance",
-        api_key,
-        api_secret,
-    )
-    .await?;
-    if let Some(msgs) = parse_binance_pm_balance_snapshot(&pm_balance_body) {
-        for payload in msgs {
-            if let Some(wrapped) = wrap_basic_payload(BasicAccountScope::BinanceUnified, payload) {
-                let _ = forward_account_event(wrapped);
-                emitted += 1;
-            }
-        }
-    }
+    emitted += refresh_unified_balance_snapshot(&client, api_key, api_secret).await?;
 
     if include_um {
-        let um_account_body = signed_get_binance(
-            &client,
-            "https://papi.binance.com",
-            "/papi/v1/um/account",
-            api_key,
-            api_secret,
-        )
-        .await?;
-        if let Some(msgs) = parse_binance_um_account_snapshot(&um_account_body) {
-            for payload in msgs {
-                if let Some(wrapped) =
-                    wrap_basic_payload(BasicAccountScope::BinanceUnified, payload)
-                {
-                    let _ = forward_account_event(wrapped);
-                    emitted += 1;
-                }
-            }
-        }
+        emitted += refresh_unified_um_snapshot(&client, api_key, api_secret).await?;
     }
 
     info!(
@@ -468,6 +485,67 @@ async fn bootstrap_unified_snapshots(
         emitted
     );
     Ok(())
+}
+
+fn spawn_pm_snapshot_poller(
+    api_key: String,
+    api_secret: String,
+    local_ip: Option<String>,
+    include_um: bool,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let client = match build_binance_rest_client(local_ip.as_deref(), Duration::from_secs(10)) {
+            Ok(client) => client,
+            Err(err) => {
+                error!("Binance PM snapshot poller: build client failed: {err:#}");
+                return;
+            }
+        };
+        let interval_secs = std::env::var("BINANCE_PM_SNAPSHOT_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BINANCE_PM_SNAPSHOT_POLL_INTERVAL_SECS);
+        let interval = Duration::from_secs(interval_secs);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        info!(
+            "Binance PM snapshot poller started: interval={}s include_um={} local_ip={}",
+            interval_secs,
+            include_um,
+            local_ip.as_deref().unwrap_or("system-default")
+        );
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+                _ = tick.tick() => {
+                    match refresh_unified_balance_snapshot(&client, &api_key, &api_secret).await {
+                        Ok(emitted) => debug!(
+                            "Binance PM balance snapshot refreshed: emitted={} interval={}s",
+                            emitted, interval_secs
+                        ),
+                        Err(err) => warn!("Binance PM balance snapshot refresh failed: {err:#}"),
+                    }
+                    if include_um {
+                        match refresh_unified_um_snapshot(&client, &api_key, &api_secret).await {
+                            Ok(emitted) => debug!(
+                                "Binance PM UM snapshot refreshed: emitted={} interval={}s",
+                                emitted, interval_secs
+                            ),
+                            Err(err) => warn!("Binance PM UM snapshot refresh failed: {err:#}"),
+                        }
+                    }
+                }
+            }
+        }
+        info!("Binance PM snapshot poller stopped");
+    });
 }
 
 async fn bootstrap_unified_cm_snapshot(
@@ -1303,6 +1381,13 @@ async fn main() -> Result<()> {
             Ok(()) => info!("bootstrap unified snapshots completed"),
             Err(err) => warn!("bootstrap unified snapshots failed: {err:#}"),
         }
+        spawn_pm_snapshot_poller(
+            api_key.clone(),
+            api_secret.clone(),
+            Some(primary_ip.clone()),
+            binance_um_enabled,
+            shutdown_rx.clone(),
+        );
         let interval_secs = std::env::var("BINANCE_PM_RISK_POLL_INTERVAL_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
