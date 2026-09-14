@@ -50,6 +50,17 @@ target_dir=${USSTOCK_RAW_TARGET_DIR:-$project_dir/target}
 audit_binary=$target_dir/release/usstock_lseg_raw_correction_audit
 export_binary=$target_dir/release/usstock_lseg_raw_export
 
+# bindgen invokes libclang directly and may not inherit GCC's private system
+# include directory. Prefer an explicit caller override, otherwise obtain that
+# directory from the configured C compiler.
+if [[ -z ${BINDGEN_EXTRA_CLANG_ARGS:-} ]]; then
+    bindgen_compiler=${CC:-gcc}
+    bindgen_include=$($bindgen_compiler -print-file-name=include 2>/dev/null || true)
+    if [[ -d $bindgen_include ]]; then
+        export BINDGEN_EXTRA_CLANG_ARGS="-isystem $bindgen_include"
+    fi
+fi
+
 cd "$project_dir"
 cargo build --release --locked --target-dir "$target_dir" \
     --bin usstock_lseg_raw_correction_audit --bin usstock_lseg_raw_export

@@ -121,12 +121,26 @@ fn spawn_exec_state_listener(hub: WsHub, namespace: &str) -> Result<()> {
         &format!("viz_exec_state_{}", sanitize_node_component(&namespace)),
         &service_name,
         move |entry: ExecStrategyStateResampleEntry, hub: WsHub| {
+            let rows = match entry.expanded_rows() {
+                Ok(rows) => rows,
+                Err(err) => {
+                    warn!(
+                        "exec state payload expansion failed (namespace={}): {err:#}",
+                        namespace_for_msg
+                    );
+                    return;
+                }
+            };
             if let Ok(msg) = serde_json::to_string(&json!({
                 "type": "exec_pre_trade_state",
                 "namespace": namespace_for_msg.as_str(),
                 "channel": EXEC_STATE_CHANNEL,
                 "ts_ms": get_timestamp_us() / 1000,
-                "entry": entry,
+                "entry": {
+                    "ts_ms": entry.ts_ms,
+                    "position_ready": entry.position_ready,
+                    "rows": rows,
+                },
             })) {
                 hub.broadcast(msg);
             }

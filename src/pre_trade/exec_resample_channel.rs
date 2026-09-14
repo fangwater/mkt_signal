@@ -115,16 +115,10 @@ impl ExecResampleChannel {
                     estimated_completion_ts_ms: snapshot.estimated_completion_ts_ms,
                     execution_complete: snapshot.execution_complete,
                     completion_reason: snapshot.completion_reason,
+                    mid_price: price,
                 });
             }
-            rows.sort_by(|lhs, rhs| {
-                (&lhs.strategy_name, &lhs.symbol).cmp(&(&rhs.strategy_name, &rhs.symbol))
-            });
-            let entry = ExecStrategyStateResampleEntry {
-                ts_ms,
-                position_ready,
-                rows,
-            };
+            let entry = ExecStrategyStateResampleEntry::from_rows(ts_ms, position_ready, rows)?;
             if Self::publish_encoded(entry.to_bytes()?, publisher, EXEC_STATE_CHANNEL)? {
                 published += 1;
             }

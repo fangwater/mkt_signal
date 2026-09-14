@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SizeThresholds {
@@ -26,6 +26,9 @@ pub struct SizeBuckets {
     pub medium_sell: f64,
     pub small_buy: f64,
     pub small_sell: f64,
+    // RAW trades retain price in nanodollars and integer share size. Keep the
+    // bucket totals on that exact scale until the parquet boundary.
+    exact_nanos: Option<[i128; 9]>,
 }
 
 impl SizeBuckets {
@@ -36,16 +39,49 @@ impl SizeBuckets {
         side: Option<bool>,
         thresholds: SizeThresholds,
     ) -> Result<()> {
+        self.add_inner(amount, None, side, thresholds)
+    }
+
+    /// Adds an amount with its exact raw nanodollar notional. The floating
+    /// amount still determines the percentile bucket so the threshold contract
+    /// remains unchanged.
+    pub fn add_exact(
+        &mut self,
+        amount: f64,
+        amount_nanos: i128,
+        side: Option<bool>,
+        thresholds: SizeThresholds,
+    ) -> Result<()> {
+        if amount_nanos <= 0 {
+            bail!("exact size-bucket amount must be positive, got {amount_nanos}");
+        }
+        self.add_inner(amount, Some(amount_nanos), side, thresholds)
+    }
+
+    fn add_inner(
+        &mut self,
+        amount: f64,
+        amount_nanos: Option<i128>,
+        side: Option<bool>,
+        thresholds: SizeThresholds,
+    ) -> Result<()> {
         if !(amount.is_finite() && amount > 0.0) {
             bail!("size-bucket amount must be finite and positive, got {amount}");
         }
-        let (order, buy, sell) = if amount >= thresholds.p90 {
+        let bucket = if amount >= thresholds.p90 {
+            0
+        } else if amount >= thresholds.p50 {
+            1
+        } else {
+            2
+        };
+        let (order, buy, sell) = if bucket == 0 {
             (
                 &mut self.large_order,
                 &mut self.large_buy,
                 &mut self.large_sell,
             )
-        } else if amount >= thresholds.p50 {
+        } else if bucket == 1 {
             (
                 &mut self.medium_order,
                 &mut self.medium_buy,
@@ -63,6 +99,22 @@ impl SizeBuckets {
             Some(true) => *buy += amount,
             Some(false) => *sell += amount,
             None => {}
+        }
+        if let Some(amount_nanos) = amount_nanos {
+            let exact = self.exact_nanos.get_or_insert([0; 9]);
+            exact[bucket] = exact[bucket]
+                .checked_add(amount_nanos)
+                .context("exact size-bucket total overflow")?;
+            let directional_index = match side {
+                Some(true) => Some(3 + bucket * 2),
+                Some(false) => Some(4 + bucket * 2),
+                None => None,
+            };
+            if let Some(index) = directional_index {
+                exact[index] = exact[index]
+                    .checked_add(amount_nanos)
+                    .context("exact directional size-bucket overflow")?;
+            }
         }
         Ok(())
     }
@@ -86,6 +138,40 @@ impl SizeBuckets {
             self.medium_buy - self.medium_sell,
             self.small_buy - self.small_sell,
         )
+    }
+
+    /// Returns exact `(total, directional_total)` nanodollar sums when this
+    /// bucket was built from RAW scaled notional values.
+    pub fn exact_totals(self) -> Result<Option<(i128, i128)>> {
+        let Some(values) = self.exact_nanos else {
+            return Ok(None);
+        };
+        let total = values[0]
+            .checked_add(values[1])
+            .and_then(|value| value.checked_add(values[2]))
+            .context("exact size-bucket total overflow")?;
+        let directional = values[3..]
+            .iter()
+            .try_fold(0_i128, |total, value| total.checked_add(*value))
+            .context("exact directional size-bucket overflow")?;
+        Ok(Some((total, directional)))
+    }
+
+    /// Replaces the working floating totals with values converted once from
+    /// exact raw nanodollar totals for parquet output.
+    pub fn materialize_exact(&mut self) {
+        let Some(values) = self.exact_nanos else {
+            return;
+        };
+        self.large_order = values[0] as f64 / 1e9;
+        self.medium_order = values[1] as f64 / 1e9;
+        self.small_order = values[2] as f64 / 1e9;
+        self.large_buy = values[3] as f64 / 1e9;
+        self.large_sell = values[4] as f64 / 1e9;
+        self.medium_buy = values[5] as f64 / 1e9;
+        self.medium_sell = values[6] as f64 / 1e9;
+        self.small_buy = values[7] as f64 / 1e9;
+        self.small_sell = values[8] as f64 / 1e9;
     }
 }
 
@@ -144,6 +230,28 @@ mod tests {
         assert_eq!(buckets.total(), 1050.0);
         assert_eq!(buckets.directional_total(), 250.0);
         assert_eq!(buckets.nets(), (0.0, -200.0, 50.0));
+    }
+
+    #[test]
+    fn exact_raw_nanos_conserve_across_size_buckets() {
+        let thresholds = SizeThresholds::new(0.15, 0.25).unwrap();
+        let mut buckets = SizeBuckets::default();
+        buckets
+            .add_exact(0.1, 100_000_000, Some(true), thresholds)
+            .unwrap();
+        buckets
+            .add_exact(0.2, 200_000_000, Some(false), thresholds)
+            .unwrap();
+        buckets
+            .add_exact(0.3, 300_000_000, None, thresholds)
+            .unwrap();
+        assert_eq!(
+            buckets.exact_totals().unwrap(),
+            Some((600_000_000, 300_000_000))
+        );
+        buckets.materialize_exact();
+        assert!((buckets.total() - 0.6).abs() <= f64::EPSILON);
+        assert!((buckets.directional_total() - 0.3).abs() <= f64::EPSILON);
     }
 
     #[test]

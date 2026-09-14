@@ -228,6 +228,7 @@ impl VenueBooks {
 struct Trade {
     price: f64,
     size: f64,
+    notional_nanos: i128,
     venue: String,
     source_order: u64,
     side: Option<bool>,
@@ -250,9 +251,13 @@ fn stored_trade(trade: TradeValue, venue: &str) -> Result<Option<Trade>> {
     {
         bail!("valid RAW N trade is not an off-exchange reporting trade");
     }
+    let notional_nanos = i128::from(trade.price)
+        .checked_mul(i128::from(trade.size))
+        .context("RAW trade notional overflows i128 nanodollars")?;
     Ok(Some(Trade {
         price: trade.price as f64 / 1e9,
         size: trade.size as f64,
+        notional_nanos,
         venue: venue.to_owned(),
         source_order: trade.source_order,
         side: match trade.aggressor_side {
@@ -370,17 +375,21 @@ impl SideComparison {
 struct Minute {
     volume: f64,
     amount: f64,
+    amount_nanos: i128,
     count: i64,
     buy_volume: f64,
     buy_amount: f64,
+    buy_amount_nanos: i128,
     buy_count: i64,
     buy_high: f64,
     sell_volume: f64,
     sell_amount: f64,
+    sell_amount_nanos: i128,
     sell_count: i64,
     sell_low: f64,
     off_exchange_volume: f64,
     off_exchange_amount: f64,
+    off_exchange_amount_nanos: i128,
     off_exchange_count: i64,
     open: f64,
     high: f64,
@@ -406,6 +415,10 @@ impl Minute {
         let amount = trade.price * trade.size;
         self.volume += trade.size;
         self.amount += amount;
+        self.amount_nanos = self
+            .amount_nanos
+            .checked_add(trade.notional_nanos)
+            .context("minute amount overflows i128 nanodollars")?;
         self.count += 1;
         if self.open.is_nan() {
             self.open = trade.price;
@@ -420,6 +433,10 @@ impl Minute {
             Some(true) => {
                 self.buy_volume += trade.size;
                 self.buy_amount += amount;
+                self.buy_amount_nanos = self
+                    .buy_amount_nanos
+                    .checked_add(trade.notional_nanos)
+                    .context("minute buy amount overflows i128 nanodollars")?;
                 self.buy_count += 1;
                 self.buy_high = if self.buy_high.is_nan() {
                     trade.price
@@ -430,6 +447,10 @@ impl Minute {
             Some(false) => {
                 self.sell_volume += trade.size;
                 self.sell_amount += amount;
+                self.sell_amount_nanos =
+                    self.sell_amount_nanos
+                        .checked_add(trade.notional_nanos)
+                        .context("minute sell amount overflows i128 nanodollars")?;
                 self.sell_count += 1;
                 self.sell_low = if self.sell_low.is_nan() {
                     trade.price
@@ -440,14 +461,39 @@ impl Minute {
             None => {
                 self.off_exchange_volume += trade.size;
                 self.off_exchange_amount += amount;
+                self.off_exchange_amount_nanos = self
+                    .off_exchange_amount_nanos
+                    .checked_add(trade.notional_nanos)
+                    .context("minute off-exchange amount overflows i128 nanodollars")?;
                 self.off_exchange_count += 1;
             }
         }
         if let Some(thresholds) = thresholds {
-            self.size.add(amount, trade.side, thresholds)?;
+            self.size
+                .add_exact(amount, trade.notional_nanos, trade.side, thresholds)?;
         }
         Ok(())
     }
+
+    fn materialize_exact_amounts(&mut self) {
+        self.amount = self.amount_nanos as f64 / 1e9;
+        self.buy_amount = self.buy_amount_nanos as f64 / 1e9;
+        self.sell_amount = self.sell_amount_nanos as f64 / 1e9;
+        self.off_exchange_amount = self.off_exchange_amount_nanos as f64 / 1e9;
+        self.size.materialize_exact();
+    }
+
+    fn exact_directional_amount(&self) -> Result<i128> {
+        self.buy_amount_nanos
+            .checked_add(self.sell_amount_nanos)
+            .context("minute directional amount overflows i128 nanodollars")
+    }
+}
+
+fn exact_size_totals(minute: &Minute) -> Result<(i128, i128)> {
+    // A no-trade minute has no exact bucket allocation yet, which is exactly
+    // the same as an all-zero allocation.
+    Ok(minute.size.exact_totals()?.unwrap_or((0, 0)))
 }
 
 fn venue_of(ric: &str) -> Result<&'static str> {
@@ -1153,6 +1199,9 @@ fn main() -> Result<()> {
             l2 = *snapshot;
         }
     }
+    for minute in &mut minute_data {
+        minute.materialize_exact_amounts();
+    }
 
     let mut backtest_columns = vec![
         Series::new("ric".into(), vec![args.ric.clone(); seconds]),
@@ -1209,23 +1258,17 @@ fn main() -> Result<()> {
     ];
     add_l2_columns(&mut baseline_columns, &minute_l2);
     for (index, minute) in minute_data.iter().enumerate() {
-        let total_tolerance = 1e-8_f64.max(minute.amount.abs() * 1e-12);
         if let Some(_) = size_thresholds {
-            let size_total = minute.size.total();
-            let directional_total = minute.size.directional_total();
-            let total_delta = size_total - minute.amount;
-            let directional_delta = directional_total - minute.buy_amount - minute.sell_amount;
-            if total_delta.abs() > total_tolerance || directional_delta.abs() > total_tolerance {
+            let (size_total, directional_total) = exact_size_totals(minute)?;
+            let directional_amount = minute.exact_directional_amount()?;
+            if size_total != minute.amount_nanos || directional_total != directional_amount {
                 bail!(
-                    "size bucket conservation failed at minute {index}: amount={} size_total={} total_delta={} buy_amount={} sell_amount={} directional_total={} directional_delta={} tolerance={}",
-                    minute.amount,
+                    "exact size bucket conservation failed at minute {index}: amount_nanos={} size_total_nanos={} buy_amount_nanos={} sell_amount_nanos={} directional_total_nanos={}",
+                    minute.amount_nanos,
                     size_total,
-                    total_delta,
-                    minute.buy_amount,
-                    minute.sell_amount,
+                    minute.buy_amount_nanos,
+                    minute.sell_amount_nanos,
                     directional_total,
-                    directional_delta,
-                    total_tolerance,
                 );
             }
         } else if minute.size.total() != 0.0 || minute.size.directional_total() != 0.0 {
@@ -1694,6 +1737,7 @@ mod tests {
         let trade = |price, size, side| Trade {
             price,
             size,
+            notional_nanos: (price * size * 1e9) as i128,
             venue: String::new(),
             source_order: 0,
             side,
@@ -1709,6 +1753,7 @@ mod tests {
         minute
             .add(&trade(10.0, 100.0, None), Some(thresholds))
             .unwrap();
+        minute.materialize_exact_amounts();
         assert_eq!(minute.size.small_buy, 400.0);
         assert_eq!(minute.size.medium_sell, 600.0);
         assert_eq!(minute.size.large_order, 1000.0);
@@ -1718,6 +1763,11 @@ mod tests {
             minute.size.directional_total(),
             minute.buy_amount + minute.sell_amount
         );
+    }
+
+    #[test]
+    fn empty_minute_has_zero_exact_size_totals() {
+        assert_eq!(exact_size_totals(&Minute::new()).unwrap(), (0, 0));
     }
 
     #[test]
