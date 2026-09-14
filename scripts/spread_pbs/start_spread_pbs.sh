@@ -311,9 +311,10 @@ json_venue="$(json_escape "$venue")"
 json_rust_log="$(json_escape "$rust_log")"
 json_inner_bin="$(json_escape "$BIN_PATH")"
 binance_sbe_env_line=""
-if [[ "$venue" == "binance-margin" || "$venue" == "binance-both" ]]; then
-  BINANCE_SBE_API_KEY_HARDCODED="nk1AebIPBgDpTNDl186QeD2imHSuyPm4t2yzIGEul1SmmU0QXFroGVEHI18pVAO4"
-  json_binance_sbe_api_key="$(json_escape "$BINANCE_SBE_API_KEY_HARDCODED")"
+if [[ ("$venue" == "binance-margin" || "$venue" == "binance-both") && "${binance_spot_transport,,}" == "ws_sbe" ]]; then
+  : "${BINANCE_SBE_API_KEY:=${BINANCE_API_KEY:-}}"
+  : "${BINANCE_SBE_API_KEY:?ws_sbe requires BINANCE_SBE_API_KEY or BINANCE_API_KEY}"
+  json_binance_sbe_api_key="$(json_escape "$BINANCE_SBE_API_KEY")"
   binance_sbe_env_line=",
         \"BINANCE_SBE_API_KEY\": \"${json_binance_sbe_api_key}\""
 fi

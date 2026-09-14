@@ -1211,11 +1211,22 @@ fn main() -> Result<()> {
     for (index, minute) in minute_data.iter().enumerate() {
         let total_tolerance = 1e-8_f64.max(minute.amount.abs() * 1e-12);
         if let Some(_) = size_thresholds {
-            if (minute.size.total() - minute.amount).abs() > total_tolerance
-                || (minute.size.directional_total() - minute.buy_amount - minute.sell_amount).abs()
-                    > total_tolerance
-            {
-                bail!("size bucket conservation failed at minute {index}");
+            let size_total = minute.size.total();
+            let directional_total = minute.size.directional_total();
+            let total_delta = size_total - minute.amount;
+            let directional_delta = directional_total - minute.buy_amount - minute.sell_amount;
+            if total_delta.abs() > total_tolerance || directional_delta.abs() > total_tolerance {
+                bail!(
+                    "size bucket conservation failed at minute {index}: amount={} size_total={} total_delta={} buy_amount={} sell_amount={} directional_total={} directional_delta={} tolerance={}",
+                    minute.amount,
+                    size_total,
+                    total_delta,
+                    minute.buy_amount,
+                    minute.sell_amount,
+                    directional_total,
+                    directional_delta,
+                    total_tolerance,
+                );
             }
         } else if minute.size.total() != 0.0 || minute.size.directional_total() != 0.0 {
             bail!("size buckets must be zero without prior-month thresholds");
