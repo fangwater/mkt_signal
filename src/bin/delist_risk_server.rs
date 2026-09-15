@@ -951,17 +951,21 @@ struct RefreshArgs {
     force_llm_ids: Option<String>,
 }
 
-async fn refresh_nav_account_catalog(state: &AppState, client: &Client) {
+async fn refresh_nav_account_catalog(state: &AppState, client: &Client) -> bool {
+    let was_ready = nav_accounts_ready(state).await;
     match fetch_nav_accounts(client, &state.nav_strategies_url).await {
         Ok(accounts) => {
             let count = accounts.len();
+            let changed = state.accounts.read().await.as_slice() != accounts.as_slice();
             *state.accounts.write().await = accounts;
             mark_ok(state, "nav_strategies", "fetch").await;
             info!("NAV strategy catalog refreshed accounts={count}");
+            !was_ready || changed
         }
         Err(err) => {
             warn!("NAV strategy catalog refresh failed; retaining cached accounts: {err:#}");
             mark_err(state, "nav_strategies", "fetch", &format!("{err:#}")).await;
+            false
         }
     }
 }
@@ -979,7 +983,7 @@ async fn nav_accounts_ready(state: &AppState) -> bool {
 async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let public = public_http_client()?;
     let nav_client = Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
         .no_proxy()
         .build()
         .context("build NAV HTTP client")?;
@@ -1097,7 +1101,14 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
                 run_position_risk_scan(&state).await;
             }
             _ = nav_strategies.tick() => {
-                refresh_nav_account_catalog(&state, &nav_client).await;
+                if refresh_nav_account_catalog(&state, &nav_client).await {
+                    if state.auto_remove_redis {
+                        run_confirmed_delist_prune(&state).await;
+                    }
+                    if state.auto_dump_position_risk || state.auto_flatten_position_risk {
+                        run_position_risk_scan(&state).await;
+                    }
+                }
             }
             result = gate_ws_session(
                 &state,
@@ -1184,16 +1195,7 @@ async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIn
         mark_ok(state, "exchange_info", "fetch").await;
         info!("official exchange_info refreshed");
         if state.auto_remove_redis {
-            match prune_confirmed_delists(state).await {
-                Ok(count) => {
-                    mark_ok(state, "redis_delist_prune", "mutation").await;
-                    info!("Redis confirmed-delist prune completed removals={count}");
-                }
-                Err(err) => {
-                    warn!("Redis confirmed-delist prune failed: {err:#}");
-                    mark_err(state, "redis_delist_prune", "mutation", &format!("{err:#}")).await;
-                }
-            }
+            run_confirmed_delist_prune(state).await;
         }
         return Ok(index);
     }
@@ -1207,6 +1209,19 @@ async fn refresh_listings(state: &AppState, public: &Client) -> Result<ListingIn
         .join("; ");
     mark_err(state, "exchange_info", "fetch", &error).await;
     anyhow::bail!(error)
+}
+
+async fn run_confirmed_delist_prune(state: &AppState) {
+    match prune_confirmed_delists(state).await {
+        Ok(count) => {
+            mark_ok(state, "redis_delist_prune", "mutation").await;
+            info!("Redis confirmed-delist prune completed removals={count}");
+        }
+        Err(err) => {
+            warn!("Redis confirmed-delist prune failed: {err:#}");
+            mark_err(state, "redis_delist_prune", "mutation", &format!("{err:#}")).await;
+        }
+    }
 }
 
 fn scheduled_midnight_ms(snapshot_date: NaiveDate) -> i64 {
