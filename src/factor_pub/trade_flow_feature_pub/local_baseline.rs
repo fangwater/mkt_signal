@@ -290,6 +290,10 @@ impl BaselineBar {
         self.medium_sell += source.medium_sell;
         self.small_buy += source.small_buy;
         self.small_sell += source.small_sell;
+        // A resampled bar represents the right edge of its final 5-second
+        // source bar. Preserve that bar's book exactly as we preserve its
+        // closing trade price above.
+        self.depth20 = source.depth20.clone();
     }
 
     fn finalize(
@@ -828,6 +832,35 @@ mod tests {
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].start_ms, 0);
         assert!(completed[0].has_trade);
+    }
+
+    #[test]
+    fn sixty_second_bar_keeps_the_latest_five_second_depth20() {
+        let mut agg = LocalBaselineAggregator::new();
+        let initial_bids: Vec<Level> = (0..20)
+            .map(|i| Level::from_values(100.0 - i as f64, 1.0))
+            .collect();
+        let initial_asks: Vec<Level> = (0..20)
+            .map(|i| Level::from_values(101.0 + i as f64, 1.0))
+            .collect();
+        agg.on_book(1, true, &initial_bids, &initial_asks);
+
+        for second in (0..=60).step_by(5) {
+            if second == 55 {
+                agg.on_book(
+                    second * 1_000_000 + 1,
+                    false,
+                    &[Level::from_values(105.0, 2.0)],
+                    &[Level::from_values(106.0, 3.0)],
+                );
+            }
+            agg.on_trade(second * 1_000_000 + 2, true, 100.0, 1.0);
+        }
+
+        let completed = agg.drain_sixty_second_bars();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].depth20.bids[0], (105.0, 2.0));
+        assert_eq!(completed[0].depth20.asks[0], (106.0, 3.0));
     }
 
     #[test]
