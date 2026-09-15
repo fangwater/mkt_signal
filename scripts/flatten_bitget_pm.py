@@ -20,6 +20,7 @@ Modes:
 Behavior:
   - CWD basename must match ^bitget_fr_ or ^bitget-intra-.
   - Auto-sources ./env.sh; BITGET_API_KEY/SECRET/PASSPHRASE — env.sh always wins.
+  - If a delisted symbol has no cash instrument, futures-only actions remain available.
   - Dry-run by default; --execute required.
 
 Usage:
@@ -61,7 +62,7 @@ BUYBACK_QUOTE_BUFFER = Decimal("1.001")
 class SymbolSpec:
     symbol: str           # BTCUSDT (used as-is for spot/margin & futures, distinguished by category)
     asset: str            # BTC
-    spot_category: str    # MARGIN normally; SPOT after an exchange removes the margin product
+    spot_category: Optional[str]  # None after the exchange removes both cash instruments
     spot_qty_step: Decimal
     spot_min_qty: Decimal
     spot_quote_step: Decimal
@@ -320,14 +321,17 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
         m = margin.get(sym, {})
         s = spot.get(sym, {})
         f = futures.get(sym, {})
-        if not m and not s:
-            sys.exit(f"[ERROR] Bitget MARGIN/SPOT instrument not found for {sym}")
         if not f:
             sys.exit(f"[ERROR] Bitget USDT-FUTURES instrument not found for {sym}")
         cash = m or s
-        spot_category = "MARGIN" if m else "SPOT"
+        spot_category = "MARGIN" if m else ("SPOT" if s else None)
         if spot_category == "SPOT":
             print(f"[WARN] Bitget MARGIN instrument absent for {sym}; using SPOT for the cash leg")
+        elif spot_category is None:
+            print(
+                f"[WARN] Bitget MARGIN/SPOT instruments absent for {sym}; "
+                "cash-leg actions are unavailable, futures-only actions remain enabled"
+            )
         out[sym] = SymbolSpec(
             symbol=sym,
             asset=split_usdt(sym),
@@ -339,7 +343,7 @@ def fetch_specs(symbols: List[str]) -> Dict[str, SymbolSpec]:
                 or cash.get("quantityMultiplier")
                 or cash.get("sizeStep")
                 or cash.get("baseSizeStep"),
-                str(step_from_precision(cash.get("quantityPrecision"), "1")),
+                str(step_from_precision(cash.get("quantityPrecision"), "0")),
             ),
             spot_min_qty=decimal_or(
                 cash.get("minOrderQuantity")
@@ -561,7 +565,12 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
         # while market sells and futures orders use base-coin qty.
         if free_after < 0:
             owed = -free_after
-            if state.mark_price <= 0:
+            if spec.spot_category is None:
+                buyback_skip = (
+                    "MARGIN/SPOT instrument unavailable; cannot buy back cash debt "
+                    f"(owed_base={format_decimal(owed)})"
+                )
+            elif state.mark_price <= 0:
                 buyback_skip = (
                     "missing spot mark price for quote-sized buyback "
                     f"(owed_base={format_decimal(owed)})"
@@ -573,25 +582,33 @@ def plan_symbol(state: SymbolState, mode: str) -> SymbolPlan:
                     buyback_amt = spec.spot_min_amount
         elif free_after > 0:
             sell_target = free_after
-            selldown_amt = floor_to_step(sell_target, spec.spot_qty_step)
-            if selldown_amt < spec.spot_min_qty:
+            if spec.spot_category is None:
                 selldown_skip = (
-                    f"selldown qty {format_decimal(selldown_amt)} < min "
-                    f"{format_decimal(spec.spot_min_qty)} (spot_net={format_decimal(sell_target)})"
-                )
-                selldown_amt = ZERO
-            elif state.mark_price <= 0:
-                selldown_skip = (
-                    "missing spot mark price for min-notional check "
+                    "MARGIN/SPOT instrument unavailable; cannot sell cash balance "
                     f"(spot_net={format_decimal(sell_target)})"
                 )
-                selldown_amt = ZERO
-            elif selldown_amt * state.mark_price < spec.spot_min_amount:
-                selldown_skip = (
-                    f"selldown notional {format_decimal(selldown_amt * state.mark_price)} < min "
-                    f"{format_decimal(spec.spot_min_amount)} (spot_net={format_decimal(sell_target)})"
-                )
-                selldown_amt = ZERO
+            else:
+                selldown_amt = floor_to_step(sell_target, spec.spot_qty_step)
+                if selldown_amt < spec.spot_min_qty:
+                    selldown_skip = (
+                        f"selldown qty {format_decimal(selldown_amt)} < min "
+                        f"{format_decimal(spec.spot_min_qty)} "
+                        f"(spot_net={format_decimal(sell_target)})"
+                    )
+                    selldown_amt = ZERO
+                elif state.mark_price <= 0:
+                    selldown_skip = (
+                        "missing spot mark price for min-notional check "
+                        f"(spot_net={format_decimal(sell_target)})"
+                    )
+                    selldown_amt = ZERO
+                elif selldown_amt * state.mark_price < spec.spot_min_amount:
+                    selldown_skip = (
+                        f"selldown notional {format_decimal(selldown_amt * state.mark_price)} < min "
+                        f"{format_decimal(spec.spot_min_amount)} "
+                        f"(spot_net={format_decimal(sell_target)})"
+                    )
+                    selldown_amt = ZERO
 
     return SymbolPlan(
         state=state,
@@ -715,7 +732,7 @@ def execute_futures(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
 
 
 def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseOutcome:
-    if plan.buyback_skip_reason or plan.buyback_amt <= 0:
+    if plan.buyback_skip_reason or plan.buyback_amt <= 0 or plan.state.spec.spot_category is None:
         return PhaseOutcome(ok=None)
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.buyback_amt)
@@ -744,7 +761,7 @@ def execute_buyback(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseO
 
 
 def execute_selldown(plan: SymbolPlan, api_key, api_secret, passphrase) -> PhaseOutcome:
-    if plan.selldown_skip_reason or plan.selldown_amt <= 0:
+    if plan.selldown_skip_reason or plan.selldown_amt <= 0 or plan.state.spec.spot_category is None:
         return PhaseOutcome(ok=None)
     sym = plan.state.spec.symbol
     qty = format_decimal(plan.selldown_amt)
