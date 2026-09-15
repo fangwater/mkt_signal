@@ -34,8 +34,8 @@ online_symbols = [
   "TRXUSDT",
 ]
 
-# Only these symbols retain a reconstructed 20-level book and append it as an
-# is_snapshot=true IncrementOrderBookInfo at each completed 3-second period.
+# Only these symbols retain a reconstructed book and append up to 20 levels as
+# an is_snapshot=true IncrementOrderBookInfo at each completed 3-second period.
 # Other online symbols continue to publish raw period increments without book
 # state, avoiding per-symbol reconstruction cost.
 depth_snapshot_symbols = [

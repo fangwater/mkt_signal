@@ -18,8 +18,8 @@ pub struct CollectorConfig {
     /// Symbols that must be represented in every emitted period, including
     /// periods without a trade or incremental update for that symbol.
     pub slot_symbols: Vec<String>,
-    /// Symbols for which each completed period appends a reconstructed 20-level
-    /// depth snapshot. All other symbols retain only their raw increments.
+    /// Symbols for which each completed period appends a reconstructed depth
+    /// snapshot with up to 20 levels. All other symbols retain only raw increments.
     pub depth_snapshot_symbols: Vec<String>,
 }
 
@@ -389,7 +389,7 @@ impl HistoricalDepthBook {
     fn snapshot(&self, timestamp: i64) -> Option<pb::IncrementOrderBookInfo> {
         let (best_bid_key, _) = self.bids.last_key_value()?;
         let (best_ask_key, _) = self.asks.first_key_value()?;
-        if best_bid_key >= best_ask_key || self.bids.len() < 20 || self.asks.len() < 20 {
+        if best_bid_key >= best_ask_key {
             return None;
         }
         let bids = self
@@ -786,6 +786,53 @@ mod tests {
             .contains_key(&price_key(101.0).expect("price key")));
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
+    }
+
+    #[test]
+    fn appends_partial_depth_snapshot_without_waiting_for_twenty_levels() {
+        let mut config = cfg();
+        config.depth_snapshot_symbols = vec!["BTCUSDT".to_string()];
+        let mut collector = PeriodCollector::new(config);
+        let depth = IncRecord {
+            symbol: "BTCUSDT".to_string(),
+            first_update_id: 1,
+            final_update_id: 1,
+            timestamp: (INIT_TP_MS + 20) * 1_000,
+            timestamp_ms: INIT_TP_MS + 20,
+            is_snapshot: false,
+            is_last: true,
+            chunk_index: 0,
+            bids: vec![LevelRecord {
+                price: 100.0,
+                amount: 1.0,
+            }],
+            asks: vec![LevelRecord {
+                price: 101.0,
+                amount: 2.0,
+            }],
+        };
+
+        collector
+            .push_trade(trade_record(INIT_TP_MS + 10, 'B'))
+            .expect("period0 trade");
+        collector.push_incremental(depth).expect("period0 depth");
+        collector
+            .push_trade(trade_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 'S'))
+            .expect("trade watermark");
+        let completed = collector
+            .push_incremental(inc_record(INIT_TP_MS + DEFAULT_PERIOD_MS + 5, 2))
+            .expect("incremental watermark");
+
+        let btc = completed[0]
+            .message
+            .symbol_infos
+            .iter()
+            .find(|info| info.symbol == "BTCUSDT")
+            .expect("BTC slot");
+        let snapshot = btc.incs.last().expect("synthesized snapshot");
+        assert!(snapshot.is_snapshot);
+        assert_eq!(snapshot.bids.len(), 1);
+        assert_eq!(snapshot.asks.len(), 1);
     }
 
     #[test]
