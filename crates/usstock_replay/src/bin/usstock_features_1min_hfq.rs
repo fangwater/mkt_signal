@@ -27,6 +27,8 @@ const DEFAULT_INPUT: &str = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/baselin
 const DEFAULT_OUTPUT: &str = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/baseline_factor_1min_hfq";
 const DEFAULT_START: &str = "2021-07-01";
 const DEFAULT_END: &str = "2026-06-30";
+const RAW_INPUT_DIR: &str = "baseline_data_1min_hfq_raw";
+const RAW_OUTPUT_DIR: &str = "baseline_factor_1min_hfq_raw";
 
 #[derive(Parser, Debug)]
 #[command(name = "usstock_features_1min_hfq")]
@@ -48,6 +50,9 @@ struct Args {
     workers: usize,
     #[arg(long)]
     overwrite: bool,
+    /// Consume measured RAW size buckets and write only to baseline_factor_1min_hfq_raw.
+    #[arg(long)]
+    raw: bool,
     #[arg(long)]
     dry_run: bool,
 }
@@ -71,6 +76,11 @@ struct OutputRow {
     factors: Vec<f64>,
 }
 
+enum CountColumn<'a> {
+    Int32(&'a Int32Chunked),
+    Int64(&'a Int64Chunked),
+}
+
 fn main() -> Result<()> {
     // Outer Rayon workers own file-level parallelism. Avoid a nested Polars pool
     // per worker, which can exhaust the thread stack on large batch runs.
@@ -83,6 +93,9 @@ fn main() -> Result<()> {
     }
     if args.input_root == args.output_root {
         bail!("factor output_root must differ from input_root");
+    }
+    if args.raw {
+        require_raw_roots(&args.input_root, &args.output_root)?;
     }
     let start = parse_day(&args.start)?;
     let end = parse_day(&args.end)?;
@@ -131,6 +144,17 @@ fn main() -> Result<()> {
         rows.load(Ordering::Relaxed),
         factor_names.len()
     );
+    Ok(())
+}
+
+fn require_raw_roots(input: &Path, output: &Path) -> Result<()> {
+    let input_name = input.file_name().and_then(|value| value.to_str());
+    let output_name = output.file_name().and_then(|value| value.to_str());
+    if input_name != Some(RAW_INPUT_DIR) || output_name != Some(RAW_OUTPUT_DIR) {
+        bail!(
+            "--raw requires input root basename {RAW_INPUT_DIR:?} and output root basename {RAW_OUTPUT_DIR:?}"
+        );
+    }
     Ok(())
 }
 
@@ -239,6 +263,7 @@ fn replay_ric(
             &mut previous_ts,
             &mut pending_factors,
             plan,
+            args.raw,
         )?;
         if output.exists() && !args.overwrite {
             continue;
@@ -260,6 +285,7 @@ fn process_day(
     previous_ts: &mut Option<i64>,
     pending_factors: &mut Option<Vec<f64>>,
     plan: &LsegFactorPlan,
+    raw: bool,
 ) -> Result<Vec<OutputRow>> {
     let frame = ParquetReader::new(File::open(path)?)
         .set_low_memory(true)
@@ -274,13 +300,31 @@ fn process_day(
     let close = f64_column(&frame, "close")?;
     let volume = f64_column(&frame, "volume")?;
     let amount = f64_column(&frame, "amount")?;
-    let count = i32_column(&frame, "count")?;
-    let buy_count = i32_column(&frame, "buy_count")?;
-    let sell_count = i32_column(&frame, "sell_count")?;
+    let count = count_column(&frame, "count")?;
+    let buy_count = count_column(&frame, "buy_count")?;
+    let sell_count = count_column(&frame, "sell_count")?;
     let buy_amount = f64_column(&frame, "buy_amount")?;
     let sell_amount = f64_column(&frame, "sell_amount")?;
     let buy_volume = f64_column(&frame, "buy_volume")?;
     let sell_volume = f64_column(&frame, "sell_volume")?;
+    let raw_size_columns = if raw {
+        Some([
+            f64_column(&frame, "large_order")?,
+            f64_column(&frame, "medium_order")?,
+            f64_column(&frame, "small_order")?,
+            f64_column(&frame, "large_buy")?,
+            f64_column(&frame, "large_sell")?,
+            f64_column(&frame, "medium_buy")?,
+            f64_column(&frame, "medium_sell")?,
+            f64_column(&frame, "small_buy")?,
+            f64_column(&frame, "small_sell")?,
+            f64_column(&frame, "net_buy_large")?,
+            f64_column(&frame, "net_buy_medium")?,
+            f64_column(&frame, "net_buy_small")?,
+        ])
+    } else {
+        None
+    };
 
     let mut output = Vec::with_capacity(frame.height());
     for index in 0..frame.height() {
@@ -300,6 +344,10 @@ fn process_day(
             Some(previous) => ts - previous != 60,
             None => false,
         };
+        let size_buckets = raw_size_columns
+            .as_ref()
+            .map(|columns| std::array::from_fn(|field| f64_at(columns[field], index)))
+            .unwrap_or([f64::NAN; 12]);
         let trade = trade_bar(
             f64_at(open, index),
             f64_at(high, index),
@@ -307,13 +355,14 @@ fn process_day(
             f64_at(close, index),
             f64_at(volume, index),
             f64_at(amount, index),
-            i32_at(count, index),
-            i32_at(buy_count, index),
-            i32_at(sell_count, index),
+            count_at(&count, index),
+            count_at(&buy_count, index),
+            count_at(&sell_count, index),
             f64_at(buy_amount, index),
             f64_at(sell_amount, index),
             f64_at(buy_volume, index),
             f64_at(sell_volume, index),
+            size_buckets,
         );
         let factors = take_shifted_factors(pending_factors, segment_break, plan.len());
         state
@@ -347,6 +396,7 @@ fn trade_bar(
     sell_amount: f64,
     buy_volume: f64,
     sell_volume: f64,
+    size_buckets: [f64; 12],
 ) -> LsegTradeBar {
     let average_amount = ratio(amount, count);
     let vwap = ratio(amount, volume);
@@ -354,10 +404,7 @@ fn trade_bar(
     let sell_vwap = ratio(sell_amount, sell_volume);
     let net_buy_amount = difference(buy_amount, sell_amount);
     let net_buy_volume = difference(buy_volume, sell_volume);
-    let net_buy_pct = ratio(net_buy_amount, amount);
-    // The base has no KLL bucket replay. NaN preserves the distinction between
-    // unavailable bucket attribution and a measured zero-sized bucket.
-    let unavailable = f64::NAN;
+    let net_buy_pct = ratio(net_buy_amount, buy_amount + sell_amount);
     LsegTradeBar::from_slice(&[
         open,
         high,
@@ -373,24 +420,24 @@ fn trade_bar(
         sell_amount,
         buy_volume,
         sell_volume,
-        unavailable,
-        unavailable,
-        unavailable,
-        unavailable,
-        unavailable,
-        unavailable,
-        unavailable,
-        unavailable,
-        unavailable,
+        size_buckets[0],
+        size_buckets[1],
+        size_buckets[2],
+        size_buckets[3],
+        size_buckets[4],
+        size_buckets[5],
+        size_buckets[6],
+        size_buckets[7],
+        size_buckets[8],
         vwap,
         buy_vwap,
         sell_vwap,
         net_buy_amount,
         net_buy_volume,
         net_buy_pct,
-        unavailable,
-        unavailable,
-        unavailable,
+        size_buckets[9],
+        size_buckets[10],
+        size_buckets[11],
     ])
     .expect("US-stock trade bar field count is fixed")
 }
@@ -507,12 +554,17 @@ fn i64_column<'a>(frame: &'a DataFrame, name: &str) -> Result<&'a Int64Chunked> 
         .with_context(|| format!("{name} must be Int64"))
 }
 
-fn i32_column<'a>(frame: &'a DataFrame, name: &str) -> Result<&'a Int32Chunked> {
-    frame
+fn count_column<'a>(frame: &'a DataFrame, name: &str) -> Result<CountColumn<'a>> {
+    let column = frame
         .column(name)
-        .with_context(|| format!("missing {name}"))?
-        .i32()
-        .with_context(|| format!("{name} must be Int32"))
+        .with_context(|| format!("missing {name}"))?;
+    if let Ok(values) = column.i32() {
+        return Ok(CountColumn::Int32(values));
+    }
+    if let Ok(values) = column.i64() {
+        return Ok(CountColumn::Int64(values));
+    }
+    bail!("{name} must be Int32 or Int64")
 }
 
 fn f64_column<'a>(frame: &'a DataFrame, name: &str) -> Result<&'a Float64Chunked> {
@@ -527,8 +579,14 @@ fn f64_at(column: &Float64Chunked, index: usize) -> f64 {
     column.get(index).unwrap_or(f64::NAN)
 }
 
-fn i32_at(column: &Int32Chunked, index: usize) -> f64 {
-    column.get(index).map(f64::from).unwrap_or(f64::NAN)
+fn count_at(column: &CountColumn<'_>, index: usize) -> f64 {
+    match column {
+        CountColumn::Int32(values) => values.get(index).map(f64::from).unwrap_or(f64::NAN),
+        CountColumn::Int64(values) => values
+            .get(index)
+            .map(|value| value as f64)
+            .unwrap_or(f64::NAN),
+    }
 }
 
 #[cfg(test)]
@@ -538,13 +596,40 @@ mod tests {
     #[test]
     fn trade_bar_keeps_unavailable_size_buckets_as_nan() {
         let bar = trade_bar(
-            100.0, 101.0, 99.0, 100.5, 10.0, 1_000.0, 4.0, 2.0, 1.0, 700.0, 200.0, 7.0, 2.0,
+            100.0,
+            101.0,
+            99.0,
+            100.5,
+            10.0,
+            1_000.0,
+            4.0,
+            2.0,
+            1.0,
+            700.0,
+            200.0,
+            7.0,
+            2.0,
+            [f64::NAN; 12],
         );
         assert_eq!(bar.values.len(), LSEG_TRADE_FIELD_COUNT);
         assert_eq!(bar.values[23], 100.0);
         assert_eq!(bar.values[26], 500.0);
+        assert!((bar.values[28] - 500.0 / 900.0).abs() < 1e-12);
         assert!(bar.values[14].is_nan());
         assert!(bar.values[31].is_nan());
+    }
+
+    #[test]
+    fn trade_bar_keeps_measured_raw_size_buckets() {
+        let buckets = [
+            100.0, 200.0, 300.0, 11.0, 12.0, 21.0, 22.0, 31.0, 32.0, -1.0, -1.0, -1.0,
+        ];
+        let bar = trade_bar(
+            100.0, 101.0, 99.0, 100.5, 10.0, 1_000.0, 4.0, 2.0, 1.0, 700.0, 200.0, 7.0, 2.0,
+            buckets,
+        );
+        assert_eq!(&bar.values[14..23], &buckets[..9]);
+        assert_eq!(&bar.values[29..32], &buckets[9..]);
     }
 
     #[test]

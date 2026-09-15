@@ -6760,6 +6760,7 @@ dependencies = [
  "chrono",
  "chrono-tz 0.8.6",
  "clap",
+ "cme_tas_replay",
  "csv",
  "flate2",
  "mkt_signal",

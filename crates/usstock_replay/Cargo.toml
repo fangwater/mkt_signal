@@ -35,8 +35,13 @@ path = "src/bin/usstock_baseline_hfq_1min.rs"
 name = "usstock_features_1min_hfq"
 path = "src/bin/usstock_features_1min_hfq.rs"
 
+[[bin]]
+name = "usstock_baseline_ylabel_1min"
+path = "src/bin/usstock_baseline_ylabel_1min.rs"
+
 [dependencies]
 anyhow = "1.0"
+cme_tas_replay = { path = "../cme_tas_replay" }
 chrono = { version = "0.4", features = ["clock"] }
 chrono-tz = "0.8"
 clap = { version = "4.0", features = ["derive"] }

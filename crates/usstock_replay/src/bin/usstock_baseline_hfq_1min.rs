@@ -23,10 +23,13 @@ const DEFAULT_ACTIONS: &str =
 const DEFAULT_OUTPUT: &str = "/mnt/hdd-raid5-72t/liang_torch/usstock_data/baseline_data_1min_hfq";
 const DEFAULT_START: &str = "2021-07-01";
 const DEFAULT_END: &str = "2026-06-30";
+const RAW_INPUT_DIR: &str = "baseline_data_1m_raw";
+const RAW_OUTPUT_DIR: &str = "baseline_data_1min_hfq_raw";
 
 const PRICE_COLUMNS: &[&str] = &[
     "bid0p", "ask0p", "open", "high", "low", "close", "midp", "buy_high", "sell_low",
 ];
+const RAW_PRICE_COLUMNS: &[&str] = &["vwap", "buy_vwap", "sell_vwap", "twap", "mid_price"];
 const VOLUME_COLUMNS: &[&str] = &[
     "bid0v",
     "ask0v",
@@ -36,6 +39,37 @@ const VOLUME_COLUMNS: &[&str] = &[
     "unknown_volume",
 ];
 const AMOUNT_COLUMNS: &[&str] = &["amount", "buy_amount", "sell_amount", "unknown_amount"];
+
+const RAW_VOLUME_COLUMNS: &[&str] = &[
+    "bid0v",
+    "ask0v",
+    "volume",
+    "buy_volume",
+    "sell_volume",
+    "off_exchange_volume",
+    "net_buy_volume",
+];
+
+const RAW_AMOUNT_COLUMNS: &[&str] = &[
+    "amount",
+    "avg_amount",
+    "buy_amount",
+    "sell_amount",
+    "off_exchange_amount",
+    "large_order",
+    "medium_order",
+    "small_order",
+    "large_buy",
+    "large_sell",
+    "medium_buy",
+    "medium_sell",
+    "small_buy",
+    "small_sell",
+    "net_buy_large",
+    "net_buy_medium",
+    "net_buy_small",
+    "net_buy_amount",
+];
 
 #[derive(Parser, Debug)]
 #[command(name = "usstock_baseline_hfq_1min")]
@@ -59,6 +93,9 @@ struct Args {
     workers: usize,
     #[arg(long)]
     overwrite: bool,
+    /// Require the RAW schema and write only to baseline_data_1min_hfq_raw.
+    #[arg(long)]
+    raw: bool,
     #[arg(long)]
     dry_run: bool,
 }
@@ -123,6 +160,9 @@ fn main() -> Result<()> {
     if args.output_root == args.input_root {
         bail!("HFQ output_root must differ from input_root");
     }
+    if args.raw {
+        require_raw_roots(&args.input_root, &args.output_root)?;
+    }
     let start = parse_day(&args.start)?;
     let end = parse_day(&args.end)?;
     if end < start {
@@ -158,7 +198,7 @@ fn main() -> Result<()> {
     let rows = AtomicU64::new(0);
     pool.install(|| {
         jobs.par_iter().try_for_each(|job| -> Result<()> {
-            let written = process_job(job)?;
+            let written = process_job(job, args.raw)?;
             files.fetch_add(1, Ordering::Relaxed);
             rows.fetch_add(written, Ordering::Relaxed);
             Ok(())
@@ -169,6 +209,17 @@ fn main() -> Result<()> {
         files.load(Ordering::Relaxed),
         rows.load(Ordering::Relaxed)
     );
+    Ok(())
+}
+
+fn require_raw_roots(input: &Path, output: &Path) -> Result<()> {
+    let input_name = input.file_name().and_then(|value| value.to_str());
+    let output_name = output.file_name().and_then(|value| value.to_str());
+    if input_name != Some(RAW_INPUT_DIR) || output_name != Some(RAW_OUTPUT_DIR) {
+        bail!(
+            "--raw requires input root basename {RAW_INPUT_DIR:?} and output root basename {RAW_OUTPUT_DIR:?}"
+        );
+    }
     Ok(())
 }
 
@@ -381,7 +432,7 @@ fn validate_identity(df: &DataFrame, job: &Job) -> Result<Vec<i64>> {
     Ok(output)
 }
 
-fn apply_hfq(mut df: DataFrame, job: &Job) -> Result<DataFrame> {
+fn apply_hfq(mut df: DataFrame, job: &Job, raw: bool) -> Result<DataFrame> {
     let timestamps = validate_identity(&df, job)?;
     let (price_factors, volume_factors): (Vec<_>, Vec<_>) = timestamps
         .iter()
@@ -395,13 +446,23 @@ fn apply_hfq(mut df: DataFrame, job: &Job) -> Result<DataFrame> {
     for name in PRICE_COLUMNS {
         multiply_column(&mut df, name, &price_factors)?;
     }
+    if raw {
+        for name in RAW_PRICE_COLUMNS {
+            multiply_column(&mut df, name, &price_factors)?;
+        }
+    }
     for level in 0..10 {
         for side in ["l2_bid", "l2_ask"] {
             multiply_column(&mut df, &format!("{side}{level}p"), &price_factors)?;
             multiply_column(&mut df, &format!("{side}{level}v"), &volume_factors)?;
         }
     }
-    for name in VOLUME_COLUMNS {
+    let volume_columns = if raw {
+        RAW_VOLUME_COLUMNS
+    } else {
+        VOLUME_COLUMNS
+    };
+    for name in volume_columns {
         multiply_column(&mut df, name, &volume_factors)?;
     }
     let amount_factors = price_factors
@@ -409,7 +470,12 @@ fn apply_hfq(mut df: DataFrame, job: &Job) -> Result<DataFrame> {
         .zip(&volume_factors)
         .map(|(price, volume)| price * volume)
         .collect::<Vec<_>>();
-    for name in AMOUNT_COLUMNS {
+    let amount_columns = if raw {
+        RAW_AMOUNT_COLUMNS
+    } else {
+        AMOUNT_COLUMNS
+    };
+    for name in amount_columns {
         multiply_column(&mut df, name, &amount_factors)?;
     }
     Ok(df)
@@ -434,13 +500,13 @@ fn write_atomic(path: &Path, mut df: DataFrame) -> Result<()> {
     result
 }
 
-fn process_job(job: &Job) -> Result<u64> {
+fn process_job(job: &Job, raw: bool) -> Result<u64> {
     let frame = ParquetReader::new(File::open(&job.input)?)
         .set_low_memory(true)
         .finish()
         .with_context(|| format!("read {}", job.input.display()))?;
     let rows = frame.height() as u64;
-    let adjusted = apply_hfq(frame, job)?;
+    let adjusted = apply_hfq(frame, job, raw)?;
     write_atomic(&job.output, adjusted)
         .with_context(|| format!("write {}", job.output.display()))?;
     Ok(rows)
@@ -463,5 +529,28 @@ mod tests {
         };
         assert_eq!(chain.factors_at(0), (0.5, 2.0));
         assert_eq!(chain.factors_at(1), (1.0, 1.0));
+    }
+
+    #[test]
+    fn raw_hfq_uses_off_exchange_and_size_bucket_columns() {
+        assert!(RAW_VOLUME_COLUMNS.contains(&"off_exchange_volume"));
+        for name in [
+            "off_exchange_amount",
+            "large_order",
+            "medium_order",
+            "small_order",
+            "large_buy",
+            "large_sell",
+            "medium_buy",
+            "medium_sell",
+            "small_buy",
+            "small_sell",
+            "net_buy_large",
+            "net_buy_medium",
+            "net_buy_small",
+        ] {
+            assert!(RAW_AMOUNT_COLUMNS.contains(&name));
+        }
+        assert!(!RAW_AMOUNT_COLUMNS.contains(&"unknown_amount"));
     }
 }
