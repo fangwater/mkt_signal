@@ -3164,6 +3164,7 @@ dependencies = [
  "openssl",
  "order_common",
  "parking_lot",
+ "period_pbs",
  "persist_common",
  "polars",
  "postgres",

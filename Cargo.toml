@@ -301,6 +301,7 @@ depth_pub_common = { package = "depth_pub", path = "crates/depth_pub" }
 factor_engine = { path = "crates/factor_engine" }
 mkt_parsers = { path = "crates/mkt_parsers" }
 rolling_common = { path = "crates/rolling_common" }
+period_pbs = { path = "crates/period_pbs" }
 viz_common = { path = "crates/viz_common" }
 local-ip-address = "0.6"
 serde_yaml = "0.9"

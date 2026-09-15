@@ -37,7 +37,7 @@ use super::zscore::{
     load_optional_zscore_config_from_tlen_server, load_zscore_config_from_tlen_server,
     normalize_feature_values, SymbolNormState, ZscoreRuntimeConfig,
 };
-use crate::common::amount_threshold::is_online_amount_threshold;
+use crate::common::amount_threshold::{is_online_amount_threshold, AmountThreshold};
 use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::rolling_welford::RollingWelfordCovariance;
 use mkt_parsers::msg::mkt_msg::FeatureMsg;
@@ -6016,6 +6016,21 @@ pub(crate) async fn load_online_symbols_from_tlen_server(
     venue_slug: &str,
     config_type: &str,
 ) -> Result<HashSet<String>> {
+    Ok(
+        load_amount_thresholds_from_tlen_server(tlen, venue, venue_slug, config_type)
+            .await?
+            .into_keys()
+            .collect(),
+    )
+}
+
+/// Loads the active per-symbol trade-notional buckets used by trade_flow_feature_pub.
+pub(crate) async fn load_amount_thresholds_from_tlen_server(
+    tlen: &TlenServerConfig,
+    venue: TradingVenue,
+    venue_slug: &str,
+    config_type: &str,
+) -> Result<HashMap<String, AmountThreshold>> {
     let base_url = tlen.base_url.trim_end_matches('/');
     let client = Client::builder()
         .timeout(Duration::from_millis(tlen.request_timeout_ms))
@@ -6037,7 +6052,7 @@ pub(crate) async fn load_online_symbols_from_tlen_server(
         .await
         .with_context(|| format!("decode amount threshold response failed: {}", url))?;
 
-    let mut out = HashSet::with_capacity(payload.thresholds.len());
+    let mut out = HashMap::with_capacity(payload.thresholds.len());
     for (raw_symbol, item) in payload.thresholds {
         let symbol = normalize_symbol_for_venue(&raw_symbol, venue);
         if !symbol.is_empty()
@@ -6046,7 +6061,13 @@ pub(crate) async fn load_online_symbols_from_tlen_server(
                 item.large_notional_threshold,
             )
         {
-            out.insert(symbol);
+            out.insert(
+                symbol,
+                AmountThreshold {
+                    medium_notional_threshold: item.medium_notional_threshold,
+                    large_notional_threshold: item.large_notional_threshold,
+                },
+            );
         }
     }
     Ok(out)

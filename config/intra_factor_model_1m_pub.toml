@@ -9,3 +9,27 @@ symbol_reload_secs = 180
 [percentile]
 window_size = 2880
 min_samples = 1440
+
+# Rebuilds historical 1m trade-flow bars from Kafka PeriodMessage payloads. History only
+# warms internal factor and percentile state; it never publishes old ModelMsg records.
+[warmup]
+enabled = true
+required = false
+lookback_secs = 172800
+tail_guard_secs = 90
+max_wait_secs = 300
+
+[warmup.kafka]
+topics = ["binance-futures"]
+brokers = "156.231.137.189:1501"
+group_id = "intra_factor_model_1m_warmup"
+client_id = "intra_factor_model_1m_warmup"
+offset_reset = "earliest"
+payload_compression = "zlib"
+poll_timeout_ms = 1000
+enable_auto_commit = false
+enable_partition_eof = false
+security_protocol = "none"
+broker_addr_rewrites = [
+  { from_host = "10.140.140.55", to_host = "156.231.137.189" },
+]
