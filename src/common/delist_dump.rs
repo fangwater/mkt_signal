@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::common::delist_accounts::{
-    matched_symbols, mounted_accounts, redis_keys, AccountHitEvent, RedisSite,
+    matched_symbols, redis_keys, AccountHitEvent, AccountSpec, RedisSite,
 };
 use crate::common::delist_risk::{normalize_symbol, RiskQueryResponse};
 
@@ -83,6 +83,7 @@ struct PositionRow {
 pub async fn position_dump_candidates(
     client: &Client,
     snapshot_base_url: &str,
+    accounts: &[AccountSpec],
     risk: &RiskQueryResponse,
     threshold_usdt: f64,
     max_snapshot_age_ms: i64,
@@ -91,13 +92,15 @@ pub async fn position_dump_candidates(
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
 
-    let scans = mounted_accounts()
+    let scans = accounts
         .iter()
         .filter(|spec| {
-            spec.kind == "funding_rate" && matches!(spec.exchange, "binance" | "bitget" | "gate")
+            spec.kind == "funding_rate"
+                && matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
+                && matches!(spec.site, RedisSite::Jp | RedisSite::Sg)
         })
         .filter_map(|spec| {
-            let bucket = risk.exchanges.get(spec.exchange)?;
+            let bucket = risk.exchanges.get(&spec.exchange)?;
             let (_keys, venues) = redis_keys(spec);
             let events: Vec<_> = bucket
                 .items
@@ -189,6 +192,7 @@ pub async fn position_dump_candidates(
                 redis_site: match spec.site {
                     RedisSite::Jp => "jp",
                     RedisSite::Sg => "sg",
+                    RedisSite::Unsupported => continue,
                 }
                 .to_string(),
                 symbol,
@@ -456,6 +460,17 @@ mod tests {
     use crate::common::delist_risk::{ExchangeRisk, RiskEventView};
     use axum::{routing::get, Json, Router};
 
+    fn gate_fr_account(slug: &str) -> AccountSpec {
+        AccountSpec {
+            slug: slug.to_string(),
+            alias: slug.to_string(),
+            exchange: "gate".to_string(),
+            kind: "funding_rate".to_string(),
+            host: "local".to_string(),
+            site: RedisSite::Jp,
+        }
+    }
+
     #[test]
     fn parses_position_by_symbol_base() {
         let snapshot: DashboardSnapshot = serde_json::from_value(serde_json::json!({
@@ -580,9 +595,14 @@ mod tests {
                 },
             )]),
         };
+        let accounts = vec![
+            gate_fr_account("gate_fr_arb01"),
+            gate_fr_account("gate_fr_arb02"),
+        ];
         let (candidates, errors) = position_dump_candidates(
             &Client::new(),
             &format!("http://{address}"),
+            &accounts,
             &risk,
             50.0,
             120_000,

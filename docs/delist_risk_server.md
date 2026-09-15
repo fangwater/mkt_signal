@@ -44,6 +44,7 @@ No API token. Do not put secrets in query strings.
 | Gate announcement WS | persistent | Push stream rather than a polling check; reconnects on drop |
 | Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **24h** | Replaces that source in the book |
 | Complete public product catalogs | **24h**, plus **00:00 UTC** | Drives current listing state and confirmed Redis removal; the midnight fetch is persisted to Postgres |
+| NAV strategy catalog | **60s** | Sole account inventory for the board and account controls; the last successful catalog is retained on failure |
 
 LLM extract runs only on **new** announcements. LLM / fetch failures never
 block the other source. Reasons are queryable at `/status`.
@@ -201,7 +202,15 @@ Spot pair removals such as `SUI/BNB` are stored only as `symbols=["SUIBNB"]`. Th
 
 ### `GET /accounts`
 
-Per mounted book: Redis online universe ∩ `/risk`. Same filters as `/risk`.
+Per NAV-configured strategy: Redis online universe ∩ `/risk`. Same filters as
+`/risk`. `delist_risk_server` does not keep a separate handwritten account
+list. It reads `slug`, display alias, host, strategy kind, and exchange from
+`/nav-api/strategies`; a strategy added to NAV appears here after the next
+catalog refresh.
+
+The response field `nav_accounts_current` is `true` only after the latest NAV
+catalog request succeeds. It is independent from the per-site `redis` health
+fields.
 
 ```bash
 curl -sS 'http://<host>:4191/delist/accounts'
@@ -215,6 +224,10 @@ pair is no longer present or tradable at that venue; it is a risk hit even when
 the service has no matching delist announcement.
 
 The HTML board at `/delist/` uses this endpoint. Style matches crypto NAV manager.
+Strategies whose exchange or strategy kind has no delist control rule remain
+visible with `tone=uncovered`. If a NAV refresh fails, the board retains the
+last successful catalog, `/status` marks `nav_strategies` failed, and automatic
+Redis/flatten mutations pause until a fresh catalog succeeds.
 
 ### `GET /removal-candidates`
 
@@ -284,9 +297,10 @@ page exposes the manual action instead of repeating live orders automatically.
 The page displays final-window position and execution state. `POST /flatten`
 backs its manual button. It accepts only `account_slug` and `symbol`, requires a
 Bearer token matching `DELIST_FLATTEN_API_TOKEN`, reloads a fresh snapshot,
-rechecks the deadline and position, and resolves the executable from the fixed
-mounted-account map. It cannot accept a command or filesystem path. A successful
-execution cannot run again against a snapshot captured before that execution.
+rechecks the deadline and position, and verifies the account against the current
+NAV catalog before resolving the fixed exchange-specific executable. It cannot
+accept a command or filesystem path. A successful execution cannot run again
+against a snapshot captured before that execution.
 
 `GET /flatten-executions` returns the latest PostgreSQL execution rows. The
 `trigger` is `auto`, `manual`, or `manual_required`; `status` is `running`,
@@ -352,7 +366,7 @@ curl -sS 'http://<host>:4191/delist/status'
 
 Source names:
 
-- fetch: `binance_cms`, `bitget_announcements`, `gate_market`,
+- fetch: `nav_strategies`, `binance_cms`, `bitget_announcements`, `gate_market`,
   `bitget_instrument_offtime`, `binance_spot_delist`, `binance_margin_delist`,
   `exchange_info`, `schedule:binance-futures`, `schedule:binance-coin-futures`,
   `schedule:gate-futures`, `schedule:bitget-futures`, `schedule:bitget-coin-futures`
@@ -424,6 +438,8 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_ANNOUNCEMENT_INTERVAL_SECS` | default `86400` |
 | `DELIST_OFFICIAL_INTERVAL_SECS` | default `86400` |
 | `DELIST_LISTING_INTERVAL_SECS` | default `86400`; a separate catalog fetch runs at `00:00 UTC` |
+| `DELIST_NAV_STRATEGIES_URL` | NAV account source, default `http://127.0.0.1:4191/nav-api/strategies` |
+| `DELIST_NAV_STRATEGY_INTERVAL_SECS` | NAV account refresh interval, default `60` |
 | `DELIST_AUTO_REMOVE_REDIS` | `1` enables audited confirmed-delisting removal; default `0` |
 | `DELIST_AUTO_FLATTEN_POSITION_RISK` | `1` enables real final-window automatic clear; default `0` |
 | `DELIST_FLATTEN_WINDOW_HOURS` | actual delist window, default `24` |

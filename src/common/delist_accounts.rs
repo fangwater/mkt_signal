@@ -1,8 +1,9 @@
-//! Redis online-symbol universes for mounted books, intersected with /risk.
+//! Redis online-symbol universes for NAV-configured strategies, intersected with /risk.
 
 use anyhow::{Context, Result};
 use redis::AsyncCommands;
-use serde::Serialize;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::common::delist_risk::{normalize_symbol, RiskEventView, RiskQueryResponse};
@@ -18,19 +19,34 @@ const FR_LISTS: [&str; 5] = [
 const INTRA_LISTS: [&str; 3] = ["dump_symbols", "fwd_trade_symbols", "bwd_trade_symbols"];
 const QUOTES: [&str; 7] = ["USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH", "BNB"];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedisSite {
     Jp,
     Sg,
+    Unsupported,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountSpec {
-    pub slug: &'static str,
-    pub alias: &'static str,
-    pub exchange: &'static str,
-    pub kind: &'static str,
+    pub slug: String,
+    pub alias: String,
+    pub exchange: String,
+    pub kind: String,
+    pub host: String,
     pub site: RedisSite,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NavStrategy {
+    slug: String,
+    #[serde(default)]
+    alias: String,
+    #[serde(default)]
+    display_name: String,
+    host: String,
+    strategy_kind: String,
+    exchange: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,96 +90,80 @@ pub struct AccountRiskView {
 pub struct AccountRiskResponse {
     pub ok: bool,
     pub as_of_ms: i64,
+    pub nav_accounts_current: bool,
     pub redis: BTreeMap<String, bool>,
     pub summary: BTreeMap<String, usize>,
     pub accounts: Vec<AccountRiskView>,
 }
 
-pub fn mounted_accounts() -> &'static [AccountSpec] {
-    &[
-        AccountSpec {
-            slug: "binance_exec_trade01",
-            alias: "binance CTA trade01",
-            exchange: "binance",
-            kind: "cta",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "okex_mm_alpha",
-            alias: "okex 做市",
-            exchange: "okex",
-            kind: "market_making",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "binance-intra-arb01",
-            alias: "binance mt",
-            exchange: "binance",
-            kind: "intra_exchange",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "binance_fr_arb04",
-            alias: "binance 外部资金",
-            exchange: "binance",
-            kind: "funding_rate",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "binance_fr_arb03",
-            alias: "binance 资费自营",
-            exchange: "binance",
-            kind: "funding_rate",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "gate_fr_arb02",
-            alias: "gate资费外部资金",
-            exchange: "gate",
-            kind: "funding_rate",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "bitget_fr_arb02",
-            alias: "bitget 资费自营",
-            exchange: "bitget",
-            kind: "funding_rate",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "gate_fr_arb01",
-            alias: "gate 资费自营",
-            exchange: "gate",
-            kind: "funding_rate",
-            site: RedisSite::Jp,
-        },
-        AccountSpec {
-            slug: "bybit_mm_alpha",
-            alias: "bybit做市",
-            exchange: "bybit",
-            kind: "market_making",
-            site: RedisSite::Sg,
-        },
-        AccountSpec {
-            slug: "bybit-intra-arb01",
-            alias: "bybit mt",
-            exchange: "bybit",
-            kind: "intra_exchange",
-            site: RedisSite::Sg,
-        },
-        AccountSpec {
-            slug: "bybit-intra-arb02",
-            alias: "bybit cta",
-            exchange: "bybit",
-            kind: "intra_exchange",
-            site: RedisSite::Sg,
-        },
-    ]
+pub async fn fetch_nav_accounts(client: &Client, url: &str) -> Result<Vec<AccountSpec>> {
+    let strategies: Vec<NavStrategy> = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("fetch NAV strategies {url}"))?
+        .error_for_status()
+        .with_context(|| format!("NAV strategies returned an error {url}"))?
+        .json()
+        .await
+        .with_context(|| format!("decode NAV strategies {url}"))?;
+    if strategies.is_empty() {
+        anyhow::bail!("NAV strategy catalog is empty");
+    }
+    let mut seen = BTreeSet::new();
+    let mut accounts = Vec::with_capacity(strategies.len());
+    for strategy in strategies {
+        validate_nav_identifier("slug", &strategy.slug)?;
+        let kind = strategy.strategy_kind.trim().to_ascii_lowercase();
+        validate_nav_identifier("strategyKind", &kind)?;
+        if !seen.insert(strategy.slug.clone()) {
+            anyhow::bail!("duplicate NAV strategy slug {}", strategy.slug);
+        }
+        let host = strategy.host.trim().to_ascii_lowercase();
+        let site = match host.as_str() {
+            "local" | "jp" | "jp-meta-elvpn" => RedisSite::Jp,
+            "sg" => RedisSite::Sg,
+            _ => RedisSite::Unsupported,
+        };
+        let exchange = match strategy.exchange.trim().to_ascii_lowercase().as_str() {
+            "okx" => "okex".to_string(),
+            exchange => exchange.to_string(),
+        };
+        validate_nav_identifier("exchange", &exchange)?;
+        let alias = if !strategy.alias.trim().is_empty() {
+            strategy.alias
+        } else if !strategy.display_name.trim().is_empty() {
+            strategy.display_name
+        } else {
+            strategy.slug.clone()
+        };
+        accounts.push(AccountSpec {
+            slug: strategy.slug,
+            alias,
+            exchange,
+            kind,
+            host,
+            site,
+        });
+    }
+    Ok(accounts)
+}
+
+fn validate_nav_identifier(field: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        anyhow::bail!("invalid NAV strategy {field}: {value:?}");
+    }
+    Ok(())
 }
 
 pub fn redis_keys(spec: &AccountSpec) -> (Vec<String>, Vec<String>) {
-    let ex = spec.exchange;
-    match spec.kind {
+    let ex = spec.exchange.as_str();
+    match spec.kind.as_str() {
         "funding_rate" => {
             let suffix = format!("{ex}-margin_{ex}-futures");
             let keys = FR_LISTS
@@ -183,7 +183,7 @@ pub fn redis_keys(spec: &AccountSpec) -> (Vec<String>, Vec<String>) {
             vec![format!("mm_trade_symbols:{ex}-futures")],
             vec![format!("{ex}-futures")],
         ),
-        "cta" => (
+        "cta" if ex == "binance" => (
             vec![format!("{}:binance-futures:exec:max_pos_u", spec.slug)],
             vec!["binance-futures".to_string()],
         ),
@@ -285,26 +285,29 @@ fn hit_tone(listing: &str, status: &str) -> &'static str {
 }
 
 pub fn build_account_views(
+    accounts: &[AccountSpec],
     risk: &RiskQueryResponse,
     listings: &ListingIndex,
     universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
 ) -> Vec<AccountRiskView> {
     let mut out = Vec::new();
-    for spec in mounted_accounts() {
+    for spec in accounts {
         let (_keys, venues) = redis_keys(spec);
         let host = match spec.site {
             RedisSite::Jp => "jp",
             RedisSite::Sg => "sg",
+            RedisSite::Unsupported => spec.host.as_str(),
         };
-        let (redis_ok, redis_error, universe) = match universes.get(spec.slug) {
+        let (redis_ok, redis_error, universe) = match universes.get(&spec.slug) {
             Some(Ok(set)) => (true, None, set.clone()),
             Some(Err(err)) => (false, Some(err.clone()), BTreeSet::new()),
             None => (false, Some("redis not queried".into()), BTreeSet::new()),
         };
-        let covered = matches!(spec.exchange, "binance" | "bitget" | "gate");
+        let covered =
+            !venues.is_empty() && matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate");
         let mut hits_by_symbol: BTreeMap<String, AccountHit> = BTreeMap::new();
         if redis_ok && covered {
-            if let Some(bucket) = risk.exchanges.get(spec.exchange) {
+            if let Some(bucket) = risk.exchanges.get(&spec.exchange) {
                 for event in &bucket.items {
                     if !venues.iter().any(|venue| venue == &event.venue) {
                         continue;
@@ -432,32 +435,46 @@ pub async fn mget_strings(url: &str, keys: &[String]) -> Result<Vec<Option<Strin
 }
 
 pub async fn load_universes(
+    accounts: &[AccountSpec],
     jp_url: &str,
     sg_url: Option<&str>,
 ) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
     let mut jp_keys = Vec::new();
     let mut sg_keys = Vec::new();
     let mut owners: Vec<(String, RedisSite, Vec<String>)> = Vec::new();
-    for spec in mounted_accounts() {
+    for spec in accounts {
         let (keys, _venues) = redis_keys(spec);
         match spec.site {
             RedisSite::Jp => jp_keys.extend(keys.iter().cloned()),
             RedisSite::Sg => sg_keys.extend(keys.iter().cloned()),
+            RedisSite::Unsupported => {}
         }
-        owners.push((spec.slug.to_string(), spec.site, keys));
+        owners.push((spec.slug.clone(), spec.site, keys));
     }
     let jp = mget_strings(jp_url, &jp_keys).await;
     let sg = match sg_url {
         Some(url) if !url.trim().is_empty() => mget_strings(url, &sg_keys).await,
+        _ if sg_keys.is_empty() => Ok(Vec::new()),
         _ => Err(anyhow::anyhow!("sg redis not configured")),
     };
     let jp_map = to_map(&jp_keys, jp);
     let sg_map = to_map(&sg_keys, sg);
     let mut out = BTreeMap::new();
     for (slug, site, keys) in owners {
+        if keys.is_empty() {
+            out.insert(slug, Ok(BTreeSet::new()));
+            continue;
+        }
         let source = match site {
             RedisSite::Jp => &jp_map,
             RedisSite::Sg => &sg_map,
+            RedisSite::Unsupported => {
+                out.insert(
+                    slug,
+                    Err("NAV strategy host has no Redis mapping".to_string()),
+                );
+                continue;
+            }
         };
         match source {
             Err(err) => {
@@ -478,23 +495,22 @@ pub async fn load_universes(
 }
 
 pub async fn load_fr_dump_symbols(
+    accounts: &[AccountSpec],
     jp_url: &str,
     sg_url: Option<&str>,
 ) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
     let mut jp_keys = Vec::new();
     let mut sg_keys = Vec::new();
     let mut owners: Vec<(String, RedisSite, String)> = Vec::new();
-    for spec in mounted_accounts()
-        .iter()
-        .filter(|spec| spec.kind == "funding_rate")
-    {
+    for spec in accounts.iter().filter(|spec| spec.kind == "funding_rate") {
         let suffix = format!("{}-margin_{}-futures", spec.exchange, spec.exchange);
         let key = format!("{}:fr_dump_symbols:{suffix}", spec.slug);
         match spec.site {
             RedisSite::Jp => jp_keys.push(key.clone()),
             RedisSite::Sg => sg_keys.push(key.clone()),
+            RedisSite::Unsupported => {}
         }
-        owners.push((spec.slug.to_string(), spec.site, key));
+        owners.push((spec.slug.clone(), spec.site, key));
     }
     let jp = mget_strings(jp_url, &jp_keys).await;
     let sg = match sg_url {
@@ -509,6 +525,13 @@ pub async fn load_fr_dump_symbols(
         let source = match site {
             RedisSite::Jp => &jp_map,
             RedisSite::Sg => &sg_map,
+            RedisSite::Unsupported => {
+                out.insert(
+                    slug,
+                    Err("NAV strategy host has no Redis mapping".to_string()),
+                );
+                continue;
+            }
         };
         let symbols = match source {
             Err(err) => Err(err.clone()),
@@ -537,6 +560,7 @@ fn to_map(
 mod tests {
     use super::*;
     use crate::common::delist_risk::RiskEventView;
+    use axum::{routing::get, Json, Router};
 
     fn event(symbols: &[&str], assets: &[&str]) -> RiskEventView {
         RiskEventView {
@@ -583,5 +607,59 @@ mod tests {
         let set = parse_universe(raw);
         assert!(set.contains("BNBUSDT"));
         assert!(set.contains("BTCUSDT"));
+    }
+
+    #[tokio::test]
+    async fn loads_accounts_from_nav_and_normalizes_local_metadata() {
+        let app = Router::new().route(
+            "/strategies",
+            get(|| async {
+                Json(serde_json::json!([
+                    {
+                        "slug": "bitget_fr_arb01",
+                        "alias": "bitget arb01",
+                        "displayName": "Bitget FR 01",
+                        "host": "local",
+                        "strategyKind": "funding_rate",
+                        "exchange": "bitget"
+                    },
+                    {
+                        "slug": "okex_mm_alpha",
+                        "alias": "",
+                        "displayName": "OKX MM",
+                        "host": "sg",
+                        "strategyKind": "market_making",
+                        "exchange": "okx"
+                    }
+                ]))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let accounts = fetch_nav_accounts(&Client::new(), &format!("http://{address}/strategies"))
+            .await
+            .unwrap();
+
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].slug, "bitget_fr_arb01");
+        assert_eq!(accounts[0].site, RedisSite::Jp);
+        assert_eq!(accounts[1].alias, "OKX MM");
+        assert_eq!(accounts[1].exchange, "okex");
+        assert_eq!(accounts[1].site, RedisSite::Sg);
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_nav_catalog() {
+        let app = Router::new().route("/strategies", get(|| async { Json(serde_json::json!([])) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let error = fetch_nav_accounts(&Client::new(), &format!("http://{address}/strategies"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("catalog is empty"));
     }
 }

@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::common::delist_accounts::{mounted_accounts, pair_and_base, redis_keys, RedisSite};
+use crate::common::delist_accounts::{pair_and_base, redis_keys, AccountSpec, RedisSite};
 use crate::common::delist_risk::normalize_symbol;
 use crate::common::exchange_info::ListingIndex;
 
@@ -41,19 +41,20 @@ struct RedisMutation {
 }
 
 pub fn confirmed_removal_candidates(
+    accounts: &[AccountSpec],
     listings: &ListingIndex,
     universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
 ) -> Vec<RedisRemovalCandidate> {
     let mut out = Vec::new();
-    for spec in mounted_accounts() {
+    for spec in accounts {
         if !matches!(
-            spec.kind,
+            spec.kind.as_str(),
             "funding_rate" | "intra_exchange" | "market_making"
-        ) || !matches!(spec.exchange, "binance" | "bitget" | "gate")
+        ) || !matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
         {
             continue;
         }
-        let Some(Ok(symbols)) = universes.get(spec.slug) else {
+        let Some(Ok(symbols)) = universes.get(&spec.slug) else {
             continue;
         };
         let (keys, venues) = redis_keys(spec);
@@ -68,6 +69,7 @@ pub fn confirmed_removal_candidates(
                     redis_site: match spec.site {
                         RedisSite::Jp => "jp",
                         RedisSite::Sg => "sg",
+                        RedisSite::Unsupported => continue,
                     }
                     .to_string(),
                     symbol: symbol.clone(),
@@ -81,18 +83,19 @@ pub fn confirmed_removal_candidates(
 }
 
 pub fn removal_universe_errors(
+    accounts: &[AccountSpec],
     universes: &BTreeMap<String, Result<BTreeSet<String>, String>>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    for spec in mounted_accounts() {
+    for spec in accounts {
         if !matches!(
-            spec.kind,
+            spec.kind.as_str(),
             "funding_rate" | "intra_exchange" | "market_making"
-        ) || !matches!(spec.exchange, "binance" | "bitget" | "gate")
+        ) || !matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
         {
             continue;
         }
-        match universes.get(spec.slug) {
+        match universes.get(&spec.slug) {
             Some(Ok(_)) => {}
             Some(Err(err)) => errors.push(format!("{}: {err}", spec.slug)),
             None => errors.push(format!("{}: Redis universe missing", spec.slug)),
@@ -227,6 +230,17 @@ fn symbol_key(raw: &str) -> String {
 mod tests {
     use super::*;
 
+    fn binance_intra_account() -> AccountSpec {
+        AccountSpec {
+            slug: "binance-intra-arb01".to_string(),
+            alias: "binance mt".to_string(),
+            exchange: "binance".to_string(),
+            kind: "intra_exchange".to_string(),
+            host: "local".to_string(),
+            site: RedisSite::Jp,
+        }
+    }
+
     #[test]
     fn removes_pair_and_base_from_array() {
         let raw = r#"["BTCUSDT","hei","HEI-USDT","ETHUSDT"]"#;
@@ -253,6 +267,7 @@ mod tests {
 
     #[test]
     fn candidate_requires_all_account_venues_to_be_gone() {
+        let accounts = vec![binance_intra_account()];
         let mut listings = ListingIndex::default();
         listings.insert_test("binance-margin", "BTCUSDT");
         listings.insert_test("binance-futures", "BTCUSDT");
@@ -261,12 +276,12 @@ mod tests {
             "binance-intra-arb01".to_string(),
             Ok(BTreeSet::from(["HEIUSDT".to_string()])),
         )]);
-        assert!(confirmed_removal_candidates(&listings, &universes).is_empty());
+        assert!(confirmed_removal_candidates(&accounts, &listings, &universes).is_empty());
 
         let mut listings = ListingIndex::default();
         listings.insert_test("binance-margin", "BTCUSDT");
         listings.insert_test("binance-futures", "BTCUSDT");
-        let candidates = confirmed_removal_candidates(&listings, &universes);
+        let candidates = confirmed_removal_candidates(&accounts, &listings, &universes);
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].venues,
@@ -276,11 +291,12 @@ mod tests {
 
     #[test]
     fn supported_redis_error_blocks_pruning() {
+        let accounts = vec![binance_intra_account()];
         let universes = BTreeMap::from([(
             "binance-intra-arb01".to_string(),
             Err("connection refused".to_string()),
         )]);
-        let errors = removal_universe_errors(&universes);
+        let errors = removal_universe_errors(&accounts, &universes);
         assert!(errors
             .iter()
             .any(|error| error.contains("binance-intra-arb01: connection refused")));

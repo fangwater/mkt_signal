@@ -36,7 +36,8 @@ use mkt_signal::common::bitget_announcement::{
     hydrate_notice_body, mark_article_body_processed,
 };
 use mkt_signal::common::delist_accounts::{
-    build_account_views, load_fr_dump_symbols, load_universes, summarize, AccountRiskResponse,
+    build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_universes, summarize,
+    AccountRiskResponse, AccountSpec,
 };
 use mkt_signal::common::delist_dump::{
     apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
@@ -160,6 +161,14 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:4191")]
     snapshot_base_url: String,
 
+    /// NAV strategy catalog used as the delist account source of truth.
+    #[arg(long, default_value = "http://127.0.0.1:4191/nav-api/strategies")]
+    nav_strategies_url: String,
+
+    /// NAV strategy catalog refresh interval.
+    #[arg(long, default_value_t = 60)]
+    nav_strategy_interval_secs: u64,
+
     /// Announcement poll interval. Default 24h.
     #[arg(long, default_value_t = 86_400)]
     announcement_interval_secs: u64,
@@ -194,6 +203,7 @@ struct AppState {
     book: Arc<RwLock<RiskBook>>,
     status: Arc<RwLock<StatusBook>>,
     listings: Arc<RwLock<ListingIndex>>,
+    accounts: Arc<RwLock<Vec<AccountSpec>>>,
     store: Option<Arc<DelistStore>>,
     book_path: PathBuf,
     web_dir: PathBuf,
@@ -213,6 +223,7 @@ struct AppState {
     flatten_api_token: Option<String>,
     snapshot_base_url: String,
     snapshot_client: Client,
+    nav_strategies_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,7 +282,9 @@ async fn main() -> Result<()> {
         match store.load_sources().await {
             Ok(rows) => status.replace_sources(
                 rows.into_iter()
-                    .filter(|row| row.source != "binance_monitoring")
+                    .filter(|row| {
+                        row.source != "binance_monitoring" && row.source != "nav_strategies"
+                    })
                     .collect(),
             ),
             Err(err) => warn!("restore source_status failed: {err:#}"),
@@ -331,6 +344,7 @@ async fn main() -> Result<()> {
         book: Arc::new(RwLock::new(book)),
         status: Arc::new(RwLock::new(status)),
         listings: Arc::new(RwLock::new(ListingIndex::default())),
+        accounts: Arc::new(RwLock::new(Vec::new())),
         store,
         book_path: args.book.clone(),
         web_dir: args.web_dir.clone(),
@@ -354,6 +368,7 @@ async fn main() -> Result<()> {
         flatten_api_token,
         snapshot_base_url: args.snapshot_base_url.clone(),
         snapshot_client: public_http_client()?,
+        nav_strategies_url: args.nav_strategies_url.clone(),
     };
 
     let refresh = state.clone();
@@ -366,6 +381,7 @@ async fn main() -> Result<()> {
         listing_interval_secs: args.listing_interval_secs,
         announcement_interval_secs: args.announcement_interval_secs,
         position_risk_interval_secs: args.position_risk_interval_secs,
+        nav_strategy_interval_secs: args.nav_strategy_interval_secs,
         days: args.days,
         llm_max: args.llm_max,
         force_llm_ids: args.force_llm_ids.clone(),
@@ -396,10 +412,11 @@ async fn main() -> Result<()> {
 
     let addr: SocketAddr = args.bind.parse().context("invalid --bind")?;
     info!(
-        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U",
+        "delist_risk_server listening at http://{addr} official={}s listings={}s announcements={}s nav_strategies={}s auto_remove_redis={} auto_dump_position_risk={} auto_flatten_position_risk={} position_scan={}s dump_threshold={}U flatten_window={}h manual_threshold={}U",
         args.official_interval_secs,
         args.listing_interval_secs,
         args.announcement_interval_secs,
+        args.nav_strategy_interval_secs,
         args.auto_remove_redis,
         args.auto_dump_position_risk,
         args.auto_flatten_position_risk,
@@ -495,8 +512,10 @@ async fn query_accounts(
     let listings = state.listings.read().await.clone();
     listings.decorate(&mut risk);
     drop(book);
-    let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
-    let accounts = build_account_views(&risk, &listings, &universes);
+    let account_specs = state.accounts.read().await.clone();
+    let universes =
+        load_universes(&account_specs, &state.jp_redis, state.sg_redis.as_deref()).await;
+    let accounts = build_account_views(&account_specs, &risk, &listings, &universes);
     let mut redis = std::collections::BTreeMap::new();
     redis.insert(
         "jp".to_string(),
@@ -515,6 +534,7 @@ async fn query_accounts(
     Json(AccountRiskResponse {
         ok: true,
         as_of_ms: risk.as_of_ms,
+        nav_accounts_current: nav_accounts_ready(&state).await,
         redis,
         summary: summarize(&accounts),
         accounts,
@@ -523,9 +543,10 @@ async fn query_accounts(
 
 async fn query_removal_candidates(State(state): State<AppState>) -> impl IntoResponse {
     let listings = state.listings.read().await.clone();
-    let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
-    let redis_errors = removal_universe_errors(&universes);
-    let candidates = confirmed_removal_candidates(&listings, &universes);
+    let accounts = state.accounts.read().await.clone();
+    let universes = load_universes(&accounts, &state.jp_redis, state.sg_redis.as_deref()).await;
+    let redis_errors = removal_universe_errors(&accounts, &universes);
+    let candidates = confirmed_removal_candidates(&accounts, &listings, &universes);
     let catalog_complete = state
         .status
         .read()
@@ -536,6 +557,7 @@ async fn query_removal_candidates(State(state): State<AppState>) -> impl IntoRes
         "ok": true,
         "auto_remove_redis": state.auto_remove_redis,
         "catalog_complete": catalog_complete,
+        "nav_accounts_current": nav_accounts_ready(&state).await,
         "redis_errors": redis_errors,
         "count": candidates.len(),
         "items": candidates,
@@ -574,7 +596,8 @@ async fn query_removals(
 }
 
 async fn query_dump_candidates(State(state): State<AppState>) -> Response {
-    match collect_position_candidates(&state, state.position_risk_threshold_usdt).await {
+    let accounts = state.accounts.read().await.clone();
+    match collect_position_candidates(&state, &accounts, state.position_risk_threshold_usdt).await {
         Ok((items, snapshot_errors)) => Json(json!({
             "ok": true,
             "auto_dump_position_risk": state.auto_dump_position_risk,
@@ -627,9 +650,10 @@ struct FlattenCandidateView {
 }
 
 async fn query_flatten_candidates(State(state): State<AppState>) -> Response {
+    let accounts = state.accounts.read().await.clone();
     let (collected, dump_symbols) = tokio::join!(
-        collect_flatten_candidates(&state),
-        load_fr_dump_symbols(&state.jp_redis, state.sg_redis.as_deref())
+        collect_flatten_candidates(&state, &accounts),
+        load_fr_dump_symbols(&accounts, &state.jp_redis, state.sg_redis.as_deref())
     );
     let (items, snapshot_errors, positioned) = match collected {
         Ok(result) => result,
@@ -767,16 +791,25 @@ async fn manual_flatten(
         )
             .into_response();
     };
-    let (candidates, snapshot_errors, positioned) = match collect_flatten_candidates(&state).await {
-        Ok(result) => result,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"ok": false, "error": format!("{err:#}")})),
-            )
-                .into_response();
-        }
-    };
+    if !nav_accounts_ready(&state).await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ok": false, "error": "NAV strategy catalog is not current"})),
+        )
+            .into_response();
+    }
+    let accounts = state.accounts.read().await.clone();
+    let (candidates, snapshot_errors, positioned) =
+        match collect_flatten_candidates(&state, &accounts).await {
+            Ok(result) => result,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false, "error": format!("{err:#}")})),
+                )
+                    .into_response();
+            }
+        };
     let Some(candidate) = candidates.into_iter().find(|candidate| {
         candidate.account_slug == request.account_slug && candidate.symbol == request.symbol
     }) else {
@@ -912,13 +945,44 @@ struct RefreshArgs {
     listing_interval_secs: u64,
     announcement_interval_secs: u64,
     position_risk_interval_secs: u64,
+    nav_strategy_interval_secs: u64,
     days: i64,
     llm_max: usize,
     force_llm_ids: Option<String>,
 }
 
+async fn refresh_nav_account_catalog(state: &AppState, client: &Client) {
+    match fetch_nav_accounts(client, &state.nav_strategies_url).await {
+        Ok(accounts) => {
+            let count = accounts.len();
+            *state.accounts.write().await = accounts;
+            mark_ok(state, "nav_strategies", "fetch").await;
+            info!("NAV strategy catalog refreshed accounts={count}");
+        }
+        Err(err) => {
+            warn!("NAV strategy catalog refresh failed; retaining cached accounts: {err:#}");
+            mark_err(state, "nav_strategies", "fetch", &format!("{err:#}")).await;
+        }
+    }
+}
+
+async fn nav_accounts_ready(state: &AppState) -> bool {
+    let source_ok = state
+        .status
+        .read()
+        .await
+        .source("nav_strategies")
+        .is_some_and(|status| status.ok);
+    source_ok && !state.accounts.read().await.is_empty()
+}
+
 async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     let public = public_http_client()?;
+    let nav_client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .context("build NAV HTTP client")?;
     let binance = binance_http_client()?;
     let llm = if args.skip_llm {
         None
@@ -936,6 +1000,8 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
         info!("llm extract disabled");
     }
     let llm_budget = Arc::new(Mutex::new(LlmBudget::new(args.llm_max)));
+
+    refresh_nav_account_catalog(&state, &nav_client).await;
 
     if !args.skip_official {
         let snapshot_date = Utc::now().date_naive();
@@ -995,6 +1061,10 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     ));
     position_risk.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     position_risk.tick().await;
+    let mut nav_strategies =
+        time::interval(Duration::from_secs(args.nav_strategy_interval_secs.max(10)));
+    nav_strategies.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    nav_strategies.tick().await;
     let daily_snapshot = time::sleep(duration_until_next_utc_midnight(Utc::now()));
     tokio::pin!(daily_snapshot);
 
@@ -1025,6 +1095,9 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
             }
             _ = position_risk.tick(), if state.auto_dump_position_risk || state.auto_flatten_position_risk => {
                 run_position_risk_scan(&state).await;
+            }
+            _ = nav_strategies.tick() => {
+                refresh_nav_account_catalog(&state, &nav_client).await;
             }
             result = gate_ws_session(
                 &state,
@@ -1241,6 +1314,7 @@ async fn record_symbol_snapshot_failure(
 
 async fn collect_position_candidates(
     state: &AppState,
+    accounts: &[AccountSpec],
     threshold_usdt: f64,
 ) -> Result<(Vec<PositionDumpCandidate>, Vec<String>)> {
     let book = state.book.read().await;
@@ -1256,6 +1330,7 @@ async fn collect_position_candidates(
     Ok(position_dump_candidates(
         &state.snapshot_client,
         &state.snapshot_base_url,
+        accounts,
         &risk,
         threshold_usdt,
         state.position_snapshot_max_age_ms,
@@ -1265,12 +1340,13 @@ async fn collect_position_candidates(
 
 async fn collect_flatten_candidates(
     state: &AppState,
+    accounts: &[AccountSpec],
 ) -> Result<(
     Vec<FlattenCandidate>,
     Vec<String>,
     Vec<PositionDumpCandidate>,
 )> {
-    let (positioned, snapshot_errors) = collect_position_candidates(state, 0.0).await?;
+    let (positioned, snapshot_errors) = collect_position_candidates(state, accounts, 0.0).await?;
     let candidates = flatten_candidates(
         &positioned,
         Utc::now().timestamp_millis(),
@@ -1291,19 +1367,31 @@ async fn run_position_risk_scan(state: &AppState) {
         }
         return;
     };
-    let (positioned, snapshot_errors) = match collect_position_candidates(state, 0.0).await {
-        Ok(result) => result,
-        Err(err) => {
-            let message = format!("{err:#}");
-            if state.auto_dump_position_risk {
-                mark_err(state, "redis_delist_dump", "mutation", &message).await;
-            }
-            if state.auto_flatten_position_risk {
-                mark_err(state, "delist_flatten", "execution", &message).await;
-            }
-            return;
+    if !nav_accounts_ready(state).await {
+        let message = "NAV strategy catalog is not current; automatic position handling paused";
+        if state.auto_dump_position_risk {
+            mark_err(state, "redis_delist_dump", "mutation", message).await;
         }
-    };
+        if state.auto_flatten_position_risk {
+            mark_err(state, "delist_flatten", "execution", message).await;
+        }
+        return;
+    }
+    let accounts = state.accounts.read().await.clone();
+    let (positioned, snapshot_errors) =
+        match collect_position_candidates(state, &accounts, 0.0).await {
+            Ok(result) => result,
+            Err(err) => {
+                let message = format!("{err:#}");
+                if state.auto_dump_position_risk {
+                    mark_err(state, "redis_delist_dump", "mutation", &message).await;
+                }
+                if state.auto_flatten_position_risk {
+                    mark_err(state, "delist_flatten", "execution", &message).await;
+                }
+                return;
+            }
+        };
     let flatten = flatten_candidates(
         &positioned,
         Utc::now().timestamp_millis(),
@@ -1407,6 +1495,23 @@ async fn ensure_positioned_symbol_dumped(
     Ok(())
 }
 
+async fn current_flatten_account(
+    state: &AppState,
+    candidate: &FlattenCandidate,
+) -> Result<AccountSpec> {
+    if !nav_accounts_ready(state).await {
+        anyhow::bail!("NAV strategy catalog is not current; flatten paused");
+    }
+    state
+        .accounts
+        .read()
+        .await
+        .iter()
+        .find(|account| account.slug == candidate.account_slug)
+        .cloned()
+        .context("flatten account is not in the current NAV strategy catalog")
+}
+
 async fn record_manual_flatten_required(
     state: &AppState,
     store: &DelistStore,
@@ -1424,7 +1529,8 @@ async fn record_manual_flatten_required(
         return Ok(());
     }
     let dedup_key = audit_dedup_key(candidate, "manual-required");
-    let command = serde_json::to_value(state.flatten_executor.command(candidate)?)?;
+    let account = current_flatten_account(state, candidate).await?;
+    let command = serde_json::to_value(state.flatten_executor.command(candidate, &account)?)?;
     let claimed = store
         .claim_flatten_execution(
             &dedup_key,
@@ -1549,7 +1655,8 @@ async fn execute_flatten_with_audit(
     trigger: &str,
     dedup_key: &str,
 ) -> Result<Option<(i64, FlattenRunOutput)>> {
-    let command = serde_json::to_value(state.flatten_executor.command(candidate)?)?;
+    let account = current_flatten_account(state, candidate).await?;
+    let command = serde_json::to_value(state.flatten_executor.command(candidate, &account)?)?;
     let claimed = store
         .claim_flatten_execution(
             dedup_key,
@@ -1617,7 +1724,7 @@ async fn execute_flatten_with_audit(
             .await?;
         return Err(err);
     }
-    let output = match state.flatten_executor.run(candidate).await {
+    let output = match state.flatten_executor.run(candidate, &account).await {
         Ok(output) => output,
         Err(err) => {
             let message = format!("{err:#}");
@@ -1779,17 +1886,21 @@ async fn dump_position_candidate(
 }
 
 async fn prune_confirmed_delists(state: &AppState) -> Result<usize> {
+    if !nav_accounts_ready(state).await {
+        anyhow::bail!("NAV strategy catalog is not current; automatic removal paused");
+    }
     let store = state
         .store
         .as_ref()
         .context("postgres is required before Redis auto-removal")?;
     let listings = state.listings.read().await.clone();
-    let universes = load_universes(&state.jp_redis, state.sg_redis.as_deref()).await;
-    let universe_errors = removal_universe_errors(&universes);
+    let accounts = state.accounts.read().await.clone();
+    let universes = load_universes(&accounts, &state.jp_redis, state.sg_redis.as_deref()).await;
+    let universe_errors = removal_universe_errors(&accounts, &universes);
     if !universe_errors.is_empty() {
         anyhow::bail!("Redis universe load failed: {}", universe_errors.join("; "));
     }
-    let candidates = confirmed_removal_candidates(&listings, &universes);
+    let candidates = confirmed_removal_candidates(&accounts, &listings, &universes);
     let mut removed = 0usize;
     let mut errors = Vec::new();
     for candidate in candidates {

@@ -63,6 +63,8 @@ ARGS=(
   --position-risk-interval-secs "${DELIST_POSITION_RISK_INTERVAL_SECS:-60}"
   --position-risk-threshold-usdt "${DELIST_POSITION_RISK_THRESHOLD_USDT:-50}"
   --position-snapshot-max-age-secs "${DELIST_POSITION_SNAPSHOT_MAX_AGE_SECS:-120}"
+  --nav-strategies-url "${DELIST_NAV_STRATEGIES_URL:-http://127.0.0.1:4191/nav-api/strategies}"
+  --nav-strategy-interval-secs "${DELIST_NAV_STRATEGY_INTERVAL_SECS:-60}"
   --flatten-window-hours "${DELIST_FLATTEN_WINDOW_HOURS:-24}"
   --flatten-manual-threshold-usdt "${DELIST_FLATTEN_MANUAL_THRESHOLD_USDT:-1000}"
   --flatten-env-root "${DELIST_FLATTEN_ENV_ROOT:-/home/ubuntu}"

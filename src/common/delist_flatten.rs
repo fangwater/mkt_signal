@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time;
 
-use crate::common::delist_accounts::{mounted_accounts, RedisSite};
+use crate::common::delist_accounts::{AccountSpec, RedisSite};
 use crate::common::delist_dump::PositionDumpCandidate;
 use crate::common::delist_risk::normalize_symbol;
 
@@ -50,8 +50,12 @@ impl FlattenExecutor {
         Self { env_root, timeout }
     }
 
-    pub async fn run(&self, candidate: &FlattenCandidate) -> Result<FlattenRunOutput> {
-        let (cwd, script, args) = self.command_parts(candidate)?;
+    pub async fn run(
+        &self,
+        candidate: &FlattenCandidate,
+        account: &AccountSpec,
+    ) -> Result<FlattenRunOutput> {
+        let (cwd, script, args) = self.command_parts(candidate, account)?;
         if !cwd.is_dir() {
             bail!("flatten account directory is missing: {}", cwd.display());
         }
@@ -101,8 +105,12 @@ impl FlattenExecutor {
         })
     }
 
-    pub fn command(&self, candidate: &FlattenCandidate) -> Result<Vec<String>> {
-        let (_cwd, script, args) = self.command_parts(candidate)?;
+    pub fn command(
+        &self,
+        candidate: &FlattenCandidate,
+        account: &AccountSpec,
+    ) -> Result<Vec<String>> {
+        let (_cwd, script, args) = self.command_parts(candidate, account)?;
         let mut display = vec!["python3".to_string(), script.display().to_string()];
         display.extend(args);
         Ok(display)
@@ -111,20 +119,18 @@ impl FlattenExecutor {
     fn command_parts(
         &self,
         candidate: &FlattenCandidate,
+        spec: &AccountSpec,
     ) -> Result<(PathBuf, PathBuf, Vec<String>)> {
         let symbol = validate_symbol(&candidate.symbol)?;
-        let spec = mounted_accounts()
-            .iter()
-            .find(|spec| spec.slug == candidate.account_slug)
-            .context("flatten account is not mounted")?;
-        if spec.kind != "funding_rate"
+        if spec.slug != candidate.account_slug
+            || spec.kind != "funding_rate"
             || !matches!(spec.site, RedisSite::Jp)
             || spec.exchange != candidate.exchange
-            || !matches!(spec.exchange, "binance" | "bitget" | "gate")
+            || !matches!(spec.exchange.as_str(), "binance" | "bitget" | "gate")
         {
             bail!("flatten account/exchange is not supported");
         }
-        let cwd = self.env_root.join(spec.slug);
+        let cwd = self.env_root.join(&spec.slug);
         let script = cwd
             .join("scripts")
             .join(format!("flatten_{}_pm.py", spec.exchange));
@@ -295,8 +301,16 @@ mod tests {
             1_000.0,
         )
         .remove(0);
+        let account = AccountSpec {
+            slug: "gate_fr_arb02".to_string(),
+            alias: "gate".to_string(),
+            exchange: "gate".to_string(),
+            kind: "funding_rate".to_string(),
+            host: "local".to_string(),
+            site: RedisSite::Jp,
+        };
         let output = FlattenExecutor::new(root.clone(), Duration::from_secs(5))
-            .run(&candidate)
+            .run(&candidate, &account)
             .await
             .unwrap();
         assert!(output.success);
