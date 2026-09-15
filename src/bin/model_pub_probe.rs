@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 const MODEL_OUTPUT_SUBSCRIBER_MAX_BUFFER_SIZE: usize = 256;
 const MODEL_OUTPUT_HISTORY_SIZE: usize = 128;
 const MODEL_OUTPUT_MAX_PUBLISHERS: usize = 1;
-const MODEL_OUTPUT_MAX_SUBSCRIBERS: usize = 10;
+const MODEL_OUTPUT_MAX_SUBSCRIBERS: usize = 32;
 const DEFAULT_POLL_MS: u64 = 20;
 const DEFAULT_PRINT_INTERVAL_SECS: u64 = 5;
 
