@@ -17,7 +17,7 @@ enabled = true
 required = false
 lookback_secs = 172800
 tail_guard_secs = 90
-max_wait_secs = 300
+max_wait_secs = 1200
 
 [warmup.kafka]
 topics = ["binance-futures"]
