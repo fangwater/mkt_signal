@@ -534,6 +534,40 @@ impl LocalBaselineAggregator {
         completed
     }
 
+    /// Replays retained Kafka L2 deltas without requiring a complete snapshot.
+    ///
+    /// Kafka retention can begin in the middle of a book sequence. For warmup,
+    /// retain each level update exactly as received and make it available to
+    /// factor replay immediately. In particular, do not apply the live
+    /// crossed-book cleanup: without the preceding snapshot it can discard an
+    /// otherwise useful side of the retained incremental state.
+    pub fn on_retained_incremental_book(
+        &mut self,
+        timestamp_us: i64,
+        bids: &[Level],
+        asks: &[Level],
+    ) -> Vec<BaselineBar> {
+        let mut completed = Vec::new();
+        if !self.advance_to(timestamp_us, &mut completed) {
+            return completed;
+        }
+
+        let bid_updates: Vec<(f64, f64)> = bids
+            .iter()
+            .map(|level| (level.price, level.amount))
+            .collect();
+        let ask_updates: Vec<(f64, f64)> = asks
+            .iter()
+            .map(|level| (level.price, level.amount))
+            .collect();
+        let update_id = self.next_book_update_id;
+        self.next_book_update_id = self.next_book_update_id.saturating_add(1);
+        self.orderbook
+            .apply_update(&bid_updates, &ask_updates, update_id, timestamp_us);
+        self.book_initialized = true;
+        completed
+    }
+
     /// Applies a trade and returns every bar closed before the containing time bucket.
     /// Once initialized, missing intervals are emitted with causal price forward-fill.
     pub fn on_trade(
@@ -926,6 +960,19 @@ mod tests {
         assert_eq!(depth.asks[0], (101.0, 2.0));
         assert_eq!(depth.asks[19], (120.0, 21.0));
         assert_eq!(agg.stats()[0].depth20_bars, 1);
+    }
+
+    #[test]
+    fn retains_crossed_kafka_deltas_for_historical_factor_replay() {
+        let mut agg = LocalBaselineAggregator::new();
+        agg.on_retained_incremental_book(100, &[Level::from_values(101.0, 1.0)], &[]);
+        agg.on_retained_incremental_book(200, &[], &[Level::from_values(100.0, 1.0)]);
+        agg.on_trade(1_000, true, 100.5, 1.0);
+        let closed = agg.on_retained_incremental_book(5_001_000, &[], &[]);
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].depth20.bids[0], (101.0, 1.0));
+        assert_eq!(closed[0].depth20.asks[0], (100.0, 1.0));
     }
 
     #[test]

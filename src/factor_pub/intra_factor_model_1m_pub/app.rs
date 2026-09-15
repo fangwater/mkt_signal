@@ -669,18 +669,16 @@ impl IntraFactorModel1mPubApp {
                             .iter()
                             .map(|level| Level::from_values(level.price, level.amount))
                             .collect();
-                        // Kafka history starts from an arbitrary delta. Initialize the local
-                        // accumulator on its first event, then preserve incremental merge
-                        // semantics for all following updates. This does not require a
-                        // complete L2 snapshot before warmup can advance.
+                        // Kafka history starts from an arbitrary delta. Its retained book is
+                        // intentionally replayed without requiring a snapshot or pruning a
+                        // possibly crossed partial book before factor warmup.
                         let initialize_book = initialized_books.insert(symbol.clone());
                         if initialize_book {
                             stats.historical_book_initializations =
                                 stats.historical_book_initializations.saturating_add(1);
                         }
-                        aggregator.on_book(
+                        aggregator.on_retained_incremental_book(
                             timestamp_as_micros(book.timestamp),
-                            initialize_book || book.is_snapshot,
                             &bids,
                             &asks,
                         );
