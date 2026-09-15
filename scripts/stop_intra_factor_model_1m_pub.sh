@@ -29,15 +29,16 @@ fi
 
 PMDAEMON_BIN="${PMDAEMON_BIN:-pmdaemon}"
 name="intra_factor_model_1m_pub_${venue}"
+binary_name="intra_factor_model_1m_pub"
 "$PMDAEMON_BIN" delete "$name" >/dev/null 2>&1 || true
 
-mapfile -t leaked_pids < <(safe_find_running_pids "$name" "$BASE_DIR" "--venue ${venue}" || true)
+mapfile -t leaked_pids < <(safe_find_running_pids "$binary_name" "$BASE_DIR" "--venue ${venue}" || true)
 if [[ ${#leaked_pids[@]} -gt 0 ]]; then
   echo "[WARN] stopping leaked ${name} PID(s): ${leaked_pids[*]}"
   kill "${leaked_pids[@]}" >/dev/null 2>&1 || true
   deadline=$((SECONDS + ${KILL_WAIT_SECS:-6}))
   while [[ $SECONDS -lt $deadline ]]; do
-    mapfile -t leaked_pids < <(safe_find_running_pids "$name" "$BASE_DIR" "--venue ${venue}" || true)
+    mapfile -t leaked_pids < <(safe_find_running_pids "$binary_name" "$BASE_DIR" "--venue ${venue}" || true)
     [[ ${#leaked_pids[@]} -eq 0 ]] && break
     sleep 1
   done
