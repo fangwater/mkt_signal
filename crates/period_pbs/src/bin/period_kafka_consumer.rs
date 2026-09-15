@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -36,6 +37,11 @@ struct Args {
     /// Force per-symbol inc/trade count table.
     #[arg(long, default_value_t = false)]
     print_symbols: bool,
+
+    /// Print per-symbol L2 summary for these comma-separated symbols. This is
+    /// useful for confirming whether a producer carries reconstructed depth.
+    #[arg(long, value_delimiter = ',')]
+    depth_symbols: Vec<String>,
 
     /// Print earliest/latest offsets for configured topics and exit without consuming messages.
     #[arg(long, default_value_t = false)]
@@ -106,6 +112,7 @@ fn main() -> Result<()> {
                         print_period_message(
                             &period,
                             config.print_symbols,
+                            &args.depth_symbols,
                             &message.topic,
                             message.partition,
                             message.offset,
@@ -199,6 +206,7 @@ fn print_topic_watermarks(watermarks: &[KafkaPartitionWatermark]) {
 fn print_period_message(
     period: &pb::PeriodMessage,
     print_symbols: bool,
+    depth_symbols: &[String],
     topic: &str,
     partition: i32,
     offset: i64,
@@ -227,6 +235,58 @@ fn print_period_message(
 
     if print_symbols {
         print_symbol_table(period, inc_count, trade_count);
+    }
+    if !depth_symbols.is_empty() {
+        print_depth_summary(period, depth_symbols);
+    }
+}
+
+fn print_depth_summary(period: &pb::PeriodMessage, requested_symbols: &[String]) {
+    let requested: HashSet<String> = requested_symbols
+        .iter()
+        .map(|symbol| symbol.trim().to_ascii_uppercase())
+        .filter(|symbol| !symbol.is_empty())
+        .collect();
+
+    for symbol_info in &period.symbol_infos {
+        let symbol = symbol_info.symbol.trim().to_ascii_uppercase();
+        if !requested.contains(&symbol) {
+            continue;
+        }
+        let snapshot_count = symbol_info
+            .incs
+            .iter()
+            .filter(|inc| inc.is_snapshot)
+            .count();
+        let dual_bbo_count = symbol_info
+            .incs
+            .iter()
+            .filter(|inc| {
+                inc.bids.first().is_some_and(|level| level.price > 0.0)
+                    && inc.asks.first().is_some_and(|level| level.price > 0.0)
+            })
+            .count();
+        let max_bid_levels = symbol_info
+            .incs
+            .iter()
+            .map(|inc| inc.bids.len())
+            .max()
+            .unwrap_or(0);
+        let max_ask_levels = symbol_info
+            .incs
+            .iter()
+            .map(|inc| inc.asks.len())
+            .max()
+            .unwrap_or(0);
+        println!(
+            "depth symbol={} incs={} snapshots={} dual_bbo_incs={} max_bid_levels={} max_ask_levels={}",
+            symbol,
+            symbol_info.incs.len(),
+            snapshot_count,
+            dual_bbo_count,
+            max_bid_levels,
+            max_ask_levels,
+        );
     }
 }
 

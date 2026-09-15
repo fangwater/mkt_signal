@@ -168,16 +168,15 @@ impl PeriodEvent<'_> {
         };
         normalize_timestamp_ms(timestamp)
     }
+}
 
-    fn sort_order(&self) -> u8 {
-        // PeriodMessage keeps trade and book vectors separately, so equal-time
-        // ordering is unavailable. Applying the book first makes the right-edge
-        // snapshot deterministic before a same-timestamp trade closes a bucket.
-        match self {
-            Self::Book(_) => 0,
-            Self::Trade(_) => 1,
-        }
-    }
+fn sort_period_events(events: &mut [PeriodEvent<'_>]) {
+    // The producer preserves causal order inside each `incs` vector. Multiple
+    // book updates commonly share an exchange timestamp, so an unstable sort
+    // can turn a later delete into an earlier update and corrupt the replayed
+    // book. Events are assembled as books followed by trades, making a stable
+    // timestamp sort also retain the intended book-before-trade tie-breaker.
+    events.sort_by_key(PeriodEvent::timestamp_ms);
 }
 
 impl IntraFactorModel1mPubApp {
@@ -549,7 +548,7 @@ impl IntraFactorModel1mPubApp {
             let mut events = Vec::with_capacity(symbol_info.trades.len() + symbol_info.incs.len());
             events.extend(symbol_info.incs.iter().map(PeriodEvent::Book));
             events.extend(symbol_info.trades.iter().map(PeriodEvent::Trade));
-            events.sort_unstable_by_key(|event| (event.timestamp_ms(), event.sort_order()));
+            sort_period_events(&mut events);
 
             let bars = {
                 let aggregator = self.aggregators.entry(symbol.clone()).or_default();
@@ -769,11 +768,13 @@ fn now_millis() -> i64 {
 mod tests {
     use super::{
         output_service_path, parse_trade_side, plan_has_required_factors, select_enabled_symbols,
-        timestamp_as_micros, FactorObservation, SymbolState, INTRA_FACTOR_NAMES,
+        sort_period_events, timestamp_as_micros, FactorObservation, PeriodEvent, SymbolState,
+        INTRA_FACTOR_NAMES,
     };
     use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
     use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
     use order_common::TradingVenue;
+    use period_pbs::pb::{IncrementOrderBookInfo, PriceLevel, TradeInfo};
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -855,6 +856,45 @@ mod tests {
         assert_eq!(parse_trade_side("BUY"), Some(true));
         assert_eq!(parse_trade_side("s"), Some(false));
         assert_eq!(parse_trade_side("unknown"), None);
+    }
+
+    #[test]
+    fn stable_sort_preserves_same_timestamp_book_sequence() {
+        let first = IncrementOrderBookInfo {
+            timestamp: 1_704_067_200_123_000,
+            is_snapshot: false,
+            bids: vec![PriceLevel {
+                price: 100.0,
+                amount: 1.0,
+            }],
+            asks: Vec::new(),
+        };
+        let second = IncrementOrderBookInfo {
+            timestamp: first.timestamp,
+            is_snapshot: false,
+            bids: vec![PriceLevel {
+                price: 100.0,
+                amount: 0.0,
+            }],
+            asks: Vec::new(),
+        };
+        let trade = TradeInfo {
+            timestamp: first.timestamp,
+            side: "buy".to_string(),
+            price: 100.0,
+            amount: 1.0,
+        };
+        let mut events = vec![
+            PeriodEvent::Book(&first),
+            PeriodEvent::Book(&second),
+            PeriodEvent::Trade(&trade),
+        ];
+
+        sort_period_events(&mut events);
+
+        assert!(matches!(events[0], PeriodEvent::Book(book) if book.bids[0].amount == 1.0));
+        assert!(matches!(events[1], PeriodEvent::Book(book) if book.bids[0].amount == 0.0));
+        assert!(matches!(events[2], PeriodEvent::Trade(_)));
     }
 
     #[test]
