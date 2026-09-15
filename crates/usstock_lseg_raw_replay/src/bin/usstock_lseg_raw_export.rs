@@ -11,7 +11,7 @@ use fs2::FileExt;
 use polars::prelude::{
     DataFrame, NamedFrom, ParquetCompression, ParquetReader, ParquetWriter, SerReader, Series,
 };
-use rocksdb::{Direction, IteratorMode, Options, DB};
+use rocksdb::{DBRawIteratorWithThreadMode, Direction, IteratorMode, Options, DB};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,6 +45,12 @@ struct Args {
     /// Export only RAW L1/trades. Do not join staged LL2 even when it exists.
     #[arg(long)]
     raw_only: bool,
+    /// Keep the existing RAW 1s/quote output and append only the derived minute fields.
+    #[arg(long)]
+    derived_only: bool,
+    /// Process all session dates listed in this file in one sequential RAW trade scan.
+    #[arg(long)]
+    days_file: Option<PathBuf>,
     #[arg(long)]
     backtest_out_root: PathBuf,
     #[arg(long)]
@@ -226,6 +232,7 @@ impl VenueBooks {
 
 #[derive(Clone)]
 struct Trade {
+    event_ts_ns: u64,
     price: f64,
     size: f64,
     notional_nanos: i128,
@@ -255,6 +262,7 @@ fn stored_trade(trade: TradeValue, venue: &str) -> Result<Option<Trade>> {
         .checked_mul(i128::from(trade.size))
         .context("RAW trade notional overflows i128 nanodollars")?;
     Ok(Some(Trade {
+        event_ts_ns: trade.source_ts_utc_ns,
         price: trade.price as f64 / 1e9,
         size: trade.size as f64,
         notional_nanos,
@@ -395,6 +403,7 @@ struct Minute {
     high: f64,
     low: f64,
     close: f64,
+    twap: f64,
     size: SizeBuckets,
 }
 
@@ -407,6 +416,7 @@ impl Minute {
             high: f64::NAN,
             low: f64::NAN,
             close: f64::NAN,
+            twap: f64::NAN,
             ..Self::default()
         }
     }
@@ -494,6 +504,65 @@ fn exact_size_totals(minute: &Minute) -> Result<(i128, i128)> {
     // A no-trade minute has no exact bucket allocation yet, which is exactly
     // the same as an all-zero allocation.
     Ok(minute.size.exact_totals()?.unwrap_or((0, 0)))
+}
+
+fn compute_minute_twap(raw: &RawRows, open_ts: i64, minutes: &mut [Minute]) -> Result<()> {
+    const NS_PER_SECOND: u64 = 1_000_000_000;
+    const MINUTE_NS: u64 = 60 * NS_PER_SECOND;
+
+    let mut prior_print = None;
+    for (index, minute) in minutes.iter_mut().enumerate() {
+        let start_ns = (open_ts as u64)
+            .checked_mul(NS_PER_SECOND)
+            .context("TWAP session start overflows u64")?
+            .checked_add((index as u64) * MINUTE_NS)
+            .context("TWAP minute start overflows u64")?;
+        let end_ns = start_ns
+            .checked_add(MINUTE_NS)
+            .context("TWAP minute end overflows u64")?;
+
+        let mut events = raw
+            .trades
+            .range(start_ns..end_ns)
+            .flat_map(|(_, trades)| trades.iter())
+            .collect::<Vec<_>>();
+        events.sort_by(|left, right| {
+            left.event_ts_ns
+                .cmp(&right.event_ts_ns)
+                .then(left.source_order.cmp(&right.source_order))
+        });
+
+        let mut cursor = start_ns;
+        let mut weighted_price_ns = 0.0;
+        for trade in events {
+            let event_ns = trade.event_ts_ns.clamp(start_ns, end_ns);
+            if let Some(price) = prior_print {
+                weighted_price_ns += price * (event_ns.saturating_sub(cursor) as f64);
+            }
+            cursor = event_ns;
+            prior_print = Some(trade.price);
+        }
+        if let Some(price) = prior_print {
+            weighted_price_ns += price * (end_ns.saturating_sub(cursor) as f64);
+            minute.twap = weighted_price_ns / MINUTE_NS as f64;
+        }
+    }
+    Ok(())
+}
+
+fn carried_ratio(numerator: f64, denominator: f64, prior: &mut f64, fallback: f64) -> f64 {
+    if numerator.is_finite() && denominator.is_finite() && denominator > 0.0 {
+        let value = numerator / denominator;
+        if value.is_finite() {
+            *prior = value;
+            return value;
+        }
+    }
+    if prior.is_finite() {
+        *prior
+    } else {
+        fallback
+    }
 }
 
 fn venue_of(ric: &str) -> Result<&'static str> {
@@ -729,9 +798,14 @@ fn load_or_build_size_audit(
         .open(&lock_path)?;
     lock.lock_exclusive()?;
     if path.is_file() && !rebuild {
-        let audit: SizeAudit = serde_json::from_slice(&fs::read(&path)?)?;
-        validate_size_audit(&audit, rocksdb, size_reference_rocksdb, venue, ric, day)?;
-        return Ok((path, audit));
+        let cached = serde_json::from_slice::<serde_json::Value>(&fs::read(&path)?)?;
+        if cached.get("schema").and_then(serde_json::Value::as_str)
+            == Some("usstock-raw-size-threshold-v2")
+        {
+            let audit: SizeAudit = serde_json::from_value(cached)?;
+            validate_size_audit(&audit, rocksdb, size_reference_rocksdb, venue, ric, day)?;
+            return Ok((path, audit));
+        }
     }
 
     let (source_month, sessions) = previous_month_sessions(calendar, day)?;
@@ -898,6 +972,75 @@ fn collect_raw(
     Ok(rows)
 }
 
+fn collect_trades_only(
+    db: &DB,
+    venue_cfs: &[String],
+    instrument_cf: &str,
+    start_ns: u64,
+    end_ns: u64,
+) -> Result<RawRows> {
+    let mut rows = RawRows::default();
+    for name in venue_cfs
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(instrument_cf))
+    {
+        let trade_venue = if name == instrument_cf {
+            ""
+        } else {
+            name.rsplit_once(':')
+                .context("venue column family has no venue suffix")?
+                .1
+        };
+        let cf = db
+            .cf_handle(name)
+            .context("opened trade column family missing")?;
+        let trade_start = encode_key(MSG_TRADE, start_ns, 0);
+        for row in db.iterator_cf(&cf, IteratorMode::From(&trade_start, Direction::Forward)) {
+            let (key, value) = row?;
+            let (kind, ts, _) = decode_key(&key)?;
+            if kind != MSG_TRADE || ts >= end_ns {
+                break;
+            }
+            if let Some(trade) = stored_trade(decode_trade(&value)?, trade_venue)? {
+                rows.trades.entry(ts / NS * NS).or_default().push(trade);
+            }
+        }
+    }
+    for trades in rows.trades.values_mut() {
+        trades.sort_by_key(|trade| trade.source_order);
+    }
+    Ok(rows)
+}
+
+struct TradeCursor<'a> {
+    venue: String,
+    iterator: DBRawIteratorWithThreadMode<'a, DB>,
+    done: bool,
+}
+
+fn load_days_file(calendar: &Path, path: &Path) -> Result<Vec<(NaiveDate, i64, i64)>> {
+    let mut days = Vec::new();
+    for line in fs::read_to_string(path)?.lines() {
+        let value = line.trim();
+        if value.is_empty() || value.starts_with('#') {
+            continue;
+        }
+        let day = parse_day(value)?;
+        let (open_ts, close_ts) = session_bounds(calendar, day)?;
+        days.push((day, open_ts, close_ts));
+    }
+    if days.is_empty() {
+        bail!("days file {} is empty", path.display());
+    }
+    for pair in days.windows(2) {
+        if pair[0].2 > pair[1].1 {
+            bail!("overlapping sessions in days file {}", path.display());
+        }
+    }
+    Ok(days)
+}
+
 fn load_stage(path: &Path, start_ts: i64, close_ts: i64) -> Result<BTreeMap<i64, L2>> {
     let frame =
         ParquetReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?)
@@ -1021,6 +1164,379 @@ fn write_manifest(
     Ok(())
 }
 
+fn required_f64(frame: &DataFrame, name: &str) -> Result<Vec<f64>> {
+    frame
+        .column(name)
+        .with_context(|| format!("baseline is missing column {name}"))?
+        .f64()
+        .with_context(|| format!("baseline column {name} is not f64"))?
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value.with_context(|| format!("baseline column {name} row {index} is null"))
+        })
+        .collect()
+}
+
+fn required_i64(frame: &DataFrame, name: &str) -> Result<Vec<i64>> {
+    frame
+        .column(name)
+        .with_context(|| format!("baseline is missing column {name}"))?
+        .i64()
+        .with_context(|| format!("baseline column {name} is not i64"))?
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value.with_context(|| format!("baseline column {name} row {index} is null"))
+        })
+        .collect()
+}
+
+fn derived_fields_manifest() -> serde_json::Value {
+    json!({
+        "vwap": "amount / volume, carried across empty minutes like the CME baseline",
+        "avg_amount": "amount / count, zero when count is zero",
+        "buy_vwap": "buy_amount / buy_volume, carried across empty buy minutes",
+        "sell_vwap": "sell_amount / sell_volume, carried across empty sell minutes",
+        "twap": "RAW last-print price step function integrated over the full 60-second minute",
+        "mid_price": "alias of the RAW composite L1 midp",
+        "net_buy_amount": "buy_amount - sell_amount",
+        "net_buy_volume": "buy_volume - sell_volume",
+        "net_buy_pct": "(buy_amount - sell_amount) / (buy_amount + sell_amount); off-exchange excluded",
+    })
+}
+
+fn augment_existing_baseline(
+    baseline_path: &Path,
+    baseline_manifest_path: &Path,
+    raw: &RawRows,
+    open_ts: i64,
+    close_ts: i64,
+    ric: &str,
+    venue: &str,
+    day: NaiveDate,
+    baseline_root: &Path,
+    backtest_root: &Path,
+) -> Result<()> {
+    let mut frame = ParquetReader::new(
+        File::open(baseline_path).with_context(|| format!("open {}", baseline_path.display()))?,
+    )
+    .set_low_memory(true)
+    .finish()
+    .with_context(|| format!("read {}", baseline_path.display()))?;
+    let minutes = usize::try_from(close_ts - open_ts)? / 60;
+    if frame.height() != minutes {
+        bail!(
+            "baseline {} has {} rows, expected {} minutes",
+            baseline_path.display(),
+            frame.height(),
+            minutes
+        );
+    }
+
+    let amount = required_f64(&frame, "amount")?;
+    let volume = required_f64(&frame, "volume")?;
+    let count = required_i64(&frame, "count")?;
+    let buy_amount = required_f64(&frame, "buy_amount")?;
+    let buy_volume = required_f64(&frame, "buy_volume")?;
+    let sell_amount = required_f64(&frame, "sell_amount")?;
+    let sell_volume = required_f64(&frame, "sell_volume")?;
+    let close = required_f64(&frame, "close")?;
+    let midp = required_f64(&frame, "midp")?;
+
+    let mut minute_data = (0..minutes).map(|_| Minute::new()).collect::<Vec<_>>();
+    for (second_ns, trades) in raw
+        .trades
+        .range((open_ts as u64) * NS..(close_ts as u64) * NS)
+    {
+        let second = *second_ns / NS;
+        let minute = usize::try_from((second - open_ts as u64) / 60)?;
+        for trade in trades {
+            minute_data[minute].add(trade, None)?;
+        }
+    }
+    compute_minute_twap(raw, open_ts, &mut minute_data)?;
+
+    let mut vwap = Vec::with_capacity(minutes);
+    let mut avg_amount = Vec::with_capacity(minutes);
+    let mut buy_vwap = Vec::with_capacity(minutes);
+    let mut sell_vwap = Vec::with_capacity(minutes);
+    let mut net_buy_amount = Vec::with_capacity(minutes);
+    let mut net_buy_volume = Vec::with_capacity(minutes);
+    let mut net_buy_pct = Vec::with_capacity(minutes);
+    let mut prior_vwap = f64::NAN;
+    let mut prior_buy_vwap = f64::NAN;
+    let mut prior_sell_vwap = f64::NAN;
+    let mut prior_close = f64::NAN;
+    for index in 0..minutes {
+        if close[index].is_finite() {
+            prior_close = close[index];
+        }
+        let fallback_close = if close[index].is_finite() {
+            close[index]
+        } else {
+            prior_close
+        };
+        vwap.push(carried_ratio(
+            amount[index],
+            volume[index],
+            &mut prior_vwap,
+            fallback_close,
+        ));
+        avg_amount.push(if count[index] > 0 {
+            amount[index] / count[index] as f64
+        } else {
+            0.0
+        });
+        buy_vwap.push(carried_ratio(
+            buy_amount[index],
+            buy_volume[index],
+            &mut prior_buy_vwap,
+            fallback_close,
+        ));
+        sell_vwap.push(carried_ratio(
+            sell_amount[index],
+            sell_volume[index],
+            &mut prior_sell_vwap,
+            fallback_close,
+        ));
+        let directed_amount = buy_amount[index] + sell_amount[index];
+        net_buy_amount.push(buy_amount[index] - sell_amount[index]);
+        net_buy_volume.push(buy_volume[index] - sell_volume[index]);
+        net_buy_pct.push(if directed_amount > 0.0 {
+            (buy_amount[index] - sell_amount[index]) / directed_amount
+        } else {
+            0.0
+        });
+    }
+
+    for name in [
+        "vwap",
+        "avg_amount",
+        "buy_vwap",
+        "sell_vwap",
+        "twap",
+        "mid_price",
+        "net_buy_amount",
+        "net_buy_volume",
+        "net_buy_pct",
+    ] {
+        if frame
+            .get_column_names()
+            .iter()
+            .any(|existing| existing.as_str() == name)
+        {
+            let _ = frame.drop_in_place(name)?;
+        }
+    }
+    for column in [
+        Series::new("vwap".into(), vwap),
+        Series::new("avg_amount".into(), avg_amount),
+        Series::new("buy_vwap".into(), buy_vwap),
+        Series::new("sell_vwap".into(), sell_vwap),
+        Series::new(
+            "twap".into(),
+            minute_data
+                .iter()
+                .map(|minute| minute.twap)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new("mid_price".into(), midp),
+        Series::new("net_buy_amount".into(), net_buy_amount),
+        Series::new("net_buy_volume".into(), net_buy_volume),
+        Series::new("net_buy_pct".into(), net_buy_pct),
+    ] {
+        frame.with_column(column)?;
+    }
+    write_atomic(baseline_path, frame)?;
+
+    let mut manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(baseline_manifest_path)
+            .with_context(|| format!("read {}", baseline_manifest_path.display()))?,
+    )?;
+    manifest["ric"] = json!(ric);
+    manifest["venue"] = json!(venue);
+    manifest["session_date"] = json!(day.to_string());
+    manifest["raw_only"] = json!(true);
+    manifest["derived_only"] = json!(true);
+    manifest["derived_schema"] = json!("usstock-raw-derived-v2");
+    manifest["derived_fields"] = derived_fields_manifest();
+    write_manifest(backtest_root, venue, ric, day, manifest.clone())?;
+    write_manifest(baseline_root, venue, ric, day, manifest)?;
+    Ok(())
+}
+
+fn finish_derived_day(
+    raw: RawRows,
+    day: NaiveDate,
+    open_ts: i64,
+    close_ts: i64,
+    ric: &str,
+    venue: &str,
+    baseline_root: &Path,
+    backtest_root: &Path,
+) -> Result<()> {
+    let baseline_path = output_path(baseline_root, venue, ric, day);
+    let baseline_manifest_path = baseline_root
+        .join("_raw_export_manifest")
+        .join(venue)
+        .join(ric)
+        .join(format!("{}.json", day.format("%Y%m%d")));
+    if !baseline_path.is_file() {
+        bail!(
+            "derived-only baseline is missing: {}",
+            baseline_path.display()
+        );
+    }
+    augment_existing_baseline(
+        &baseline_path,
+        &baseline_manifest_path,
+        &raw,
+        open_ts,
+        close_ts,
+        ric,
+        venue,
+        day,
+        baseline_root,
+        backtest_root,
+    )
+}
+
+fn stream_derived_days(
+    db: &DB,
+    venue_cfs: &[String],
+    instrument_cf: &str,
+    calendar: &Path,
+    days_file: &Path,
+    ric: &str,
+    venue: &str,
+    baseline_root: &Path,
+    backtest_root: &Path,
+) -> Result<usize> {
+    let days = load_days_file(calendar, days_file)?;
+    let first_open_ns = (days[0].1 as u64) * NS;
+    let last_close_ns = (days.last().context("days file is empty")?.2 as u64) * NS;
+    let start_key = encode_key(MSG_TRADE, first_open_ns, 0);
+    let end_key = encode_key(MSG_TRADE, last_close_ns, 0);
+
+    let mut cursors = Vec::new();
+    for name in venue_cfs
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(instrument_cf))
+    {
+        let cf = db
+            .cf_handle(name)
+            .context("opened trade column family missing")?;
+        let mut iterator = db.raw_iterator_cf(&cf);
+        iterator.seek(&start_key);
+        let venue_name = if name == instrument_cf {
+            String::new()
+        } else {
+            name.rsplit_once(':')
+                .context("venue column family has no venue suffix")?
+                .1
+                .to_string()
+        };
+        cursors.push(TradeCursor {
+            venue: venue_name,
+            iterator,
+            done: false,
+        });
+    }
+
+    let mut day_index = 0usize;
+    let mut raw = RawRows::default();
+    loop {
+        let mut selected = None;
+        let mut selected_key = None;
+        for (index, cursor) in cursors.iter_mut().enumerate() {
+            if cursor.done || !cursor.iterator.valid() {
+                if !cursor.done {
+                    cursor.iterator.status()?;
+                    cursor.done = true;
+                }
+                continue;
+            }
+            let key = cursor.iterator.key().context("RAW iterator has no key")?;
+            if key.first().copied() != Some(MSG_TRADE) || key >= end_key.as_slice() {
+                cursor.done = true;
+                continue;
+            }
+            if selected_key
+                .as_ref()
+                .map(|current: &Vec<u8>| key < current.as_slice())
+                .unwrap_or(true)
+            {
+                selected = Some(index);
+                selected_key = Some(key.to_vec());
+            }
+        }
+        let Some(index) = selected else {
+            break;
+        };
+        let cursor = &mut cursors[index];
+        let key = cursor
+            .iterator
+            .key()
+            .context("selected RAW iterator has no key")?
+            .to_vec();
+        let value = cursor
+            .iterator
+            .value()
+            .context("selected RAW iterator has no value")?
+            .to_vec();
+        let (_, ts, _) = decode_key(&key)?;
+
+        while day_index < days.len() && ts >= (days[day_index].2 as u64) * NS {
+            let (day, open_ts, close_ts) = days[day_index];
+            for trades in raw.trades.values_mut() {
+                trades.sort_by_key(|trade| trade.source_order);
+            }
+            finish_derived_day(
+                std::mem::take(&mut raw),
+                day,
+                open_ts,
+                close_ts,
+                ric,
+                venue,
+                baseline_root,
+                backtest_root,
+            )?;
+            day_index += 1;
+        }
+        if day_index == days.len() {
+            break;
+        }
+        if ts >= (days[day_index].1 as u64) * NS {
+            let trade = stored_trade(decode_trade(&value)?, &cursor.venue)?;
+            if let Some(trade) = trade {
+                raw.trades.entry(ts / NS * NS).or_default().push(trade);
+            }
+        }
+        cursor.iterator.next();
+    }
+
+    while day_index < days.len() {
+        let (day, open_ts, close_ts) = days[day_index];
+        for trades in raw.trades.values_mut() {
+            trades.sort_by_key(|trade| trade.source_order);
+        }
+        finish_derived_day(
+            std::mem::take(&mut raw),
+            day,
+            open_ts,
+            close_ts,
+            ric,
+            venue,
+            baseline_root,
+            backtest_root,
+        )?;
+        day_index += 1;
+    }
+    Ok(days.len())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     require_raw_output_root(&args.backtest_out_root, "backtest_1s_raw")?;
@@ -1051,6 +1567,73 @@ fn main() -> Result<()> {
             backtest_path.display(),
             baseline_path.display()
         );
+    }
+
+    if args.derived_only {
+        if !args.raw_only {
+            bail!("--derived-only requires --raw-only");
+        }
+        if !backtest_path.is_file() || !baseline_path.is_file() {
+            bail!(
+                "--derived-only requires existing backtest and baseline files: {} {}",
+                backtest_path.display(),
+                baseline_path.display()
+            );
+        }
+        if let Some(days_file) = args.days_file.as_deref() {
+            let (db, venue_cfs, instrument_cf) = open_read_only(&args.rocksdb_dir, &args.ric)?;
+            let days = stream_derived_days(
+                &db,
+                &venue_cfs,
+                &instrument_cf,
+                &args.calendar,
+                days_file,
+                &args.ric,
+                venue,
+                &args.baseline_out_root,
+                &args.backtest_out_root,
+            )?;
+            println!(
+                "augmented ric={} days={} baseline_root={}",
+                args.ric,
+                days,
+                args.baseline_out_root.display()
+            );
+            return Ok(());
+        }
+        let baseline_manifest_path = args
+            .baseline_out_root
+            .join("_raw_export_manifest")
+            .join(venue)
+            .join(&args.ric)
+            .join(format!("{}.json", day.format("%Y%m%d")));
+        let (db, venue_cfs, instrument_cf) = open_read_only(&args.rocksdb_dir, &args.ric)?;
+        let raw = collect_trades_only(
+            &db,
+            &venue_cfs,
+            &instrument_cf,
+            (open_ts.saturating_sub(LOOKBACK_SECS) as u64) * NS,
+            (close_ts as u64) * NS,
+        )?;
+        augment_existing_baseline(
+            &baseline_path,
+            &baseline_manifest_path,
+            &raw,
+            open_ts,
+            close_ts,
+            &args.ric,
+            venue,
+            day,
+            &args.baseline_out_root,
+            &args.backtest_out_root,
+        )?;
+        println!(
+            "augmented ric={} day={} baseline={}",
+            args.ric,
+            day,
+            baseline_path.display()
+        );
+        return Ok(());
     }
 
     let scan_start_ts = open_ts.saturating_sub(LOOKBACK_SECS);
@@ -1199,8 +1782,62 @@ fn main() -> Result<()> {
             l2 = *snapshot;
         }
     }
+    compute_minute_twap(&raw, open_ts, &mut minute_data)?;
     for minute in &mut minute_data {
         minute.materialize_exact_amounts();
+    }
+
+    let mut vwap = Vec::with_capacity(minutes);
+    let mut avg_amount = Vec::with_capacity(minutes);
+    let mut buy_vwap = Vec::with_capacity(minutes);
+    let mut sell_vwap = Vec::with_capacity(minutes);
+    let mut net_buy_amount = Vec::with_capacity(minutes);
+    let mut net_buy_volume = Vec::with_capacity(minutes);
+    let mut net_buy_pct = Vec::with_capacity(minutes);
+    let mut prior_vwap = f64::NAN;
+    let mut prior_buy_vwap = f64::NAN;
+    let mut prior_sell_vwap = f64::NAN;
+    let mut prior_close = f64::NAN;
+    for minute in &minute_data {
+        if minute.close.is_finite() {
+            prior_close = minute.close;
+        }
+        let fallback_close = if minute.close.is_finite() {
+            minute.close
+        } else {
+            prior_close
+        };
+        vwap.push(carried_ratio(
+            minute.amount,
+            minute.volume,
+            &mut prior_vwap,
+            fallback_close,
+        ));
+        avg_amount.push(if minute.count > 0 {
+            minute.amount / minute.count as f64
+        } else {
+            0.0
+        });
+        buy_vwap.push(carried_ratio(
+            minute.buy_amount,
+            minute.buy_volume,
+            &mut prior_buy_vwap,
+            fallback_close,
+        ));
+        sell_vwap.push(carried_ratio(
+            minute.sell_amount,
+            minute.sell_volume,
+            &mut prior_sell_vwap,
+            fallback_close,
+        ));
+        let directed_amount = minute.buy_amount + minute.sell_amount;
+        net_buy_amount.push(minute.buy_amount - minute.sell_amount);
+        net_buy_volume.push(minute.buy_volume - minute.sell_volume);
+        net_buy_pct.push(if directed_amount > 0.0 {
+            (minute.buy_amount - minute.sell_amount) / directed_amount
+        } else {
+            0.0
+        });
     }
 
     let mut backtest_columns = vec![
@@ -1449,6 +2086,21 @@ fn main() -> Result<()> {
         ),
         Series::new("midp".into(), &minute_midp),
         Series::new("n_seconds".into(), vec![60_i64; minutes]),
+        Series::new("vwap".into(), vwap),
+        Series::new("avg_amount".into(), avg_amount),
+        Series::new("buy_vwap".into(), buy_vwap),
+        Series::new("sell_vwap".into(), sell_vwap),
+        Series::new(
+            "twap".into(),
+            minute_data
+                .iter()
+                .map(|minute| minute.twap)
+                .collect::<Vec<_>>(),
+        ),
+        Series::new("mid_price".into(), &minute_midp),
+        Series::new("net_buy_amount".into(), net_buy_amount),
+        Series::new("net_buy_volume".into(), net_buy_volume),
+        Series::new("net_buy_pct".into(), net_buy_pct),
     ]);
     write_atomic(&baseline_path, DataFrame::new(baseline_columns)?)?;
 
@@ -1471,6 +2123,18 @@ fn main() -> Result<()> {
         "raw_trade_correction_policy": "raw source prints are exported as observed; cancellation, previous-day and restatement messages remain preserved in RocksDB but do not alter trade prints because CAN_TRD_ID/PD_TRDID cannot be losslessly joined to TRADE_ID",
         "trade_side": "stored replay aggressor_side; never recomputed by exporter; N only off_exchange_reporting",
         "trade_order": "within source second, source_order across all venue and instrument CFs",
+        "derived_schema": "usstock-raw-derived-v2",
+        "derived_fields": {
+            "vwap": "amount / volume, carried across empty minutes like the CME baseline",
+            "avg_amount": "amount / count, zero when count is zero",
+            "buy_vwap": "buy_amount / buy_volume, carried across empty buy minutes",
+            "sell_vwap": "sell_amount / sell_volume, carried across empty sell minutes",
+            "twap": "RAW last-print price step function integrated over the full 60-second minute",
+            "mid_price": "alias of the RAW composite L1 midp",
+            "net_buy_amount": "buy_amount - sell_amount",
+            "net_buy_volume": "buy_volume - sell_volume",
+            "net_buy_pct": "(buy_amount - sell_amount) / (buy_amount + sell_amount); off-exchange excluded",
+        },
         "size_buckets": {
             "audit": size_audit_path,
             "trading_month": size_audit.trading_month,
@@ -1735,6 +2399,7 @@ mod tests {
         let thresholds = SizeThresholds::new(500.0, 900.0).unwrap();
         let mut minute = Minute::new();
         let trade = |price, size, side| Trade {
+            event_ts_ns: 0,
             price,
             size,
             notional_nanos: (price * size * 1e9) as i128,
@@ -1763,6 +2428,39 @@ mod tests {
             minute.size.directional_total(),
             minute.buy_amount + minute.sell_amount
         );
+    }
+
+    #[test]
+    fn minute_twap_integrates_prints_and_carries_across_empty_minutes() {
+        const NS_PER_SECOND: u64 = 1_000_000_000;
+        let open_ts = 1_700_000_000_i64;
+        let open_ns = open_ts as u64 * NS_PER_SECOND;
+        let trade = |event_ts_ns, source_order, price| Trade {
+            event_ts_ns,
+            price,
+            size: 1.0,
+            notional_nanos: (price * 1e9) as i128,
+            venue: String::new(),
+            source_order,
+            side: None,
+            side_method: 9,
+            side_flags: 0,
+        };
+        let mut raw = RawRows::default();
+        raw.trades.insert(
+            open_ns + 10 * NS_PER_SECOND,
+            vec![trade(open_ns + 10 * NS_PER_SECOND, 0, 100.0)],
+        );
+        raw.trades.insert(
+            open_ns + 40 * NS_PER_SECOND,
+            vec![trade(open_ns + 40 * NS_PER_SECOND, 0, 110.0)],
+        );
+        let mut minutes = (0..2).map(|_| Minute::new()).collect::<Vec<_>>();
+
+        compute_minute_twap(&raw, open_ts, &mut minutes).unwrap();
+
+        assert!((minutes[0].twap - (100.0 * 30.0 + 110.0 * 20.0) / 60.0).abs() < 1e-12);
+        assert_eq!(minutes[1].twap, 110.0);
     }
 
     #[test]

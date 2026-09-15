@@ -6,7 +6,7 @@ usage() {
 Usage:
   run_raw_multi_period_release.sh \
     --period-plan PATH --calendar PATH --output-parent PATH \
-    --seed-contract PATH [--workers N]
+    --seed-contract PATH [--workers N] [--rebuild-size-thresholds]
 
 The tab-separated period plan has four columns with no header:
   start_date<TAB>end_date<TAB>rocksdb_dir<TAB>size_reference_rocksdb-or--
@@ -23,6 +23,7 @@ output_parent=
 seed_contract=
 workers=16
 resume_root=
+rebuild_size_thresholds=0
 
 while (($#)); do
     case "$1" in
@@ -32,6 +33,7 @@ while (($#)); do
         --seed-contract) seed_contract=$2; shift 2 ;;
         --workers) workers=$2; shift 2 ;;
         --resume-root) resume_root=$2; shift 2 ;;
+        --rebuild-size-thresholds) rebuild_size_thresholds=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -137,10 +139,22 @@ while IFS=$'\t' read -r start_date end_date rocksdb_dir size_reference extra; do
     }
     cat "$days" >> "$all_days"
     while IFS= read -r ric; do
-        printf '%s\t%s\t%s\t%s\t%s\n' \
-            "$period_id" "$rocksdb_dir" "$size_reference" "$days" "$ric" >> "$tasks"
+        case "$ric" in
+            *.O) venue=NASDAQ ;;
+            *.N) venue=NYSE ;;
+            *.P) venue=ARCA ;;
+            *.BAT) venue=BZX ;;
+            *) echo "unsupported RIC $ric" >&2; exit 2 ;;
+        esac
+        printf '%s\t%s\t%s\t%s\n' \
+            "$period_id" "$rocksdb_dir" "$size_reference" "$ric" >> "$tasks"
+        while IFS= read -r day; do
+            stamp=${day//-/}
+            if [[ ! -e "$release_root/baseline_data_1m_raw/$venue/$ric/$stamp.parquet" ]]; then
+                added_expected=$((added_expected + 1))
+            fi
+        done < "$days"
     done < "$rics"
-    added_expected=$((added_expected + day_count * ric_count))
 done < "$period_plan"
 
 ((period_count > 0)) || { echo "period plan is empty" >&2; exit 2; }
@@ -153,49 +167,72 @@ printf 'RAW multi-period staging=%s seed=%s periods=%s tasks=%s added_expected=%
     "$release_root" "$seed_backtest_count" "$period_count" "$task_count" \
     "$added_expected" "$((seed_backtest_count + added_expected))" "$workers"
 
-export export_binary calendar release_root
+export export_binary calendar release_root rebuild_size_thresholds
 export_task() {
     set -euo pipefail
     local task=$1
-    local period_id rocksdb_dir size_reference days ric log
-    IFS=$'\t' read -r period_id rocksdb_dir size_reference days ric <<< "$task"
-    log="$release_root/logs/${period_id}.${ric}.log"
+    local period_id rocksdb_dir size_reference ric log days day stamp first_day
+    IFS=$'\t' read -r period_id rocksdb_dir size_reference ric <<< "$task"
+    days="$release_root/plans/${period_id}_sessions.txt"
+    first_day=$(head -1 "$days")
+    log="$release_root/logs/${period_id}.${ric}.batch.log"
     printf 'start period=%s ric=%s\n' "$period_id" "$ric" >> "$log"
     local -a reference_args=()
     if [[ $size_reference != - ]]; then
         reference_args=(--size-reference-rocksdb "$size_reference")
     fi
+    local -a rebuild_args=()
+    if ((rebuild_size_thresholds)); then
+        rebuild_args=(--rebuild-size-thresholds)
+    fi
+    local venue backtest_path baseline_path manifest_path complete=1
+    case "$ric" in
+        *.O) venue=NASDAQ ;; *.N) venue=NYSE ;; *.P) venue=ARCA ;; *.BAT) venue=BZX ;;
+        *) echo "unsupported RIC $ric" >&2; return 1 ;;
+    esac
     while IFS= read -r day; do
-        local venue stamp backtest_path baseline_path manifest_path complete=1
-        case "$ric" in
-            *.O) venue=NASDAQ ;; *.N) venue=NYSE ;; *.P) venue=ARCA ;; *.BAT) venue=BZX ;;
-            *) echo "unsupported RIC $ric" >&2; return 1 ;;
-        esac
         stamp=${day//-/}
         backtest_path="$release_root/backtest_1s_raw/$venue/$ric/$stamp.parquet"
         baseline_path="$release_root/baseline_data_1m_raw/$venue/$ric/$stamp.parquet"
         manifest_path="$release_root/baseline_data_1m_raw/_raw_export_manifest/$venue/$ric/$stamp.json"
         if [[ ! -s $backtest_path || ! -s $baseline_path ]] ||
             ! jq -e --arg ric "$ric" --arg day "$day" --arg db "$rocksdb_dir" \
-            '.ric == $ric and .session_date == $day and .raw_rocksdb == $db and .raw_only == true' \
+            '.ric == $ric and .session_date == $day and .raw_rocksdb == $db and .raw_only == true
+             and .derived_schema == "usstock-raw-derived-v2"
+             and (.derived_fields.vwap // null) != null
+             and (.derived_fields.avg_amount // null) != null
+             and (.derived_fields.buy_vwap // null) != null
+             and (.derived_fields.sell_vwap // null) != null
+             and (.derived_fields.twap // null) != null
+             and (.derived_fields.mid_price // null) != null
+             and (.derived_fields.net_buy_amount // null) != null
+             and (.derived_fields.net_buy_volume // null) != null
+             and (.derived_fields.net_buy_pct // null) != null' \
             "$manifest_path" >/dev/null 2>&1; then
             complete=0
+            break
         fi
-        if ((complete)); then continue; fi
-        "$export_binary" \
-            --overwrite \
-            --rocksdb-dir "$rocksdb_dir" \
-            "${reference_args[@]}" \
-            --calendar "$calendar" \
-            --stage-ll2-root "$release_root/_stage_ll2_disabled" \
-            --raw-only \
-            --backtest-out-root "$release_root/backtest_1s_raw" \
-            --baseline-out-root "$release_root/baseline_data_1m_raw" \
-            --ric "$ric" \
-            --day "$day"
-    done < "$days" >> "$log" 2>&1
+    done < "$days"
+    if ((complete)); then
+        touch "$release_root/done/${period_id}.${ric}.batch"
+        return 0
+    fi
+    "$export_binary" \
+        --overwrite \
+        --rocksdb-dir "$rocksdb_dir" \
+        "${reference_args[@]}" \
+        --calendar "$calendar" \
+        --stage-ll2-root "$release_root/_stage_ll2_disabled" \
+        --raw-only \
+        --derived-only \
+        --days-file "$days" \
+        "${rebuild_args[@]}" \
+        --backtest-out-root "$release_root/backtest_1s_raw" \
+        --baseline-out-root "$release_root/baseline_data_1m_raw" \
+        --ric "$ric" \
+        --day "$first_day" >> "$log" 2>&1
     printf 'complete period=%s ric=%s\n' "$period_id" "$ric" >> "$log"
-    touch "$release_root/done/${period_id}.${ric}"
+    touch "$release_root/done/${period_id}.${ric}.batch"
 }
 export -f export_task
 
