@@ -147,6 +147,9 @@ struct KafkaWarmupStats {
     missing_thresholds: u64,
     synthetic_book_seeds: u64,
     replayed_events: u64,
+    sixty_second_bars: u64,
+    invalid_price_bars: u64,
+    invalid_depth_bars: u64,
     historical_bars: u64,
     percentile_samples: u64,
     evaluation_errors: u64,
@@ -603,7 +606,7 @@ impl IntraFactorModel1mPubApp {
             }
         }
         info!(
-            "Kafka warmup completed: venue={} kafka_records={} decoded_periods={} decode_errors={} ignored_symbols={} missing_thresholds={} synthetic_book_seeds={} replayed_events={} historical_bars={} percentile_samples={} evaluation_errors={} state_symbols={}",
+            "Kafka warmup completed: venue={} kafka_records={} decoded_periods={} decode_errors={} ignored_symbols={} missing_thresholds={} synthetic_book_seeds={} replayed_events={} sixty_second_bars={} invalid_price_bars={} invalid_depth_bars={} historical_bars={} percentile_samples={} evaluation_errors={} state_symbols={}",
             self.venue_slug,
             stats.kafka_records,
             stats.decoded_periods,
@@ -612,6 +615,9 @@ impl IntraFactorModel1mPubApp {
             stats.missing_thresholds,
             stats.synthetic_book_seeds,
             stats.replayed_events,
+            stats.sixty_second_bars,
+            stats.invalid_price_bars,
+            stats.invalid_depth_bars,
             stats.historical_bars,
             stats.percentile_samples,
             stats.evaluation_errors,
@@ -707,7 +713,13 @@ impl IntraFactorModel1mPubApp {
         history_start_ms: i64,
         stats: &mut KafkaWarmupStats,
     ) {
-        if !historical_bar_is_publishable(&bar) {
+        stats.sixty_second_bars = stats.sixty_second_bars.saturating_add(1);
+        if !historical_bar_has_valid_prices(&bar) {
+            stats.invalid_price_bars = stats.invalid_price_bars.saturating_add(1);
+            return;
+        }
+        if !historical_bar_has_valid_depth(&bar) {
+            stats.invalid_depth_bars = stats.invalid_depth_bars.saturating_add(1);
             return;
         }
         let payload = match bar.to_trade_flow_feature_payload(symbol, self.venue.to_u8()) {
@@ -799,7 +811,7 @@ fn parse_trade_side(side: &str) -> Option<bool> {
     }
 }
 
-fn historical_bar_is_publishable(bar: &BaselineBar) -> bool {
+fn historical_bar_has_valid_prices(bar: &BaselineBar) -> bool {
     [
         bar.open,
         bar.high,
@@ -808,11 +820,15 @@ fn historical_bar_is_publishable(bar: &BaselineBar) -> bool {
         bar.vwap,
         bar.buy_vwap,
         bar.sell_vwap,
-        bar.depth20.bids[0].0,
-        bar.depth20.asks[0].0,
     ]
     .iter()
     .all(|value| value.is_finite() && *value > 0.0)
+}
+
+fn historical_bar_has_valid_depth(bar: &BaselineBar) -> bool {
+    [bar.depth20.bids[0].0, bar.depth20.asks[0].0]
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0)
 }
 
 async fn load_enabled_symbols(
