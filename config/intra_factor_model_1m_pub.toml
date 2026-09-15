@@ -10,20 +10,16 @@ symbol_reload_secs = 180
 window_size = 2880
 min_samples = 1440
 
-# Rebuilds historical 1m trade-flow bars from Kafka PeriodMessage payloads. History only
-# warms internal factor and percentile state; it never publishes old ModelMsg records.
-[warmup]
-enabled = true
-required = false
+# The sole input for this 1m publisher. At startup it replays retained
+# PeriodMessage records, publishes the resulting ModelMsg records, then keeps
+# consuming the same Kafka stream. It never subscribes to current IPC trade-flow.
+[kafka]
 lookback_secs = 172800
-tail_guard_secs = 90
-max_wait_secs = 1800
-
-[warmup.kafka]
+catchup_timeout_secs = 1800
 topics = ["binance-futures"]
 brokers = "156.231.137.189:1501"
-group_id = "intra_factor_model_1m_warmup"
-client_id = "intra_factor_model_1m_warmup"
+group_id = "intra_factor_model_1m"
+client_id = "intra_factor_model_1m"
 offset_reset = "earliest"
 payload_compression = "zlib"
 poll_timeout_ms = 1000

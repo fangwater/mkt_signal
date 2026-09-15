@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     maybe_pin_current_thread(args.core, "INTRA_FACTOR_MODEL_1M_CORE")?;
     info!(
-        "Starting intra_factor_model_1m_pub: venue={} config={} input=trade_flow_feature_1m output=model_output/intra-{}-1m-<factor>",
+        "Starting intra_factor_model_1m_pub: venue={} config={} input=Kafka PeriodMessage output=model_output/intra-{}-1m-<factor>",
         args.venue.data_pub_slug(),
         args.config,
         args.venue.data_pub_slug(),

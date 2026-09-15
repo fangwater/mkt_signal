@@ -1,24 +1,18 @@
 use anyhow::{bail, Context, Result};
-use iceoryx2::port::subscriber::Subscriber;
-use iceoryx2::prelude::*;
-use iceoryx2::service::ipc;
 use log::{info, warn};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mkt_parsers::msg::mkt_msg::Level;
 use mkt_parsers::msg::mkt_msg::{ModelMsg, MODEL_STATUS_OK};
-use mkt_parsers::msg::trade_flow_feature_msg::{
-    TradeFlowFeatureMsg, TRADE_FLOW_FEATURE_HISTORY_SIZE, TRADE_FLOW_FEATURE_MAX_BYTES,
-};
+use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
 use order_common::TradingVenue;
-use period_pbs::kafka::{decode_period_payload, RawKafkaConsumer};
+use period_pbs::kafka::{decode_period_payload, PayloadCompressionMode, RawKafkaConsumer};
 use period_pbs::pb::{IncrementOrderBookInfo, PeriodMessage, TradeInfo};
 use period_pbs::period::normalize_timestamp_ms;
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use crate::common::amount_threshold::AmountThreshold;
-use crate::common::msg_parser::parse_trade_flow_feature;
 use crate::common::sliding_quantile::SlidingQuantileWindow;
 use crate::factor_pub::fusion_factor_pub::app::{
     load_amount_thresholds_from_tlen_server, load_online_symbols_from_tlen_server,
@@ -32,17 +26,13 @@ use crate::factor_pub::trade_flow_feature_pub::local_baseline::{
     BaselineBar, LocalBaselineAggregator,
 };
 
-use super::cfg::{IntraFactorModelPubConfig, KafkaWarmupConfig};
+use super::cfg::{IntraFactorModelPubConfig, KafkaInputConfig};
 
-const IDLE_SLEEP_MICROS: u64 = 200;
 const STATS_LOG_INTERVAL_SECS: u64 = 60;
 const SYMBOL_RELOAD_WARN_INTERVAL_SECS: u64 = 60;
-const TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE: usize = 8192;
-const TRADE_FLOW_MAX_SUBSCRIBERS: usize = 10;
 const FACTOR_PLAN_CONFIG_TYPE: &str = "factor_plan_1m";
 const AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds_1m";
 const TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE: &str = "amount_thresholds";
-const ONE_MINUTE_MS: i64 = 60_000;
 
 pub const INTRA_FACTOR_NAMES: [&str; 9] = [
     "baseline_035",
@@ -138,23 +128,6 @@ struct IntraFactorModelStats {
     ready: u64,
 }
 
-#[derive(Default)]
-struct KafkaWarmupStats {
-    kafka_records: u64,
-    decoded_periods: u64,
-    decode_errors: u64,
-    ignored_symbols: u64,
-    missing_thresholds: u64,
-    historical_book_initializations: u64,
-    replayed_events: u64,
-    sixty_second_bars: u64,
-    invalid_price_bars: u64,
-    incomplete_depth_bars: u64,
-    historical_bars: u64,
-    percentile_samples: u64,
-    evaluation_errors: u64,
-}
-
 /// Publishes each notebook factor as a separate raw-value virtual model.
 ///
 /// `ModelMsg.score` is the raw factor value. `score_quantile` is the current
@@ -166,7 +139,12 @@ pub struct IntraFactorModel1mPubApp {
     window_size: usize,
     min_samples: usize,
     plan: SymbolFactorPlan,
-    trade_flow_subscriber: Option<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>>,
+    kafka_consumer: RawKafkaConsumer,
+    kafka_poll_timeout_ms: u64,
+    kafka_payload_compression: PayloadCompressionMode,
+    amount_thresholds: HashMap<String, AmountThreshold>,
+    aggregators: HashMap<String, LocalBaselineAggregator>,
+    history_start_ms: i64,
     outputs: Vec<FactorOutput>,
     allowed_symbols: HashSet<String>,
     states: HashMap<String, SymbolState>,
@@ -232,9 +210,32 @@ impl IntraFactorModel1mPubApp {
             );
         }
 
-        // Subscribe before the synchronous Kafka replay so its large buffer bridges
-        // records produced while warming. Historical overlap is removed by timestamp.
-        let trade_flow_subscriber = create_trade_flow_subscriber(&venue_slug)?;
+        let amount_thresholds = load_amount_thresholds_from_tlen_server(
+            &config.tlen_server,
+            venue,
+            &venue_slug,
+            TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "load Kafka trade-flow amount thresholds failed: venue={}",
+                venue_slug
+            )
+        })?;
+        let startup_ms = now_millis();
+        let history_start_ms =
+            startup_ms.saturating_sub(config.kafka.lookback_secs.saturating_mul(1_000) as i64);
+        let mut kafka_config = config.kafka.consumer.clone();
+        let run_id = format!("{}-{}", std::process::id(), startup_ms);
+        kafka_config.group_id = format!("{}-{}", kafka_config.group_id, run_id);
+        kafka_config.client_id = format!("{}-{}", kafka_config.client_id, run_id);
+        // Each restart replays retained history and never commits a shared offset.
+        kafka_config.offset_reset = "earliest".to_string();
+        kafka_config.enable_auto_commit = false;
+        let kafka_consumer =
+            RawKafkaConsumer::new(&kafka_config).context("create intra 1m Kafka consumer")?;
+
         let mut outputs = Vec::with_capacity(INTRA_FACTOR_NAMES.len());
         for factor_name in INTRA_FACTOR_NAMES {
             let service_path = output_service_path(&venue_slug, factor_name);
@@ -268,7 +269,12 @@ impl IntraFactorModel1mPubApp {
             window_size: config.percentile.window_size,
             min_samples: config.percentile.min_samples,
             plan,
-            trade_flow_subscriber: Some(trade_flow_subscriber),
+            kafka_consumer,
+            kafka_poll_timeout_ms: kafka_config.poll_timeout_ms.max(1),
+            kafka_payload_compression: kafka_config.payload_compression,
+            amount_thresholds,
+            aggregators: HashMap::new(),
+            history_start_ms,
             outputs,
             allowed_symbols,
             states: HashMap::new(),
@@ -280,39 +286,10 @@ impl IntraFactorModel1mPubApp {
             stats: IntraFactorModelStats::default(),
         };
 
-        if config.warmup.enabled {
-            match load_amount_thresholds_from_tlen_server(
-                &config.tlen_server,
-                venue,
-                &app.venue_slug,
-                TRADE_FLOW_AMOUNT_THRESHOLD_CONFIG_TYPE,
-            )
-            .await
-            {
-                Ok(thresholds) => {
-                    if let Err(err) = app.warm_from_kafka(&config.warmup, &thresholds) {
-                        if config.warmup.required {
-                            return Err(err).context("required Kafka warmup failed");
-                        }
-                        warn!(
-                            "Kafka warmup failed; starting cold with score_ready=false until live history accumulates: venue={} err={:#}",
-                            app.venue_slug, err
-                        );
-                    }
-                }
-                Err(err) if config.warmup.required => {
-                    return Err(err).context("load required warmup amount thresholds failed");
-                }
-                Err(err) => warn!(
-                    "Kafka warmup skipped because realtime amount thresholds could not be loaded; starting cold: venue={} err={:#}",
-                    app.venue_slug, err
-                ),
-            }
-        }
+        app.catch_up_kafka(&config.kafka)?;
 
         info!(
-            "IntraFactorModel1mPubApp started: venue={} input=factor_pub/{}/trade_flow_feature_1m symbols={} sample={} percentile_window={} min_samples={} output_services={:?}",
-            app.venue_slug,
+            "IntraFactorModel1mPubApp started: venue={} input=Kafka PeriodMessage symbols={} sample={} percentile_window={} min_samples={} output_services={:?}",
             app.venue_slug,
             app.allowed_symbols.len(),
             format_symbol_sample(&app.allowed_symbols),
@@ -329,11 +306,8 @@ impl IntraFactorModel1mPubApp {
 
         loop {
             self.maybe_reload_symbols().await;
-            let has_message = self.poll_trade_flow()?;
+            self.poll_kafka()?;
             self.maybe_log_stats();
-            if !has_message {
-                std::thread::sleep(Duration::from_micros(IDLE_SLEEP_MICROS));
-            }
         }
     }
 
@@ -369,6 +343,8 @@ impl IntraFactorModel1mPubApp {
                 self.allowed_symbols = symbols;
                 self.states
                     .retain(|symbol, _| self.allowed_symbols.contains(symbol));
+                self.aggregators
+                    .retain(|symbol, _| self.allowed_symbols.contains(symbol));
                 info!(
                     "IntraFactorModel1mPubApp symbols reloaded: venue={} enabled={} sample={} retired={} retired_sample={}",
                     self.venue_slug,
@@ -394,49 +370,28 @@ impl IntraFactorModel1mPubApp {
         }
     }
 
-    fn poll_trade_flow(&mut self) -> Result<bool> {
-        let mut has_message = false;
-        loop {
-            let parsed = {
-                let subscriber = self
-                    .trade_flow_subscriber
-                    .as_ref()
-                    .context("trade-flow subscriber was not initialized")?;
-                let Some(sample) = subscriber.receive()? else {
-                    break;
-                };
-                parse_trade_flow_feature(sample.payload())
-            };
-            has_message = true;
-            self.stats.raw_messages = self.stats.raw_messages.saturating_add(1);
-            let msg = match parsed {
-                Ok(msg) => msg,
-                Err(err) => {
-                    self.stats.decode_errors = self.stats.decode_errors.saturating_add(1);
-                    warn!(
-                        "intra factor 1m trade-flow decode failed: venue={} err={}",
-                        self.venue_slug, err
-                    );
-                    continue;
-                }
-            };
-            let symbol = normalize_symbol_for_venue(&msg.symbol, self.venue);
-            if !self.allowed_symbols.contains(&symbol) {
-                continue;
-            }
-            self.on_trade_flow(symbol, msg);
-        }
-        Ok(has_message)
+    fn poll_kafka(&mut self) -> Result<()> {
+        let Some(record) = self.kafka_consumer.poll(self.kafka_poll_timeout_ms) else {
+            return Ok(());
+        };
+        let record = record.context("read live intra 1m Kafka record")?;
+        self.consume_kafka_record(
+            &record.topic,
+            record.partition,
+            record.offset,
+            &record.payload,
+        );
+        Ok(())
     }
 
-    fn on_trade_flow(&mut self, symbol: String, msg: TradeFlowFeatureMsg) {
+    fn on_trade_flow(&mut self, symbol: String, msg: TradeFlowFeatureMsg, record_percentile: bool) {
         let ts_in_ms = msg.ts / 1_000;
         let observations = match {
             let state = self
                 .states
                 .entry(symbol.clone())
                 .or_insert_with(|| SymbolState::new(self.window_size));
-            state.evaluate(msg, &self.plan, self.min_samples, true)
+            state.evaluate(msg, &self.plan, self.min_samples, record_percentile)
         } {
             Ok(Some(observations)) => observations,
             Ok(None) => return,
@@ -484,40 +439,15 @@ impl IntraFactorModel1mPubApp {
         }
     }
 
-    fn warm_from_kafka(
-        &mut self,
-        config: &KafkaWarmupConfig,
-        thresholds: &HashMap<String, AmountThreshold>,
-    ) -> Result<()> {
-        let now_ms = now_millis();
-        let history_end_ms = align_to_minute(
-            now_ms.saturating_sub(config.tail_guard_secs.saturating_mul(1_000) as i64),
-        );
-        let history_start_ms =
-            history_end_ms.saturating_sub(config.lookback_secs.saturating_mul(1_000) as i64);
-        if history_end_ms <= history_start_ms {
-            bail!(
-                "invalid Kafka warmup range: start={} end={}",
-                history_start_ms,
-                history_end_ms
-            );
-        }
-
-        let mut kafka_config = config.kafka.clone();
-        let run_id = format!("{}-{}", std::process::id(), now_ms);
-        kafka_config.group_id = format!("{}-{}", kafka_config.group_id, run_id);
-        kafka_config.client_id = format!("{}-{}", kafka_config.client_id, run_id);
-        // A warmup must always read retained history and must never commit offsets.
-        kafka_config.offset_reset = "earliest".to_string();
-        kafka_config.enable_auto_commit = false;
-        let consumer = RawKafkaConsumer::new(&kafka_config).context("create Kafka consumer")?;
-        let watermarks = consumer
+    fn catch_up_kafka(&mut self, config: &KafkaInputConfig) -> Result<()> {
+        let watermarks = self
+            .kafka_consumer
             .query_topic_watermarks(
-                &kafka_config.topics,
-                kafka_config.metadata_timeout_ms,
-                kafka_config.watermark_timeout_ms,
+                &config.consumer.topics,
+                config.consumer.metadata_timeout_ms,
+                config.consumer.watermark_timeout_ms,
             )
-            .context("query Kafka warmup watermarks")?;
+            .context("query Kafka input watermarks")?;
         let target_offsets: HashMap<(String, i32), i64> = watermarks
             .iter()
             .filter(|watermark| watermark.high > watermark.low)
@@ -530,120 +460,89 @@ impl IntraFactorModel1mPubApp {
             .collect();
         if target_offsets.is_empty() {
             bail!(
-                "Kafka warmup has no retained records: topics={:?}",
-                kafka_config.topics
+                "Kafka input has no retained records: topics={:?}",
+                config.consumer.topics
             );
         }
 
         info!(
-            "Kafka warmup starting: venue={} topics={:?} symbols={} range=[{}, {}) partitions={} tail_guard_secs={}",
+            "Kafka input catch-up starting: venue={} topics={:?} symbols={} history_start={} partitions={}",
             self.venue_slug,
-            kafka_config.topics,
+            config.consumer.topics,
             self.allowed_symbols.len(),
-            history_start_ms,
-            history_end_ms,
+            self.history_start_ms,
             target_offsets.len(),
-            config.tail_guard_secs,
         );
 
-        let deadline = Instant::now() + Duration::from_secs(config.max_wait_secs);
+        let deadline = Instant::now() + Duration::from_secs(config.catchup_timeout_secs);
         let mut reached_offsets = HashSet::new();
-        let mut aggregators: HashMap<String, LocalBaselineAggregator> = HashMap::new();
-        let mut initialized_books = HashSet::new();
-        let mut stats = KafkaWarmupStats::default();
+        let start_raw_messages = self.stats.raw_messages;
 
         while reached_offsets.len() < target_offsets.len() {
             if Instant::now() >= deadline {
                 bail!(
-                    "Kafka warmup timed out after {}s: reached_partitions={} total_partitions={}",
-                    config.max_wait_secs,
+                    "Kafka input catch-up timed out after {}s: reached_partitions={} total_partitions={}",
+                    config.catchup_timeout_secs,
                     reached_offsets.len(),
                     target_offsets.len()
                 );
             }
-            let Some(record) = consumer.poll(kafka_config.poll_timeout_ms.max(1)) else {
+            let Some(record) = self.kafka_consumer.poll(self.kafka_poll_timeout_ms) else {
                 continue;
             };
-            let record = record.context("read Kafka warmup record")?;
-            stats.kafka_records = stats.kafka_records.saturating_add(1);
+            let record = record.context("read Kafka input catch-up record")?;
             let partition_key = (record.topic.clone(), record.partition);
             if let Some(target) = target_offsets.get(&partition_key) {
                 if record.offset >= *target {
                     reached_offsets.insert(partition_key);
                 }
             }
-
-            let period = match decode_period_payload(
+            self.consume_kafka_record(
+                &record.topic,
+                record.partition,
+                record.offset,
                 &record.payload,
-                kafka_config.payload_compression,
-            ) {
-                Ok((_, _, period)) => period,
-                Err(err) => {
-                    stats.decode_errors = stats.decode_errors.saturating_add(1);
-                    warn!(
-                        "Kafka warmup PeriodMessage decode failed: venue={} topic={} partition={} offset={} err={:#}",
-                        self.venue_slug, record.topic, record.partition, record.offset, err
-                    );
-                    continue;
-                }
-            };
-            stats.decoded_periods = stats.decoded_periods.saturating_add(1);
-            self.replay_period_message(
-                &period,
-                thresholds,
-                &mut aggregators,
-                &mut initialized_books,
-                history_start_ms,
-                history_end_ms,
-                &mut stats,
             );
         }
 
-        for (symbol, aggregator) in aggregators.iter_mut() {
-            aggregator.flush_until_ms(history_end_ms);
-            for bar in aggregator.drain_sixty_second_bars() {
-                self.consume_historical_bar(symbol, bar, history_start_ms, &mut stats);
-            }
-        }
         info!(
-            "Kafka warmup completed: venue={} kafka_records={} decoded_periods={} decode_errors={} ignored_symbols={} missing_thresholds={} historical_book_initializations={} replayed_events={} sixty_second_bars={} invalid_price_bars={} incomplete_depth_bars={} historical_bars={} percentile_samples={} evaluation_errors={} state_symbols={}",
+            "Kafka input catch-up completed: venue={} kafka_records={} reached_partitions={} state_symbols={} active_books={}",
             self.venue_slug,
-            stats.kafka_records,
-            stats.decoded_periods,
-            stats.decode_errors,
-            stats.ignored_symbols,
-            stats.missing_thresholds,
-            stats.historical_book_initializations,
-            stats.replayed_events,
-            stats.sixty_second_bars,
-            stats.invalid_price_bars,
-            stats.incomplete_depth_bars,
-            stats.historical_bars,
-            stats.percentile_samples,
-            stats.evaluation_errors,
+            self.stats.raw_messages.saturating_sub(start_raw_messages),
+            reached_offsets.len(),
             self.states.len(),
+            self.aggregators.len(),
         );
         Ok(())
     }
 
-    fn replay_period_message(
-        &mut self,
-        period: &PeriodMessage,
-        thresholds: &HashMap<String, AmountThreshold>,
-        aggregators: &mut HashMap<String, LocalBaselineAggregator>,
-        initialized_books: &mut HashSet<String>,
-        history_start_ms: i64,
-        history_end_ms: i64,
-        stats: &mut KafkaWarmupStats,
-    ) {
+    fn consume_kafka_record(&mut self, topic: &str, partition: i32, offset: i64, payload: &[u8]) {
+        self.stats.raw_messages = self.stats.raw_messages.saturating_add(1);
+        let period = match decode_period_payload(payload, self.kafka_payload_compression) {
+            Ok((_, _, period)) => period,
+            Err(err) => {
+                self.stats.decode_errors = self.stats.decode_errors.saturating_add(1);
+                warn!(
+                    "intra factor 1m Kafka PeriodMessage decode failed: venue={} topic={} partition={} offset={} err={:#}",
+                    self.venue_slug, topic, partition, offset, err
+                );
+                return;
+            }
+        };
+        self.consume_period_message(&period);
+    }
+
+    fn consume_period_message(&mut self, period: &PeriodMessage) {
         for symbol_info in &period.symbol_infos {
             let symbol = normalize_symbol_for_venue(&symbol_info.symbol, self.venue);
             if !self.allowed_symbols.contains(&symbol) {
-                stats.ignored_symbols = stats.ignored_symbols.saturating_add(1);
                 continue;
             }
-            let Some(threshold) = thresholds.get(&symbol).copied() else {
-                stats.missing_thresholds = stats.missing_thresholds.saturating_add(1);
+            let Some(threshold) = self.amount_thresholds.get(&symbol).copied() else {
+                warn!(
+                    "intra factor 1m Kafka record has no amount threshold: venue={} symbol={}",
+                    self.venue_slug, symbol
+                );
                 continue;
             };
 
@@ -652,82 +551,61 @@ impl IntraFactorModel1mPubApp {
             events.extend(symbol_info.trades.iter().map(PeriodEvent::Trade));
             events.sort_unstable_by_key(|event| (event.timestamp_ms(), event.sort_order()));
 
-            let aggregator = aggregators.entry(symbol.clone()).or_default();
-            for event in events {
-                if event.timestamp_ms() >= history_end_ms {
-                    continue;
-                }
-                match event {
-                    PeriodEvent::Book(book) => {
-                        let bids: Vec<Level> = book
-                            .bids
-                            .iter()
-                            .map(|level| Level::from_values(level.price, level.amount))
-                            .collect();
-                        let asks: Vec<Level> = book
-                            .asks
-                            .iter()
-                            .map(|level| Level::from_values(level.price, level.amount))
-                            .collect();
-                        // Kafka history starts from an arbitrary delta. Its retained book is
-                        // intentionally replayed without requiring a snapshot or pruning a
-                        // possibly crossed partial book before factor warmup.
-                        let initialize_book = initialized_books.insert(symbol.clone());
-                        if initialize_book {
-                            stats.historical_book_initializations =
-                                stats.historical_book_initializations.saturating_add(1);
+            let bars = {
+                let aggregator = self.aggregators.entry(symbol.clone()).or_default();
+                for event in events {
+                    match event {
+                        PeriodEvent::Book(book) => {
+                            let bids: Vec<Level> = book
+                                .bids
+                                .iter()
+                                .map(|level| Level::from_values(level.price, level.amount))
+                                .collect();
+                            let asks: Vec<Level> = book
+                                .asks
+                                .iter()
+                                .map(|level| Level::from_values(level.price, level.amount))
+                                .collect();
+                            // Retention can start at any delta. Both historical and newly
+                            // synthesized snapshots use this partial-book-safe update path.
+                            aggregator.on_retained_incremental_book(
+                                timestamp_as_micros(book.timestamp),
+                                &bids,
+                                &asks,
+                            );
                         }
-                        aggregator.on_retained_incremental_book(
-                            timestamp_as_micros(book.timestamp),
-                            &bids,
-                            &asks,
-                        );
-                    }
-                    PeriodEvent::Trade(trade) => {
-                        let Some(is_buy) = parse_trade_side(&trade.side) else {
-                            continue;
-                        };
-                        aggregator.on_trade_with_threshold(
-                            timestamp_as_micros(trade.timestamp),
-                            is_buy,
-                            trade.price,
-                            trade.amount,
-                            threshold,
-                        );
+                        PeriodEvent::Trade(trade) => {
+                            let Some(is_buy) = parse_trade_side(&trade.side) else {
+                                continue;
+                            };
+                            aggregator.on_trade_with_threshold(
+                                timestamp_as_micros(trade.timestamp),
+                                is_buy,
+                                trade.price,
+                                trade.amount,
+                                threshold,
+                            );
+                        }
                     }
                 }
-                stats.replayed_events = stats.replayed_events.saturating_add(1);
-                for bar in aggregator.drain_sixty_second_bars() {
-                    self.consume_historical_bar(&symbol, bar, history_start_ms, stats);
-                }
+                aggregator.drain_sixty_second_bars()
+            };
+            for bar in bars {
+                self.consume_kafka_bar(&symbol, bar);
             }
         }
     }
 
-    fn consume_historical_bar(
-        &mut self,
-        symbol: &str,
-        bar: BaselineBar,
-        history_start_ms: i64,
-        stats: &mut KafkaWarmupStats,
-    ) {
-        stats.sixty_second_bars = stats.sixty_second_bars.saturating_add(1);
+    fn consume_kafka_bar(&mut self, symbol: &str, bar: BaselineBar) {
         if !historical_bar_has_valid_prices(&bar) {
-            stats.invalid_price_bars = stats.invalid_price_bars.saturating_add(1);
             return;
-        }
-        if !historical_bar_has_valid_depth(&bar) {
-            // Retained Kafka history has no complete-snapshot guarantee. Partial
-            // depth remains useful to the 1m factor baseline and must not block
-            // the one-day factor/percentile warmup.
-            stats.incomplete_depth_bars = stats.incomplete_depth_bars.saturating_add(1);
         }
         let payload = match bar.to_trade_flow_feature_payload(symbol, self.venue.to_u8()) {
             Ok(payload) => payload,
             Err(err) => {
-                stats.evaluation_errors = stats.evaluation_errors.saturating_add(1);
+                self.stats.evaluation_errors = self.stats.evaluation_errors.saturating_add(1);
                 warn!(
-                    "Kafka warmup feature encoding failed: venue={} symbol={} bar_start={} err={:#}",
+                    "Kafka trade-flow feature encoding failed: venue={} symbol={} bar_start={} err={:#}",
                     self.venue_slug, symbol, bar.start_ms, err
                 );
                 return;
@@ -736,38 +614,19 @@ impl IntraFactorModel1mPubApp {
         let msg = match TradeFlowFeatureMsg::from_bytes(payload.as_ref()) {
             Ok(msg) => msg,
             Err(err) => {
-                stats.evaluation_errors = stats.evaluation_errors.saturating_add(1);
+                self.stats.evaluation_errors = self.stats.evaluation_errors.saturating_add(1);
                 warn!(
-                    "Kafka warmup feature decode failed: venue={} symbol={} bar_start={} err={:#}",
+                    "Kafka trade-flow feature decode failed: venue={} symbol={} bar_start={} err={:#}",
                     self.venue_slug, symbol, bar.start_ms, err
                 );
                 return;
             }
         };
-        let record_percentile = bar.start_ms >= history_start_ms;
-        let state = self
-            .states
-            .entry(symbol.to_string())
-            .or_insert_with(|| SymbolState::new(self.window_size));
-        match state.evaluate(msg, &self.plan, self.min_samples, record_percentile) {
-            Ok(Some(observations)) => {
-                stats.historical_bars = stats.historical_bars.saturating_add(1);
-                stats.percentile_samples = stats.percentile_samples.saturating_add(
-                    observations
-                        .iter()
-                        .filter(|observation| observation.score_quantile.is_some())
-                        .count() as u64,
-                );
-            }
-            Ok(None) => {}
-            Err(err) => {
-                stats.evaluation_errors = stats.evaluation_errors.saturating_add(1);
-                warn!(
-                    "Kafka warmup factor evaluation failed: venue={} symbol={} bar_start={} err={:#}",
-                    self.venue_slug, symbol, bar.start_ms, err
-                );
-            }
-        }
+        self.on_trade_flow(
+            symbol.to_string(),
+            msg,
+            bar.start_ms >= self.history_start_ms,
+        );
     }
 
     fn maybe_log_stats(&mut self) {
@@ -799,10 +658,6 @@ fn timestamp_as_micros(timestamp: i64) -> i64 {
     }
 }
 
-fn align_to_minute(timestamp_ms: i64) -> i64 {
-    timestamp_ms - timestamp_ms.rem_euclid(ONE_MINUTE_MS)
-}
-
 fn parse_trade_side(side: &str) -> Option<bool> {
     match side.trim().to_ascii_lowercase().as_str() {
         "b" | "buy" => Some(true),
@@ -823,12 +678,6 @@ fn historical_bar_has_valid_prices(bar: &BaselineBar) -> bool {
     ]
     .iter()
     .all(|value| value.is_finite() && *value > 0.0)
-}
-
-fn historical_bar_has_valid_depth(bar: &BaselineBar) -> bool {
-    [bar.depth20.bids[0].0, bar.depth20.asks[0].0]
-        .iter()
-        .all(|value| value.is_finite() && *value > 0.0)
 }
 
 async fn load_enabled_symbols(
@@ -870,47 +719,6 @@ fn plan_has_required_factors(plan: &SymbolFactorPlan) -> bool {
         && INTRA_FACTOR_NAMES
             .iter()
             .all(|required| names.contains(required))
-}
-
-fn create_trade_flow_subscriber(
-    venue_slug: &str,
-) -> Result<Subscriber<ipc::Service, [u8; TRADE_FLOW_FEATURE_MAX_BYTES], ()>> {
-    let node_name = format!(
-        "intra_factor_model_1m_sub_{}",
-        sanitize_node_component(venue_slug)
-    );
-    let node = NodeBuilder::new()
-        .name(&NodeName::new(&node_name)?)
-        .create::<ipc::Service>()?;
-    let service_name = format!("factor_pub/{}/trade_flow_feature_1m", venue_slug);
-    let service = node
-        .service_builder(&ServiceName::new(&service_name)?)
-        .publish_subscribe::<[u8; TRADE_FLOW_FEATURE_MAX_BYTES]>()
-        .max_publishers(1)
-        .max_subscribers(TRADE_FLOW_MAX_SUBSCRIBERS)
-        .subscriber_max_buffer_size(TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE)
-        .history_size(TRADE_FLOW_FEATURE_HISTORY_SIZE)
-        .open_or_create()?;
-    let service_max_buffer = service.static_config().subscriber_max_buffer_size();
-    if service_max_buffer < TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE {
-        bail!(
-            "trade-flow service buffer is too small: service={} actual={} required_min={}",
-            service_name,
-            service_max_buffer,
-            TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE
-        );
-    }
-    let subscriber = service
-        .subscriber_builder()
-        .buffer_size(TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE)
-        .create()?;
-    info!(
-        "IntraFactorModel1mPubApp subscribed: service={} buffer={} history={}",
-        service_name,
-        TRADE_FLOW_SUBSCRIBER_BUFFER_SIZE,
-        service.static_config().history_size(),
-    );
-    Ok(subscriber)
 }
 
 pub fn output_service_path(venue_slug: &str, factor_name: &str) -> String {
@@ -960,9 +768,8 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        align_to_minute, output_service_path, parse_trade_side, plan_has_required_factors,
-        select_enabled_symbols, timestamp_as_micros, FactorObservation, SymbolState,
-        INTRA_FACTOR_NAMES,
+        output_service_path, parse_trade_side, plan_has_required_factors, select_enabled_symbols,
+        timestamp_as_micros, FactorObservation, SymbolState, INTRA_FACTOR_NAMES,
     };
     use crate::factor_pub::fusion_factor_pub::SymbolFactorPlan;
     use mkt_parsers::msg::trade_flow_feature_msg::TradeFlowFeatureMsg;
@@ -1045,14 +852,13 @@ mod tests {
             timestamp_as_micros(1_704_067_200_123_456),
             1_704_067_200_123_456
         );
-        assert_eq!(align_to_minute(123_456), 120_000);
         assert_eq!(parse_trade_side("BUY"), Some(true));
         assert_eq!(parse_trade_side("s"), Some(false));
         assert_eq!(parse_trade_side("unknown"), None);
     }
 
     #[test]
-    fn ignores_overlapping_live_bar_after_historical_warmup() {
+    fn ignores_replayed_kafka_bar_with_same_timestamp() {
         let plan = SymbolFactorPlan::from_factor_names(
             "BTCUSDT",
             INTRA_FACTOR_NAMES

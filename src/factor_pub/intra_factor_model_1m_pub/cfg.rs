@@ -14,7 +14,7 @@ pub struct IntraFactorModelPubConfig {
     #[serde(default)]
     pub percentile: PercentileConfig,
     #[serde(default)]
-    pub warmup: KafkaWarmupConfig,
+    pub kafka: KafkaInputConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -36,26 +36,21 @@ impl Default for PercentileConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct KafkaWarmupConfig {
-    /// A failed Kafka replay keeps the publisher available but leaves score_ready false
-    /// until the live feed has accumulated enough valid bars.
-    pub enabled: bool,
-    pub required: bool,
+pub struct KafkaInputConfig {
+    /// Retained history used to seed factor state and rolling percentiles at startup.
     pub lookback_secs: u64,
-    pub tail_guard_secs: u64,
-    pub max_wait_secs: u64,
-    pub kafka: KafkaConsumerConfig,
+    /// Maximum time to reach the Kafka high watermark captured at startup.
+    pub catchup_timeout_secs: u64,
+    #[serde(flatten)]
+    pub consumer: KafkaConsumerConfig,
 }
 
-impl Default for KafkaWarmupConfig {
+impl Default for KafkaInputConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            required: false,
             lookback_secs: 2 * 24 * 60 * 60,
-            tail_guard_secs: 90,
-            max_wait_secs: 300,
-            kafka: KafkaConsumerConfig::default(),
+            catchup_timeout_secs: 300,
+            consumer: KafkaConsumerConfig::default(),
         }
     }
 }
@@ -91,15 +86,13 @@ impl IntraFactorModelPubConfig {
                 self.percentile.window_size
             );
         }
-        if self.warmup.enabled {
-            if self.warmup.lookback_secs == 0 {
-                anyhow::bail!("warmup.lookback_secs must be > 0 when warmup is enabled");
-            }
-            if self.warmup.max_wait_secs == 0 {
-                anyhow::bail!("warmup.max_wait_secs must be > 0 when warmup is enabled");
-            }
-            self.warmup.kafka.validate()?;
+        if self.kafka.lookback_secs == 0 {
+            anyhow::bail!("kafka.lookback_secs must be > 0");
         }
+        if self.kafka.catchup_timeout_secs == 0 {
+            anyhow::bail!("kafka.catchup_timeout_secs must be > 0");
+        }
+        self.kafka.consumer.validate()?;
         Ok(())
     }
 }
@@ -128,29 +121,26 @@ mod tests {
 
         assert_eq!(config.percentile.window_size, DEFAULT_WINDOW_SIZE);
         assert_eq!(config.percentile.min_samples, DEFAULT_MIN_SAMPLES);
-        assert!(!config.warmup.enabled);
+        assert_eq!(config.kafka.lookback_secs, 2 * 24 * 60 * 60);
     }
 
     #[test]
-    fn parses_enabled_kafka_warmup() {
+    fn parses_kafka_input() {
         let config: IntraFactorModelPubConfig = toml::from_str(
             r#"
                 [tlen_server]
                 base_url = "http://tlen.example"
 
-                [warmup]
-                enabled = true
+                [kafka]
                 lookback_secs = 60
-                max_wait_secs = 10
-
-                [warmup.kafka]
+                catchup_timeout_secs = 10
                 topics = ["binance-futures"]
             "#,
         )
         .expect("parse config");
 
         config.validate().expect("validate config");
-        assert!(config.warmup.enabled);
-        assert_eq!(config.warmup.kafka.topics, ["binance-futures"]);
+        assert_eq!(config.kafka.lookback_secs, 60);
+        assert_eq!(config.kafka.consumer.topics, ["binance-futures"]);
     }
 }
