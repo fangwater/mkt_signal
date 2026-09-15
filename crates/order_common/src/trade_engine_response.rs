@@ -15,6 +15,7 @@ pub const HYPERLIQUID_TRADE_RESPONSE_ACCOUNT_HASH_END: usize =
 pub enum TradeRequestKind {
     Open,
     Cancel,
+    Modify,
     Other,
 }
 
@@ -100,6 +101,12 @@ pub trait TradeEngineResponse {
                 | TradeRequestType::HyperliquidCancelMarginOrder
                 | TradeRequestType::HyperliquidCancelUMOrder,
             ) => TradeRequestKind::Cancel,
+            Ok(
+                TradeRequestType::BinanceModifyUMOrder
+                | TradeRequestType::BinanceStdModifyUMOrder
+                | TradeRequestType::BinanceStdBatchModifyUMOrders
+                | TradeRequestType::BinanceWsModifyUMOrder,
+            ) => TradeRequestKind::Modify,
             _ => TradeRequestKind::Other,
         }
     }
@@ -112,6 +119,10 @@ pub trait TradeEngineResponse {
         self.request_kind() == TradeRequestKind::Cancel
     }
 
+    fn is_modify_request(&self) -> bool {
+        self.request_kind() == TradeRequestKind::Modify
+    }
+
     fn is_open_rejected(&self) -> bool {
         self.is_open_request() && !self.is_request_success()
     }
@@ -122,7 +133,7 @@ pub trait TradeEngineResponse {
         matches!(self.exchange_enum(), Some(Exchange::Hyperliquid))
             && matches!(
                 self.request_kind(),
-                TradeRequestKind::Open | TradeRequestKind::Cancel
+                TradeRequestKind::Open | TradeRequestKind::Cancel | TradeRequestKind::Modify
             )
             && self.error_code() == hyperliquid::ACTION_AMBIGUOUS
     }
@@ -131,7 +142,7 @@ pub trait TradeEngineResponse {
         self.is_hyperliquid_action_ambiguous()
             || (matches!(
                 self.request_kind(),
-                TradeRequestKind::Open | TradeRequestKind::Cancel
+                TradeRequestKind::Open | TradeRequestKind::Cancel | TradeRequestKind::Modify
             ) && self.error_code() == crate::trade_error_code::ACTION_RESULT_UNKNOWN)
     }
 
@@ -368,6 +379,27 @@ mod tests {
         let http_err = TradeEngineResponseMessage::new(400, 1, 1, 123, -2011);
         assert!(!http_err.is_http_ok());
         assert!(!http_err.is_request_success());
+    }
+
+    #[test]
+    fn classifies_all_binance_modify_transports() {
+        for req_type in [
+            TradeRequestType::BinanceModifyUMOrder,
+            TradeRequestType::BinanceStdModifyUMOrder,
+            TradeRequestType::BinanceStdBatchModifyUMOrders,
+            TradeRequestType::BinanceWsModifyUMOrder,
+        ] {
+            let response = TradeEngineResponseMessage::new(
+                200,
+                req_type as u32,
+                symbol_utils::Exchange::Binance as u32,
+                42,
+                0,
+            );
+            assert!(response.is_modify_request());
+            assert!(!response.is_open_request());
+            assert!(!response.is_cancel_request());
+        }
     }
 
     #[test]

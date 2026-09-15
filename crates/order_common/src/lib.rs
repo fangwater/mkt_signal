@@ -158,7 +158,7 @@ impl ExecutionType {
         match s.to_uppercase().as_str() {
             "NEW" => Some(ExecutionType::New),
             "CANCELED" | "CANCELLED" => Some(ExecutionType::Canceled),
-            "REPLACED" => Some(ExecutionType::Replaced),
+            "REPLACED" | "AMENDMENT" => Some(ExecutionType::Replaced),
             "REJECTED" => Some(ExecutionType::Rejected),
             "TRADE" => Some(ExecutionType::Trade),
             "EXPIRED" => Some(ExecutionType::Expired),
@@ -638,12 +638,16 @@ impl OrderManager {
 
     pub fn should_skip_idempotent_order_update(
         order: &Order,
+        incoming_execution_type: ExecutionType,
         incoming_status: OrderStatus,
         incoming_order_id: i64,
         incoming_cum_qty: f64,
         log_owner: &str,
         strategy_id: i32,
     ) -> Option<OrderUpdateSkipReason> {
+        if incoming_execution_type == ExecutionType::Replaced {
+            return None;
+        }
         let incoming_exec_status = Self::map_update_status(incoming_status)?;
 
         if order.status == incoming_exec_status {
@@ -1423,6 +1427,22 @@ impl Order {
         self.bitget_spot_order = enabled;
     }
 
+    pub fn apply_replacement_fields(&mut self, update: &dyn OrderUpdate) {
+        if update.execution_type() != ExecutionType::Replaced {
+            return;
+        }
+        let price = update.price();
+        if price.is_finite() && price > 0.0 {
+            self.price = price;
+            self.price_qv = None;
+        }
+        let quantity = update.quantity();
+        if quantity.is_finite() && quantity > 0.0 {
+            self.quantity = quantity;
+            self.quantity_qv = None;
+        }
+    }
+
     /// 更新订单状态
     pub fn update_status(&mut self, status: OrderExecutionStatus) {
         // 增加订单状态检查
@@ -1574,6 +1594,39 @@ mod tests {
         let order = manager.get(client_order_id).expect("order exists");
         assert_eq!(order.timestamp.create_t, 1_000);
         assert_eq!(order.timestamp.submit_t, 3_000);
+    }
+
+    #[test]
+    fn replacement_is_not_dropped_as_duplicate_new_status() {
+        let mut manager = OrderManager::new(None);
+        insert_test_order(&mut manager, 42);
+        manager.update(42, |order| order.status = OrderExecutionStatus::Create);
+        let order = manager.get(42).unwrap();
+
+        assert_eq!(
+            OrderManager::should_skip_idempotent_order_update(
+                &order,
+                ExecutionType::New,
+                OrderStatus::New,
+                100,
+                0.0,
+                "test",
+                1,
+            ),
+            Some(OrderUpdateSkipReason::DuplicateStatus)
+        );
+        assert_eq!(
+            OrderManager::should_skip_idempotent_order_update(
+                &order,
+                ExecutionType::Replaced,
+                OrderStatus::New,
+                100,
+                0.0,
+                "test",
+                1,
+            ),
+            None
+        );
     }
 
     #[test]

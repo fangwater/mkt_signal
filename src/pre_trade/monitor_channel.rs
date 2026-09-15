@@ -7709,7 +7709,7 @@ where
     let matched = strategy.is_strategy_order(order_id);
     if matched {
         match normalized_update.execution_type() {
-            ExecutionType::New | ExecutionType::Canceled => {
+            ExecutionType::New | ExecutionType::Canceled | ExecutionType::Replaced => {
                 strategy.apply_order_update(normalized_update);
             }
             ExecutionType::Trade => {
@@ -7724,15 +7724,6 @@ where
                     OrderUpdate::order_id(normalized_update)
                 );
                 strategy.apply_order_update(normalized_update);
-            }
-            _ => {
-                log::error!(
-                    "Unhandled execution type: {:?}, sym={} cli_id={} ord_id={}",
-                    normalized_update.execution_type(),
-                    OrderUpdate::symbol(normalized_update),
-                    OrderUpdate::client_order_id(normalized_update),
-                    OrderUpdate::order_id(normalized_update)
-                );
             }
         }
     }

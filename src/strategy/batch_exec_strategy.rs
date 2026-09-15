@@ -2322,6 +2322,7 @@ impl BatchExecStrategy {
         };
         if OrderManager::should_skip_idempotent_order_update(
             &current,
+            update.execution_type(),
             update.status(),
             update.order_id(),
             update.cumulative_filled_quantity(),
@@ -2338,6 +2339,7 @@ impl BatchExecStrategy {
             .effective_cum;
         let status = update.status();
         let changed = manager.apply_remote_update(client_order_id, |order| {
+            order.apply_replacement_fields(update);
             order.set_exchange_order_id(update.order_id());
             order.cumulative_filled_quantity = effective_fill;
             match status {

@@ -228,6 +228,7 @@ fn format_ws_error(err: &WsError) -> String {
 }
 
 const DEFAULT_TRADE_ENGINE_TCP_USER_TIMEOUT_MS: u32 = 30_000;
+const DEFAULT_BINANCE_MODIFY_ACK_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_HYPERLIQUID_POST_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_HYPERLIQUID_NEW_ORDER_QUEUE_TTL_US: i64 = 2_000_000;
 
@@ -1444,6 +1445,7 @@ impl TradeWsClient {
                             }
                             self.fail_hyperliquid_trades_after_disconnect();
                             self.fail_hyperliquid_queries_after_disconnect();
+                            self.fail_binance_modifies_after_disconnect();
                             if self.use_ltp_backend {
                                 for meta in Self::drain_trade_inflight(&mut self.inflight) {
                                     self.publish_ltp_ambiguous(&meta, "connection lost before action acknowledgement");
@@ -1529,12 +1531,13 @@ impl TradeWsClient {
         let mut tcp_health_interval = time::interval(Duration::from_millis(tcp_health_sample_ms));
         tcp_health_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         tcp_health_interval.tick().await;
-        let hyperliquid_post_timeout_poll = self
+        let action_timeout_poll = self
             .hyperliquid_post_timeout
+            .min(Duration::from_millis(DEFAULT_BINANCE_MODIFY_ACK_TIMEOUT_MS))
             .min(Duration::from_millis(1_000));
-        let mut hyperliquid_post_timeout_interval = time::interval(hyperliquid_post_timeout_poll);
-        hyperliquid_post_timeout_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        hyperliquid_post_timeout_interval.tick().await;
+        let mut action_timeout_interval = time::interval(action_timeout_poll);
+        action_timeout_interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        action_timeout_interval.tick().await;
         let mut planned_reconnect_deadline = self.next_planned_reconnect_deadline();
         self.flush_pending(ws).await?;
         loop {
@@ -1548,13 +1551,15 @@ impl TradeWsClient {
                     let _ = ws.close(None).await;
                     return Ok(());
                 }
-                _ = hyperliquid_post_timeout_interval.tick(), if self.exchange == Exchange::Hyperliquid || self.use_ltp_backend => {
+                _ = action_timeout_interval.tick(), if self.exchange == Exchange::Hyperliquid || self.exchange == Exchange::Binance || self.use_ltp_backend => {
                     if self.use_ltp_backend {
                         for meta in Self::take_expired_trade_inflight(&mut self.inflight, Instant::now(), Duration::from_secs(10)) {
                             self.publish_ltp_ambiguous(&meta, "action acknowledgement timed out");
                         }
-                    } else {
+                    } else if self.exchange == Exchange::Hyperliquid {
                         self.expire_hyperliquid_posts(Instant::now());
+                    } else {
+                        self.expire_binance_modifies(Instant::now());
                     }
                 }
                 cmd = self.next_command() => {
@@ -2083,6 +2088,7 @@ impl TradeWsClient {
             }
             TradeRequestType::BinanceWsCancelUMOrder
             | TradeRequestType::BinanceWsCancelMarginOrder => "cancel_order",
+            TradeRequestType::BinanceWsModifyUMOrder => "modify_order",
             _ => "trade_request",
         }
     }
@@ -2697,6 +2703,40 @@ impl TradeWsClient {
             .collect()
     }
 
+    fn take_expired_binance_modify_inflight(
+        inflight: &mut FastHashMap<i64, TradeInflightMeta>,
+        now: Instant,
+        timeout: Duration,
+    ) -> Vec<TradeInflightMeta> {
+        let expired_ids: Vec<_> = inflight
+            .iter()
+            .filter_map(|(transport_id, meta)| {
+                (meta.req_type == TradeRequestType::BinanceWsModifyUMOrder
+                    && now.saturating_duration_since(meta.sent_at) >= timeout)
+                    .then_some(*transport_id)
+            })
+            .collect();
+        expired_ids
+            .into_iter()
+            .filter_map(|transport_id| inflight.remove(&transport_id))
+            .collect()
+    }
+
+    fn take_all_binance_modify_inflight(
+        inflight: &mut FastHashMap<i64, TradeInflightMeta>,
+    ) -> Vec<TradeInflightMeta> {
+        let transport_ids: Vec<_> = inflight
+            .iter()
+            .filter_map(|(transport_id, meta)| {
+                (meta.req_type == TradeRequestType::BinanceWsModifyUMOrder).then_some(*transport_id)
+            })
+            .collect();
+        transport_ids
+            .into_iter()
+            .filter_map(|transport_id| inflight.remove(&transport_id))
+            .collect()
+    }
+
     fn hyperliquid_action_tail(
         req_type: TradeRequestType,
         resp: &hyperliquid_ws::HyperliquidActionOutcome,
@@ -2886,6 +2926,91 @@ impl TradeWsClient {
             self.publish_hyperliquid_ambiguous(
                 &meta,
                 "Hyperliquid WS disconnected after action send; orderStatus query required",
+            );
+        }
+    }
+
+    fn binance_modify_ambiguous_outcome(
+        exchange: Exchange,
+        endpoint_id: usize,
+        local_ip: IpAddr,
+        meta: &TradeInflightMeta,
+        reason: &str,
+    ) -> TradeExecOutcome {
+        TradeExecOutcome {
+            req_type: meta.req_type,
+            client_order_id: meta.client_order_id,
+            status: 503,
+            body: json!({
+                "transport": "ws",
+                "exchange": "binance",
+                "state": "ambiguous",
+                "requiresQuery": true,
+                "code": order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+                "msg": reason,
+                "endpointId": endpoint_id,
+                "localIp": local_ip.to_string(),
+            })
+            .to_string(),
+            exchange,
+            order_id: 0,
+            order_status_u8: 0,
+            order_update_time: 0,
+            executed_qty: 0.0,
+            response_price: 0.0,
+        }
+    }
+
+    fn publish_binance_modify_ambiguous(&self, meta: &TradeInflightMeta, reason: &str) {
+        let _ = self.resp_sink.send(Self::binance_modify_ambiguous_outcome(
+            self.exchange,
+            self.id,
+            self.local_ip,
+            meta,
+            reason,
+        ));
+    }
+
+    fn expire_binance_modifies(&mut self, now: Instant) {
+        let expired = Self::take_expired_binance_modify_inflight(
+            &mut self.inflight,
+            now,
+            Duration::from_millis(DEFAULT_BINANCE_MODIFY_ACK_TIMEOUT_MS),
+        );
+        if expired.is_empty() {
+            return;
+        }
+        warn!(
+            "trade ws client id={} marking {} Binance modify actions ambiguous after ACK timeout",
+            self.id,
+            expired.len()
+        );
+        for meta in expired {
+            self.publish_binance_modify_ambiguous(
+                &meta,
+                "Binance order.modify acknowledgement timed out; order query required",
+            );
+        }
+        self.update_health_queue_depths();
+    }
+
+    fn fail_binance_modifies_after_disconnect(&mut self) {
+        if self.exchange != Exchange::Binance || self.inflight.is_empty() {
+            return;
+        }
+        let failed = Self::take_all_binance_modify_inflight(&mut self.inflight);
+        if failed.is_empty() {
+            return;
+        }
+        warn!(
+            "trade ws client id={} marking {} Binance modify actions ambiguous after disconnect",
+            self.id,
+            failed.len()
+        );
+        for meta in failed {
+            self.publish_binance_modify_ambiguous(
+                &meta,
+                "Binance WS disconnected after order.modify send; order query required",
             );
         }
     }
@@ -4735,6 +4860,56 @@ mod tests {
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn binance_modify_timeout_is_ambiguous_and_does_not_drain_other_actions() {
+        let now = Instant::now();
+        let mut inflight = fast_hash_map();
+        inflight.insert(
+            7,
+            TradeInflightMeta {
+                req_type: TradeRequestType::BinanceWsModifyUMOrder,
+                client_order_id: 42,
+                ws_open_update_enabled: false,
+                sent_at: now - Duration::from_secs(11),
+            },
+        );
+        inflight.insert(
+            8,
+            TradeInflightMeta {
+                req_type: TradeRequestType::BinanceWsNewUMOrder,
+                client_order_id: 43,
+                ws_open_update_enabled: true,
+                sent_at: now - Duration::from_secs(11),
+            },
+        );
+
+        let expired = TradeWsClient::take_expired_binance_modify_inflight(
+            &mut inflight,
+            now,
+            Duration::from_secs(10),
+        );
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].client_order_id, 42);
+        assert!(inflight.contains_key(&8));
+
+        let outcome = TradeWsClient::binance_modify_ambiguous_outcome(
+            Exchange::Binance,
+            3,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &expired[0],
+            "timeout",
+        );
+        let body: Value = serde_json::from_str(&outcome.body).unwrap();
+        assert_eq!(outcome.req_type, TradeRequestType::BinanceWsModifyUMOrder);
+        assert_eq!(outcome.client_order_id, 42);
+        assert_eq!(outcome.status, 503);
+        assert_eq!(
+            body["code"],
+            order_common::trade_error_code::ACTION_RESULT_UNKNOWN
+        );
+        assert_eq!(body["requiresQuery"], true);
     }
 
     #[test]

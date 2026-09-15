@@ -58,6 +58,7 @@ pub fn ambiguous_action_query_reason(
     match response.request_kind() {
         TradeRequestKind::Open => Some(PendingOrderQueryReason::OrderWatchdog),
         TradeRequestKind::Cancel => Some(cancel_reason),
+        TradeRequestKind::Modify => Some(PendingOrderQueryReason::OrderWatchdog),
         TradeRequestKind::Other => None,
     }
 }
@@ -158,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn rapidx_ambiguous_actions_use_the_same_reconciliation_path() {
+    fn action_result_unknown_uses_request_specific_reconciliation_path() {
         for (exchange, request, expected) in [
             (
                 symbol_utils::Exchange::Binance,
@@ -169,6 +170,11 @@ mod tests {
                 symbol_utils::Exchange::Okex,
                 TradeRequestType::OkexCancelUMOrder,
                 PendingOrderQueryReason::CancelFailed,
+            ),
+            (
+                symbol_utils::Exchange::Binance,
+                TradeRequestType::BinanceWsModifyUMOrder,
+                PendingOrderQueryReason::OrderWatchdog,
             ),
         ] {
             let response = TradeEngineResponseMessage::new(

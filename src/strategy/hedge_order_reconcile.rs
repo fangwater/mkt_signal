@@ -157,6 +157,9 @@ pub trait HedgeOrderReconcileCommon: Strategy {
             TradeRequestKind::Cancel => {
                 self.handle_hedge_cancel_failed(response, code_desc, client_order_id)
             }
+            TradeRequestKind::Modify => {
+                self.handle_hedge_other_failed(response, code_desc, client_order_id)
+            }
             TradeRequestKind::Other => {
                 self.handle_hedge_other_failed(response, code_desc, client_order_id)
             }

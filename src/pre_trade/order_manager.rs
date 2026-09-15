@@ -27,9 +27,9 @@ use trade_engine::okex::{
     OkexOrderType,
 };
 use trade_engine::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, BitgetCancelOrderParams, BitgetNewOrderParams,
-    GateCancelOrderParams, GateNewOrderParams, HyperliquidCancelOrderParams,
-    HyperliquidNewOrderParams, PreparedTradeRequest,
+    BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams,
+    BitgetCancelOrderParams, BitgetNewOrderParams, GateCancelOrderParams, GateNewOrderParams,
+    HyperliquidCancelOrderParams, HyperliquidNewOrderParams, PreparedTradeRequest,
 };
 use trade_signal::MktChannel;
 
@@ -726,6 +726,8 @@ impl PreTradeOrderManagerRequestExt for OrderManager {
 
 pub trait PreTradeOrderRequestExt {
     fn get_order_cancel_bytes(&self) -> Result<Bytes, String>;
+    fn get_order_modify_bytes(&self, price_qv: QuantizedValue) -> Result<Bytes, String>;
+    fn get_order_modify_to_best_price_bytes(&self) -> Result<Bytes, String>;
     fn get_order_request_bytes(&self) -> Result<Bytes, String>;
     fn get_order_request_prepared(&self) -> Result<PreparedTradeRequest, String>;
 }
@@ -910,6 +912,67 @@ impl PreTradeOrderRequestExt for Order {
             }
             _ => Err(format!("Unsupported trading venue: {:?}", self.venue)),
         }
+    }
+
+    fn get_order_modify_bytes(&self, price_qv: QuantizedValue) -> Result<Bytes, String> {
+        if self.venue != TradingVenue::BinanceFutures || !self.order_type.is_limit() {
+            return Err(format!(
+                "Binance UM modify requires a BinanceFutures limit order: venue={:?} order_type={:?}",
+                self.venue, self.order_type
+            ));
+        }
+        let quantity_qv = ResolvedOrderQuantities::from_order(self)
+            .require_quantity_qv(self, "binance modify")?;
+        let req_type = match self.require_binance_account_mode() {
+            BinanceAccountMode::Standard => {
+                trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
+            }
+            BinanceAccountMode::Unified => {
+                trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
+            }
+        };
+        BinanceModifyOrderParams::with_price(
+            &self.symbol,
+            self.side,
+            quantity_qv,
+            price_qv,
+            self.exchange_order_id.unwrap_or(0),
+            self.client_order_id,
+            None,
+        )
+        .request_bytes(req_type, get_timestamp_us(), self.client_order_id)
+        .ok_or_else(|| "failed to build Binance UM modify request".to_string())
+    }
+
+    fn get_order_modify_to_best_price_bytes(&self) -> Result<Bytes, String> {
+        if self.venue != TradingVenue::BinanceFutures || !self.order_type.is_limit() {
+            return Err(format!(
+                "Binance UM best-price modify requires a BinanceFutures limit order: venue={:?} order_type={:?}",
+                self.venue, self.order_type
+            ));
+        }
+        let quantity_qv = ResolvedOrderQuantities::from_order(self)
+            .require_quantity_qv(self, "binance best-price modify")?;
+        let req_type = match self.require_binance_account_mode() {
+            BinanceAccountMode::Standard => {
+                trade_engine::trade_request::TradeRequestType::BinanceWsModifyUMOrder
+            }
+            BinanceAccountMode::Unified => {
+                trade_engine::trade_request::TradeRequestType::BinanceModifyUMOrder
+            }
+        };
+        BinanceModifyOrderParams::best_price_request_bytes_from_parts(
+            req_type,
+            get_timestamp_us(),
+            self.client_order_id,
+            &self.symbol,
+            self.side,
+            quantity_qv,
+            self.exchange_order_id.unwrap_or(0),
+            self.client_order_id,
+            None,
+        )
+        .ok_or_else(|| "failed to build Binance UM best-price modify request".to_string())
     }
 
     fn get_order_request_bytes(&self) -> Result<Bytes, String> {
@@ -1582,8 +1645,11 @@ mod tests {
     use order_common::{BinanceAccountMode, TradingVenue};
     use runtime_common::execution_backend::{ExecBackend, RapidXCashBusinessType};
     use serde_json::Value;
+    use signal_common::tick_math::QuantizedValue;
     use symbol_utils::symbol_util::extract_assets_from_internal_symbol;
-    use trade_engine::trade_request::{TradeRequestMsg, TradeRequestType};
+    use trade_engine::trade_request::{
+        BinanceModifyOrderParams, BinancePriceMatch, TradeRequestMsg, TradeRequestType,
+    };
     use trade_engine::{bitget_ws, gate_ws};
 
     fn extract_request_json(bytes: &[u8]) -> Value {
@@ -1668,6 +1734,68 @@ mod tests {
     fn binance_standard_or_reduce_only_margin_open_omits_margin_buy() {
         assert!(!binance_margin_should_use_margin_buy(false, false));
         assert!(!binance_margin_should_use_margin_buy(true, true));
+    }
+
+    #[test]
+    fn binance_best_price_modify_uses_queue_and_account_mode_transport() {
+        for (account_mode, expected_type) in [
+            (
+                BinanceAccountMode::Standard,
+                TradeRequestType::BinanceWsModifyUMOrder,
+            ),
+            (
+                BinanceAccountMode::Unified,
+                TradeRequestType::BinanceModifyUMOrder,
+            ),
+        ] {
+            let mut order = Order::new(
+                TradingVenue::BinanceFutures,
+                42,
+                OrderType::Limit,
+                "BTCUSDT".to_string(),
+                Side::Buy,
+                0.25,
+                65000.0,
+                false,
+                1.0,
+                Some(account_mode),
+                true,
+            );
+            order.set_exchange_order_id(9988);
+            let bytes = order.get_order_modify_to_best_price_bytes().unwrap();
+            let request = TradeRequestMsg::parse(&bytes).unwrap();
+            let params = BinanceModifyOrderParams::from_bytes(&request.params).unwrap();
+
+            assert_eq!(request.req_type, expected_type);
+            assert_eq!(params.price_match, BinancePriceMatch::Queue);
+            assert!(params.price_qv.is_zero());
+            assert_eq!(params.order_id, 9988);
+            assert_eq!(params.orig_client_order_id, 42);
+        }
+    }
+
+    #[test]
+    fn binance_explicit_modify_uses_supplied_quantized_price() {
+        let order = Order::new(
+            TradingVenue::BinanceFutures,
+            42,
+            OrderType::Limit,
+            "BTCUSDT".to_string(),
+            Side::Sell,
+            0.25,
+            65000.0,
+            false,
+            1.0,
+            Some(BinanceAccountMode::Standard),
+            true,
+        );
+        let price_qv = QuantizedValue::from_decimal(65001.5).unwrap();
+        let bytes = order.get_order_modify_bytes(price_qv).unwrap();
+        let request = TradeRequestMsg::parse(&bytes).unwrap();
+        let params = BinanceModifyOrderParams::from_bytes(&request.params).unwrap();
+
+        assert_eq!(params.price_match, BinancePriceMatch::None);
+        assert_eq!(params.price_qv, price_qv);
     }
 
     #[test]

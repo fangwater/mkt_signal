@@ -2468,6 +2468,7 @@ impl ArbHedgeStrategy {
         };
         if OrderManager::should_skip_idempotent_order_update(
             &current_order,
+            order_update.execution_type(),
             order_update.status(),
             order_update.order_id(),
             order_update.cumulative_filled_quantity(),
@@ -2483,36 +2484,39 @@ impl ArbHedgeStrategy {
         let protected_cumulative_fill =
             current_order.protected_cumulative_fill(order_update.cumulative_filled_quantity());
         let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
-        let updated = order_manager.apply_remote_update(client_order_id, |order| match status {
-            OrderStatus::New => {
-                order.status = OrderExecutionStatus::Create;
-                order.set_exchange_order_id(order_update.order_id());
-                if order.timestamp.create_t == 0 {
-                    order.set_create_time(order_update.event_time());
+        let updated = order_manager.apply_remote_update(client_order_id, |order| {
+            order.apply_replacement_fields(order_update);
+            match status {
+                OrderStatus::New => {
+                    order.status = OrderExecutionStatus::Create;
+                    order.set_exchange_order_id(order_update.order_id());
+                    if order.timestamp.create_t == 0 {
+                        order.set_create_time(order_update.event_time());
+                    }
                 }
-            }
-            OrderStatus::Canceled => {
-                order.status = OrderExecutionStatus::Cancelled;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_end_time(order_update.event_time());
-            }
-            OrderStatus::Filled => {
-                order.status = OrderExecutionStatus::Filled;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_end_time(order_update.event_time());
-            }
-            OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
-                order.status = OrderExecutionStatus::Rejected;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
-                order.set_end_time(order_update.event_time());
-            }
-            OrderStatus::PartiallyFilled => {
-                order.status = OrderExecutionStatus::Create;
-                order.set_exchange_order_id(order_update.order_id());
-                order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                OrderStatus::Canceled => {
+                    order.status = OrderExecutionStatus::Cancelled;
+                    order.set_exchange_order_id(order_update.order_id());
+                    order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                    order.set_end_time(order_update.event_time());
+                }
+                OrderStatus::Filled => {
+                    order.status = OrderExecutionStatus::Filled;
+                    order.set_exchange_order_id(order_update.order_id());
+                    order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                    order.set_end_time(order_update.event_time());
+                }
+                OrderStatus::Expired | OrderStatus::ExpiredInMatch => {
+                    order.status = OrderExecutionStatus::Rejected;
+                    order.set_exchange_order_id(order_update.order_id());
+                    order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                    order.set_end_time(order_update.event_time());
+                }
+                OrderStatus::PartiallyFilled => {
+                    order.status = OrderExecutionStatus::Create;
+                    order.set_exchange_order_id(order_update.order_id());
+                    order.cumulative_filled_quantity = effective_cumulative_filled_qty;
+                }
             }
         });
         drop(order_manager);

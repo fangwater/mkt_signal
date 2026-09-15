@@ -367,7 +367,9 @@ impl QueuePositionState {
             self.stats.account_filtered_count = self.stats.account_filtered_count.saturating_add(1);
             return None;
         }
-        if matches!(
+        if update.execution_type() == ExecutionType::Replaced {
+            self.apply_order_update(update, now_ms, local_tp, level_context)
+        } else if matches!(
             update.status(),
             OrderStatus::PartiallyFilled | OrderStatus::Filled
         ) || update.execution_type() == ExecutionType::Trade
@@ -417,6 +419,22 @@ impl QueuePositionState {
 
         if !self.add_trackable_order(update, now_ms, update_tp, level_context) {
             return None;
+        }
+        if action == OrderQueuePositionAction::Replaced {
+            let amount_scale = self
+                .order_amount_scale
+                .get(&order_id)
+                .copied()
+                .unwrap_or(1.0);
+            let cumulative = update.cumulative_filled_quantity() * amount_scale;
+            if cumulative.is_finite() && cumulative >= 0.0 {
+                if let Some(order) = self.engine.apply_fill_update(FillUpdate {
+                    order_id,
+                    cumulative_filled_qty: cumulative,
+                }) {
+                    self.finish_removed_order(order);
+                }
+            }
         }
         self.order_snapshot(order_id)
             .map(|snapshot| queue_position_msg_from_snapshot(action, update_tp, local_tp, snapshot))
@@ -1235,6 +1253,46 @@ mod tests {
         assert_eq!(msg.create_tp, 1_001_000);
         assert_eq!(state.engine.order_snapshot(42).unwrap().remaining_qty, 1.5);
         assert!(state.tracks_level("BTCUSDT", BookSide::Bid, 100));
+    }
+
+    #[test]
+    fn replacement_requeues_partially_filled_order_with_remaining_quantity() {
+        let mut state = QueuePositionState::new(
+            "acct".to_string(),
+            TradingVenue::BinanceFutures,
+            Exchange::Binance,
+        );
+        let new_order = test_binance_order(1_000, ExecutionType::New, OrderStatus::New, 0.0);
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::OrderUpdate,
+            BasicAccountScope::BinanceUnified,
+            new_order.to_bytes(),
+        );
+        state.process_account_payload(&event.to_bytes(), 10_000, 10_000_000, level_context);
+        state.apply_public_trade("BTCUSDT", Side::Sell, 100, 3.0);
+        assert_eq!(state.order_snapshot(42).unwrap().inpos, 7.0);
+
+        let replacement = test_binance_order(
+            1_001,
+            ExecutionType::Replaced,
+            OrderStatus::PartiallyFilled,
+            0.5,
+        );
+        let event = BasicAccountEventMsg::create(
+            BasicAccountEventType::OrderUpdate,
+            BasicAccountScope::BinanceUnified,
+            replacement.to_bytes(),
+        );
+        let msg = state
+            .process_account_payload(&event.to_bytes(), 10_001, 10_001_000, level_context)
+            .unwrap();
+
+        assert_eq!(msg.action, OrderQueuePositionAction::Replaced);
+        let snapshot = state.order_snapshot(42).unwrap();
+        assert_eq!(snapshot.inpos, 10.0);
+        assert_eq!(state.engine.order_snapshot(42).unwrap().remaining_qty, 1.5);
+        assert_eq!(state.stats.remove_order_count, 1);
+        assert_eq!(state.stats.add_order_count, 2);
     }
 
     #[test]

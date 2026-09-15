@@ -46,7 +46,8 @@ use crate::query_response_handle::QueryExecOutcome;
 use crate::query_type_mapping::QueryTypeMapping;
 use crate::response_sink::{QueryResponseSink, TradeResponseSink};
 use crate::trade_request::{
-    BinanceCancelOrderParams, BinanceNewOrderParams, BinanceNewOrderParamsRef,
+    BinanceBatchModifyOrdersParams, BinanceCancelOrderParams, BinanceModifyOrderParams,
+    BinanceModifyOrderParamsRef, BinanceNewOrderParams, BinanceNewOrderParamsRef,
     BitgetNewOrderParams, GateNewOrderParams, HyperliquidNewOrderParams, TradeRequestIpcPayload,
     TradeRequestMsg, TradeRequestType,
 };
@@ -750,6 +751,182 @@ fn binance_cancel_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPai
     ])
 }
 
+fn binance_modify_order_rest_pairs_from_ref(
+    params: &BinanceModifyOrderParamsRef<'_>,
+) -> RestParamPairs {
+    let mut pairs = Vec::with_capacity(8);
+    if let Some(modify_id) = params.modify_id {
+        pairs.push(("modifyId".to_string(), modify_id.to_string()));
+    }
+    if params.order_id > 0 {
+        pairs.push(("orderId".to_string(), params.order_id.to_string()));
+    }
+    if params.orig_client_order_id > 0 {
+        pairs.push((
+            "origClientOrderId".to_string(),
+            params.orig_client_order_id.to_string(),
+        ));
+    }
+    if let Some(price_match) = params.price_match.as_str() {
+        pairs.push(("priceMatch".to_string(), price_match.to_string()));
+    } else {
+        pairs.push(("price".to_string(), params.price_qv.decimal_string()));
+    }
+    pairs.push(("quantity".to_string(), params.quantity_qv.decimal_string()));
+    pairs.push(("side".to_string(), params.side.as_str().to_string()));
+    pairs.push(("symbol".to_string(), params.symbol.to_string()));
+    sorted_rest_pairs(pairs)
+}
+
+fn binance_modify_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let params = BinanceModifyOrderParamsRef::from_bytes(&msg.params).ok_or_else(|| {
+        anyhow!(
+            "Binance REST modify order requires valid typed params, req_type={:?}",
+            msg.req_type
+        )
+    })?;
+    let owned = BinanceModifyOrderParams::from_bytes(&msg.params)
+        .ok_or_else(|| anyhow!("invalid Binance REST modify order values"))?;
+    debug_assert_eq!(owned.symbol, params.symbol);
+    Ok(binance_modify_order_rest_pairs_from_ref(&params))
+}
+
+fn binance_batch_modify_order_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
+    let params = BinanceBatchModifyOrdersParams::from_bytes(&msg.params)
+        .ok_or_else(|| anyhow!("Binance REST batch modify requires 1..=5 valid typed orders"))?;
+    let batch_orders = params
+        .orders
+        .iter()
+        .map(|order| {
+            let raw = order
+                .to_bytes()
+                .ok_or_else(|| anyhow!("invalid Binance batch order"))?;
+            let params = BinanceModifyOrderParamsRef::from_bytes(&raw)
+                .ok_or_else(|| anyhow!("invalid Binance batch order encoding"))?;
+            Ok(binance_modify_order_rest_pairs_from_ref(&params)
+                .into_iter()
+                .map(|(key, value)| (key, Value::String(value)))
+                .collect::<serde_json::Map<String, Value>>())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(vec![(
+        "batchOrders".to_string(),
+        serde_json::to_string(&batch_orders).with_context(|| "serialize Binance batchOrders")?,
+    )])
+}
+
+fn json_i64(value: Option<&Value>) -> i64 {
+    value
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+                .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        })
+        .unwrap_or(0)
+}
+
+fn json_f64(value: Option<&Value>) -> f64 {
+    value
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        })
+        .unwrap_or(0.0)
+}
+
+fn binance_order_status_u8(value: Option<&Value>) -> u8 {
+    match value.and_then(Value::as_str).unwrap_or_default() {
+        "NEW" => 1,
+        "PARTIALLY_FILLED" => 2,
+        "FILLED" => 3,
+        "CANCELED" | "CANCELLED" => 4,
+        "EXPIRED" => 5,
+        "EXPIRED_IN_MATCH" => 6,
+        _ => 0,
+    }
+}
+
+fn batch_modify_protocol_error_body(message: &str) -> String {
+    serde_json::json!({
+        "code": order_common::trade_error_code::ACTION_RESULT_UNKNOWN,
+        "msg": message,
+    })
+    .to_string()
+}
+
+fn binance_batch_modify_outcomes(
+    params: &BinanceBatchModifyOrdersParams,
+    status: u16,
+    body: &str,
+    exchange: Exchange,
+) -> Vec<TradeExecOutcome> {
+    let parsed = (200..300)
+        .contains(&(status as u32))
+        .then(|| serde_json::from_str::<Value>(body).ok())
+        .flatten()
+        .and_then(|value| value.as_array().cloned())
+        .filter(|items| items.len() == params.orders.len());
+
+    params
+        .orders
+        .iter()
+        .enumerate()
+        .map(|(index, order)| {
+            let item = parsed.as_ref().and_then(|items| items.get(index));
+            let (item_status, item_body) = if status == 0 {
+                (
+                    0,
+                    batch_modify_protocol_error_body(&format!(
+                        "Binance batch modify transport error: {body}"
+                    )),
+                )
+            } else if !(200..300).contains(&(status as u32)) {
+                (status, body.to_string())
+            } else if let Some(item) = item {
+                (status, item.to_string())
+            } else {
+                (
+                    502,
+                    batch_modify_protocol_error_body(
+                        "Binance batch modify response is not an array matching the request count",
+                    ),
+                )
+            };
+            TradeExecOutcome {
+                req_type: TradeRequestType::BinanceStdBatchModifyUMOrders,
+                client_order_id: order.response_client_order_id,
+                status: item_status,
+                body: item_body,
+                exchange,
+                order_id: json_i64(item.and_then(|item| item.get("orderId"))),
+                order_status_u8: binance_order_status_u8(item.and_then(|item| item.get("status"))),
+                order_update_time: json_i64(
+                    item.and_then(|item| {
+                        item.get("updateTime").or_else(|| item.get("transactTime"))
+                    }),
+                ),
+                executed_qty: json_f64(item.and_then(|item| item.get("executedQty"))),
+                response_price: json_f64(item.and_then(|item| item.get("price"))),
+            }
+        })
+        .collect()
+}
+
+fn binance_modify_transport_error_body(req_type: TradeRequestType, message: &str) -> String {
+    if matches!(
+        req_type,
+        TradeRequestType::BinanceModifyUMOrder
+            | TradeRequestType::BinanceStdModifyUMOrder
+            | TradeRequestType::BinanceStdBatchModifyUMOrders
+    ) {
+        batch_modify_protocol_error_body(message)
+    } else {
+        message.to_string()
+    }
+}
+
 fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
     match msg.req_type {
         TradeRequestType::BinanceNewUMOrder
@@ -760,6 +937,12 @@ fn trade_request_rest_pairs(msg: &TradeRequestMsg) -> Result<RestParamPairs> {
         | TradeRequestType::BinanceCancelMarginOrder
         | TradeRequestType::BinanceCancelCmOrder
         | TradeRequestType::BinancePmCancelCmOrder => binance_cancel_order_rest_pairs(msg),
+        TradeRequestType::BinanceModifyUMOrder | TradeRequestType::BinanceStdModifyUMOrder => {
+            binance_modify_order_rest_pairs(msg)
+        }
+        TradeRequestType::BinanceStdBatchModifyUMOrders => {
+            binance_batch_modify_order_rest_pairs(msg)
+        }
         TradeRequestType::BinanceStdMainToUmTransfer
         | TradeRequestType::BinanceStdUmToMainTransfer => binance_std_usdt_transfer_rest_pairs(msg),
         _ => parse_urlencoded_rest_pairs(&msg.params, "Binance REST trade request"),
@@ -2487,9 +2670,13 @@ impl TradeEngine {
 
                 // 根据 mapping 判断是否走 WebSocket；LTP 后端统一从 WS 执行。
                 if use_ltp_backend_for_req_worker || TradeTypeMapping::is_websocket(msg.req_type) {
-                    let is_binance_um_new = exchange_for_req_worker == Exchange::Binance
-                        && msg.req_type == TradeRequestType::BinanceWsNewUMOrder;
-                    if is_binance_um_new {
+                    let is_binance_um_latency_routed = exchange_for_req_worker == Exchange::Binance
+                        && matches!(
+                            msg.req_type,
+                            TradeRequestType::BinanceWsNewUMOrder
+                                | TradeRequestType::BinanceWsModifyUMOrder
+                        );
+                    if is_binance_um_latency_routed {
                         if let Some(groups) = binance_um_ws_endpoint_groups.as_mut() {
                             let len = groups.len();
                             if len == 0 {
@@ -2614,7 +2801,7 @@ impl TradeEngine {
                         ws_rr_cursor = (ws_rr_cursor + 1) % len;
 
                         let mut target_idx = None;
-                        if is_binance_um_new {
+                        if is_binance_um_latency_routed {
                             // 统一 RR 选路（无 group 的回退路径）；dispatch 下 is_available() 已绕开丢包端点。
                             let candidates: Vec<BinanceUmWsRouteCandidate> = endpoints
                                 .iter()
@@ -2633,7 +2820,7 @@ impl TradeEngine {
                             }
                         }
 
-                        if target_idx.is_none() && !is_binance_um_new {
+                        if target_idx.is_none() && !is_binance_um_latency_routed {
                             for offset in 0..len {
                                 let idx = (start + offset) % len;
                                 debug!(
@@ -2655,7 +2842,7 @@ impl TradeEngine {
                         if let Some(idx) = target_idx {
                             endpoints[idx].enqueue_available(WsCommand::Send(msg));
                         } else {
-                            let reason = if is_binance_um_new {
+                            let reason = if is_binance_um_latency_routed {
                                 "no Binance UM websocket endpoint available"
                             } else {
                                 "all websocket endpoints unavailable"
@@ -2720,6 +2907,10 @@ impl TradeEngine {
                                 continue;
                             }
                         };
+                        let batch_modify_params = (msg.req_type
+                            == TradeRequestType::BinanceStdBatchModifyUMOrders)
+                            .then(|| BinanceBatchModifyOrdersParams::from_bytes(&msg.params))
+                            .flatten();
 
                         let evt = crate::order_event::OrderRequestEvent {
                             req_type: Some(format!("{:?}", msg.req_type)),
@@ -2747,33 +2938,58 @@ impl TradeEngine {
                                     outcome.ip,
                                     outcome.body.len()
                                 );
-                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
-                                    req_type: msg.req_type,
-                                    client_order_id: msg.client_order_id,
-                                    status: outcome.status,
-                                    body: outcome.body,
-                                    exchange: exchange_for_req_worker,
-                                    order_id: 0,
-                                    order_status_u8: 0,
-                                    order_update_time: 0,
-                                    executed_qty: 0.0,
-                                    response_price: 0.0,
-                                });
+                                if let Some(batch) = batch_modify_params.as_ref() {
+                                    for item_outcome in binance_batch_modify_outcomes(
+                                        batch,
+                                        outcome.status,
+                                        &outcome.body,
+                                        exchange_for_req_worker,
+                                    ) {
+                                        let _ = trade_resp_sink_for_req_worker.send(item_outcome);
+                                    }
+                                } else {
+                                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_order_id: msg.client_order_id,
+                                        status: outcome.status,
+                                        body: outcome.body,
+                                        exchange: exchange_for_req_worker,
+                                        order_id: 0,
+                                        order_status_u8: 0,
+                                        order_update_time: 0,
+                                        executed_qty: 0.0,
+                                        response_price: 0.0,
+                                    });
+                                }
                             }
                             Err(e) => {
                                 debug!("http error: {}", e);
-                                let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
-                                    req_type: msg.req_type,
-                                    client_order_id: msg.client_order_id,
-                                    status: 0,
-                                    body: e.to_string(),
-                                    exchange: exchange_for_req_worker,
-                                    order_id: 0,
-                                    order_status_u8: 0,
-                                    order_update_time: 0,
-                                    executed_qty: 0.0,
-                                    response_price: 0.0,
-                                });
+                                if let Some(batch) = batch_modify_params.as_ref() {
+                                    for item_outcome in binance_batch_modify_outcomes(
+                                        batch,
+                                        0,
+                                        &e.to_string(),
+                                        exchange_for_req_worker,
+                                    ) {
+                                        let _ = trade_resp_sink_for_req_worker.send(item_outcome);
+                                    }
+                                } else {
+                                    let _ = trade_resp_sink_for_req_worker.send(TradeExecOutcome {
+                                        req_type: msg.req_type,
+                                        client_order_id: msg.client_order_id,
+                                        status: 0,
+                                        body: binance_modify_transport_error_body(
+                                            msg.req_type,
+                                            &e.to_string(),
+                                        ),
+                                        exchange: exchange_for_req_worker,
+                                        order_id: 0,
+                                        order_status_u8: 0,
+                                        order_update_time: 0,
+                                        executed_qty: 0.0,
+                                        response_price: 0.0,
+                                    });
+                                }
                             }
                         }
                     } else {
@@ -4334,9 +4550,19 @@ impl TradeEngine {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_std_usdt_transfer_rest_pairs, configured_binance_ws_markets, enable_ipc_fast_poll,
-        parse_bool_env, router_idle_spin_iters, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
+        binance_batch_modify_order_rest_pairs, binance_batch_modify_outcomes,
+        binance_modify_order_rest_pairs, binance_std_usdt_transfer_rest_pairs,
+        configured_binance_ws_markets, enable_ipc_fast_poll, parse_bool_env,
+        router_idle_spin_iters, trade_request_rest_pairs, DEFAULT_TE_ROUTER_IDLE_SPIN_ITERS,
     };
+    use crate::trade_request::{
+        BinanceBatchModifyOrdersParams, BinanceModifyOrderParams, BinancePriceMatch,
+        TradeRequestMsg, TradeRequestType,
+    };
+    use order_common::Side;
+    use runtime_common::exchange::Exchange;
+    use serde_json::Value;
+    use signal_common::tick_math::QuantizedValue;
     use std::sync::{Mutex, OnceLock};
 
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -4363,6 +4589,102 @@ mod tests {
                 ("type".to_string(), "UMFUTURE_MAIN".to_string()),
             ]
         );
+    }
+
+    fn best_modify(client_order_id: i64, side: Side) -> BinanceModifyOrderParams {
+        BinanceModifyOrderParams::at_best_price(
+            "BTCUSDT",
+            side,
+            QuantizedValue::from_decimal(0.01).unwrap(),
+            1000 + client_order_id,
+            client_order_id,
+            None,
+        )
+    }
+
+    #[test]
+    fn binance_modify_rest_pairs_select_price_or_queue() {
+        let explicit = BinanceModifyOrderParams::with_price(
+            "BTCUSDT",
+            Side::Buy,
+            QuantizedValue::from_decimal(0.01).unwrap(),
+            QuantizedValue::from_decimal(65000.5).unwrap(),
+            1042,
+            42,
+            Some(9),
+        );
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceStdModifyUMOrder,
+            1,
+            42,
+            &explicit.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let pairs = binance_modify_order_rest_pairs(&msg).unwrap();
+        assert!(pairs.contains(&("price".to_string(), "65000.5".to_string())));
+        assert!(!pairs.iter().any(|(key, _)| key == "priceMatch"));
+
+        let best = best_modify(43, Side::Sell);
+        assert_eq!(best.price_match, BinancePriceMatch::Queue);
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceModifyUMOrder,
+            1,
+            43,
+            &best.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let pairs = binance_modify_order_rest_pairs(&msg).unwrap();
+        assert!(pairs.contains(&("priceMatch".to_string(), "QUEUE".to_string())));
+        assert!(!pairs.iter().any(|(key, _)| key == "price"));
+    }
+
+    #[test]
+    fn binance_papi_modify_rejects_urlencoded_params() {
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceModifyUMOrder,
+            1,
+            42,
+            b"symbol=BTCUSDT&side=BUY&quantity=0.01&priceMatch=QUEUE&origClientOrderId=42",
+        )
+        .unwrap();
+        assert!(trade_request_rest_pairs(&msg).is_err());
+    }
+
+    #[test]
+    fn binance_batch_modify_serializes_and_fans_out_partial_results() {
+        let batch = BinanceBatchModifyOrdersParams {
+            orders: vec![best_modify(42, Side::Buy), best_modify(43, Side::Sell)],
+        };
+        let msg = TradeRequestMsg::create(
+            TradeRequestType::BinanceStdBatchModifyUMOrders,
+            1,
+            99,
+            &batch.to_bytes().unwrap(),
+        )
+        .unwrap();
+        let pairs = binance_batch_modify_order_rest_pairs(&msg).unwrap();
+        let encoded = pairs
+            .iter()
+            .find(|(key, _)| key == "batchOrders")
+            .map(|(_, value)| value)
+            .unwrap();
+        let json: Value = serde_json::from_str(encoded).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["priceMatch"], "QUEUE");
+        assert!(json[0].get("response_client_order_id").is_none());
+
+        let body = r#"[
+            {"orderId":1042,"status":"NEW","updateTime":123,"executedQty":"0","price":"65000.0"},
+            {"code":-2011,"msg":"Unknown order sent."}
+        ]"#;
+        let outcomes = binance_batch_modify_outcomes(&batch, 200, body, Exchange::Binance);
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].client_order_id, 42);
+        assert_eq!(outcomes[0].order_id, 1042);
+        assert_eq!(outcomes[0].order_status_u8, 1);
+        assert_eq!(outcomes[0].response_price, 65000.0);
+        assert_eq!(outcomes[1].client_order_id, 43);
+        assert!(outcomes[1].body.contains("-2011"));
     }
 
     #[test]

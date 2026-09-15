@@ -475,6 +475,7 @@ impl Dispatcher {
 
         let request_builder = match evt.method.as_str() {
             "POST" => client.post(&full_url),
+            "PUT" => client.put(&full_url),
             "DELETE" => client.delete(&full_url),
             "GET" => client.get(&full_url),
             other => return Err(anyhow!("unsupported method: {}", other)),
@@ -491,6 +492,7 @@ impl Dispatcher {
                     ip_idx,
                     acc_idx,
                     r.headers(),
+                    evt.weight(),
                     evt.counts_toward_order_limit,
                 );
 
@@ -584,6 +586,7 @@ impl Dispatcher {
         ip_idx: usize,
         acc_idx: usize,
         headers: &HeaderMap,
+        fallback_ip_weight: u32,
         fallback_increment_order_count: bool,
     ) -> (Option<u32>, Option<u32>) {
         self.refresh_limit_windows();
@@ -628,8 +631,9 @@ impl Dispatcher {
         if let Some(x) = ip_final {
             self.ip_clients[ip_idx].used_weight_1m = x;
         } else {
-            self.ip_clients[ip_idx].used_weight_1m =
-                self.ip_clients[ip_idx].used_weight_1m.saturating_add(1);
+            self.ip_clients[ip_idx].used_weight_1m = self.ip_clients[ip_idx]
+                .used_weight_1m
+                .saturating_add(fallback_ip_weight);
         }
 
         if let Some(x) = acc_final {
@@ -725,7 +729,7 @@ mod tests {
         dispatcher.accounts[0].used_orders_1m = 99;
         let headers = HeaderMap::new();
 
-        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, false);
+        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, 1, false);
 
         assert_eq!(acc_used, None);
         assert_eq!(dispatcher.accounts[0].used_orders_1m, 99);
@@ -742,10 +746,24 @@ mod tests {
             HeaderValue::from_static("12"),
         );
 
-        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, true);
+        let (_ip_used, acc_used) = dispatcher.update_limits_from_headers(0, 0, &headers, 1, true);
 
         assert_eq!(acc_used, Some(12));
         assert_eq!(dispatcher.accounts[0].used_orders_1m, 12);
+    }
+
+    #[test]
+    fn fallback_uses_request_ip_weight_and_one_order_count() {
+        let mut dispatcher = test_dispatcher();
+        let headers = HeaderMap::new();
+
+        dispatcher.update_limits_from_headers(0, 0, &headers, 0, true);
+        assert_eq!(dispatcher.ip_clients[0].used_weight_1m, 0);
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 1);
+
+        dispatcher.update_limits_from_headers(0, 0, &headers, 5, true);
+        assert_eq!(dispatcher.ip_clients[0].used_weight_1m, 5);
+        assert_eq!(dispatcher.accounts[0].used_orders_1m, 2);
     }
 
     #[test]

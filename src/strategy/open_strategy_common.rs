@@ -32,7 +32,9 @@ use order_common::trade_error_code::describe_trade_error_code;
 use order_common::OrderUpdate;
 use order_common::TradeUpdate;
 use order_common::TradeUpdateLite;
-use order_common::{OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side};
+use order_common::{
+    ExecutionType, OrderExecutionStatus, OrderManager, OrderQuantizedValue, OrderType, Side,
+};
 use order_common::{OrderStatus, TradingVenue};
 use order_common::{TradeEngineResponse, TradeRequestKind};
 use persist_common::SignalBbo;
@@ -2080,6 +2082,18 @@ pub trait OpenStrategyCommon {
                     self.handoff_open_order_after_query_failure(client_order_id, marker);
                 }
             }
+            TradeRequestKind::Modify => {
+                warn!(
+                    "{}: strategy_id={} modify_failed: req_type={} status={} code={}({}) client_order_id={}",
+                    self.strategy_name(),
+                    self.strategy_id(),
+                    response.req_type(),
+                    response.status(),
+                    response.error_code(),
+                    code_desc,
+                    client_order_id
+                );
+            }
             TradeRequestKind::Other => {
                 warn!(
                     "{}: strategy_id={} other_failed(TODO): req_type={} status={} code={}({}) client_order_id={}",
@@ -2121,6 +2135,7 @@ pub trait OpenStrategyCommon {
 
         if OrderManager::should_skip_idempotent_order_update(
             &current_order,
+            order_update.execution_type(),
             order_update.status(),
             order_update.order_id(),
             order_update.cumulative_filled_quantity(),
@@ -2151,7 +2166,15 @@ pub trait OpenStrategyCommon {
         }
         let effective_cumulative_filled_qty = protected_cumulative_fill.effective_cum;
 
-        let updated = order_manager.apply_remote_update(client_order_id, |order| match order_update.status() {
+        if order_update.execution_type() == ExecutionType::Replaced {
+            if let Some(price_qv) = QuantizedValue::from_decimal(order_update.price()) {
+                self.open_state_mut().price_qv = price_qv;
+            }
+        }
+
+        let updated = order_manager.apply_remote_update(client_order_id, |order| {
+            order.apply_replacement_fields(order_update);
+            match order_update.status() {
             OrderStatus::New => {
                 if !self.open_state().alive {
                     warn!(
@@ -2255,6 +2278,7 @@ pub trait OpenStrategyCommon {
                     order_update.order_id(),
                     order.symbol
                 );
+            }
             }
         });
 

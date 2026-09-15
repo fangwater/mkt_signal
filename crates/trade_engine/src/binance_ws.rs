@@ -1,7 +1,8 @@
 use crate::config::RestConstants;
 use crate::query_request::{QueryRequestMsg, QueryRequestType};
 use crate::trade_request::{
-    BinanceCancelOrderParamsRef, BinanceNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
+    BinanceCancelOrderParamsRef, BinanceModifyOrderParams, BinanceModifyOrderParamsRef,
+    BinanceNewOrderParamsRef, TradeRequestMsg, TradeRequestType,
 };
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -24,6 +25,7 @@ pub const BINANCE_ED25519_PRIVATE_KEY_PASSPHRASE_ENV: &str =
 
 const METHOD_ORDER_PLACE: &str = "order.place";
 const METHOD_ORDER_CANCEL: &str = "order.cancel";
+const METHOD_ORDER_MODIFY: &str = "order.modify";
 const METHOD_ORDER_STATUS: &str = "order.status";
 const METHOD_SESSION_LOGON: &str = "session.logon";
 const BINANCE_RECV_WINDOW_MS: &str = "5000";
@@ -492,6 +494,71 @@ fn build_cancel_order_payload_fast(
     build_authorized_payload_json(transport_id, METHOD_ORDER_CANCEL, &ordered[..len], signer)
 }
 
+fn build_modify_order_payload_fast(
+    params: &BinanceModifyOrderParamsRef<'_>,
+    transport_id: i64,
+    api_key: &str,
+    signer: &BinanceWsSigner,
+) -> Result<String> {
+    let quantity = QuantizedDecimal::try_from_value(params.quantity_qv)
+        .ok_or_else(|| anyhow!("binance modify quantity decimal exceeds inline buffer"))?;
+    let price = (params.price_match.as_str().is_none())
+        .then(|| {
+            QuantizedDecimal::try_from_value(params.price_qv)
+                .ok_or_else(|| anyhow!("binance modify price decimal exceeds inline buffer"))
+        })
+        .transpose()?;
+    let mut modify_id_buffer = itoa::Buffer::new();
+    let modify_id = params
+        .modify_id
+        .map(|modify_id| modify_id_buffer.format(modify_id));
+    let mut order_id_buffer = itoa::Buffer::new();
+    let order_id = (params.order_id > 0).then(|| order_id_buffer.format(params.order_id));
+    let mut orig_client_order_id_buffer = itoa::Buffer::new();
+    let orig_client_order_id = (params.orig_client_order_id > 0)
+        .then(|| orig_client_order_id_buffer.format(params.orig_client_order_id));
+    let mut timestamp_buffer = itoa::Buffer::new();
+    let timestamp = current_timestamp_ms(&mut timestamp_buffer);
+
+    let mut ordered = [("", ""); 11];
+    let mut len = 0usize;
+    if !signer.uses_session_logon() {
+        ordered[len] = ("apiKey", api_key);
+        len += 1;
+    }
+    if let Some(value) = modify_id {
+        ordered[len] = ("modifyId", value);
+        len += 1;
+    }
+    if let Some(value) = order_id {
+        ordered[len] = ("orderId", value);
+        len += 1;
+    }
+    if let Some(value) = orig_client_order_id {
+        ordered[len] = ("origClientOrderId", value);
+        len += 1;
+    }
+    if let Some(value) = price.as_ref() {
+        ordered[len] = ("price", value.as_str());
+        len += 1;
+    } else if let Some(value) = params.price_match.as_str() {
+        ordered[len] = ("priceMatch", value);
+        len += 1;
+    }
+    ordered[len] = ("quantity", quantity.as_str());
+    len += 1;
+    ordered[len] = ("recvWindow", BINANCE_RECV_WINDOW_MS);
+    len += 1;
+    ordered[len] = ("side", params.side.as_str());
+    len += 1;
+    ordered[len] = ("symbol", params.symbol);
+    len += 1;
+    ordered[len] = ("timestamp", timestamp);
+    len += 1;
+
+    build_authorized_payload_json(transport_id, METHOD_ORDER_MODIFY, &ordered[..len], signer)
+}
+
 fn build_typed_order_payload_fast(
     msg: &TradeRequestMsg,
     transport_id: i64,
@@ -523,6 +590,13 @@ fn build_typed_order_payload_fast(
                 )
             })?;
             build_cancel_order_payload_fast(&params, transport_id, api_key, signer)
+        }
+        TradeRequestType::BinanceWsModifyUMOrder => {
+            BinanceModifyOrderParams::from_bytes(&msg.params)
+                .ok_or_else(|| anyhow!("invalid typed binance ws modify order values"))?;
+            let params = BinanceModifyOrderParamsRef::from_bytes(&msg.params)
+                .ok_or_else(|| anyhow!("invalid typed binance ws modify order params"))?;
+            build_modify_order_payload_fast(&params, transport_id, api_key, signer)
         }
         _ => Err(anyhow!(
             "unsupported binance ws request type: {:?}",
@@ -612,6 +686,9 @@ pub fn build_order_payload(
             build_typed_order_payload_fast(msg, transport_id, api_key, signer)
         }
         TradeRequestType::BinanceWsCancelUMOrder | TradeRequestType::BinanceWsCancelMarginOrder => {
+            build_typed_order_payload_fast(msg, transport_id, api_key, signer)
+        }
+        TradeRequestType::BinanceWsModifyUMOrder => {
             build_typed_order_payload_fast(msg, transport_id, api_key, signer)
         }
         _ => Err(anyhow!(
@@ -818,7 +895,8 @@ mod tests {
     };
     use crate::query_request::{QueryRequestMsg, QueryRequestType};
     use crate::trade_request::{
-        BinanceCancelOrderParams, BinanceNewOrderParams, TradeRequestMsg, TradeRequestType,
+        BinanceCancelOrderParams, BinanceModifyOrderParams, BinanceNewOrderParams, TradeRequestMsg,
+        TradeRequestType,
     };
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
@@ -995,6 +1073,55 @@ mod tests {
         assert!(value["params"]["signature"]
             .as_str()
             .is_some_and(|s| !s.is_empty()));
+        assert_signature_matches_sorted_params(&value);
+    }
+
+    #[test]
+    fn builds_binance_modify_payload_with_explicit_price() {
+        let params = BinanceModifyOrderParams::with_price(
+            "BTCUSDT",
+            Side::Buy,
+            QuantizedValue::from_decimal(0.25).unwrap(),
+            QuantizedValue::from_decimal(65000.5).unwrap(),
+            9988,
+            42,
+            Some(7),
+        )
+        .to_bytes()
+        .unwrap();
+        let msg = trade_msg(TradeRequestType::BinanceWsModifyUMOrder, 42, &params);
+        let payload = build_order_payload(&msg, 102, "api-key", &signer()).unwrap();
+        let value: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(value["method"], "order.modify");
+        assert_eq!(value["params"]["orderId"], "9988");
+        assert_eq!(value["params"]["origClientOrderId"], "42");
+        assert_eq!(value["params"]["modifyId"], "7");
+        assert_eq!(value["params"]["price"], "65000.5");
+        assert!(value["params"].get("priceMatch").is_none());
+        assert_signature_matches_sorted_params(&value);
+    }
+
+    #[test]
+    fn builds_binance_modify_to_queue_best_price() {
+        let params = BinanceModifyOrderParams::at_best_price(
+            "ETHUSDT",
+            Side::Sell,
+            QuantizedValue::from_decimal(1.5).unwrap(),
+            0,
+            43,
+            None,
+        )
+        .to_bytes()
+        .unwrap();
+        let msg = trade_msg(TradeRequestType::BinanceWsModifyUMOrder, 43, &params);
+        let payload = build_order_payload(&msg, 103, "api-key", &signer()).unwrap();
+        let value: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(value["method"], "order.modify");
+        assert_eq!(value["params"]["side"], "SELL");
+        assert_eq!(value["params"]["priceMatch"], "QUEUE");
+        assert!(value["params"].get("price").is_none());
         assert_signature_matches_sorted_params(&value);
     }
 

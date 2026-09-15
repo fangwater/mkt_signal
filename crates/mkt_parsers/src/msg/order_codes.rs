@@ -48,7 +48,7 @@ pub fn execution_type_to_u8(execution_type: &str) -> u8 {
     match execution_type.to_ascii_uppercase().as_str() {
         "NEW" => 1,
         "CANCELED" | "CANCELLED" => 2,
-        "REPLACED" => 3,
+        "REPLACED" | "AMENDMENT" => 3,
         "REJECTED" => 4,
         "TRADE" => 5,
         "EXPIRED" => 6,
@@ -174,6 +174,7 @@ pub fn execution_type_label(execution_type: u8) -> &'static str {
     match execution_type {
         5 => "Trade",
         2 => "Canceled",
+        3 => "Replaced",
         6 => "Expired",
         8 => "Rejected",
         _ => "New",
@@ -354,4 +355,16 @@ pub fn gate_order_uses_fill_price(event_or_status: &str, finish_as: &str) -> boo
             gate_finish_kind(finish_as),
             GateFinishKind::Update | GateFinishKind::Filled | GateFinishKind::Ioc
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{execution_type_label, execution_type_to_u8};
+
+    #[test]
+    fn binance_amendment_maps_to_replaced() {
+        assert_eq!(execution_type_to_u8("AMENDMENT"), 3);
+        assert_eq!(execution_type_to_u8("replaced"), 3);
+        assert_eq!(execution_type_label(3), "Replaced");
+    }
 }
