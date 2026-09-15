@@ -4,10 +4,12 @@
 pub mod cn_features;
 pub mod factor_test;
 pub mod fusion_factor_pub;
+pub mod intra_factor_model_1m_pub;
 pub(crate) mod kline_factors;
 pub mod lseg_features;
 #[cfg(feature = "model-ort")]
 pub mod model_pub;
+pub mod model_output_publisher;
 pub mod pairmm_resample;
 pub mod rl_vol;
 pub mod trade_flow_feature_pub;

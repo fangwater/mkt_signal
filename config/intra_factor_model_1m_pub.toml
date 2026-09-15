@@ -1,0 +1,11 @@
+# Raw 1-minute notebook factors exposed as one ModelMsg stream per factor.
+# score = raw factor value; score_quantile = rolling percentile rank.
+[tlen_server]
+# The deployed JP environment reaches its host-local TLen service through this loopback URL.
+base_url = "http://127.0.0.1:6322"
+request_timeout_ms = 5000
+symbol_reload_secs = 180
+
+[percentile]
+window_size = 2880
+min_samples = 1440

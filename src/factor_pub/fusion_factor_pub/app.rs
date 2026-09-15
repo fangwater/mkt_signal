@@ -6010,7 +6010,7 @@ struct AmountThresholdItem {
     large_notional_threshold: f64,
 }
 
-async fn load_online_symbols_from_tlen_server(
+pub(crate) async fn load_online_symbols_from_tlen_server(
     tlen: &TlenServerConfig,
     venue: TradingVenue,
     venue_slug: &str,
