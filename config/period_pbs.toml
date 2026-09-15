@@ -34,6 +34,19 @@ online_symbols = [
   "TRXUSDT",
 ]
 
+# Only these symbols retain a reconstructed 20-level book and append it as an
+# is_snapshot=true IncrementOrderBookInfo at each completed 3-second period.
+# Other online symbols continue to publish raw period increments without book
+# state, avoiding per-symbol reconstruction cost.
+depth_snapshot_symbols = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "SOLUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "BNBUSDT",
+]
+
 [zmq]
 # Supports both tcp:// and ipc:// PUB binds.
 bind = "tcp://0.0.0.0:16380"

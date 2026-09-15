@@ -19,6 +19,7 @@ pub const STATS_LOG_SECS: u64 = 30;
 pub struct PeriodPbsConfig {
     pub core: Option<usize>,
     pub online_symbols: Vec<String>,
+    pub depth_snapshot_symbols: Vec<String>,
     pub zmq: ZmqConfig,
     pub venues: Vec<VenueConfig>,
 }
@@ -53,6 +54,7 @@ pub struct RuntimeVenueConfig {
     pub idle_sleep_us: u64,
     pub delay_ms: i64,
     pub symbols: VenueSymbolMap,
+    pub depth_snapshot_symbols: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +67,7 @@ impl Default for PeriodPbsConfig {
         Self {
             core: None,
             online_symbols: Vec::new(),
+            depth_snapshot_symbols: Vec::new(),
             zmq: ZmqConfig::default(),
             venues: Vec::new(),
         }
@@ -122,6 +125,13 @@ impl PeriodPbsConfig {
 
         let online_symbols = normalize_online_symbols(&self.online_symbols)?;
         let online_set: AHashSet<&str> = online_symbols.iter().map(String::as_str).collect();
+        let depth_snapshot_symbols = normalize_online_symbols(&self.depth_snapshot_symbols)?;
+        for symbol in &depth_snapshot_symbols {
+            ensure!(
+                online_set.contains(symbol.as_str()),
+                "depth_snapshot_symbols contains symbol not in online_symbols: {symbol}"
+            );
+        }
 
         let mut venue_names = AHashSet::new();
         let mut topics = AHashSet::new();
@@ -171,6 +181,7 @@ impl PeriodPbsConfig {
 
     pub fn runtime_venues(&self) -> Result<Vec<RuntimeVenueConfig>> {
         let online_symbols = normalize_online_symbols(&self.online_symbols)?;
+        let depth_snapshot_symbols = normalize_online_symbols(&self.depth_snapshot_symbols)?;
         self.venues
             .iter()
             .map(|venue| {
@@ -197,6 +208,7 @@ impl PeriodPbsConfig {
                     idle_sleep_us: venue.idle_sleep_us.unwrap_or(DEFAULT_IDLE_SLEEP_US),
                     delay_ms: venue.delay_ms.unwrap_or(DEFAULT_DELAY_MS),
                     symbols: build_venue_symbol_map(&name, &online_symbols, &venue.symbol_map)?,
+                    depth_snapshot_symbols: depth_snapshot_symbols.clone(),
                 })
             })
             .collect()

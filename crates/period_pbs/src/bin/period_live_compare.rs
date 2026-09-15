@@ -177,6 +177,7 @@ fn main() -> Result<()> {
                     sanitize_node_component(&stream.venue)
                 ),
                 slot_symbols: Vec::new(),
+                depth_snapshot_symbols: Vec::new(),
             };
             (stream.venue.clone(), PeriodCollector::new(collector_config))
         })
