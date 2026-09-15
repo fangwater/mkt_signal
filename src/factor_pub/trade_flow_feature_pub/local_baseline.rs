@@ -536,11 +536,10 @@ impl LocalBaselineAggregator {
 
     /// Replays retained Kafka L2 deltas without requiring a complete snapshot.
     ///
-    /// Kafka retention can begin in the middle of a book sequence. For warmup,
-    /// retain each level update exactly as received and make it available to
-    /// factor replay immediately. In particular, do not apply the live
-    /// crossed-book cleanup: without the preceding snapshot it can discard an
-    /// otherwise useful side of the retained incremental state.
+    /// Kafka retention can begin in the middle of a book sequence. Keep the
+    /// partial-book behavior, but use the same crossed-book repair as
+    /// `depth_pub`: retain the newer BBO side and remove crossed levels from
+    /// the older side.
     pub fn on_retained_incremental_book(
         &mut self,
         timestamp_us: i64,
@@ -564,6 +563,9 @@ impl LocalBaselineAggregator {
         self.next_book_update_id = self.next_book_update_id.saturating_add(1);
         self.orderbook
             .apply_update(&bid_updates, &ask_updates, update_id, timestamp_us);
+        if !self.orderbook.is_valid() {
+            self.orderbook.prune_crossed_by_best_update_id();
+        }
         self.book_initialized = true;
         completed
     }
@@ -699,6 +701,15 @@ impl LocalBaselineAggregator {
     }
 
     fn depth20(&self) -> (BaselineDepth20, bool) {
+        if !self.orderbook.is_valid() {
+            return (
+                BaselineDepth20 {
+                    bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+                    asks: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
+                },
+                false,
+            );
+        }
         let (bids, asks) = self.orderbook.get_depth(BASELINE_DEPTH_LEVELS);
         let mut depth20 = BaselineDepth20 {
             bids: [(0.0, 0.0); BASELINE_DEPTH_LEVELS],
@@ -963,16 +974,42 @@ mod tests {
     }
 
     #[test]
-    fn retains_crossed_kafka_deltas_for_historical_factor_replay() {
+    fn retained_kafka_deltas_prune_the_older_crossed_bbo_side() {
         let mut agg = LocalBaselineAggregator::new();
-        agg.on_retained_incremental_book(100, &[Level::from_values(101.0, 1.0)], &[]);
-        agg.on_retained_incremental_book(200, &[], &[Level::from_values(100.0, 1.0)]);
+        agg.on_retained_incremental_book(
+            100,
+            &[
+                Level::from_values(100.0, 1.0),
+                Level::from_values(99.0, 1.0),
+            ],
+            &[
+                Level::from_values(101.0, 1.0),
+                Level::from_values(103.0, 1.0),
+            ],
+        );
+        agg.on_retained_incremental_book(200, &[Level::from_values(102.0, 1.0)], &[]);
         agg.on_trade(1_000, true, 100.5, 1.0);
         let closed = agg.on_retained_incremental_book(5_001_000, &[], &[]);
 
         assert_eq!(closed.len(), 1);
-        assert_eq!(closed[0].depth20.bids[0], (101.0, 1.0));
-        assert_eq!(closed[0].depth20.asks[0], (100.0, 1.0));
+        assert_eq!(closed[0].depth20.bids[0], (102.0, 1.0));
+        assert_eq!(closed[0].depth20.asks[0], (103.0, 1.0));
+    }
+
+    #[test]
+    fn does_not_attach_depth20_when_a_same_update_cross_cannot_be_pruned() {
+        let mut agg = LocalBaselineAggregator::new();
+        agg.on_retained_incremental_book(
+            100,
+            &[Level::from_values(101.0, 1.0)],
+            &[Level::from_values(100.0, 1.0)],
+        );
+        agg.on_trade(1_000, true, 100.5, 1.0);
+        let closed = agg.on_retained_incremental_book(5_001_000, &[], &[]);
+
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].depth20.bids[0], (0.0, 0.0));
+        assert_eq!(closed[0].depth20.asks[0], (0.0, 0.0));
     }
 
     #[test]
