@@ -145,11 +145,11 @@ struct KafkaWarmupStats {
     decode_errors: u64,
     ignored_symbols: u64,
     missing_thresholds: u64,
-    synthetic_book_seeds: u64,
+    historical_book_initializations: u64,
     replayed_events: u64,
     sixty_second_bars: u64,
     invalid_price_bars: u64,
-    invalid_depth_bars: u64,
+    incomplete_depth_bars: u64,
     historical_bars: u64,
     percentile_samples: u64,
     evaluation_errors: u64,
@@ -549,7 +549,7 @@ impl IntraFactorModel1mPubApp {
         let deadline = Instant::now() + Duration::from_secs(config.max_wait_secs);
         let mut reached_offsets = HashSet::new();
         let mut aggregators: HashMap<String, LocalBaselineAggregator> = HashMap::new();
-        let mut seeded_books = HashSet::new();
+        let mut initialized_books = HashSet::new();
         let mut stats = KafkaWarmupStats::default();
 
         while reached_offsets.len() < target_offsets.len() {
@@ -592,7 +592,7 @@ impl IntraFactorModel1mPubApp {
                 &period,
                 thresholds,
                 &mut aggregators,
-                &mut seeded_books,
+                &mut initialized_books,
                 history_start_ms,
                 history_end_ms,
                 &mut stats,
@@ -606,18 +606,18 @@ impl IntraFactorModel1mPubApp {
             }
         }
         info!(
-            "Kafka warmup completed: venue={} kafka_records={} decoded_periods={} decode_errors={} ignored_symbols={} missing_thresholds={} synthetic_book_seeds={} replayed_events={} sixty_second_bars={} invalid_price_bars={} invalid_depth_bars={} historical_bars={} percentile_samples={} evaluation_errors={} state_symbols={}",
+            "Kafka warmup completed: venue={} kafka_records={} decoded_periods={} decode_errors={} ignored_symbols={} missing_thresholds={} historical_book_initializations={} replayed_events={} sixty_second_bars={} invalid_price_bars={} incomplete_depth_bars={} historical_bars={} percentile_samples={} evaluation_errors={} state_symbols={}",
             self.venue_slug,
             stats.kafka_records,
             stats.decoded_periods,
             stats.decode_errors,
             stats.ignored_symbols,
             stats.missing_thresholds,
-            stats.synthetic_book_seeds,
+            stats.historical_book_initializations,
             stats.replayed_events,
             stats.sixty_second_bars,
             stats.invalid_price_bars,
-            stats.invalid_depth_bars,
+            stats.incomplete_depth_bars,
             stats.historical_bars,
             stats.percentile_samples,
             stats.evaluation_errors,
@@ -631,7 +631,7 @@ impl IntraFactorModel1mPubApp {
         period: &PeriodMessage,
         thresholds: &HashMap<String, AmountThreshold>,
         aggregators: &mut HashMap<String, LocalBaselineAggregator>,
-        seeded_books: &mut HashSet<String>,
+        initialized_books: &mut HashSet<String>,
         history_start_ms: i64,
         history_end_ms: i64,
         stats: &mut KafkaWarmupStats,
@@ -669,18 +669,18 @@ impl IntraFactorModel1mPubApp {
                             .iter()
                             .map(|level| Level::from_values(level.price, level.amount))
                             .collect();
-                        // Kafka retains deltas but need not retain the original L2 snapshot.
-                        // Seed from the first two-sided update solely during history replay.
-                        let is_seed =
-                            !seeded_books.contains(&symbol) && !bids.is_empty() && !asks.is_empty();
-                        let is_snapshot = book.is_snapshot || is_seed;
-                        if is_snapshot && seeded_books.insert(symbol.clone()) && !book.is_snapshot {
-                            stats.synthetic_book_seeds =
-                                stats.synthetic_book_seeds.saturating_add(1);
+                        // Kafka history starts from an arbitrary delta. Initialize the local
+                        // accumulator on its first event, then preserve incremental merge
+                        // semantics for all following updates. This does not require a
+                        // complete L2 snapshot before warmup can advance.
+                        let initialize_book = initialized_books.insert(symbol.clone());
+                        if initialize_book {
+                            stats.historical_book_initializations =
+                                stats.historical_book_initializations.saturating_add(1);
                         }
                         aggregator.on_book(
                             timestamp_as_micros(book.timestamp),
-                            is_snapshot,
+                            initialize_book || book.is_snapshot,
                             &bids,
                             &asks,
                         );
@@ -719,8 +719,10 @@ impl IntraFactorModel1mPubApp {
             return;
         }
         if !historical_bar_has_valid_depth(&bar) {
-            stats.invalid_depth_bars = stats.invalid_depth_bars.saturating_add(1);
-            return;
+            // Retained Kafka history has no complete-snapshot guarantee. Partial
+            // depth remains useful to the 1m factor baseline and must not block
+            // the one-day factor/percentile warmup.
+            stats.incomplete_depth_bars = stats.incomplete_depth_bars.saturating_add(1);
         }
         let payload = match bar.to_trade_flow_feature_payload(symbol, self.venue.to_u8()) {
             Ok(payload) => payload,
