@@ -115,7 +115,7 @@ _BOOL_FALSE = {"false", "0", "no", "off"}
 # config server 的 cta rules 面板用它做表单预填；validate_rule 里的内联默认值必须保持一致。
 RULE_DEFAULTS: Dict[str, Any] = {
     "rule_id": "",
-    "model_service": "",
+    "model_service": "intra-binance-futures-1m-baseline_035",
     "trade_sides": "both",
     "long_quantile": 0.9,
     "short_quantile": 0.1,

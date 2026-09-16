@@ -616,7 +616,7 @@ def sync_spread_thresholds(
 # cta 信号配置（{env}:cta_rules 单对象）的字段默认值/注释/顺序——
 # 「CTA 信号」面板按此渲染扁平参数行。执行/网格字段不在这里，归 strategy hash。
 _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
-    "model_service": "",
+    "model_service": "intra-binance-futures-1m-baseline_035",
     "enabled": True,
     "trade_sides": "both",
     "application": "each_bar",
@@ -625,7 +625,7 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
     "cooldown_seconds": 0,
 }
 _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
-    "model_service": "因子信号流 service（model_output/<service>，必填），如 intra-binance-futures-1m-xxx",
+    "model_service": "因子信号流 service（model_output/<service>，必填），默认 intra-binance-futures-1m-baseline_035",
     "enabled": "false = 不产生任何信号（配置保留）",
     "trade_sides": "方向生效：both 多空都做 / long 只多 / short 只空",
     "application": "each_bar 每根 bar 评估 / on_change 仅方向翻转时",
