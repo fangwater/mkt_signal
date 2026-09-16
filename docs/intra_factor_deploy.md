@@ -304,12 +304,10 @@ CTA 开空 = 卖出借入的现货（borrow-to-short），FR 同款机制，无�
   启动时直接拒绝（`BINANCE_ACCOUNT_MODE=STANDARD` + CTA → bail）。
   部署用 `deploy_cta_binance_std.sh <tag> --exec-backend native`。
 
-风控：UnimmrOpenLock（只减仓）与 UnimmrForceClose（taker-taker 强平）对
-CTA 生效（UNIFIED 下）。CTA risk params 在 intra schema 之上多 4 个字段：
-`unimmr_force_close_line`（默认 1.3）、`unimmr_force_close_recover_line`
-（默认 1.5）、`arb_order_amount_u`（强平每笔市价单名义 U，默认 100）、
-`open_orders_per_round`（每个 symbol 每批子单数，默认 4）。校验要求
-`0 < force_close < force_close_recover` 且 `force_close < unimmr_trigger_line`。
+风控：UnimmrOpenLock（只减仓锁，`unimmr_trigger_line`/`unimmr_recover_line`）
+对 CTA 生效（UNIFIED 下）。UnimmrForceClose 为 FR 专用，CTA 不启用、
+无需配置 `unimmr_close_symbols`——CTA 仓位退出由 per-lot 止盈/止损/
+`max_holding_seconds` 管理。risk params 沿用 intra schema，无额外字段。
 
 **新 CTA 环境配置清单**（按顺序；`binance-cta-rx01` 已按此配置）：
 

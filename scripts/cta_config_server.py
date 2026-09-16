@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import sys
@@ -687,72 +686,6 @@ def _cta_strategy_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
     return defaults, comments, order
 
 
-# CTA 在 intra 共享 risk schema 之上追加 UniMMR 强平相关字段
-# （UnimmrForceClose 对 CTA 生效；intra schema 只带 trigger/recover 两条线）。
-_CTA_RISK_EXTRA_DEFAULTS: Dict[str, str] = {
-    "unimmr_force_close_line": "1.3",
-    "unimmr_force_close_recover_line": "1.5",
-    "arb_order_amount_u": "100",
-    "open_orders_per_round": "4",
-}
-_CTA_RISK_EXTRA_COMMENTS: Dict[str, str] = {
-    "unimmr_force_close_line": "UniMMR taker-taker 强制平仓触发线（>1.0 且 < unimmr_trigger_line）",
-    "unimmr_force_close_recover_line": "UniMMR taker-taker 强制平仓恢复线（> force close）",
-    "arb_order_amount_u": "UniMMR 强平每笔市价单名义 U",
-    "open_orders_per_round": "强平每个 symbol 每批子单数",
-}
-_CTA_RISK_EXTRA_ORDER: List[str] = list(_CTA_RISK_EXTRA_DEFAULTS.keys())
-
-
-def _cta_risk_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
-    defaults = dict(base.DEFAULT_RISK_PARAMS)
-    defaults.update(_CTA_RISK_EXTRA_DEFAULTS)
-    comments = dict(base.RISK_PARAM_COMMENTS)
-    comments.update(_CTA_RISK_EXTRA_COMMENTS)
-    order = list(base.RISK_PARAM_ORDER) + [
-        k for k in _CTA_RISK_EXTRA_ORDER if k not in base.RISK_PARAM_ORDER
-    ]
-    return defaults, comments, order
-
-
-def _cta_normalize_unimmr_force_close_lines(mapping: Dict[str, str]) -> Dict[str, str]:
-    normalized = dict(mapping)
-    trigger_field = "unimmr_force_close_line"
-    recover_field = "unimmr_force_close_recover_line"
-    if trigger_field not in normalized and recover_field not in normalized:
-        return normalized
-    if trigger_field not in normalized or recover_field not in normalized:
-        raise ValueError(
-            "unimmr_force_close_line and unimmr_force_close_recover_line must be provided together"
-        )
-    try:
-        trigger = float(str(normalized[trigger_field]).strip())
-        recover = float(str(normalized[recover_field]).strip())
-    except Exception as exc:
-        raise ValueError("unimmr force close lines must be numbers") from exc
-    if not (
-        math.isfinite(trigger)
-        and math.isfinite(recover)
-        and 0.0 < trigger < recover
-    ):
-        raise ValueError(
-            "unimmr force close lines must satisfy 0 < unimmr_force_close_line < unimmr_force_close_recover_line"
-        )
-    open_lock_trigger = str(normalized.get("unimmr_trigger_line", "")).strip()
-    if open_lock_trigger:
-        try:
-            open_lock = float(open_lock_trigger)
-        except Exception as exc:
-            raise ValueError("unimmr_trigger_line must be a number") from exc
-        if math.isfinite(open_lock) and trigger >= open_lock:
-            raise ValueError(
-                "unimmr force close lines must satisfy unimmr_force_close_line < unimmr_trigger_line"
-            )
-    normalized[trigger_field] = f"{trigger:g}"
-    normalized[recover_field] = f"{recover:g}"
-    return normalized
-
-
 def render_index_html(
     default_open_venue: Optional[str],
     default_hedge_venue: Optional[str],
@@ -764,7 +697,6 @@ def render_index_html(
         except Exception:
             key_suffix = ""
     strategy_defaults, strategy_comments, strategy_order = _cta_strategy_schema()
-    risk_defaults, risk_comments, risk_order = _cta_risk_schema()
     bootstrap = {
         "env_name": base.infer_dir_prefix_from_cwd() or "",
         "default_open_venue": default_open_venue or "",
@@ -773,19 +705,19 @@ def render_index_html(
         "defaults": {
             "signal_params": dict(_CTA_SIGNAL_DEFAULTS),
             "strategy_params": strategy_defaults,
-            "risk_params": risk_defaults,
+            "risk_params": dict(base.DEFAULT_RISK_PARAMS),
             "spread_mapping": dict(_CTA_SPREAD_DEFAULTS),
         },
         "comments": {
             "signal_params": dict(_CTA_SIGNAL_COMMENTS),
             "strategy_params": strategy_comments,
-            "risk_params": risk_comments,
+            "risk_params": dict(base.RISK_PARAM_COMMENTS),
             "spread_mapping": dict(_CTA_SPREAD_COMMENTS),
         },
         "order": {
             "signal": _CTA_SIGNAL_ORDER,
             "strategy": strategy_order,
-            "risk": risk_order,
+            "risk": base.RISK_PARAM_ORDER,
             "spread": _CTA_SPREAD_ORDER,
         },
         "selects": {"signal": _CTA_SIGNAL_SELECTS},
@@ -945,12 +877,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             key = base.build_risk_params_key(open_venue, hedge_venue)
             raw_values = base.read_hash(self.server.context.redis_client, key)
-            rk_defaults, rk_comments, rk_order = _cta_risk_schema()
             values, stale_values = base.filter_mapping_by_schema(
                 raw_values,
-                rk_defaults,
-                rk_comments,
-                rk_order,
+                base.DEFAULT_RISK_PARAMS,
+                base.RISK_PARAM_COMMENTS,
+                base.RISK_PARAM_ORDER,
             )
             if not values and not raw_values:
                 self._send_error(404, f"risk params not found: {key}")
@@ -1171,16 +1102,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             exchange = base.exchange_from_venue(open_venue) or ""
             values = payload.get("values") or {}
             key = base.build_risk_params_key(open_venue, hedge_venue)
-            rk_defaults, rk_comments, rk_order = _cta_risk_schema()
             try:
                 mapping = base.sanitize_mapping_by_schema(
                     values,
-                    rk_defaults,
-                    rk_comments,
-                    rk_order,
+                    base.DEFAULT_RISK_PARAMS,
+                    base.RISK_PARAM_COMMENTS,
+                    base.RISK_PARAM_ORDER,
                 )
                 mapping = base.normalize_unimmr_control_lines(mapping)
-                mapping = _cta_normalize_unimmr_force_close_lines(mapping)
                 mapping = base.normalize_intra_risk_limits(exchange, mapping)
             except Exception as exc:
                 self._send_error(400, str(exc))
