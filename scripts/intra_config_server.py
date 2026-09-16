@@ -753,9 +753,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <a href="#symbol-lists">Symbol Lists</a>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
-      <a id="funding-nav-link" href="#funding-thresholds">Funding Thresholds</a>
-      <a href="#rolling-params">Rolling Params</a>
-      <a href="#spread-thresholds">Spread Thresholds</a>
+      <a id="funding-nav-link" class="ns-intra-only" href="#funding-thresholds">Funding Thresholds</a>
+      <a class="ns-intra-only" href="#rolling-params">Rolling Params</a>
+      <a class="ns-intra-only" href="#spread-thresholds">Spread Thresholds</a>
       <a id="cta-rules-nav-link" href="#cta-rules" style="display:none">CTA Rules</a>
     </div>
 
@@ -770,19 +770,19 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div class="grid-2">
         <div>
-          <h3>平仓列表 <span class="hint">intra_dump_symbols</span></h3>
+          <h3>平仓列表 <span class="hint ns-sym-hint">intra_dump_symbols</span></h3>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>正套建仓 <span class="hint">intra_fwd_trade_symbols</span></h3>
+          <h3>正套建仓 <span class="hint ns-sym-hint">intra_fwd_trade_symbols</span></h3>
           <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>反套建仓 <span class="hint">intra_bwd_trade_symbols</span></h3>
+          <h3>反套建仓 <span class="hint ns-sym-hint">intra_bwd_trade_symbols</span></h3>
           <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>Vol Gate <span class="hint">intra_vol_gate_symbols</span></h3>
+          <h3>Vol Gate <span class="hint ns-sym-hint">intra_vol_gate_symbols</span></h3>
           <textarea id="sym-vol-gate" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
@@ -822,7 +822,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="risk-status" class="status"></div>
     </section>
 
-    <section id="funding-thresholds" class="panel">
+    <section id="funding-thresholds" class="panel ns-intra-only">
       <div class="section-header">
         <h2>Funding Filter Config</h2>
         <div class="actions">
@@ -836,7 +836,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="funding-status" class="status"></div>
     </section>
 
-    <section id="rolling-params" class="panel">
+    <section id="rolling-params" class="panel ns-intra-only">
       <div class="section-header">
         <h2>Rolling Metrics Params</h2>
         <div class="actions">
@@ -871,7 +871,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="rolling-status" class="status"></div>
     </section>
 
-    <section id="spread-thresholds" class="panel">
+    <section id="spread-thresholds" class="panel ns-intra-only">
       <div class="section-header">
         <h2>Spread Threshold Mapping</h2>
         <div class="actions">
@@ -1372,10 +1372,13 @@ __PER_SYMBOL_PANELS_HTML__
       }
     }
 
+    function isCtaEnv() { return BOOTSTRAP.features?.cta_rules === true; }
+
     async function reloadAll() {
       await loadSymbolLists();
       await loadStrategyParams();
       await loadRiskParams();
+      if (isCtaEnv()) return;
       if (BOOTSTRAP.features?.funding_thresholds !== false) {
         await loadFundingThresholds();
       }
@@ -1390,9 +1393,20 @@ __PER_SYMBOL_PANELS_HTML__
       const fundingEnabled = BOOTSTRAP.features?.funding_thresholds !== false;
       const fundingPanel = document.getElementById('funding-thresholds');
       const fundingNav = document.getElementById('funding-nav-link');
-      if (!fundingEnabled) {
+      if (!fundingEnabled || isCtaEnv()) {
         if (fundingPanel) fundingPanel.style.display = 'none';
         if (fundingNav) fundingNav.style.display = 'none';
+      }
+      if (isCtaEnv()) {
+        // cta env 只保留 symbol lists / strategy / risk / cta rules；
+        // funding/spread thresholds、rolling params、per-symbol overrides 均为 intra 机制
+        document.querySelectorAll('.ns-intra-only').forEach(el => { el.style.display = 'none'; });
+        const ns = BOOTSTRAP.namespace || 'intra';
+        if (ns !== 'intra') {
+          document.querySelectorAll('.ns-sym-hint').forEach(el => {
+            el.textContent = el.textContent.replace(/^intra_/, ns + '_');
+          });
+        }
       }
     }
 
@@ -1402,7 +1416,9 @@ __PER_SYMBOL_PANELS_HTML__
     if (BOOTSTRAP.features?.funding_thresholds !== false) {
       buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
     }
-    buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
+    if (!isCtaEnv()) {
+      buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
+    }
 
     document.getElementById('sym-load').addEventListener('click', loadSymbolLists);
     document.getElementById('sym-save').addEventListener('click', saveSymbolLists);
@@ -1422,13 +1438,15 @@ __PER_SYMBOL_PANELS_HTML__
       document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
     }
 
-    document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
-    document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
-    document.getElementById('rolling-default').addEventListener('click', applyRollingDefaults);
+    if (!isCtaEnv()) {
+      document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
+      document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
+      document.getElementById('rolling-default').addEventListener('click', applyRollingDefaults);
 
-    document.getElementById('spread-config-load').addEventListener('click', loadSpreadMapping);
-    document.getElementById('spread-config-save').addEventListener('click', saveSpreadMapping);
-    document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
+      document.getElementById('spread-config-load').addEventListener('click', loadSpreadMapping);
+      document.getElementById('spread-config-save').addEventListener('click', saveSpreadMapping);
+      document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
+    }
 
     document.getElementById('reload-all').addEventListener('click', reloadAll);
 
@@ -1441,11 +1459,13 @@ __PER_SYMBOL_PANELS_HTML__
       };
     }
 __PER_SYMBOL_PANELS_JS__
-    bindPerSymbolPanels();
+    if (!isCtaEnv()) {
+      bindPerSymbolPanels();
+      loadAmountU();
+      loadMaxPosU();
+      loadHedgeOffsetLimits();
+    }
     bindCtaRulesPanel();
-    loadAmountU();
-    loadMaxPosU();
-    loadHedgeOffsetLimits();
 
     reloadAll();
   </script>
@@ -2348,6 +2368,7 @@ def render_index_html(
         ).strip()
     bootstrap = {
         "env_name": infer_dir_prefix_from_cwd() or "",
+        "namespace": current_namespace(),
         "exchanges": SUPPORTED_EXCHANGES,
         "default_exchange": default_exchange,
         "default_open_venue": default_open_venue or "",
