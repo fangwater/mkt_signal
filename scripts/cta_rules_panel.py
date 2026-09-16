@@ -1,10 +1,8 @@
-"""CTA rules 配置面板 — 仅供 intra_config_server 在 namespace=cta 的 env 下使用。
+"""CTA rules 配置面板 — 由 cta_config_server 注入渲染。
 
 Redis 模型（与 crates/trade_signal/src/cta_config.rs 对齐）：
 - `{env}:cta_rules` STRING，JSON 数组，元素是 RawCtaRule 形状的对象
 - 校验逻辑复用 sync_cta_rules.validate_rules（与 Rust loader 同规则）
-
-面板只在 BOOTSTRAP.features.cta_rules 为真（即 env 目录名含 -cta-）时展示。
 """
 
 from __future__ import annotations
@@ -243,7 +241,16 @@ def render_cta_rules_panel_js() -> str:
       const data = await fetch(ctaApiUrl()).then(r => r.json());
       if (data.error) { setStatus('cta-rules-status', data.error, false); return; }
       document.getElementById('cta-rules-key').textContent = data.key || '';
-      renderCtaRules(data.rules || []);
+      const rules = data.rules || [];
+      if (rules.length) {
+        renderCtaRules(rules);
+      } else {
+        // 空配置：直接渲染一张默认规则卡，网格执行参数（open_offsets 档位、
+        // 单笔名义、TP/trailing 等）立即可填；不点保存不会写入 Redis。
+        renderCtaRules([{...CTA_RULE_DEFAULTS, rule_id: 'rule_1'}]);
+        const list = document.getElementById('cta-rules-list');
+        list.insertAdjacentHTML('beforeend', '<div class="hint">（未保存 — 编辑后点「保存」写入 Redis）</div>');
+      }
       setStatus('cta-rules-status', `Loaded ${data.count} rules${data.exists ? '' : ' (key 不存在)'}` + (data.parse_error ? ` — parse_error: ${data.parse_error}` : ''), !data.parse_error);
     }
 
