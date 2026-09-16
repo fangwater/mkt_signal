@@ -306,7 +306,7 @@ fn create_hyperliquid_account_fact_ack_subscriber(
 
 // ==================== 序列化辅助函数 ====================
 
-fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
+pub(crate) fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
     let upper = normalize_symbol_for_internal(symbol);
     match venue {
         TradingVenue::OkexMargin
@@ -317,7 +317,11 @@ fn normalize_symbol_for_venue(venue: TradingVenue, symbol: &str) -> String {
     }
 }
 
-fn resolve_futures_qty_multiplier(venue: TradingVenue, normalized_symbol: &str, price: f64) -> f64 {
+pub(crate) fn resolve_futures_qty_multiplier(
+    venue: TradingVenue,
+    normalized_symbol: &str,
+    price: f64,
+) -> f64 {
     if !venue.is_futures() {
         return 1.0;
     }

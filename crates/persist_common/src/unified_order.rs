@@ -1,6 +1,11 @@
 pub const SIGNAL_BBO_LEG_BINARY_LEN: usize = 1 + 8 + 8 * 4;
 pub const SIGNAL_BBO_BINARY_LEN: usize = 1 + SIGNAL_BBO_LEG_BINARY_LEN * 2;
 
+/// `ttype` for synthetic fills booked by the internal position cross between
+/// BatchExec strategies sharing one account position. No exchange order exists
+/// for these fills; consumers must treat the code as internal-only.
+pub const UNIFORM_ORDER_TYPE_INTERNAL_CROSS: u8 = 2;
+
 const SIGNAL_BBO_OPEN_PRESENT: u8 = 1 << 0;
 const SIGNAL_BBO_HEDGE_PRESENT: u8 = 1 << 1;
 const SIGNAL_BBO_VALID_MASK: u8 = SIGNAL_BBO_OPEN_PRESENT | SIGNAL_BBO_HEDGE_PRESENT;

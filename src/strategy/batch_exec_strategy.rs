@@ -21,8 +21,10 @@ use order_common::{
     OrderExecutionStatus, OrderManager, OrderStatus, OrderType, OrderUpdate, Side,
     TradeEngineResponse, TradeUpdate, TradingVenue,
 };
-use persist_common::{SignalBbo, SignalBboLeg};
-use quote_plan::common::{align_price_ceil, align_price_floor};
+use persist_common::{
+    SignalBbo, SignalBboLeg, UnifiedOrderRecord, UNIFORM_ORDER_TYPE_INTERNAL_CROSS,
+};
+use quote_plan::common::{align_price_ceil, align_price_floor, Quote};
 use quote_plan::order_align::{align_final_order_qty, min_qty_symbol_key};
 use runtime_common::fast_hash::{fast_hash_map, FastHashMap};
 use runtime_common::symbol_util::normalize_symbol_for_internal;
@@ -1094,6 +1096,123 @@ impl BatchExecStrategy {
         Ok(())
     }
 
+    fn current_from_key(&self) -> Option<Vec<u8>> {
+        self.pending_target
+            .as_ref()
+            .map(|target| target.from_key.clone())
+            .or_else(|| {
+                self.active_target
+                    .as_ref()
+                    .map(|target| target.from_key.clone())
+            })
+    }
+
+    /// Books an internal cross fill: `signed_base_qty` moves this strategy's
+    /// ledger position without touching the shared account position. The
+    /// matching opposite leg is applied to the counterparty strategy by the
+    /// caller, so the group stays zero-sum. Returns the synthetic uniform
+    /// order record for the caller to persist.
+    pub fn apply_internal_cross_fill(
+        &mut self,
+        signed_base_qty: f64,
+        quote: &Quote,
+        now_ts: i64,
+    ) -> Result<UnifiedOrderRecord, String> {
+        if !signed_base_qty.is_finite() || signed_base_qty.abs() <= QTY_EPS {
+            return Err(format!(
+                "internal cross qty must be finite and non-zero: {signed_base_qty}"
+            ));
+        }
+        let mid = (quote.bid + quote.ask) / 2.0;
+        if !quote.is_valid() || !mid.is_finite() || mid <= 0.0 {
+            return Err(format!(
+                "internal cross requires a valid quote: bid={} ask={}",
+                quote.bid, quote.ask
+            ));
+        }
+        if !self.position_allocation_ready() {
+            return Err("internal cross requires an applied position allocation".to_string());
+        }
+        let Some(from_key) = self.current_from_key() else {
+            return Err("internal cross requires a current target".to_string());
+        };
+        let normalized_symbol = crate::pre_trade::persist_channel::normalize_symbol_for_venue(
+            self.exec_venue,
+            &self.symbol,
+        );
+        let qty_multiplier = crate::pre_trade::persist_channel::resolve_futures_qty_multiplier(
+            self.exec_venue,
+            &normalized_symbol,
+            mid,
+        );
+        if !qty_multiplier.is_finite() || qty_multiplier <= 0.0 {
+            return Err(format!(
+                "internal cross invalid qty multiplier={qty_multiplier}"
+            ));
+        }
+        let venue_qty = signed_base_qty.abs() / qty_multiplier;
+        if !venue_qty.is_finite() || venue_qty <= 0.0 {
+            return Err(format!("internal cross invalid venue qty={venue_qty}"));
+        }
+        let Some(virtual_position) = self.virtual_position_qty.as_mut() else {
+            return Err("internal cross requires a virtual position".to_string());
+        };
+        *virtual_position += signed_base_qty;
+        let virtual_position_qty = *virtual_position;
+        self.last_position_fill_at_us = now_ts;
+        self.completion_reason = None;
+        let side = if signed_base_qty > 0.0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        let signal_bbo = SignalBbo::new(
+            SignalBboLeg::checked(
+                self.exec_venue as u8,
+                quote.ts,
+                quote.bid,
+                quote.bid_qty,
+                quote.ask,
+                quote.ask_qty,
+            ),
+            None,
+        );
+        let mut record = UnifiedOrderRecord {
+            symbol_len: 0,
+            symbol: self.symbol.as_bytes().to_vec(),
+            create_ts: now_ts,
+            update_ts: now_ts,
+            signal_ts: now_ts,
+            submit_ts: now_ts,
+            local_ts: now_ts,
+            mkt_ts: quote.ts,
+            client_order_id: self.next_order_id(),
+            venue: self.exec_venue as u8,
+            ttype: UNIFORM_ORDER_TYPE_INTERNAL_CROSS,
+            side: side.to_u8(),
+            price: mid,
+            price_offset: 0.0,
+            amount_init: venue_qty,
+            amount_update: venue_qty,
+            status: OrderStatus::Filled.to_u8(),
+            from_key_len: 0,
+            from_key,
+            signal_bbo,
+        };
+        record.refresh_lengths();
+        info!(
+            "BatchExecStrategy: strategy_id={} strategy_name={} symbol={} internal cross applied signed_base_qty={:.8} mid={:.8} virtual_position_qty={:.8} client_order_id={}",
+            self.strategy_id,
+            self.strategy_name,
+            self.symbol,
+            signed_base_qty,
+            mid,
+            virtual_position_qty,
+            record.client_order_id,
+        );
+        Ok(record)
+    }
+
     fn settled_completion_reason(&self, position_qty: f64) -> Option<BatchExecCompletionReason> {
         if !self.position_allocation_ready()
             || self.pending_target.is_some()
@@ -2160,20 +2279,22 @@ impl BatchExecStrategy {
         let direction_changed = committed_qty.abs() > QTY_EPS
             && (remaining_qty.abs() <= QTY_EPS || remaining_qty.signum() != committed_qty.signum());
         let committed_too_much = committed_qty.abs() > remaining_qty.abs() + QTY_EPS;
-        let within_tolerance = MktChannel::instance()
-            .get_quote(&self.symbol, self.exec_venue)
-            .map(|quote| {
-                let reference_price = if remaining_qty >= 0.0 {
-                    quote.bid
-                } else {
-                    quote.ask
-                };
-                remaining_qty.abs() * reference_price <= self.config.target_tolerance_usdt
-            })
-            .unwrap_or(false);
 
-        if !direction_changed && !committed_too_much && !within_tolerance {
-            return;
+        if !direction_changed && !committed_too_much {
+            let within_tolerance = MktChannel::instance()
+                .get_quote(&self.symbol, self.exec_venue)
+                .map(|quote| {
+                    let reference_price = if remaining_qty >= 0.0 {
+                        quote.bid
+                    } else {
+                        quote.ask
+                    };
+                    remaining_qty.abs() * reference_price <= self.config.target_tolerance_usdt
+                })
+                .unwrap_or(false);
+            if !within_tolerance {
+                return;
+            }
         }
         let batch_ids: Vec<u64> = self.batches.keys().copied().collect();
         for batch_seq in batch_ids {
@@ -3836,6 +3957,127 @@ mod tests {
             .unwrap();
             assert!(plans.iter().all(|plan| plan.order_type == OrderType::Limit));
         }
+    }
+
+    #[test]
+    fn internal_cross_fill_moves_virtual_position_and_builds_fill_record() {
+        let mut strategy = BatchExecStrategy::new(
+            7,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.virtual_position_qty = Some(0.6);
+        strategy.position_allocation_ready = true;
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+        let record = strategy
+            .apply_internal_cross_fill(0.4, &quote, 1_000)
+            .unwrap();
+        assert_eq!(strategy.virtual_position_qty, Some(1.0));
+        assert_eq!(strategy.last_position_fill_at_us, 1_000);
+        assert_eq!(record.ttype, UNIFORM_ORDER_TYPE_INTERNAL_CROSS);
+        assert_eq!(record.side, Side::Buy.to_u8());
+        assert_eq!(record.status, OrderStatus::Filled.to_u8());
+        assert_eq!(record.price, 100.0);
+        assert_eq!(record.amount_init, 0.4);
+        assert_eq!(record.amount_update, 0.4);
+        assert_eq!(record.symbol, b"BTCUSDT".to_vec());
+        assert_eq!(record.from_key, b"batch_exec:cta_alpha".to_vec());
+        assert_eq!(record.mkt_ts, 500);
+        assert!(record.signal_bbo.is_some());
+        assert_eq!(record.symbol_len as usize, record.symbol.len());
+        assert_eq!(record.from_key_len as usize, record.from_key.len());
+
+        let record = strategy
+            .apply_internal_cross_fill(-0.25, &quote, 1_001)
+            .unwrap();
+        assert_eq!(strategy.virtual_position_qty, Some(0.75));
+        assert_eq!(record.side, Side::Sell.to_u8());
+        assert_eq!(record.amount_update, 0.25);
+    }
+
+    #[test]
+    fn internal_cross_fill_rejects_invalid_inputs_without_moving_position() {
+        let mut strategy = BatchExecStrategy::new(
+            7,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+        // No applied allocation yet.
+        assert!(strategy
+            .apply_internal_cross_fill(0.4, &quote, 1_000)
+            .is_err());
+        strategy.virtual_position_qty = Some(0.0);
+        strategy.position_allocation_ready = true;
+        // Allocation applied but no target exists to attribute the fill.
+        assert!(strategy
+            .apply_internal_cross_fill(0.4, &quote, 1_000)
+            .is_err());
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        assert!(strategy
+            .apply_internal_cross_fill(0.0, &quote, 1_000)
+            .is_err());
+        assert!(strategy
+            .apply_internal_cross_fill(f64::NAN, &quote, 1_000)
+            .is_err());
+        let mut invalid = quote;
+        invalid.bid = 0.0;
+        assert!(strategy
+            .apply_internal_cross_fill(0.4, &invalid, 1_000)
+            .is_err());
+        assert_eq!(strategy.virtual_position_qty, Some(0.0));
+    }
+
+    #[test]
+    fn internal_cross_closing_gap_marks_committed_batches_for_target_cancel() {
+        // 0.4 buy is committed in a live batch; the cross fills the whole gap
+        // so the next clock must cancel rather than requote it.
+        let mut strategy = strategy_with_orphan_batch(&[(101, 0, 0.4, 0.0)]);
+        strategy.active_target = Some(ActiveTarget {
+            target: BatchExecTarget::new(1.0, 0).unwrap(),
+            generation_time: 1,
+            from_key: b"batch_exec:cta_alpha".to_vec(),
+            effective_single_order_usdt: None,
+        });
+        let quote = Quote {
+            bid: 99.0,
+            bid_qty: 2.0,
+            ask: 101.0,
+            ask_qty: 3.0,
+            ts: 500,
+        };
+        strategy
+            .apply_internal_cross_fill(1.0, &quote, 1_000)
+            .unwrap();
+        strategy.cancel_batches_when_target_no_longer_needs_them();
+        assert_eq!(strategy.batches[&1].phase, BatchPhase::CancellingForTarget);
     }
 
     #[test]

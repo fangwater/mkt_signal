@@ -1,3 +1,4 @@
+use crate::pre_trade::PersistChannel;
 use crate::strategy::batch_exec_strategy::{
     BatchExecConfig, BatchExecConfigOverride, BatchExecStrategy, BatchExecTarget,
     BATCH_EXEC_POSITION_CLOSE_STRATEGY_NAME,
@@ -15,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::Duration;
+use trade_signal::MktChannel;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +110,7 @@ const LEVERAGE_INIT_KEY: &str = "batch_exec_state:leverage_initialized";
 const POSITION_LEDGER_VERSION: u32 = 1;
 const LEVERAGE_INIT_VERSION: u32 = 1;
 const POSITION_ALLOCATION_EPS: f64 = 1e-10;
+const INTERNAL_CROSS_MAX_QUOTE_AGE_US: i64 = 5_000_000;
 const LEVERAGE_INIT_REQUEST_SPACING: Duration = Duration::from_millis(75);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,6 +271,7 @@ struct PositionAllocationCandidate {
     strategy_id: i32,
     strategy_name: String,
     symbol: String,
+    has_target: bool,
     target_qty: f64,
     position_qty: f64,
     missing_position: bool,
@@ -438,6 +442,63 @@ fn reconcile_untradable_position(
         candidates[*index].position_qty = qty;
         allocated += qty;
     }
+}
+
+/// Splits `cross_qty` across `side` proportionally to each member's unexecuted
+/// gap. The last member absorbs the rounding remainder so the legs sum exactly
+/// to `cross_qty`.
+fn proportional_cross_legs(side: &[(i32, f64)], cross_qty: f64) -> Vec<(i32, f64)> {
+    let total: f64 = side.iter().map(|(_, qty)| qty).sum();
+    if cross_qty <= POSITION_ALLOCATION_EPS || total <= POSITION_ALLOCATION_EPS {
+        return Vec::new();
+    }
+    let mut legs = Vec::with_capacity(side.len());
+    let mut allocated = 0.0;
+    for (index, (strategy_id, qty)) in side.iter().enumerate() {
+        let leg = if index + 1 == side.len() {
+            cross_qty - allocated
+        } else {
+            *qty * cross_qty / total
+        };
+        if leg > POSITION_ALLOCATION_EPS {
+            legs.push((*strategy_id, leg));
+            allocated += leg;
+        }
+    }
+    legs
+}
+
+/// Plans signed internal-cross legs for one symbol group: positive legs buy
+/// into a long gap, negative legs sell into a short gap. Only strategies with
+/// a live target and an applied ledger position participate, and the matched
+/// amount is the smaller of the two opposite unexecuted totals.
+fn plan_internal_cross_legs(group: &[PositionAllocationCandidate]) -> Vec<(i32, f64)> {
+    let mut buy_side = Vec::new();
+    let mut sell_side = Vec::new();
+    for candidate in group {
+        if !candidate.has_target || !candidate.allocation_ready || !candidate.has_virtual_position {
+            continue;
+        }
+        let unexecuted = candidate.target_qty - candidate.position_qty;
+        if unexecuted > POSITION_ALLOCATION_EPS {
+            buy_side.push((candidate.strategy_id, unexecuted));
+        } else if unexecuted < -POSITION_ALLOCATION_EPS {
+            sell_side.push((candidate.strategy_id, -unexecuted));
+        }
+    }
+    let total_buy: f64 = buy_side.iter().map(|(_, qty)| qty).sum();
+    let total_sell: f64 = sell_side.iter().map(|(_, qty)| qty).sum();
+    let cross_qty = total_buy.min(total_sell);
+    if cross_qty <= POSITION_ALLOCATION_EPS {
+        return Vec::new();
+    }
+    let mut legs = proportional_cross_legs(&buy_side, cross_qty);
+    legs.extend(
+        proportional_cross_legs(&sell_side, cross_qty)
+            .into_iter()
+            .map(|(strategy_id, qty)| (strategy_id, -qty)),
+    );
+    legs
 }
 
 fn select_requested_removals(
@@ -957,6 +1018,7 @@ impl BatchExecConfigReloader {
                 strategy_id,
                 strategy_name: exec.strategy_name().to_string(),
                 symbol: exec.exec_symbol().to_string(),
+                has_target: exec.target_qty().is_some(),
                 target_qty: exec.target_qty().unwrap_or(0.0),
                 position_qty: virtual_position.or(persisted_position).unwrap_or(0.0),
                 missing_position: virtual_position.is_none() && persisted_position.is_none(),
@@ -971,6 +1033,92 @@ impl BatchExecConfigReloader {
             (&lhs.symbol, &lhs.strategy_name).cmp(&(&rhs.symbol, &rhs.strategy_name))
         });
         candidates
+    }
+
+    /// Crosses opposite unexecuted target gaps inside each symbol group. Every
+    /// leg books a synthetic internal fill at the current mid so the sum of
+    /// per-strategy ledger positions stays equal to the shared account
+    /// position. The next per-strategy clock cancels whatever outstanding
+    /// batches the shrunken gap no longer needs.
+    fn net_opposite_unexecuted_targets(
+        &self,
+        strategy_mgr: &Rc<RefCell<StrategyManager>>,
+        now_ts: i64,
+    ) -> usize {
+        let candidates = self.collect_position_candidates(strategy_mgr, now_ts);
+        let mut groups = BTreeMap::<String, Vec<PositionAllocationCandidate>>::new();
+        for candidate in candidates {
+            groups
+                .entry(candidate.symbol.clone())
+                .or_default()
+                .push(candidate);
+        }
+        let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
+        let mut applied = 0usize;
+        let mut last_publish_ts_us = 0i64;
+        for (symbol, group) in groups {
+            let legs = plan_internal_cross_legs(&group);
+            if legs.is_empty() {
+                continue;
+            }
+            let symbol_not_tradable = monitor
+                .try_venue_min_qty_table(self.venue)
+                .is_some_and(|table| table.snapshot_loaded() && !table.is_tradable_symbol(&symbol));
+            if symbol_not_tradable {
+                continue;
+            }
+            let quote = MktChannel::is_initialized()
+                .then(|| MktChannel::instance().get_quote(&symbol, self.venue))
+                .flatten();
+            let Some(quote) = quote else {
+                warn!("BatchExec internal cross skipped: symbol={symbol} no quote");
+                continue;
+            };
+            if !quote.is_valid()
+                || quote.ts <= 0
+                || now_ts.saturating_sub(quote.ts) > INTERNAL_CROSS_MAX_QUOTE_AGE_US
+            {
+                warn!(
+                    "BatchExec internal cross skipped: symbol={symbol} invalid_or_stale_quote bid={} ask={} quote_ts={}",
+                    quote.bid, quote.ask, quote.ts
+                );
+                continue;
+            }
+            info!(
+                "BatchExec internal cross planned: symbol={} legs={:?}",
+                symbol, legs
+            );
+            for (strategy_id, signed_qty) in legs {
+                let Some(mut strategy) = strategy_mgr.borrow_mut().take(strategy_id) else {
+                    continue;
+                };
+                let result = strategy
+                    .as_any_mut()
+                    .downcast_mut::<BatchExecStrategy>()
+                    .ok_or_else(|| "strategy is not BatchExec during internal cross".to_string())
+                    .and_then(|exec| exec.apply_internal_cross_fill(signed_qty, &quote, now_ts));
+                strategy_mgr.borrow_mut().insert(strategy);
+                match result {
+                    Ok(record) => {
+                        // Persist keys derive from publish-time timestamps; keep
+                        // consecutive records strictly ordered.
+                        while get_timestamp_us() <= last_publish_ts_us {
+                            std::hint::spin_loop();
+                        }
+                        PersistChannel::with(|channel| {
+                            channel.publish_uniform_order(&record)
+                        });
+                        last_publish_ts_us = get_timestamp_us();
+                        applied += 1;
+                    }
+                    Err(err) => warn!(
+                        "BatchExec internal cross leg skipped: symbol={} strategy_id={} signed_qty={:.8} err={}",
+                        symbol, strategy_id, signed_qty, err
+                    ),
+                }
+            }
+        }
+        applied
     }
 
     fn suspend_position_allocations(
@@ -1074,6 +1222,10 @@ impl BatchExecConfigReloader {
         }
 
         let now_ts = get_timestamp_us();
+        let internal_cross_legs = self.net_opposite_unexecuted_targets(strategy_mgr, now_ts);
+        if internal_cross_legs > 0 {
+            info!("BatchExec internal cross applied: legs={internal_cross_legs}");
+        }
         let monitor = crate::pre_trade::monitor_channel::MonitorChannel::instance();
         let mut candidates = self.collect_position_candidates(strategy_mgr, now_ts);
         let mut groups = BTreeMap::<String, Vec<PositionAllocationCandidate>>::new();
@@ -1255,7 +1407,17 @@ impl BatchExecConfigReloader {
 
         self.pending_ledger_removals.clear();
 
-        Self::apply_position_allocations(strategy_mgr, &plans, now_ts)
+        let applied = Self::apply_position_allocations(strategy_mgr, &plans, now_ts)?;
+        // Strategies whose allocation was just applied become cross-eligible in
+        // this same pass, so a freshly activated opposite target still nets
+        // before its first batch can submit.
+        let post_apply_cross_legs = self.net_opposite_unexecuted_targets(strategy_mgr, now_ts);
+        if post_apply_cross_legs > 0 {
+            info!(
+                "BatchExec internal cross applied after allocation: legs={post_apply_cross_legs}"
+            );
+        }
+        Ok(applied)
     }
 
     pub async fn reload(&mut self, strategy_mgr: &Rc<RefCell<StrategyManager>>) -> Result<usize> {
@@ -1510,6 +1672,7 @@ mod tests {
             strategy_id,
             strategy_name: strategy_name.to_string(),
             symbol: "BTCUSDT".to_string(),
+            has_target: true,
             target_qty,
             position_qty,
             missing_position,
@@ -1896,5 +2059,79 @@ mod tests {
         let mut state = BatchExecLeverageInitState::empty();
         state.symbols.insert("btc-usdt".to_string());
         assert!(state.validate().is_err());
+    }
+
+    #[test]
+    fn internal_cross_pairs_opposite_unexecuted_gaps() {
+        // A bought 0.6 of a +1 target (0.4 still to execute); B targets -1.
+        let group = vec![
+            allocation_candidate(1, "cta_a", 1.0, 0.6, false),
+            allocation_candidate(2, "cta_b", -1.0, 0.0, false),
+        ];
+        let legs = plan_internal_cross_legs(&group);
+        assert_eq!(legs.len(), 2);
+        let a_leg = legs.iter().find(|(id, _)| *id == 1).unwrap().1;
+        let b_leg = legs.iter().find(|(id, _)| *id == 2).unwrap().1;
+        assert!((a_leg - 0.4).abs() < 1e-9);
+        assert!((b_leg + 0.4).abs() < 1e-9);
+        assert!(legs.iter().map(|(_, qty)| qty).sum::<f64>().abs() < 1e-9);
+    }
+
+    #[test]
+    fn internal_cross_ignores_same_direction_gaps() {
+        let group = vec![
+            allocation_candidate(1, "cta_a", 1.0, 0.0, false),
+            allocation_candidate(2, "cta_b", 2.0, 0.5, false),
+        ];
+        assert!(plan_internal_cross_legs(&group).is_empty());
+    }
+
+    #[test]
+    fn internal_cross_distributes_minor_side_proportionally() {
+        // Buy gaps total +1.0 (0.6 + 0.4); sell gap is -0.5.
+        let group = vec![
+            allocation_candidate(1, "cta_a", 1.0, 0.4, false),
+            allocation_candidate(2, "cta_b", 1.0, 0.6, false),
+            allocation_candidate(3, "cta_c", -0.5, 0.0, false),
+        ];
+        let legs = plan_internal_cross_legs(&group);
+        assert_eq!(legs.len(), 3);
+        let a_leg = legs.iter().find(|(id, _)| *id == 1).unwrap().1;
+        let b_leg = legs.iter().find(|(id, _)| *id == 2).unwrap().1;
+        let c_leg = legs.iter().find(|(id, _)| *id == 3).unwrap().1;
+        assert!((a_leg - 0.3).abs() < 1e-9);
+        assert!((b_leg - 0.2).abs() < 1e-9);
+        assert!((c_leg + 0.5).abs() < 1e-9);
+        assert!(legs.iter().map(|(_, qty)| qty).sum::<f64>().abs() < 1e-9);
+    }
+
+    #[test]
+    fn internal_cross_skips_candidates_without_target_or_allocation() {
+        let mut no_target = allocation_candidate(1, "cta_a", 0.0, -1.0, false);
+        no_target.has_target = false;
+        let group = vec![no_target, allocation_candidate(2, "cta_b", 1.0, 0.0, false)];
+        assert!(plan_internal_cross_legs(&group).is_empty());
+
+        let group = vec![
+            allocation_candidate(1, "cta_a", -1.0, 0.0, true),
+            allocation_candidate(2, "cta_b", 1.0, 0.0, false),
+        ];
+        assert!(plan_internal_cross_legs(&group).is_empty());
+    }
+
+    #[test]
+    fn internal_cross_plan_is_idempotent_after_legs_apply() {
+        let mut group = vec![
+            allocation_candidate(1, "cta_a", 1.0, 0.6, false),
+            allocation_candidate(2, "cta_b", -1.0, 0.0, false),
+        ];
+        for (strategy_id, signed_qty) in plan_internal_cross_legs(&group) {
+            let candidate = group
+                .iter_mut()
+                .find(|candidate| candidate.strategy_id == strategy_id)
+                .unwrap();
+            candidate.position_qty += signed_qty;
+        }
+        assert!(plan_internal_cross_legs(&group).is_empty());
     }
 }
