@@ -72,11 +72,14 @@ dir_lc="${dir_name,,}"
 
 EXCHANGE=""
 ENV_TAG="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+MODE="intra"
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra$ ]]; then
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]//-/_}"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
+  MODE="${BASH_REMATCH[2]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
@@ -88,7 +91,7 @@ if [[ -z "$EXCHANGE" && -n "${OPEN_VENUE:-}" ]]; then
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 无法确定 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
+  echo "[ERROR] 无法确定 exchange (dir=$dir_name)，期望 <exchange>-(intra|cta)-<tag>"
   exit 1
 fi
 
@@ -137,7 +140,7 @@ intra_release_verify_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH"
 intra_release_verify_running_file "$BASE_DIR" pre_trade "$PRE_TRADE_PATH" 0
 echo "[INFO] release guard passed release_id=$(intra_release_id "$BASE_DIR") binaries=$MONITOR_RELEASE_NAME,pre_trade"
 
-PROC_NAME="intra_am_${EXCHANGE}_${ENV_TAG}"
+PROC_NAME="${MODE}_am_${EXCHANGE}_${ENV_TAG}"
 
 cfg_file="$(mktemp)"
 trap 'rm -f "$cfg_file" >/dev/null 2>&1 || true' EXIT

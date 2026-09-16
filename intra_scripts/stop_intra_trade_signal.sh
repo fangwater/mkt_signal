@@ -15,21 +15,23 @@ dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 
 EXCHANGE=""
+MODE=""
 ENV_TAG=""
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]}"
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 if [[ -z "$EXCHANGE" || -z "$ENV_TAG" ]]; then
-  echo "[ERROR] not an intra env dir: ${dir_name} (expect <exchange>-intra-<env>)"
+  echo "[ERROR] not an intra/cta env dir: ${dir_name} (expect <exchange>-(intra|cta)-<env>)"
   exit 1
 fi
 ENV_TAG="$(printf '%s' "$ENV_TAG" | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
 
-PROC_NAME="intra_${EXCHANGE}_${ENV_TAG}_trade_signal"
+PROC_NAME="${MODE}_${EXCHANGE}_${ENV_TAG}_trade_signal"
 LEGACY_PROC_NAME="trade_signal_${EXCHANGE}"
 
 echo "[INFO] Deleting ${PROC_NAME} (namespace=${NAMESPACE})"

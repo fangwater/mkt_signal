@@ -245,7 +245,8 @@ fn infer_venues_from_dir_name(dir_name: &str) -> Option<(TradingVenue, TradingVe
     let parts = normalized_dir_parts(dir_name);
 
     // intra: <exchange>-intra-<trade|test|...> → margin × futures (same exchange)
-    if parts.len() >= 2 && parts[1] == "intra" {
+    // cta:   <exchange>-cta-<tag> 同样走同所 margin × futures（规则信号驱动）
+    if parts.len() >= 2 && matches!(parts[1].as_str(), "intra" | "cta") {
         let ex = normalize_exchange(&parts[0]);
         return Some((margin_venue(ex)?, futures_venue(ex)?));
     }
@@ -276,6 +277,9 @@ fn infer_arb_mode_from_dir_name(dir_name: &str) -> Option<ArbMode> {
     let parts = normalized_dir_parts(dir_name);
     if parts.len() >= 2 && parts[1] == "intra" {
         return Some(ArbMode::IntraArb);
+    }
+    if parts.len() >= 2 && parts[1] == "cta" {
+        return Some(ArbMode::Cta);
     }
     if parts.len() >= 3 && parts[2] == "cross" {
         return Some(ArbMode::CrossArb);
@@ -752,7 +756,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // 与 trade_signal 共用同一份 Redis key（无 prefix）以保证两侧视图一致。
             let mut intra_bwd_refresh = None;
             let mut taker_decision_model_refresh = None;
-            if arb_mode == ArbMode::IntraArb {
+            if matches!(arb_mode, ArbMode::IntraArb | ArbMode::Cta) {
                 let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
                 let bwd_env_name = dir_prefix.clone().unwrap_or_else(|| {
                     panic!("intra_bwd_trade_symbols requires an env directory prefix")
@@ -841,7 +845,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                     "exec-pre-trade BBO subscriber initialized: spread_pbs/{}/ask_bid_spread",
                     open_venue.data_pub_slug()
                 );
-            } else if arb_mode == ArbMode::IntraArb || matches!(
+            } else if matches!(arb_mode, ArbMode::IntraArb | ArbMode::Cta) || matches!(
                 open_venue,
                 TradingVenue::HyperliquidMargin | TradingVenue::HyperliquidFutures
             ) || matches!(

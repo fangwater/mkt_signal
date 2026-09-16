@@ -164,3 +164,14 @@ source_id = "okex-intra-arb01"
 public_url = "http://47.238.128.48:6354"
 bind = "127.0.0.1:50054"
 status = "planned"
+
+# JP Binance cta source (RapidX/LTP rule-driven env).
+[[allocations]]
+port = 6359
+region = "local"
+strategy = "cta"
+env = "binance-cta-rx01"
+source_id = "binance-cta-rx01"
+public_url = "http://127.0.0.1:6359"
+bind = "127.0.0.1:50059"
+status = "fixed"

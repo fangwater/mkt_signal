@@ -42,7 +42,7 @@ def normalize_exchange(ex: str) -> str:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra|cta)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))
@@ -51,19 +51,33 @@ def infer_exchange_from_name(name: str) -> Optional[str]:
     return ex
 
 
+def infer_namespace_from_name(name: str) -> Optional[str]:
+    n = (name or "").strip().lower()
+    m = re.match(r"^[a-z0-9]+[-_](intra|cta)([_-].*)?$", n)
+    if not m:
+        return None
+    return m.group(1)
+
+
 def infer_exchange_from_cwd() -> Optional[str]:
     return infer_exchange_from_name(Path.cwd().name)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Print intra strategy params from Redis")
+    p = argparse.ArgumentParser(description="Print intra/cta strategy params from Redis")
     p.add_argument("--exchange", default=os.environ.get("EXCHANGE"))
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
-    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
+    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade / binance-cta-rx01）")
+    p.add_argument(
+        "--namespace",
+        choices=["intra", "cta"],
+        help="策略参数命名空间（默认按 env-name/CWD 的 -intra-/-cta- 段推断）",
+    )
     args = p.parse_args()
 
     exchange = args.exchange
+    env_name = (args.env_name or Path.cwd().name).strip().lower()
     if not exchange:
         exchange = infer_exchange_from_name(args.env_name) if args.env_name else infer_exchange_from_cwd()
         if exchange:
@@ -79,10 +93,11 @@ def parse_args() -> argparse.Namespace:
             args.hedge_venue = f"{exchange}-futures"
 
     if not args.open_venue or not args.hedge_venue:
-        p.error("需要 --exchange 或同时提供 --open-venue/--hedge-venue，或使用 --env-name <exchange>-intra-<tag>")
+        p.error("需要 --exchange 或同时提供 --open-venue/--hedge-venue，或使用 --env-name <exchange>-(intra|cta)-<tag>")
 
     args.open_venue = args.open_venue.lower()
     args.hedge_venue = args.hedge_venue.lower()
+    args.namespace = args.namespace or infer_namespace_from_name(env_name) or "intra"
     return args
 
 
@@ -176,12 +191,12 @@ def main() -> int:
         print("❌ redis 包未安装，请使用 pip install redis", file=sys.stderr)
         return 2
 
-    key = f"intra_strategy_params_{args.open_venue}_{args.hedge_venue}"
+    key = f"{args.namespace}_strategy_params_{args.open_venue}_{args.hedge_venue}"
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
     data = rds.hgetall(key)
     print("📍 Redis: 127.0.0.1:6379/0")
-    print(f"📊 intra 策略参数: {key}")
+    print(f"📊 {args.namespace} 策略参数: {key}")
     print("=" * 80)
     if not data:
         print(f"⚠️  HASH '{key}' 为空或不存在")

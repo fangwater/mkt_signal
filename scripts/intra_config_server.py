@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, urlparse
 
 SUPPORTED_EXCHANGES = ["binance", "okex", "bybit", "bitget", "gate", "hyperliquid"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-INTRA_RE = re.compile(r"^([a-z0-9]+)[-_]intra([_-].*)?$")
+INTRA_RE = re.compile(r"^([a-z0-9]+)[-_](intra|cta)([_-].*)?$")
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S = 300
 BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 
@@ -1910,11 +1910,30 @@ def make_unimmr_close_key_suffix(open_venue: str, hedge_venue: str) -> str:
 
 
 
-def intra_symbol_list_key(env_name: str, name: str, key_suffix: str) -> str:
+def infer_namespace_from_name(name: str) -> Optional[str]:
+    """<exchange>-(intra|cta)-<tag> -> intra|cta。"""
+    matched = INTRA_RE.match((name or "").strip().lower())
+    if not matched:
+        return None
+    return matched.group(2)
+
+
+def current_namespace() -> str:
+    """进程 CWD 推断配置命名空间；缺省 intra（旧行为）。"""
+    return infer_namespace_from_name(infer_dir_prefix_from_cwd() or "") or "intra"
+
+
+def intra_symbol_list_key(
+    env_name: str,
+    name: str,
+    key_suffix: str,
+    namespace: Optional[str] = None,
+) -> str:
     env = (env_name or "").strip().lower()
     if not env:
         raise ValueError("env_name unavailable (no cwd prefix)")
-    return f"{env}:intra_{name}:{key_suffix.strip().lower()}"
+    ns = (namespace or current_namespace()).strip().lower()
+    return f"{env}:{ns}_{name}:{key_suffix.strip().lower()}"
 
 
 def current_env_name() -> str:
@@ -2095,7 +2114,7 @@ def ensure_intra_runtime_quantiles(
 
 
 def threshold_mapping_key(kind: str, open_venue: str, hedge_venue: str) -> str:
-    return f"intra_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
+    return f"{current_namespace()}_{kind}_thresholds_config_{open_venue}_{hedge_venue}"
 
 
 def normalize_threshold_mapping(values: Dict[str, Any]) -> Dict[str, str]:
@@ -2155,7 +2174,7 @@ def write_threshold_mapping(
             existing = {}
     payload = {
         "schema_version": 1,
-        "namespace": "intra",
+        "namespace": current_namespace(),
         "kind": kind,
         "open_venue": open_venue,
         "hedge_venue": hedge_venue,
@@ -2208,7 +2227,7 @@ def sync_thresholds(
     symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     rolling_key = f"rolling_metrics_thresholds_{open_venue}_{hedge_venue}"
-    write_key = f"intra_{kind}_thresholds_{open_venue}_{hedge_venue}"
+    write_key = f"{current_namespace()}_{kind}_thresholds_{open_venue}_{hedge_venue}"
 
     mapping = normalize_threshold_mapping(mapping or {})
     if not mapping:
@@ -2547,7 +2566,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
-            key = f"intra_strategy_params_{open_venue}_{hedge_venue}"
+            key = f"{current_namespace()}_strategy_params_{open_venue}_{hedge_venue}"
             raw_values = read_hash(self.server.context.redis_client, key)
             values, stale_values = filter_mapping_by_schema(
                 raw_values,
@@ -2752,10 +2771,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             rds = self.server.context.redis_client
             try:
                 env_name = current_env_name()
-                rds.set(intra_symbol_list_key(env_name, "dump_symbols", key_suffix), json.dumps(dump_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix), json.dumps(fwd_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix), json.dumps(bwd_symbols, ensure_ascii=False))
-                rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix), json.dumps(vol_gate_symbols, ensure_ascii=False))
+                ns = current_namespace()
+                rds.set(intra_symbol_list_key(env_name, "dump_symbols", key_suffix, ns), json.dumps(dump_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix, ns), json.dumps(fwd_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix, ns), json.dumps(bwd_symbols, ensure_ascii=False))
+                rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix, ns), json.dumps(vol_gate_symbols, ensure_ascii=False))
+                if ns == "cta":
+                    # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{suffix}
+                    rds.set(
+                        intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix, "intra"),
+                        json.dumps(bwd_symbols, ensure_ascii=False),
+                    )
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
@@ -2806,7 +2832,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_error(400, str(exc))
                 return
             values = payload.get("values") or {}
-            key = f"intra_strategy_params_{open_v}_{hedge_v}"
+            key = f"{current_namespace()}_strategy_params_{open_v}_{hedge_v}"
             try:
                 mapping = sanitize_mapping_by_schema(
                     values,

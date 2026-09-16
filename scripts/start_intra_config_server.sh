@@ -30,8 +30,8 @@ normalize_exchange() {
 
 intra_env_suffix() {
   local name="$1"
-  if [[ "$name" =~ ^[a-z0-9]+[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
-    echo "${BASH_REMATCH[1]}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[2]}"
   fi
 }
 
@@ -69,8 +69,14 @@ exchange_default_port() {
         *)       echo "19173" ;;
       esac
       ;;
+    rx01)
+      case "$exchange" in
+        binance) echo "19174" ;;
+        *)       echo "19174" ;;
+      esac
+      ;;
     *)
-      echo "[ERROR] unsupported intra suffix for config server: ${suffix}" >&2
+      echo "[ERROR] unsupported intra/cta suffix for config server: ${suffix}" >&2
       exit 1
       ;;
   esac
@@ -81,19 +87,19 @@ dir_lc="${dir_name,,}"
 dir_tag="$(echo "${dir_lc}" | sed 's/[^a-z0-9_-]/_/g')"
 ENV_SUFFIX="$(intra_env_suffix "$dir_lc")"
 case "$ENV_SUFFIX" in
-  arb01|arb02|arb03) ;;
+  arb01|arb02|arb03|rx01) ;;
   trade)
     echo "[ERROR] intra suffix 'trade' is no longer supported; use arb01/arb02/arb03" >&2
     exit 1
     ;;
   *)
-    echo "[ERROR] unsupported intra suffix: ${ENV_SUFFIX}; use arb01/arb02/arb03" >&2
+    echo "[ERROR] unsupported intra/cta suffix: ${ENV_SUFFIX}; use arb01/arb02/arb03 (intra) or rx01 (cta)" >&2
     exit 1
     ;;
 esac
 
 EXCHANGE=""
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra([-_].+)?$ ]]; then
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)([-_].+)?$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
 fi
 EXCHANGE="$(normalize_exchange "${EXCHANGE:-}")"

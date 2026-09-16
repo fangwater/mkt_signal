@@ -37,21 +37,23 @@ EXCHANGE=""
 ENV_SUFFIX_EXPLICIT="0"
 EXEC_BACKEND="native"
 
-# 从 env_name 推 exchange + env_suffix（intra 唯一格式：<exchange>-intra-<tag>）
+# 从 env_name 推 exchange + env_suffix（格式：<exchange>-(intra|cta)-<tag>）
 infer_meta_from_env_name() {
   local name="${1,,}"
   local ex=""
+  local mode=""
   local tag=""
 
-  if [[ "$name" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+  if [[ "$name" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
     ex="${BASH_REMATCH[1]}"
-    tag="${BASH_REMATCH[2]}"
+    mode="${BASH_REMATCH[2]}"
+    tag="${BASH_REMATCH[3]}"
   fi
   if [[ "$ex" == "okx" ]]; then
     ex="okex"
   fi
-  if [[ -n "$ex" && -n "$tag" ]]; then
-    echo "${ex},${tag}"
+  if [[ -n "$ex" && -n "$mode" && -n "$tag" ]]; then
+    echo "${ex},${mode}-${tag}"
   fi
 }
 
@@ -93,13 +95,13 @@ if [[ -n "$ENV_NAME" ]]; then
       EXCHANGE="${inferred%%,*}"
     fi
     if [[ "$ENV_SUFFIX_EXPLICIT" != "1" ]]; then
-      ENV_SUFFIX="intra-${inferred##*,}"
+      ENV_SUFFIX="${inferred##*,}"
     fi
   fi
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-intra-<tag> 推断"
+  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-(intra|cta)-<tag> 推断"
   usage
   exit 1
 fi

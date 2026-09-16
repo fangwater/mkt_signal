@@ -68,6 +68,7 @@ pub const DEFAULT_ENV_MODEL_TRUE_THRESHOLD: f64 = 0.0;
 const TARGET_FACTOR_MAX_AGE_MS: i64 = 30_000;
 const FUNDING_ARB_SHELL_NAME: &str = "ArbDecision(FundingArb)";
 const SPREAD_ARB_SHELL_NAME: &str = "ArbDecision(SpreadArb)";
+const CTA_SHELL_NAME: &str = "ArbDecision(cta)";
 const MISSING_TICK_RELOAD_COOLDOWN_US: i64 = 5_000_000;
 const ARB_CLOSE_MIN_NOTIONAL_U: f64 = 25.0;
 // Arb hedge 是 open terminal 触发的高频对冲闭环，不走 MM hedge 的多档拆单模型；
@@ -368,6 +369,15 @@ fn apply_missing_tick_table_refresh(
     }
     if source == SPREAD_ARB_SHELL_NAME {
         return SPREAD_ARB_SHELL.with(|cell| {
+            let Some(shell) = cell.get() else {
+                return false;
+            };
+            let mut shell = shell.borrow_mut();
+            apply_refreshed_table(&mut shell.runtime, venue, table)
+        });
+    }
+    if source == CTA_SHELL_NAME {
+        return CTA_SHELL.with(|cell| {
             let Some(shell) = cell.get() else {
                 return false;
             };
@@ -786,9 +796,14 @@ struct SpreadArbShell {
     pub(crate) runtime: ArbShellRuntime,
 }
 
+struct CtaShell {
+    pub(crate) runtime: ArbShellRuntime,
+}
+
 thread_local! {
     static FUNDING_ARB_SHELL: OnceCell<RefCell<FundingArbShell>> = const { OnceCell::new() };
     static SPREAD_ARB_SHELL: OnceCell<RefCell<SpreadArbShell>> = const { OnceCell::new() };
+    static CTA_SHELL: OnceCell<RefCell<CtaShell>> = const { OnceCell::new() };
 }
 
 impl FundingArbShell {
@@ -953,6 +968,119 @@ impl SpreadArbShell {
 
         log::info!(
             "{SPREAD_ARB_SHELL_NAME} singleton initialized, open={:?} hedge={:?}",
+            open_venue,
+            hedge_venue
+        );
+        Ok(())
+    }
+}
+
+fn build_cta_shell(venues: VenuePair) -> Result<CtaShell> {
+    let pnlu_settings = default_pnlu_redis_settings();
+    let pnlu_key_suffix = DEFAULT_PNLU_KEY_SUFFIX.to_string();
+    let (runtime, open_factor_value_hub, hedge_factor_value_hub) = create_arb_shell_runtime(
+        "arb_cta_shell",
+        CTA_SHELL_NAME,
+        DEFAULT_ARBITRAGE_SIGNAL_CHANNEL,
+        DEFAULT_ARBITRAGE_BACKWARD_CHANNEL,
+        venues,
+        false,
+        pnlu_settings.clone(),
+        pnlu_key_suffix.clone(),
+    )?;
+    log_shell_runtime_ready(CTA_SHELL_NAME);
+
+    let state = CtaShell { runtime };
+    let _ = ArbDecision::with_state_mut(|arb| {
+        arb.open_factor_value_hub = Some(open_factor_value_hub);
+        arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
+        arb.model_output_hub = Some(ModelOutputHub::new(venues.1));
+        // cta 的 model_output 订阅完全由 cta rules 配置驱动；
+        // return/environment 模型角色与 vol gate 不适用于 cta 决策路径。
+        arb.apply_shared_bootstrap(ArbDecisionState::default_shared_bootstrap(4));
+        arb.enable_environment_model = false;
+        arb.return_model_service = None;
+        arb.environment_model_service = None;
+        arb.funding_open_thresholds = HashMap::new();
+    });
+    Ok(state)
+}
+
+impl CtaShell {
+    pub async fn init_singleton(open_venue: TradingVenue, hedge_venue: TradingVenue) -> Result<()> {
+        let venues = (open_venue, hedge_venue);
+        init_shell_runtime(
+            &CTA_SHELL,
+            CTA_SHELL_NAME,
+            CTA_SHELL_NAME,
+            venues,
+            || build_cta_shell(venues),
+            |open_table, hedge_table| {
+                with_thread_local_shell_mut(&CTA_SHELL, CTA_SHELL_NAME, |decision| {
+                    if let Some(open_table) = open_table {
+                        decision.runtime.open_min_qty_table = open_table;
+                    }
+                    if let Some(hedge_table) = hedge_table {
+                        decision.runtime.hedge_min_qty_table = hedge_table;
+                    }
+                });
+            },
+            || {
+                CTA_SHELL.with(|cell| {
+                    let decision_ref = cell.get();
+                    if decision_ref.is_none() {
+                        return false;
+                    }
+                    let decision = decision_ref.unwrap().borrow_mut();
+                    let mut has_message = false;
+                    loop {
+                        ArbDecision::poll_input_updates();
+                        match decision.runtime.backward_sub.receive_msg() {
+                            Ok(Some(data)) => {
+                                has_message = true;
+                                if let Some(query) =
+                                    dispatch_arb_backward_query(CTA_SHELL_NAME, data)
+                                {
+                                    match query {
+                                        // cta 的挂单生命周期由 spread overlay
+                                        // 撤单与 per-lot 对冲管理，不响应 tlen
+                                        // cancel-candidate 轮询。
+                                        ArbBackwardQueryMsg::CancelCandidates(_) => {}
+                                        ArbBackwardQueryMsg::Hedge(query) => {
+                                            drive_shared_arb_hedge_query(
+                                                CTA_SHELL_NAME,
+                                                &decision.runtime,
+                                                query,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                log::warn!("{CTA_SHELL_NAME}: backward_sub 接收错误: {}", err);
+                                break;
+                            }
+                        }
+                    }
+                    has_message
+                })
+            },
+            |now_us| {
+                try_with_thread_local_shell_mut(&CTA_SHELL, |decision| {
+                    (
+                        ArbDecision::with_state_mut(|arb| arb.tlen_threshold_reload_due(now_us))
+                            .unwrap_or(false),
+                        decision.runtime.venues.0,
+                    )
+                })
+            },
+            |_thresholds, _now_us| {},
+        )
+        .await?;
+
+        log::info!(
+            "{CTA_SHELL_NAME} singleton initialized, open={:?} hedge={:?}",
             open_venue,
             hedge_venue
         );
@@ -1125,6 +1253,13 @@ pub fn update_model_output_services_for_arb(node: &Node<ipc::Service>, services:
 
 pub fn try_update_arb_model_output_services(services: Vec<String>) -> bool {
     if try_with_thread_local_shell_mut(&SPREAD_ARB_SHELL, |decision| {
+        update_model_output_services_for_arb(&decision.runtime.node, services.clone());
+    })
+    .is_some()
+    {
+        return true;
+    }
+    if try_with_thread_local_shell_mut(&CTA_SHELL, |decision| {
         update_model_output_services_for_arb(&decision.runtime.node, services.clone());
     })
     .is_some()
@@ -1641,6 +1776,19 @@ fn drive_funding_decision(
     }
 
     Ok(emitted_signal)
+}
+
+/// cta 决策入口：由 quote 更新触发。
+/// 当前阶段只接线 shell/订阅/配置；逐规则的信号状态机与 ArbOpen/ArbCancel
+/// 发放在下一步实现。
+fn drive_cta_decision(
+    _decision: &mut CtaShell,
+    _open_symbol: &str,
+    _hedge_symbol: &str,
+    _open_venue: TradingVenue,
+    _hedge_venue: TradingVenue,
+) -> Result<Option<SignalType>> {
+    Ok(None)
 }
 
 fn drive_spread_arb_decision(
@@ -3902,6 +4050,7 @@ thread_local! {
 pub(crate) enum ArbBackend {
     Funding,
     Spread,
+    Cta,
 }
 
 pub struct ArbDecision;
@@ -4130,6 +4279,9 @@ pub(crate) struct ArbDecisionState {
     pub last_tlen_cancel_log: Instant,
     /// 30s 窗口内资费 close 已命中、但 close spread gate 未通过的 symbol 级统计。
     pub funding_close_spread_blocks: HashMap<(String, ArbSignalKind), FundingCloseSpreadBlock>,
+    /// cta 模式规则集（`{env}:cta_rules:{key_suffix}` 热加载）。
+    /// 仅 `ArbMode::Cta` 下非空；每条 rule 是一条独立因子信号流。
+    pub cta_rules: Vec<super::cta_config::CtaRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -4246,6 +4398,7 @@ impl ArbDecisionState {
             tlen_cancel_summaries: HashMap::new(),
             last_tlen_cancel_log: Instant::now(),
             funding_close_spread_blocks: HashMap::new(),
+            cta_rules: Vec::new(),
         }
     }
 
@@ -4550,6 +4703,14 @@ impl ArbDecisionState {
             self.hedge_price_offset_limit_upper_overrides.len(),
             warned
         );
+    }
+
+    /// 应用一份已校验的 cta 规则集，返回去重后的 model_output 订阅列表。
+    /// 规则整体替换；每条 rule 的状态由消费侧（CtaShell）按 rule_id 隔离维护。
+    pub fn apply_cta_rules(&mut self, rule_set: super::cta_config::CtaRuleSet) -> Vec<String> {
+        let services = rule_set.model_services();
+        self.cta_rules = rule_set.rules().to_vec();
+        services
     }
 
     pub fn apply_shared_bootstrap(&mut self, bootstrap: ArbSharedBootstrap) {
@@ -5602,6 +5763,19 @@ impl ArbDecision {
         try_update_arb_model_output_services(services)
     }
 
+    /// cta 配置 server 的应用入口：替换规则集并同步 model_output 订阅。
+    /// 返回 false 表示 ArbDecision 尚未初始化（调用方应保留配置待重试）；
+    /// shell 尚未建好导致订阅失败时规则仍已落库，下一轮 reload 会补推订阅。
+    pub(crate) fn apply_cta_rule_set(rule_set: super::cta_config::CtaRuleSet) -> bool {
+        let Some(services) = Self::with_state_mut(|arb| arb.apply_cta_rules(rule_set)) else {
+            return false;
+        };
+        if !Self::try_update_model_output_services(services) {
+            log::debug!("ArbDecision: cta model_output subscription deferred (shell not ready)");
+        }
+        true
+    }
+
     pub(crate) fn try_configure_return_score_rolling(
         model_service: Option<&str>,
         rolling_mean_window: usize,
@@ -5661,6 +5835,7 @@ impl ArbDecision {
         match mode {
             ArbMode::FundingArb => ArbBackend::Funding,
             ArbMode::IntraArb | ArbMode::CrossArb => ArbBackend::Spread,
+            ArbMode::Cta => ArbBackend::Cta,
         }
     }
 
@@ -5689,6 +5864,7 @@ impl ArbDecision {
                 FundingArbShell::init_singleton(exchange).await
             }
             ArbBackend::Spread => SpreadArbShell::init_singleton(open_venue, hedge_venue).await,
+            ArbBackend::Cta => CtaShell::init_singleton(open_venue, hedge_venue).await,
         }
     }
 
@@ -5731,6 +5907,17 @@ impl ArbDecision {
                     );
                 });
             }
+            ArbBackend::Cta => {
+                with_thread_local_shell_mut(&CTA_SHELL, CTA_SHELL_NAME, |decision| {
+                    let _ = drive_cta_decision(
+                        decision,
+                        open_symbol,
+                        hedge_symbol,
+                        open_venue,
+                        hedge_venue,
+                    );
+                });
+            }
         }
     }
 
@@ -5754,6 +5941,7 @@ impl ArbDecision {
                     drive_spread_arb_cancel_trigger_interval(decision);
                 });
             }
+            ArbBackend::Cta => {}
         }
     }
 

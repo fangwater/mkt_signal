@@ -33,7 +33,7 @@ usage() {
 用法: intra_scripts/start_intra_viz_server.sh [--cfg config/viz.toml]
 
 说明:
-  - 同所期现：按目录名 <exchange>-intra-<tag> 推断
+  - 同所期现：按目录名 <exchange>-(intra|cta)-<tag> 推断
   - 进程名: intra_viz_<exchange>_<env>
 EOF
 }
@@ -58,11 +58,14 @@ dir_name="$(basename "${BASE_DIR}")"
 dir_lc="${dir_name,,}"
 EXCHANGE=""
 ENV_TAG="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+MODE="intra"
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra$ ]]; then
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]//-/_}"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
+  MODE="${BASH_REMATCH[2]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then EXCHANGE="okex"; fi
 if [[ -z "$EXCHANGE" ]]; then
@@ -70,7 +73,7 @@ if [[ -z "$EXCHANGE" ]]; then
   exit 1
 fi
 
-PROC_NAME="intra_viz_${EXCHANGE}_${ENV_TAG}"
+PROC_NAME="${MODE}_viz_${EXCHANGE}_${ENV_TAG}"
 RUST_LOG="${RUST_LOG:-info}"
 
 if [[ ! -f "$BASE_DIR/$CFG_PATH" ]]; then

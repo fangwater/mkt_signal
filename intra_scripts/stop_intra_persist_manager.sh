@@ -28,21 +28,24 @@ dir_lc="${dir_name,,}"
 
 EXCHANGE=""
 ENV_TAG="intra"
-if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+MODE="intra"
+if [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
-  ENV_TAG="${BASH_REMATCH[2]//-/_}"
-elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_]intra$ ]]; then
+  MODE="${BASH_REMATCH[2]}"
+  ENV_TAG="${BASH_REMATCH[3]//-/_}"
+elif [[ "$dir_lc" =~ ^([a-z0-9]+)[-_](intra|cta)$ ]]; then
   EXCHANGE="${BASH_REMATCH[1]}"
+  MODE="${BASH_REMATCH[2]}"
 fi
 if [[ "$EXCHANGE" == "okx" ]]; then
   EXCHANGE="okex"
 fi
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-intra-<tag>"
+  echo "[ERROR] 无法从目录名推断 exchange (dir=$dir_name)，期望 <exchange>-(intra|cta)-<tag>"
   exit 1
 fi
 
-PROC_NAME="${PMDAEMON_NAME:-intra_pm_${EXCHANGE}_${ENV_TAG}}"
+PROC_NAME="${PMDAEMON_NAME:-${MODE}_pm_${EXCHANGE}_${ENV_TAG}}"
 KILL_WAIT_SECS="${KILL_WAIT_SECS:-6}"
 
 if [[ -n "${PERSIST_MANAGER_CORE:-}" ]]; then

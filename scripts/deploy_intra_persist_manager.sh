@@ -45,13 +45,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$ENV_NAME" && -z "$EXCHANGE" ]]; then
-  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_]intra[-_][a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "${ENV_NAME,,}" =~ ^([a-z0-9]+)[-_](intra|cta)[-_][a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-intra-<tag>"
+  echo "[ERROR] 需要 --exchange，或使用 --env-name <exchange>-(intra|cta)-<tag>"
   usage; exit 1
 fi
 

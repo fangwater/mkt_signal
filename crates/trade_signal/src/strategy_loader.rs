@@ -4,7 +4,7 @@
 //! - ArbDecision: 套利参数（订单量、超时、偏移、冷却时间等）
 
 use anyhow::Result;
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -13,6 +13,7 @@ use runtime_common::redis_client::{RedisClient, RedisSettings};
 use runtime_common::symbol_util::normalize_symbol_for_venue;
 
 use super::arb_decision::{ArbDecision, VolGateCompare};
+use super::arb_mode::ArbMode;
 use super::inventory_hedge_inputs::effective_return_score_adjust_hedge;
 use super::mm_decision::MmDecision;
 use super::return_score_threshold::{
@@ -1961,12 +1962,18 @@ impl StrategyParams {
         .is_some();
         // 旧版用 || 短路把 model_output 服务订阅串在 arb state 写入之后；ArbDecision 已初始化时
         // 第一项总返回 true，订阅这一步永远跑不到，导致 hedge 模型订阅从未建立。这里拆开顺序执行。
+        // cta 模式例外：model_output 订阅由 cta rules 配置独立管理，strategy params 的
+        // return/environment 角色不接管（否则会每轮清掉 rule 订阅）。
         if arb_state_applied {
-            ArbDecision::try_update_model_output_services(self.parse_model_output_services());
-            ArbDecision::try_configure_return_score_rolling(
-                return_model_service.as_deref(),
-                self.return_score_rolling_mean_window,
-            );
+            if matches!(ArbDecision::mode(), Some(ArbMode::Cta)) {
+                debug!("cta 模式：跳过 strategy params 的 model_output 订阅注册");
+            } else {
+                ArbDecision::try_update_model_output_services(self.parse_model_output_services());
+                ArbDecision::try_configure_return_score_rolling(
+                    return_model_service.as_deref(),
+                    self.return_score_rolling_mean_window,
+                );
+            }
         }
         let mm_applied = MmDecision::try_with_mut(|_decision| {
             let open_buy_vol_scale =

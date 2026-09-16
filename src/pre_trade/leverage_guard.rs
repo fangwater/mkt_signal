@@ -845,17 +845,28 @@ fn online_symbol_keys(config: &GuardStartupConfig) -> Vec<String> {
         .into_iter()
         .map(|name| format!("{}:fr_{}:{}", config.env_name, name, venue_suffix))
         .collect(),
-        ArbMode::IntraArb => {
+        ArbMode::IntraArb | ArbMode::Cta => {
+            let list_ns = if config.arb_mode == ArbMode::Cta {
+                "cta"
+            } else {
+                "intra"
+            };
             let exchange_suffix = config.open_venue.trade_engine_exchange();
             vec![
-                format!("{}:intra_dump_symbols:{exchange_suffix}", config.env_name),
-                format!("{}:intra_trade_symbols:{exchange_suffix}", config.env_name),
                 format!(
-                    "{}:intra_fwd_trade_symbols:{exchange_suffix}",
+                    "{}:{list_ns}_dump_symbols:{exchange_suffix}",
                     config.env_name
                 ),
                 format!(
-                    "{}:intra_bwd_trade_symbols:{exchange_suffix}",
+                    "{}:{list_ns}_trade_symbols:{exchange_suffix}",
+                    config.env_name
+                ),
+                format!(
+                    "{}:{list_ns}_fwd_trade_symbols:{exchange_suffix}",
+                    config.env_name
+                ),
+                format!(
+                    "{}:{list_ns}_bwd_trade_symbols:{exchange_suffix}",
                     config.env_name
                 ),
             ]

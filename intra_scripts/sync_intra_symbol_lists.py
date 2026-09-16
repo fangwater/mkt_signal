@@ -2,16 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-将 intra（同所期现）交易对列表同步到 Redis 并打印（按 exchange 维度）。
+将 intra/cta（同所期现）交易对列表同步到 Redis 并打印（按 exchange 维度）。
 
-写入 5 个 Redis key（String 类型，JSON 数组）：
-  - intra_dump_symbols:{exchange}        - 平仓列表
-  - intra_fwd_trade_symbols:{exchange}   - 正套建仓列表
-  - intra_bwd_trade_symbols:{exchange}   - 反套建仓列表
-  - intra_vol_gate_symbols:{open}_{hedge} - 需要应用 inline vol gate 的建仓列表
-                                            - UniMMR 算法平仓候选列表
+写入的 Redis key（String 类型，JSON 数组，namespace 由 --namespace 或
+env-name/CWD 的 -intra-/-cta- 段推断，默认 intra）：
+  - {env}:{ns}_dump_symbols:{exchange}        - 平仓列表
+  - {env}:{ns}_fwd_trade_symbols:{exchange}   - 正套/开多建仓列表
+  - {env}:{ns}_bwd_trade_symbols:{exchange}   - 反套/开空建仓列表
+  - {env}:{ns}_vol_gate_symbols:{exchange}    - 需要应用 inline vol gate 的建仓列表
 
-推断规则：--exchange / --open-venue / --env-name / CWD（<exchange>-intra-<tag>）
+cta 额外镜像：{env}:intra_bwd_trade_symbols:{exchange}（pre_trade 借贷白名单
+固定读该 key，跨模式共享约定）。
+
+推断规则：--exchange / --open-venue / --env-name / CWD（<exchange>-(intra|cta)-<tag>）
 """
 
 from __future__ import annotations
@@ -56,13 +59,21 @@ def exchange_from_venue(venue: str) -> Optional[str]:
 
 def infer_exchange_from_name(name: str) -> Optional[str]:
     n = (name or "").strip().lower()
-    m = re.match(r"^([a-z0-9]+)[-_]intra([_-].*)?$", n)
+    m = re.match(r"^([a-z0-9]+)[-_](intra|cta)([_-].*)?$", n)
     if not m:
         return None
     ex = normalize_exchange(m.group(1))
     if ex not in SUPPORTED_EXCHANGES:
         return None
     return ex
+
+
+def infer_namespace_from_name(name: str) -> Optional[str]:
+    n = (name or "").strip().lower()
+    m = re.match(r"^[a-z0-9]+[-_](intra|cta)([_-].*)?$", n)
+    if not m:
+        return None
+    return m.group(1)
 
 
 def infer_exchange_from_cwd() -> Optional[str]:
@@ -74,7 +85,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--exchange", default=os.environ.get("EXCHANGE"))
     p.add_argument("--open-venue", default=os.environ.get("OPEN_VENUE"))
     p.add_argument("--hedge-venue", default=os.environ.get("HEDGE_VENUE"))
-    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade）")
+    p.add_argument("--env-name", help="环境目录名（例如 binance-intra-trade / binance-cta-rx01）")
+    p.add_argument(
+        "--namespace",
+        choices=["intra", "cta"],
+        help="symbol list 命名空间（默认按 env-name/CWD 的 -intra-/-cta- 段推断）",
+    )
     return p.parse_args()
 
 
@@ -157,16 +173,22 @@ def resolve_env_name(args: argparse.Namespace) -> str:
     return Path.cwd().name.strip().lower()
 
 
+def resolve_namespace(args: argparse.Namespace, env_name: str) -> str:
+    if args.namespace:
+        return args.namespace
+    return infer_namespace_from_name(env_name) or "intra"
+
+
 def resolve_venues(args: argparse.Namespace, exchange: str) -> tuple[str, str]:
     open_venue = (args.open_venue or f"{exchange}-margin").strip().lower()
     hedge_venue = (args.hedge_venue or f"{exchange}-futures").strip().lower()
     return open_venue, hedge_venue
 
 
-def symbol_list_key(env_name: str, name: str, exchange: str) -> str:
+def symbol_list_key(env_name: str, name: str, exchange: str, namespace: str = "intra") -> str:
     if not env_name:
         raise ValueError("env_name is required for intra symbol lists")
-    return f"{env_name}:intra_{name}:{exchange}"
+    return f"{env_name}:{namespace}_{name}:{exchange}"
 
 
 def print_symbol_list(rds, key: str, title: str) -> None:
@@ -237,11 +259,18 @@ def validate_symbol_partition(exchange: Optional[str] = None) -> bool:
     return True
 
 
-def sync_symbol_lists(rds, exchange: str, env_name: str, open_venue: str, hedge_venue: str) -> int:
-    dump_key = symbol_list_key(env_name, "dump_symbols", exchange)
-    fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", exchange)
-    bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange)
-    vol_key = symbol_list_key(env_name, "vol_gate_symbols", exchange)
+def sync_symbol_lists(
+    rds,
+    exchange: str,
+    env_name: str,
+    open_venue: str,
+    hedge_venue: str,
+    namespace: str = "intra",
+) -> int:
+    dump_key = symbol_list_key(env_name, "dump_symbols", exchange, namespace)
+    fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace)
+    bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace)
+    vol_key = symbol_list_key(env_name, "vol_gate_symbols", exchange, namespace)
 
     dump_symbols = symbols_for_exchange(DUMP_SYMBOLS, exchange)
     fwd_symbols = symbols_for_exchange(FWD_SYMBOLS, exchange)
@@ -256,6 +285,13 @@ def sync_symbol_lists(rds, exchange: str, env_name: str, open_venue: str, hedge_
 
     rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
+
+    if namespace == "cta":
+        # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{exchange}
+        # （跨模式共享的 key 名约定），cta env 需要把 bwd 列表同步一份过去。
+        borrow_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, "intra")
+        rds.set(borrow_key, json.dumps(bwd_symbols, ensure_ascii=False))
+        print(f"✅ 已镜像 {len(bwd_symbols)} 个交易对到 '{borrow_key}'（pre_trade 借贷白名单）")
 
     rds.set(vol_key, json.dumps(vol_gate_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(vol_gate_symbols)} 个交易对到 '{vol_key}'（Vol Gate）")
@@ -273,7 +309,7 @@ def main() -> int:
     exchange = resolve_exchange(args)
     if not exchange or exchange not in SUPPORTED_EXCHANGES:
         print(
-            "❌ 需要 --exchange / --open-venue / --env-name，或在目录名包含 '<exchange>-intra-...' 以自动推断",
+            "❌ 需要 --exchange / --open-venue / --env-name，或在目录名包含 '<exchange>-(intra|cta)-...' 以自动推断",
             file=sys.stderr,
         )
         return 2
@@ -286,23 +322,25 @@ def main() -> int:
         return 2
     open_venue, hedge_venue = resolve_venues(args, exchange)
     env_name = resolve_env_name(args)
+    namespace = resolve_namespace(args, env_name)
 
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
 
-    print(f"🔄 开始同步 intra 交易对列表 (exchange={exchange})...")
+    print(f"🔄 开始同步 {namespace} 交易对列表 (exchange={exchange})...")
     print(f"📦 Env: {env_name or '-'}")
+    print(f"🏷️  Namespace: {namespace}")
     print("📍 Redis: 127.0.0.1:6379/0")
     print()
 
-    total = sync_symbol_lists(rds, exchange, env_name, open_venue, hedge_venue)
+    total = sync_symbol_lists(rds, exchange, env_name, open_venue, hedge_venue, namespace)
     print(f"\n✅ 共写入 {total} 个交易对条目")
 
-    print("\n📊 intra 交易对列表配置:")
+    print(f"\n📊 {namespace} 交易对列表配置:")
     print("=" * 80)
-    print_symbol_list(rds, symbol_list_key(env_name, "dump_symbols", exchange), "🔴 dump_symbols")
-    print_symbol_list(rds, symbol_list_key(env_name, "fwd_trade_symbols", exchange), "🟢 fwd_trade_symbols")
-    print_symbol_list(rds, symbol_list_key(env_name, "bwd_trade_symbols", exchange), "🔴 bwd_trade_symbols")
-    print_symbol_list(rds, symbol_list_key(env_name, "vol_gate_symbols", exchange), "🟣 vol_gate_symbols")
+    print_symbol_list(rds, symbol_list_key(env_name, "dump_symbols", exchange, namespace), "🔴 dump_symbols")
+    print_symbol_list(rds, symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace), "🟢 fwd_trade_symbols")
+    print_symbol_list(rds, symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace), "🔴 bwd_trade_symbols")
+    print_symbol_list(rds, symbol_list_key(env_name, "vol_gate_symbols", exchange, namespace), "🟣 vol_gate_symbols")
     print()
     return 0
 

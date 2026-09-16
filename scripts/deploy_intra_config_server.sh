@@ -52,16 +52,16 @@ normalize_env_name() {
 
 require_intra_env_name() {
   local name="$1"
-  if [[ ! "$name" =~ ^[a-z0-9]+-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
-    echo "[ERROR] env-name must match <exchange>-intra-<suffix> (got: ${name})" >&2
+  if [[ ! "$name" =~ ^[a-z0-9]+-(intra|cta)-[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "[ERROR] env-name must match <exchange>-(intra|cta)-<suffix> (got: ${name})" >&2
     exit 1
   fi
 }
 
 intra_env_suffix() {
   local name="$1"
-  if [[ "$name" =~ ^[a-z0-9]+[-_]intra[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
-    echo "${BASH_REMATCH[1]}"
+  if [[ "$name" =~ ^[a-z0-9]+[-_](intra|cta)[-_]([a-z0-9][a-z0-9_-]*)$ ]]; then
+    echo "${BASH_REMATCH[2]}"
   fi
 }
 
@@ -97,6 +97,13 @@ exchange_default_port() {
         gate)    echo "19203" ;;
         bitget)  echo "19213" ;;
         *)       echo "19173" ;;
+      esac
+      ;;
+    rx*)
+      # cta envs（<exchange>-cta-rxNN）显式从 wrapper 传入 --port；这里只兜底 binance
+      case "$exchange" in
+        binance) echo "19174" ;;
+        *)       echo "19174" ;;
       esac
       ;;
     *)
@@ -196,20 +203,30 @@ fi
 ENV_NAME="$(normalize_env_name "$ENV_NAME")"
 require_intra_env_name "$ENV_NAME"
 ENV_SUFFIX="$(intra_env_suffix "$ENV_NAME")"
-case "$ENV_SUFFIX" in
-  arb01|arb02|arb03) ;;
-  trade)
-    echo "[ERROR] intra suffix 'trade' is no longer supported; use arb01/arb02/arb03" >&2
-    exit 1
-    ;;
-  *)
-    echo "[ERROR] unsupported intra suffix: ${ENV_SUFFIX}; use arb01/arb02/arb03" >&2
-    exit 1
-    ;;
-esac
+if [[ "$ENV_NAME" == *-cta-* ]]; then
+  case "$ENV_SUFFIX" in
+    rx*) ;;
+    *)
+      echo "[ERROR] unsupported cta suffix: ${ENV_SUFFIX}; use rxNN (e.g. rx01)" >&2
+      exit 1
+      ;;
+  esac
+else
+  case "$ENV_SUFFIX" in
+    arb01|arb02|arb03) ;;
+    trade)
+      echo "[ERROR] intra suffix 'trade' is no longer supported; use arb01/arb02/arb03" >&2
+      exit 1
+      ;;
+    *)
+      echo "[ERROR] unsupported intra suffix: ${ENV_SUFFIX}; use arb01/arb02/arb03" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [[ -z "$EXCHANGE" ]]; then
-  if [[ "$ENV_NAME" =~ ^([a-z0-9]+)-intra-[a-z0-9][a-z0-9_-]*$ ]]; then
+  if [[ "$ENV_NAME" =~ ^([a-z0-9]+)-(intra|cta)-[a-z0-9][a-z0-9_-]*$ ]]; then
     EXCHANGE="${BASH_REMATCH[1]}"
   fi
 fi

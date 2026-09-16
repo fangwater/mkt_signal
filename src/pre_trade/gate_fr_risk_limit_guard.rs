@@ -699,16 +699,21 @@ fn online_symbol_keys(config: &GateFrRiskLimitConfig) -> Vec<String> {
             .map(|name| format!("{}:fr_{}:{}", env_name, name, venue_suffix))
             .collect()
         }
-        ArbMode::IntraArb => {
+        ArbMode::IntraArb | ArbMode::Cta => {
             let Some(env_name) = config.env_name.as_deref() else {
                 return Vec::new();
             };
+            let list_ns = if config.arb_mode == ArbMode::Cta {
+                "cta"
+            } else {
+                "intra"
+            };
             let exchange_suffix = config.open_venue.trade_engine_exchange();
             vec![
-                format!("{env_name}:intra_dump_symbols:{exchange_suffix}"),
-                format!("{env_name}:intra_trade_symbols:{exchange_suffix}"),
-                format!("{env_name}:intra_fwd_trade_symbols:{exchange_suffix}"),
-                format!("{env_name}:intra_bwd_trade_symbols:{exchange_suffix}"),
+                format!("{env_name}:{list_ns}_dump_symbols:{exchange_suffix}"),
+                format!("{env_name}:{list_ns}_trade_symbols:{exchange_suffix}"),
+                format!("{env_name}:{list_ns}_fwd_trade_symbols:{exchange_suffix}"),
+                format!("{env_name}:{list_ns}_bwd_trade_symbols:{exchange_suffix}"),
             ]
         }
         ArbMode::CrossArb => Vec::new(),
