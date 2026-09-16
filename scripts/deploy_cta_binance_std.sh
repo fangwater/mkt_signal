@@ -16,7 +16,8 @@ usage() {
   - 部署 Binance 同所期现 cta 环境：
       open=binance-margin
       hedge=binance-futures
-      执行后端固定为 ltp（RapidX portfolio credentials）
+      执行后端 --exec-backend ltp|rapidx|native（默认 ltp；native 走原生
+      Binance PM，要求 env.sh 里 BINANCE_ACCOUNT_MODE=UNIFIED）
   - 环境目录固定: $HOME/binance-cta-<suffix>
   - 仅部署，不启动任何进程
   - 支持 suffix: rx01
@@ -40,7 +41,8 @@ while [[ $# -gt 0 ]]; do
     --exec-backend)
       case "${2:-}" in
         ltp|rapidx) EXEC_BACKEND="ltp" ;;
-        *) echo "[ERROR] cta 当前仅支持 ltp/rapidx 执行后端（收到: ${2:-}）" >&2; exit 1 ;;
+        native)     EXEC_BACKEND="native" ;;
+        *) echo "[ERROR] cta 执行后端仅支持 ltp/rapidx/native（收到: ${2:-}）" >&2; exit 1 ;;
       esac
       shift 2 ;;
     --remote)

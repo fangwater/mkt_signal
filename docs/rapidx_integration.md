@@ -17,11 +17,12 @@ Use the existing execution-backend selector consistently in `trade_engine`,
 export TRADE_ENGINE_EXEC_BACKEND_MAP='binance=rapidx,okex=rapidx'
 ```
 
-For a Binance Intra cash leg, `SPOT` is the default. Select RapidX margin
-orders explicitly when that deployment is intended to auto-borrow:
+For a Binance cash leg, `MARGIN` is the default (RapidX `BINANCE_MARGIN_*`
+sells auto-borrow). Select RapidX spot orders explicitly when that deployment
+must not borrow:
 
 ```bash
-export RAPIDX_BINANCE_CASH_BUSINESS_TYPE=MARGIN
+export RAPIDX_BINANCE_CASH_BUSINESS_TYPE=SPOT
 ```
 
 Only `SPOT` and `MARGIN` are accepted. This setting changes the cash-leg order
@@ -341,7 +342,9 @@ reject RapidX sources rather than touching native accounts.
   execution evidence is centrally persisted. Read-only liquidation attribution
   uses documented journal evidence, but live unmatched/uniform-order forced-close
   plumbing remains incomplete. Malformed lifecycle messages invalidate the session.
-- Native Binance auto-repay/collection are disabled for RapidX. Exec startup is
+- For RapidX, Binance auto-repay uses the RapidX loan REST
+  (`rapidxLoan/loan/info` + `rapidxLoan/loan/repay`, hourly at :55 UTC,
+  amounts floored to 2 decimals); collection remains disabled. Exec startup is
   conditional on Manager rule provenance, scoped cancellation and verified leverage.
   FR/MM paths may remain gated by unavailable normalized account
   fields; this is not a claim of production-ready automatic trading.

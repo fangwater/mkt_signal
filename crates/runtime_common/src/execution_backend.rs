@@ -16,8 +16,8 @@ pub enum RapidXCashBusinessType {
 impl RapidXCashBusinessType {
     pub fn resolve(value: &str) -> Result<Self> {
         match value.trim().to_ascii_uppercase().as_str() {
-            "" | "SPOT" => Ok(Self::Spot),
-            "MARGIN" => Ok(Self::Margin),
+            "" | "MARGIN" => Ok(Self::Margin),
+            "SPOT" => Ok(Self::Spot),
             _ => bail!("invalid RapidX Binance cash business type; expected SPOT or MARGIN"),
         }
     }
@@ -144,9 +144,17 @@ mod tests {
     }
 
     #[test]
-    fn rapidx_binance_cash_business_defaults_to_spot_and_validates() {
+    fn rapidx_binance_cash_business_defaults_to_margin_and_validates() {
         assert_eq!(
             RapidXCashBusinessType::resolve("").unwrap(),
+            RapidXCashBusinessType::Margin
+        );
+        assert_eq!(
+            RapidXCashBusinessType::resolve("  ").unwrap(),
+            RapidXCashBusinessType::Margin
+        );
+        assert_eq!(
+            RapidXCashBusinessType::resolve("spot").unwrap(),
             RapidXCashBusinessType::Spot
         );
         assert_eq!(

@@ -2,11 +2,11 @@ use account_common::bybit_auth::BybitCredentials;
 use account_common::gate_auth::GateCredentials;
 use account_common::{init_binance_account_mode, BinanceAccountMode};
 use account_monitor_common::hyperliquid_account::discover_account_mode;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mkt_signal::pre_trade::auto_collection_service::AutoCollectionService;
-use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer};
+use mkt_signal::pre_trade::auto_repay::{BinanceRepayer, BybitRepayer, GateRepayer, RapidXRepayer};
 use mkt_signal::pre_trade::auto_repay_service::AutoRepayService;
 use mkt_signal::pre_trade::batch_exec_config::BatchExecConfigReloader;
 use mkt_signal::pre_trade::binance_fr_position_limit_guard::BinanceFrPositionLimitGuard;
@@ -55,6 +55,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use trade_engine::config::RestConstants;
+use trade_engine::ltp_rest::LtpRestClient;
 use trade_signal::ArbMode;
 
 #[derive(Parser, Debug)]
@@ -619,6 +620,15 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
     } else {
         None
     };
+    if arb_mode == ArbMode::Cta
+        && need_binance
+        && !rapidx_binance
+        && binance_account_mode == Some(BinanceAccountMode::Standard)
+    {
+        bail!(
+            "CTA 借币开空需要 Binance PM(UNIFIED) 或 RapidX 执行后端，BINANCE_ACCOUNT_MODE=STANDARD 不支持"
+        );
+    }
     let need_hyperliquid = open_venue.trade_engine_exchange() == "hyperliquid"
         || hedge_venue.trade_engine_exchange() == "hyperliquid";
     let hyperliquid_account_mode = if need_hyperliquid {
@@ -756,7 +766,7 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             // 与 trade_signal 共用同一份 Redis key（无 prefix）以保证两侧视图一致。
             let mut intra_bwd_refresh = None;
             let mut taker_decision_model_refresh = None;
-            if matches!(arb_mode, ArbMode::IntraArb | ArbMode::Cta) {
+            if arb_mode == ArbMode::IntraArb {
                 let bwd_key_suffix = open_venue.trade_engine_exchange().to_string();
                 let bwd_env_name = dir_prefix.clone().unwrap_or_else(|| {
                     panic!("intra_bwd_trade_symbols requires an env directory prefix")
@@ -894,7 +904,8 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
             }
 
             // 3.1 启动多交易所自动还款服务（启动即跑一次 + 每小时 :55 UTC）。
-            //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan
+            //     - Binance：仅 PM (UNIFIED) 账户模式注册，端点 /papi/v1/repayLoan；
+            //               RapidX 执行后端走 LTP rapidxLoan/loan/repay
             //     - Gate   ：UNIFIED 账户，端点 POST /api/v4/unified/loans (type=repay)
             //     - Bybit  ：UNIFIED 账户，仅为 USDT 调用 /v5/account/no-convert-repay；
             //               非 USDT 持仓币禁止自动还款，避免绕开策略对冲状态。
@@ -927,6 +938,13 @@ async fn run_pre_trade(startup_stable: Arc<AtomicBool>) -> Result<()> {
                             binance_api_secret,
                             RestConstants::RECV_WINDOW_MS,
                         )));
+                    }
+                } else if binance_in_play && rapidx_binance {
+                    match LtpRestClient::from_env() {
+                        Ok(client) => repay_svc.register(Box::new(RapidXRepayer::new(
+                            client, "BINANCE",
+                        ))),
+                        Err(e) => warn!("rapidx auto-repay disabled: {e:#}"),
                     }
                 } else if binance_in_play {
                     info!(

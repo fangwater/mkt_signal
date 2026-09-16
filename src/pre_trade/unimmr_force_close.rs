@@ -1,4 +1,4 @@
-//! Pre-trade owned UniMMR emergency close execution for funding arbitrage.
+//! Pre-trade owned UniMMR emergency close execution for funding arb and cta.
 
 use crate::pre_trade::monitor_channel::MonitorChannel;
 use crate::pre_trade::params_load::PreTradeParamsLoader;
@@ -88,7 +88,7 @@ pub struct UnimmrForceClose;
 
 impl UnimmrForceClose {
     pub fn initialize(arb_mode: ArbMode, binance_account_mode: Option<BinanceAccountMode>) {
-        let enabled = arb_mode == ArbMode::FundingArb
+        let enabled = matches!(arb_mode, ArbMode::FundingArb | ArbMode::Cta)
             && !matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
         STATE.with(|state| {
             *state.borrow_mut() = ForceCloseState {

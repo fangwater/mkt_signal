@@ -188,7 +188,7 @@ key_suffix=`binance`，venue 按 intra 同款规则推断为
 | 板块 | Redis key | 说明 |
 | --- | --- | --- |
 | CTA 信号 | `{env}:cta_rules` | 单 JSON 对象（见下） |
-| Symbol Lists | `{env}:cta_trade_symbols:{exchange}` / `{env}:cta_dump_symbols:{exchange}` | 单一交易宇宙（无 fwd/bwd 概念）+ dump 列表；保存时镜像到 `{env}:intra_bwd_trade_symbols:{exchange}` 供 pre_trade 借贷白名单 |
+| Symbol Lists | `{env}:cta_trade_symbols:{exchange}` / `{env}:cta_dump_symbols:{exchange}` | 单一交易宇宙（无 fwd/bwd 概念）+ dump 列表；CTA 不设借贷白名单 |
 | Strategy Params | `cta_strategy_params_{open}_{hedge}` | hash，10 个网格执行字段（见下） |
 | Spread Thresholds | `cta_spread_thresholds_config_{o}_{h}` + `cta_spread_thresholds_{o}_{h}` | mapping 配置 + 「同步阈值」物化，机制与 fr/intra 相同 |
 | Risk Params | `{env}:{open}:{hedge}:pre_trade_risk_params` | hash，pre_trade 60s 热加载 |
@@ -265,6 +265,7 @@ bidask {5,10,15,20,30,50}、askbid {50,70,80,85,90,95}。
 ```bash
 # 本机环境（在 jp-meta-elvpn 上执行；只部署不启动）
 scripts/deploy_cta_binance_std.sh rx01          # 或 --env-suffix rx01
+scripts/deploy_cta_binance_std.sh rx01 --exec-backend native   # 原生 Binance PM
 
 # 发布 / 启动 / 停止（远端编排，复用 intra 安全流程）
 scripts/publish-cta.sh --env-name binance-cta-rx01
@@ -276,7 +277,8 @@ scripts/stop-cta.sh    --env-name binance-cta-rx01
 - env 注册在 `scripts/intra_orchestration_lib.sh` 的 `cta_configure_env`
   （host=`jp-meta-elvpn`，backend=`ltp`，config=19174，viz=10186，
   account_monitor=`rapidx_account_monitor`）。
-- `deploy_cta_binance_std.sh` 固定 ltp 后端，core layout：
+- `deploy_cta_binance_std.sh` 默认 ltp 后端，也接受 `--exec-backend native`
+  （原生 Binance PM）；core layout：
   account_monitor=32 / trade_signal=33 / pre_trade=34 / trade_engine=35 /
   persist_manager=15（共享）。
 - publish 的 manifest 含 `cta_config_server.py`、`sync_cta_rules.py` /
@@ -285,11 +287,35 @@ scripts/stop-cta.sh    --env-name binance-cta-rx01
 - config server PM2 名 `cta_config_server_{env}`，公网入口
   `http://13.115.227.29:4191/cta/<env>/config`（nginx 前缀 `/cta`）。
 
+**借币开空与账户模式**：
+
+CTA 开空 = 卖出借入的现货（borrow-to-short），FR 同款机制，无借贷白名单——
+只受 `cta_trade_symbols` 宇宙约束。按执行后端分两种：
+
+- RapidX/LTP：cash leg 业务类型默认 `MARGIN`（`RAPIDX_BINANCE_CASH_BUSINESS_TYPE`
+  未配置即 MARGIN，可显式覆盖为 `SPOT`）；`BINANCE_MARGIN_*` 卖单由 LTP
+  自动借币，无需显式借还调用。auto-repay 由 pre_trade 每小时 :55 UTC 走
+  `rapidxLoan/loan/info` + `rapidxLoan/loan/repay`（金额两位小数、向下取整，
+  `clientOrderId=autorepay<ts_ms><coin>`）。⚠️ LTP 是否对 MARGIN 卖单
+  真正自动借币尚需小额实盘 smoke 确认。
+- 原生 Binance PM：`BINANCE_ACCOUNT_MODE=UNIFIED`，现货腿走
+  `/papi/v1/margin/order` + `sideEffectType=MARGIN_BUY`，auto-repay 走
+  `/papi/v1/repayLoan`（`BinanceRepayer`）。`STANDARD` 不支持——pre_trade
+  启动时直接拒绝（`BINANCE_ACCOUNT_MODE=STANDARD` + CTA → bail）。
+  部署用 `deploy_cta_binance_std.sh <tag> --exec-backend native`。
+
+风控：UnimmrOpenLock（只减仓）与 UnimmrForceClose（taker-taker 强平）对
+CTA 生效（UNIFIED 下）。CTA risk params 在 intra schema 之上多 4 个字段：
+`unimmr_force_close_line`（默认 1.3）、`unimmr_force_close_recover_line`
+（默认 1.5）、`arb_order_amount_u`（强平每笔市价单名义 U，默认 100）、
+`open_orders_per_round`（每个 symbol 每批子单数，默认 4）。校验要求
+`0 < force_close < force_close_recover` 且 `force_close < unimmr_trigger_line`。
+
 **新 CTA 环境配置清单**（按顺序；`binance-cta-rx01` 已按此配置）：
 
 1. `deploy_cta_binance_std.sh <tag>` 建 env → `publish-cta.sh` 发二进制和脚本。
-2. Symbol Lists：写 `cta_trade_symbols`（交易宇宙）+ `cta_dump_symbols`；
-   bwd 白名单镜像自动完成。
+2. Symbol Lists：写 `cta_trade_symbols`（交易宇宙）+ `cta_dump_symbols`
+   （CTA 无借贷白名单；保存会顺带清理旧的 intra bwd 镜像 key）。
 3. CTA 信号：model_service + 分位 + 方向。baseline_035 用 notebook §8
    选中组：q=0.9/0.1、both、each_bar、cooldown=0。
 4. Strategy Params：写 10 个执行字段。notebook 选中组

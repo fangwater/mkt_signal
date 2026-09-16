@@ -434,6 +434,7 @@ publish_file trade_engine trade_engine
 publish_file persist_manager persist_manager
 publish_file intra_config_server.py scripts/intra_config_server.py
 publish_file arb_per_symbol_overrides.py scripts/arb_per_symbol_overrides.py
+publish_file cta_config_server.py scripts/cta_config_server.py
 publish_file sync_cta_rules.py scripts/sync_cta_rules.py
 publish_file print_cta_rules.py scripts/print_cta_rules.py
 publish_file sync_intra_risk_params.py scripts/sync_intra_risk_params.py
@@ -444,6 +445,8 @@ publish_file sync_intra_spread_thresholds.py scripts/sync_intra_spread_threshold
 publish_file sync_rolling_metrics_params.py scripts/sync_rolling_metrics_params.py
 publish_file start_intra_config_server.sh scripts/start_intra_config_server.sh
 publish_file stop_intra_config_server.sh scripts/stop_intra_config_server.sh
+publish_file start_cta_config_server.sh scripts/start_cta_config_server.sh
+publish_file stop_cta_config_server.sh scripts/stop_cta_config_server.sh
 publish_file process_match_lib.sh scripts/process_match_lib.sh
 publish_file intra_release_guard.sh scripts/intra_release_guard.sh
 publish_file execution_backend_lib.sh scripts/execution_backend_lib.sh

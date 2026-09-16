@@ -1,4 +1,4 @@
-//! Pre-trade UniMMR global ArbOpen gate for FR and intra strategies.
+//! Pre-trade UniMMR global ArbOpen gate for FR, intra, and cta strategies.
 //!
 //! A low unified-account margin ratio locks new risk: `ArbOpen` may proceed
 //! only when both legs reduce their current positions. The lock uses the same
@@ -42,7 +42,7 @@ thread_local! {
     static STATE: RefCell<UnimmrOpenLockState> = RefCell::new(UnimmrOpenLockState::default());
 }
 
-/// Per-process global lock for FR/intra `ArbOpen` signals.
+/// Per-process global lock for FR/intra/cta `ArbOpen` signals.
 pub struct UnimmrOpenLock;
 
 impl UnimmrOpenLock {
@@ -53,8 +53,10 @@ impl UnimmrOpenLock {
         arb_mode: ArbMode,
         binance_account_mode: Option<BinanceAccountMode>,
     ) -> Result<()> {
-        let enabled = matches!(arb_mode, ArbMode::FundingArb | ArbMode::IntraArb)
-            && !matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
+        let enabled = matches!(
+            arb_mode,
+            ArbMode::FundingArb | ArbMode::IntraArb | ArbMode::Cta
+        ) && !matches!(binance_account_mode, Some(BinanceAccountMode::Standard));
         let notification = enabled
             .then(LocalNotificationClient::from_env)
             .transpose()
@@ -441,6 +443,30 @@ mod tests {
         )
         .unwrap();
         UnimmrOpenLock::apply_account_risk(BasicAccountScope::BinanceStdUm, &risk_msg(0.5));
+        assert!(!UnimmrOpenLock::is_locked());
+    }
+
+    #[test]
+    fn cta_uses_the_same_unimmr_open_lock() {
+        initialize_test(
+            Some("binance-cta01".to_string()),
+            ArbMode::Cta,
+            Some(BinanceAccountMode::Unified),
+        )
+        .unwrap();
+        UnimmrOpenLock::apply_account_risk(BasicAccountScope::BinanceUnified, &risk_msg(1.99));
+        assert!(UnimmrOpenLock::is_locked());
+    }
+
+    #[test]
+    fn cta_binance_standard_is_disabled() {
+        initialize_test(
+            Some("binance-cta01".to_string()),
+            ArbMode::Cta,
+            Some(BinanceAccountMode::Standard),
+        )
+        .unwrap();
+        UnimmrOpenLock::apply_account_risk(BasicAccountScope::BinanceUnified, &risk_msg(0.5));
         assert!(!UnimmrOpenLock::is_locked());
     }
 
