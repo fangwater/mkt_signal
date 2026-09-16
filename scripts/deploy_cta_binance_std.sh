@@ -103,21 +103,17 @@ configure_binance_core_layout() {
     echo "[WARN] $ENV_FILE 不存在，跳过 ${ENV_NAME} core layout 写入" >&2
     return 0
   fi
-  local account_core trade_signal_core pre_trade_core trade_engine_core persist_core
+  local persist_core
   case "$ENV_NAME" in
     binance-cta-rx01)
-      account_core=32; trade_signal_core=33; pre_trade_core=34; trade_engine_core=35; persist_core=15
+      persist_core=15
       ;;
     *) return 0 ;;
   esac
   intra_upsert_env_exports_block \
     "$ENV_FILE" \
     "managed ${ENV_NAME} core layout" \
-    "Local ${ENV_NAME} core layout; trade_engine is single-threaded." \
-    "ACCOUNT_MONITOR_CORE='${account_core}'" \
-    "TRADE_SIGNAL_CORE='${trade_signal_core}'" \
-    "PRE_TRADE_CORE='${pre_trade_core}'" \
-    "TRADE_ENGINE_CORE='${trade_engine_core}'" \
+    "Local ${ENV_NAME} core layout; only persist_manager is pinned." \
     "PERSIST_MANAGER_CORE='${persist_core}'"
   echo "[INFO] ${ENV_NAME} core layout written to $ENV_FILE"
 }

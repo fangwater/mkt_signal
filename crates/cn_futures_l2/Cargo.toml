@@ -13,7 +13,7 @@ clap = { version = "4.5", features = ["derive"] }
 crossbeam-channel = "0.5"
 csv = "1.3"
 parquet = { version = "54", default-features = false, features = ["arrow", "zstd"] }
-rocksdb = { version = "0.21", default-features = false, features = ["lz4"] }
+rocksdb = { version = "0.25", default-features = false, features = ["lz4"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

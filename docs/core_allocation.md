@@ -36,11 +36,7 @@ CPU 布局:`0-5` housekeeping(OS、SSH、PM2、系统服务),`6-47` 隔离
 | 25 | trade_signal(binance_mm_alpha) | |
 | 26 | pre_trade(binance_mm_alpha) | |
 | 27 | trade_engine(binance_mm_alpha) | 单线程；原 31 号 te-ipc 核已回收 |
-| 28-31 | (空) | 原 binance-intra-arb02 已下线删除 |
-| 32 | account_monitor(binance-cta-rx01, RapidX/LTP) | |
-| 33 | trade_signal(binance-cta-rx01) | 首次部署保持停止，显式放量后再启动 |
-| 34 | pre_trade(binance-cta-rx01) | |
-| 35 | trade_engine(binance-cta-rx01, RapidX/LTP) | 单线程 |
+| 28-35 | (空) | 原 binance-intra-arb02 已下线删除 |
 | 36-45 | (空) | |
 | 46 | NIC IRQ: ens41 全部 Tx-Rx 队列(16) | 默认路由/主网卡;禁止再绑用户进程 |
 | 47 | NIC IRQ: ens42 全部 Tx-Rx 队列(16) | 第二块网卡;禁止再绑用户进程。原 pred_rnn_infer 已下线 |
