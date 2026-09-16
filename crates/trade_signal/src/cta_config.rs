@@ -1,17 +1,25 @@
-//! cta 模式规则配置（Redis 热加载）。
+//! cta 模式信号配置（Redis 热加载）。
 //!
 //! 语义对齐 research 引擎 `version005_long_short_rust_two_exchange` 的
-//! `SignalRule`：每条 rule 对应一个独立的因子信号流（`model_output/<service>`），
-//! 各规则之间互不聚合、互不共享状态；组合决策由上层另行处理。
+//! `SignalRule`：一条独立因子信号流（`model_output/<service>`）。
 //!
 //! Redis key：`{env_dir}:cta_rules`
 //! - `env_dir` 取当前工作目录 basename（如 `binance-cta-rx01`），与其它
 //!   env 作用域配置一致；exchange 已编码在 env 名里，不再挂 key_suffix。
+//! - value 为单个 JSON 对象（信号配置）；为兼容旧格式也接受规则数组
+//!   （数组元素同样是一条 `CtaRule`，`rule_id` 可省略，缺省 "default"）。
 //!
-//! value 为 JSON 数组，每个元素是一条 `CtaRule`。
+//! 执行/网格参数（`open_offsets` 档位、单笔名义、TP、trailing、持仓上限等）
+//! 不放在该对象里，而是 `cta_strategy_params_{open}_{hedge}` hash 的字段；
+//! 加载时 `CtaExecOverrides` 从 hash 解析并覆盖到规则上（对象内同名字段仅作
+//! 兼容回退）。
+
+use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
+use order_common::TradingVenue;
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::model_output_hub::ModelOutputHub;
 
@@ -96,7 +104,8 @@ pub struct CtaRule {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCtaRule {
-    rule_id: String,
+    /// 单对象信号配置下可省略（缺省 "default"）；数组格式中建议显式给出。
+    rule_id: Option<String>,
     model_service: String,
     /// long|buy / short|sell / both|long_short|long,short|short,long；缺省 both。
     trade_sides: Option<String>,
@@ -207,6 +216,124 @@ fn default_open_offsets() -> Vec<f64> {
     vec![0.0, 0.0001, 0.0003, 0.0005]
 }
 
+/// `cta_strategy_params_{open}_{hedge}` hash 里的执行/网格字段名
+/// （覆盖到 `CtaRule` 执行段；与 RawCtaRule 同名字段一一对应）。
+const CTA_EXEC_FLOAT_FIELDS: &[&str] = &[
+    "order_notional_usdt",
+    "max_position_notional_usdt",
+    "take_profit",
+    "reward_risk_ratio",
+    "trailing_stop_trigger_step",
+    "trailing_stop_move_step",
+];
+const CTA_EXEC_INT_FIELDS: &[&str] = &["open_ttl_seconds", "max_holding_seconds"];
+const CTA_EXEC_BOOL_FIELDS: &[&str] = &["trailing_stop_enabled"];
+const CTA_EXEC_OFFSETS_FIELD: &str = "open_offsets";
+
+/// 从 `cta_strategy_params_*` hash（String→String）解析出的执行参数覆盖。
+/// 全部为 Option：hash 缺字段时规则回退到对象内字段 / serde 默认值。
+#[derive(Debug, Clone, Default)]
+pub struct CtaExecOverrides {
+    order_notional_usdt: Option<f64>,
+    open_offsets: Option<Vec<f64>>,
+    open_ttl_seconds: Option<i64>,
+    max_position_notional_usdt: Option<f64>,
+    take_profit: Option<f64>,
+    reward_risk_ratio: Option<f64>,
+    trailing_stop_enabled: Option<bool>,
+    trailing_stop_trigger_step: Option<f64>,
+    trailing_stop_move_step: Option<f64>,
+    max_holding_seconds: Option<i64>,
+}
+
+fn parse_exec_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// `open_offsets` 在 hash 里存 JSON 数组字符串（`"[0.0, 0.0001]"`），
+/// 也兼容逗号/空白分隔的裸列表（`"0, 0.0001, 0.0003"`）。
+fn parse_exec_offsets(raw: &str) -> Option<Vec<f64>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<Vec<f64>>(trimmed) {
+        return Some(v);
+    }
+    let parsed: Option<Vec<f64>> = trimmed
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<f64>().ok())
+        .collect();
+    parsed.filter(|v| !v.is_empty())
+}
+
+impl CtaExecOverrides {
+    /// 从 `cta_strategy_params_{open}_{hedge}` hash 解析执行参数覆盖。
+    /// 单个字段解析失败只 warn 跳过（沿用对象内字段/serde 默认），不整轮失败。
+    pub fn from_strategy_params(params: &HashMap<String, String>, key_ctx: &str) -> Self {
+        let mut out = Self::default();
+        for (field, raw) in params {
+            let value = raw.trim();
+            match field.as_str() {
+                name if CTA_EXEC_FLOAT_FIELDS.contains(&name) => match value.parse::<f64>() {
+                    Ok(v) => match name {
+                        "order_notional_usdt" => out.order_notional_usdt = Some(v),
+                        "max_position_notional_usdt" => out.max_position_notional_usdt = Some(v),
+                        "take_profit" => out.take_profit = Some(v),
+                        "reward_risk_ratio" => out.reward_risk_ratio = Some(v),
+                        "trailing_stop_trigger_step" => out.trailing_stop_trigger_step = Some(v),
+                        "trailing_stop_move_step" => out.trailing_stop_move_step = Some(v),
+                        _ => {}
+                    },
+                    Err(_) => log::warn!(
+                        "cta exec param '{}' 在 '{}' 中不是数字: '{}'",
+                        name,
+                        key_ctx,
+                        value
+                    ),
+                },
+                name if CTA_EXEC_INT_FIELDS.contains(&name) => match value.parse::<i64>() {
+                    Ok(v) => match name {
+                        "open_ttl_seconds" => out.open_ttl_seconds = Some(v),
+                        "max_holding_seconds" => out.max_holding_seconds = Some(v),
+                        _ => {}
+                    },
+                    Err(_) => log::warn!(
+                        "cta exec param '{}' 在 '{}' 中不是整数: '{}'",
+                        name,
+                        key_ctx,
+                        value
+                    ),
+                },
+                name if CTA_EXEC_BOOL_FIELDS.contains(&name) => match parse_exec_bool(value) {
+                    Some(v) => out.trailing_stop_enabled = Some(v),
+                    None => log::warn!(
+                        "cta exec param '{}' 在 '{}' 中不是布尔值: '{}'",
+                        name,
+                        key_ctx,
+                        value
+                    ),
+                },
+                name if name == CTA_EXEC_OFFSETS_FIELD => match parse_exec_offsets(value) {
+                    Some(v) => out.open_offsets = Some(v),
+                    None => log::warn!(
+                        "cta exec param 'open_offsets' 在 '{}' 中不是合法数组: '{}'",
+                        key_ctx,
+                        value
+                    ),
+                },
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
 /// 与引擎 `parse_trade_sides` 一致：返回 (allow_long, allow_short)。
 fn parse_trade_sides(raw: Option<&str>) -> Result<(bool, bool)> {
     let Some(value) = raw else {
@@ -221,10 +348,15 @@ fn parse_trade_sides(raw: Option<&str>) -> Result<(bool, bool)> {
 }
 
 impl CtaRule {
-    fn from_raw(raw: RawCtaRule, index: usize) -> Result<Self> {
-        let rule_id = raw.rule_id.trim().to_string();
-        if rule_id.is_empty()
-            || rule_id.len() > RULE_ID_MAX_LEN
+    fn from_raw(raw: RawCtaRule, index: usize, exec: Option<&CtaExecOverrides>) -> Result<Self> {
+        let rule_id = raw
+            .rule_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("default")
+            .to_string();
+        if rule_id.len() > RULE_ID_MAX_LEN
             || !rule_id
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -232,7 +364,7 @@ impl CtaRule {
             bail!(
                 "cta rule[{}] rule_id '{}' invalid: 仅允许 [a-zA-Z0-9_-]，长度 1..={}",
                 index,
-                raw.rule_id,
+                rule_id,
                 RULE_ID_MAX_LEN
             );
         }
@@ -272,16 +404,36 @@ impl CtaRule {
             cooldown_seconds: raw.cooldown_seconds,
             signal_delay_seconds: raw.signal_delay_seconds,
             application,
-            order_notional_usdt: raw.order_notional_usdt,
-            open_offsets: raw.open_offsets.unwrap_or_else(default_open_offsets),
-            open_ttl_seconds: raw.open_ttl_seconds,
-            max_position_notional_usdt: raw.max_position_notional_usdt,
-            take_profit: raw.take_profit,
-            reward_risk_ratio: raw.reward_risk_ratio,
-            trailing_stop_enabled: raw.trailing_stop_enabled,
-            trailing_stop_trigger_step: raw.trailing_stop_trigger_step,
-            trailing_stop_move_step: raw.trailing_stop_move_step,
-            max_holding_seconds: raw.max_holding_seconds,
+            // 执行/网格参数：strategy hash 覆盖 > 对象内字段 > serde 默认。
+            order_notional_usdt: exec
+                .and_then(|e| e.order_notional_usdt)
+                .unwrap_or(raw.order_notional_usdt),
+            open_offsets: exec
+                .and_then(|e| e.open_offsets.clone())
+                .or(raw.open_offsets)
+                .unwrap_or_else(default_open_offsets),
+            open_ttl_seconds: exec
+                .and_then(|e| e.open_ttl_seconds)
+                .unwrap_or(raw.open_ttl_seconds),
+            max_position_notional_usdt: exec
+                .and_then(|e| e.max_position_notional_usdt)
+                .unwrap_or(raw.max_position_notional_usdt),
+            take_profit: exec.and_then(|e| e.take_profit).unwrap_or(raw.take_profit),
+            reward_risk_ratio: exec
+                .and_then(|e| e.reward_risk_ratio)
+                .unwrap_or(raw.reward_risk_ratio),
+            trailing_stop_enabled: exec
+                .and_then(|e| e.trailing_stop_enabled)
+                .unwrap_or(raw.trailing_stop_enabled),
+            trailing_stop_trigger_step: exec
+                .and_then(|e| e.trailing_stop_trigger_step)
+                .unwrap_or(raw.trailing_stop_trigger_step),
+            trailing_stop_move_step: exec
+                .and_then(|e| e.trailing_stop_move_step)
+                .unwrap_or(raw.trailing_stop_move_step),
+            max_holding_seconds: exec
+                .and_then(|e| e.max_holding_seconds)
+                .unwrap_or(raw.max_holding_seconds),
             enabled: raw.enabled,
         };
         rule.validate()?;
@@ -469,12 +621,26 @@ pub struct CtaRuleSet {
 }
 
 impl CtaRuleSet {
+    /// 兼容两种存储格式：单个规则对象（当前 UI 写入的信号配置）或规则数组。
+    /// 执行/网格参数见 `parse_with_exec`。
     pub fn parse(raw: &str) -> Result<Self> {
-        let raws: Vec<RawCtaRule> =
-            serde_json::from_str(raw).context("cta rules JSON must be an array of rule objects")?;
+        Self::parse_with_exec(raw, None)
+    }
+
+    /// 解析 `cta_rules` 内容并把 `cta_strategy_params_*` hash 的执行参数
+    /// 覆盖到每条规则（hash 字段 > 对象内字段 > serde 默认）。
+    pub fn parse_with_exec(raw: &str, exec: Option<&CtaExecOverrides>) -> Result<Self> {
+        let doc: Value = serde_json::from_str(raw).context("cta rules JSON invalid")?;
+        let raws: Vec<RawCtaRule> = match doc {
+            Value::Object(_) => vec![serde_json::from_value::<RawCtaRule>(doc)
+                .context("cta rules 单对象必须是合法 rule 字段")?],
+            Value::Array(_) => serde_json::from_value::<Vec<RawCtaRule>>(doc)
+                .context("cta rules JSON must be an array of rule objects")?,
+            _ => bail!("cta rules JSON must be an object or an array of rule objects"),
+        };
         let mut rules = Vec::with_capacity(raws.len());
         for (index, raw) in raws.into_iter().enumerate() {
-            let rule = CtaRule::from_raw(raw, index)?;
+            let rule = CtaRule::from_raw(raw, index, exec)?;
             if rules
                 .iter()
                 .any(|prev: &CtaRule| prev.rule_id == rule.rule_id)
@@ -502,11 +668,24 @@ impl CtaRuleSet {
     }
 }
 
-/// `{env_dir}:cta_rules` —— env 作用域的 cta 规则 STRING key（一个 env 只对应
+/// `{env_dir}:cta_rules` —— env 作用域的 cta 信号配置 STRING key（一个 env 只对应
 /// 一个 venue 对，exchange 已编码在 env 名里，不再挂 key_suffix）。
 pub fn cta_rules_redis_key(env_dir: &str) -> String {
     let env = env_dir.trim().trim_end_matches(':').to_ascii_lowercase();
     format!("{env}:cta_rules")
+}
+
+/// `cta_strategy_params_{open}_{hedge}` —— cta 执行/网格参数 hash key
+/// （与 strategy_loader::strategy_params_key 对 cta namespace 的拼法一致）。
+pub fn cta_strategy_params_redis_key(
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> String {
+    format!(
+        "cta_strategy_params_{}_{}",
+        open_venue.data_pub_slug(),
+        hedge_venue.data_pub_slug()
+    )
 }
 
 #[cfg(test)]
@@ -643,8 +822,57 @@ mod tests {
     #[test]
     fn rejects_invalid_rule_id_charset() {
         assert!(CtaRuleSet::parse(&rule_json("bad|id", "svc")).is_err());
-        assert!(CtaRuleSet::parse(&rule_json("", "svc")).is_err());
         assert!(CtaRuleSet::parse(&rule_json("has space", "svc")).is_err());
+    }
+
+    #[test]
+    fn parses_single_object_without_rule_id() {
+        // 新存储格式：`{env}:cta_rules` 为单个信号配置对象，rule_id 缺省 "default"。
+        let raw = r#"{"model_service":"svc","trade_sides":"long","long_quantile":0.95}"#;
+        let set = CtaRuleSet::parse(raw).unwrap();
+        assert_eq!(set.rules().len(), 1);
+        let rule = &set.rules()[0];
+        assert_eq!(rule.rule_id, "default");
+        assert_eq!(rule.model_service, "model_output/svc");
+        assert!(rule.allow_long && !rule.allow_short);
+        assert_eq!(rule.long_quantile, 0.95);
+    }
+
+    #[test]
+    fn exec_overrides_from_strategy_params_win() {
+        // 执行/网格参数以 cta_strategy_params hash 为准，覆盖对象内字段。
+        let raw = r#"{"model_service":"svc","order_notional_usdt":50.0,"open_offsets":[0.0],"open_ttl_seconds":30}"#;
+        let mut params = HashMap::new();
+        params.insert("order_notional_usdt".to_string(), "250".to_string());
+        params.insert("open_offsets".to_string(), "[0.0, 0.0002]".to_string());
+        params.insert("open_ttl_seconds".to_string(), "60".to_string());
+        params.insert("max_position_notional_usdt".to_string(), "5000".to_string());
+        params.insert("take_profit".to_string(), "0.005".to_string());
+        params.insert("trailing_stop_enabled".to_string(), "false".to_string());
+        let exec = CtaExecOverrides::from_strategy_params(&params, "test");
+        let set = CtaRuleSet::parse_with_exec(raw, Some(&exec)).unwrap();
+        let rule = &set.rules()[0];
+        assert_eq!(rule.order_notional_usdt, 250.0);
+        assert_eq!(rule.open_offsets, vec![0.0, 0.0002]);
+        assert_eq!(rule.open_ttl_seconds, 60);
+        assert_eq!(rule.max_position_notional_usdt, 5000.0);
+        assert_eq!(rule.take_profit, 0.005);
+        assert!(!rule.trailing_stop_enabled);
+    }
+
+    #[test]
+    fn exec_overrides_tolerate_bad_and_csv_offsets() {
+        // 坏值只 warn 跳过，对象内字段兜底；open_offsets 兼容裸 CSV。
+        let raw = r#"{"model_service":"svc","order_notional_usdt":50.0,"open_ttl_seconds":30}"#;
+        let mut params = HashMap::new();
+        params.insert("order_notional_usdt".to_string(), "not_a_num".to_string());
+        params.insert("open_offsets".to_string(), "0, 0.0001, 0.0003".to_string());
+        let exec = CtaExecOverrides::from_strategy_params(&params, "test");
+        let set = CtaRuleSet::parse_with_exec(raw, Some(&exec)).unwrap();
+        let rule = &set.rules()[0];
+        assert_eq!(rule.order_notional_usdt, 50.0); // 坏值被忽略，对象内字段兜底
+        assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003]);
+        assert_eq!(rule.open_ttl_seconds, 30);
     }
 
     #[test]

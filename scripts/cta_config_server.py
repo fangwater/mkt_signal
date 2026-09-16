@@ -4,15 +4,15 @@
 """CTA 专用 config server（与 intra_config_server 独立）。
 
 只暴露 cta env 真正消费的配置：
-  - CTA Rules          -> {env}:cta_rules                        (JSON 数组，trade_signal 热加载)
+  - CTA 信号           -> {env}:cta_rules                        (单 JSON 对象：model/分位/方向)
   - Symbol Lists       -> {env}:cta_trade_symbols:{exchange}     (单一交易宇宙，无正反概念)
                          {env}:cta_dump_symbols:{exchange}       (平仓/禁用列表)
                          + 镜像 {env}:intra_bwd_trade_symbols:{exchange} (pre_trade 借贷白名单)
-  - Strategy Params    -> cta_strategy_params_{open}_{hedge}     (hash)
+  - Strategy Params    -> cta_strategy_params_{open}_{hedge}     (hash：网格执行参数 + 共享执行旋钮)
   - Risk Params        -> {env}:{open}:{hedge}:pre_trade_risk_params (hash, pre_trade 读取)
 
 schema 常量与通用 helper 从 intra_config_server import（单一来源），
-Redis 校验复用 sync_cta_rules.validate_rules（与 Rust RawCtaRule 同规则）。
+校验复用 sync_cta_rules（与 Rust cta_config.rs 同规则）。
 
 运行：在 env 目录（<exchange>-cta-<tag>）下启动，例如
   cd ~/binance-cta-rx01 && python3 scripts/cta_config_server.py --port 19174
@@ -34,7 +34,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 import intra_config_server as base  # noqa: E402  (schema 常量与通用 helper 的单一来源)
-import cta_rules_panel  # noqa: E402
+import sync_cta_rules  # noqa: E402  (cta 信号/执行字段校验，与 Rust loader 同规则)
 
 SUPPORTED_EXCHANGES = base.SUPPORTED_EXCHANGES
 
@@ -79,11 +79,29 @@ INDEX_HTML_TEMPLATE = (
 
   <main>
     <div class="subnav">
-      <a href="#cta-rules">CTA Rules</a>
+      <a href="#cta-signal">CTA 信号</a>
       <a href="#symbol-lists">Symbol Lists</a>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
     </div>
+
+    <section id="cta-signal" class="panel">
+      <div class="section-header">
+        <h2>CTA 信号 <span class="badge" id="signal-key"></span></h2>
+        <div class="actions">
+          <button id="signal-load" class="secondary">读取</button>
+          <button id="signal-save">保存</button>
+          <button id="signal-default" class="ghost">默认</button>
+        </div>
+      </div>
+      <div class="hint">
+        key: <code>{env}:cta_rules</code>（单 JSON 对象，trade_signal 60s 热加载）。
+        配置哪个 model、分位阈值、多空方向；网格执行参数（档位/单笔名义/TP/trailing）在
+        <a href="#strategy-params">Strategy Params</a>。
+      </div>
+      <div id="signal-table" class="kv-table"></div>
+      <div id="signal-status" class="status"></div>
+    </section>
 
     <section id="symbol-lists" class="panel">
       <div class="section-header">
@@ -121,8 +139,8 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div class="hint">
         hash key: <code>cta_strategy_params_{open_venue}_{hedge_venue}</code>，trade_signal 60s 热加载。
-        仅共享执行管道参数（对冲腿/订单TTL/冷却/撤单链路）；每笔网格参数（档位、单笔名义、TP、trailing）在
-        <a href="#cta-rules">CTA Rules</a> 内按规则配置。
+        前段为网格报单执行参数（open_offsets 档位、单笔名义、TP、trailing、持仓上限），
+        后段为共享执行链路旋钮（订单TTL/对冲时限/冷却/撤单）。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -143,7 +161,6 @@ INDEX_HTML_TEMPLATE = (
       <div id="risk-table" class="kv-table"></div>
       <div id="risk-status" class="status"></div>
     </section>
-__CTA_RULES_PANEL_HTML__
   </main>
 
   <script>
@@ -209,7 +226,9 @@ __CTA_RULES_PANEL_HTML__
       Object.keys(values).forEach(key => {
         if (!ordered.includes(key)) ordered.push(key);
       });
-      const boolKeys = new Set(containerId === 'strategy-table' ? (BOOTSTRAP.param_schema?.strategy_bool_params || []) : []);
+      const panel = containerId.replace(/-table$/, '');
+      const boolKeys = new Set((BOOTSTRAP.bool_params && BOOTSTRAP.bool_params[panel]) || []);
+      const selectDefs = (BOOTSTRAP.selects && BOOTSTRAP.selects[panel]) || {};
       ordered.forEach(key => {
         const row = document.createElement('div');
         row.className = 'kv-row';
@@ -220,7 +239,18 @@ __CTA_RULES_PANEL_HTML__
         inputCell.className = 'kv-input';
         const rawValue = values[key] ?? defaults[key] ?? '';
         let input;
-        if (boolKeys.has(key) && isBooleanParamValue(rawValue)) {
+        if (selectDefs[key]) {
+          input = document.createElement('select');
+          const options = [...selectDefs[key]];
+          if (rawValue !== '' && !options.includes(String(rawValue))) options.unshift(String(rawValue));
+          options.forEach(value => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = value;
+            input.appendChild(option);
+          });
+          input.value = String(rawValue);
+        } else if (boolKeys.has(key) && isBooleanParamValue(rawValue)) {
           input = document.createElement('select');
           [['false', 'false'], ['true', 'true']].forEach(([value, label]) => {
             const option = document.createElement('option');
@@ -332,13 +362,66 @@ __CTA_RULES_PANEL_HTML__
     const saveRiskParams = () => saveParamPanel('risk');
     const applyRiskDefaults = () => applyParamDefaults('risk');
 
+    // ---- CTA 信号（{env}:cta_rules 单对象）----
+    function renderSignalRows(values) {
+      buildParamRows(
+        'signal-table',
+        BOOTSTRAP.defaults.signal_params || {},
+        BOOTSTRAP.comments.signal_params || {},
+        BOOTSTRAP.order.signal || [],
+        values || {}
+      );
+    }
+
+    async function loadSignalConfig() {
+      setStatus('signal-status', '读取中...');
+      try {
+        const data = await fetchJson(apiUrl('cta-rules'));
+        document.getElementById('signal-key').textContent = data.key || '';
+        renderSignalRows(data.values || {});
+        setStatus('signal-status', '读取完成');
+      } catch (err) {
+        // key 未配置（404）或读失败都落到默认表，编辑后保存即可创建。
+        renderSignalRows({});
+        const notConfigured = String(err).includes('404');
+        setStatus(
+          'signal-status',
+          notConfigured ? '尚未配置，已载入默认值（修改后点保存写入）' : `读取失败: ${err}（已载入默认值）`,
+          false
+        );
+      }
+    }
+
+    async function saveSignalConfig() {
+      setStatus('signal-status', '保存中...');
+      try {
+        const data = await fetchJson(apiUrl('cta-rules'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values: collectParamValues('signal-table') }),
+        });
+        setStatus('signal-status', `保存成功 -> ${data.key}`);
+      } catch (err) {
+        setStatus('signal-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    const applySignalDefaults = () => {
+      renderSignalRows({});
+      setStatus('signal-status', '已载入默认值（未保存）');
+    };
+
     async function reloadAll() {
+      await loadSignalConfig();
       await loadSymbolLists();
       await loadStrategyParams();
       await loadRiskParams();
     }
 
     applyFixedContext();
+    document.getElementById('signal-load').addEventListener('click', loadSignalConfig);
+    document.getElementById('signal-save').addEventListener('click', saveSignalConfig);
+    document.getElementById('signal-default').addEventListener('click', applySignalDefaults);
     document.getElementById('sym-load').addEventListener('click', loadSymbolLists);
     document.getElementById('sym-save').addEventListener('click', saveSymbolLists);
     document.getElementById('strategy-load').addEventListener('click', loadStrategyParams);
@@ -348,8 +431,6 @@ __CTA_RULES_PANEL_HTML__
     document.getElementById('risk-save').addEventListener('click', saveRiskParams);
     document.getElementById('risk-default').addEventListener('click', applyRiskDefaults);
     document.getElementById('reload-all').addEventListener('click', reloadAll);
-__CTA_RULES_PANEL_JS__
-    bindCtaRulesPanel();
     reloadAll();
   </script>
 </body>
@@ -373,40 +454,96 @@ def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta
     return base.intra_symbol_list_key(env_name, name, suffix, namespace)
 
 
-# cta 是网格报单模型：每笔执行参数（网格档 open_offsets、单笔名义、TP、
-# trailing、冷却、持仓上限）都在 cta_rules 规则内。strategy_params hash 只承载
-# 共享执行链路里 mode-agnostic 的少量参数：
+# cta 信号配置（{env}:cta_rules 单对象）的字段默认值/注释/顺序——
+# 「CTA 信号」面板按此渲染扁平参数行。执行/网格字段不在这里，归 strategy hash。
+_CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
+    "model_service": "",
+    "enabled": True,
+    "trade_sides": "both",
+    "application": "each_bar",
+    "long_quantile": 0.9,
+    "short_quantile": 0.1,
+    "spread_long_quantile": 0.7,
+    "spread_short_quantile": 0.3,
+    "spread_cancel_quantile": 0.5,
+    "rolling_window": 2880,
+    "rolling_min_periods": 1440,
+    "frequency_seconds": 60,
+    "signal_delay_seconds": 1,
+    "cooldown_seconds": 0,
+}
+_CTA_SIGNAL_COMMENTS: Dict[str, str] = {
+    "model_service": "因子信号流 service（model_output/<service>，必填），如 intra-binance-futures-1m-xxx",
+    "enabled": "false = 不产生任何信号（配置保留）",
+    "trade_sides": "方向生效：both 多空都做 / long 只多 / short 只空",
+    "application": "each_bar 每根 bar 评估 / on_change 仅方向翻转时",
+    "long_quantile": "score 分位 > 此值做多",
+    "short_quantile": "score 分位 < 此值做空（须 < long_quantile）",
+    "spread_long_quantile": "做多要求 spread_rate 分位 < 此值",
+    "spread_short_quantile": "做空要求 spread_rate 分位 > 此值",
+    "spread_cancel_quantile": "spread 分位越过此值撤同向未成交单",
+    "rolling_window": "spread 分位滚动窗口（bar 数）",
+    "rolling_min_periods": "分位就绪所需最少样本 ∈ [1, rolling_window]",
+    "frequency_seconds": "bar 周期（秒），仅校验/记录",
+    "signal_delay_seconds": "信号确认延迟（秒）",
+    "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
+}
+_CTA_SIGNAL_ORDER: List[str] = list(_CTA_SIGNAL_DEFAULTS.keys())
+_CTA_SIGNAL_SELECTS: Dict[str, List[str]] = {
+    "trade_sides": ["both", "long", "short"],
+    "application": ["each_bar", "on_change"],
+}
+_CTA_SIGNAL_BOOLS: List[str] = ["enabled"]
+
+# strategy_params hash 承载两组字段：
+# 1) cta 执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES 全集）——Rust
+#    CtaExecOverrides 加载时覆盖到规则上，与 cta_rules 对象同名字段兼容。
+# 2) 共享执行链路里 mode-agnostic 的少量参数：
 #   signal_cooldown    —— 信号冷却/扫档节拍（main.rs 决策循环直接消费）
 #   open_order_timeout —— 开仓单 TTL 兜底（打进 ArbOpen ctx）
 #   hedge_timeout      —— 对冲腿成交时限（打进 ArbOpen ctx / hedge 查询 exp_time）
 #   enable_tlen_cancel / tlen_cancel_freq_ms —— 通用挂单撤单链路
-# intra 的 inventory-hedge 定价（hedge_vol_multiplier/hedge_offset_ratio/
-# hedge_price_offset_limit_*/max_hedge_price_pct_change）只服务 return-score
-# 驱动的库存再平衡对冲，cta 的 per-lot entry 锚定 TP 对冲不消费；
-# hedge_aggressive_seq_threshold 全库无读取点（死配置）；vol gate / taker
-# decision model / model 角色订阅在 cta 路径均被 build_cta_shell 显式禁用。
-_CTA_STRATEGY_KEYS: Tuple[str, ...] = (
+_CTA_EXEC_COMMENTS: Dict[str, str] = {
+    "order_notional_usdt": "网格单档挂单名义（USDT）",
+    "open_offsets": "网格档位价格偏移，JSON 数组或逗号分隔（0..0.01），档数=个数",
+    "open_ttl_seconds": "开仓挂单 TTL（秒）",
+    "max_position_notional_usdt": "单向名义上限（USDT），须 ≥ 档数×单档名义",
+    "take_profit": "swap 腿 maker 止盈偏移（价格分数）；0=不挂止盈",
+    "reward_risk_ratio": "止盈/止损比：stop_loss = take_profit / rr",
+    "trailing_stop_enabled": "trailing stop 开关（true/false）",
+    "trailing_stop_trigger_step": "trailing 触发步进（价格分数）",
+    "trailing_stop_move_step": "trailing 移动步进（价格分数）",
+    "max_holding_seconds": "最长持仓（秒），0=不限制",
+}
+_CTA_SHARED_STRATEGY_KEYS: Tuple[str, ...] = (
     "signal_cooldown",
     "open_order_timeout",
     "hedge_timeout",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
 )
+# 面板顺序：执行/网格参数在前（主配置），共享旋钮在后。
+_CTA_STRATEGY_KEYS: Tuple[str, ...] = (
+    tuple(sync_cta_rules.EXEC_FIELD_TYPES.keys()) + _CTA_SHARED_STRATEGY_KEYS
+)
 
 
 def _cta_strategy_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
-    allowed = set(_CTA_STRATEGY_KEYS)
-    defaults = {
-        k: v for k, v in base.DEFAULT_STRATEGY_PARAMS.items() if k in allowed
+    exec_defaults = {
+        k: v for k, v in sync_cta_rules.EXEC_FIELD_DEFAULTS.items()
     }
-    comments = {
-        k: v for k, v in base.STRATEGY_PARAM_COMMENTS.items() if k in allowed
-    }
-    order = [
-        k
-        for k in base.STRATEGY_PARAM_ORDER
-        if k in allowed
-    ]
+    exec_defaults["open_offsets"] = json.dumps(
+        sync_cta_rules.EXEC_FIELD_DEFAULTS["open_offsets"], separators=(",", ":")
+    )
+    exec_defaults["trailing_stop_enabled"] = "true"
+    defaults = dict(exec_defaults)
+    comments = dict(_CTA_EXEC_COMMENTS)
+    for key in _CTA_SHARED_STRATEGY_KEYS:
+        if key in base.DEFAULT_STRATEGY_PARAMS:
+            defaults[key] = base.DEFAULT_STRATEGY_PARAMS[key]
+        if key in base.STRATEGY_PARAM_COMMENTS:
+            comments[key] = base.STRATEGY_PARAM_COMMENTS[key]
+    order = list(_CTA_STRATEGY_KEYS)
     return defaults, comments, order
 
 
@@ -426,33 +563,30 @@ def render_index_html(
         "default_open_venue": default_open_venue or "",
         "default_hedge_venue": default_hedge_venue or "",
         "key_suffix": key_suffix,
-        "features": {"cta_rules": True},
-        "param_schema": {
-            "strategy_bool_params": base.STRATEGY_BOOL_PARAM_KEYS,
-        },
         "defaults": {
+            "signal_params": dict(_CTA_SIGNAL_DEFAULTS),
             "strategy_params": strategy_defaults,
             "risk_params": dict(base.DEFAULT_RISK_PARAMS),
         },
         "comments": {
+            "signal_params": dict(_CTA_SIGNAL_COMMENTS),
             "strategy_params": strategy_comments,
             "risk_params": dict(base.RISK_PARAM_COMMENTS),
         },
         "order": {
+            "signal": _CTA_SIGNAL_ORDER,
             "strategy": strategy_order,
             "risk": base.RISK_PARAM_ORDER,
         },
+        "selects": {"signal": _CTA_SIGNAL_SELECTS},
+        "bool_params": {
+            "signal": _CTA_SIGNAL_BOOLS,
+            "strategy": ["enable_tlen_cancel", "trailing_stop_enabled"],
+        },
     }
-    html = INDEX_HTML_TEMPLATE.replace(
+    return INDEX_HTML_TEMPLATE.replace(
         "__BOOTSTRAP__", json.dumps(bootstrap, ensure_ascii=False)
     )
-    html = html.replace(
-        "__CTA_RULES_PANEL_HTML__", cta_rules_panel.render_cta_rules_panel_html()
-    )
-    html = html.replace(
-        "__CTA_RULES_PANEL_JS__", cta_rules_panel.render_cta_rules_panel_js()
-    )
-    return html
 
 
 @dataclass
@@ -555,11 +689,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             key = strategy_params_key(open_venue, hedge_venue)
             raw_values = base.read_hash(self.server.context.redis_client, key)
+            st_defaults, st_comments, st_order = _cta_strategy_schema()
             values, stale_values = base.filter_mapping_by_schema(
-                raw_values,
-                base.DEFAULT_STRATEGY_PARAMS,
-                base.STRATEGY_PARAM_COMMENTS,
-                base.STRATEGY_PARAM_ORDER,
+                raw_values, st_defaults, st_comments, st_order
             )
             self._send_json(
                 200,
@@ -610,12 +742,29 @@ class RequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
-            self._send_json(
-                200,
-                cta_rules_panel.read_cta_rules(
-                    self.server.context.redis_client, env_name
-                ),
-            )
+            key = sync_cta_rules.cta_rules_key(env_name)
+            raw = self.server.context.redis_client.get(key)
+            if raw is None:
+                self._send_error(404, f"cta signal config not found: {key}")
+                return
+            text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            try:
+                doc = json.loads(text)
+            except Exception as exc:
+                self._send_error(500, f"{key} 不是合法 JSON: {exc}")
+                return
+            # 兼容旧数组格式：取第一条；空数组视为未配置。
+            if isinstance(doc, list):
+                doc = doc[0] if doc and isinstance(doc[0], dict) else None
+            if not isinstance(doc, dict) or not doc:
+                self._send_error(404, f"cta signal config empty: {key}")
+                return
+            values = {
+                k: doc[k]
+                for k in list(sync_cta_rules.SIGNAL_FIELD_TYPES) + ["rule_id"]
+                if k in doc
+            }
+            self._send_json(200, {"key": key, "exists": True, "values": values})
             return
 
         self._send_error(404, "not found")
@@ -719,6 +868,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(400, str(exc))
                 return
+            # 执行/网格字段与 Rust CtaRule::validate 同规则校验并规范化
+            # （open_offsets 统一为 JSON 数组字符串）。
+            exec_values = {
+                k: mapping[k] for k in sync_cta_rules.EXEC_FIELD_TYPES if k in mapping
+            }
+            norm_exec, exec_errors = sync_cta_rules.parse_exec_params(exec_values)
+            if exec_errors:
+                self._send_error(400, "exec params 校验失败: " + "; ".join(exec_errors))
+                return
+            mapping.update(norm_exec)
             result = base.replace_hash(self.server.context.redis_client, key, mapping)
             self._send_json(200, result)
             return
@@ -758,42 +917,24 @@ class RequestHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_error(400, str(exc))
                 return
-            rules = payload.get("rules")
-            if not isinstance(rules, list):
-                self._send_error(400, "rules must be an array of rule objects")
+            values = payload.get("values")
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be an object of signal fields")
                 return
-            dry_run = bool(payload.get("dry_run"))
-            if dry_run:
-                errors = cta_rules_panel.validate_cta_rules(rules)
-                if errors:
-                    self._send_json(200, {"ok": False, "errors": errors})
-                    return
-                self._send_json(
-                    200,
-                    {
-                        "ok": True,
-                        "key": cta_rules_panel.cta_rules_redis_key(env_name),
-                        "count": len(rules),
-                    },
-                )
+            config, errors = sync_cta_rules.parse_signal_config(values)
+            if errors:
+                self._send_error(400, "cta signal 校验失败: " + "; ".join(errors))
                 return
+            key = sync_cta_rules.cta_rules_key(env_name)
+            body = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
             try:
-                result = cta_rules_panel.write_cta_rules(
-                    self.server.context.redis_client, env_name, rules
-                )
-            except ValueError as exc:
-                self._send_error(400, str(exc))
-                return
+                self.server.context.redis_client.set(key, body)
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
-            print(
-                "[cta-rules][POST] env={} key={} count={}".format(
-                    env_name, result["key"], result["count"]
-                )
-            )
+            print(f"[cta-rules][POST] env={env_name} key={key} fields={len(config)}")
             sys.stdout.flush()
-            self._send_json(200, result)
+            self._send_json(200, {"key": key, "count": len(config), "bytes": len(body)})
             return
 
         self._send_error(404, "not found")

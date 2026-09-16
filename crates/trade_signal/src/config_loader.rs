@@ -19,7 +19,9 @@ use order_common::TradingVenue;
 use runtime_common::redis_client::{RedisClient, RedisSettings};
 
 use super::arb_decision::ArbDecision;
-use super::cta_config::{cta_rules_redis_key, CtaRuleSet};
+use super::cta_config::{
+    cta_rules_redis_key, cta_strategy_params_redis_key, CtaExecOverrides, CtaRuleSet,
+};
 use super::fr_threshold_loader::load_from_redis as load_fr_thresholds;
 use super::mm_decision::MmDecision;
 use super::rolling_threshold_sync::{
@@ -188,9 +190,10 @@ async fn reload_all_configs(
     reload_dynamic_thresholds(redis, namespace, open_venue, hedge_venue).await?;
     reload_fr_thresholds(redis, namespace, open_venue, hedge_venue).await?;
 
-    // 4. cta 模式：env 作用域的独立规则集（每条规则一路独立因子信号）。
+    // 4. cta 模式：env 作用域的信号配置（model/分位/方向）+ strategy hash
+    //    的执行/网格参数合并成规则集。
     if normalize_namespace(namespace) == "cta" {
-        reload_cta_rules(redis).await?;
+        reload_cta_rules(redis, open_venue, hedge_venue).await?;
     }
 
     info!("✅ 配置重载完成");
@@ -267,14 +270,22 @@ async fn reload_symbol_list(
     Ok(())
 }
 
-/// 重载 cta 规则集（`{env}:cta_rules`，JSON 数组）。
+/// 重载 cta 信号配置（`{env}:cta_rules`，单对象；兼容数组）。
 ///
+/// - 执行/网格参数（open_offsets/单笔名义/TP/trailing 等）来自
+///   `cta_strategy_params_{open}_{hedge}` hash，加载时覆盖到规则上；
+///   hash 缺失/字段缺失时走 serde 默认（与 strategy params 的 cta 容错一致）。
 /// - key 缺失 / Redis 失败 / 解析失败：warn 并保留上一份已应用配置；
 /// - key 存在且解析成功：原子替换规则集，并把去重后的 model_output
 ///   service 列表推给 ArbDecision 的订阅 hub（空的 `[]` 会显式清空订阅）。
-async fn reload_cta_rules(redis: &RedisSettings) -> Result<()> {
+async fn reload_cta_rules(
+    redis: &RedisSettings,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+) -> Result<()> {
     let env_dir = funding_env_dir_or_panic();
     let redis_key = cta_rules_redis_key(&env_dir);
+    let strategy_key = cta_strategy_params_redis_key(open_venue, hedge_venue);
 
     let mut client = match RedisClient::connect(redis.clone()).await {
         Ok(client) => client,
@@ -286,8 +297,18 @@ async fn reload_cta_rules(redis: &RedisSettings) -> Result<()> {
             return Ok(());
         }
     };
+    let exec = match client.hgetall_map(&strategy_key).await {
+        Ok(map) => CtaExecOverrides::from_strategy_params(&map, &strategy_key),
+        Err(err) => {
+            warn!(
+                "cta exec params 读取失败 (key='{}')，使用对象内字段/默认值: {:?}",
+                strategy_key, err
+            );
+            CtaExecOverrides::default()
+        }
+    };
     match client.get_string(&redis_key).await {
-        Ok(Some(raw)) => match CtaRuleSet::parse(&raw) {
+        Ok(Some(raw)) => match CtaRuleSet::parse_with_exec(&raw, Some(&exec)) {
             Ok(rule_set) => {
                 let rule_count = rule_set.rules().len();
                 let services = rule_set.model_services();

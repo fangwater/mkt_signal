@@ -2,10 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-将 cta 规则集同步到 Redis（env 作用域 STRING key，JSON 数组）。
+将 cta 信号配置同步到 Redis（env 作用域 STRING key，单 JSON 对象）。
 
 写入的 Redis key：
   - {env}:cta_rules    - 例如 binance-cta-rx01:cta_rules
+
+`{env}:cta_rules` 存放信号配置对象（model_service/分位/方向/spread overlay）；
+执行/网格参数（open_offsets、单笔名义、TP、trailing 等）归
+`cta_strategy_params_{open}_{hedge}` hash（本脚本提供 parse_exec_params
+供 config server 校验写入）。为兼容旧格式，--file 也接受规则数组。
 
 校验规则与 trade_signal `cta_config.rs` 的 `CtaRule::validate` 保持一致
 （在写入前本地全量校验，避免把 loader 会拒绝的配置写进 Redis）。
@@ -13,9 +18,9 @@
 env-name 推断：--env-name，或 CWD 目录名 <exchange>-cta-<tag>。
 
 用法：
-  scripts/sync_cta_rules.py --env-name binance-cta-rx01 --file rules.json
-  scripts/sync_cta_rules.py --file rules.json --dry-run     # 只校验不写
-  scripts/sync_cta_rules.py --clear                          # 写入 [] 清空规则
+  scripts/sync_cta_rules.py --env-name binance-cta-rx01 --file signal.json
+  scripts/sync_cta_rules.py --file signal.json --dry-run    # 只校验不写
+  scripts/sync_cta_rules.py --clear                          # 写入 [] 清空信号
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 RULE_ID_MAX_LEN = 32
 MAX_OPEN_LEVELS = 8
@@ -73,6 +78,55 @@ QUANTILE_FIELDS = (
     "spread_short_quantile",
     "spread_cancel_quantile",
 )
+
+# ---- 信号配置（{env}:cta_rules 单对象）与执行参数（strategy hash）的字段分区 ----
+# 信号字段：config server 的「CTA 信号」面板编辑这些；rule_id 可选透传。
+SIGNAL_FIELD_TYPES: Dict[str, str] = {
+    "model_service": "str",
+    "enabled": "bool",
+    "trade_sides": "str",
+    "application": "str",
+    "long_quantile": "float",
+    "short_quantile": "float",
+    "spread_long_quantile": "float",
+    "spread_short_quantile": "float",
+    "spread_cancel_quantile": "float",
+    "rolling_window": "int",
+    "rolling_min_periods": "int",
+    "frequency_seconds": "int",
+    "signal_delay_seconds": "int",
+    "cooldown_seconds": "int",
+}
+
+# 执行/网格字段：存于 cta_strategy_params_* hash（String→String），
+# Rust CtaExecOverrides 加载时覆盖到规则上。
+EXEC_FIELD_TYPES: Dict[str, str] = {
+    "order_notional_usdt": "float",
+    "open_offsets": "offsets",
+    "open_ttl_seconds": "int",
+    "max_position_notional_usdt": "float",
+    "take_profit": "float",
+    "reward_risk_ratio": "float",
+    "trailing_stop_enabled": "bool",
+    "trailing_stop_trigger_step": "float",
+    "trailing_stop_move_step": "float",
+    "max_holding_seconds": "int",
+}
+EXEC_FIELD_DEFAULTS: Dict[str, Any] = {
+    "order_notional_usdt": 100.0,
+    "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
+    "open_ttl_seconds": 120,
+    "max_position_notional_usdt": 10000.0,
+    "take_profit": 0.0,
+    "reward_risk_ratio": 1.0,
+    "trailing_stop_enabled": True,
+    "trailing_stop_trigger_step": 0.001,
+    "trailing_stop_move_step": 0.0005,
+    "max_holding_seconds": 14400,
+}
+
+_BOOL_TRUE = {"true", "1", "yes", "on"}
+_BOOL_FALSE = {"false", "0", "no", "off"}
 
 # serde 默认值，与 crates/trade_signal/src/cta_config.rs RawCtaRule 一一对应。
 # config server 的 cta rules 面板用它做表单预填；validate_rule 里的内联默认值必须保持一致。
@@ -129,8 +183,8 @@ def cta_rules_key(env_name: str) -> str:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync cta rules to Redis ({env}:cta_rules)")
     p.add_argument("--env-name", help="环境目录名（例如 binance-cta-rx01），缺省取 CWD basename")
-    p.add_argument("--file", help="cta rules JSON 文件（数组）")
-    p.add_argument("--clear", action="store_true", help="写入空数组 []，清空全部规则")
+    p.add_argument("--file", help="cta 信号配置 JSON 文件（单对象，兼容规则数组）")
+    p.add_argument("--clear", action="store_true", help="写入空数组 []，清空信号配置")
     p.add_argument("--dry-run", action="store_true", help="只校验，不写入 Redis")
     args = p.parse_args()
     if args.clear and args.file:
@@ -162,8 +216,8 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
         _fail(rule_id, f"unknown fields rejected by loader (deny_unknown_fields): {', '.join(unknown)}", errors)
 
     rid = str(raw.get("rule_id") or "").strip()
-    if not rid or len(rid) > RULE_ID_MAX_LEN or not RULE_ID_RE.match(rid):
-        _fail(rid or f"#{index}", f"rule_id invalid: [a-zA-Z0-9_-]{{1,{RULE_ID_MAX_LEN}}}", errors)
+    if rid and (len(rid) > RULE_ID_MAX_LEN or not RULE_ID_RE.match(rid)):
+        _fail(rid, f"rule_id invalid: [a-zA-Z0-9_-]{{1,{RULE_ID_MAX_LEN}}}", errors)
     service = str(raw.get("model_service") or "").strip()
     if not service:
         _fail(rid, "model_service must be non-empty", errors)
@@ -257,9 +311,12 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
 
 
 def validate_rules(raw: Any) -> List[str]:
+    """校验 {env}:cta_rules 内容：单对象（当前格式）或规则数组（兼容）。"""
     errors: List[str] = []
+    if isinstance(raw, dict):
+        raw = [raw]
     if not isinstance(raw, list):
-        return ["cta rules JSON must be an array of rule objects"]
+        return ["cta rules JSON must be an object or an array of rule objects"]
     seen = set()
     for index, item in enumerate(raw):
         validate_rule(item, index, errors)
@@ -269,6 +326,183 @@ def validate_rules(raw: Any) -> List[str]:
                 errors.append(f"rule_id '{rid}' duplicated")
             seen.add(rid)
     return errors
+
+
+def _coerce_bool(raw: Any) -> Optional[bool]:
+    v = str(raw).strip().lower()
+    if v in _BOOL_TRUE:
+        return True
+    if v in _BOOL_FALSE:
+        return False
+    return None
+
+
+def parse_offsets_text(raw: Any) -> Optional[List[float]]:
+    """open_offsets 接受 JSON 数组或逗号/空白分隔列表，返回 float 列表。"""
+    if isinstance(raw, list):
+        try:
+            return [float(v) for v in raw]
+        except (TypeError, ValueError):
+            return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [float(v) for v in parsed]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    try:
+        return [float(p) for p in re.split(r"[\s,]+", text) if p]
+    except ValueError:
+        return None
+
+
+def parse_signal_config(values: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """把 config server 表单的字符串 values 转成 typed 信号配置对象
+    （写入 {env}:cta_rules 的内容）。返回 (config, errors)。"""
+    errors: List[str] = []
+    if not isinstance(values, dict):
+        return None, ["signal config must be an object of field values"]
+    unknown = sorted(set(values) - set(SIGNAL_FIELD_TYPES) - {"rule_id"})
+    if unknown:
+        errors.append(
+            "unknown signal fields: " + ", ".join(unknown) + "（执行参数走 strategy params）"
+        )
+    config: Dict[str, Any] = {}
+    for name, kind in SIGNAL_FIELD_TYPES.items():
+        if name not in values or values[name] is None:
+            continue
+        raw = values[name]
+        if kind == "str":
+            config[name] = str(raw).strip()
+        elif kind == "bool":
+            parsed = _coerce_bool(raw)
+            if parsed is None:
+                errors.append(f"{name} must be bool, got '{raw}'")
+            else:
+                config[name] = parsed
+        elif kind == "int":
+            try:
+                config[name] = int(str(raw).strip())
+            except (TypeError, ValueError):
+                errors.append(f"{name} must be int, got '{raw}'")
+        elif kind == "float":
+            try:
+                parsed = float(str(raw).strip())
+            except (TypeError, ValueError):
+                errors.append(f"{name} must be a number, got '{raw}'")
+                continue
+            if not math.isfinite(parsed):
+                errors.append(f"{name} must be finite, got '{raw}'")
+            else:
+                config[name] = parsed
+    rid = str(values.get("rule_id") or "").strip()
+    if rid:
+        if len(rid) > RULE_ID_MAX_LEN or not RULE_ID_RE.match(rid):
+            errors.append(f"rule_id invalid: [a-zA-Z0-9_-]{{1,{RULE_ID_MAX_LEN}}}")
+        else:
+            config["rule_id"] = rid
+    if errors:
+        return None, errors
+    # 复用全量校验（缺省执行字段走 serde 同默认值，不会误报）。
+    errors = validate_rules(config)
+    if errors:
+        return None, errors
+    return config, []
+
+
+def parse_exec_params(values: Any) -> Tuple[Dict[str, str], List[str]]:
+    """校验+规范化 strategy hash 里的 cta 执行/网格字段。
+
+    返回 (normalized, errors)：normalized 只包含提交过的字段（String 值，
+    open_offsets 统一为紧凑 JSON 数组字符串）；交叉校验按"提交值缺省走
+    EXEC_FIELD_DEFAULTS"的有效值做（与 Rust CtaExecOverrides 兜底一致）。
+    """
+    errors: List[str] = []
+    norm: Dict[str, str] = {}
+    if not isinstance(values, dict):
+        return {}, ["exec params must be an object"]
+    unknown = sorted(set(values) - set(EXEC_FIELD_TYPES))
+    if unknown:
+        errors.append("unknown exec fields: " + ", ".join(unknown))
+    typed: Dict[str, Any] = {}
+    for name, kind in EXEC_FIELD_TYPES.items():
+        if name not in values or values[name] is None:
+            continue
+        raw = values[name]
+        if kind == "offsets":
+            parsed = parse_offsets_text(raw)
+            if parsed is None:
+                errors.append(f"{name} must be a JSON array or CSV of numbers, got '{raw}'")
+            else:
+                typed[name] = parsed
+        elif kind == "bool":
+            parsed = _coerce_bool(raw)
+            if parsed is None:
+                errors.append(f"{name} must be bool, got '{raw}'")
+            else:
+                typed[name] = parsed
+        elif kind == "int":
+            try:
+                typed[name] = int(str(raw).strip())
+            except (TypeError, ValueError):
+                errors.append(f"{name} must be int, got '{raw}'")
+        else:
+            try:
+                parsed = float(str(raw).strip())
+            except (TypeError, ValueError):
+                errors.append(f"{name} must be a number, got '{raw}'")
+                continue
+            if not math.isfinite(parsed):
+                errors.append(f"{name} must be finite, got '{raw}'")
+            else:
+                typed[name] = parsed
+
+    # 与 Rust CtaRule::validate 对齐的交叉/边界校验（有效值 = 提交值或默认）。
+    eff = {**EXEC_FIELD_DEFAULTS, **typed}
+    if eff["order_notional_usdt"] <= 0:
+        errors.append(f"order_notional_usdt must be positive, got {eff['order_notional_usdt']}")
+    offsets = eff["open_offsets"]
+    if not 1 <= len(offsets) <= MAX_OPEN_LEVELS:
+        errors.append(f"open_offsets len must be in [1, {MAX_OPEN_LEVELS}], got {len(offsets)}")
+    for off in offsets:
+        if not 0.0 <= off <= MAX_OPEN_OFFSET:
+            errors.append(f"open_offsets item must be in [0, {MAX_OPEN_OFFSET}], got {off}")
+            break
+    if eff["open_ttl_seconds"] <= 0:
+        errors.append(f"open_ttl_seconds must be positive, got {eff['open_ttl_seconds']}")
+    if eff["max_position_notional_usdt"] <= 0:
+        errors.append(
+            f"max_position_notional_usdt must be positive, got {eff['max_position_notional_usdt']}"
+        )
+    grid_notional = eff["order_notional_usdt"] * len(offsets)
+    if 0 < eff["max_position_notional_usdt"] < grid_notional:
+        errors.append(
+            f"max_position_notional_usdt({eff['max_position_notional_usdt']}) "
+            f"must cover one complete grid ({grid_notional})"
+        )
+    if eff["take_profit"] < 0:
+        errors.append(f"take_profit must be >= 0 (0 disables maker tp hedge), got {eff['take_profit']}")
+    if eff["reward_risk_ratio"] <= 0:
+        errors.append(f"reward_risk_ratio must be positive, got {eff['reward_risk_ratio']}")
+    if eff["trailing_stop_enabled"]:
+        for name in ("trailing_stop_trigger_step", "trailing_stop_move_step"):
+            if eff[name] <= 0:
+                errors.append(f"{name} must be positive when trailing_stop_enabled, got {eff[name]}")
+    if eff["max_holding_seconds"] < 0:
+        errors.append(f"max_holding_seconds cannot be negative (0 disables), got {eff['max_holding_seconds']}")
+
+    if not errors:
+        for name, value in typed.items():
+            if name == "open_offsets":
+                norm[name] = json.dumps(value, separators=(",", ":"))
+            elif isinstance(value, bool):
+                norm[name] = "true" if value else "false"
+            else:
+                norm[name] = str(value)
+    return norm, errors
 
 
 def resolve_env_name(args: argparse.Namespace) -> str:
@@ -308,7 +542,8 @@ def main() -> int:
             print(f"   - {err}", file=sys.stderr)
         return 2
 
-    print(f"✅ 校验通过: {len(rules)} 条规则 -> {key}")
+    items = rules if isinstance(rules, list) else [rules]
+    print(f"✅ 校验通过: {len(items)} 条配置 -> {key}")
     if args.dry_run:
         print("📄 dry-run，未写入 Redis")
         return 0
@@ -319,9 +554,9 @@ def main() -> int:
         return 2
     rds = redis.Redis(host="127.0.0.1", port=6379, db=0, password=None)
     rds.set(key, payload)
-    print(f"✅ 已写入 '{key}'（{len(payload)} 字节，{len(rules)} 条规则）")
-    for item in rules:
-        rid = item.get("rule_id", "?") if isinstance(item, dict) else "?"
+    print(f"✅ 已写入 '{key}'（{len(payload)} 字节，{len(items)} 条配置）")
+    for item in items:
+        rid = item.get("rule_id", "default") if isinstance(item, dict) else "?"
         svc = item.get("model_service", "?") if isinstance(item, dict) else "?"
         en = item.get("enabled", True) if isinstance(item, dict) else True
         print(f"   - {rid}: service={svc} enabled={en}")

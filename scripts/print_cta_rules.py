@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-打印 Redis 中的 cta 规则集（{env}:cta_rules，JSON 数组）。
+打印 Redis 中的 cta 信号配置（{env}:cta_rules，单 JSON 对象；兼容旧数组格式）。
 
 env-name 推断：--env-name，或 CWD 目录名 <exchange>-cta-<tag>。
 
@@ -36,8 +36,10 @@ def cta_rules_key(env_name: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Print cta rules from Redis ({env}:cta_rules)")
+    p = argparse.ArgumentParser(description="Print cta signal config from Redis ({env}:cta_rules)")
     p.add_argument("--env-name", help="环境目录名（例如 binance-cta-rx01），缺省取 CWD basename")
+    p.add_argument("--open-venue", help="开仓 venue，缺省按 <exchange>-margin 推断")
+    p.add_argument("--hedge-venue", help="对冲 venue，缺省按 <exchange>-futures 推断")
     p.add_argument("--json", action="store_true", help="原样输出 JSON")
     return p.parse_args()
 
@@ -116,22 +118,54 @@ def main() -> int:
         print(text)
         return 0
     try:
-        rules = json.loads(text)
+        doc = json.loads(text)
     except Exception as exc:
         print(f"❌ '{key}' 不是合法 JSON: {exc}")
         print(f"   原始值: {text[:500]}")
         return 1
-    if not isinstance(rules, list):
-        print(f"❌ '{key}' 不是 JSON 数组: {text[:200]}")
+    if isinstance(doc, dict):
+        rules = [doc]
+    elif isinstance(doc, list):
+        rules = doc
+    else:
+        print(f"❌ '{key}' 不是 JSON 对象/数组: {text[:200]}")
         return 1
 
-    print(f"\n📊 cta 规则集: {len(rules)} 条")
+    print(f"\n📊 cta 信号配置: {len(rules)} 条")
     print("=" * 80)
     for index, rule in enumerate(rules):
         if isinstance(rule, dict):
             print_rule(index, rule)
         else:
             print(f"\n⚠️ [{index}] 非对象条目: {rule!r}")
+
+    # 执行/网格参数在 cta_strategy_params hash（加载时覆盖到规则上）。
+    exchange = env_name.split("-")[0] if "-" in env_name else ""
+    open_venue = (args.open_venue or f"{exchange}-margin").strip()
+    hedge_venue = (args.hedge_venue or f"{exchange}-futures").strip()
+    strat_key = f"cta_strategy_params_{open_venue}_{hedge_venue}"
+    exec_fields = (
+        "order_notional_usdt", "open_offsets", "open_ttl_seconds",
+        "max_position_notional_usdt", "take_profit", "reward_risk_ratio",
+        "trailing_stop_enabled", "trailing_stop_trigger_step",
+        "trailing_stop_move_step", "max_holding_seconds",
+    )
+    try:
+        strat = rds.hgetall(strat_key) or {}
+    except Exception:
+        strat = {}
+    decoded = {
+        (k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v)
+        for k, v in strat.items()
+    }
+    exec_values = {k: decoded[k] for k in exec_fields if k in decoded}
+    print("\n🛠  执行/网格参数 (hash: {})".format(strat_key))
+    if exec_values:
+        for k in exec_fields:
+            if k in exec_values:
+                print(f"    {k:32} = {exec_values[k]}")
+    else:
+        print("    （未配置 — 加载时走 serde 默认值）")
     print()
     return 0
 

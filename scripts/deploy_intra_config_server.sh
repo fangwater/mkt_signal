@@ -259,7 +259,6 @@ FILES=(
   "scripts/intra_config_server.py"
   "scripts/arb_per_symbol_overrides.py"
   "scripts/cta_config_server.py"
-  "scripts/cta_rules_panel.py"
   "scripts/sync_cta_rules.py"
   "scripts/print_cta_rules.py"
   "scripts/start_intra_config_server.sh"
