@@ -74,6 +74,36 @@ QUANTILE_FIELDS = (
     "spread_cancel_quantile",
 )
 
+# serde 默认值，与 crates/trade_signal/src/cta_config.rs RawCtaRule 一一对应。
+# config server 的 cta rules 面板用它做表单预填；validate_rule 里的内联默认值必须保持一致。
+RULE_DEFAULTS: Dict[str, Any] = {
+    "rule_id": "",
+    "model_service": "",
+    "trade_sides": "both",
+    "long_quantile": 0.9,
+    "short_quantile": 0.1,
+    "spread_long_quantile": 0.7,
+    "spread_short_quantile": 0.3,
+    "spread_cancel_quantile": 0.5,
+    "rolling_window": 2880,
+    "rolling_min_periods": 1440,
+    "frequency_seconds": 60,
+    "cooldown_seconds": 0,
+    "signal_delay_seconds": 1,
+    "application": "each_bar",
+    "order_notional_usdt": 100.0,
+    "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
+    "open_ttl_seconds": 120,
+    "max_position_notional_usdt": 10000.0,
+    "take_profit": 0.0,
+    "reward_risk_ratio": 1.0,
+    "trailing_stop_enabled": True,
+    "trailing_stop_trigger_step": 0.001,
+    "trailing_stop_move_step": 0.0005,
+    "max_holding_seconds": 14400,
+    "enabled": True,
+}
+
 
 def try_import_redis():
     try:

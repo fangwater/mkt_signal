@@ -40,6 +40,7 @@ BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 # 三 arb config_server 共用 helper，这里只负责 import + 在 HTML / 路由里挂接。
 sys.path.insert(0, SCRIPT_DIR)
 import arb_per_symbol_overrides as ps_overrides  # noqa: E402
+import cta_rules_panel  # noqa: E402
 
 EXCHANGE_DEFAULTS = {
     "binance": ("binance-margin", "binance-futures"),
@@ -755,6 +756,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <a id="funding-nav-link" href="#funding-thresholds">Funding Thresholds</a>
       <a href="#rolling-params">Rolling Params</a>
       <a href="#spread-thresholds">Spread Thresholds</a>
+      <a id="cta-rules-nav-link" href="#cta-rules" style="display:none">CTA Rules</a>
     </div>
 
     <section id="symbol-lists" class="panel">
@@ -1440,6 +1442,7 @@ __PER_SYMBOL_PANELS_HTML__
     }
 __PER_SYMBOL_PANELS_JS__
     bindPerSymbolPanels();
+    bindCtaRulesPanel();
     loadAmountU();
     loadMaxPosU();
     loadHedgeOffsetLimits();
@@ -2353,6 +2356,7 @@ def render_index_html(
             "funding_thresholds": funding_thresholds_applicable(
                 default_open_venue, default_hedge_venue
             ),
+            "cta_rules": current_namespace() == "cta",
         },
         "param_schema": {
             "strategy_bool_params": STRATEGY_BOOL_PARAM_KEYS,
@@ -2384,13 +2388,15 @@ def render_index_html(
         "__PER_SYMBOL_PANELS_HTML__",
         ps_overrides.render_per_symbol_panels_html()
         + ps_overrides.render_taker_decision_model_panel_html()
-        + ps_overrides.render_intra_trailing_stop_panel_html(),
+        + ps_overrides.render_intra_trailing_stop_panel_html()
+        + cta_rules_panel.render_cta_rules_panel_html(),
     )
     html = html.replace(
         "__PER_SYMBOL_PANELS_JS__",
         ps_overrides.render_per_symbol_panels_js()
         + ps_overrides.render_taker_decision_model_panel_js()
-        + ps_overrides.render_intra_trailing_stop_panel_js(),
+        + ps_overrides.render_intra_trailing_stop_panel_js()
+        + cta_rules_panel.render_cta_rules_panel_js(),
     )
     return html
 
@@ -2653,6 +2659,21 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not values:
                 values = normalize_threshold_mapping(SPREAD_THRESHOLD_MAPPING)
             self._send_json(200, {"key": key, "count": len(values), "values": values})
+            return
+
+        if parsed.path == "/api/cta-rules":
+            if current_namespace() != "cta":
+                self._send_error(404, "cta rules only available in cta env")
+                return
+            try:
+                env_name = current_env_name()
+            except ValueError as exc:
+                self._send_error(400, str(exc))
+                return
+            data = cta_rules_panel.read_cta_rules(
+                self.server.context.redis_client, env_name
+            )
+            self._send_json(200, data)
             return
 
         if parsed.path in (
@@ -2991,6 +3012,49 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(500, f"write failed: {exc}")
                 return
+            self._send_json(200, result)
+            return
+
+        if parsed.path == "/api/cta-rules":
+            if current_namespace() != "cta":
+                self._send_error(404, "cta rules only available in cta env")
+                return
+            try:
+                env_name = current_env_name()
+            except ValueError as exc:
+                self._send_error(400, str(exc))
+                return
+            rules = payload.get("rules")
+            if not isinstance(rules, list):
+                self._send_error(400, "rules must be an array of rule objects")
+                return
+            dry_run = bool(payload.get("dry_run"))
+            if dry_run:
+                errors = cta_rules_panel.validate_cta_rules(rules)
+                if errors:
+                    self._send_json(200, {"ok": False, "errors": errors})
+                    return
+                self._send_json(
+                    200,
+                    {"ok": True, "key": cta_rules_panel.cta_rules_redis_key(env_name), "count": len(rules)},
+                )
+                return
+            try:
+                result = cta_rules_panel.write_cta_rules(
+                    self.server.context.redis_client, env_name, rules
+                )
+            except ValueError as exc:
+                self._send_error(400, str(exc))
+                return
+            except Exception as exc:
+                self._send_error(500, f"redis write failed: {exc}")
+                return
+            print(
+                "[cta-rules][POST] env={} key={} count={}".format(
+                    env_name, result["key"], result["count"]
+                )
+            )
+            sys.stdout.flush()
             self._send_json(200, result)
             return
 
