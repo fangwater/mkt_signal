@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="/home/u171/fanghaizhou/mkt_signal"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SHARD_ROOT="/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_ll2_zstd_shards"
 LOG_ROOT="/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs"
-TAS_PATTERN="^/home/u171/fanghaizhou/mkt_signal/target/release/cme_tas_replay_all "
+TAS_PATTERN="^${REPO_ROOT}/target/release/cme_tas_replay_all "
 
 while pgrep -f "${TAS_PATTERN}" >/dev/null; do
   sleep 30

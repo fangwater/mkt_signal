@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=/home/u171/fanghaizhou/mkt_signal
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lock_path=/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/cme_tas_replay_all.lock
 binary="$repo_root/target/release/cme_tas_replay_all"
 

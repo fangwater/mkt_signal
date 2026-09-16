@@ -3,7 +3,7 @@ set -euo pipefail
 
 main_unit=cme-tas-replay-2020-2023.service
 next_unit=cme-tas-replay-2023-2021.service
-repo_root=/home/u171/fanghaizhou/mkt_signal
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner="$repo_root/scripts/run-cme-tas-replay-2020-2023.sh"
 stdout_log=/mnt/nvme-raid0-28t/fanghaizhou/lseg_data/logs/cme_tas_replay_all_2020_2023.stdout.log
 done_marker='done config/cme_tas_replay_all_2020.toml'
