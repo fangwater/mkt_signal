@@ -546,12 +546,20 @@ def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta
 # cta_spread_thresholds_{open}_{hedge} hash。
 # 字段名沿用共享 schema：forward=开多（买现货卖期货）/backward=开空，
 # mm=maker 挂单阈值 / mt=taker 阈值（apply 需要 mm+mt 成对存在）。
-_CTA_SPREAD_DEFAULTS: Dict[str, str] = (
-    dict(spread_sync.SPREAD_THRESHOLD_MAPPING) if spread_sync is not None else {}
-)
-_CTA_SPREAD_ORDER: List[str] = (
-    list(spread_sync.THRESHOLD_ORDER) if spread_sync is not None else []
-)
+# 默认值只用该 rolling 管线实际发布的分位（binance margin×futures 发布
+# spread {5,10,15,20,25,30,70,85,90} / bidask {5..30} / askbid {70..95}，
+# 没有 spread_95——代码默认的 spread_95 会取不到值导致整 symbol 跳过）。
+_CTA_SPREAD_DEFAULTS: Dict[str, str] = {
+    "forward_open_mm": "spread_20",
+    "forward_open_mt": "bidask_10",
+    "forward_cancel_mm": "spread_30",
+    "forward_cancel_mt": "bidask_15",
+    "backward_open_mm": "spread_90",
+    "backward_open_mt": "askbid_90",
+    "backward_cancel_mm": "spread_85",
+    "backward_cancel_mt": "askbid_85",
+}
+_CTA_SPREAD_ORDER: List[str] = list(_CTA_SPREAD_DEFAULTS.keys())
 _CTA_SPREAD_COMMENTS: Dict[str, str] = {
     "forward_open_mm": "开多 maker 阈值：spread < 该分位值才挂",
     "forward_open_mt": "开多 taker 阈值（bidask 分位）",
