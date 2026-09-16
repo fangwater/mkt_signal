@@ -5,3 +5,7 @@ target-dir = "/mnt/nvme-raid0-28t/fanghaizhou/cargo-target/mkt_signal"
 # Load ONNX Runtime on first use from the repository-local third_party binary.
 # Tests that do not run inference can start without a process-level shared-library dependency.
 ORT_DYLIB_PATH = { value = "third_party/onnxruntime/linux-x86_64/lib/libonnxruntime.so", relative = true }
+# librocksdb-sys 0.11 (rocksdb 8.1.1) relies on transitive <cstdint> includes that
+# libstdc++ stopped providing with GCC 13+. cc-rs reads CXXFLAGS_<target> for C++
+# sources only, so this is a no-op on older toolchains and on C deps.
+CXXFLAGS_x86_64_unknown_linux_gnu = "-include cstdint"
