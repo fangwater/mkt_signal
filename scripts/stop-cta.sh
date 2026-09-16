@@ -161,7 +161,7 @@ required_files=(
   "$target/env.sh"
   "$scripts_dir/process_match_lib.sh"
   "$cancel_script"
-  "$scripts_dir/stop_intra_config_server.sh"
+  "$scripts_dir/stop_cta_config_server.sh"
   "$intra_scripts_dir/stop_intra_trade_engine.sh"
   "$intra_scripts_dir/stop_intra_trade_signal.sh"
   "$intra_scripts_dir/stop_intra_pre_trade.sh"
@@ -230,7 +230,7 @@ target_executables=(
   "$target/trade_engine"
   "$target/persist_manager"
 )
-config_server="$scripts_dir/intra_config_server.py"
+config_server="$scripts_dir/cta_config_server.py"
 
 find_running_targets() {
   local pid=""
@@ -369,7 +369,7 @@ echo "[INFO] all $exchange futures and spot/margin open orders confirmed empty"
 run_step "stop trade_signal" bash "$intra_scripts_dir/stop_intra_trade_signal.sh"
 run_step "stop pre_trade" bash "$intra_scripts_dir/stop_intra_pre_trade.sh"
 run_step "stop account_monitor" bash "$intra_scripts_dir/stop_intra_monitors.sh"
-run_step "stop config_server" bash "$scripts_dir/stop_intra_config_server.sh"
+run_step "stop config_server" bash "$scripts_dir/stop_cta_config_server.sh"
 run_step "stop persist_manager" bash "$intra_scripts_dir/stop_intra_persist_manager.sh"
 run_step "stop viz_server" bash "$intra_scripts_dir/stop_intra_viz_server.sh"
 

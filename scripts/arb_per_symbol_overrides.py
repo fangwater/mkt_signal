@@ -68,7 +68,7 @@ def write_intra_trailing_stop(rds, env_name: str, open_venue: str, hedge_venue: 
 
 def render_intra_trailing_stop_panel_html() -> str:
     return """
-    <section class="panel ns-intra-only">
+    <section class="panel">
       <div class="section-header">
         <h2>Per-Symbol Take Profit / Trailing Stop</h2>
         <div class="actions">
@@ -679,7 +679,7 @@ def render_per_symbol_panels_html() -> str:
     （三个 arb config_server 都已包含）。
     """
     return """
-    <section class="panel ns-intra-only">
+    <section class="panel">
       <div class="section-header">
         <h2>Per-Symbol Amount U Overrides</h2>
         <div class="actions">
@@ -699,7 +699,7 @@ def render_per_symbol_panels_html() -> str:
       <div id="amount-u-status" class="status"></div>
     </section>
 
-    <section class="panel ns-intra-only">
+    <section class="panel">
       <div class="section-header">
         <h2>Per-Symbol Max Pos U Overrides</h2>
         <div class="actions">
@@ -719,7 +719,7 @@ def render_per_symbol_panels_html() -> str:
       <div id="max-pos-u-status" class="status"></div>
     </section>
 
-    <section class="panel ns-intra-only">
+    <section class="panel">
       <div class="section-header">
         <h2>Per-Symbol Hedge Price Offset Limit Overrides</h2>
         <div class="actions">
@@ -744,7 +744,7 @@ def render_per_symbol_panels_html() -> str:
       <div id="hedge-offset-limits-status" class="status"></div>
     </section>
 
-    <section class="panel ns-intra-only">
+    <section class="panel">
       <div class="section-header">
         <h2>Per-Symbol Open Offset Lower Overrides</h2>
         <div class="actions">
@@ -1043,7 +1043,7 @@ def render_per_symbol_panels_js() -> str:
 def render_taker_decision_model_panel_html() -> str:
     """intra 专用：per-symbol lazy taker model rolling/threshold overrides。"""
     return """
-    <section class="panel ns-intra-only">
+    <section class="panel">
       <div class="section-header">
         <h2>Per-Symbol Taker Decision Model Overrides</h2>
         <div class="actions">

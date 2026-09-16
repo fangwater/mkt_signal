@@ -40,7 +40,6 @@ BINANCE_ARB_HEDGE_ORDER_RATE_LIMIT_10S_KEY = "arb_hedge_order_rate_limit_10s"
 # 三 arb config_server 共用 helper，这里只负责 import + 在 HTML / 路由里挂接。
 sys.path.insert(0, SCRIPT_DIR)
 import arb_per_symbol_overrides as ps_overrides  # noqa: E402
-import cta_rules_panel  # noqa: E402
 
 EXCHANGE_DEFAULTS = {
     "binance": ("binance-margin", "binance-futures"),
@@ -753,10 +752,9 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <a href="#symbol-lists">Symbol Lists</a>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
-      <a id="funding-nav-link" class="ns-intra-only" href="#funding-thresholds">Funding Thresholds</a>
-      <a class="ns-intra-only" href="#rolling-params">Rolling Params</a>
-      <a class="ns-intra-only" href="#spread-thresholds">Spread Thresholds</a>
-      <a id="cta-rules-nav-link" href="#cta-rules" style="display:none">CTA Rules</a>
+      <a id="funding-nav-link" href="#funding-thresholds">Funding Thresholds</a>
+      <a href="#rolling-params">Rolling Params</a>
+      <a href="#spread-thresholds">Spread Thresholds</a>
     </div>
 
     <section id="symbol-lists" class="panel">
@@ -770,19 +768,19 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       </div>
       <div class="grid-2">
         <div>
-          <h3>平仓列表 <span class="hint ns-sym-hint">intra_dump_symbols</span></h3>
+          <h3>平仓列表 <span class="hint">intra_dump_symbols</span></h3>
           <textarea id="sym-dump" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>正套建仓 <span class="hint ns-sym-hint">intra_fwd_trade_symbols</span></h3>
+          <h3>正套建仓 <span class="hint">intra_fwd_trade_symbols</span></h3>
           <textarea id="sym-fwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>反套建仓 <span class="hint ns-sym-hint">intra_bwd_trade_symbols</span></h3>
+          <h3>反套建仓 <span class="hint">intra_bwd_trade_symbols</span></h3>
           <textarea id="sym-bwd" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
-          <h3>Vol Gate <span class="hint ns-sym-hint">intra_vol_gate_symbols</span></h3>
+          <h3>Vol Gate <span class="hint">intra_vol_gate_symbols</span></h3>
           <textarea id="sym-vol-gate" class="mono" placeholder="每行一个 symbol"></textarea>
         </div>
         <div>
@@ -822,7 +820,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="risk-status" class="status"></div>
     </section>
 
-    <section id="funding-thresholds" class="panel ns-intra-only">
+    <section id="funding-thresholds" class="panel">
       <div class="section-header">
         <h2>Funding Filter Config</h2>
         <div class="actions">
@@ -836,7 +834,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="funding-status" class="status"></div>
     </section>
 
-    <section id="rolling-params" class="panel ns-intra-only">
+    <section id="rolling-params" class="panel">
       <div class="section-header">
         <h2>Rolling Metrics Params</h2>
         <div class="actions">
@@ -871,7 +869,7 @@ INDEX_HTML_TEMPLATE = """<!doctype html>
       <div id="rolling-status" class="status"></div>
     </section>
 
-    <section id="spread-thresholds" class="panel ns-intra-only">
+    <section id="spread-thresholds" class="panel">
       <div class="section-header">
         <h2>Spread Threshold Mapping</h2>
         <div class="actions">
@@ -1372,13 +1370,10 @@ __PER_SYMBOL_PANELS_HTML__
       }
     }
 
-    function isCtaEnv() { return BOOTSTRAP.features?.cta_rules === true; }
-
     async function reloadAll() {
       await loadSymbolLists();
       await loadStrategyParams();
       await loadRiskParams();
-      if (isCtaEnv()) return;
       if (BOOTSTRAP.features?.funding_thresholds !== false) {
         await loadFundingThresholds();
       }
@@ -1393,20 +1388,9 @@ __PER_SYMBOL_PANELS_HTML__
       const fundingEnabled = BOOTSTRAP.features?.funding_thresholds !== false;
       const fundingPanel = document.getElementById('funding-thresholds');
       const fundingNav = document.getElementById('funding-nav-link');
-      if (!fundingEnabled || isCtaEnv()) {
+      if (!fundingEnabled) {
         if (fundingPanel) fundingPanel.style.display = 'none';
         if (fundingNav) fundingNav.style.display = 'none';
-      }
-      if (isCtaEnv()) {
-        // cta env 只保留 symbol lists / strategy / risk / cta rules；
-        // funding/spread thresholds、rolling params、per-symbol overrides 均为 intra 机制
-        document.querySelectorAll('.ns-intra-only').forEach(el => { el.style.display = 'none'; });
-        const ns = BOOTSTRAP.namespace || 'intra';
-        if (ns !== 'intra') {
-          document.querySelectorAll('.ns-sym-hint').forEach(el => {
-            el.textContent = el.textContent.replace(/^intra_/, ns + '_');
-          });
-        }
       }
     }
 
@@ -1416,9 +1400,7 @@ __PER_SYMBOL_PANELS_HTML__
     if (BOOTSTRAP.features?.funding_thresholds !== false) {
       buildParamRows('funding-table', BOOTSTRAP.defaults.funding_thresholds || {}, BOOTSTRAP.comments.funding_thresholds || {}, BOOTSTRAP.order.funding_thresholds || [], {});
     }
-    if (!isCtaEnv()) {
-      buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
-    }
+    buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, {}, BOOTSTRAP.order.spread_mapping || [], {});
 
     document.getElementById('sym-load').addEventListener('click', loadSymbolLists);
     document.getElementById('sym-save').addEventListener('click', saveSymbolLists);
@@ -1438,15 +1420,13 @@ __PER_SYMBOL_PANELS_HTML__
       document.getElementById('funding-default').addEventListener('click', applyFundingDefaults);
     }
 
-    if (!isCtaEnv()) {
-      document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
-      document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
-      document.getElementById('rolling-default').addEventListener('click', applyRollingDefaults);
+    document.getElementById('rolling-load').addEventListener('click', loadRollingParams);
+    document.getElementById('rolling-save').addEventListener('click', saveRollingParams);
+    document.getElementById('rolling-default').addEventListener('click', applyRollingDefaults);
 
-      document.getElementById('spread-config-load').addEventListener('click', loadSpreadMapping);
-      document.getElementById('spread-config-save').addEventListener('click', saveSpreadMapping);
-      document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
-    }
+    document.getElementById('spread-config-load').addEventListener('click', loadSpreadMapping);
+    document.getElementById('spread-config-save').addEventListener('click', saveSpreadMapping);
+    document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
 
     document.getElementById('reload-all').addEventListener('click', reloadAll);
 
@@ -1459,13 +1439,10 @@ __PER_SYMBOL_PANELS_HTML__
       };
     }
 __PER_SYMBOL_PANELS_JS__
-    if (!isCtaEnv()) {
-      bindPerSymbolPanels();
-      loadAmountU();
-      loadMaxPosU();
-      loadHedgeOffsetLimits();
-    }
-    bindCtaRulesPanel();
+    bindPerSymbolPanels();
+    loadAmountU();
+    loadMaxPosU();
+    loadHedgeOffsetLimits();
 
     reloadAll();
   </script>
@@ -2368,7 +2345,6 @@ def render_index_html(
         ).strip()
     bootstrap = {
         "env_name": infer_dir_prefix_from_cwd() or "",
-        "namespace": current_namespace(),
         "exchanges": SUPPORTED_EXCHANGES,
         "default_exchange": default_exchange,
         "default_open_venue": default_open_venue or "",
@@ -2377,7 +2353,6 @@ def render_index_html(
             "funding_thresholds": funding_thresholds_applicable(
                 default_open_venue, default_hedge_venue
             ),
-            "cta_rules": current_namespace() == "cta",
         },
         "param_schema": {
             "strategy_bool_params": STRATEGY_BOOL_PARAM_KEYS,
@@ -2409,15 +2384,13 @@ def render_index_html(
         "__PER_SYMBOL_PANELS_HTML__",
         ps_overrides.render_per_symbol_panels_html()
         + ps_overrides.render_taker_decision_model_panel_html()
-        + ps_overrides.render_intra_trailing_stop_panel_html()
-        + cta_rules_panel.render_cta_rules_panel_html(),
+        + ps_overrides.render_intra_trailing_stop_panel_html(),
     )
     html = html.replace(
         "__PER_SYMBOL_PANELS_JS__",
         ps_overrides.render_per_symbol_panels_js()
         + ps_overrides.render_taker_decision_model_panel_js()
-        + ps_overrides.render_intra_trailing_stop_panel_js()
-        + cta_rules_panel.render_cta_rules_panel_js(),
+        + ps_overrides.render_intra_trailing_stop_panel_js(),
     )
     return html
 
@@ -2682,21 +2655,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"key": key, "count": len(values), "values": values})
             return
 
-        if parsed.path == "/api/cta-rules":
-            if current_namespace() != "cta":
-                self._send_error(404, "cta rules only available in cta env")
-                return
-            try:
-                env_name = current_env_name()
-            except ValueError as exc:
-                self._send_error(400, str(exc))
-                return
-            data = cta_rules_panel.read_cta_rules(
-                self.server.context.redis_client, env_name
-            )
-            self._send_json(200, data)
-            return
-
         if parsed.path in (
             "/api/amount-u",
             "/api/max-pos-u",
@@ -2818,12 +2776,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 rds.set(intra_symbol_list_key(env_name, "fwd_trade_symbols", key_suffix, ns), json.dumps(fwd_symbols, ensure_ascii=False))
                 rds.set(intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix, ns), json.dumps(bwd_symbols, ensure_ascii=False))
                 rds.set(intra_symbol_list_key(env_name, "vol_gate_symbols", key_suffix, ns), json.dumps(vol_gate_symbols, ensure_ascii=False))
-                if ns == "cta":
-                    # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{suffix}
-                    rds.set(
-                        intra_symbol_list_key(env_name, "bwd_trade_symbols", key_suffix, "intra"),
-                        json.dumps(bwd_symbols, ensure_ascii=False),
-                    )
             except Exception as exc:
                 self._send_error(500, f"redis write failed: {exc}")
                 return
@@ -3033,49 +2985,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_error(500, f"write failed: {exc}")
                 return
-            self._send_json(200, result)
-            return
-
-        if parsed.path == "/api/cta-rules":
-            if current_namespace() != "cta":
-                self._send_error(404, "cta rules only available in cta env")
-                return
-            try:
-                env_name = current_env_name()
-            except ValueError as exc:
-                self._send_error(400, str(exc))
-                return
-            rules = payload.get("rules")
-            if not isinstance(rules, list):
-                self._send_error(400, "rules must be an array of rule objects")
-                return
-            dry_run = bool(payload.get("dry_run"))
-            if dry_run:
-                errors = cta_rules_panel.validate_cta_rules(rules)
-                if errors:
-                    self._send_json(200, {"ok": False, "errors": errors})
-                    return
-                self._send_json(
-                    200,
-                    {"ok": True, "key": cta_rules_panel.cta_rules_redis_key(env_name), "count": len(rules)},
-                )
-                return
-            try:
-                result = cta_rules_panel.write_cta_rules(
-                    self.server.context.redis_client, env_name, rules
-                )
-            except ValueError as exc:
-                self._send_error(400, str(exc))
-                return
-            except Exception as exc:
-                self._send_error(500, f"redis write failed: {exc}")
-                return
-            print(
-                "[cta-rules][POST] env={} key={} count={}".format(
-                    env_name, result["key"], result["count"]
-                )
-            )
-            sys.stdout.flush()
             self._send_json(200, result)
             return
 

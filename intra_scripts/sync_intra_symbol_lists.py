@@ -267,31 +267,44 @@ def sync_symbol_lists(
     hedge_venue: str,
     namespace: str = "intra",
 ) -> int:
+    dump_symbols = symbols_for_exchange(DUMP_SYMBOLS, exchange)
     dump_key = symbol_list_key(env_name, "dump_symbols", exchange, namespace)
+    rds.set(dump_key, json.dumps(dump_symbols, ensure_ascii=False))
+    print(f"✅ 已写入 {len(dump_symbols)} 个交易对到 '{dump_key}'（平仓列表）")
+
+    if namespace == "cta":
+        # cta 无正反/vol gate 概念：fwd∪bwd 合成单一交易宇宙
+        trade_symbols = sorted(
+            set(symbols_for_exchange(FWD_SYMBOLS, exchange))
+            | set(symbols_for_exchange(BWD_SYMBOLS, exchange))
+        )
+        trade_key = symbol_list_key(env_name, "trade_symbols", exchange, "cta")
+        rds.set(trade_key, json.dumps(trade_symbols, ensure_ascii=False))
+        print(f"✅ 已写入 {len(trade_symbols)} 个交易对到 '{trade_key}'（交易宇宙）")
+
+        # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{exchange}
+        borrow_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, "intra")
+        rds.set(borrow_key, json.dumps(trade_symbols, ensure_ascii=False))
+        print(f"✅ 已镜像 {len(trade_symbols)} 个交易对到 '{borrow_key}'（pre_trade 借贷白名单）")
+
+        # loader 不再读 cta fwd/bwd/vol_gate；清掉历史误写 key
+        for stale in ("fwd_trade_symbols", "bwd_trade_symbols", "vol_gate_symbols"):
+            rds.delete(symbol_list_key(env_name, stale, exchange, "cta"))
+        return len(dump_symbols) + len(trade_symbols)
+
     fwd_key = symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace)
     bwd_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace)
     vol_key = symbol_list_key(env_name, "vol_gate_symbols", exchange, namespace)
 
-    dump_symbols = symbols_for_exchange(DUMP_SYMBOLS, exchange)
     fwd_symbols = symbols_for_exchange(FWD_SYMBOLS, exchange)
     bwd_symbols = symbols_for_exchange(BWD_SYMBOLS, exchange)
     vol_gate_symbols = symbols_for_exchange(VOL_GATE_SYMBOLS, exchange)
-
-    rds.set(dump_key, json.dumps(dump_symbols, ensure_ascii=False))
-    print(f"✅ 已写入 {len(dump_symbols)} 个交易对到 '{dump_key}'（平仓列表）")
 
     rds.set(fwd_key, json.dumps(fwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(fwd_symbols)} 个交易对到 '{fwd_key}'（正套）")
 
     rds.set(bwd_key, json.dumps(bwd_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(bwd_symbols)} 个交易对到 '{bwd_key}'（反套）")
-
-    if namespace == "cta":
-        # pre_trade 的现货借贷白名单固定读 {env}:intra_bwd_trade_symbols:{exchange}
-        # （跨模式共享的 key 名约定），cta env 需要把 bwd 列表同步一份过去。
-        borrow_key = symbol_list_key(env_name, "bwd_trade_symbols", exchange, "intra")
-        rds.set(borrow_key, json.dumps(bwd_symbols, ensure_ascii=False))
-        print(f"✅ 已镜像 {len(bwd_symbols)} 个交易对到 '{borrow_key}'（pre_trade 借贷白名单）")
 
     rds.set(vol_key, json.dumps(vol_gate_symbols, ensure_ascii=False))
     print(f"✅ 已写入 {len(vol_gate_symbols)} 个交易对到 '{vol_key}'（Vol Gate）")

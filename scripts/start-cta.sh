@@ -161,7 +161,7 @@ required_files=(
   "$target/intra-release.manifest"
   "$target/config/viz.toml"
   "$target/config/intra_config_server.env"
-  "$scripts_dir/intra_config_server.py"
+  "$scripts_dir/cta_config_server.py"
   "$scripts_dir/process_match_lib.sh"
   "$scripts_dir/intra_release_guard.sh"
   "$scripts_dir/execution_backend_lib.sh"
@@ -173,8 +173,8 @@ required_executables=(
   "$target/pre_trade"
   "$target/trade_engine"
   "$target/persist_manager"
-  "$scripts_dir/start_intra_config_server.sh"
-  "$scripts_dir/stop_intra_config_server.sh"
+  "$scripts_dir/start_cta_config_server.sh"
+  "$scripts_dir/stop_cta_config_server.sh"
   "$intra_scripts_dir/start_intra_viz_server.sh"
   "$intra_scripts_dir/stop_intra_viz_server.sh"
   "$intra_scripts_dir/start_intra_persist_manager.sh"
@@ -299,7 +299,7 @@ start_scripts=(
 )
 trade_signal_binary="$target/trade_signal"
 legacy_account_monitor_binary="$target/$account_monitor_bin"
-config_server_script="$scripts_dir/intra_config_server.py"
+config_server_script="$scripts_dir/cta_config_server.py"
 
 for index in "${!binaries[@]}"; do
   intra_release_verify_file "$target" "${release_names[$index]}" "${binaries[$index]}"
@@ -444,7 +444,7 @@ start_and_verify_config_server() {
   local pids=()
   echo
   echo "[STEP] start and verify config_server"
-  bash "$scripts_dir/start_intra_config_server.sh" </dev/null
+  bash "$scripts_dir/start_cta_config_server.sh" </dev/null
   initial_pid="$(wait_for_config_server)"
   sleep "$startup_settle_seconds"
   mapfile -t pids < <(find_config_server_pids)

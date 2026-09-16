@@ -199,57 +199,83 @@ impl SymbolList {
         }
 
         // 读取建仓列表
-        // （废弃）建仓列表现阶段未使用，留空
-        if ns == "mm" {
+        // mm/cta 只有单一交易宇宙：trade_symbols 同时映射到正反两个方向集合。
+        if ns == "mm" || ns == "cta" {
             let trade_key =
                 symbol_list_redis_key(key_prefix.as_deref(), &ns, "trade_symbols", &key_suffix);
-            if let Ok(Some(value)) = client.get_string(&trade_key).await {
-                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                    let normalized: FastHashSet<String> =
-                        fast_hash_set_from_iter(symbols.iter().map(|s| s.to_uppercase()));
+            match client.get_string(&trade_key).await {
+                Ok(Some(value)) => match serde_json::from_str::<Vec<String>>(&value) {
+                    Ok(symbols) => {
+                        let normalized: FastHashSet<String> =
+                            fast_hash_set_from_iter(symbols.iter().map(|s| s.to_uppercase()));
+                        Self::with_inner_mut(|inner| {
+                            inner.fwd_trade_symbols = normalized.clone();
+                            inner.bwd_trade_symbols = normalized.clone();
+                            info!(
+                                "更新 {} 交易列表 key='{}': {} 个交易对",
+                                ns,
+                                trade_key,
+                                inner.fwd_trade_symbols.len()
+                            );
+                        });
+                    }
+                    Err(err) => {
+                        warn!(
+                            "{} 交易列表 key='{}' 解析失败 raw={} err={:#}，保留旧缓存",
+                            ns, trade_key, value, err
+                        );
+                    }
+                },
+                Ok(None) if ns == "cta" => {
                     Self::with_inner_mut(|inner| {
-                        // MM 当前只维护一套交易列表，映射到正反两个方向以复用触发逻辑
-                        inner.fwd_trade_symbols = normalized.clone();
-                        inner.bwd_trade_symbols = normalized.clone();
+                        inner.fwd_trade_symbols.clear();
+                        inner.bwd_trade_symbols.clear();
+                    });
+                    info!("{} 交易列表 key='{}' 不存在，清空交易宇宙", ns, trade_key);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!(
+                        "{} 交易列表 key='{}' 读取失败: {:#}（保留旧缓存）",
+                        ns, trade_key, err
+                    );
+                }
+            }
+        }
+
+        // 读取正套建仓列表（cta 无正反概念，唯一来源是 trade_symbols）
+        if ns != "cta" {
+            let fwd_trade_key =
+                symbol_list_redis_key(key_prefix.as_deref(), &ns, "fwd_trade_symbols", &key_suffix);
+            if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
+                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                    Self::with_inner_mut(|inner| {
+                        inner.fwd_trade_symbols =
+                            symbols.iter().map(|s| s.to_uppercase()).collect();
                         info!(
-                            "更新 MM 交易列表 key='{}': {} 个交易对",
-                            trade_key,
+                            "更新正套建仓列表 key='{}': {} 个交易对",
+                            fwd_trade_key,
                             inner.fwd_trade_symbols.len()
                         );
                     });
                 }
             }
-        }
 
-        // 读取正套建仓列表
-        let fwd_trade_key =
-            symbol_list_redis_key(key_prefix.as_deref(), &ns, "fwd_trade_symbols", &key_suffix);
-        if let Ok(Some(value)) = client.get_string(&fwd_trade_key).await {
-            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                Self::with_inner_mut(|inner| {
-                    inner.fwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
-                    info!(
-                        "更新正套建仓列表 key='{}': {} 个交易对",
-                        fwd_trade_key,
-                        inner.fwd_trade_symbols.len()
-                    );
-                });
-            }
-        }
-
-        // 读取反套建仓列表
-        let bwd_trade_key =
-            symbol_list_redis_key(key_prefix.as_deref(), &ns, "bwd_trade_symbols", &key_suffix);
-        if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
-            if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
-                Self::with_inner_mut(|inner| {
-                    inner.bwd_trade_symbols = symbols.iter().map(|s| s.to_uppercase()).collect();
-                    info!(
-                        "更新反套建仓列表 key='{}': {} 个交易对",
-                        bwd_trade_key,
-                        inner.bwd_trade_symbols.len()
-                    );
-                });
+            // 读取反套建仓列表
+            let bwd_trade_key =
+                symbol_list_redis_key(key_prefix.as_deref(), &ns, "bwd_trade_symbols", &key_suffix);
+            if let Ok(Some(value)) = client.get_string(&bwd_trade_key).await {
+                if let Ok(symbols) = serde_json::from_str::<Vec<String>>(&value) {
+                    Self::with_inner_mut(|inner| {
+                        inner.bwd_trade_symbols =
+                            symbols.iter().map(|s| s.to_uppercase()).collect();
+                        info!(
+                            "更新反套建仓列表 key='{}': {} 个交易对",
+                            bwd_trade_key,
+                            inner.bwd_trade_symbols.len()
+                        );
+                    });
+                }
             }
         }
 
@@ -343,9 +369,9 @@ impl SymbolList {
             Self::with_inner_mut(|inner| inner.vol_gate_symbols.clear());
         }
 
-        // intra: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
+        // intra/cta: 同所期现没有正反开方向限制，fwd ∪ bwd 视为单一 online 列表，
         // 让 is_in_fwd_trade_list / is_in_bwd_trade_list 对任一方向都放行
-        if ns == "intra" {
+        if ns == "intra" || ns == "cta" {
             Self::with_inner_mut(|inner| {
                 Self::canonicalize_filter_set(&mut inner.dump_symbols);
                 Self::canonicalize_filter_set(&mut inner.pos_dump_symbols);
@@ -365,8 +391,8 @@ impl SymbolList {
                 inner.bwd_trade_symbols = union;
                 inner.canonical_filter_keys = true;
                 info!(
-                    "intra online 列表 {}: 合并 fwd∪bwd = {} 个交易对",
-                    key_suffix, count
+                    "{} online 列表 {}: 合并 fwd∪bwd = {} 个交易对",
+                    ns, key_suffix, count
                 );
             });
         }

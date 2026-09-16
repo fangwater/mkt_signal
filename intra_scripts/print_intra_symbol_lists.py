@@ -179,17 +179,28 @@ def main() -> int:
     print(f"\n📊 {namespace} 交易对列表配置:")
     print("=" * 80)
     total = 0
-    total += print_symbol_list(rds, symbol_list_key(env_name, "dump_symbols", exchange, namespace), "🔴 dump_symbols")
-    total += print_symbol_list(rds, symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace), "🟢 fwd_trade_symbols")
-    total += print_symbol_list(rds, symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace), "🔴 bwd_trade_symbols")
+    if namespace == "cta":
+        keys = [
+            symbol_list_key(env_name, "trade_symbols", exchange, "cta"),
+            symbol_list_key(env_name, "dump_symbols", exchange, "cta"),
+            symbol_list_key(env_name, "bwd_trade_symbols", exchange, "intra"),
+        ]
+        total += print_symbol_list(rds, keys[0], "🟢 cta_trade_symbols")
+        total += print_symbol_list(rds, keys[1], "🔴 cta_dump_symbols")
+        total += print_symbol_list(rds, keys[2], "🪞 intra_bwd_trade_symbols (借贷白名单镜像)")
+    else:
+        keys = [
+            symbol_list_key(env_name, "dump_symbols", exchange, namespace),
+            symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace),
+            symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace),
+        ]
+        total += print_symbol_list(rds, keys[0], "🔴 dump_symbols")
+        total += print_symbol_list(rds, keys[1], "🟢 fwd_trade_symbols")
+        total += print_symbol_list(rds, keys[2], "🔴 bwd_trade_symbols")
 
     print("\n📈 统计摘要:")
     print("=" * 80)
-    for k in [
-        symbol_list_key(env_name, "dump_symbols", exchange, namespace),
-        symbol_list_key(env_name, "fwd_trade_symbols", exchange, namespace),
-        symbol_list_key(env_name, "bwd_trade_symbols", exchange, namespace),
-    ]:
+    for k in keys:
         data = rds.get(k)
         if not data:
             continue

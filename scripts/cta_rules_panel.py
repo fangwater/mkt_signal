@@ -142,6 +142,12 @@ def render_cta_rules_panel_js() -> str:
 
     function ctaRulesSection() { return document.getElementById('cta-rules'); }
 
+    // 相对当前页面路径取 API（nginx 挂在 /cta/<env>/config 前缀下，不能用 /api 绝对路径）
+    function ctaApiUrl() {
+      const base = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
+      return `${base}api/cta-rules`;
+    }
+
     function ctaEsc(v) {
       return String(v ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
@@ -234,7 +240,7 @@ def render_cta_rules_panel_js() -> str:
     }
 
     async function ctaRulesLoad() {
-      const data = await fetch('/api/cta-rules').then(r => r.json());
+      const data = await fetch(ctaApiUrl()).then(r => r.json());
       if (data.error) { setStatus('cta-rules-status', data.error, false); return; }
       document.getElementById('cta-rules-key').textContent = data.key || '';
       renderCtaRules(data.rules || []);
@@ -243,7 +249,7 @@ def render_cta_rules_panel_js() -> str:
 
     async function ctaRulesSave(dryRun) {
       const rules = ctaCollectRules();
-      const resp = await fetch('/api/cta-rules', {
+      const resp = await fetch(ctaApiUrl(), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({rules, dry_run: !!dryRun}),
       }).then(r => r.json());
