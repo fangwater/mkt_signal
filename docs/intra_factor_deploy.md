@@ -239,18 +239,26 @@ mm/mt` → `{factor}_{percentile}`。forward=开多（买现货卖期货），ba
 「同步阈值」从 `rolling_metrics_thresholds_{open}_{hedge}` 取 per-symbol 分位
 物化到 `cta_spread_thresholds_*`；trade_signal 60s 热加载走与 intra/cross 相同
 的 `reload_spread_thresholds_from_rolling` → `SpreadFactor` 链路。
-binance-margin×futures 实际发布的分位集合：spread≈{5..30,70,85,90}、
-bidask≈{5..30}、askbid≈{70..95}——**没有 spread_95**，当前默认 mapping：
+
+语义与 notebook 的 spread overlay 一致（`spread = (spot_mid−swap_mid)/spot_mid`，
+与 rolling_metrics 同定义）：开多只在 `spread < q30` 挂单、开空只在
+`spread > q70`、越过 `q50` 撤同向未成交。默认 mapping（notebook 口径）：
 
 ```text
-forward_open_mm=spread_20   forward_open_mt=bidask_10
-forward_cancel_mm=spread_30 forward_cancel_mt=bidask_15
-backward_open_mm=spread_90  backward_open_mt=askbid_90
-backward_cancel_mm=spread_85 backward_cancel_mt=askbid_85
+forward_open_mm=spread_30    forward_open_mt=bidask_30
+forward_cancel_mm=spread_50  forward_cancel_mt=bidask_50
+backward_open_mm=spread_70   backward_open_mt=askbid_70
+backward_cancel_mm=spread_50 backward_cancel_mt=askbid_50
 ```
 
+q50 不在原始发布集合内——`rolling_metrics_params_binance-margin_binance-futures`
+已给 spread/bidask/askbid 三个因子追加 `50`（纯增量，热加载生效，intra 引用
+的既有分位不受影响）。当前 spread 集合 {5,10,15,20,25,30,50,70,85,90}、
+bidask {5,10,15,20,30,50}、askbid {50,70,80,85,90,95}。
+
 `_mm`/`_mt` 必须成对才能 set；mapping 里引用未发布的分位会导致该 symbol 整组
-跳过（sync 响应里 warnings 可见）。
+跳过（sync 响应里 warnings 可见）。裸调 `POST /api/spread-thresholds/sync`
+不带 mapping 时读取已持久化的 config，而不是代码默认值。
 
 **部署编排（binance-cta-rx01，RapidX/LTP）**：
 

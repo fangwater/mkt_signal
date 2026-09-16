@@ -545,18 +545,18 @@ def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta
 # cta_spread_thresholds_{open}_{hedge} hash。
 # 字段名沿用共享 schema：forward=开多（买现货卖期货）/backward=开空，
 # mm=maker 挂单阈值 / mt=taker 阈值（apply 需要 mm+mt 成对存在）。
-# 默认值只用该 rolling 管线实际发布的分位（binance margin×futures 发布
-# spread {5,10,15,20,25,30,70,85,90} / bidask {5..30} / askbid {70..95}，
-# 没有 spread_95——代码默认的 spread_95 会取不到值导致整 symbol 跳过）。
+# 默认值按 notebook 的 spread overlay 语义：开多要求 spread<q30、开空要求
+# spread>q70、越过 q50 撤同向未成交。依赖 rolling_metrics 发布 50 分位
+#（rolling_metrics_params_binance-margin_binance-futures 已给三个因子加 50）。
 _CTA_SPREAD_DEFAULTS: Dict[str, str] = {
-    "forward_open_mm": "spread_20",
-    "forward_open_mt": "bidask_10",
-    "forward_cancel_mm": "spread_30",
-    "forward_cancel_mt": "bidask_15",
-    "backward_open_mm": "spread_90",
-    "backward_open_mt": "askbid_90",
-    "backward_cancel_mm": "spread_85",
-    "backward_cancel_mt": "askbid_85",
+    "forward_open_mm": "spread_30",
+    "forward_open_mt": "bidask_30",
+    "forward_cancel_mm": "spread_50",
+    "forward_cancel_mt": "bidask_50",
+    "backward_open_mm": "spread_70",
+    "backward_open_mt": "askbid_70",
+    "backward_cancel_mm": "spread_50",
+    "backward_cancel_mt": "askbid_50",
 }
 _CTA_SPREAD_ORDER: List[str] = list(_CTA_SPREAD_DEFAULTS.keys())
 _CTA_SPREAD_COMMENTS: Dict[str, str] = {
@@ -596,6 +596,12 @@ def sync_spread_thresholds(
 ) -> Dict[str, Any]:
     if spread_sync is None:
         raise RuntimeError("sync_intra_spread_thresholds.py not available")
+    if not mapping:
+        # 裸调 sync（不带 mapping）时优先用已持久化的 mapping，
+        # 否则回落代码默认值——避免与已存 config 漂移。
+        mapping = base.read_threshold_mapping(
+            rds, "spread", open_venue, hedge_venue, _CTA_SPREAD_DEFAULTS
+        )
     return base.sync_thresholds(
         rds,
         "spread",
