@@ -64,12 +64,6 @@ def print_rule(index: int, rule: dict) -> None:
         f"delay={_fmt(rule.get('signal_delay_seconds'), 1)}s"
     )
     print(
-        "    spread overlay:           "
-        f"long_q={_fmt(rule.get('spread_long_quantile'), 0.7)} "
-        f"short_q={_fmt(rule.get('spread_short_quantile'), 0.3)} "
-        f"cancel_q={_fmt(rule.get('spread_cancel_quantile'), 0.5)}"
-    )
-    print(
         "    open grid:                "
         f"offsets={_fmt(rule.get('open_offsets'), '[0.0, 0.0001, 0.0003, 0.0005]')} "
         f"notional={_fmt(rule.get('order_notional_usdt'), 100.0)}u "

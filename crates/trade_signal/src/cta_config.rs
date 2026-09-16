@@ -49,11 +49,10 @@ impl CtaApplication {
 ///
 /// 分位比较与引擎一致（严格 `>` / `<`）：`score_quantile > long_quantile`
 /// → long vote；`score_quantile < short_quantile` → short vote。
-/// spread overlay（同样严格比较；spread_rate 的滚动分位由 rolling_metrics
-/// 服务发布，与 intra/fr 一致，不在进程内维护滚动窗口）：
-/// - long 仅当 `spread_rate < spread_short_quantile` 时允许挂单；
-/// - short 仅当 `spread_rate > spread_long_quantile` 时允许挂单；
-/// - `spread_rate` 越过 `spread_cancel_quantile` 触发同向撤单。
+/// spread overlay 不在规则内配置：per-symbol 价差阈值由
+/// `cta_spread_thresholds_config_{open}_{hedge}` mapping + rolling_metrics
+/// 发布值解析（`reload_spread_thresholds_from_rolling` → `SpreadFactor`），
+/// 与 intra/cross 同一机制。
 #[derive(Debug, Clone)]
 pub struct CtaRule {
     pub rule_id: String,
@@ -63,9 +62,6 @@ pub struct CtaRule {
     pub allow_short: bool,
     pub long_quantile: f64,
     pub short_quantile: f64,
-    pub spread_long_quantile: f64,
-    pub spread_short_quantile: f64,
-    pub spread_cancel_quantile: f64,
     /// 信号采样周期（秒），仅作校验/记录；live 由 model_output bar 驱动。
     pub frequency_seconds: i64,
     pub cooldown_seconds: i64,
@@ -111,12 +107,6 @@ struct RawCtaRule {
     long_quantile: f64,
     #[serde(default = "default_short_quantile")]
     short_quantile: f64,
-    #[serde(default = "default_spread_long_quantile")]
-    spread_long_quantile: f64,
-    #[serde(default = "default_spread_short_quantile")]
-    spread_short_quantile: f64,
-    #[serde(default = "default_spread_cancel_quantile")]
-    spread_cancel_quantile: f64,
     #[serde(default = "default_frequency_seconds")]
     frequency_seconds: i64,
     #[serde(default)]
@@ -153,15 +143,6 @@ fn default_long_quantile() -> f64 {
 }
 fn default_short_quantile() -> f64 {
     0.1
-}
-fn default_spread_long_quantile() -> f64 {
-    0.7
-}
-fn default_spread_short_quantile() -> f64 {
-    0.3
-}
-fn default_spread_cancel_quantile() -> f64 {
-    0.5
 }
 fn default_frequency_seconds() -> i64 {
     60
@@ -383,9 +364,6 @@ impl CtaRule {
             allow_short,
             long_quantile: raw.long_quantile,
             short_quantile: raw.short_quantile,
-            spread_long_quantile: raw.spread_long_quantile,
-            spread_short_quantile: raw.spread_short_quantile,
-            spread_cancel_quantile: raw.spread_cancel_quantile,
             frequency_seconds: raw.frequency_seconds,
             cooldown_seconds: raw.cooldown_seconds,
             signal_delay_seconds: raw.signal_delay_seconds,
@@ -436,9 +414,6 @@ impl CtaRule {
         for (name, q) in [
             ("long_quantile", self.long_quantile),
             ("short_quantile", self.short_quantile),
-            ("spread_long_quantile", self.spread_long_quantile),
-            ("spread_short_quantile", self.spread_short_quantile),
-            ("spread_cancel_quantile", self.spread_cancel_quantile),
         ] {
             if !q.is_finite() || !(0.0..=1.0).contains(&q) {
                 bail!(
@@ -692,9 +667,6 @@ mod tests {
         assert!(rule.allow_long && rule.allow_short);
         assert_eq!(rule.long_quantile, 0.9);
         assert_eq!(rule.short_quantile, 0.1);
-        assert_eq!(rule.spread_long_quantile, 0.7);
-        assert_eq!(rule.spread_short_quantile, 0.3);
-        assert_eq!(rule.spread_cancel_quantile, 0.5);
         assert_eq!(rule.frequency_seconds, 60);
         assert_eq!(rule.signal_delay_seconds, 1);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
@@ -717,9 +689,6 @@ mod tests {
             "trade_sides": "short",
             "long_quantile": 0.95,
             "short_quantile": 0.05,
-            "spread_long_quantile": 0.8,
-            "spread_short_quantile": 0.2,
-            "spread_cancel_quantile": 0.55,
             "frequency_seconds": 60,
             "cooldown_seconds": 30,
             "signal_delay_seconds": 0,
@@ -894,7 +863,8 @@ mod tests {
     fn spread_overlay_gates_match_engine_semantics() {
         let set = CtaRuleSet::parse(&rule_json("r", "svc")).unwrap();
         let rule = &set.rules()[0];
-        // long 需 spread < short 分位；short 需 spread > long 分位
+        // 阈值入参为 resolved per-symbol 值（rolling_metrics + mapping 解析后
+        // 由 SpreadFactor 供给）：long 需 spread < short_thr；short 需 spread > long_thr
         assert!(rule.spread_allows(1, -0.002, 0.7, -0.001));
         assert!(!rule.spread_allows(1, 0.0, 0.7, -0.001));
         assert!(rule.spread_allows(-1, 0.003, 0.002, -0.001));

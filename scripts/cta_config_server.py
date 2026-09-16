@@ -9,6 +9,8 @@
                          {env}:cta_dump_symbols:{exchange}       (平仓/禁用列表)
                          + 镜像 {env}:intra_bwd_trade_symbols:{exchange} (pre_trade 借贷白名单)
   - Strategy Params    -> cta_strategy_params_{open}_{hedge}     (hash：网格执行参数 + 共享执行旋钮)
+  - Spread Thresholds  -> cta_spread_thresholds_config_{o}_{h}   (JSON mapping：阈值字段→rolling 分位)
+                         cta_spread_thresholds_{o}_{h}           (hash：同步物化的 per-symbol 阈值)
   - Risk Params        -> {env}:{open}:{hedge}:pre_trade_risk_params (hash, pre_trade 读取)
 
 schema 常量与通用 helper 从 intra_config_server import（单一来源），
@@ -35,6 +37,12 @@ sys.path.insert(0, SCRIPT_DIR)
 
 import intra_config_server as base  # noqa: E402  (schema 常量与通用 helper 的单一来源)
 import sync_cta_rules  # noqa: E402  (cta 信号/执行字段校验，与 Rust loader 同规则)
+
+spread_sync = None  # noqa: E402
+try:
+    import sync_intra_spread_thresholds as spread_sync  # noqa: E402
+except Exception:
+    pass
 
 SUPPORTED_EXCHANGES = base.SUPPORTED_EXCHANGES
 
@@ -81,6 +89,7 @@ INDEX_HTML_TEMPLATE = (
     <div class="subnav">
       <a href="#cta-signal">CTA 信号</a>
       <a href="#symbol-lists">Symbol Lists</a>
+      <a href="#spread-thresholds">Spread Thresholds</a>
       <a href="#strategy-params">Strategy Params</a>
       <a href="#risk-params">Risk Params</a>
     </div>
@@ -144,6 +153,33 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-status" class="status"></div>
+    </section>
+
+    <section id="spread-thresholds" class="panel">
+      <div class="section-header">
+        <h2>Spread Threshold Mapping</h2>
+        <div class="actions">
+          <button id="spread-config-load" class="secondary">读取配置</button>
+          <button id="spread-config-save">保存配置</button>
+          <button id="spread-sync" class="ghost">同步阈值</button>
+        </div>
+      </div>
+      <div class="hint">
+        mapping 存 <code>cta_spread_thresholds_config_{open}_{hedge}</code>；
+        「同步阈值」按 symbol 列表从 <code>rolling_metrics_thresholds_{open}_{hedge}</code>
+        取分位值，物化到 <code>cta_spread_thresholds_{open}_{hedge}</code>。
+        trade_signal 与 intra/cross 同一机制：读 mapping + rolling 发布值解析 per-symbol
+        价差阈值（60s 热加载）。forward=开多（买现货卖期货），backward=开空。
+      </div>
+      <div class="toolbar" style="margin-bottom: 10px;">
+        <div class="field">
+          <label for="spread-symbol">Symbol (可选)</label>
+          <input id="spread-symbol" placeholder="BTCUSDT" />
+        </div>
+        <div class="hint">格式: bidask_10 / askbid_90 / spread_15</div>
+      </div>
+      <div id="spread-table" class="kv-table"></div>
+      <div id="spread-status" class="status"></div>
     </section>
 
     <section id="risk-params" class="panel">
@@ -411,11 +447,56 @@ INDEX_HTML_TEMPLATE = (
       setStatus('signal-status', '已载入默认值（未保存）');
     };
 
+    // ---- Spread Threshold Mapping（cta_spread_thresholds_config_*）----
+    async function loadSpreadMapping() {
+      setStatus('spread-status', '读取中...');
+      try {
+        const data = await fetchJson(apiUrl('spread-thresholds'));
+        buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, BOOTSTRAP.comments.spread_mapping || {}, BOOTSTRAP.order.spread || [], data.values || {});
+        setStatus('spread-status', '读取完成');
+      } catch (err) {
+        setStatus('spread-status', `读取失败: ${err}`, false);
+      }
+    }
+
+    async function saveSpreadMapping() {
+      setStatus('spread-status', '保存中...');
+      try {
+        const data = await fetchJson(apiUrl('spread-thresholds'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values: collectParamValues('spread-table') }),
+        });
+        setStatus('spread-status', `保存成功 (${data.count || 0} 字段)`);
+      } catch (err) {
+        setStatus('spread-status', `保存失败: ${err}`, false);
+      }
+    }
+
+    async function syncSpreadThresholds() {
+      setStatus('spread-status', '同步中...');
+      try {
+        const symbol = document.getElementById('spread-symbol').value.trim();
+        const data = await fetchJson(apiUrl('spread-thresholds/sync'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol, mapping: collectParamValues('spread-table') }),
+        });
+        const changed = data.changed != null ? `, changed=${data.changed}` : '';
+        const warnings = data.warnings && data.warnings.length ? ` ⚠️ ${data.warnings.join('; ')}` : '';
+        const missing = data.missing_symbols && data.missing_symbols.length ? ` missing=${data.missing_symbols.length}` : '';
+        setStatus('spread-status', `同步完成: ${data.written || 0} 字段${changed}${missing}${warnings}`, !warnings);
+      } catch (err) {
+        setStatus('spread-status', `同步失败: ${err}`, false);
+      }
+    }
+
     async function reloadAll() {
       await loadSignalConfig();
       await loadSymbolLists();
       await loadStrategyParams();
       await loadRiskParams();
+      await loadSpreadMapping();
     }
 
     applyFixedContext();
@@ -430,7 +511,11 @@ INDEX_HTML_TEMPLATE = (
     document.getElementById('risk-load').addEventListener('click', loadRiskParams);
     document.getElementById('risk-save').addEventListener('click', saveRiskParams);
     document.getElementById('risk-default').addEventListener('click', applyRiskDefaults);
+    document.getElementById('spread-config-load').addEventListener('click', loadSpreadMapping);
+    document.getElementById('spread-config-save').addEventListener('click', saveSpreadMapping);
+    document.getElementById('spread-sync').addEventListener('click', syncSpreadThresholds);
     document.getElementById('reload-all').addEventListener('click', reloadAll);
+    buildParamRows('spread-table', BOOTSTRAP.defaults.spread_mapping || {}, BOOTSTRAP.comments.spread_mapping || {}, BOOTSTRAP.order.spread || [], {});
     reloadAll();
   </script>
 </body>
@@ -454,6 +539,73 @@ def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta
     return base.intra_symbol_list_key(env_name, name, suffix, namespace)
 
 
+# ---- Spread Thresholds（与 intra/cross 同一机制）----
+# mapping 存 cta_spread_thresholds_config_{open}_{hedge}（JSON），
+# trade_signal 的 reload_spread_thresholds_from_rolling 读它 + rolling_metrics
+# 发布值解析 per-symbol 阈值 -> SpreadFactor。「同步阈值」同时把解析结果物化到
+# cta_spread_thresholds_{open}_{hedge} hash。
+# 字段名沿用共享 schema：forward=开多（买现货卖期货）/backward=开空，
+# mm=maker 挂单阈值 / mt=taker 阈值（apply 需要 mm+mt 成对存在）。
+_CTA_SPREAD_DEFAULTS: Dict[str, str] = (
+    dict(spread_sync.SPREAD_THRESHOLD_MAPPING) if spread_sync is not None else {}
+)
+_CTA_SPREAD_ORDER: List[str] = (
+    list(spread_sync.THRESHOLD_ORDER) if spread_sync is not None else []
+)
+_CTA_SPREAD_COMMENTS: Dict[str, str] = {
+    "forward_open_mm": "开多 maker 阈值：spread < 该分位值才挂",
+    "forward_open_mt": "开多 taker 阈值（bidask 分位）",
+    "forward_cancel_mm": "开多挂单撤离：spread > 该分位值",
+    "forward_cancel_mt": "开多 taker 撤离（bidask 分位）",
+    "backward_open_mm": "开空 maker 阈值：spread > 该分位值才挂",
+    "backward_open_mt": "开空 taker 阈值（askbid 分位）",
+    "backward_cancel_mm": "开空挂单撤离：spread < 该分位值",
+    "backward_cancel_mt": "开空 taker 撤离（askbid 分位）",
+}
+
+
+def _cta_load_symbol_lists(
+    rds, key_suffix: str, env_name: str, open_venue: str, hedge_venue: str
+) -> List[str]:
+    """cta 单一交易宇宙：trade_symbols ∪ dump_symbols（无正反列表）。"""
+    symbols: set = set()
+    for name in ("trade_symbols", "dump_symbols"):
+        for sym in base.read_symbol_list(
+            rds, symbol_list_key(env_name, name, key_suffix)
+        ):
+            s = str(sym).strip().upper()
+            if s:
+                symbols.add(s)
+    return sorted(symbols)
+
+
+def sync_spread_thresholds(
+    rds,
+    open_venue: str,
+    hedge_venue: str,
+    key_suffix: str,
+    mapping: Optional[Dict[str, str]] = None,
+    symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    if spread_sync is None:
+        raise RuntimeError("sync_intra_spread_thresholds.py not available")
+    return base.sync_thresholds(
+        rds,
+        "spread",
+        current_env_name(),
+        open_venue,
+        hedge_venue,
+        key_suffix,
+        mapping,
+        _CTA_SPREAD_DEFAULTS,
+        _cta_load_symbol_lists,
+        spread_sync.read_rolling_metrics,
+        spread_sync.normalize_for_rolling,
+        spread_sync.extract_quantile_value,
+        symbol,
+    )
+
+
 # cta 信号配置（{env}:cta_rules 单对象）的字段默认值/注释/顺序——
 # 「CTA 信号」面板按此渲染扁平参数行。执行/网格字段不在这里，归 strategy hash。
 _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
@@ -463,9 +615,6 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
     "application": "each_bar",
     "long_quantile": 0.9,
     "short_quantile": 0.1,
-    "spread_long_quantile": 0.7,
-    "spread_short_quantile": 0.3,
-    "spread_cancel_quantile": 0.5,
     "frequency_seconds": 60,
     "signal_delay_seconds": 1,
     "cooldown_seconds": 0,
@@ -477,9 +626,6 @@ _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
     "application": "each_bar 每根 bar 评估 / on_change 仅方向翻转时",
     "long_quantile": "score 分位 > 此值做多",
     "short_quantile": "score 分位 < 此值做空（须 < long_quantile）",
-    "spread_long_quantile": "做多要求 spread_rate 分位 < 此值（分位由 rolling_metrics 发布）",
-    "spread_short_quantile": "做空要求 spread_rate 分位 > 此值（分位由 rolling_metrics 发布）",
-    "spread_cancel_quantile": "spread 分位越过此值撤同向未成交单",
     "frequency_seconds": "bar 周期（秒），仅校验/记录",
     "signal_delay_seconds": "信号确认延迟（秒）",
     "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
@@ -563,16 +709,19 @@ def render_index_html(
             "signal_params": dict(_CTA_SIGNAL_DEFAULTS),
             "strategy_params": strategy_defaults,
             "risk_params": dict(base.DEFAULT_RISK_PARAMS),
+            "spread_mapping": dict(_CTA_SPREAD_DEFAULTS),
         },
         "comments": {
             "signal_params": dict(_CTA_SIGNAL_COMMENTS),
             "strategy_params": strategy_comments,
             "risk_params": dict(base.RISK_PARAM_COMMENTS),
+            "spread_mapping": dict(_CTA_SPREAD_COMMENTS),
         },
         "order": {
             "signal": _CTA_SIGNAL_ORDER,
             "strategy": strategy_order,
             "risk": base.RISK_PARAM_ORDER,
+            "spread": _CTA_SPREAD_ORDER,
         },
         "selects": {"signal": _CTA_SIGNAL_SELECTS},
         "bool_params": {
@@ -674,6 +823,27 @@ class RequestHandler(BaseHTTPRequestHandler):
                         rds, symbol_list_key(env_name, "dump_symbols", key_suffix)
                     ),
                 },
+            )
+            return
+
+        if parsed.path == "/api/spread-thresholds":
+            try:
+                open_venue, hedge_venue = self._fixed_context()
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            key = base.threshold_mapping_key("spread", open_venue, hedge_venue)
+            values = base.read_threshold_mapping(
+                self.server.context.redis_client,
+                "spread",
+                open_venue,
+                hedge_venue,
+                _CTA_SPREAD_DEFAULTS,
+            )
+            if not values:
+                values = base.normalize_threshold_mapping(_CTA_SPREAD_DEFAULTS)
+            self._send_json(
+                200, {"key": key, "count": len(values), "values": values}
             )
             return
 
@@ -875,6 +1045,55 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             mapping.update(norm_exec)
             result = base.replace_hash(self.server.context.redis_client, key, mapping)
+            self._send_json(200, result)
+            return
+
+        if parsed.path == "/api/spread-thresholds":
+            try:
+                open_venue, hedge_venue = self._fixed_context()
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            values = payload.get("values") or {}
+            if not isinstance(values, dict):
+                self._send_error(400, "values must be object")
+                return
+            mapping = base.normalize_threshold_mapping(values)
+            if not mapping:
+                self._send_error(400, "mapping is empty")
+                return
+            key = base.threshold_mapping_key("spread", open_venue, hedge_venue)
+            written = base.write_threshold_mapping(
+                self.server.context.redis_client,
+                "spread",
+                open_venue,
+                hedge_venue,
+                mapping,
+            )
+            self._send_json(200, {"key": key, "count": written})
+            return
+
+        if parsed.path == "/api/spread-thresholds/sync":
+            try:
+                open_venue, hedge_venue = self._fixed_context()
+                key_suffix = base.make_key_suffix(open_venue, hedge_venue)
+            except Exception as exc:
+                self._send_error(400, str(exc))
+                return
+            symbol = payload.get("symbol")
+            mapping = payload.get("mapping") if isinstance(payload, dict) else None
+            try:
+                result = sync_spread_thresholds(
+                    self.server.context.redis_client,
+                    open_venue,
+                    hedge_venue,
+                    key_suffix,
+                    mapping,
+                    symbol,
+                )
+            except Exception as exc:
+                self._send_error(500, f"sync failed: {exc}")
+                return
             self._send_json(200, result)
             return
 

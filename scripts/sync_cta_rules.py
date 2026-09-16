@@ -7,7 +7,7 @@
 写入的 Redis key：
   - {env}:cta_rules    - 例如 binance-cta-rx01:cta_rules
 
-`{env}:cta_rules` 存放信号配置对象（model_service/分位/方向/spread overlay）；
+`{env}:cta_rules` 存放信号配置对象（model_service/分位/方向）；
 执行/网格参数（open_offsets、单笔名义、TP、trailing 等）归
 `cta_strategy_params_{open}_{hedge}` hash（本脚本提供 parse_exec_params
 供 config server 校验写入）。为兼容旧格式，--file 也接受规则数组。
@@ -49,9 +49,6 @@ ALLOWED_FIELDS = {
     "trade_sides",
     "long_quantile",
     "short_quantile",
-    "spread_long_quantile",
-    "spread_short_quantile",
-    "spread_cancel_quantile",
     "frequency_seconds",
     "cooldown_seconds",
     "signal_delay_seconds",
@@ -72,9 +69,6 @@ ALLOWED_FIELDS = {
 QUANTILE_FIELDS = (
     "long_quantile",
     "short_quantile",
-    "spread_long_quantile",
-    "spread_short_quantile",
-    "spread_cancel_quantile",
 )
 
 # ---- 信号配置（{env}:cta_rules 单对象）与执行参数（strategy hash）的字段分区 ----
@@ -86,9 +80,6 @@ SIGNAL_FIELD_TYPES: Dict[str, str] = {
     "application": "str",
     "long_quantile": "float",
     "short_quantile": "float",
-    "spread_long_quantile": "float",
-    "spread_short_quantile": "float",
-    "spread_cancel_quantile": "float",
     "frequency_seconds": "int",
     "signal_delay_seconds": "int",
     "cooldown_seconds": "int",
@@ -132,9 +123,6 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "trade_sides": "both",
     "long_quantile": 0.9,
     "short_quantile": 0.1,
-    "spread_long_quantile": 0.7,
-    "spread_short_quantile": 0.3,
-    "spread_cancel_quantile": 0.5,
     "frequency_seconds": 60,
     "cooldown_seconds": 0,
     "signal_delay_seconds": 1,

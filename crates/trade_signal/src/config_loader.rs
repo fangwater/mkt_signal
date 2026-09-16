@@ -355,7 +355,7 @@ async fn reload_dynamic_thresholds(
     hedge_venue: TradingVenue,
 ) -> Result<()> {
     let ns = normalize_namespace(namespace);
-    if ns != "fr" && ns != "intra" && ns != "cross" {
+    if ns != "fr" && ns != "intra" && ns != "cross" && ns != "cta" {
         if ns == "mm" {
             reload_open_volatility_thresholds(redis, namespace, open_venue, hedge_venue).await?;
         }
@@ -363,7 +363,7 @@ async fn reload_dynamic_thresholds(
     }
 
     match ns.as_str() {
-        "intra" | "cross" => {
+        "intra" | "cross" | "cta" => {
             reload_spread_thresholds_from_rolling(redis, &ns, open_venue, hedge_venue).await?
         }
         "fr" => reload_fr_dynamic_thresholds_from_rolling(redis, open_venue, hedge_venue).await?,
