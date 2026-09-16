@@ -47,6 +47,8 @@ Regions:
 | 6355 | jp | mm | `okex_mm_alpha` | `okex_mm_alpha` | `http://127.0.0.1:6355` | `127.0.0.1:50055` | fixed |
 | 6356 | jp | mm | `binance_mm_alpha` | `binance_mm_alpha` | `http://127.0.0.1:6356` | `127.0.0.1:50056` | fixed |
 | 6359 | jp | cta | `binance-cta-rx01` | `binance-cta-rx01` | `http://127.0.0.1:6359` | `127.0.0.1:50059` | fixed |
+| 6380 | jp | fr | `gate_fr_arb03` | `gate_fr_arb03` | `http://127.0.0.1:6380` | `127.0.0.1:50080` | planned |
+| 6381 | jp | fr | `bitget_fr_arb03` | `bitget_fr_arb03` | `http://127.0.0.1:6381` | `127.0.0.1:50081` | planned |
 
 ## Setup Notes
 

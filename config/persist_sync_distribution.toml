@@ -166,3 +166,27 @@ source_id = "binance-cta-rx01"
 public_url = "http://127.0.0.1:6359"
 bind = "127.0.0.1:50059"
 status = "fixed"
+
+# JP Gate FR arb03 source. The manager stays stopped until the operator starts
+# the new environment; this allocation reserves its local gRPC bind now.
+[[allocations]]
+port = 6380
+region = "local"
+strategy = "fr"
+env = "gate_fr_arb03"
+source_id = "gate_fr_arb03"
+public_url = "http://127.0.0.1:6380"
+bind = "127.0.0.1:50080"
+status = "planned"
+
+# JP Bitget FR arb03 source. The manager stays stopped until the operator starts
+# the new environment; this allocation reserves its local gRPC bind now.
+[[allocations]]
+port = 6381
+region = "local"
+strategy = "fr"
+env = "bitget_fr_arb03"
+source_id = "bitget_fr_arb03"
+public_url = "http://127.0.0.1:6381"
+bind = "127.0.0.1:50081"
+status = "planned"
