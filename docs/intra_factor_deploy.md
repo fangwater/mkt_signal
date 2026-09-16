@@ -181,78 +181,76 @@ percentile 不依赖 z-score 值；`baseline_035` 内部每层使用 30 个 1min
 key_suffix=`binance`，venue 按 intra 同款规则推断为
 `(binance-margin, binance-futures)`。
 
-**已落地（config server + 部署编排）**：
+**配置面（`scripts/cta_config_server.py`，路由前缀 `/cta`，端口 19174）**：
 
-- `ArbMode::Cta` + `CtaShell` 骨架：复用 arb runtime（signal publisher /
-  backward channel / min-qty table），独立的 `ModelOutputHub` 订阅。
-- `crates/trade_signal/src/cta_config.rs`：规则 schema + 校验 + Redis
-  加载。key 为 env 作用域 STRING（exchange 已编码在 env 名里，不再挂
-  key_suffix）：
+页面五个板块，全部是扁平表单（无 rules 数组、无 rule_id 概念）：
 
-  ```text
-  {env_dir}:cta_rules        # 例：binance-cta-rx01:cta_rules
-  ```
+| 板块 | Redis key | 说明 |
+| --- | --- | --- |
+| CTA 信号 | `{env}:cta_rules` | 单 JSON 对象（见下） |
+| Symbol Lists | `{env}:cta_trade_symbols:{exchange}` / `{env}:cta_dump_symbols:{exchange}` | 单一交易宇宙（无 fwd/bwd 概念）+ dump 列表；保存时镜像到 `{env}:intra_bwd_trade_symbols:{exchange}` 供 pre_trade 借贷白名单 |
+| Strategy Params | `cta_strategy_params_{open}_{hedge}` | hash，10 个网格执行字段（见下） |
+| Spread Thresholds | `cta_spread_thresholds_config_{o}_{h}` + `cta_spread_thresholds_{o}_{h}` | mapping 配置 + 「同步阈值」物化，机制与 fr/intra 相同 |
+| Risk Params | `{env}:{open}:{hedge}:pre_trade_risk_params` | hash，pre_trade 60s 热加载 |
 
-  value 为 JSON 数组，每条 rule 字段（缺省值对齐引擎）：
+**`{env}:cta_rules` 信号对象**（7 字段，`RawCtaRule`；旧 JSON 数组格式仍兼容解析，
+`rule_id` 可省略缺省 `"default"`）：
 
-  ```text
-  rule_id                  必填，[a-zA-Z0-9_-]{1,32}，集合内唯一
-  model_service            必填，裸名或 model_output/... 全名
-  trade_sides              long|short|both（缺省 both；与引擎同义别名同集）
-  long_quantile            0.9   — score_quantile > 此值 → 多方向 vote
-  short_quantile           0.1   — score_quantile < 此值 → 空方向 vote
-  spread_long_quantile     0.7   — spread_rate > 此值才允许挂 short
-  spread_short_quantile    0.3   — spread_rate < 此值才允许挂 long
-  spread_cancel_quantile   0.5   — 越过此值撤同向未成交挂单
-  rolling_window           2880  — spread overlay 滚动窗口（1m 样本数）
-  rolling_min_periods      1440
-  frequency_seconds        60
-  cooldown_seconds         0
-  signal_delay_seconds     1
-  application              each_bar | on_change
-  order_notional_usdt      100.0 — 单档名义（引擎 order_notional_usdt）
-  open_offsets             [0.0, 0.0001, 0.0003, 0.0005] — 网格各档相对 touch
-                           价偏移；JSON 小数字面量与科学计数法（1e-4）均可
-  open_ttl_seconds         120   — 挂单 TTL（引擎 maker_ttl_seconds）
-  max_position_notional_usdt 10000 — 单向名义上限，必须 ≥ 档数×单档名义
-  take_profit              0.0   — swap 腿 maker 止盈偏移；0 = 不挂止盈单
-  reward_risk_ratio        1.0   — stop_loss = take_profit / rr
-  trailing_stop_enabled    true
-  trailing_stop_trigger_step 0.001 — trailing 触发步进
-  trailing_stop_move_step  0.0005 — trailing 移动步进
-  max_holding_seconds      14400 — 最长持仓；0 = 不限制
-  enabled                  true
-  ```
+```text
+model_service    必填 — 裸名自动补 model_output/ 前缀；默认
+                 intra-binance-futures-1m-baseline_035
+enabled          true — false 时不产生信号（配置保留）
+trade_sides      both | long | short
+application      each_bar | on_change
+long_quantile    0.9  — score_quantile > 此值 → 多方向
+short_quantile   0.1  — score_quantile < 此值 → 空方向（须 < long_quantile）
+cooldown_seconds 0    — 同一 symbol 两次开仓最小间隔
+```
 
-  校验规则与引擎 `ExecutionConfig`/`SignalRule` 对齐：分位数 ∈ [0,1] 且
-  `short_quantile < long_quantile`；`max_position_notional_usdt` 必须覆盖
-  一整组网格（`order_notional_usdt × open_offsets.len()`）；`take_profit`
-  非负有限；`reward_risk_ratio` 正有限；trailing 开启时两个 step 必须为正；
-  `max_holding_seconds ≥ 0`。
+注意：rolling 窗口/min_samples **不在**信号配置里——`score_quantile` 由
+`intra_factor_model_1m_pub` 按 notebook 的 2880 窗 / 1440 min_samples 直接发布；
+`frequency_seconds`/`signal_delay_seconds`/`conflict_policy`/`nq_change` 是回测
+引擎概念，生产无消费点，均不暴露。
 
-- `config_loader` 统一接入：启动 `load_all_once_with_namespace` 即加载，
-  之后每 60s 随统一 reload 周期刷新；key 缺失/连接失败/解析失败均保留
-  上一份已应用配置并告警；显式写 `[]` 会清空规则与订阅。
-- `SymbolList` 对 `cta` namespace 同样走 env 前缀
-  （`{env}:cta_fwd_trade_symbols:{suffix}` / `{env}:cta_bwd_trade_symbols:{suffix}`）；
-  `sync_intra_symbol_lists.py`/`print_intra_symbol_lists.py` 与
-  `sync_intra_strategy_params.py`/`print_intra_strategy_params.py` 已支持
-  `--namespace cta`（缺省按 env-name/CWD 的 `-cta-` 段推断）。cta 同步时
-  会额外把 bwd 列表镜像到 `{env}:intra_bwd_trade_symbols:{suffix}`——
-  pre_trade 的现货借贷白名单固定读该 key（跨模式共享约定）。
-- `strategy_params` 的 `return_model_service`/`environment_model_service`
-  在 cta 模式下不再接管 model_output 订阅——订阅集完全由 cta rules 的
-  `model_service` 去重生成并热更新；`intra_trailing_stop_overrides`、
-  hedge 参数等仍随 `cta_strategy_params_{open}_{hedge}` hash 生效。
-- `pre_trade` 识别 `<exchange>-cta-<tag>` → `ArbMode::Cta`（margin×futures），
-  参与 bwd 借贷白名单刷新与 intra 同款 BBO 保护订阅。
-- `intra_config_server.py` 按 CWD 推断命名空间：cta env 下 UI 读写
-  `{env}:cta_*` symbol lists、`cta_strategy_params_*`、
-  `cta_{spread,funding}_thresholds_*`，并在保存 symbol lists 时同步镜像
-  bwd 白名单。
-- `scripts/sync_cta_rules.py` / `scripts/print_cta_rules.py`：读写
-  `{env}:cta_rules` 的运维工具；sync 在写入前做与 loader 一致的全量校验
-  （`--dry-run` 只校验，`--clear` 写 `[]` 清空）。
+**`cta_strategy_params_{open}_{hedge}` 执行参数**（10 字段；`CtaExecOverrides`
+加载时覆盖到规则上，优先级：hash > 对象内字段 > serde 默认）：
+
+```text
+order_notional_usdt          100.0  — 网格单档名义
+open_offsets                 [0.0,0.0001,0.0003,0.0005] — 各档相对 touch 价偏移
+open_ttl_seconds             120    — 开仓挂单 TTL
+max_position_notional_usdt   10000  — 单向名义上限，须 ≥ 档数×单档名义
+take_profit                  0.005  — swap 腿 maker 止盈偏移；0 = 不挂止盈
+reward_risk_ratio            1.0    — stop_loss = take_profit / rr
+trailing_stop_enabled        true
+trailing_stop_trigger_step   0.001
+trailing_stop_move_step      0.0005
+max_holding_seconds          14400  — 0 = 不限制
+```
+
+intra 共享链路的旋钮对 cta 均为死参数、不暴露：`signal_cooldown`（只喂
+FundingArb cooldown sweep）、`open_order_timeout`/`hedge_timeout`（intra/xarb
+open-ctx）、`enable_tlen_cancel`/`tlen_cancel_freq_ms`（tlen 撤单——CtaShell
+对 cancel trigger/candidate 显式 no-op）、`hedge_*` 定价参数（inventory-hedge
+路径，cta 对冲是 entry 锚定 per-lot maker TP）。
+
+**Spread Thresholds**：mapping 表 8 字段 `forward/backward × open/cancel ×
+mm/mt` → `{factor}_{percentile}`。forward=开多（买现货卖期货），backward=开空。
+「同步阈值」从 `rolling_metrics_thresholds_{open}_{hedge}` 取 per-symbol 分位
+物化到 `cta_spread_thresholds_*`；trade_signal 60s 热加载走与 intra/cross 相同
+的 `reload_spread_thresholds_from_rolling` → `SpreadFactor` 链路。
+binance-margin×futures 实际发布的分位集合：spread≈{5..30,70,85,90}、
+bidask≈{5..30}、askbid≈{70..95}——**没有 spread_95**，当前默认 mapping：
+
+```text
+forward_open_mm=spread_20   forward_open_mt=bidask_10
+forward_cancel_mm=spread_30 forward_cancel_mt=bidask_15
+backward_open_mm=spread_90  backward_open_mt=askbid_90
+backward_cancel_mm=spread_85 backward_cancel_mt=askbid_85
+```
+
+`_mm`/`_mt` 必须成对才能 set；mapping 里引用未发布的分位会导致该 symbol 整组
+跳过（sync 响应里 warnings 可见）。
 
 **部署编排（binance-cta-rx01，RapidX/LTP）**：
 
@@ -273,15 +271,39 @@ scripts/stop-cta.sh    --env-name binance-cta-rx01
 - `deploy_cta_binance_std.sh` 固定 ltp 后端，core layout：
   account_monitor=32 / trade_signal=33 / pre_trade=34 / trade_engine=35 /
   persist_manager=15（共享）。
-- publish 的 manifest 在 intra 文件集上追加 `sync_cta_rules.py` /
-  `print_cta_rules.py`；staging 目录 `.publish-cta.*`；`--all` 只遍历
-  `CTA_ORCHESTRATION_ENVS`，与 intra 的 `--all` 互不触碰。
+- publish 的 manifest 含 `cta_config_server.py`、`sync_cta_rules.py` /
+  `print_cta_rules.py`、`start-cta.sh`/`stop-cta.sh` 与 cta 部署脚本；
+  staging 目录 `.publish-cta.*`；`--all` 只遍历 `CTA_ORCHESTRATION_ENVS`。
+- config server PM2 名 `cta_config_server_{env}`，公网入口
+  `http://13.115.227.29:4191/cta/<env>/config`（nginx 前缀 `/cta`）。
+
+**新 CTA 环境配置清单**（按顺序；`binance-cta-rx01` 已按此配置）：
+
+1. `deploy_cta_binance_std.sh <tag>` 建 env → `publish-cta.sh` 发二进制和脚本。
+2. Symbol Lists：写 `cta_trade_symbols`（交易宇宙）+ `cta_dump_symbols`；
+   bwd 白名单镜像自动完成。
+3. CTA 信号：model_service + 分位 + 方向。baseline_035 用 notebook §8
+   选中组：q=0.9/0.1、both、each_bar、cooldown=0。
+4. Strategy Params：写 10 个执行字段。notebook 选中组
+   `parameter_id=1d8936bf9b635502`（live46 中 `valid_auc+test_auc` 最小：
+   0.076+0.124，sharpe 4.26/3.71）：tp=0.005、rr=1.0、trig=0.001、
+   move=0.0005，其余为共有值（offsets 4 档 / 100U / ttl 120 / max_pos 10k /
+   max_holding 14400）。注意该组 `nq_change.enabled=True`——nq 过滤执行侧
+   尚未实现，实盘暂不带。
+5. Spread Thresholds：确认 mapping 分位在 rolling 发布集合内 → 「同步阈值」
+   物化 per-symbol 值；检查 `written`/`warnings`。
+6. Risk Params：参照 binance-intra-arb01 现网值写限速（arb_open 500/10s、
+   1000/min；arb_hedge 300/10s=Binance 硬上限、1000/min；挂单上限
+   5/5/10/10/global 10）与敞口（max_pos_u 10k、symbol 0.05、total 0.02、
+   leverage 5、UniMMR 1.5/1.6）。
+7. 校验：`print_cta_rules.py` 读回信号+执行 hash；GET
+   `/api/spread-thresholds` 看物化值；交易进程保持停止。
 
 **尚未实现（下一步）**：
 
 - `drive_cta_decision` 目前是 no-op：逐 `(rule_id, symbol)` 的 vote→方向
-  状态机、spread overlay 滚动分位（进程内自攒 ~24h 预热）、
-  ArbOpen/ArbCancel 发放还没写。
+  状态机、ArbOpen/ArbCancel 发放还没写。spread overlay 由 rolling_metrics
+  链路供给阈值（无进程内滚动预热）。
 - 现货成交后"按开仓价锚定 maker 止盈对冲 + 止损联动撤单"的 per-lot
   hedge 路径（1:1 映射已有 `IntraTrailingBook`/`HedgeAllocation`/`borrow_open_id`
   骨架，但聚合式 due-hedge query 需要改为按 open lot 维度）。
