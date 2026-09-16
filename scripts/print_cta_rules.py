@@ -67,9 +67,7 @@ def print_rule(index: int, rule: dict) -> None:
         "    spread overlay:           "
         f"long_q={_fmt(rule.get('spread_long_quantile'), 0.7)} "
         f"short_q={_fmt(rule.get('spread_short_quantile'), 0.3)} "
-        f"cancel_q={_fmt(rule.get('spread_cancel_quantile'), 0.5)} "
-        f"window={_fmt(rule.get('rolling_window'), 2880)} "
-        f"min_periods={_fmt(rule.get('rolling_min_periods'), 1440)}"
+        f"cancel_q={_fmt(rule.get('spread_cancel_quantile'), 0.5)}"
     )
     print(
         "    open grid:                "

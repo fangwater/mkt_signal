@@ -49,7 +49,8 @@ impl CtaApplication {
 ///
 /// 分位比较与引擎一致（严格 `>` / `<`）：`score_quantile > long_quantile`
 /// → long vote；`score_quantile < short_quantile` → short vote。
-/// spread overlay（同样严格比较）：
+/// spread overlay（同样严格比较；spread_rate 的滚动分位由 rolling_metrics
+/// 服务发布，与 intra/fr 一致，不在进程内维护滚动窗口）：
 /// - long 仅当 `spread_rate < spread_short_quantile` 时允许挂单；
 /// - short 仅当 `spread_rate > spread_long_quantile` 时允许挂单；
 /// - `spread_rate` 越过 `spread_cancel_quantile` 触发同向撤单。
@@ -65,9 +66,6 @@ pub struct CtaRule {
     pub spread_long_quantile: f64,
     pub spread_short_quantile: f64,
     pub spread_cancel_quantile: f64,
-    /// spread overlay 滚动窗口（样本数）；因子分位由发布侧维护。
-    pub rolling_window: usize,
-    pub rolling_min_periods: usize,
     /// 信号采样周期（秒），仅作校验/记录；live 由 model_output bar 驱动。
     pub frequency_seconds: i64,
     pub cooldown_seconds: i64,
@@ -119,10 +117,6 @@ struct RawCtaRule {
     spread_short_quantile: f64,
     #[serde(default = "default_spread_cancel_quantile")]
     spread_cancel_quantile: f64,
-    #[serde(default = "default_rolling_window")]
-    rolling_window: usize,
-    #[serde(default = "default_rolling_min_periods")]
-    rolling_min_periods: usize,
     #[serde(default = "default_frequency_seconds")]
     frequency_seconds: i64,
     #[serde(default)]
@@ -168,12 +162,6 @@ fn default_spread_short_quantile() -> f64 {
 }
 fn default_spread_cancel_quantile() -> f64 {
     0.5
-}
-fn default_rolling_window() -> usize {
-    2880
-}
-fn default_rolling_min_periods() -> usize {
-    1440
 }
 fn default_frequency_seconds() -> i64 {
     60
@@ -398,8 +386,6 @@ impl CtaRule {
             spread_long_quantile: raw.spread_long_quantile,
             spread_short_quantile: raw.spread_short_quantile,
             spread_cancel_quantile: raw.spread_cancel_quantile,
-            rolling_window: raw.rolling_window,
-            rolling_min_periods: raw.rolling_min_periods,
             frequency_seconds: raw.frequency_seconds,
             cooldown_seconds: raw.cooldown_seconds,
             signal_delay_seconds: raw.signal_delay_seconds,
@@ -441,15 +427,9 @@ impl CtaRule {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.frequency_seconds <= 0 || self.rolling_window == 0 {
+        if self.frequency_seconds <= 0 {
             bail!(
-                "cta rule '{}' frequency_seconds/rolling_window must be positive",
-                self.rule_id
-            );
-        }
-        if self.rolling_min_periods == 0 || self.rolling_min_periods > self.rolling_window {
-            bail!(
-                "cta rule '{}' rolling_min_periods must be in [1, rolling_window]",
+                "cta rule '{}' frequency_seconds must be positive",
                 self.rule_id
             );
         }
@@ -715,8 +695,6 @@ mod tests {
         assert_eq!(rule.spread_long_quantile, 0.7);
         assert_eq!(rule.spread_short_quantile, 0.3);
         assert_eq!(rule.spread_cancel_quantile, 0.5);
-        assert_eq!(rule.rolling_window, 2880);
-        assert_eq!(rule.rolling_min_periods, 1440);
         assert_eq!(rule.frequency_seconds, 60);
         assert_eq!(rule.signal_delay_seconds, 1);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
@@ -742,8 +720,6 @@ mod tests {
             "spread_long_quantile": 0.8,
             "spread_short_quantile": 0.2,
             "spread_cancel_quantile": 0.55,
-            "rolling_window": 1440,
-            "rolling_min_periods": 720,
             "frequency_seconds": 60,
             "cooldown_seconds": 30,
             "signal_delay_seconds": 0,

@@ -52,8 +52,6 @@ ALLOWED_FIELDS = {
     "spread_long_quantile",
     "spread_short_quantile",
     "spread_cancel_quantile",
-    "rolling_window",
-    "rolling_min_periods",
     "frequency_seconds",
     "cooldown_seconds",
     "signal_delay_seconds",
@@ -91,8 +89,6 @@ SIGNAL_FIELD_TYPES: Dict[str, str] = {
     "spread_long_quantile": "float",
     "spread_short_quantile": "float",
     "spread_cancel_quantile": "float",
-    "rolling_window": "int",
-    "rolling_min_periods": "int",
     "frequency_seconds": "int",
     "signal_delay_seconds": "int",
     "cooldown_seconds": "int",
@@ -139,8 +135,6 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "spread_long_quantile": 0.7,
     "spread_short_quantile": 0.3,
     "spread_cancel_quantile": 0.5,
-    "rolling_window": 2880,
-    "rolling_min_periods": 1440,
     "frequency_seconds": 60,
     "cooldown_seconds": 0,
     "signal_delay_seconds": 1,
@@ -237,13 +231,6 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     if _is_num(raw.get("long_quantile", long_q)) and _is_num(raw.get("short_quantile", short_q)):
         if not short_q < long_q:
             _fail(rid, f"short_quantile({short_q}) must be < long_quantile({long_q})", errors)
-
-    window = raw.get("rolling_window", 2880)
-    min_periods = raw.get("rolling_min_periods", 1440)
-    if not _is_int(window) or window <= 0:
-        _fail(rid, f"rolling_window must be positive int, got {window}", errors)
-    if not _is_int(min_periods) or not 1 <= min_periods <= (window if _is_int(window) and window > 0 else 0):
-        _fail(rid, "rolling_min_periods must be in [1, rolling_window]", errors)
 
     freq = raw.get("frequency_seconds", 60)
     if not _is_int(freq) or freq <= 0:
