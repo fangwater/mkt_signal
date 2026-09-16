@@ -10,7 +10,6 @@ INTRA_ORCHESTRATION_ENVS=(
   bybit-intra-arb02
   okex-intra-arb01
   binance-intra-arb01
-  binance-intra-arb02
 )
 
 # cta envs share the Intra host/port/exec-backend plumbing but are orchestrated
@@ -58,13 +57,6 @@ intra_configure_env() {
       INTRA_CONFIG_PORT="19171"
       INTRA_VIZ_PORT="10180"
       INTRA_EXEC_BACKEND="native"
-      ;;
-    binance-intra-arb02)
-      INTRA_EXCHANGE="binance"
-      INTRA_SSH_HOST="jp-meta-elvpn"
-      INTRA_CONFIG_PORT="19172"
-      INTRA_VIZ_PORT="10181"
-      INTRA_EXEC_BACKEND="ltp"
       ;;
     *)
       echo "[ERROR] unsupported Intra environment: ${INTRA_ENV_NAME:-<empty>}" >&2

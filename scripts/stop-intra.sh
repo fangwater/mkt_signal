@@ -23,7 +23,7 @@ Options:
 
 Supported environments:
   bybit-intra-arb01, bybit-intra-arb02 -> SG
-  okex-intra-arb01, binance-intra-arb01, binance-intra-arb02 -> jp-meta-elvpn
+  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
 
 Live stop order:
   1. trade_engine, followed by an executable-level stopped check

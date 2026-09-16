@@ -59,15 +59,6 @@ public_url = "http://127.0.0.1:6342"
 bind = "127.0.0.1:50042"
 status = "fixed"
 
-[[allocations]]
-port = 6358
-region = "local"
-strategy = "intra"
-env = "binance-intra-arb02"
-source_id = "binance-intra-arb02"
-public_url = "http://127.0.0.1:6358"
-bind = "127.0.0.1:50058"
-status = "fixed"
 
 [[allocations]]
 port = 6343

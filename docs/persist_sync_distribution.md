@@ -46,7 +46,7 @@ Regions:
 | 6354 | hk | intra | `okex-intra-arb01` | `okex-intra-arb01` | `http://47.238.128.48:6354` | `127.0.0.1:50054` | planned |
 | 6355 | jp | mm | `okex_mm_alpha` | `okex_mm_alpha` | `http://127.0.0.1:6355` | `127.0.0.1:50055` | fixed |
 | 6356 | jp | mm | `binance_mm_alpha` | `binance_mm_alpha` | `http://127.0.0.1:6356` | `127.0.0.1:50056` | fixed |
-| 6358 | jp | intra | `binance-intra-arb02` | `binance-intra-arb02` | `http://127.0.0.1:6358` | `127.0.0.1:50058` | fixed |
+| 6359 | jp | cta | `binance-cta-rx01` | `binance-cta-rx01` | `http://127.0.0.1:6359` | `127.0.0.1:50059` | fixed |
 
 ## Setup Notes
 

@@ -25,7 +25,7 @@ Options:
 
 Supported environments:
   bybit-intra-arb01, bybit-intra-arb02 -> SG
-  okex-intra-arb01, binance-intra-arb01, binance-intra-arb02 -> jp-meta-elvpn
+  okex-intra-arb01, binance-intra-arb01 -> jp-meta-elvpn
 
 Unless --check-only or --skip-build is used, every required release binary is
 built before the first SSH call. Files are staged, SHA-256 checked, rechecked
