@@ -49,9 +49,7 @@ ALLOWED_FIELDS = {
     "trade_sides",
     "long_quantile",
     "short_quantile",
-    "frequency_seconds",
     "cooldown_seconds",
-    "signal_delay_seconds",
     "application",
     "order_notional_usdt",
     "open_offsets",
@@ -80,8 +78,6 @@ SIGNAL_FIELD_TYPES: Dict[str, str] = {
     "application": "str",
     "long_quantile": "float",
     "short_quantile": "float",
-    "frequency_seconds": "int",
-    "signal_delay_seconds": "int",
     "cooldown_seconds": "int",
 }
 
@@ -123,9 +119,7 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "trade_sides": "both",
     "long_quantile": 0.9,
     "short_quantile": 0.1,
-    "frequency_seconds": 60,
     "cooldown_seconds": 0,
-    "signal_delay_seconds": 1,
     "application": "each_bar",
     "order_notional_usdt": 100.0,
     "open_offsets": [0.0, 0.0001, 0.0003, 0.0005],
@@ -220,13 +214,9 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
         if not short_q < long_q:
             _fail(rid, f"short_quantile({short_q}) must be < long_quantile({long_q})", errors)
 
-    freq = raw.get("frequency_seconds", 60)
-    if not _is_int(freq) or freq <= 0:
-        _fail(rid, f"frequency_seconds must be positive int, got {freq}", errors)
-    for name in ("cooldown_seconds", "signal_delay_seconds"):
-        v = raw.get(name, 0 if name == "cooldown_seconds" else 1)
-        if not _is_int(v) or v < 0:
-            _fail(rid, f"{name} must be a non-negative int, got {v}", errors)
+    cooldown = raw.get("cooldown_seconds", 0)
+    if not _is_int(cooldown) or cooldown < 0:
+        _fail(rid, f"cooldown_seconds must be a non-negative int, got {cooldown}", errors)
 
     app = str(raw.get("application", "each_bar")).strip().lower()
     if app not in APPLICATIONS:

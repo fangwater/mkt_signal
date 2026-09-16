@@ -60,8 +60,7 @@ def print_rule(index: int, rule: dict) -> None:
         f"long_q={_fmt(rule.get('long_quantile'), 0.9)} "
         f"short_q={_fmt(rule.get('short_quantile'), 0.1)} "
         f"app={_fmt(rule.get('application'), 'each_bar')} "
-        f"cooldown={_fmt(rule.get('cooldown_seconds'), 0)}s "
-        f"delay={_fmt(rule.get('signal_delay_seconds'), 1)}s"
+        f"cooldown={_fmt(rule.get('cooldown_seconds'), 0)}s"
     )
     print(
         "    open grid:                "

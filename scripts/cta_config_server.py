@@ -623,8 +623,6 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
     "application": "each_bar",
     "long_quantile": 0.9,
     "short_quantile": 0.1,
-    "frequency_seconds": 60,
-    "signal_delay_seconds": 1,
     "cooldown_seconds": 0,
 }
 _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
@@ -634,8 +632,6 @@ _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
     "application": "each_bar 每根 bar 评估 / on_change 仅方向翻转时",
     "long_quantile": "score 分位 > 此值做多",
     "short_quantile": "score 分位 < 此值做空（须 < long_quantile）",
-    "frequency_seconds": "bar 周期（秒），仅校验/记录",
-    "signal_delay_seconds": "信号确认延迟（秒）",
     "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
 }
 _CTA_SIGNAL_ORDER: List[str] = list(_CTA_SIGNAL_DEFAULTS.keys())

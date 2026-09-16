@@ -62,10 +62,8 @@ pub struct CtaRule {
     pub allow_short: bool,
     pub long_quantile: f64,
     pub short_quantile: f64,
-    /// 信号采样周期（秒），仅作校验/记录；live 由 model_output bar 驱动。
-    pub frequency_seconds: i64,
+    /// 同一 symbol 两次开仓的最小间隔（秒）；0 = 不限制。
     pub cooldown_seconds: i64,
-    pub signal_delay_seconds: i64,
     pub application: CtaApplication,
     /// 单档挂单名义金额（USDT）。引擎 `order_notional_usdt`。
     pub order_notional_usdt: f64,
@@ -107,12 +105,8 @@ struct RawCtaRule {
     long_quantile: f64,
     #[serde(default = "default_short_quantile")]
     short_quantile: f64,
-    #[serde(default = "default_frequency_seconds")]
-    frequency_seconds: i64,
     #[serde(default)]
     cooldown_seconds: i64,
-    #[serde(default = "default_signal_delay_seconds")]
-    signal_delay_seconds: i64,
     #[serde(default = "default_application")]
     application: String,
     #[serde(default = "default_order_notional_usdt")]
@@ -143,12 +137,6 @@ fn default_long_quantile() -> f64 {
 }
 fn default_short_quantile() -> f64 {
     0.1
-}
-fn default_frequency_seconds() -> i64 {
-    60
-}
-fn default_signal_delay_seconds() -> i64 {
-    1
 }
 fn default_application() -> String {
     "each_bar".to_string()
@@ -364,9 +352,7 @@ impl CtaRule {
             allow_short,
             long_quantile: raw.long_quantile,
             short_quantile: raw.short_quantile,
-            frequency_seconds: raw.frequency_seconds,
             cooldown_seconds: raw.cooldown_seconds,
-            signal_delay_seconds: raw.signal_delay_seconds,
             application,
             // 执行/网格参数：strategy hash 覆盖 > 对象内字段 > serde 默认。
             order_notional_usdt: exec
@@ -405,12 +391,6 @@ impl CtaRule {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.frequency_seconds <= 0 {
-            bail!(
-                "cta rule '{}' frequency_seconds must be positive",
-                self.rule_id
-            );
-        }
         for (name, q) in [
             ("long_quantile", self.long_quantile),
             ("short_quantile", self.short_quantile),
@@ -430,9 +410,9 @@ impl CtaRule {
                 self.long_quantile
             );
         }
-        if self.cooldown_seconds < 0 || self.signal_delay_seconds < 0 {
+        if self.cooldown_seconds < 0 {
             bail!(
-                "cta rule '{}' cooldown/signal_delay cannot be negative",
+                "cta rule '{}' cooldown_seconds cannot be negative",
                 self.rule_id
             );
         }
@@ -667,8 +647,7 @@ mod tests {
         assert!(rule.allow_long && rule.allow_short);
         assert_eq!(rule.long_quantile, 0.9);
         assert_eq!(rule.short_quantile, 0.1);
-        assert_eq!(rule.frequency_seconds, 60);
-        assert_eq!(rule.signal_delay_seconds, 1);
+        assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
         assert_eq!(rule.open_ttl_seconds, 120);
         assert_eq!(rule.max_position_notional_usdt, 10_000.0);
@@ -689,9 +668,7 @@ mod tests {
             "trade_sides": "short",
             "long_quantile": 0.95,
             "short_quantile": 0.05,
-            "frequency_seconds": 60,
             "cooldown_seconds": 30,
-            "signal_delay_seconds": 0,
             "application": "on_change",
             "order_notional_usdt": 250.0,
             "open_offsets": [0.0, 0.0002],
