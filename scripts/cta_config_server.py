@@ -121,6 +121,8 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div class="hint">
         hash key: <code>cta_strategy_params_{open_venue}_{hedge_venue}</code>，trade_signal 60s 热加载。
+        仅共享执行管道参数（对冲腿/订单TTL/冷却/撤单链路）；每笔网格参数（档位、单笔名义、TP、trailing）在
+        <a href="#cta-rules">CTA Rules</a> 内按规则配置。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -363,22 +365,39 @@ def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta
     return base.intra_symbol_list_key(env_name, name, suffix, namespace)
 
 
-# intra_config_server 会把这几个 intra 独有机制参数强注入 strategy schema；
-# cta 不消费它们（vol gate / intra funding close / taker nn model 均不存在），
-# CTA 面板和 sanitize 都应剔除，避免混淆。
-_INTRA_ONLY_STRATEGY_KEYS = frozenset(base.REQUIRED_STRATEGY_PARAMS.keys())
+# cta 是网格报单模型：每笔执行参数（网格档 open_offsets、单笔名义、TP、
+# trailing、冷却、持仓上限）都在 cta_rules 规则内。strategy_params hash 只承载
+# 共享执行管道参数（对冲腿管理、订单 TTL、信号冷却、tlen 撤单链路）。
+# intra 的 vol-band plan 生成、vol gate、taker decision model、funding close、
+# model 角色订阅等机制在 cta 路径均不消费（build_cta_shell 也显式禁掉）。
+_CTA_STRATEGY_KEYS: Tuple[str, ...] = (
+    "open_order_timeout",
+    "hedge_timeout",
+    "hedge_vol_multiplier",
+    "hedge_offset_ratio",
+    "hedge_price_offset_limit_lower",
+    "hedge_price_offset_limit_upper",
+    "hedge_aggressive_seq_threshold",
+    "max_hedge_price_pct_change",
+    "signal_cooldown",
+    "enable_tlen_cancel",
+    "tlen_cancel_freq_ms",
+)
 
 
 def _cta_strategy_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
+    allowed = set(_CTA_STRATEGY_KEYS)
     defaults = {
-        k: v for k, v in base.DEFAULT_STRATEGY_PARAMS.items()
-        if k not in _INTRA_ONLY_STRATEGY_KEYS
+        k: v for k, v in base.DEFAULT_STRATEGY_PARAMS.items() if k in allowed
     }
     comments = {
-        k: v for k, v in base.STRATEGY_PARAM_COMMENTS.items()
-        if k not in _INTRA_ONLY_STRATEGY_KEYS
+        k: v for k, v in base.STRATEGY_PARAM_COMMENTS.items() if k in allowed
     }
-    order = [k for k in base.STRATEGY_PARAM_ORDER if k not in _INTRA_ONLY_STRATEGY_KEYS]
+    order = [
+        k
+        for k in base.STRATEGY_PARAM_ORDER
+        if k in allowed
+    ]
     return defaults, comments, order
 
 
