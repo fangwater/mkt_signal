@@ -367,19 +367,20 @@ def symbol_list_key(env_name: str, name: str, suffix: str, namespace: str = "cta
 
 # cta 是网格报单模型：每笔执行参数（网格档 open_offsets、单笔名义、TP、
 # trailing、冷却、持仓上限）都在 cta_rules 规则内。strategy_params hash 只承载
-# 共享执行管道参数（对冲腿管理、订单 TTL、信号冷却、tlen 撤单链路）。
-# intra 的 vol-band plan 生成、vol gate、taker decision model、funding close、
-# model 角色订阅等机制在 cta 路径均不消费（build_cta_shell 也显式禁掉）。
+# 共享执行链路里 mode-agnostic 的少量参数：
+#   signal_cooldown    —— 信号冷却/扫档节拍（main.rs 决策循环直接消费）
+#   open_order_timeout —— 开仓单 TTL 兜底（打进 ArbOpen ctx）
+#   hedge_timeout      —— 对冲腿成交时限（打进 ArbOpen ctx / hedge 查询 exp_time）
+#   enable_tlen_cancel / tlen_cancel_freq_ms —— 通用挂单撤单链路
+# intra 的 inventory-hedge 定价（hedge_vol_multiplier/hedge_offset_ratio/
+# hedge_price_offset_limit_*/max_hedge_price_pct_change）只服务 return-score
+# 驱动的库存再平衡对冲，cta 的 per-lot entry 锚定 TP 对冲不消费；
+# hedge_aggressive_seq_threshold 全库无读取点（死配置）；vol gate / taker
+# decision model / model 角色订阅在 cta 路径均被 build_cta_shell 显式禁用。
 _CTA_STRATEGY_KEYS: Tuple[str, ...] = (
+    "signal_cooldown",
     "open_order_timeout",
     "hedge_timeout",
-    "hedge_vol_multiplier",
-    "hedge_offset_ratio",
-    "hedge_price_offset_limit_lower",
-    "hedge_price_offset_limit_upper",
-    "hedge_aggressive_seq_threshold",
-    "max_hedge_price_pct_change",
-    "signal_cooldown",
     "enable_tlen_cancel",
     "tlen_cancel_freq_ms",
 )
