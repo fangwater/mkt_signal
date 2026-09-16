@@ -293,7 +293,15 @@ __CTA_RULES_PANEL_HTML__
         const extra = data.stale_count ? `，忽略 ${data.stale_count} 个未知字段` : '';
         setStatus(`${name}-status`, `读取完成 (${data.count || 0} 字段${extra})`);
       } catch (err) {
-        setStatus(`${name}-status`, `读取失败: ${err}`, false);
+        // hash 未配置（404）时直接渲染默认值，便于一次性编辑后保存；
+        // 其它错误（网络/500）同样落到默认表，避免面板不可用。
+        buildParamRows(`${name}-table`, BOOTSTRAP.defaults[`${name}_params`] || {}, BOOTSTRAP.comments[`${name}_params`] || {}, BOOTSTRAP.order[name] || [], {});
+        const notConfigured = String(err).includes('404');
+        setStatus(
+          `${name}-status`,
+          notConfigured ? '尚未配置，已载入默认值（修改后点保存写入）' : `读取失败: ${err}（已载入默认值）`,
+          false
+        );
       }
     }
 
