@@ -8,7 +8,7 @@
   - Symbol Lists       -> {env}:cta_trade_symbols:{exchange}     (单一交易宇宙，无正反概念)
                          {env}:cta_dump_symbols:{exchange}       (平仓/禁用列表)
                          + 镜像 {env}:intra_bwd_trade_symbols:{exchange} (pre_trade 借贷白名单)
-  - Strategy Params    -> cta_strategy_params_{open}_{hedge}     (hash：网格执行参数 + 共享执行旋钮)
+  - Strategy Params    -> cta_strategy_params_{open}_{hedge}     (hash：网格执行参数)
   - Spread Thresholds  -> cta_spread_thresholds_config_{o}_{h}   (JSON mapping：阈值字段→rolling 分位)
                          cta_spread_thresholds_{o}_{h}           (hash：同步物化的 per-symbol 阈值)
   - Risk Params        -> {env}:{open}:{hedge}:pre_trade_risk_params (hash, pre_trade 读取)
@@ -148,8 +148,7 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div class="hint">
         hash key: <code>cta_strategy_params_{open_venue}_{hedge_venue}</code>，trade_signal 60s 热加载。
-        前段为网格报单执行参数（open_offsets 档位、单笔名义、TP、trailing、持仓上限），
-        后段为共享执行链路旋钮（订单TTL/对冲时限/冷却/撤单）。
+        全部为网格报单执行参数（open_offsets 档位、单笔名义、挂单TTL、持仓上限、TP/trailing、最长持仓）。
       </div>
       <div id="strategy-table" class="kv-table"></div>
       <div id="strategy-status" class="status"></div>
@@ -641,14 +640,8 @@ _CTA_SIGNAL_SELECTS: Dict[str, List[str]] = {
 }
 _CTA_SIGNAL_BOOLS: List[str] = ["enabled"]
 
-# strategy_params hash 承载两组字段：
-# 1) cta 执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES 全集）——Rust
-#    CtaExecOverrides 加载时覆盖到规则上，与 cta_rules 对象同名字段兼容。
-# 2) 共享执行链路里 mode-agnostic 的少量参数：
-#   signal_cooldown    —— 信号冷却/扫档节拍（main.rs 决策循环直接消费）
-#   open_order_timeout —— 开仓单 TTL 兜底（打进 ArbOpen ctx）
-#   hedge_timeout      —— 对冲腿成交时限（打进 ArbOpen ctx / hedge 查询 exp_time）
-#   enable_tlen_cancel / tlen_cancel_freq_ms —— 通用挂单撤单链路
+# strategy_params hash 只承载 cta 执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES
+# 全集）——Rust CtaExecOverrides 加载时覆盖到规则上，与 cta_rules 对象同名字段兼容。
 _CTA_EXEC_COMMENTS: Dict[str, str] = {
     "order_notional_usdt": "网格单档挂单名义（USDT）",
     "open_offsets": "网格档位价格偏移，JSON 数组或逗号分隔（0..0.01），档数=个数",
@@ -661,17 +654,17 @@ _CTA_EXEC_COMMENTS: Dict[str, str] = {
     "trailing_stop_move_step": "trailing 移动步进（价格分数）",
     "max_holding_seconds": "最长持仓（秒），0=不限制",
 }
-_CTA_SHARED_STRATEGY_KEYS: Tuple[str, ...] = (
-    "signal_cooldown",
-    "open_order_timeout",
-    "hedge_timeout",
-    "enable_tlen_cancel",
-    "tlen_cancel_freq_ms",
-)
-# 面板顺序：执行/网格参数在前（主配置），共享旋钮在后。
-_CTA_STRATEGY_KEYS: Tuple[str, ...] = (
-    tuple(sync_cta_rules.EXEC_FIELD_TYPES.keys()) + _CTA_SHARED_STRATEGY_KEYS
-)
+# CTA strategy hash 只承载执行/网格参数（sync_cta_rules.EXEC_FIELD_TYPES）。
+# intra 共享链路里被其它 arb 模式消费的旋钮对 cta 均为死参数，不暴露：
+#   signal_cooldown      —— 只喂 FundingArb 的 cooldown sweep worker；
+#                          cta 的同语义旋钮是信号对象里的 cooldown_seconds
+#   open_order_timeout   —— open ctx 的 TTL 兜底；cta 网格单 TTL 用
+#                          per-rule open_ttl_seconds
+#   hedge_timeout        —— intra/xarb 对冲腿成交时限；cta 对冲是 entry 锚定
+#                          per-lot maker TP，生命周期由 trailing/max_holding 管
+#   enable_tlen_cancel / tlen_cancel_freq_ms —— tlen 衰减撤单；
+#                          CtaShell 对 cancel trigger/candidate 显式 no-op
+_CTA_STRATEGY_KEYS: Tuple[str, ...] = tuple(sync_cta_rules.EXEC_FIELD_TYPES.keys())
 
 
 def _cta_strategy_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
@@ -684,11 +677,6 @@ def _cta_strategy_schema() -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
     exec_defaults["trailing_stop_enabled"] = "true"
     defaults = dict(exec_defaults)
     comments = dict(_CTA_EXEC_COMMENTS)
-    for key in _CTA_SHARED_STRATEGY_KEYS:
-        if key in base.DEFAULT_STRATEGY_PARAMS:
-            defaults[key] = base.DEFAULT_STRATEGY_PARAMS[key]
-        if key in base.STRATEGY_PARAM_COMMENTS:
-            comments[key] = base.STRATEGY_PARAM_COMMENTS[key]
     order = list(_CTA_STRATEGY_KEYS)
     return defaults, comments, order
 
@@ -730,7 +718,7 @@ def render_index_html(
         "selects": {"signal": _CTA_SIGNAL_SELECTS},
         "bool_params": {
             "signal": _CTA_SIGNAL_BOOLS,
-            "strategy": ["enable_tlen_cancel", "trailing_stop_enabled"],
+            "strategy": ["trailing_stop_enabled"],
         },
     }
     return INDEX_HTML_TEMPLATE.replace(
