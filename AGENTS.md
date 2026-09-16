@@ -5,8 +5,6 @@
 `mkt_signal` is a multi-binary Rust trading system for market data, funding-rate arbitrage, intra-exchange arbitrage, cross-exchange arbitrage, market making, account monitoring, order execution, persistence, and visualization.
 
 The actively maintained worktree is `/home/fanghaizhou/mkt_signal`.
-`/home/u171/fanghaizhou/mkt_signal` is not an active development worktree; do
-not edit, commit, or push from that copy.
 
 The crate is both a library and a binary collection. Primary code lives under `src/`; scripts and deployment wrappers live under `scripts/`, `xarb_scripts/`, `intra_scripts/`, `cross_scripts/`, and `mm_scripts/`.
 
