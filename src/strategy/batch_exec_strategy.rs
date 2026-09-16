@@ -356,6 +356,7 @@ struct BatchState {
     remaining_qty_by_level: BTreeMap<u32, f64>,
     expires_at_us: i64,
     from_key: Vec<u8>,
+    saw_open_reject: bool,
 }
 
 fn estimate_active_batch_completion_ts_us(
@@ -1837,6 +1838,7 @@ impl BatchExecStrategy {
                 remaining_qty_by_level: BTreeMap::new(),
                 expires_at_us: 0,
                 from_key: target_from_key,
+                saw_open_reject: false,
             },
         );
         self.submit_batch(batch_seq, now_ts);
@@ -2402,9 +2404,13 @@ impl BatchExecStrategy {
                 {
                     remove_batch = true;
                 } else {
-                    if batch.phase == BatchPhase::CancellingForRequote && !batch.use_taker {
+                    if batch.phase == BatchPhase::CancellingForRequote
+                        && !batch.use_taker
+                        && !batch.saw_open_reject
+                    {
                         batch.maker_requotes = batch.maker_requotes.saturating_add(1);
                     }
+                    batch.saw_open_reject = false;
                     batch.phase = BatchPhase::ReadyToSubmit;
                     batch.expires_at_us = 0;
                 }
@@ -2677,6 +2683,11 @@ impl HedgeOrderReconcileCommon for BatchExecStrategy {
             response.error_code(),
             code_desc
         );
+        if let Some(meta) = self.child_orders.get(&client_order_id) {
+            if let Some(batch) = self.batches.get_mut(&meta.batch_seq) {
+                batch.saw_open_reject = true;
+            }
+        }
         self.finish_child_order(client_order_id);
         if retry_post_only_immediately {
             self.next_batch_at_us = get_timestamp_us();
@@ -3204,6 +3215,7 @@ mod tests {
                 remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
                 expires_at_us: 1_000,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
             },
         );
         strategy.child_orders.insert(
@@ -3234,10 +3246,124 @@ mod tests {
 
         let batch = strategy.batches.get(&1).unwrap();
         assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
-        assert_eq!(batch.maker_requotes, 1);
+        assert_eq!(batch.maker_requotes, 0);
         assert!(batch.child_order_ids.is_empty());
         assert!(strategy.child_orders.is_empty());
         assert!((before_retry..=after_retry).contains(&strategy.next_batch_at_us));
+    }
+
+    #[test]
+    fn open_failed_rejection_does_not_burn_maker_requotes() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::ReadyToSubmit,
+                child_order_ids: BTreeSet::new(),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 0,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+            },
+        );
+        for attempt in 0..10 {
+            let order_id = client_order_id + attempt;
+            {
+                let batch = strategy.batches.get_mut(&1).unwrap();
+                assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+                batch.phase = BatchPhase::Live;
+                batch.child_order_ids.insert(order_id);
+            }
+            strategy.child_orders.insert(
+                order_id,
+                ChildOrderMeta {
+                    batch_seq: 1,
+                    level_index: 0,
+                    order_base_qty: 1.0,
+                    accounted_fill_base_qty: 0.0,
+                    signal_ts: 1,
+                    signal_bbo: None,
+                    price_offset: 0.0,
+                    from_key: b"cta_alpha".to_vec(),
+                    cancel_requested: false,
+                },
+            );
+            let response = TradeEngineResponseMessage::new(
+                400,
+                TradeRequestType::BinanceWsNewUMOrder as u32,
+                Exchange::Binance as u32,
+                order_id,
+                -2019,
+            );
+            strategy.handle_hedge_open_failed(&response, "Margin insufficient", order_id);
+        }
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 0);
+        assert!(!batch.saw_open_reject);
+    }
+
+    #[test]
+    fn maker_timeout_requote_still_counts_toward_taker_fallback() {
+        let client_order_id = 101;
+        let mut strategy = BatchExecStrategy::new(
+            1,
+            "cta_alpha",
+            "BTCUSDT",
+            TradingVenue::BinanceFutures,
+            config(),
+        );
+        strategy.next_batch_at_us = i64::MAX;
+        strategy.batches.insert(
+            1,
+            BatchState {
+                target_generation: 7,
+                side: Side::Buy,
+                remaining_base_qty: 1.0,
+                maker_requotes: 0,
+                use_taker: false,
+                phase: BatchPhase::Live,
+                child_order_ids: BTreeSet::from([client_order_id]),
+                remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
+                expires_at_us: 1_000,
+                from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
+            },
+        );
+        strategy.child_orders.insert(
+            client_order_id,
+            ChildOrderMeta {
+                batch_seq: 1,
+                level_index: 0,
+                order_base_qty: 1.0,
+                accounted_fill_base_qty: 0.0,
+                signal_ts: 1,
+                signal_bbo: None,
+                price_offset: 0.0,
+                from_key: b"cta_alpha".to_vec(),
+                cancel_requested: false,
+            },
+        );
+
+        strategy.finish_child_order(client_order_id);
+
+        let batch = strategy.batches.get(&1).unwrap();
+        assert_eq!(batch.phase, BatchPhase::ReadyToSubmit);
+        assert_eq!(batch.maker_requotes, 1);
     }
 
     #[test]
@@ -3280,6 +3406,7 @@ mod tests {
                 remaining_qty_by_level: BTreeMap::new(),
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
             },
         );
         assert_eq!(strategy.settled_completion_reason(0.9), None);
@@ -3316,6 +3443,7 @@ mod tests {
                 remaining_qty_by_level: BTreeMap::from([(0, 1.0)]),
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
             },
         );
 
@@ -3401,6 +3529,7 @@ mod tests {
             remaining_qty_by_level: BTreeMap::new(),
             expires_at_us: now_ts_us + 400_000,
             from_key: Vec::new(),
+            saw_open_reject: false,
         };
 
         assert_eq!(
@@ -3441,6 +3570,7 @@ mod tests {
                 remaining_qty_by_level,
                 expires_at_us: 100,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
             },
         );
         for (client_order_id, level_index, order_base_qty, accounted_fill_base_qty) in entries {
@@ -3614,6 +3744,7 @@ mod tests {
                 remaining_qty_by_level: BTreeMap::new(),
                 expires_at_us: 0,
                 from_key: b"cta_alpha".to_vec(),
+                saw_open_reject: false,
             },
         );
 
