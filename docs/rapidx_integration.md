@@ -28,6 +28,17 @@ export RAPIDX_BINANCE_CASH_BUSINESS_TYPE=SPOT
 Only `SPOT` and `MARGIN` are accepted. This setting changes the cash-leg order
 symbol between `BINANCE_SPOT_*` and `BINANCE_MARGIN_*`; futures remain `PERP`.
 
+Confirmed by live smoke on the rx01 portfolio (small DOGE orders, then cleaned
+up): an unfilled post-only `BINANCE_MARGIN` sell opens and cancels with no loan
+created; a filled `BINANCE_MARGIN` sell auto-borrows the base asset at fill
+time even when the coin is absent from `rapidxLoan/loan/config`'s explicit
+borrowable list and `loan/maxLoan` reports zero. The resulting liability does
+**not** appear in `rapidxLoan/loan/info`; it surfaces in the portfolio assets
+snapshot as per-coin `debt`/`borrow` with negative `equity`. Buying the coin
+back auto-repays the debt. `rapidxLoan/loan/info` therefore only covers
+explicit portfolio loans — margin-order debt must be enumerated from
+`portfolio/assets`.
+
 Provide `LTP_API_KEY`, `LTP_API_SECRET` and `LTP_PORTFOLIO_ID` securely in the
 environment. The portfolio ID binds the credential's account identity; it is
 not an account-mode switch. Unsupported venues and malformed backend maps fail
@@ -101,8 +112,8 @@ These inspection fields do not silently become strategy borrowing permissions.
 
 Loan status and portfolio borrowing capacity use the read-only
 `rapidxLoan/loan/info` and `rapidxLoan/loan/maxLoan` endpoints. Explicit portfolio
-loan capacity is not native spot automatic-borrow capacity, and no borrow or
-repay request is sent. Unknown accrued interest is not fabricated as zero.
+loan capacity is not margin-order automatic-borrow capacity. Unknown accrued
+interest is not fabricated as zero.
 
 Execution recovery defaults to the preceding 24 hours on first startup;
 `--history-lookback-hours` allows 1 through 2136 hours (89 days). Subsequent
@@ -334,17 +345,21 @@ reject RapidX sources rather than touching native accounts.
   recovery, and endpoint retention/completeness still needs authenticated testing.
 - Financial/loan inspection is implemented, but accrued interest, collateral
   tier rules and all strategy-facing financial fields are not at full OKX parity.
-  Neither native max-loan query semantics nor automatic borrowing are inferred
-  from the explicit portfolio-loan API. There is no atomic all-account IPC
-  readiness snapshot protocol.
+  Margin-order auto-borrow is confirmed at fill time (see the smoke results
+  above), but the explicit `rapidxLoan/loan/borrow` endpoint is not exercised
+  and `loan/maxLoan` semantics do not describe margin-order borrow capacity.
+  There is no atomic all-account IPC readiness snapshot protocol.
 - Nonnumeric external client IDs remain outside the native numeric order
   lifecycle; they no longer invalidate an otherwise valid order stream. Their
   execution evidence is centrally persisted. Read-only liquidation attribution
   uses documented journal evidence, but live unmatched/uniform-order forced-close
   plumbing remains incomplete. Malformed lifecycle messages invalidate the session.
-- For RapidX, Binance auto-repay uses the RapidX loan REST
-  (`rapidxLoan/loan/info` + `rapidxLoan/loan/repay`, hourly at :55 UTC,
-  amounts floored to 2 decimals); collection remains disabled. Exec startup is
+- For RapidX, Binance auto-repay enumerates liabilities from the portfolio
+  assets snapshot (`debt` per coin — the only surface where margin-order
+  auto-borrow debt appears), merges explicit `rapidxLoan/loan/info` loans per
+  coin, and repays `min(debt, available)` via `rapidxLoan/loan/repay`
+  (hourly at :55 UTC, amounts floored to 2 decimals, ambiguous transport
+  failures are not retried blindly); collection remains disabled. Exec startup is
   conditional on Manager rule provenance, scoped cancellation and verified leverage.
   FR/MM paths may remain gated by unavailable normalized account
   fields; this is not a claim of production-ready automatic trading.

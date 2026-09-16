@@ -1,9 +1,13 @@
 //! RapidX (LTP) 自动还款 Repayer。
 //!
-//! - 状态查询：`GET rapidxLoan/loan/info` → `data.accounts[]`（按 `exchange` 过滤），
-//!   每个 account 带 `coins[]`（`coin` / `loan` / `netEquity` / ...）与 `accountStatus`。
-//! - 可用余额：`fetch_account_push("Assets", exchange)` → `data[]`（`coin` / `available`）。
-//! - 还款额：`floor(min(loan, available) * 100) / 100`（LTP amount 仅接受两位小数）。
+//! - 负债主来源：`fetch_account_push("Assets", exchange)` → `data[]` 的 `debt` 字段。
+//!   MARGIN 单成交时自动借币产生的负债只体现在资产快照（`debt`/`borrow`），
+//!   `rapidxLoan/loan/info` 不一定列出该币（实测 DOGE MARGIN 卖空成交后
+//!   `loan/info` 无 DOGE 记录，但 assets `debt=100.0009...`）。
+//! - 负债补充来源：`GET rapidxLoan/loan/info` → `data.accounts[].coins[].loan`
+//!   （显式 portfolio loan），与 assets debt 按 coin 取 max 合并；失败不阻断。
+//! - 可用余额：同一 Assets 快照的 `available` 字段。
+//! - 还款额：`floor(min(debt, available) * 100) / 100`（LTP amount 仅接受两位小数）。
 //! - 还款：`POST rapidxLoan/loan/repay`（`exchange` / `coin` / `amount` / `clientOrderId`）。
 
 use std::collections::BTreeMap;
@@ -41,41 +45,7 @@ impl Repayer for RapidXRepayer {
     }
 
     async fn check_and_repay(&self) {
-        let loan_info = match self.client.fetch_loan_info().await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("{} auto-repay: 获取负债失败 {:#}", self.name, e);
-                return;
-            }
-        };
-        let account_status = loan_info
-            .get("data")
-            .and_then(|d| d.get("accounts"))
-            .and_then(Value::as_array)
-            .and_then(|accounts| {
-                accounts
-                    .iter()
-                    .find(|a| a.get("exchange").and_then(Value::as_str) == Some(self.exchange))
-            })
-            .and_then(|a| a.get("accountStatus"))
-            .and_then(Value::as_str)
-            .unwrap_or("-")
-            .to_string();
-        let debts = match parse_loan_debts(&loan_info, self.exchange) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("{} auto-repay: 解析 loan/info 失败 {:#}", self.name, e);
-                return;
-            }
-        };
-        if debts.is_empty() {
-            info!(
-                "{} auto-repay: 无未结借头 (exchange={} accountStatus={})",
-                self.name, self.exchange, account_status
-            );
-            return;
-        }
-
+        // 资产快照是负债与可用余额的权威来源，必须成功。
         let assets_body = match self
             .client
             .fetch_account_push("Assets", self.exchange)
@@ -87,7 +57,7 @@ impl Repayer for RapidXRepayer {
                 return;
             }
         };
-        let available = match parse_available_assets(&assets_body) {
+        let assets = match parse_asset_rows(&assets_body) {
             Ok(v) => v,
             Err(e) => {
                 warn!("{} auto-repay: 解析资产快照失败 {:#}", self.name, e);
@@ -95,7 +65,36 @@ impl Repayer for RapidXRepayer {
             }
         };
 
-        let decisions = decide_repays(&debts, &available);
+        // loan/info 仅作负债补充来源与 accountStatus 展示，失败不阻断。
+        let (account_status, loan_debts) = match self.client.fetch_loan_info().await {
+            Ok(v) => {
+                let status = extract_account_status(&v, self.exchange);
+                let debts = parse_loan_debts(&v, self.exchange).unwrap_or_else(|e| {
+                    warn!("{} auto-repay: 解析 loan/info 失败 {:#}", self.name, e);
+                    BTreeMap::new()
+                });
+                (status, debts)
+            }
+            Err(e) => {
+                warn!(
+                    "{} auto-repay: 获取 loan/info 失败 {:#}（继续用资产快照）",
+                    self.name, e
+                );
+                ("-".to_string(), BTreeMap::new())
+            }
+        };
+
+        let debts = merge_debts(&assets.debts, &loan_debts);
+        if debts.is_empty() {
+            info!(
+                "{} auto-repay: 无未结借头 (exchange={} accountStatus={})",
+                self.name, self.exchange, account_status
+            );
+            return;
+        }
+        let available = &assets.available;
+
+        let decisions = decide_repays(&debts, available);
         info!(
             "{} auto-repay tick: exchange={} accountStatus={} 共 {} 项有借头，详情:\n{}",
             self.name,
@@ -248,14 +247,24 @@ fn parse_loan_debts(value: &Value, exchange: &str) -> Result<BTreeMap<String, f6
     Ok(out)
 }
 
-fn parse_available_assets(body: &str) -> Result<BTreeMap<String, f64>> {
+struct AssetSnapshot {
+    /// coin -> debt（含利息的总负债，还款口径）
+    debts: BTreeMap<String, f64>,
+    /// coin -> 可用余额
+    available: BTreeMap<String, f64>,
+}
+
+fn parse_asset_rows(body: &str) -> Result<AssetSnapshot> {
     let v: Value = serde_json::from_str(body)
         .map_err(|e| anyhow!("invalid JSON from RapidX Assets snapshot: {}", e))?;
     let rows = v
         .get("data")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow!("RapidX Assets snapshot expected data array, got: {}", v))?;
-    let mut out = BTreeMap::new();
+    let mut snap = AssetSnapshot {
+        debts: BTreeMap::new(),
+        available: BTreeMap::new(),
+    };
     for row in rows {
         let coin = row
             .get("coin")
@@ -266,16 +275,51 @@ fn parse_available_assets(body: &str) -> Result<BTreeMap<String, f64>> {
         if coin.is_empty() {
             continue;
         }
-        let available = match row.get("available") {
+        let debt = parse_f64(row.get("debt"));
+        if debt > 0.0 {
+            snap.debts.insert(coin.clone(), debt);
+        }
+        if let Some(available) = match row.get("available") {
             Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
             Some(Value::Number(n)) => n.as_f64(),
             _ => None,
-        };
-        if let Some(available) = available {
-            out.insert(coin, available);
+        } {
+            snap.available.insert(coin, available);
         }
     }
-    Ok(out)
+    Ok(snap)
+}
+
+fn extract_account_status(loan_info: &Value, exchange: &str) -> String {
+    loan_info
+        .get("data")
+        .and_then(|d| d.get("accounts"))
+        .and_then(Value::as_array)
+        .and_then(|accounts| {
+            accounts
+                .iter()
+                .find(|a| a.get("exchange").and_then(Value::as_str) == Some(exchange))
+        })
+        .and_then(|a| a.get("accountStatus"))
+        .and_then(Value::as_str)
+        .unwrap_or("-")
+        .to_string()
+}
+
+/// assets.debt 与 loan/info.loan 按 coin 取 max 合并：
+/// 同一底层负债在两边口径可能因计息时点略有差异，取大者保证还得干净。
+fn merge_debts(
+    asset_debts: &BTreeMap<String, f64>,
+    loan_debts: &BTreeMap<String, f64>,
+) -> BTreeMap<String, f64> {
+    let mut out = asset_debts.clone();
+    for (coin, &loan) in loan_debts {
+        let entry = out.entry(coin.clone()).or_insert(0.0);
+        if loan > *entry {
+            *entry = loan;
+        }
+    }
+    out
 }
 
 fn decide_repays(
@@ -396,17 +440,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_available_assets_uses_available_and_skips_missing() {
+    fn parse_asset_rows_reads_debt_and_available() {
+        // MARGIN 单自动借币：DOGE 无余额但有 debt/borrow（实测快照形状）。
         let body = r#"{"channel":"Assets","data":[
-            {"coin":"USDT","available":"12.5","balance":"20"},
-            {"coin":"BTC","available":0.001},
-            {"coin":"ETH","balance":"3"},
+            {"coin":"USDT","available":"12.5","balance":"20","debt":"0","borrow":"0"},
+            {"coin":"BTC","available":0.001,"debt":"0"},
+            {"coin":"DOGE","balance":"0","available":"0","equity":"-100.0009483",
+             "debt":"100.0009483","borrow":"100.00047415"},
+            {"coin":"ETH","balance":"3","debt":"bad"},
             {"coin":"SOL","available":"bad"}
         ]}"#;
-        let assets = parse_available_assets(body).unwrap();
-        assert_eq!(assets.len(), 2);
-        assert_eq!(assets["USDT"], 12.5);
-        assert_eq!(assets["BTC"], 0.001);
+        let snap = parse_asset_rows(body).unwrap();
+        assert_eq!(snap.debts.len(), 1);
+        assert_eq!(snap.debts["DOGE"], 100.0009483);
+        assert_eq!(snap.available.len(), 3);
+        assert_eq!(snap.available["USDT"], 12.5);
+        assert_eq!(snap.available["BTC"], 0.001);
+        assert_eq!(snap.available["DOGE"], 0.0);
+    }
+
+    #[test]
+    fn merge_debts_takes_per_coin_max() {
+        let assets = BTreeMap::from([("DOGE".to_string(), 100.0), ("USDT".to_string(), 5.0)]);
+        let loans = BTreeMap::from([("DOGE".to_string(), 99.0), ("BTC".to_string(), 0.5)]);
+        let merged = merge_debts(&assets, &loans);
+        assert_eq!(merged["DOGE"], 100.0);
+        assert_eq!(merged["USDT"], 5.0);
+        assert_eq!(merged["BTC"], 0.5);
     }
 
     #[test]

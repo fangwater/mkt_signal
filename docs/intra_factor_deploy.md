@@ -293,11 +293,14 @@ CTA 开空 = 卖出借入的现货（borrow-to-short），FR 同款机制，无�
 只受 `cta_trade_symbols` 宇宙约束。按执行后端分两种：
 
 - RapidX/LTP：cash leg 业务类型默认 `MARGIN`（`RAPIDX_BINANCE_CASH_BUSINESS_TYPE`
-  未配置即 MARGIN，可显式覆盖为 `SPOT`）；`BINANCE_MARGIN_*` 卖单由 LTP
-  自动借币，无需显式借还调用。auto-repay 由 pre_trade 每小时 :55 UTC 走
-  `rapidxLoan/loan/info` + `rapidxLoan/loan/repay`（金额两位小数、向下取整，
-  `clientOrderId=autorepay<ts_ms><coin>`）。⚠️ LTP 是否对 MARGIN 卖单
-  真正自动借币尚需小额实盘 smoke 确认。
+  未配置即 MARGIN，可显式覆盖为 `SPOT`）；`BINANCE_MARGIN_*` 卖单成交时由
+  LTP 自动借币（已实盘验证：挂单不产生负债，成交才借；且不受
+  `loan/config` 可借列表/`maxLoan` 约束）。注意此类负债**不**出现在
+  `rapidxLoan/loan/info`，只体现在 `portfolio/assets` 的 `debt`/`borrow`
+  字段——auto-repay 因此以资产快照为负债主来源、loan/info 为补充，
+  每小时 :55 UTC 按 `min(debt, available)`（两位小数向下取整，
+  `clientOrderId=autorepay<ts_ms><coin>`）走 `rapidxLoan/loan/repay`。
+  买回所借币种会自动还债。
 - 原生 Binance PM：`BINANCE_ACCOUNT_MODE=UNIFIED`，现货腿走
   `/papi/v1/margin/order` + `sideEffectType=MARGIN_BUY`，auto-repay 走
   `/papi/v1/repayLoan`（`BinanceRepayer`）。`STANDARD` 不支持——pre_trade
