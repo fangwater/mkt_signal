@@ -137,7 +137,9 @@ TARGET_DIR="$HOME/${ENV_NAME}"
 mkdir -p "$TARGET_DIR"
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/intra/${ENV_NAME}"
+  NS_PREFIX="intra"
+  [[ "$ENV_NAME" == *-cta-* ]] && NS_PREFIX="cta"
+  NGINX_PREFIX="/${NS_PREFIX}/${ENV_NAME}"
 fi
 if [[ -z "$NGINX_MAPPING_FILE" ]]; then
   NGINX_MAPPING_FILE="$HOME/nginx_locations.txt"

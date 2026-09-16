@@ -247,7 +247,9 @@ if [[ -z "$PORT" ]]; then
 fi
 
 if [[ -z "$NGINX_PREFIX" ]]; then
-  NGINX_PREFIX="/intra/${ENV_NAME}/config"
+  NS_PREFIX="intra"
+  [[ "$ENV_NAME" == *-cta-* ]] && NS_PREFIX="cta"
+  NGINX_PREFIX="/${NS_PREFIX}/${ENV_NAME}/config"
 fi
 
 DEST_SCRIPT_DIR="$TARGET_DIR/scripts"
@@ -256,6 +258,9 @@ mkdir -p "$DEST_SCRIPT_DIR" "$TARGET_DIR/config"
 FILES=(
   "scripts/intra_config_server.py"
   "scripts/arb_per_symbol_overrides.py"
+  "scripts/cta_rules_panel.py"
+  "scripts/sync_cta_rules.py"
+  "scripts/print_cta_rules.py"
   "scripts/start_intra_config_server.sh"
   "scripts/stop_intra_config_server.sh"
   "intra_scripts/sync_intra_risk_params.py"
