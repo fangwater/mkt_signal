@@ -51,6 +51,9 @@ OKX_POSITIONS_PATH = "/api/v5/account/positions"
 OKX_BORROW_REPAY_PATH = "/api/v5/account/borrow-repay"
 OKX_ORDER_PATH = "/api/v5/trade/order"
 OKX_INSTRUMENTS_PUBLIC = "/api/v5/public/instruments"
+OKX_TICKER_PATH = "/api/v5/market/ticker"
+# OKX rejects spot market orders above 1000 USDT notional (sCode 51201).
+MARKET_ORDER_NOTIONAL_CAP_USDT = Decimal("950")
 
 DEFAULT_HTTP_HEADERS = {
     "Accept": "application/json",
@@ -424,27 +427,29 @@ def fetch_swap_positions(
     out: Dict[str, Decimal] = {inst: ZERO for inst in swap_insts}
     if not swap_insts:
         return out
-    params = {"instType": "SWAP", "instId": ",".join(swap_insts)}
-    status, body = okx_private("GET", OKX_POSITIONS_PATH, api_key, api_secret, passphrase, params=params)
-    if not (200 <= status < 300):
-        sys.stderr.write(f"[WARN] positions status={status} body={body}\n")
-        return out
-    parsed = json.loads(body)
-    if str(parsed.get("code", "")) != "0":
-        sys.stderr.write(f"[WARN] positions: {body}\n")
-        return out
-    for row in parsed.get("data", []):
-        inst = str(row.get("instId", ""))
-        if inst not in out:
-            continue
-        pos = decimal_or(row.get("pos"))
-        pos_side = str(row.get("posSide", "")).lower()
-        if pos_side == "short":
-            pos = -abs(pos)
-        elif pos_side == "long":
-            pos = abs(pos)
-        # posSide=net keeps the sign as-is
-        out[inst] += pos
+    # OKX rejects instId lists longer than 10 (error 50025); a failed fetch must
+    # abort rather than plan around silently-zeroed positions.
+    for start in range(0, len(swap_insts), 10):
+        chunk = swap_insts[start : start + 10]
+        params = {"instType": "SWAP", "instId": ",".join(chunk)}
+        status, body = okx_private("GET", OKX_POSITIONS_PATH, api_key, api_secret, passphrase, params=params)
+        if not (200 <= status < 300):
+            sys.exit(f"[ERROR] positions status={status} body={body}")
+        parsed = json.loads(body)
+        if str(parsed.get("code", "")) != "0":
+            sys.exit(f"[ERROR] positions: {body}")
+        for row in parsed.get("data", []):
+            inst = str(row.get("instId", ""))
+            if inst not in out:
+                continue
+            pos = decimal_or(row.get("pos"))
+            pos_side = str(row.get("posSide", "")).lower()
+            if pos_side == "short":
+                pos = -abs(pos)
+            elif pos_side == "long":
+                pos = abs(pos)
+            # posSide=net keeps the sign as-is
+            out[inst] += pos
     return out
 
 
@@ -663,56 +668,91 @@ def execute_swap(plan: SymbolPlan, api_key: str, api_secret: str, passphrase: st
     return PhaseOutcome(ok=ok, err="" if ok else f"status={status} {brief}"[:200])
 
 
+def fetch_last_price(inst: str) -> Optional[Decimal]:
+    status, body = http_request(
+        f"{OKX_BASE}{OKX_TICKER_PATH}?instId={urllib.parse.quote(inst)}", timeout=15
+    )
+    if not (200 <= status < 300):
+        return None
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if str(parsed.get("code", "")) != "0":
+        return None
+    data = parsed.get("data") or []
+    if not data:
+        return None
+    last = decimal_or(data[0].get("last"))
+    return last if last > 0 else None
+
+
+def execute_spot_market_sliced(
+    label: str,
+    spec: SymbolSpec,
+    side: str,
+    total_amt: Decimal,
+    api_key: str,
+    api_secret: str,
+    passphrase: str,
+) -> PhaseOutcome:
+    inst = spec.spot_inst
+    price = fetch_last_price(inst)
+    if price is not None:
+        cap = floor_to_step(MARKET_ORDER_NOTIONAL_CAP_USDT / price, spec.spot_lot)
+        if cap <= 0:
+            cap = spec.spot_lot
+    else:
+        sys.stderr.write(f"[WARN] no ticker for {inst}; submitting unsliced\n")
+        cap = total_amt
+    remaining = total_amt
+    while remaining > 0:
+        amt = min(remaining, cap)
+        if side == "buy" and amt == remaining:
+            amt = ceil_to_step(amt, spec.spot_lot)
+        else:
+            amt = floor_to_step(amt, spec.spot_lot)
+        if amt <= 0 or amt < spec.spot_min_sz:
+            break
+        print(f"\n[{label}] {inst} {side} sz={format_decimal(amt)} (base) tdMode=cross")
+        status, body = okx_private(
+            "POST",
+            OKX_ORDER_PATH,
+            api_key, api_secret, passphrase,
+            body={
+                "instId": inst,
+                "tdMode": "cross",
+                "side": side,
+                "ordType": "market",
+                "sz": format_decimal(amt),
+                "tgtCcy": "base_ccy",
+            },
+        )
+        okx_ok, brief = okx_response_ok(body)
+        ok = (200 <= status < 300) and okx_ok
+        print(f"  [{'OK' if ok else 'ERR'}] status={status} {brief}")
+        print(f"  {body}")
+        if not ok:
+            return PhaseOutcome(ok=False, err=f"status={status} {brief}"[:200])
+        remaining -= min(amt, remaining)
+        time.sleep(0.15)
+    return PhaseOutcome(ok=True)
+
+
 def execute_buyback(plan: SymbolPlan, api_key: str, api_secret: str, passphrase: str) -> PhaseOutcome:
     if plan.buyback_skip_reason or plan.buyback_amt <= 0:
         return PhaseOutcome(ok=None)
-    inst = plan.state.spec.spot_inst
-    sz = format_decimal(plan.buyback_amt)
-    print(f"\n[buyback] {inst} buy sz={sz} (base) tdMode=cross")
-    status, body = okx_private(
-        "POST",
-        OKX_ORDER_PATH,
-        api_key, api_secret, passphrase,
-        body={
-            "instId": inst,
-            "tdMode": "cross",
-            "side": "buy",
-            "ordType": "market",
-            "sz": sz,
-            "tgtCcy": "base_ccy",
-        },
+    return execute_spot_market_sliced(
+        "buyback", plan.state.spec, "buy", plan.buyback_amt, api_key, api_secret, passphrase
     )
-    okx_ok, brief = okx_response_ok(body)
-    ok = (200 <= status < 300) and okx_ok
-    print(f"  [{'OK' if ok else 'ERR'}] status={status} {brief}")
-    print(f"  {body}")
-    return PhaseOutcome(ok=ok, err="" if ok else f"status={status} {brief}"[:200])
 
 
 def execute_selldown(plan: SymbolPlan, api_key: str, api_secret: str, passphrase: str) -> PhaseOutcome:
     if plan.selldown_skip_reason or plan.selldown_amt <= 0:
         return PhaseOutcome(ok=None)
-    inst = plan.state.spec.spot_inst
-    sz = format_decimal(plan.selldown_amt)
-    print(f"\n[selldown] {inst} sell sz={sz} (base) tdMode=cross")
-    status, body = okx_private(
-        "POST",
-        OKX_ORDER_PATH,
-        api_key, api_secret, passphrase,
-        body={
-            "instId": inst,
-            "tdMode": "cross",
-            "side": "sell",
-            "ordType": "market",
-            "sz": sz,
-            "tgtCcy": "base_ccy",
-        },
+    return execute_spot_market_sliced(
+        "selldown", plan.state.spec, "sell", plan.selldown_amt, api_key, api_secret, passphrase
     )
-    okx_ok, brief = okx_response_ok(body)
-    ok = (200 <= status < 300) and okx_ok
-    print(f"  [{'OK' if ok else 'ERR'}] status={status} {brief}")
-    print(f"  {body}")
-    return PhaseOutcome(ok=ok, err="" if ok else f"status={status} {brief}"[:200])
 
 
 # -------------------- main --------------------
