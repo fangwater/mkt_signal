@@ -109,6 +109,26 @@ EOF
                 continue
             fi
 
+            # external snippet include (installed and owned outside this file,
+            # e.g. crypto CTA manager SPA + auth_request gates).
+            # Mapping format:
+            #   /manager/ external:/etc/nginx/snippets/crypto_cta_manager.conf
+            # The path column is documentary and feeds the /manager guard below;
+            # the include target must exist on this host or the rewrite aborts
+            # instead of silently dropping the routes it provides.
+            if [[ "${upstream}" == external:* ]]; then
+                inc="${upstream#external:}"
+                if [[ "${inc}" != /* || ! -f "${inc}" ]]; then
+                    echo "[ERROR] invalid external include (need an existing absolute path): ${line}" >&2
+                    exit 1
+                fi
+                cat <<EOF
+    include ${inc};
+
+EOF
+                continue
+            fi
+
             # nginx does not accept ws:// or wss:// in proxy_pass; WebSocket still uses HTTP(S)
             upstream="${upstream/#ws:\/\//http:\/\/}"
             upstream="${upstream/#wss:\/\//https:\/\/}"
@@ -143,7 +163,10 @@ EOF
 }
 
 if [[ -f "${CONF_PATH}" && "${FORCE_NGINX_REWRITE:-0}" != "1" ]]; then
-    if grep -Eq 'location[[:space:]]+(=[[:space:]]+)?/manager(/|[[:space:]]|$)' "${CONF_PATH}"; then
+    # /manager routes may live in the conf literally or behind an included
+    # snippet (the external: row); either form counts as "manager present".
+    if grep -Eq 'location[[:space:]]+(=[[:space:]]+)?/manager(/|[[:space:]]|$)' "${CONF_PATH}" \
+        || grep -Eq 'include[[:space:]]+\S*crypto_cta_manager' "${CONF_PATH}"; then
         mapping_has_manager=0
         if [[ -f "${MAPPING_FILE}" ]] && grep -Eq '^[[:space:]]*/manager(/|[[:space:]]|$)' "${MAPPING_FILE}"; then
             mapping_has_manager=1
@@ -157,12 +180,16 @@ if [[ -f "${CONF_PATH}" && "${FORCE_NGINX_REWRITE:-0}" != "1" ]]; then
     fi
 fi
 
+# Render before teeing: a failing locations() (e.g. missing external include)
+# must abort the rewrite instead of leaving a half-generated conf behind.
+rendered_locations="$(locations)"
+
 cat <<EOF | ${SUDO} tee "${CONF_PATH}" >/dev/null
 server {
     listen ${PORT};
     server_name ${SERVER_NAME};
 
-$(locations)
+${rendered_locations}
 }
 EOF
 
