@@ -59,7 +59,7 @@ use super::mkt_channel::MktChannel;
 use super::model_output_hub::{ModelOutputHub, ModelOutputScoreLookupResult};
 use super::rate_fetcher::RateFetcher;
 use super::rolling_threshold_sync::StoredFactorChainEntry;
-use super::symbol_list::SymbolListMembership;
+use super::symbol_list::{SymbolList, SymbolListMembership};
 
 pub const DEFAULT_ARBITRAGE_SIGNAL_CHANNEL: &str = "trade_signal";
 pub const DEFAULT_ARBITRAGE_BACKWARD_CHANNEL: &str = "trade_query";
@@ -796,8 +796,22 @@ struct SpreadArbShell {
     pub(crate) runtime: ArbShellRuntime,
 }
 
+/// cta 逐 (rule_id, symbol) 决策状态：网格发放去重、on_change 检测与冷却。
+#[derive(Debug, Default)]
+struct CtaRuleSymbolState {
+    /// 已消费的最近一条模型消息 ts_in_ms（each_bar 每根 bar 只评估一次）。
+    last_bar_ts_ms: i64,
+    /// 最近一次 vote（on_change 模式在 vote 变化沿触发）。
+    last_vote: i8,
+    /// 最近一次网格发放时间（us），对应 rule.cooldown_seconds。
+    last_open_emit_us: i64,
+}
+
 struct CtaShell {
     pub(crate) runtime: ArbShellRuntime,
+    /// (rule_id, open_symbol_key) -> 状态。rule 集合热更时保留，
+    /// 失效 rule 的状态不再被访问，量小不清理。
+    states: HashMap<(String, String), CtaRuleSymbolState>,
 }
 
 thread_local! {
@@ -990,7 +1004,10 @@ fn build_cta_shell(venues: VenuePair) -> Result<CtaShell> {
     )?;
     log_shell_runtime_ready(CTA_SHELL_NAME);
 
-    let state = CtaShell { runtime };
+    let state = CtaShell {
+        runtime,
+        states: HashMap::new(),
+    };
     let _ = ArbDecision::with_state_mut(|arb| {
         arb.open_factor_value_hub = Some(open_factor_value_hub);
         arb.hedge_factor_value_hub = Some(hedge_factor_value_hub);
@@ -1047,11 +1064,7 @@ impl CtaShell {
                                         // cancel-candidate 轮询。
                                         ArbBackwardQueryMsg::CancelCandidates(_) => {}
                                         ArbBackwardQueryMsg::Hedge(query) => {
-                                            drive_shared_arb_hedge_query(
-                                                CTA_SHELL_NAME,
-                                                &decision.runtime,
-                                                query,
-                                            )
+                                            drive_cta_hedge_query(&decision.runtime, query)
                                         }
                                     }
                                 }
@@ -1778,17 +1791,549 @@ fn drive_funding_decision(
     Ok(emitted_signal)
 }
 
-/// cta 决策入口：由 quote 更新触发。
-/// 当前阶段只接线 shell/订阅/配置；逐规则的信号状态机与 ArbOpen/ArbCancel
-/// 发放在下一步实现。
+/// cta 决策：逐 (rule_id, symbol) 评估模型分位 vote，命中即按 rule.open_offsets
+/// 在现货腿发一组 maker 网格挂单（每档 order_notional_usdt，TTL=open_ttl_seconds）。
+///
+/// 对齐 research 引擎语义：
+/// - each_bar：每根新模型 bar（msg.ts_in_ms 递增）评估一次；on_change：仅 vote
+///   变化沿触发。
+/// - spread overlay 开仓 gate 与撤单走 SpreadFactor 阈值（rolling_metrics 热加载）；
+///   撤单是 symbol+side 级广播（strategy_id=0, Spread reason）。
+/// - 仓位上限由 pre_trade max_pos_u 兜底执行；反向仓位互斥由 execution 层保证。
+/// - 现货 fill 后的退出（swap 腿 TP / 止损 / trailing / max_holding）见
+///   drive_cta_hedge_query 与策略层 per-lot 管理。
 fn drive_cta_decision(
-    _decision: &mut CtaShell,
-    _open_symbol: &str,
-    _hedge_symbol: &str,
-    _open_venue: TradingVenue,
-    _hedge_venue: TradingVenue,
+    decision: &mut CtaShell,
+    open_symbol: &str,
+    hedge_symbol: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
 ) -> Result<Option<SignalType>> {
-    Ok(None)
+    let now_us = get_timestamp_us();
+    let open_symbol_key = normalize_arb_symbol_key_cow(open_symbol);
+    let membership = SymbolList::instance().membership_canonical(open_symbol_key.as_ref());
+    if !membership.is_online() {
+        return Ok(None);
+    }
+    let in_dump = membership.in_dump;
+
+    let rules = ArbDecision::with_state_mut(|arb| arb.cta_rules.clone()).unwrap_or_default();
+    if rules.is_empty() {
+        return Ok(None);
+    }
+
+    let spread_factor = super::spread_factor::SpreadFactor::instance();
+    let mut emitted: Option<SignalType> = None;
+    // spread 撤单为 symbol+side 级广播（strategy_id=0）；同次决策内按方向去重。
+    let mut cancel_sides: Vec<Side> = Vec::new();
+    // (rule_idx, side, score_qtl)
+    let mut pending_opens: Vec<(usize, Side, f64)> = Vec::new();
+
+    for (rule_idx, rule) in rules.iter().enumerate() {
+        if !rule.enabled {
+            continue;
+        }
+        let lookup = ArbDecision::with_state_mut(|arb| {
+            arb.model_output_hub
+                .as_ref()
+                .map(|hub| hub.cached_score(&rule.model_service, hedge_symbol, hedge_venue))
+        })
+        .flatten();
+        let Some(lookup) = lookup else {
+            continue;
+        };
+        if !lookup.subscribed || !lookup.score_ready {
+            continue;
+        }
+        let Some(score_qtl) = lookup.score_quantile.filter(|v| v.is_finite()) else {
+            continue;
+        };
+
+        let state_key = (rule.rule_id.clone(), open_symbol_key.to_string());
+        let state = decision.states.entry(state_key).or_default();
+        let vote = rule.vote(score_qtl);
+        let (new_bar, open_side) =
+            cta_rule_eval(rule, state, vote, lookup.score_ts_ms, in_dump, now_us);
+
+        // spread overlay 撤单：与引擎一致按 bar 评估；同 bar 多 rule 去重。
+        if new_bar {
+            if spread_factor.satisfy_forward_cancel(
+                open_venue,
+                open_symbol,
+                hedge_venue,
+                hedge_symbol,
+            ) && !cancel_sides.contains(&Side::Buy)
+            {
+                cancel_sides.push(Side::Buy);
+            }
+            if spread_factor.satisfy_backward_cancel(
+                open_venue,
+                open_symbol,
+                hedge_venue,
+                hedge_symbol,
+            ) && !cancel_sides.contains(&Side::Sell)
+            {
+                cancel_sides.push(Side::Sell);
+            }
+        }
+
+        let Some(open_side) = open_side else {
+            continue;
+        };
+        let spread_ok = if open_side == Side::Buy {
+            spread_factor.satisfy_forward_open(open_venue, open_symbol, hedge_venue, hedge_symbol)
+        } else {
+            spread_factor.satisfy_backward_open(open_venue, open_symbol, hedge_venue, hedge_symbol)
+        };
+        if !spread_ok {
+            let _ = ArbDecision::with_state_mut(|arb| {
+                arb.record_intercept_summary("cta_spread_block_open")
+            });
+            continue;
+        }
+        pending_opens.push((rule_idx, open_side, score_qtl));
+    }
+
+    for side in cancel_sides {
+        emit_cta_spread_cancel(
+            decision,
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            side,
+        )?;
+        emitted = Some(SignalType::ArbCancel);
+    }
+    for (rule_idx, side, score_qtl) in pending_opens {
+        let rule = &rules[rule_idx];
+        if emit_cta_open_signals(
+            decision,
+            rule,
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            side,
+            score_qtl,
+            now_us,
+        )? {
+            if let Some(state) = decision
+                .states
+                .get_mut(&(rule.rule_id.clone(), open_symbol_key.to_string()))
+            {
+                state.last_open_emit_us = now_us;
+            }
+            emitted = Some(SignalType::ArbOpen);
+        }
+    }
+    Ok(emitted)
+}
+
+/// cta 单规则本轮触发判定（纯函数，无 IPC 依赖）：推进 state 的 bar/vote
+/// 游标，返回 (new_bar, open_side)。spread gate 由调用方在 fired 后评估。
+/// - each_bar：score_ts_ms 递增（新模型 bar）才评估；
+/// - on_change：vote 非 0 且与上轮不同才触发；
+/// - cooldown：距上次成功发放不足 cooldown_seconds 抑制；
+/// - in_dump：dump 名单币不开新仓。
+fn cta_rule_eval(
+    rule: &super::cta_config::CtaRule,
+    state: &mut CtaRuleSymbolState,
+    vote: i8,
+    score_ts_ms: i64,
+    in_dump: bool,
+    now_us: i64,
+) -> (bool, Option<Side>) {
+    let new_bar = score_ts_ms > state.last_bar_ts_ms;
+    if new_bar {
+        state.last_bar_ts_ms = score_ts_ms;
+    }
+    let fired = match rule.application {
+        super::cta_config::CtaApplication::EachBar => new_bar,
+        super::cta_config::CtaApplication::OnChange => vote != 0 && vote != state.last_vote,
+    };
+    state.last_vote = vote;
+    if !fired || vote == 0 || in_dump {
+        return (new_bar, None);
+    }
+    if rule.cooldown_seconds > 0
+        && state.last_open_emit_us > 0
+        && now_us.saturating_sub(state.last_open_emit_us)
+            < rule.cooldown_seconds.saturating_mul(1_000_000)
+    {
+        return (new_bar, None);
+    }
+    (new_bar, Some(if vote > 0 { Side::Buy } else { Side::Sell }))
+}
+
+/// cta swap 腿 TP 挂单价：多仓 → 卖空 swap 于 entry*(1+tp)；
+/// 空仓（margin 借币卖）→ 买回 swap 于 entry*(1-tp)。
+fn cta_hedge_tp_price(side: Side, entry_price: f64, take_profit: f64) -> f64 {
+    match side {
+        Side::Sell => entry_price * (1.0 + take_profit),
+        Side::Buy => entry_price * (1.0 - take_profit),
+    }
+}
+
+/// 按 rule.open_offsets 在现货腿发一组网格 maker 挂单。
+/// 档价 = inner * (1 ∓ offset)，inner 为 touch 价（买单取 bid，卖单取 ask）。
+#[allow(clippy::too_many_arguments)]
+fn emit_cta_open_signals(
+    decision: &mut CtaShell,
+    rule: &super::cta_config::CtaRule,
+    open_symbol: &str,
+    hedge_symbol: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    side: Side,
+    score_qtl: f64,
+    now_us: i64,
+) -> Result<bool> {
+    if !arb_open_legs_tradable(
+        CTA_SHELL_NAME,
+        &mut decision.runtime,
+        open_venue,
+        open_symbol,
+        hedge_venue,
+        hedge_symbol,
+    ) {
+        return Ok(false);
+    }
+    let Some((open_quote, hedge_quote)) =
+        ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue)
+    else {
+        return Ok(false);
+    };
+    let inner_price = match side {
+        Side::Buy => open_quote.bid,
+        Side::Sell => open_quote.ask,
+    };
+    if !(inner_price.is_finite() && inner_price > 0.0) {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta open skipped invalid inner price={inner_price} symbol={open_symbol} rule={}",
+            rule.rule_id
+        );
+        return Ok(false);
+    }
+    let specs: Vec<quote_plan::quote_plan_levels::QuotePlanLevelSpec> = rule
+        .open_offsets
+        .iter()
+        .enumerate()
+        .map(
+            |(idx, offset)| quote_plan::quote_plan_levels::QuotePlanLevelSpec {
+                side,
+                side_level_index: idx + 1,
+                offset: *offset,
+                base_price: inner_price,
+            },
+        )
+        .collect();
+    let open_trade_symbol = normalize_symbol_for_venue(open_symbol, open_venue);
+    let hedge_trade_symbol = normalize_symbol_for_venue(hedge_symbol, hedge_venue);
+    let open_symbol_key = min_qty_symbol_key(open_venue, &open_trade_symbol);
+    let open_table = if open_venue == decision.runtime.venues.0 {
+        &decision.runtime.open_min_qty_table
+    } else {
+        &decision.runtime.hedge_min_qty_table
+    };
+    let hedge_table = if hedge_venue == decision.runtime.venues.0 {
+        &decision.runtime.open_min_qty_table
+    } else {
+        &decision.runtime.hedge_min_qty_table
+    };
+    let (_price_tick, _qty_tick, levels) =
+        match quote_plan::quote_plan_levels::build_quote_plan_levels(
+            open_venue,
+            &open_trade_symbol,
+            rule.order_notional_usdt,
+            &specs,
+            open_table,
+        ) {
+            Ok(v) => v,
+            Err(err) => {
+                log::warn!(
+                    "{CTA_SHELL_NAME}: build cta grid plan failed open={} rule={} err={}",
+                    open_symbol,
+                    rule.rule_id,
+                    err
+                );
+                return Ok(false);
+            }
+        };
+    if levels.is_empty() {
+        return Ok(false);
+    }
+    let from_key = super::common::append_key_value_fields(
+        super::common::build_decision_from_key_base(
+            now_us,
+            Some(score_qtl),
+            None,
+            None,
+            None,
+            None,
+        ),
+        &[
+            ("cta_rule", rule.rule_id.clone()),
+            (
+                "cta_side",
+                if side == Side::Buy { "long" } else { "short" }.to_string(),
+            ),
+        ],
+    );
+    let open_order_ttl_us = rule.open_ttl_seconds.saturating_mul(1_000_000);
+    let planned_levels = levels.len();
+    let contexts: Vec<_> = levels
+        .iter()
+        .map(|level| {
+            super::arb_open_context::build_arb_open_context_from_level_with_tables(
+                super::arb_open_context::ArbOpenContextTablesInput {
+                    open_trade_symbol: open_trade_symbol.as_str(),
+                    hedge_trade_symbol: hedge_trade_symbol.as_str(),
+                    open_symbol_key: open_symbol_key.as_str(),
+                    open_venue,
+                    hedge_venue,
+                    open_quote: &open_quote,
+                    hedge_quote: &hedge_quote,
+                    level,
+                    now: now_us,
+                    from_key: from_key.as_str(),
+                    open_order_ttl_us,
+                    hedge_timeout_mm_us: 0,
+                    factor_mode: super::common::FactorMode::MM,
+                    order_amount: rule.order_notional_usdt,
+                    open_table,
+                    hedge_table,
+                },
+            )
+        })
+        .collect();
+    let sent = super::arb_emit::emit_levels_as_signals(
+        &decision.runtime.signal_pub,
+        SignalType::ArbOpen,
+        now_us,
+        contexts,
+    )?;
+    log::info!(
+        "{CTA_SHELL_NAME}: emitted {}/{} ArbOpen cta grid open={} hedge={} side={:?} rule={} score_qtl={:.6} inner={:.8} offsets={:?} ttl_s={}",
+        sent,
+        planned_levels,
+        open_symbol,
+        hedge_symbol,
+        side,
+        rule.rule_id,
+        score_qtl,
+        inner_price,
+        rule.open_offsets,
+        rule.open_ttl_seconds
+    );
+    Ok(sent > 0)
+}
+
+/// spread overlay 撤单：广播 ArbCancel（strategy_id=0 + Spread reason →
+/// pre_trade 按 symbol+side 匹配所有 ArbOpenStrategy）。
+fn emit_cta_spread_cancel(
+    decision: &CtaShell,
+    open_symbol: &str,
+    hedge_symbol: &str,
+    open_venue: TradingVenue,
+    hedge_venue: TradingVenue,
+    side: Side,
+) -> Result<()> {
+    let Some((open_quote, hedge_quote)) =
+        ArbDecision::load_valid_quotes(open_symbol, hedge_symbol, open_venue, hedge_venue)
+    else {
+        return Ok(());
+    };
+    let now_us = get_timestamp_us();
+    let from_key = super::common::append_suffix_token(
+        super::common::build_decision_from_key_base(now_us, None, None, None, None, None),
+        "cta_spread_cancel",
+    );
+    let sent = super::arb_cancel_emit::emit_precise_arb_cancel(
+        super::arb_cancel_emit::ArbCancelEmitInput {
+            signal_pub: &decision.runtime.signal_pub,
+            open_symbol,
+            hedge_symbol,
+            open_venue,
+            hedge_venue,
+            open_quote: &open_quote,
+            hedge_quote: &hedge_quote,
+            now: now_us,
+            from_key: &from_key,
+            reason: signal_common::cancel_signal::ArbCancelReason::Spread,
+            side,
+            strategy_id: 0,
+        },
+    );
+    if sent.is_ok() {
+        log::info!(
+            "{CTA_SHELL_NAME}: emitted ArbCancel cta spread overlay open={} side={:?}",
+            open_symbol,
+            side
+        );
+    }
+    sent
+}
+
+/// cta 的 hedge query 响应：不走共享的 inventory market-hedge 计划（那会把每个
+/// 现货 fill 立刻对冲成无方向敞口的套利对）。引擎语义是 per-lot TP 单挂在
+/// swap 腿、价格锚定 entry*(1±take_profit)、常驻不撤（exp_time=0 → 策略层
+/// 不做超时撤单）。
+///
+/// 注意：聚合 query 只携带 weighted_inventory_price，多 lot 时用加权均价近似
+/// 锚定（同组网格档差 ≤0.05%，误差可忽略）；精确逐 lot 锚定与
+/// 止损/trailing/max_holding 退出依赖策略层 per-lot 改造（待接）。
+fn drive_cta_hedge_query(runtime: &ArbShellRuntime, query: ArbHedgeSignalQueryMsg) {
+    let symbol = query.get_symbol().to_uppercase();
+    log::info!(
+        "{CTA_SHELL_NAME}: cta ArbHedge query received strategy_id={} symbol={} request_seq={} net_qty={:.8} due_hedge_qty={:.8} pending_hedge_qty={:.8} weighted_inventory_price={:.8}",
+        query.strategy_id,
+        symbol,
+        query.request_seq,
+        query.net_qty,
+        query.due_hedge_qty,
+        query.pending_hedge_qty,
+        query.weighted_inventory_price
+    );
+    if symbol.is_empty() {
+        log::warn!("{CTA_SHELL_NAME}: cta hedge query missing symbol");
+        return;
+    }
+    if query.due_hedge_qty.abs() <= 1e-12 {
+        log::debug!(
+            "{CTA_SHELL_NAME}: cta hedge query skip zero due qty strategy_id={} symbol={} request_seq={}",
+            query.strategy_id,
+            symbol,
+            query.request_seq
+        );
+        return;
+    }
+    let take_profit = ArbDecision::with_state_mut(|arb| {
+        arb.cta_rules
+            .iter()
+            .find(|r| r.enabled)
+            .map(|r| r.take_profit)
+    })
+    .flatten();
+    let Some(take_profit) = take_profit.filter(|v| v.is_finite() && *v > 0.0) else {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} due={:.8} reason=no enabled rule with take_profit>0",
+            query.strategy_id,
+            symbol,
+            query.due_hedge_qty
+        );
+        return;
+    };
+    let entry_price = query.weighted_inventory_price;
+    if !(entry_price.is_finite() && entry_price > 0.0) {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge query skipped strategy_id={} symbol={} invalid weighted_inventory_price={}",
+            query.strategy_id,
+            symbol,
+            entry_price
+        );
+        return;
+    }
+    let hedge_venue = runtime.venues.1;
+    let Some(quote) = MktChannel::instance().get_quote(&symbol, hedge_venue) else {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge query quote unavailable strategy_id={} symbol={} venue={:?}",
+            query.strategy_id,
+            symbol,
+            hedge_venue
+        );
+        return;
+    };
+    let hedge_side = if query.due_hedge_qty >= 0.0 {
+        Side::Sell
+    } else {
+        Side::Buy
+    };
+    let tp_price = cta_hedge_tp_price(hedge_side, entry_price, take_profit);
+    let table = if hedge_venue == runtime.venues.0 {
+        &runtime.open_min_qty_table
+    } else {
+        &runtime.hedge_min_qty_table
+    };
+    let symbol_key = min_qty_symbol_key(hedge_venue, &symbol);
+    let price_tick = table.price_tick(&symbol_key).unwrap_or(0.0);
+    let qty_tick = table.step_size(&symbol_key).unwrap_or(0.0);
+    let Some(price_qv) = QuantizedValue::encode_floor(tp_price, price_tick) else {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge tp price qv invalid strategy_id={} symbol={} price={:.8} tick={:.8}",
+            query.strategy_id,
+            symbol,
+            tp_price,
+            price_tick
+        );
+        return;
+    };
+    let Some(amount_qv) = QuantizedValue::encode_floor(query.due_hedge_qty.abs(), qty_tick) else {
+        log::warn!(
+            "{CTA_SHELL_NAME}: cta hedge amount qv invalid strategy_id={} symbol={} qty={:.8} tick={:.8}",
+            query.strategy_id,
+            symbol,
+            query.due_hedge_qty,
+            qty_tick
+        );
+        return;
+    };
+
+    let mut ctx = ArbHedgeCtx::new();
+    ctx.strategy_id = query.strategy_id;
+    ctx.set_side(hedge_side);
+    ctx.hedging_leg = TradingLeg::new_with_qty(
+        hedge_venue,
+        quote.bid,
+        quote.bid_qty,
+        quote.ask,
+        quote.ask_qty,
+        quote.ts,
+    );
+    ctx.set_hedging_symbol(&symbol);
+    ctx.price_qv = price_qv;
+    ctx.amount_qv = amount_qv;
+    ctx.price_offset = 0.0;
+    ctx.signal_ts = get_timestamp_us();
+    // 常驻 TP：策略层 expire_ts<=0 时不做超时撤单（与引擎 expires_ts=MAX 一致）。
+    ctx.exp_time = 0;
+    ctx.request_seq = query.request_seq;
+    ctx.set_from_key(
+        format!(
+            "{}:cta_tp:tp={:.6}:entry={:.8}",
+            ctx.signal_ts, take_profit, entry_price
+        )
+        .into_bytes(),
+    );
+
+    let context = ctx.to_bytes();
+    if let Err(err) = runtime.signal_pub.publish_trade_signal_parts(
+        SignalType::ArbHedge,
+        get_timestamp_us(),
+        0.0,
+        context.as_ref(),
+    ) {
+        log::warn!(
+            "{CTA_SHELL_NAME}: publish cta ArbHedge failed strategy_id={} symbol={} err={:#}",
+            query.strategy_id,
+            symbol,
+            err
+        );
+        return;
+    }
+    log::info!(
+        "{CTA_SHELL_NAME}: cta TP hedge reply strategy_id={} symbol={} side={:?} qty={:.8} tp_price={:.8} entry={:.8} tp={:.6} request_seq={} net_qty={:.8} due_hedge_qty={:.8}",
+        query.strategy_id,
+        symbol,
+        hedge_side,
+        ctx.amount_value(),
+        ctx.price_value(),
+        entry_price,
+        take_profit,
+        query.request_seq,
+        query.net_qty,
+        query.due_hedge_qty
+    );
 }
 
 fn drive_spread_arb_decision(
@@ -6582,5 +7127,105 @@ mod hedge_offset_overrides_tests {
         assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 0.0, 250.0), 5.0);
         assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, 0.0), 5.0);
         assert_eq!(cap_arb_hedge_due_qty_by_amount_u(5.0, 100.0, f64::NAN), 5.0);
+    }
+}
+
+#[cfg(test)]
+mod cta_decision_tests {
+    use super::*;
+    use crate::cta_config::CtaRuleSet;
+
+    fn cta_rule(json: &str) -> crate::cta_config::CtaRule {
+        let extra = if json.is_empty() {
+            String::new()
+        } else {
+            format!(",{json}")
+        };
+        let raw = format!(r#"[{{"rule_id":"r","model_service":"svc"{extra}}}]"#);
+        CtaRuleSet::parse(&raw).unwrap().rules()[0].clone()
+    }
+
+    #[test]
+    fn each_bar_fires_once_per_model_bar() {
+        let rule = cta_rule("");
+        let mut state = CtaRuleSymbolState::default();
+        // 新 bar + 多头 vote → 触发 Buy
+        let (new_bar, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_000_000);
+        assert!(new_bar);
+        assert_eq!(side, Some(Side::Buy));
+        // 同一 bar 再评估 → 不触发
+        let (new_bar, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_100_000);
+        assert!(!new_bar);
+        assert_eq!(side, None);
+        // 下一根 bar vote=0 → 不触发但推进游标
+        let (new_bar, side) = cta_rule_eval(&rule, &mut state, 0, 120_000, false, 1_200_000);
+        assert!(new_bar);
+        assert_eq!(side, None);
+        // 新 bar 空头 vote → 触发 Sell
+        let (new_bar, side) = cta_rule_eval(&rule, &mut state, -1, 180_000, false, 1_300_000);
+        assert!(new_bar);
+        assert_eq!(side, Some(Side::Sell));
+    }
+
+    #[test]
+    fn on_change_fires_only_on_vote_transition() {
+        let rule = cta_rule(r#""application":"on_change""#);
+        let mut state = CtaRuleSymbolState::default();
+        // 初始 vote=0 → +1 沿触发
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_000_000);
+        assert_eq!(side, Some(Side::Buy));
+        // vote 保持 +1（即使新 bar）→ 不重复触发
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 120_000, false, 2_000_000);
+        assert_eq!(side, None);
+        // 回到中性再转多 → 再次触发
+        let (_, side) = cta_rule_eval(&rule, &mut state, 0, 180_000, false, 3_000_000);
+        assert_eq!(side, None);
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 240_000, false, 4_000_000);
+        assert_eq!(side, Some(Side::Buy));
+        // 直接翻空（+1 → -1）→ 触发 Sell
+        let (_, side) = cta_rule_eval(&rule, &mut state, -1, 300_000, false, 5_000_000);
+        assert_eq!(side, Some(Side::Sell));
+    }
+
+    #[test]
+    fn cooldown_suppresses_until_window_elapsed() {
+        let rule = cta_rule(r#""cooldown_seconds":60"#);
+        let mut state = CtaRuleSymbolState::default();
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, false, 1_000_000);
+        assert_eq!(side, Some(Side::Buy));
+        // 标记发放时间后，60s 内的新 bar 被抑制
+        state.last_open_emit_us = 1_000_000;
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 120_000, false, 30_000_000);
+        assert_eq!(side, None);
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 180_000, false, 61_000_000);
+        assert_eq!(side, Some(Side::Buy));
+    }
+
+    #[test]
+    fn dump_symbol_never_opens() {
+        let rule = cta_rule("");
+        let mut state = CtaRuleSymbolState::default();
+        let (_, side) = cta_rule_eval(&rule, &mut state, 1, 60_000, true, 1_000_000);
+        assert_eq!(side, None);
+    }
+
+    #[test]
+    fn hedge_tp_price_anchors_entry() {
+        // spot 多 → swap 卖单挂在 entry*(1+tp)；spot 空 → swap 买挂在 entry*(1-tp)
+        assert!((cta_hedge_tp_price(Side::Sell, 100.0, 0.005) - 100.5).abs() < 1e-12);
+        assert!((cta_hedge_tp_price(Side::Buy, 100.0, 0.005) - 99.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rule_grid_validation_enforces_position_cap() {
+        // 50u × 4 档 = 200 ≤ 500 上限通过；单手×档数超过上限必须拒
+        let ok = CtaRuleSet::parse(
+            r#"[{"rule_id":"r","model_service":"svc","order_notional_usdt":50.0,"open_offsets":[0.0,0.0001,0.0003,0.0005],"max_position_notional_usdt":500.0}]"#,
+        );
+        assert!(ok.is_ok());
+        let bad = CtaRuleSet::parse(
+            r#"[{"rule_id":"r","model_service":"svc","order_notional_usdt":50.0,"open_offsets":[0.0,0.0001,0.0003,0.0005],"max_position_notional_usdt":199.0}]"#,
+        );
+        assert!(bad.is_err());
     }
 }

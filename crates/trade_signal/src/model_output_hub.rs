@@ -26,6 +26,9 @@ pub struct ModelOutputScoreLookupResult {
     pub score: Option<f64>,
     pub score_quantile: Option<f64>,
     pub score_ready: bool,
+    /// 最近一次该 (service, symbol) 模型消息的 ts_in_ms（bar 时间戳）；
+    /// 无数据/未订阅时为 0。cta each_bar 语义用它做 bar 去重。
+    pub score_ts_ms: i64,
     pub note: String,
 }
 
@@ -43,6 +46,7 @@ struct ModelOutputSnapshot {
     score: f64,
     score_quantile: Option<f64>,
     score_ready: bool,
+    ts_in_ms: i64,
 }
 
 #[derive(Default)]
@@ -231,6 +235,7 @@ impl ModelOutputHub {
                                 score,
                                 score_quantile: msg.score_quantile,
                                 score_ready: msg.score_ready,
+                                ts_in_ms: msg.ts_in_ms,
                             },
                         );
                         self.msg_count = self.msg_count.saturating_add(1);
@@ -287,6 +292,7 @@ impl ModelOutputHub {
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_ts_ms: 0,
                 note: "service_disabled".to_string(),
             };
         };
@@ -301,6 +307,7 @@ impl ModelOutputHub {
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_ts_ms: 0,
                 note: "service_not_subscribed".to_string(),
             };
         }
@@ -318,6 +325,7 @@ impl ModelOutputHub {
                     score: None,
                     score_quantile: snapshot.score_quantile,
                     score_ready: false,
+                    score_ts_ms: snapshot.ts_in_ms,
                     note: "score_not_ready".to_string(),
                 }
             }
@@ -328,15 +336,17 @@ impl ModelOutputHub {
                 score: Some(snapshot.score),
                 score_quantile: snapshot.score_quantile,
                 score_ready: snapshot.score_ready,
+                score_ts_ms: snapshot.ts_in_ms,
                 note: "ok".to_string(),
             },
-            Some(_) => ModelOutputScoreLookupResult {
+            Some(snapshot) => ModelOutputScoreLookupResult {
                 service_name,
                 symbol_key,
                 subscribed: true,
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_ts_ms: snapshot.ts_in_ms,
                 note: "invalid_model_score".to_string(),
             },
             None => ModelOutputScoreLookupResult {
@@ -346,6 +356,7 @@ impl ModelOutputHub {
                 score: None,
                 score_quantile: None,
                 score_ready: false,
+                score_ts_ms: 0,
                 note: "missing_model_score".to_string(),
             },
         }
