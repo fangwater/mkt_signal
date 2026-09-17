@@ -309,8 +309,9 @@ CTA 开空 = 卖出借入的现货（borrow-to-short），FR 同款机制，无�
 
 风控：UnimmrOpenLock（只减仓锁，`unimmr_trigger_line`/`unimmr_recover_line`）
 对 CTA 生效（UNIFIED 下）。UnimmrForceClose 为 FR 专用，CTA 不启用、
-无需配置 `unimmr_close_symbols`——CTA 仓位退出由 per-lot 止盈/止损/
-`max_holding_seconds` 管理。risk params 沿用 intra schema，无额外字段。
+无需配置 `unimmr_close_symbols`——CTA 仓位退出见下文「仓位退出机制
+现状」（maker TP 已接，止损/trailing 需配 `intra_trailing_stop_overrides`，
+max_holding 未实现）。risk params 沿用 intra schema，无额外字段。
 
 **新 CTA 环境配置清单**（按顺序；`binance-cta-rx01` 已按此配置）：
 
@@ -329,21 +330,65 @@ CTA 开空 = 卖出借入的现货（borrow-to-short），FR 同款机制，无�
    物化 per-symbol 值；检查 `written`/`warnings`。
 6. Risk Params：参照 binance-intra-arb01 现网值写限速（arb_open 500/10s、
    1000/min；arb_hedge 300/10s=Binance 硬上限、1000/min；挂单上限
-   5/5/10/10/global 10）与敞口（max_pos_u 10k、symbol 0.05、total 0.02、
-   leverage 5、UniMMR 1.5/1.6）。
+   5/5/10/10/global 10）与敞口（max_pos_u、symbol 0.05、total 0.02、
+   leverage 5、UniMMR 1.5/1.6）。**rx01 当前 `max_pos_u=500`**——这是
+   pre_trade 的 per-symbol 名义上限，是真正拦截超仓的兜底；strategy hash
+   的 `max_position_notional_usdt` 只做"网格总档额 ≤ 上限"的静态校验，
+   不在运行时计数。单边 50U×4 档=200U/轮，多轮累计由 max_pos_u 截断。
 7. 校验：`print_cta_rules.py` 读回信号+执行 hash；GET
    `/api/spread-thresholds` 看物化值；交易进程保持停止。
 
-**尚未实现（下一步）**：
+**决策链路（已实现，commit 7ea66195）**：
 
-- `drive_cta_decision` 目前是 no-op：逐 `(rule_id, symbol)` 的 vote→方向
-  状态机、ArbOpen/ArbCancel 发放还没写。spread overlay 由 rolling_metrics
-  链路供给阈值（无进程内滚动预热）。
-- 现货成交后"按开仓价锚定 maker 止盈对冲 + 止损联动撤单"的 per-lot
-  hedge 路径（1:1 映射已有 `IntraTrailingBook`/`HedgeAllocation`/`borrow_open_id`
-  骨架，但聚合式 due-hedge query 需要改为按 open lot 维度）。
-- `nq_change` filter；trailing/tp/rr/max_holding 的字段已在 config 中，
-  执行侧消费路径（per-rule 参数下发到 `IntraTrailingBook`）待接。
+`drive_cta_decision`：逐 `(rule_id, symbol)` 状态机——
+- `score_quantile` 严格比较出 vote（`>long_q`→多 / `<short_q`→空），
+  `trade_sides` 控方向生效；
+- `each_bar`：按模型消息 `ts_in_ms` 递增去重（每根 bar 只评估一次）；
+  `on_change`：vote 变化沿触发；
+- `cooldown_seconds` 抑制发放频率；dump 名单不开仓；
+- spread overlay：开仓 gate `satisfy_forward/backward_open`（spread<q30
+  开多 />q70 开空），每根新 bar 评估 `satisfy_*_cancel`（过中位线撤同向
+  挂单，strategy_id=0 + Spread reason 广播，pre_trade 按 symbol+side
+  匹配所有 ArbOpenStrategy）；
+- 发放：`open_offsets` 各档从 touch 价（买取 bid、卖取 ask）挂 maker，
+  每档 `order_notional_usdt`，TTL=`open_ttl_seconds`。
+
+**仓位退出机制现状（关键边界，跑实盘前必读）**：
+
+- **maker TP 单（已接）**：现货 fill → pre_trade 发 hedge query →
+  `drive_cta_hedge_query` 回复 swap 腿常驻限价单（`exp_time=0` 不超时
+  撤单），价=加权均价 entry×(1±take_profit)。多 lot 时用聚合
+  `weighted_inventory_price` 锚定（档差 ≤0.05%，误差可忽略）。
+- **止损/trailing（机制已在代码里，未配置）**：`IntraTrailingBook`
+  （`src/strategy/intra_trailing_stop.rs`）是 per-lot 账本，对每个 open
+  fill 按 open order id 建 `TrailingPosition`；`is_intra()` 是同所期现
+  的**结构判断**，CTA 的 binance-margin+binance-futures 自动满足，
+  record_open 已在 fill 路径上生效。语义与引擎一致：`stop =
+  entry×(1+dir×(−tp/rr + level×MOVE_STEP))`，`level=floor(progress/
+  TRIGGER_STEP)`，TRIGGER_STEP=0.001 / MOVE_STEP=0.0005 硬编码（恰好
+  等于选中组参数）。触发 `intra_stop_loss`/`intra_take_profit` 后发
+  **swap 腿 taker 单**锁亏/锁盈。
+  - **启用方式**：写 Redis STRING
+    `{env}:{open}:{hedge}:intra_trailing_stop_overrides` =
+    `{symbol:{"take_profit":0.005,"reward_risk_ratio":1.0}}`
+    （rx01 即 `binance-cta-rx01:binance-margin:binance-futures:...`）。
+    注意这是独立 key，**不是** `cta_strategy_params`——后者里的
+    `trailing_stop_*` 字段目前只被 `CtaRule` 解析、无运行时消费者（死配置）。
+- **TP/止损竞态（未解决，必须先选方向）**：maker TP 挂单与 intra book
+  的 taker 触发是两个独立出口——
+  - maker TP 先成交 → hedge allocation 清掉该 lot → book 不再触发 ✓
+  - 但 `intra_stop_loss`/`intra_take_profit` taker 先触发（lot 被锁亏）→
+    **盘口上那个 TP maker 单不会被撤**（TP 回复未绑 open_id），价格回到
+    TP 位会成交出一条无现货腿的**裸 swap 仓位**。
+  - 选 A：不配 maker TP、hedge query 不回复，退出全交 intra book taker
+    （无竞态，TP 也吃 taker 费）；
+  - 选 B：保留 maker TP + 写 trailing key，但要补代码：TP 回复带
+    open_id 绑定 + stop 触发时撤该 lot 的常驻 TP 单。
+- **max_holding_seconds（4h 强平）：无任何现成机制**。`close_ts` 是
+  "藏仓窗口"（`hedge_timeout_us`，CTA=0→fill 后立即进入 hedge due），
+  不是持仓时限；`due_force_close_open_id` 只认 `force_close_open_ids`
+  注册（UnimmrForceClose 那套，CTA 已禁用）。要做需单独加。
+- `nq_change` filter 未实现（选中组带该过滤，实盘暂不带）。
 
 ## 目标架构
 
