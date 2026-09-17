@@ -464,7 +464,7 @@ wait_for_binary() {
   for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
     mapfile -t pids < <(find_exact_pids "$expected")
     if [[ "${#pids[@]}" -eq 1 ]]; then
-      printf '%s\n' "$pid"
+      printf '%s\n' "${pids[0]}"
       return 0
     fi
     if [[ "${#pids[@]}" -gt 1 ]]; then
