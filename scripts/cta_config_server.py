@@ -633,14 +633,7 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
     "enabled": True,
     "trade_sides": "both",
     "application": "each_bar",
-    "long_quantile": 0.9,
-    "short_quantile": 0.1,
-    "frequency_seconds": 60,
-    "rolling_window": 2880,
-    "rolling_min_samples": 1440,
-    "signal_delay_seconds": 1,
     "nq_change_enabled": True,
-    "max_signal_age_seconds": 120,
     "cooldown_seconds": 0,
 }
 _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
@@ -648,14 +641,7 @@ _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
     "enabled": "false = 不产生任何信号（配置保留）",
     "trade_sides": "入选回测固定 both（多空都做）",
     "application": "入选回测固定 each_bar（每根 bar 评估）",
-    "long_quantile": "raw 因子 q90 契约（固定 0.9，实际比较发布端线性分位阈值）",
-    "short_quantile": "raw 因子 q10 契约（固定 0.1，实际比较发布端线性分位阈值）",
-    "frequency_seconds": "回测 bar 周期（固定 60）",
-    "rolling_window": "raw 因子滚动窗口（固定 2880，当前值计入）",
-    "rolling_min_samples": "raw 因子最小有效样本数（固定 1440）",
-    "signal_delay_seconds": "bar 右端时间后的决策延迟（固定 1 秒）",
     "nq_change_enabled": "现货 BBO NQ 过滤（选中规则固定开启）",
-    "max_signal_age_seconds": "超过该秒数的因子 bar 不再开仓（至少 60）",
     "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
 }
 _CTA_SIGNAL_ORDER: List[str] = list(_CTA_SIGNAL_DEFAULTS.keys())

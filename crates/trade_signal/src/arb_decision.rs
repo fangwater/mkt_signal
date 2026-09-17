@@ -1869,19 +1869,7 @@ fn drive_cta_decision(
         if rule.nq_change_enabled && !lookup.filter_ready {
             continue;
         }
-        let decision_due_ms = lookup
-            .score_ts_ms
-            .saturating_add(rule.signal_delay_seconds.saturating_mul(1_000));
-        let now_ms = now_us.div_euclid(1_000);
-        if lookup.score_ts_ms <= 0 || now_ms < decision_due_ms {
-            continue;
-        }
-        if now_ms.saturating_sub(lookup.score_ts_ms)
-            > rule.max_signal_age_seconds.saturating_mul(1_000)
-        {
-            let _ = ArbDecision::with_state_mut(|arb| {
-                arb.record_intercept_summary("cta_stale_factor_bar")
-            });
+        if lookup.score_ts_ms <= 0 {
             continue;
         }
         let evidence = CtaDecisionEvidence {

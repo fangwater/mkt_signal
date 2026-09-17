@@ -84,8 +84,8 @@ impl CtaApplication {
 
 /// cta 规则：一条独立因子信号流。
 ///
-/// raw 因子与发布端线性分位阈值的比较和引擎一致（严格 `>` / `<`）；
-/// `long_quantile`/`short_quantile` 固定为 0.9/0.1，用于校验发布契约。
+/// raw 因子与发布端随消息给出的线性分位阈值比较（严格 `>` / `<`）。窗口、
+/// 最小样本数、bar 周期和分位值均由 publisher 负责，不在执行侧重复配置。
 /// spread overlay 不在规则内配置：per-symbol 价差阈值由
 /// `cta_spread_thresholds_config_{open}_{hedge}` mapping + rolling_metrics
 /// 发布值解析（`reload_spread_thresholds_from_rolling` → `SpreadFactor`），
@@ -97,14 +97,7 @@ pub struct CtaRule {
     pub model_service: String,
     pub allow_long: bool,
     pub allow_short: bool,
-    pub long_quantile: f64,
-    pub short_quantile: f64,
-    pub frequency_seconds: i64,
-    pub rolling_window: usize,
-    pub rolling_min_samples: usize,
-    pub signal_delay_seconds: i64,
     pub nq_change_enabled: bool,
-    pub max_signal_age_seconds: i64,
     /// 同一 symbol 两次开仓的最小间隔（秒）；0 = 不限制。
     pub cooldown_seconds: i64,
     pub application: CtaApplication,
@@ -144,22 +137,8 @@ struct RawCtaRule {
     model_service: String,
     /// long|buy / short|sell / both|long_short|long,short|short,long；缺省 both。
     trade_sides: Option<String>,
-    #[serde(default = "default_long_quantile")]
-    long_quantile: f64,
-    #[serde(default = "default_short_quantile")]
-    short_quantile: f64,
-    #[serde(default = "default_frequency_seconds")]
-    frequency_seconds: i64,
-    #[serde(default = "default_rolling_window")]
-    rolling_window: usize,
-    #[serde(default = "default_rolling_min_samples")]
-    rolling_min_samples: usize,
-    #[serde(default = "default_signal_delay_seconds")]
-    signal_delay_seconds: i64,
     #[serde(default = "default_enabled")]
     nq_change_enabled: bool,
-    #[serde(default = "default_max_signal_age_seconds")]
-    max_signal_age_seconds: i64,
     #[serde(default)]
     cooldown_seconds: i64,
     #[serde(default = "default_application")]
@@ -187,27 +166,6 @@ struct RawCtaRule {
     enabled: bool,
 }
 
-fn default_long_quantile() -> f64 {
-    0.9
-}
-fn default_short_quantile() -> f64 {
-    0.1
-}
-fn default_frequency_seconds() -> i64 {
-    60
-}
-fn default_rolling_window() -> usize {
-    2_880
-}
-fn default_rolling_min_samples() -> usize {
-    1_440
-}
-fn default_signal_delay_seconds() -> i64 {
-    1
-}
-fn default_max_signal_age_seconds() -> i64 {
-    120
-}
 fn default_application() -> String {
     "each_bar".to_string()
 }
@@ -424,14 +382,7 @@ impl CtaRule {
             model_service,
             allow_long,
             allow_short,
-            long_quantile: raw.long_quantile,
-            short_quantile: raw.short_quantile,
-            frequency_seconds: raw.frequency_seconds,
-            rolling_window: raw.rolling_window,
-            rolling_min_samples: raw.rolling_min_samples,
-            signal_delay_seconds: raw.signal_delay_seconds,
             nq_change_enabled: raw.nq_change_enabled,
-            max_signal_age_seconds: raw.max_signal_age_seconds,
             cooldown_seconds: raw.cooldown_seconds,
             application,
             // 执行/网格参数：strategy hash 覆盖 > 对象内字段 > serde 默认。
@@ -471,43 +422,6 @@ impl CtaRule {
     }
 
     fn validate(&self) -> Result<()> {
-        for (name, q) in [
-            ("long_quantile", self.long_quantile),
-            ("short_quantile", self.short_quantile),
-        ] {
-            if !q.is_finite() || !(0.0..=1.0).contains(&q) {
-                bail!(
-                    "cta rule '{}' {name} must be finite in [0,1], got {q}",
-                    self.rule_id
-                );
-            }
-        }
-        if self.short_quantile >= self.long_quantile {
-            bail!(
-                "cta rule '{}' short_quantile({}) must be < long_quantile({})",
-                self.rule_id,
-                self.short_quantile,
-                self.long_quantile
-            );
-        }
-        if (self.long_quantile - 0.9).abs() > f64::EPSILON
-            || (self.short_quantile - 0.1).abs() > f64::EPSILON
-            || self.frequency_seconds != 60
-            || self.rolling_window != 2_880
-            || self.rolling_min_samples != 1_440
-            || self.signal_delay_seconds != 1
-        {
-            bail!(
-                "cta rule '{}' must match the intra 1m publisher contract: q=0.9/0.1 frequency=60 rolling=2880 min_samples=1440 delay=1",
-                self.rule_id
-            );
-        }
-        if self.max_signal_age_seconds < self.frequency_seconds {
-            bail!(
-                "cta rule '{}' max_signal_age_seconds must be >= frequency_seconds",
-                self.rule_id
-            );
-        }
         if self.cooldown_seconds < 0 {
             bail!(
                 "cta rule '{}' cooldown_seconds cannot be negative",
@@ -809,12 +723,6 @@ mod tests {
             "model_output/intra-binance-futures-1m-baseline_035"
         );
         assert!(rule.allow_long && rule.allow_short);
-        assert_eq!(rule.long_quantile, 0.9);
-        assert_eq!(rule.short_quantile, 0.1);
-        assert_eq!(rule.frequency_seconds, 60);
-        assert_eq!(rule.rolling_window, 2_880);
-        assert_eq!(rule.rolling_min_samples, 1_440);
-        assert_eq!(rule.signal_delay_seconds, 1);
         assert!(rule.nq_change_enabled);
         assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
@@ -835,8 +743,6 @@ mod tests {
             "rule_id": "tp_vpi_006",
             "model_service": "model_output/test-service",
             "trade_sides": "short",
-            "long_quantile": 0.9,
-            "short_quantile": 0.1,
             "cooldown_seconds": 30,
             "application": "on_change",
             "order_notional_usdt": 250.0,
@@ -955,14 +861,13 @@ mod tests {
     #[test]
     fn parses_single_object_without_rule_id() {
         // 新存储格式：`{env}:cta_rules` 为单个信号配置对象，rule_id 缺省 "default"。
-        let raw = r#"{"model_service":"svc","trade_sides":"long","long_quantile":0.9}"#;
+        let raw = r#"{"model_service":"svc","trade_sides":"long"}"#;
         let set = CtaRuleSet::parse(raw).unwrap();
         assert_eq!(set.rules().len(), 1);
         let rule = &set.rules()[0];
         assert_eq!(rule.rule_id, "default");
         assert_eq!(rule.model_service, "model_output/svc");
         assert!(rule.allow_long && !rule.allow_short);
-        assert_eq!(rule.long_quantile, 0.9);
     }
 
     #[test]
@@ -1003,12 +908,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_quantiles_and_sides() {
-        let raw =
-            r#"[{"rule_id":"r","model_service":"svc","long_quantile":0.4,"short_quantile":0.6}]"#;
-        assert!(CtaRuleSet::parse(raw).is_err());
+    fn rejects_invalid_sides() {
         let raw = r#"[{"rule_id":"r","model_service":"svc","trade_sides":"none"}]"#;
         assert!(CtaRuleSet::parse(raw).is_err());
+    }
+
+    #[test]
+    fn rejects_publisher_owned_signal_fields() {
+        for field in [
+            r#""long_quantile":0.9"#,
+            r#""short_quantile":0.1"#,
+            r#""frequency_seconds":60"#,
+            r#""rolling_window":2880"#,
+            r#""rolling_min_samples":1440"#,
+            r#""signal_delay_seconds":1"#,
+            r#""max_signal_age_seconds":120"#,
+        ] {
+            let raw = format!(r#"{{"model_service":"svc",{field}}}"#);
+            assert!(CtaRuleSet::parse(&raw).is_err(), "field={field}");
+        }
     }
 
     #[test]

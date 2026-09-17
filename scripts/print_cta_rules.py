@@ -57,14 +57,7 @@ def print_rule(index: int, rule: dict) -> None:
     print(
         "    signal:                   "
         f"trade_sides={_fmt(rule.get('trade_sides'), 'both')} "
-        f"long_q={_fmt(rule.get('long_quantile'), 0.9)} "
-        f"short_q={_fmt(rule.get('short_quantile'), 0.1)} "
-        f"freq={_fmt(rule.get('frequency_seconds'), 60)}s "
-        f"window={_fmt(rule.get('rolling_window'), 2880)}/"
-        f"{_fmt(rule.get('rolling_min_samples'), 1440)} "
-        f"delay={_fmt(rule.get('signal_delay_seconds'), 1)}s "
         f"nq={'on' if rule.get('nq_change_enabled', True) else 'off'} "
-        f"max_age={_fmt(rule.get('max_signal_age_seconds'), 120)}s "
         f"app={_fmt(rule.get('application'), 'each_bar')} "
         f"cooldown={_fmt(rule.get('cooldown_seconds'), 0)}s"
     )
@@ -75,7 +68,7 @@ def print_rule(index: int, rule: dict) -> None:
         f"ttl={_fmt(rule.get('open_ttl_seconds'), 120)}s "
         f"max_pos={_fmt(rule.get('max_position_notional_usdt'), 10000.0)}u"
     )
-    tp = rule.get("take_profit", 0.0)
+    tp = rule.get("take_profit", 0.005)
     rr = rule.get("reward_risk_ratio", 1.0)
     try:
         sl = float(tp) / float(rr) if float(rr) > 0 else float("nan")

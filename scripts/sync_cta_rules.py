@@ -45,14 +45,7 @@ ALLOWED_FIELDS = {
     "rule_id",
     "model_service",
     "trade_sides",
-    "long_quantile",
-    "short_quantile",
-    "frequency_seconds",
-    "rolling_window",
-    "rolling_min_samples",
-    "signal_delay_seconds",
     "nq_change_enabled",
-    "max_signal_age_seconds",
     "cooldown_seconds",
     "application",
     "order_notional_usdt",
@@ -68,11 +61,6 @@ ALLOWED_FIELDS = {
     "enabled",
 }
 
-QUANTILE_FIELDS = (
-    "long_quantile",
-    "short_quantile",
-)
-
 # ---- 信号配置（{env}:cta_rules 单对象）与执行参数（strategy hash）的字段分区 ----
 # 信号字段：config server 的「CTA 信号」面板编辑这些；rule_id 可选透传。
 SIGNAL_FIELD_TYPES: Dict[str, str] = {
@@ -80,14 +68,7 @@ SIGNAL_FIELD_TYPES: Dict[str, str] = {
     "enabled": "bool",
     "trade_sides": "str",
     "application": "str",
-    "long_quantile": "float",
-    "short_quantile": "float",
-    "frequency_seconds": "int",
-    "rolling_window": "int",
-    "rolling_min_samples": "int",
-    "signal_delay_seconds": "int",
     "nq_change_enabled": "bool",
-    "max_signal_age_seconds": "int",
     "cooldown_seconds": "int",
 }
 
@@ -127,14 +108,7 @@ RULE_DEFAULTS: Dict[str, Any] = {
     "rule_id": "",
     "model_service": "intra-binance-futures-1m-baseline_035",
     "trade_sides": "both",
-    "long_quantile": 0.9,
-    "short_quantile": 0.1,
-    "frequency_seconds": 60,
-    "rolling_window": 2880,
-    "rolling_min_samples": 1440,
-    "signal_delay_seconds": 1,
     "nq_change_enabled": True,
-    "max_signal_age_seconds": 120,
     "cooldown_seconds": 0,
     "application": "each_bar",
     "order_notional_usdt": 100.0,
@@ -225,42 +199,9 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
     }:
         _fail(rid, f"selected backtests require both long and short, got '{trade_sides}'", errors)
 
-    long_raw = raw.get("long_quantile", 0.9)
-    short_raw = raw.get("short_quantile", 0.1)
-    long_q = float(long_raw) if _is_num(long_raw) else math.nan
-    short_q = float(short_raw) if _is_num(short_raw) else math.nan
-    for name in QUANTILE_FIELDS:
-        v = raw.get(name)
-        if v is None:
-            continue
-        if not _is_num(v) or not 0.0 <= float(v) <= 1.0:
-            _fail(rid, f"{name} must be finite in [0,1], got {v}", errors)
-    if _is_num(raw.get("long_quantile", long_q)) and _is_num(raw.get("short_quantile", short_q)):
-        if not short_q < long_q:
-            _fail(rid, f"short_quantile({short_q}) must be < long_quantile({long_q})", errors)
-        elif long_q != 0.9 or short_q != 0.1:
-            _fail(
-                rid,
-                f"selected backtests require long_quantile=0.9 and short_quantile=0.1, got {long_q}/{short_q}",
-                errors,
-            )
-
-    fixed_contract = {
-        "frequency_seconds": 60,
-        "rolling_window": 2880,
-        "rolling_min_samples": 1440,
-        "signal_delay_seconds": 1,
-    }
-    for name, expected in fixed_contract.items():
-        value = raw.get(name, expected)
-        if not _is_int(value) or value != expected:
-            _fail(rid, f"{name} must equal backtest contract value {expected}, got {value}", errors)
     nq_enabled = raw.get("nq_change_enabled", True)
     if nq_enabled is not True:
         _fail(rid, f"nq_change_enabled must be true for the selected backtests, got {nq_enabled}", errors)
-    max_age = raw.get("max_signal_age_seconds", 120)
-    if not _is_int(max_age) or max_age < 60:
-        _fail(rid, f"max_signal_age_seconds must be an int >= 60, got {max_age}", errors)
 
     cooldown = raw.get("cooldown_seconds", 0)
     if not _is_int(cooldown) or cooldown != 0:

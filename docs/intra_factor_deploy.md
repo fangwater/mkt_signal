@@ -17,7 +17,7 @@ select_params/analysis_params_binancesymbol6_icir_vs_baseline489_train2024_2026_
 
 本次审核后的结论：
 
-- 仓库代码已补齐 raw 因子线性分位阈值、右端 bar 时间、1 秒 delay、NQ 过滤、
+- 仓库代码已补齐 raw 因子线性分位阈值、右端 bar 时间、NQ 过滤、
   逐 lot maker TP、止损、移动止损、最长持仓和 TP 撤单竞态处理；重启恢复已明确
   排除并改由人工对齐；同 symbol opening maker 已采用单方向 pending 契约，research
   尚需按相同契约重跑验收。不得把代码完成度等同于可上线。
@@ -49,7 +49,6 @@ short threshold      = linear_quantile(window including current, 0.1)
 long                 = raw > long_threshold
 short                = raw < short_threshold
 application          = each_bar
-signal delay         = 1s，即最早在 t+1s 决策
 cooldown             = 0
 conflict policy      = flat
 ```
@@ -58,9 +57,9 @@ conflict policy      = flat
 离散因子下两者不等价。非有限值占用时间窗口槽位但不进入有序样本，当前 bar 的
 raw 值和 NQ 值都计入各自当期阈值。
 
-过旧、乱序、warming-up、非有限或 factor/NQ 时间戳未对齐的消息不得开仓。
-live 额外使用 `max_signal_age_seconds=120` 作为陈旧消息保护；它不改变正常 bar 的
-回测决策。
+乱序、warming-up、非有限或 factor/NQ 时间戳未对齐的消息不得开仓。bar 周期、rolling
+窗口、最小样本数和 q90/q10 阈值都由 publisher 负责并随 `ModelMsg` 给出；执行侧不重复
+配置或校验这些计算参数，也不人为等待或按消息年龄丢弃 publisher 已发布的 ready bar。
 
 ### NQ 过滤
 
@@ -141,7 +140,7 @@ spot 成交后，每个 `open_id` 独立持有 entry、数量、成交时间和�
 
 ### 九条入选规则
 
-公共参数均为 `both / each_bar / q90-q10 / delay=1s / cooldown=0 / NQ=on`，以及上面的
+公共执行参数均为 `both / each_bar / cooldown=0 / NQ=on`，以及上面的
 四档、100U、TTL 120、max position 10000、max holding 14400。差异如下：
 
 | rule / factor | replay parameter_id | TP | RR | trailing trigger | trailing move |
@@ -169,7 +168,7 @@ ID 混为同一命名空间。Rust loader 对上述九个 model service 的公�
 | 60s 右端时间 | 已实现 | publisher 将闭合 bar 左端加 60s |
 | q90/q10 数值阈值 | 已实现 | `ExactRollingWindow::quantile_linear(f64)` |
 | 固定时间槽 NaN | 已实现 | `observe_slot` 使缺失值推进窗口但不入分布 |
-| 1s signal delay | 已实现 | CTA 决策等待 `factor_ts+1s` |
+| publisher ready bar 立即决策 | 已实现 | 不在执行侧增加 delay 或 age filter |
 | spot NQ | 已实现 | spot Kafka 增量簿、1min last BBO、60/1440/720/q95 |
 | factor/NQ 原子对齐 | 已实现 | 相同 `(symbol, ts)` 才发布 `ModelMsg` |
 | raw strict vote | 已实现 | raw 与消息内 q90/q10 严格 `>`/`<` |
@@ -267,14 +266,7 @@ model_output/intra-binance-futures-1m-baseline_091
   "enabled": true,
   "trade_sides": "both",
   "application": "each_bar",
-  "long_quantile": 0.9,
-  "short_quantile": 0.1,
-  "frequency_seconds": 60,
-  "rolling_window": 2880,
-  "rolling_min_samples": 1440,
-  "signal_delay_seconds": 1,
   "nq_change_enabled": true,
-  "max_signal_age_seconds": 120,
   "cooldown_seconds": 0
 }
 ```
@@ -428,4 +420,4 @@ symbol 范围和操作是否会发单。先单环境、单 symbol、小额度验
 - 行情 publisher 与交易所撮合时间戳存在传输延迟。
 
 这些应进入 slippage/fill-rate/fee attribution，不得通过改变 raw 阈值、NQ 比较符或
-signal delay 来“补偿”。
+在执行侧增加人为 delay 来“补偿”。
