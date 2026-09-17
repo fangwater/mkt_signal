@@ -108,7 +108,7 @@ INDEX_HTML_TEMPLATE = (
       </div>
       <div class="hint">
         key: <code>{env}:cta_rules</code>（单 JSON 对象，trade_signal 60s 热加载）。
-        配置哪个 model、分位阈值、多空方向；网格执行参数（档位/单笔名义/TP/trailing）在
+        配置 model 与做空方向；网格执行参数（档位/单笔名义/TP/trailing）在
         <a href="#strategy-params">Strategy Params</a>。
       </div>
       <div id="signal-table" class="kv-table"></div>
@@ -631,7 +631,7 @@ def sync_spread_thresholds(
 _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
     "model_service": "intra-binance-futures-1m-baseline_035",
     "enabled": True,
-    "trade_sides": "both",
+    "trade_sides": "short",
     "application": "each_bar",
     "nq_change_enabled": True,
     "cooldown_seconds": 0,
@@ -639,14 +639,14 @@ _CTA_SIGNAL_DEFAULTS: Dict[str, Any] = {
 _CTA_SIGNAL_COMMENTS: Dict[str, str] = {
     "model_service": "因子信号流 service（model_output/<service>，必填），默认 intra-binance-futures-1m-baseline_035",
     "enabled": "false = 不产生任何信号（配置保留）",
-    "trade_sides": "入选回测固定 both（多空都做）",
+    "trade_sides": "当前 CTA 固定 short（只做空）",
     "application": "入选回测固定 each_bar（每根 bar 评估）",
     "nq_change_enabled": "现货 BBO NQ 过滤（选中规则固定开启）",
     "cooldown_seconds": "同一 symbol 两次开仓最小间隔（秒），0=不限制",
 }
 _CTA_SIGNAL_ORDER: List[str] = list(_CTA_SIGNAL_DEFAULTS.keys())
 _CTA_SIGNAL_SELECTS: Dict[str, List[str]] = {
-    "trade_sides": ["both"],
+    "trade_sides": ["short"],
     "application": ["each_bar"],
 }
 _CTA_SIGNAL_BOOLS: List[str] = ["enabled", "nq_change_enabled"]

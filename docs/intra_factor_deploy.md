@@ -139,7 +139,7 @@ spot 成交后，每个 `open_id` 独立持有 entry、数量、成交时间和�
 
 ### 九条入选规则
 
-公共执行参数均为 `both / each_bar / cooldown=0 / NQ=on`，以及上面的
+公共执行参数均为 `short / each_bar / cooldown=0 / NQ=on`，即只做空，以及上面的
 四档、100U、TTL 120、max holding 14400。差异如下：
 
 | rule / factor | replay parameter_id | TP | RR | trailing trigger | trailing move |
@@ -263,7 +263,7 @@ model_output/intra-binance-futures-1m-baseline_091
   "rule_id": "baseline_035",
   "model_service": "intra-binance-futures-1m-baseline_035",
   "enabled": true,
-  "trade_sides": "both",
+  "trade_sides": "short",
   "application": "each_bar",
   "nq_change_enabled": true,
   "cooldown_seconds": 0
