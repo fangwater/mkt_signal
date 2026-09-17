@@ -56,7 +56,7 @@ def print_rule(index: int, rule: dict) -> None:
     print(f"    model_service:            {_fmt(rule.get('model_service'))}")
     print(
         "    signal:                   "
-        f"trade_sides={_fmt(rule.get('trade_sides'), 'short')} "
+        f"trade_sides={_fmt(rule.get('trade_sides'), 'both')} "
         f"nq={'on' if rule.get('nq_change_enabled', True) else 'off'} "
         f"app={_fmt(rule.get('application'), 'each_bar')} "
         f"cooldown={_fmt(rule.get('cooldown_seconds'), 0)}s"

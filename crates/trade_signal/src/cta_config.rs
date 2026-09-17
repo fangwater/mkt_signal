@@ -132,7 +132,7 @@ struct RawCtaRule {
     /// 单对象信号配置下可省略（缺省 "default"）；数组格式中建议显式给出。
     rule_id: Option<String>,
     model_service: String,
-    /// long|buy / short|sell / both|long_short|long,short|short,long；缺省 short。
+    /// long|buy / short|sell / both|long_short|long,short|short,long；缺省 both。
     trade_sides: Option<String>,
     #[serde(default = "default_enabled")]
     nq_change_enabled: bool,
@@ -314,7 +314,7 @@ impl CtaExecOverrides {
 /// 与引擎 `parse_trade_sides` 一致：返回 (allow_long, allow_short)。
 fn parse_trade_sides(raw: Option<&str>) -> Result<(bool, bool)> {
     let Some(value) = raw else {
-        return Ok((false, true));
+        return Ok((true, true));
     };
     match value.trim().to_ascii_lowercase().as_str() {
         "long" | "buy" => Ok((true, false)),
@@ -503,7 +503,7 @@ impl CtaRule {
                     .iter()
                     .zip([0.0, 0.0001, 0.0003, 0.0005])
                     .all(|(actual, expected)| same_param(*actual, expected));
-            if self.allow_long
+            if !self.allow_long
                 || !self.allow_short
                 || self.application != CtaApplication::EachBar
                 || self.cooldown_seconds != 0
@@ -691,7 +691,7 @@ mod tests {
             rule.model_service,
             "model_output/intra-binance-futures-1m-baseline_035"
         );
-        assert!(!rule.allow_long && rule.allow_short);
+        assert!(rule.allow_long && rule.allow_short);
         assert!(rule.nq_change_enabled);
         assert_eq!(rule.cooldown_seconds, 0);
         assert_eq!(rule.open_offsets, vec![0.0, 0.0001, 0.0003, 0.0005]);
@@ -774,10 +774,10 @@ mod tests {
             r#"{{"rule_id":"r","model_service":"{service}","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.001}}"#
         );
         assert!(CtaRuleSet::parse(&raw).is_ok());
-        let both = format!(
-            r#"{{"rule_id":"r","model_service":"{service}","trade_sides":"both","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.001}}"#
+        let short_only = format!(
+            r#"{{"rule_id":"r","model_service":"{service}","trade_sides":"short","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.001}}"#
         );
-        assert!(CtaRuleSet::parse(&both).is_err());
+        assert!(CtaRuleSet::parse(&short_only).is_err());
         let drifted = format!(
             r#"{{"rule_id":"r","model_service":"{service}","take_profit":0.01,"trailing_stop_trigger_step":0.002,"trailing_stop_move_step":0.0005}}"#
         );
@@ -903,9 +903,7 @@ mod tests {
 
     #[test]
     fn vote_respects_quantiles_and_sides() {
-        let set =
-            CtaRuleSet::parse(r#"[{"rule_id":"r","model_service":"svc","trade_sides":"both"}]"#)
-                .unwrap();
+        let set = CtaRuleSet::parse(&rule_json("r", "svc")).unwrap();
         let rule = &set.rules()[0];
         assert_eq!(
             rule.vote(2.0, 1.5, -1.5, Some(0.2), Some(0.1), None, None),

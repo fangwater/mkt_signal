@@ -104,7 +104,7 @@ _BOOL_FALSE = {"false", "0", "no", "off"}
 RULE_DEFAULTS: Dict[str, Any] = {
     "rule_id": "",
     "model_service": "intra-binance-futures-1m-baseline_035",
-    "trade_sides": "short",
+    "trade_sides": "both",
     "nq_change_enabled": True,
     "cooldown_seconds": 0,
     "application": "each_bar",
@@ -186,12 +186,12 @@ def validate_rule(raw: Any, index: int, errors: List[str]) -> Optional[Dict[str,
 
     trade_sides = raw.get("trade_sides")
     if trade_sides is None:
-        trade_sides = "short"
+        trade_sides = "both"
     normalized_trade_sides = str(trade_sides).strip().lower()
     if normalized_trade_sides not in TRADE_SIDES:
         _fail(rid, f"trade_sides must be long, short, or both, got '{trade_sides}'", errors)
-    elif normalized_trade_sides not in {"short", "sell"}:
-        _fail(rid, f"selected CTA contract requires short only, got '{trade_sides}'", errors)
+    elif normalized_trade_sides not in {"both", "long_short", "long,short", "short,long"}:
+        _fail(rid, f"selected CTA contract requires both long and short, got '{trade_sides}'", errors)
 
     nq_enabled = raw.get("nq_change_enabled", True)
     if nq_enabled is not True:
