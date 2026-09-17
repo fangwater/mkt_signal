@@ -52,6 +52,7 @@ const INCREMENTAL_STALE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const HYPERLIQUID_STALE_RESTART_COOLDOWN: Duration = Duration::from_secs(15);
 const HEALTH_WALL_CLOCK_JUMP_THRESHOLD: Duration = Duration::from_secs(1);
 const INCREMENTAL_CRITICAL_SYMBOLS: [&str; 3] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const GATE_INCREMENTAL_CRITICAL_SYMBOLS: [&str; 3] = ["BTC_USDT", "ETH_USDT", "SOL_USDT"];
 const COIN_INCREMENTAL_CRITICAL_SYMBOLS: [&str; 2] = ["BTCUSD_PERP", "ETHUSD_PERP"];
 const ENV_ENABLE_TRADE: &str = "SPREAD_PBS_ENABLE_TRADE";
 const ENV_ENABLE_INCREMENTAL: &str = "SPREAD_PBS_ENABLE_INCREMENTAL";
@@ -185,12 +186,18 @@ fn critical_incremental_symbols_for_venue(
     current_symbols: &HashSet<String>,
     static_symbols: &[String],
 ) -> Vec<String> {
-    if !is_hyperliquid_venue(venue) {
-        return static_symbols.to_vec();
+    if is_hyperliquid_venue(venue) {
+        let mut symbols = current_symbols.iter().cloned().collect::<Vec<_>>();
+        symbols.sort_unstable();
+        return symbols;
     }
-    let mut symbols = current_symbols.iter().cloned().collect::<Vec<_>>();
-    symbols.sort_unstable();
-    symbols
+    if matches!(venue, TradingVenue::GateMargin | TradingVenue::GateFutures) {
+        return GATE_INCREMENTAL_CRITICAL_SYMBOLS
+            .iter()
+            .map(|symbol| (*symbol).to_string())
+            .collect();
+    }
+    static_symbols.to_vec()
 }
 
 fn role_stream_policy(
@@ -4321,6 +4328,21 @@ mod tests {
             state.stale_incremental_symbols(&critical_refs, seen_at, INCREMENTAL_CRITICAL_STALE,),
             ["BTCUSDC", "ETHUSDC"],
         );
+    }
+
+    #[test]
+    fn gate_incremental_health_uses_sbe_symbol_keys() {
+        let current_symbols = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        let static_symbols = INCREMENTAL_CRITICAL_SYMBOLS.map(str::to_string);
+
+        for venue in [TradingVenue::GateMargin, TradingVenue::GateFutures] {
+            let critical =
+                critical_incremental_symbols_for_venue(venue, &current_symbols, &static_symbols);
+            assert_eq!(critical, ["BTC_USDT", "ETH_USDT", "SOL_USDT"]);
+        }
     }
 
     #[test]
