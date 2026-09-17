@@ -45,6 +45,7 @@ No API token. Do not put secrets in query strings.
 | Official snapshots (Gate `delisting_time` / `in_delisting`, Bitget `offTime`, Binance SAPI if keys, futures schedule) | **24h** | Replaces that source in the book |
 | Complete public product catalogs | **24h**, plus **00:00 UTC** | Drives current listing state and confirmed Redis removal; the midnight fetch is persisted to Postgres |
 | NAV strategy catalog | **60s** | Sole account inventory for the board and account controls; the last successful catalog is retained on failure |
+| FR `fr_unimmr_close_symbols` watch | **60s** | Redis-only read; an empty or missing key on any `funding_rate` account is a finding |
 
 LLM extract runs only on **new** announcements. LLM / fetch failures never
 block the other source. Reasons are queryable at `/status`.
@@ -229,6 +230,21 @@ visible with `tone=uncovered`. If a NAV refresh fails, the board retains the
 last successful catalog, `/status` marks `nav_strategies` failed, and automatic
 Redis/flatten mutations pause until a fresh catalog succeeds.
 
+Every `funding_rate` account also reports its `fr_unimmr_close_symbols` Redis
+list: `unimmr_close_n` is the parsed symbol count and `unimmr_empty` is `true`
+when the key is missing or parses to no symbols (a site Redis read failure
+leaves both unset). An empty list upgrades the account to `tone=risk` unless
+the tone is already `error`. This is a dedicated watch, not a delist event:
+when UniMMR drops below the trigger line the env would have no algorithmic
+close candidates.
+
+A background scan runs every `DELIST_UNIMMR_LIST_INTERVAL_SECS` (60s). On a
+confirmed empty transition it pushes a `critical` Telegram (`UniMMR平仓列表为空`),
+repeats every hour while the list stays empty, and sends one `info`
+`UniMMR平仓列表恢复` when the list becomes non-empty again. Telegram requires
+`PRE_TRADE_NOTIFICATION_URL`; without it the finding is still visible in
+`/accounts` and `/status` (source `fr_unimmr_close_list`).
+
 ### `GET /removal-candidates`
 
 Returns the Redis symbols eligible for automatic removal. A symbol is eligible
@@ -370,6 +386,8 @@ Source names:
   `bitget_instrument_offtime`, `binance_spot_delist`, `binance_margin_delist`,
   `exchange_info`, `schedule:binance-futures`, `schedule:binance-coin-futures`,
   `schedule:gate-futures`, `schedule:bitget-futures`, `schedule:bitget-coin-futures`
+- check: `fr_unimmr_close_list` — lists the empty FR `unimmr_close_symbols`
+  accounts or site read errors in `last_error`
 - ws: `gate_ws`
 - llm: `llm` plus per-announcement rows in `llm_failures`
 
@@ -440,6 +458,7 @@ Environment (see `config/delist_risk_server.env.example`):
 | `DELIST_LISTING_INTERVAL_SECS` | default `86400`; a separate catalog fetch runs at `00:00 UTC` |
 | `DELIST_NAV_STRATEGIES_URL` | NAV account source, default `http://127.0.0.1:4191/nav-api/strategies` |
 | `DELIST_NAV_STRATEGY_INTERVAL_SECS` | NAV account refresh interval, default `60` |
+| `DELIST_UNIMMR_LIST_INTERVAL_SECS` | FR `unimmr_close_symbols` empty-list watch, default `60` |
 | `DELIST_AUTO_REMOVE_REDIS` | `1` enables audited confirmed-delisting removal; default `0` |
 | `DELIST_AUTO_FLATTEN_POSITION_RISK` | `1` enables real final-window automatic clear; default `0` |
 | `DELIST_FLATTEN_WINDOW_HOURS` | actual delist window, default `24` |

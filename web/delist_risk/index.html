@@ -315,7 +315,10 @@
       }
       function accountRows(account) {
         const status = TONES[account.tone] || account.tone;
-        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span></td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span></td></tr>`;
+        const unimmrN = account.kind === 'funding_rate' && account.unimmr_close_n != null ? account.unimmr_close_n : null;
+        const unimmrCell = unimmrN != null ? `<div class="account-venues">UniMMR <span class="${unimmrN ? '' : 'account-value--risk'}">${unimmrN}</span> 候选</div>` : '';
+        const unimmrChip = account.unimmr_empty ? ' <span class="chip chip--risk">UniMMR为空</span>' : '';
+        const row = `<tr><td><span class="account-name">${escapeHtml(account.alias)}</span><code class="account-slug">${escapeHtml(account.slug)}</code></td><td>${escapeHtml(KINDS[account.kind] || account.kind)}</td><td><span class="account-value">${account.universe_n}</span>${unimmrCell}</td><td><span class="account-venues">${escapeHtml((account.venues || []).join(' / '))}</span></td><td><span class="account-value ${account.risk_n ? 'account-value--risk' : ''}">${account.risk_n || 0}</span></td><td><span class="chip chip--${escapeHtml(account.tone)}">${escapeHtml(status)}</span>${unimmrChip}</td></tr>`;
         if (!account.hits || !account.hits.length) return row;
         const hits = account.hits.map((hit) => {
           const positionStatus = positionStatusByKey.get(flattenKey(account.slug, hit.symbol));
@@ -326,17 +329,20 @@
       function exchangeBlock(exchange, accounts) {
         const riskN = accounts.reduce((sum, account) => sum + (account.risk_n || 0), 0);
         const errorN = accounts.filter((account) => account.tone === 'error').length;
-        const tone = riskN ? 'risk' : errorN ? 'error' : accounts.some((account) => account.tone === 'uncovered') ? 'uncovered' : 'ok';
-        const label = riskN ? `${riskN} 个风险标的` : errorN ? `${errorN} 个连接异常` : TONES[tone];
+        const unimmrN = accounts.filter((account) => account.unimmr_empty).length;
+        const tone = riskN || unimmrN ? 'risk' : errorN ? 'error' : accounts.some((account) => account.tone === 'uncovered') ? 'uncovered' : 'ok';
+        const label = riskN || unimmrN
+          ? [riskN ? `${riskN} 个风险标的` : '', unimmrN ? `${unimmrN} 个 UniMMR 为空` : ''].filter(Boolean).join(' · ')
+          : errorN ? `${errorN} 个连接异常` : TONES[tone];
         const source = accounts.some((account) => account.host === 'sg') ? 'SG Redis' : 'JP Redis';
-        return `<details class="exchange" ${riskN || errorN ? 'open' : ''}><summary><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${source}</span></div><div class="exchange__counts ${riskN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span></summary><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:31%">盘子</th><th style="width:13%">策略</th><th style="width:10%">标的</th><th style="width:25%">交易范围</th><th style="width:8%">风险</th><th style="width:13%">状态</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></details>`;
+        return `<details class="exchange" ${riskN || errorN || unimmrN ? 'open' : ''}><summary><div class="exchange__identity"><span class="exchange__name">${escapeHtml(EXCHANGES[exchange] || exchange)}</span><span class="exchange__site">${source}</span></div><div class="exchange__counts ${riskN || unimmrN ? 'exchange__counts--risk' : ''}"><strong>${accounts.length}</strong> 个盘子 · <strong>${accounts.reduce((sum, account) => sum + (account.universe_n || 0), 0)}</strong> 标的</div><span class="chip chip--${tone} exchange__status">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span></summary><div class="exchange__body"><table class="account-table"><thead><tr><th style="width:31%">盘子</th><th style="width:13%">策略</th><th style="width:10%">标的</th><th style="width:25%">交易范围</th><th style="width:8%">风险</th><th style="width:13%">状态</th></tr></thead><tbody>${accounts.map(accountRows).join('')}</tbody></table></div></details>`;
       }
       function renderList(accounts) {
         const root = document.getElementById('exchange-list');
         if (!accounts.length) { root.innerHTML = '<div class="empty">当前筛选条件下没有盘子</div>'; return; }
         const groups = new Map();
         accounts.forEach((account) => { if (!groups.has(account.exchange)) groups.set(account.exchange, []); groups.get(account.exchange).push(account); });
-        const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0), 0);
+        const score = (items) => items.reduce((sum, item) => sum + (item.risk_n || 0) * 100 + (item.tone === 'error' ? 10 : 0) + (item.unimmr_empty ? 50 : 0), 0);
         root.innerHTML = [...groups.entries()].sort(([, left], [, right]) => score(right) - score(left)).map(([exchange, group]) => exchangeBlock(exchange, group)).join('');
         root.querySelectorAll('.flatten-action').forEach((button) => button.addEventListener('click', () => executeManualFlatten(button)));
       }

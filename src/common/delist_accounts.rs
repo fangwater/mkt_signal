@@ -84,6 +84,12 @@ pub struct AccountRiskView {
     pub risk_n: usize,
     pub hits: Vec<AccountHit>,
     pub symbols: Vec<String>,
+    /// FR 盘 `fr_unimmr_close_symbols` 解析后的币对数；非 FR 或读取失败为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unimmr_close_n: Option<usize>,
+    /// 已确认 `fr_unimmr_close_symbols` 为空（key 缺失或列表无币对）。
+    #[serde(default)]
+    pub unimmr_empty: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -399,6 +405,8 @@ pub fn build_account_views(
             risk_n,
             hits,
             symbols: universe.into_iter().collect(),
+            unimmr_close_n: None,
+            unimmr_empty: false,
         });
     }
     out
@@ -494,17 +502,31 @@ pub async fn load_universes(
     out
 }
 
-pub async fn load_fr_dump_symbols(
+/// One `fr_*` symbol list on a funding-rate account, e.g.
+/// `{slug}:fr_unimmr_close_symbols:{exchange}-margin_{exchange}-futures`.
+#[derive(Debug, Clone)]
+pub struct FrSymbolListState {
+    pub key: String,
+    /// The Redis key existed; a missing key still yields an empty `symbols`.
+    pub present: bool,
+    pub symbols: BTreeSet<String>,
+}
+
+/// Loads one `fr_{list}` key for every `funding_rate` NAV account from its
+/// site's Redis. A site-level read failure marks every account on that site;
+/// a missing key yields `present=false` with an empty set.
+pub async fn load_fr_symbol_list(
     accounts: &[AccountSpec],
+    list: &str,
     jp_url: &str,
     sg_url: Option<&str>,
-) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
+) -> BTreeMap<String, Result<FrSymbolListState, String>> {
     let mut jp_keys = Vec::new();
     let mut sg_keys = Vec::new();
     let mut owners: Vec<(String, RedisSite, String)> = Vec::new();
     for spec in accounts.iter().filter(|spec| spec.kind == "funding_rate") {
         let suffix = format!("{}-margin_{}-futures", spec.exchange, spec.exchange);
-        let key = format!("{}:fr_dump_symbols:{suffix}", spec.slug);
+        let key = format!("{}:fr_{list}:{suffix}", spec.slug);
         match spec.site {
             RedisSite::Jp => jp_keys.push(key.clone()),
             RedisSite::Sg => sg_keys.push(key.clone()),
@@ -533,17 +555,32 @@ pub async fn load_fr_dump_symbols(
                 continue;
             }
         };
-        let symbols = match source {
+        let state = match source {
             Err(err) => Err(err.clone()),
-            Ok(values) => Ok(values
-                .get(&key)
-                .and_then(|raw| raw.as_deref())
-                .map(parse_universe)
-                .unwrap_or_default()),
+            Ok(values) => {
+                let raw = values.get(&key).and_then(|raw| raw.as_deref());
+                Ok(FrSymbolListState {
+                    key,
+                    present: raw.is_some(),
+                    symbols: raw.map(parse_universe).unwrap_or_default(),
+                })
+            }
         };
-        out.insert(slug, symbols);
+        out.insert(slug, state);
     }
     out
+}
+
+pub async fn load_fr_dump_symbols(
+    accounts: &[AccountSpec],
+    jp_url: &str,
+    sg_url: Option<&str>,
+) -> BTreeMap<String, Result<BTreeSet<String>, String>> {
+    load_fr_symbol_list(accounts, "dump_symbols", jp_url, sg_url)
+        .await
+        .into_iter()
+        .map(|(slug, state)| (slug, state.map(|state| state.symbols)))
+        .collect()
 }
 
 fn to_map(

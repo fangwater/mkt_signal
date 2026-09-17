@@ -36,8 +36,9 @@ use mkt_signal::common::bitget_announcement::{
     hydrate_notice_body, mark_article_body_processed,
 };
 use mkt_signal::common::delist_accounts::{
-    build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_universes, summarize,
-    AccountRiskResponse, AccountSpec,
+    build_account_views, fetch_nav_accounts, load_fr_dump_symbols, load_fr_symbol_list,
+    load_universes, summarize, AccountRiskResponse, AccountRiskView, AccountSpec,
+    FrSymbolListState,
 };
 use mkt_signal::common::delist_dump::{
     apply_redis_dump, position_close_statuses, position_dump_candidates, prepare_redis_dump,
@@ -69,7 +70,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tokio::time;
 use tokio_tungstenite::tungstenite::Message;
@@ -80,6 +81,8 @@ use mkt_signal::pre_trade::notification_client::{
 
 const POSITION_CLOSED_THRESHOLD_USDT: f64 = 100.0;
 const POSITION_REMOVAL_THRESHOLD_USDT: f64 = 1.0;
+/// Repeat the empty `fr_unimmr_close_symbols` alert while the list stays empty.
+const UNIMMR_EMPTY_REPEAT_SECS: u64 = 3_600;
 
 #[derive(Parser)]
 #[command(name = "delist_risk_server")]
@@ -128,6 +131,10 @@ struct Args {
     /// Local position snapshot scan interval. This does not poll exchange delist APIs.
     #[arg(long, default_value_t = 60)]
     position_risk_interval_secs: u64,
+
+    /// FR `fr_unimmr_close_symbols` empty-list watch interval. Redis-only read.
+    #[arg(long, default_value_t = 60)]
+    unimmr_list_interval_secs: u64,
 
     /// Minimum absolute affected-leg position required for automatic dump.
     #[arg(long, default_value_t = 50.0)]
@@ -381,6 +388,7 @@ async fn main() -> Result<()> {
         listing_interval_secs: args.listing_interval_secs,
         announcement_interval_secs: args.announcement_interval_secs,
         position_risk_interval_secs: args.position_risk_interval_secs,
+        unimmr_list_interval_secs: args.unimmr_list_interval_secs,
         nav_strategy_interval_secs: args.nav_strategy_interval_secs,
         days: args.days,
         llm_max: args.llm_max,
@@ -513,9 +521,17 @@ async fn query_accounts(
     listings.decorate(&mut risk);
     drop(book);
     let account_specs = state.accounts.read().await.clone();
-    let universes =
-        load_universes(&account_specs, &state.jp_redis, state.sg_redis.as_deref()).await;
-    let accounts = build_account_views(&account_specs, &risk, &listings, &universes);
+    let (universes, unimmr_lists) = tokio::join!(
+        load_universes(&account_specs, &state.jp_redis, state.sg_redis.as_deref()),
+        load_fr_symbol_list(
+            &account_specs,
+            "unimmr_close_symbols",
+            &state.jp_redis,
+            state.sg_redis.as_deref()
+        )
+    );
+    let mut accounts = build_account_views(&account_specs, &risk, &listings, &universes);
+    decorate_unimmr_lists(&mut accounts, &unimmr_lists);
     let mut redis = std::collections::BTreeMap::new();
     redis.insert(
         "jp".to_string(),
@@ -945,6 +961,7 @@ struct RefreshArgs {
     listing_interval_secs: u64,
     announcement_interval_secs: u64,
     position_risk_interval_secs: u64,
+    unimmr_list_interval_secs: u64,
     nav_strategy_interval_secs: u64,
     days: i64,
     llm_max: usize,
@@ -1049,6 +1066,8 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     if state.auto_dump_position_risk || state.auto_flatten_position_risk {
         run_position_risk_scan(&state).await;
     }
+    let mut unimmr_watch = UnimmrListWatch::default();
+    run_unimmr_list_scan(&state, &mut unimmr_watch).await;
 
     let mut official = time::interval(Duration::from_secs(args.official_interval_secs.max(60)));
     official.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -1065,6 +1084,10 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
     ));
     position_risk.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     position_risk.tick().await;
+    let mut unimmr_list =
+        time::interval(Duration::from_secs(args.unimmr_list_interval_secs.max(10)));
+    unimmr_list.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    unimmr_list.tick().await;
     let mut nav_strategies =
         time::interval(Duration::from_secs(args.nav_strategy_interval_secs.max(10)));
     nav_strategies.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -1099,6 +1122,9 @@ async fn run_refresh(state: AppState, args: RefreshArgs) -> Result<()> {
             }
             _ = position_risk.tick(), if state.auto_dump_position_risk || state.auto_flatten_position_risk => {
                 run_position_risk_scan(&state).await;
+            }
+            _ = unimmr_list.tick() => {
+                run_unimmr_list_scan(&state, &mut unimmr_watch).await;
             }
             _ = nav_strategies.tick() => {
                 if refresh_nav_account_catalog(&state, &nav_client).await {
@@ -1835,6 +1861,162 @@ async fn send_flatten_notification(
         severity,
         fields,
         dedup_key: Some(audit_dedup_key(candidate, title)),
+    };
+    tokio::task::spawn_blocking(move || client.send(&request))
+        .await
+        .context("join notification task")?
+}
+
+/// Marks FR accounts whose `fr_unimmr_close_symbols` list is confirmed empty.
+/// Read failures leave the fields unset; an empty list upgrades tone to `risk`.
+fn decorate_unimmr_lists(
+    accounts: &mut [AccountRiskView],
+    lists: &BTreeMap<String, Result<FrSymbolListState, String>>,
+) {
+    for account in accounts
+        .iter_mut()
+        .filter(|account| account.kind == "funding_rate")
+    {
+        let Some(Ok(list)) = lists.get(&account.slug) else {
+            continue;
+        };
+        account.unimmr_close_n = Some(list.symbols.len());
+        account.unimmr_empty = list.symbols.is_empty();
+        if account.unimmr_empty && matches!(account.tone.as_str(), "ok" | "uncovered") {
+            account.tone = "risk".to_string();
+        }
+    }
+}
+
+/// Per-scan dedup for the FR `fr_unimmr_close_symbols` empty-list watch.
+#[derive(Default)]
+struct UnimmrListWatch {
+    /// slug -> last accepted/attempted alert time for a currently empty list.
+    empty_notified: BTreeMap<String, Instant>,
+}
+
+/// Watches every NAV `funding_rate` account's `fr_unimmr_close_symbols` Redis
+/// list and alerts while it is empty. An empty list means a UniMMR breach has
+/// no algorithmic close candidates on that env.
+async fn run_unimmr_list_scan(state: &AppState, watch: &mut UnimmrListWatch) {
+    if !nav_accounts_ready(state).await {
+        return;
+    }
+    let accounts = state.accounts.read().await.clone();
+    if !accounts
+        .iter()
+        .any(|account| account.kind == "funding_rate")
+    {
+        return;
+    }
+    let lists = load_fr_symbol_list(
+        &accounts,
+        "unimmr_close_symbols",
+        &state.jp_redis,
+        state.sg_redis.as_deref(),
+    )
+    .await;
+
+    let now = Instant::now();
+    let mut empty: Vec<(&String, &FrSymbolListState)> = Vec::new();
+    let mut read_errors = Vec::new();
+    for (slug, result) in &lists {
+        match result {
+            Ok(list) if list.symbols.is_empty() => empty.push((slug, list)),
+            Ok(list) => {
+                if watch.empty_notified.remove(slug).is_some() {
+                    if let Err(err) = send_unimmr_list_notification(state, slug, list, true).await {
+                        warn!("UniMMR list recovery notification failed account={slug}: {err:#}");
+                    }
+                }
+            }
+            Err(err) => read_errors.push(format!("{slug}: {err}")),
+        }
+    }
+    for (slug, list) in &empty {
+        let due = watch.empty_notified.get(*slug).is_none_or(|last| {
+            now.saturating_duration_since(*last) >= Duration::from_secs(UNIMMR_EMPTY_REPEAT_SECS)
+        });
+        if !due {
+            continue;
+        }
+        match send_unimmr_list_notification(state, slug, list, false).await {
+            Ok(()) => {
+                info!("UniMMR empty-list alert sent account={slug}");
+                watch.empty_notified.insert((*slug).clone(), now);
+            }
+            Err(err) => {
+                warn!("UniMMR empty-list alert failed account={slug}: {err:#}");
+            }
+        }
+    }
+    watch
+        .empty_notified
+        .retain(|slug, _| lists.contains_key(slug));
+
+    let mut problems = Vec::new();
+    if !empty.is_empty() {
+        problems.push(format!(
+            "empty fr_unimmr_close_symbols: {}",
+            empty
+                .iter()
+                .map(|(slug, _)| slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    problems.extend(read_errors.iter().map(|err| format!("list read: {err}")));
+    if problems.is_empty() {
+        mark_ok(state, "fr_unimmr_close_list", "check").await;
+    } else {
+        let message = problems.join("; ");
+        warn!("FR UniMMR list scan degraded: {message}");
+        mark_err(state, "fr_unimmr_close_list", "check", &message).await;
+    }
+}
+
+async fn send_unimmr_list_notification(
+    state: &AppState,
+    account_slug: &str,
+    list: &FrSymbolListState,
+    recovered: bool,
+) -> Result<()> {
+    let client = state
+        .notification_client
+        .clone()
+        .context("local notification client is unavailable")?;
+    let (title, severity, message) = if recovered {
+        (
+            "UniMMR平仓列表恢复",
+            NotificationSeverity::Info,
+            format!(
+                "{account_slug}｜fr_unimmr_close_symbols 已配置 {} 个币对",
+                list.symbols.len()
+            ),
+        )
+    } else {
+        (
+            "UniMMR平仓列表为空",
+            NotificationSeverity::Critical,
+            format!(
+                "{account_slug}｜fr_unimmr_close_symbols {}\nkey: {}\nUniMMR 跌破触发线时将没有可算法平仓的币对",
+                if list.present { "列表为空" } else { "key 未配置" },
+                list.key
+            ),
+        )
+    };
+    let mut fields = BTreeMap::new();
+    fields.insert("账户".to_string(), account_slug.to_string());
+    fields.insert("Redis Key".to_string(), list.key.clone());
+    let request = NotificationRequest {
+        source: "delist_risk_server".to_string(),
+        title: title.to_string(),
+        message,
+        severity,
+        fields,
+        dedup_key: Some(format!(
+            "delist_risk_server:unimmr_close_list:{account_slug}"
+        )),
     };
     tokio::task::spawn_blocking(move || client.send(&request))
         .await

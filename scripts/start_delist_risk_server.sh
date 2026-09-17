@@ -61,6 +61,7 @@ ARGS=(
   --official-interval-secs "${DELIST_OFFICIAL_INTERVAL_SECS:-86400}"
   --listing-interval-secs "${DELIST_LISTING_INTERVAL_SECS:-86400}"
   --position-risk-interval-secs "${DELIST_POSITION_RISK_INTERVAL_SECS:-60}"
+  --unimmr-list-interval-secs "${DELIST_UNIMMR_LIST_INTERVAL_SECS:-60}"
   --position-risk-threshold-usdt "${DELIST_POSITION_RISK_THRESHOLD_USDT:-50}"
   --position-snapshot-max-age-secs "${DELIST_POSITION_SNAPSHOT_MAX_AGE_SECS:-120}"
   --nav-strategies-url "${DELIST_NAV_STRATEGIES_URL:-http://127.0.0.1:4191/nav-api/strategies}"
